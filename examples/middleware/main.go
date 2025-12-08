@@ -29,7 +29,7 @@ func main() {
 	// Register provider
 	registry.RegisterProvider("openai", openaiProvider)
 
-	fmt.Println("=== Middleware Examples ===\n")
+	fmt.Println("=== Middleware Examples ===")
 
 	// Example 1: Default settings middleware
 	fmt.Println("1. Using default settings middleware:")
@@ -75,10 +75,15 @@ func exampleDefaultSettings(p provider.Provider) error {
 	)
 
 	// Generate text - will use temperature=0.3 by default
-	result, err := ai.Generate(context.Background(), ai.GenerateOptions{
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 		Model: wrappedModel,
 		Messages: []types.Message{
-			{Role: "user", Content: types.NewTextContent("Say 'Hello, middleware!'")},
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Say 'Hello, middleware!'"},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -97,19 +102,15 @@ func exampleCustomMiddleware(p provider.Provider) error {
 		return fmt.Errorf("failed to get model: %w", err)
 	}
 
-	// Create custom middleware that adds a system message
+	// Create custom middleware that adds a system prompt
 	customMiddleware := &middleware.LanguageModelMiddleware{
 		SpecificationVersion: "v3",
 		TransformParams: func(ctx context.Context, callType string, params *provider.GenerateOptions, model provider.LanguageModel) (*provider.GenerateOptions, error) {
-			// Add a system message at the beginning
-			systemMsg := types.Message{
-				Role:    "system",
-				Content: types.NewTextContent("You are a helpful assistant. Always respond concisely."),
-			}
-
-			// Create new params with system message prepended
+			// Add a system prompt
 			newParams := *params
-			newParams.Messages = append([]types.Message{systemMsg}, params.Messages...)
+			if newParams.Prompt.System == "" {
+				newParams.Prompt.System = "You are a helpful assistant. Always respond concisely."
+			}
 
 			return &newParams, nil
 		},
@@ -122,11 +123,16 @@ func exampleCustomMiddleware(p provider.Provider) error {
 		nil, nil,
 	)
 
-	// Generate text - will have system message automatically added
-	result, err := ai.Generate(context.Background(), ai.GenerateOptions{
+	// Generate text - will have system prompt automatically added
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 		Model: wrappedModel,
 		Messages: []types.Message{
-			{Role: "user", Content: types.NewTextContent("What is 2+2?")},
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "What is 2+2?"},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -159,10 +165,15 @@ func exampleProviderMiddleware(p provider.Provider) error {
 	}
 
 	// Generate text - will use temperature=0.5 by default
-	result, err := ai.Generate(context.Background(), ai.GenerateOptions{
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 		Model: model,
 		Messages: []types.Message{
-			{Role: "user", Content: types.NewTextContent("Write a haiku about coding.")},
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Write a haiku about coding."},
+				},
+			},
 		},
 	})
 	if err != nil {

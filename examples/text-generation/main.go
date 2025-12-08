@@ -7,9 +7,9 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
-	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 func main() {
@@ -20,12 +20,12 @@ func main() {
 	}
 
 	// Create OpenAI provider
-	provider := openai.New(openai.Config{
+	p := openai.New(openai.Config{
 		APIKey: apiKey,
 	})
 
 	// Create language model
-	model, err := provider.LanguageModel("gpt-4")
+	model, err := p.LanguageModel("gpt-4")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -43,15 +43,11 @@ func main() {
 	// Example 3: Tool calling
 	fmt.Println("\n=== Example 3: Tool Calling ===")
 	toolCallingExample(ctx, model)
-
-	// Example 4: Structured output
-	fmt.Println("\n=== Example 4: Structured Output ===")
-	structuredOutputExample(ctx, model)
 }
 
-func simpleExample(ctx context.Context, model interface{ ai.GenerateText(context.Context, ai.GenerateTextOptions) (*ai.GenerateTextResult, error) }) {
+func simpleExample(ctx context.Context, model provider.LanguageModel) {
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model.(ai.LanguageModel),
+		Model:  model,
 		Prompt: "Tell me a joke about programming",
 	})
 	if err != nil {
@@ -66,34 +62,35 @@ func simpleExample(ctx context.Context, model interface{ ai.GenerateText(context
 		result.Usage.OutputTokens)
 }
 
-func streamingExample(ctx context.Context, model interface{}) {
-	result, err := ai.StreamText(ctx, ai.StreamTextOptions{
-		Model:  model.(ai.LanguageModel),
+func streamingExample(ctx context.Context, model provider.LanguageModel) {
+	stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+		Model:  model,
 		Prompt: "Write a haiku about Go programming",
-		OnChunk: func(chunk ai.StreamChunk) {
-			if chunk.Type == ai.ChunkTypeText {
-				fmt.Print(chunk.Text)
-			}
-		},
 	})
 	if err != nil {
 		log.Printf("Error: %v", err)
 		return
 	}
-	defer result.Close()
 
-	// Wait for stream to complete
-	_, err = result.ReadAll()
-	if err != nil {
-		log.Printf("Error: %v", err)
+	fmt.Print("Response: ")
+	for chunk := range stream.Chunks() {
+		if chunk.Type == provider.ChunkTypeText {
+			fmt.Print(chunk.Text)
+		}
+	}
+	fmt.Println()
+
+	if err := stream.Err(); err != nil {
+		log.Printf("Stream error: %v", err)
 		return
 	}
 
-	fmt.Printf("\n\nTokens used: %d\n", result.Usage().TotalTokens)
+	usage := stream.Usage()
+	fmt.Printf("Tokens used: %d\n", usage.TotalTokens)
 }
 
-func toolCallingExample(ctx context.Context, model interface{}) {
-	// Define a tool
+func toolCallingExample(ctx context.Context, model provider.LanguageModel) {
+	// Define a weather tool
 	weatherTool := types.Tool{
 		Name:        "get_weather",
 		Description: "Get the current weather for a location",
@@ -107,8 +104,8 @@ func toolCallingExample(ctx context.Context, model interface{}) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-			location := input["location"].(string)
+		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			location := params["location"].(string)
 			// Simulate weather API call
 			return map[string]interface{}{
 				"location":    location,
@@ -118,69 +115,21 @@ func toolCallingExample(ctx context.Context, model interface{}) {
 		},
 	}
 
+	maxSteps := 5
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model.(ai.LanguageModel),
-		Prompt: "What's the weather like in San Francisco?",
-		Tools:  []types.Tool{weatherTool},
-		OnStepFinish: func(step types.StepResult) {
-			fmt.Printf("Step %d completed:\n", step.StepNumber)
-			if len(step.ToolCalls) > 0 {
-				fmt.Printf("  Tool calls: %d\n", len(step.ToolCalls))
-				for _, tc := range step.ToolCalls {
-					fmt.Printf("    - %s\n", tc.ToolName)
-				}
-			}
-			if step.Text != "" {
-				fmt.Printf("  Text: %s\n", step.Text)
-			}
-		},
+		Model:    model,
+		Prompt:   "What's the weather like in San Francisco?",
+		Tools:    []types.Tool{weatherTool},
+		MaxSteps: &maxSteps,
 	})
 	if err != nil {
 		log.Printf("Error: %v", err)
 		return
 	}
 
-	fmt.Printf("\nFinal response: %s\n", result.Text)
+	fmt.Printf("Final response: %s\n", result.Text)
 	fmt.Printf("Steps taken: %d\n", len(result.Steps))
-	fmt.Printf("Tools called: %d\n", len(result.ToolResults))
-}
-
-func structuredOutputExample(ctx context.Context, model interface{}) {
-	// Define a schema for a person object
-	personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"name": map[string]interface{}{
-				"type":        "string",
-				"description": "The person's full name",
-			},
-			"age": map[string]interface{}{
-				"type":        "number",
-				"description": "The person's age in years",
-			},
-			"occupation": map[string]interface{}{
-				"type":        "string",
-				"description": "The person's occupation",
-			},
-			"hobbies": map[string]interface{}{
-				"type":        "array",
-				"items":       map[string]interface{}{"type": "string"},
-				"description": "List of the person's hobbies",
-			},
-		},
-		"required": []string{"name", "age", "occupation"},
-	})
-
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
-		Model:  model.(ai.LanguageModel),
-		Prompt: "Generate a fictional person profile for a software engineer",
-		Schema: personSchema,
-	})
-	if err != nil {
-		log.Printf("Error: %v", err)
-		return
+	if len(result.ToolCalls) > 0 {
+		fmt.Printf("Tools called: %d\n", len(result.ToolCalls))
 	}
-
-	fmt.Printf("Generated object:\n%s\n", result.Text)
-	fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
 }

@@ -6,19 +6,18 @@ import (
 	"log"
 	"os"
 
-	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
-	"github.com/digitallysavvy/go-ai/pkg/registry"
 )
 
 func main() {
 	ctx := context.Background()
 
-	fmt.Println("=== Go AI SDK - Comprehensive Example ===\n")
+	fmt.Println("=== Go AI SDK - Comprehensive Example ===")
 
 	// Example 1: Multiple Providers
 	fmt.Println("1. Using Multiple Providers")
@@ -31,10 +30,6 @@ func main() {
 	// Example 3: Agent with Tools
 	fmt.Println("\n3. Autonomous Agent with Tools")
 	agentExample(ctx)
-
-	// Example 4: Registry System
-	fmt.Println("\n4. Registry System")
-	registryExample(ctx)
 }
 
 func multiProviderExample(ctx context.Context) {
@@ -57,9 +52,9 @@ func multiProviderExample(ctx context.Context) {
 
 	// Try Anthropic
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		fmt.Println("  Using Anthropic (Claude-3):")
+		fmt.Println("  Using Anthropic (Claude):")
 		provider := anthropic.New(anthropic.Config{APIKey: apiKey})
-		model, _ := provider.LanguageModel("claude-3-sonnet-20240229")
+		model, _ := provider.LanguageModel("claude-sonnet-4-5")
 
 		result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 			Model:  model,
@@ -98,7 +93,7 @@ func embeddingExample(ctx context.Context) {
 	}
 
 	provider := openai.New(openai.Config{APIKey: apiKey})
-	embeddingModel, _ := provider.EmbeddingModel("text-embedding-ada-002")
+	embeddingModel, _ := provider.EmbeddingModel("text-embedding-3-small")
 
 	// Create embeddings for a knowledge base
 	documents := []string{
@@ -148,8 +143,8 @@ func agentExample(ctx context.Context) {
 		return
 	}
 
-	provider := openai.New(openai.Config{APIKey: apiKey})
-	model, _ := provider.LanguageModel("gpt-4")
+	p := openai.New(openai.Config{APIKey: apiKey})
+	model, _ := p.LanguageModel("gpt-4")
 
 	// Define tools for the agent
 	calculatorTool := types.Tool{
@@ -167,10 +162,10 @@ func agentExample(ctx context.Context) {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-			op := input["operation"].(string)
-			a := input["a"].(float64)
-			b := input["b"].(float64)
+		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			op := params["operation"].(string)
+			a := params["a"].(float64)
+			b := params["b"].(float64)
 
 			switch op {
 			case "add":
@@ -203,8 +198,8 @@ func agentExample(ctx context.Context) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-			location := input["location"].(string)
+		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			location := params["location"].(string)
 			// Simulate API call
 			return map[string]interface{}{
 				"location":    location,
@@ -216,22 +211,12 @@ func agentExample(ctx context.Context) {
 	}
 
 	// Create agent
-	agentConfig := agent.AgentConfig{
-		Model:  model,
-		System: "You are a helpful assistant that can use tools to answer questions.",
-		Tools:  []types.Tool{calculatorTool, weatherTool},
+	agentInstance := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:    model,
+		System:   "You are a helpful assistant that can use tools to answer questions.",
+		Tools:    []types.Tool{calculatorTool, weatherTool},
 		MaxSteps: 5,
-		OnStepFinish: func(step types.StepResult) {
-			fmt.Printf("  Step %d: ", step.StepNumber)
-			if len(step.ToolCalls) > 0 {
-				fmt.Printf("Called %d tool(s)\n", len(step.ToolCalls))
-			} else {
-				fmt.Printf("Final answer\n")
-			}
-		},
-	}
-
-	agentInstance := agent.NewToolLoopAgent(agentConfig)
+	})
 
 	// Execute agent
 	result, err := agentInstance.Execute(ctx, "What's 15 times 23, and what's the weather in San Francisco?")
@@ -240,53 +225,9 @@ func agentExample(ctx context.Context) {
 		return
 	}
 
-	fmt.Printf("\n  Final Answer: %s\n", result.Text)
+	fmt.Printf("  Final Answer: %s\n", result.Text)
 	fmt.Printf("  Steps taken: %d\n", len(result.Steps))
-	fmt.Printf("  Tools used: %d\n", len(result.ToolResults))
-}
-
-func registryExample(ctx context.Context) {
-	// Register providers in the global registry
-	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		provider := openai.New(openai.Config{APIKey: apiKey})
-		registry.RegisterProvider("openai", provider)
-		registry.RegisterAlias("gpt-4", "openai:gpt-4")
-		fmt.Println("  Registered OpenAI provider")
+	if len(result.ToolResults) > 0 {
+		fmt.Printf("  Tools called: %d\n", len(result.ToolResults))
 	}
-
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		provider := anthropic.New(anthropic.Config{APIKey: apiKey})
-		registry.RegisterProvider("anthropic", provider)
-		registry.RegisterAlias("claude-3-sonnet", "anthropic:claude-3-sonnet-20240229")
-		fmt.Println("  Registered Anthropic provider")
-	}
-
-	if apiKey := os.Getenv("GOOGLE_API_KEY"); apiKey != "" {
-		provider := google.New(google.Config{APIKey: apiKey})
-		registry.RegisterProvider("google", provider)
-		registry.RegisterAlias("gemini-pro", "google:gemini-pro")
-		fmt.Println("  Registered Google provider")
-	}
-
-	// Now you can resolve models by string ID
-	if os.Getenv("OPENAI_API_KEY") != "" {
-		model, err := registry.ResolveLanguageModel("openai:gpt-4")
-		if err == nil {
-			fmt.Println("  Resolved openai:gpt-4")
-
-			result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-				Model:  model,
-				Prompt: "Say 'Registry works!' in one sentence",
-			})
-			if err != nil {
-				log.Printf("    Error: %v", err)
-			} else {
-				fmt.Printf("  Response: %s\n", result.Text)
-			}
-		}
-	}
-
-	// List all registered providers
-	providers := registry.GetGlobalRegistry().ListProviders()
-	fmt.Printf("  Total providers registered: %d\n", len(providers))
 }
