@@ -1,23 +1,12 @@
 # Go AI SDK
 
-A complete Go implementation of the [Vercel AI SDK](https://sdk.vercel.ai) with full feature parity for backend functionality.
+The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
-Build AI-powered applications in Go with a unified API across 30+ model providers including OpenAI, Anthropic, Google, AWS Bedrock, Azure, Cohere, Mistral, and many more.
-
-## Features
-
-- **Unified Provider API**: Switch between 30+ providers with zero code changes
-- **Text Generation**: `GenerateText()` and `StreamText()` with multi-step tool calling
-- **Structured Output**: `GenerateObject()` for JSON schema-validated responses
-- **Embeddings**: `Embed()` and `EmbedMany()` with similarity search utilities
-- **Image Generation**: `GenerateImage()` for text-to-image generation
-- **Speech**: `GenerateSpeech()` and `Transcribe()` for audio processing
-- **Agents**: `ToolLoopAgent` for autonomous multi-step reasoning
-- **Middleware System**: Model wrapping for cross-cutting concerns (logging, caching, rate limiting)
-- **Telemetry**: Built-in OpenTelemetry integration
-- **Registry System**: Resolve models by string ID (e.g., `"openai:gpt-4"`)
+To learn more about how to use the Go AI SDK, check out our [Documentation](./docs).
 
 ## Installation
+
+You will need Go 1.21+ installed on your local development machine.
 
 ```bash
 go get github.com/digitallysavvy/go-ai
@@ -25,40 +14,22 @@ go get github.com/digitallysavvy/go-ai
 
 ## Unified Provider Architecture
 
-The Go AI SDK provides a unified interface across all providers, making it easy to switch between models or combine them in your application:
+The Go AI SDK provides a [unified API](./docs/02-foundations/02-providers-and-models.mdx) to interact with model providers like [OpenAI](https://platform.openai.com), [Anthropic](https://www.anthropic.com), [Google](https://ai.google.dev), and [more](#supported-providers).
 
-```go
-import (
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
-    "github.com/digitallysavvy/go-ai/pkg/providers/google"
-    "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
-)
-
-// All providers implement the same interface
-openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
-bedrockProvider := bedrock.New(bedrock.Config{Region: "us-east-1"})
-
-// Get models with the same API
-gpt4, _ := openaiProvider.LanguageModel("gpt-4")
-claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
-gemini, _ := googleProvider.LanguageModel("gemini-pro")
-titan, _ := bedrockProvider.LanguageModel("amazon.titan-text-express-v1")
+```bash
+go get github.com/digitallysavvy/go-ai/pkg/providers/openai
+go get github.com/digitallysavvy/go-ai/pkg/providers/anthropic
+go get github.com/digitallysavvy/go-ai/pkg/providers/google
 ```
 
-## Usage Examples
+## Usage
 
 ### Generating Text
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
-    "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
@@ -68,22 +39,15 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Create provider
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-
-    // Get language model
     model, _ := provider.LanguageModel("gpt-4")
 
-    // Generate text
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
-        Prompt: "What is love?",
+        Prompt: "What is an agent?",
     })
-    if err != nil {
-        log.Fatal(err)
-    }
 
     fmt.Println(result.Text)
 }
@@ -92,21 +56,17 @@ func main() {
 ### Streaming Text
 
 ```go
-result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
-    Prompt: "Write a poem about Go programming",
+    Prompt: "Write a story about Go programming",
 })
-defer result.Close()
 
-// Stream text chunks as they arrive
-for chunk := range result.Chunks() {
-    fmt.Print(chunk.Text)
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
 }
 ```
 
 ### Generating Structured Data
-
-Use `GenerateObject` to generate JSON with schema validation:
 
 ```go
 type Recipe struct {
@@ -115,34 +75,43 @@ type Recipe struct {
     Steps       []string `json:"steps"`
 }
 
-schema := map[string]interface{}{
-    "type": "object",
-    "properties": map[string]interface{}{
-        "name":        map[string]interface{}{"type": "string"},
-        "ingredients": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-        "steps":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-    },
-    "required": []string{"name", "ingredients", "steps"},
-}
-
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Prompt: "Generate a recipe for chocolate chip cookies",
-    Schema: schema,
+    Prompt: "Generate a lasagna recipe.",
+    Output: &Recipe{},
 })
 
-var recipe Recipe
-json.Unmarshal(result.Object, &recipe)
+recipe := result.Object
 fmt.Printf("Recipe: %s\n", recipe.Name)
+```
+
+### Agents
+
+Build autonomous agents with multi-step reasoning:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/agents"
+
+agent := agents.New(agents.Config{
+    Model:        model,
+    Instructions: "You are a helpful research assistant.",
+    Tools: map[string]ai.Tool{
+        "search":     searchTool,
+        "calculator": calculatorTool,
+    },
+    MaxSteps: 10,
+})
+
+result, _ := agent.Execute(ctx, "What is the population of Tokyo?")
+fmt.Println(result.Text)
 ```
 
 ### Tool Calling
 
-Enable AI models to call functions:
+Extend AI capabilities with custom tools:
 
 ```go
-weatherTool := types.Tool{
-    Name:        "get_weather",
+weatherTool := ai.Tool{
     Description: "Get current weather for a location",
     Parameters: map[string]interface{}{
         "type": "object",
@@ -154,13 +123,11 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-        location := input["location"].(string)
-        // Fetch actual weather data here
+    Execute: func(params map[string]interface{}) (interface{}, error) {
+        location := params["location"].(string)
         return map[string]interface{}{
             "temperature": 72,
             "condition":   "sunny",
-            "location":    location,
         }, nil
     },
 }
@@ -168,79 +135,29 @@ weatherTool := types.Tool{
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in San Francisco?",
-    Tools:  []types.Tool{weatherTool},
+    Tools:  map[string]ai.Tool{"getWeather": weatherTool},
 })
-```
-
-### Building Agents
-
-Create autonomous agents that reason through multi-step tasks:
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/agent"
-
-agentConfig := agent.AgentConfig{
-    Model:    model,
-    System:   "You are a helpful research assistant.",
-    Tools:    []types.Tool{searchTool, calculatorTool, weatherTool},
-    MaxSteps: 10,
-}
-
-researchAgent := agent.NewToolLoopAgent(agentConfig)
-
-result, _ := researchAgent.Execute(ctx,
-    "Find the population of Tokyo and calculate what percentage it is of Japan's total population")
-
-fmt.Println(result.Text)
-// Agent automatically:
-// 1. Searches for Tokyo's population
-// 2. Searches for Japan's population
-// 3. Uses calculator to compute percentage
-// 4. Returns formatted answer
 ```
 
 ### Embeddings
 
-Generate embeddings for semantic search and similarity matching:
+Generate embeddings for semantic search:
 
 ```go
 embeddingModel, _ := provider.EmbeddingModel("text-embedding-3-small")
 
-// Single embedding
 result, _ := ai.Embed(ctx, ai.EmbedOptions{
     Model: embeddingModel,
-    Input: "Go is a statically typed, compiled language",
+    Input: "Go is great for building AI applications",
 })
 
-// Batch embeddings
-documents := []string{
-    "Python is great for data science",
-    "Go excels at concurrent programming",
-    "Rust provides memory safety guarantees",
-}
-
-results, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
-    Model:  embeddingModel,
-    Inputs: documents,
-})
-
-// Find most similar document
-queryEmbedding, _ := ai.Embed(ctx, ai.EmbedOptions{
-    Model: embeddingModel,
-    Input: "best language for parallelism",
-})
-
-idx, score, _ := ai.FindMostSimilar(queryEmbedding.Embedding, results.Embeddings)
-fmt.Printf("Most similar: %s (score: %.3f)\n", documents[idx], score)
-// Output: Most similar: Go excels at concurrent programming (score: 0.892)
+// result.Embedding contains the vector
 ```
 
 ### Image Generation
 
-Generate images from text prompts:
-
 ```go
-imageModel, _ := openaiProvider.ImageModel("dall-e-3")
+imageModel, _ := provider.ImageModel("dall-e-3")
 
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
@@ -248,164 +165,123 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Size:   "1024x1024",
 })
 
-// result.Image contains the image bytes
-// result.URL contains the image URL (if available)
+// result.Image contains the generated image bytes
 ```
 
-### Speech Generation and Transcription
+### Speech and Transcription
 
 ```go
-speechModel, _ := openaiProvider.SpeechModel("tts-1")
-
 // Generate speech
+speechModel, _ := provider.SpeechModel("tts-1")
 result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model: speechModel,
     Text:  "Hello, welcome to the Go AI SDK!",
     Voice: "alloy",
 })
 
-// result.Audio contains the audio bytes
-
 // Transcribe audio
-transcriptionModel, _ := openaiProvider.TranscriptionModel("whisper-1")
-
+transcriptionModel, _ := provider.TranscriptionModel("whisper-1")
 transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
     Model: transcriptionModel,
     Audio: audioBytes,
 })
-
-fmt.Println(transcript.Text)
-```
-
-### Using the Registry
-
-The registry allows model resolution by string ID:
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/registry"
-
-// Register providers
-reg := registry.New()
-reg.RegisterProvider("openai", openaiProvider)
-reg.RegisterProvider("anthropic", anthropicProvider)
-reg.RegisterProvider("google", googleProvider)
-
-// Resolve models by string ID
-model, _ := reg.LanguageModel("openai:gpt-4")
-model2, _ := reg.LanguageModel("anthropic:claude-3-opus-20240229")
-model3, _ := reg.LanguageModel("google:gemini-pro")
-
-// Use consistently
-result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Hello!",
-})
-```
-
-### Middleware
-
-Add cross-cutting concerns like logging, caching, and rate limiting:
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/middleware"
-
-// Create logging middleware
-loggingMiddleware := &middleware.LanguageModelMiddleware{
-    WrapGenerate: func(ctx context.Context, doGenerate func() (*types.GenerateResult, error),
-        params *provider.GenerateParams, model provider.LanguageModel) (*types.GenerateResult, error) {
-
-        log.Printf("Generating with model: %s", model.ModelID())
-        start := time.Now()
-        result, err := doGenerate()
-        log.Printf("Generation completed in %v", time.Since(start))
-        return result, err
-    },
-}
-
-// Wrap model with middleware
-wrappedModel := middleware.WrapLanguageModel(model, []*middleware.LanguageModelMiddleware{
-    loggingMiddleware,
-}, nil, nil)
 ```
 
 ## Supported Providers
 
-| Provider | Language Models | Embedding Models | Image Models | Speech Models |
-|----------|-----------------|------------------|--------------|---------------|
-| OpenAI | GPT-4, GPT-3.5, o1 | text-embedding-3 | DALL-E 3 | TTS, Whisper |
-| Anthropic | Claude 3 (Opus, Sonnet, Haiku) | - | - | - |
-| Google | Gemini Pro, Gemini Flash | text-embedding | Imagen | - |
-| Azure OpenAI | All Azure-hosted models | Azure embeddings | Azure DALL-E | Azure TTS |
-| AWS Bedrock | Claude, Titan, Llama | Titan Embeddings | Stable Diffusion | - |
-| Cohere | Command, Command-R | embed-english | - | - |
-| Mistral | Mistral Large, Medium, Small | mistral-embed | - | - |
-| Groq | Llama, Mixtral | - | - | Whisper |
-| Together | Llama, Mixtral, Qwen | - | Stable Diffusion | - |
-| Fireworks | Llama, Mixtral | nomic-embed | - | - |
-| Perplexity | Sonar models | - | - | - |
-| DeepSeek | DeepSeek Chat, Coder | - | - | - |
-| xAI | Grok | - | - | - |
-| Replicate | All hosted models | - | All image models | - |
-| Hugging Face | Inference API models | - | - | - |
-| Ollama | Local models | Local embeddings | - | - |
-| LM Studio | Local models | - | - | - |
-| ... and more | | | | |
+The Go AI SDK supports 26+ providers:
 
-## Project Structure
+| Provider         | Language Models             | Embeddings | Images           | Speech       |
+| ---------------- | --------------------------- | ---------- | ---------------- | ------------ |
+| **OpenAI**       | GPT-4, GPT-3.5, O1          | ✓          | DALL-E           | TTS, Whisper |
+| **Anthropic**    | Claude 3.5 Sonnet, Claude 3 | -          | -                | -            |
+| **Google**       | Gemini Pro, Flash           | ✓          | -                | -            |
+| **AWS Bedrock**  | Claude, Titan, Llama        | ✓          | -                | -            |
+| **Azure OpenAI** | Azure-hosted models         | ✓          | ✓                | ✓            |
+| **Mistral**      | Large, Medium, Small        | ✓          | -                | -            |
+| **Cohere**       | Command R+, Command         | ✓          | -                | -            |
+| **Groq**         | Llama, Mixtral              | -          | -                | Whisper      |
+| **Together AI**  | Llama, Mixtral, Qwen        | -          | Stable Diffusion | -            |
+| **Fireworks**    | Llama, Mixtral              | ✓          | -                | -            |
+| **Perplexity**   | Sonar models                | -          | -                | -            |
+| **DeepSeek**     | DeepSeek Chat, Coder        | -          | -                | -            |
+| **xAI**          | Grok                        | -          | -                | -            |
+| **Replicate**    | All hosted models           | -          | ✓                | -            |
+| **Hugging Face** | Inference API               | -          | -                | -            |
+| **Ollama**       | Local models                | ✓          | -                | -            |
 
-```
-go-ai/
-├── pkg/
-│   ├── ai/           # Main SDK package (public API)
-│   ├── provider/     # Provider interface definitions
-│   ├── providers/    # Provider implementations (30+)
-│   │   ├── openai/
-│   │   ├── anthropic/
-│   │   ├── google/
-│   │   ├── bedrock/
-│   │   ├── azure/
-│   │   └── ...
-│   ├── agent/        # Agent implementations
-│   ├── middleware/   # Middleware system
-│   ├── telemetry/    # OpenTelemetry integration
-│   ├── streaming/    # Streaming utilities
-│   ├── registry/     # Model registry
-│   ├── schema/       # JSON Schema validation
-│   └── internal/     # Internal utilities
-└── examples/         # Example applications
-```
+And many more...
+
+## Features
+
+- ✅ **Unified API** - One interface for 26+ providers
+- ✅ **Text Generation** - `GenerateText()` and `StreamText()`
+- ✅ **Structured Output** - Type-safe `GenerateObject()` with JSON validation
+- ✅ **Tool Calling** - Extend models with custom functions
+- ✅ **Agents** - Autonomous multi-step reasoning with `ToolLoopAgent`
+- ✅ **Embeddings** - Generate and search with vector embeddings
+- ✅ **Image Generation** - Text-to-image with multiple providers
+- ✅ **Speech** - TTS and transcription capabilities
+- ✅ **Middleware** - Logging, caching, rate limiting, and more
+- ✅ **Telemetry** - Built-in OpenTelemetry integration
+- ✅ **Registry** - Resolve models by string ID (e.g., `"openai:gpt-4"`)
+- ✅ **Context Support** - Native Go context cancellation and timeouts
+- ✅ **Streaming** - Real-time responses with automatic backpressure
+
+## Why Go for AI?
+
+While Python dominates AI/ML model training, **Go excels at building production AI applications**:
+
+- 🚀 **Performance** - Fast execution and low memory overhead
+- ⚡ **Concurrency** - Native goroutines and channels for parallel processing
+- 📦 **Single Binary** - No dependencies, easy deployment
+- 🔒 **Type Safety** - Catch errors at compile time
+- ☁️ **Cloud Native** - Perfect for Kubernetes, Docker, microservices
+- 🏢 **Production Ready** - Built for scalable backend systems
+
+## Examples
+
+Check out the [examples directory](./examples) for complete working applications:
+
+- **CLI Chat** - Interactive command-line AI assistant
+- **HTTP Streaming** - Server-Sent Events (SSE) API
+- **Agent Workflows** - Multi-step autonomous agents
+- **RAG Pipeline** - Retrieval-augmented generation
+- **Embeddings Search** - Semantic similarity search
+
+## Documentation
+
+- **[Getting Started](./docs/02-getting-started)** - Quick start guide
+- **[Foundations](./docs/02-foundations)** - Core concepts
+- **[AI SDK Core](./docs/03-ai-sdk-core)** - Complete API reference
+- **[Agents](./docs/03-agents)** - Building autonomous agents
+- **[Advanced](./docs/06-advanced)** - Production patterns
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://sdk.vercel.ai):
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality:
 
-- Same function signatures (`GenerateText`, `StreamText`, `GenerateObject`, etc.)
-- Same provider interfaces and middleware patterns
-- Same embedding model metadata (`MaxEmbeddingsPerCall`, `SupportsParallelCalls`)
-- Same error types and handling patterns
-- Compatible with AI SDK workflows
+- Same function signatures and patterns
+- Same provider interfaces
+- Same middleware system
+- Compatible workflows
+- Feature complete for server-side use
 
 ## Community
 
-Join our community to get help, share feedback, and contribute:
+The Go AI SDK community can be found on GitHub where you can ask questions, voice ideas, and share your projects:
 
-- [GitHub Issues](https://github.com/digitallysavvy/go-ai/issues) - Bug reports and feature requests
-- [GitHub Discussions](https://github.com/digitallysavvy/go-ai/discussions) - Questions and ideas
+- **[GitHub Discussions](https://github.com/digitallysavvy/go-ai/discussions)** - Ask questions and share ideas
+- **[GitHub Issues](https://github.com/digitallysavvy/go-ai/issues)** - Report bugs and request features
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting a pull request.
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Contributions to the Go AI SDK are welcome and highly appreciated. However, before you jump right into it, we would like you to review our [Contribution Guidelines](./CONTRIBUTING.md) to make sure you have a smooth experience contributing to the Go AI SDK.
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE) for details.
+Apache 2.0 - See [LICENSE](./LICENSE) for details.
 
 ## Authors
 
-- [digitallysavvy](https://github.com/digitallysavvy)
+This library is created by [@digitallysavvy](https://github.com/digitallysavvy), inspired by the [Vercel AI SDK](https://ai-sdk.dev), with contributions from the [Open Source Community](https://github.com/digitallysavvy/go-ai/graphs/contributors).
