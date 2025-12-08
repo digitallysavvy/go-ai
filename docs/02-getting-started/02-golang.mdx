@@ -1,0 +1,567 @@
+---
+title: Go Quick Start
+description: Learn how to build your first AI agent with the Go AI SDK.
+---
+
+# Go Quick Start
+
+The Go AI SDK is a powerful toolkit designed to help developers build AI-powered applications using Go.
+
+In this quickstart tutorial, you'll build a simple agent with a streaming chat interface. Along the way, you'll learn key concepts and techniques that are fundamental to using the SDK in your own projects.
+
+## Prerequisites
+
+To follow this quickstart, you'll need:
+
+- **Go 1.21+** installed on your local development machine
+- An **API key** from a supported provider (OpenAI, Anthropic, Google, etc.)
+
+If you haven't obtained your API key, sign up at your chosen provider's website.
+
+## Setup Your Application
+
+Start by creating a new directory and initializing a Go module:
+
+```bash
+mkdir my-ai-app
+cd my-ai-app
+go mod init my-ai-app
+```
+
+### Install Dependencies
+
+Install the Go AI SDK:
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+<Note>
+  The Go AI SDK is designed to be a unified interface to interact with any large
+  language model. This means that you can change model and providers with just
+  one line of code! Learn more about [available providers](/providers).
+</Note>
+
+### Configure Your API Key
+
+Create a `.env` file in your project's root directory and add your API key:
+
+```bash
+touch .env
+```
+
+Edit the `.env` file:
+
+```env filename=".env"
+OPENAI_API_KEY=sk-...
+# or
+ANTHROPIC_API_KEY=sk-ant-...
+# or
+GOOGLE_API_KEY=...
+```
+
+Replace the placeholder with your actual API key.
+
+## Create Your Application
+
+Create a `main.go` file in the root of your project:
+
+```go filename="main.go"
+package main
+
+import (
+    "bufio"
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Initialize provider and model
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Initialize conversation history
+    messages := []ai.Message{}
+
+    // Create a reader for user input
+    reader := bufio.NewReader(os.Stdin)
+
+    fmt.Println("AI Chat Agent (type 'exit' to quit)")
+    fmt.Println("=====================================\n")
+
+    for {
+        // Get user input
+        fmt.Print("You: ")
+        userInput, _ := reader.ReadString('\n')
+        userInput = strings.TrimSpace(userInput)
+
+        if userInput == "exit" {
+            break
+        }
+
+        // Add user message to history
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleUser,
+            Content: userInput,
+        })
+
+        // Stream the response
+        stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+            Model:    model,
+            Messages: messages,
+        })
+        if err != nil {
+            log.Printf("Error: %v\n", err)
+            continue
+        }
+
+        // Print assistant response
+        fmt.Print("\nAssistant: ")
+        var fullResponse strings.Builder
+        for chunk := range stream.TextChannel {
+            fmt.Print(chunk)
+            fullResponse.WriteString(chunk)
+        }
+        fmt.Println("\n")
+
+        // Check for errors
+        if err := stream.Err(); err != nil {
+            log.Printf("Stream error: %v\n", err)
+            continue
+        }
+
+        // Add assistant response to history
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleAssistant,
+            Content: fullResponse.String(),
+        })
+    }
+}
+```
+
+Let's take a look at what is happening in this code:
+
+1. **Initialize the provider and model** - Create an OpenAI provider instance and get a language model
+2. **Set up conversation history** - Initialize a slice to store the conversation messages
+3. **Create an input reader** - Use `bufio.Reader` to read user input from the terminal
+4. **Main loop**:
+   - Prompt for and capture user input
+   - Add user input to the `messages` slice as a user message
+   - Call `ai.StreamText` with the model and conversation history
+   - Stream and print the AI response in real-time
+   - Add the assistant's response to the `messages` slice for conversation context
+
+## Running Your Application
+
+To start your application:
+
+```bash
+go run main.go
+```
+
+You should see a prompt in your terminal. Test it out by entering a message and see the AI agent respond in real-time! The Go AI SDK makes it fast and easy to build AI chat interfaces.
+
+## Choosing a Provider
+
+You can easily switch between providers by changing just a few lines:
+
+### OpenAI
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+model, _ := provider.LanguageModel("gpt-4")
+```
+
+### Anthropic
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+})
+model, _ := provider.LanguageModel("claude-sonnet-4-5")
+```
+
+### Google
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/google"
+
+provider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_API_KEY"),
+})
+model, _ := provider.LanguageModel("gemini-pro")
+```
+
+The rest of your code remains exactly the same!
+
+## Enhance Your Agent with Tools
+
+While large language models (LLMs) have incredible generation capabilities, they struggle with discrete tasks (e.g. mathematics) and interacting with the outside world (e.g. getting the weather). This is where [tools](/docs/ai-sdk-core/tools-and-tool-calling) come in.
+
+Tools are actions that an LLM can invoke. The results of these actions can be reported back to the LLM to be considered in the next response.
+
+Let's enhance your agent by adding a simple weather tool.
+
+### Update Your Application
+
+Modify your `main.go` file to include the weather tool:
+
+```go filename="main.go" highlight="10,46-61"
+package main
+
+import (
+    "bufio"
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    messages := []ai.Message{}
+    reader := bufio.NewReader(os.Stdin)
+
+    fmt.Println("AI Chat Agent (type 'exit' to quit)")
+    fmt.Println("=====================================\n")
+
+    for {
+        fmt.Print("You: ")
+        userInput, _ := reader.ReadString('\n')
+        userInput = strings.TrimSpace(userInput)
+
+        if userInput == "exit" {
+            break
+        }
+
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleUser,
+            Content: userInput,
+        })
+
+        // Define tools
+        tools := map[string]ai.Tool{
+            "getWeather": {
+                Description: "Get the weather in a location (fahrenheit)",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "location": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The location to get the weather for",
+                        },
+                    },
+                    "required": []string{"location"},
+                },
+                Execute: func(params map[string]interface{}) (interface{}, error) {
+                    location := params["location"].(string)
+                    temperature := rand.Intn(59) + 32 // Random temp between 32-90°F
+                    return map[string]interface{}{
+                        "location":    location,
+                        "temperature": temperature,
+                    }, nil
+                },
+            },
+        }
+
+        stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+            Model:    model,
+            Messages: messages,
+            Tools:    tools,
+        })
+        if err != nil {
+            log.Printf("Error: %v\n", err)
+            continue
+        }
+
+        fmt.Print("\nAssistant: ")
+        var fullResponse strings.Builder
+        for chunk := range stream.TextChannel {
+            fmt.Print(chunk)
+            fullResponse.WriteString(chunk)
+        }
+        fmt.Println("\n")
+
+        if err := stream.Err(); err != nil {
+            log.Printf("Stream error: %v\n", err)
+            continue
+        }
+
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleAssistant,
+            Content: fullResponse.String(),
+        })
+    }
+}
+```
+
+In this updated code:
+
+1. **Import `math/rand`** - For generating random temperatures
+2. **Define tools** - Create a `tools` map with a `getWeather` tool that:
+   - Has a description that helps the agent understand when to use it
+   - Defines parameters using JSON Schema format, specifying it requires a `location` string
+   - Includes an `Execute` function that simulates getting weather data (returns a random temperature)
+   - Is an asynchronous function where you could fetch real data from an external API
+3. **Pass tools to StreamText** - Include the tools in the streaming options
+
+Now your agent can "fetch" weather information for any location. Try asking something like "What's the weather in New York?"
+
+## Enabling Multi-Step Tool Calls
+
+You may have noticed that while the agent calls the weather tool, it might not always use the results to answer your question. This is because you need to enable multi-step reasoning.
+
+### Update Your Application
+
+Modify your code to enable multi-step generations:
+
+```go filename="main.go" highlight="18-23,46"
+package main
+
+import (
+    "bufio"
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    messages := []ai.Message{}
+    reader := bufio.NewReader(os.Stdin)
+
+    fmt.Println("AI Chat Agent (type 'exit' to quit)")
+    fmt.Println("=====================================\n")
+
+    for {
+        fmt.Print("You: ")
+        userInput, _ := reader.ReadString('\n')
+        userInput = strings.TrimSpace(userInput)
+
+        if userInput == "exit" {
+            break
+        }
+
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleUser,
+            Content: userInput,
+        })
+
+        tools := map[string]ai.Tool{
+            "getWeather": {
+                Description: "Get the weather in a location (fahrenheit)",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "location": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The location to get the weather for",
+                        },
+                    },
+                    "required": []string{"location"},
+                },
+                Execute: func(params map[string]interface{}) (interface{}, error) {
+                    location := params["location"].(string)
+                    temperature := rand.Intn(59) + 32
+                    return map[string]interface{}{
+                        "location":    location,
+                        "temperature": temperature,
+                    }, nil
+                },
+            },
+        }
+
+        // Generate with tool calling (synchronous for multi-step)
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:    model,
+            Messages: messages,
+            Tools:    tools,
+            MaxSteps: 5, // Allow up to 5 steps for tool calling
+        })
+        if err != nil {
+            log.Printf("Error: %v\n", err)
+            continue
+        }
+
+        fmt.Printf("\nAssistant: %s\n\n", result.Text)
+
+        // Add the full result to conversation history
+        messages = append(messages, ai.Message{
+            Role:    ai.RoleAssistant,
+            Content: result.Text,
+        })
+
+        // Log tool calls if any
+        if len(result.ToolCalls) > 0 {
+            fmt.Printf("(Used %d tool(s))\n\n", len(result.ToolCalls))
+        }
+    }
+}
+```
+
+Key changes:
+
+1. **Use `GenerateText` instead of `StreamText`** - This allows automatic multi-step execution
+2. **Set `MaxSteps: 5`** - Allow up to 5 steps for the agent to use tools and generate responses
+3. **Print full response** - Display the final text after all tool calls are complete
+
+Now when you ask about the weather, the agent will:
+1. Call the weather tool to get the temperature
+2. Use that information to provide a natural language response
+
+### Adding a Second Tool
+
+Let's add temperature conversion to demonstrate multi-step tool usage:
+
+```go filename="main.go" highlight="43-62"
+tools := map[string]ai.Tool{
+    "getWeather": {
+        Description: "Get the weather in a location (fahrenheit)",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The location to get the weather for",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(params map[string]interface{}) (interface{}, error) {
+            location := params["location"].(string)
+            temperature := rand.Intn(59) + 32
+            return map[string]interface{}{
+                "location":    location,
+                "temperature": temperature,
+            }, nil
+        },
+    },
+    "convertFahrenheitToCelsius": {
+        Description: "Convert a temperature from fahrenheit to celsius",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "temperature": map[string]interface{}{
+                    "type":        "number",
+                    "description": "The temperature in fahrenheit to convert",
+                },
+            },
+            "required": []string{"temperature"},
+        },
+        Execute: func(params map[string]interface{}) (interface{}, error) {
+            // Handle both float64 and int
+            var fahrenheit float64
+            switch v := params["temperature"].(type) {
+            case float64:
+                fahrenheit = v
+            case int:
+                fahrenheit = float64(v)
+            }
+            celsius := (fahrenheit - 32) * 5 / 9
+            return map[string]interface{}{
+                "celsius": int(celsius),
+            }, nil
+        },
+    },
+}
+```
+
+Now when you ask "What's the weather in New York in celsius?", the agent will:
+1. Call the `getWeather` tool
+2. Call the `convertFahrenheitToCelsius` tool
+3. Provide a natural language response with the temperature in Celsius
+
+This demonstrates how tools can expand your agent's capabilities. You can create more complex tools to integrate with real APIs, databases, or any other external systems.
+
+## Where to Next?
+
+You've built an AI agent using the Go AI SDK! From here, you have several paths to explore:
+
+- **[Foundations](/docs/foundations)** - Learn about core concepts like providers, prompts, and streaming
+- **[AI SDK Core](/docs/ai-sdk-core)** - Explore the complete API reference
+- **[Agents](/docs/agents)** - Build more sophisticated autonomous agents
+- **[Advanced Topics](/docs/advanced)** - Learn about production patterns like caching, rate limiting, and backpressure
+- **[Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)** - Check out more example applications
+
+## Production Tips
+
+When moving to production, consider:
+
+1. **Error Handling** - Implement proper error handling and retry logic
+2. **Context Timeouts** - Set appropriate timeouts for your use case
+3. **Rate Limiting** - Respect provider rate limits
+4. **Monitoring** - Add telemetry and logging
+5. **Cost Management** - Monitor token usage and implement caching
+
+Example with timeout and better error handling:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    switch e := err.(type) {
+    case *ai.APIConnectionError:
+        log.Printf("Connection error: %v", e)
+        // Retry with backoff
+    case *ai.RateLimitError:
+        log.Printf("Rate limited: %v", e)
+        // Wait and retry
+    case *ai.InvalidPromptError:
+        log.Printf("Invalid prompt: %v", e)
+        // Fix prompt
+    default:
+        log.Printf("Unknown error: %v", err)
+    }
+    return
+}
+```

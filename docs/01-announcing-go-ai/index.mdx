@@ -1,0 +1,338 @@
+---
+title: Announcing the Go AI SDK
+description: A comprehensive toolkit for building AI applications and agents with Go.
+---
+
+# Announcing the Go AI SDK
+
+We're excited to introduce the **Go AI SDK** - a complete, production-ready toolkit for building AI-powered applications and agents using Go.
+
+## Why Go AI SDK?
+
+While the AI ecosystem has been dominated by Python and TypeScript, Go developers have lacked a comprehensive, idiomatic solution for building AI applications. The Go AI SDK fills this gap by bringing the power of modern LLMs to Go's strengths:
+
+- **Performance**: Go's execution speed and low memory overhead
+- **Concurrency**: Native goroutines and channels for streaming
+- **Type Safety**: Compile-time error checking
+- **Production Ready**: Built for scalable backend systems
+- **Cloud Native**: Perfect for microservices and Kubernetes deployments
+
+## What's Included?
+
+### Unified Provider Interface
+
+Access 26+ AI providers through a single, consistent API:
+
+```go
+// Switch providers with just one line
+openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
+claudeModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
+geminiModel, _ := googleProvider.LanguageModel("gemini-pro")
+
+// Same API for all
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  openaiModel, // or claudeModel, or geminiModel
+    Prompt: "Hello!",
+})
+```
+
+### Comprehensive Feature Set
+
+The Go AI SDK provides everything you need:
+
+- **Text Generation**: `GenerateText` and `StreamText`
+- **Structured Data**: Type-safe object generation
+- **Tool Calling**: Integrate external APIs and functions
+- **Embeddings**: Semantic search and RAG
+- **Image Generation**: Create images with AI
+- **Speech & Transcription**: Audio capabilities
+- **Agent Framework**: Build autonomous agents
+- **Middleware**: Logging, tracing, retry logic
+- **Testing Utilities**: Mock providers and responses
+
+### Built for Go's Strengths
+
+#### Context-Based Cancellation
+
+Go's `context.Context` provides clean cancellation patterns:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Long generation...",
+})
+// Automatically stops after 30 seconds or if cancelled
+```
+
+#### Natural Streaming with Channels
+
+Unbuffered channels provide automatic backpressure:
+
+```go
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story...",
+})
+
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+    // Producer automatically slows down to match consumer
+}
+```
+
+#### Concurrent Processing
+
+Process multiple requests efficiently:
+
+```go
+var wg sync.WaitGroup
+results := make(chan string, len(prompts))
+
+for _, prompt := range prompts {
+    wg.Add(1)
+    go func(p string) {
+        defer wg.Done()
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: p,
+        })
+        results <- result.Text
+    }(prompt)
+}
+
+wg.Wait()
+close(results)
+```
+
+## Key Features
+
+### Type-Safe Structured Output
+
+Generate structured data with compile-time type safety:
+
+```go
+type ProductReview struct {
+    Rating    int      `json:"rating"`
+    Pros      []string `json:"pros"`
+    Cons      []string `json:"cons"`
+    Summary   string   `json:"summary"`
+}
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Analyze this product review...",
+    Output: &ProductReview{},
+})
+
+// result.Object is fully typed!
+fmt.Printf("Rating: %d/5\n", result.Object.Rating)
+```
+
+### Powerful Agent Framework
+
+Build autonomous agents with full control:
+
+```go
+agent := agents.New(agents.Config{
+    Model:        model,
+    Instructions: "You are a customer support agent.",
+    Tools: map[string]ai.Tool{
+        "searchDocs":    searchDocsToolgetUserInfo":     getUserInfoTool,
+        "createTicket":  createTicketTool,
+    },
+    MaxSteps: 10,
+})
+
+result, err := agent.Execute(ctx, "Help me reset my password")
+```
+
+### Production-Ready Features
+
+#### Middleware Support
+
+Add logging, tracing, and retry logic:
+
+```go
+wrappedModel := middleware.WrapLanguageModel(
+    baseModel,
+    middleware.NewLoggingMiddleware(),
+    middleware.NewRetryMiddleware(3),
+    middleware.NewTelemetryMiddleware(),
+)
+```
+
+#### Error Handling
+
+Comprehensive error types for robust applications:
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    switch e := err.(type) {
+    case *ai.APIConnectionError:
+        // Handle network issues
+    case *ai.InvalidPromptError:
+        // Handle invalid inputs
+    case *ai.RateLimitError:
+        // Implement backoff
+    default:
+        // Handle other errors
+    }
+}
+```
+
+#### Testing Utilities
+
+Mock providers for unit tests:
+
+```go
+mockProvider := testing.NewMockProvider()
+mockProvider.SetResponse("Hello, I'm a mock response!")
+
+model, _ := mockProvider.LanguageModel("mock-model")
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Test prompt",
+})
+```
+
+## Supported Providers
+
+The Go AI SDK supports 26+ providers out of the box:
+
+### Major Providers
+- **OpenAI** - GPT-4, GPT-4 Turbo, GPT-3.5, O1
+- **Anthropic** - Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku
+- **Google** - Gemini Pro, Gemini Flash, Gemini Ultra
+- **Mistral** - Mistral Large, Medium, Small, Codestral
+- **Cohere** - Command R+, Command R, Command Light
+
+### Cloud Platforms
+- **Amazon Bedrock** - Access multiple models through AWS
+- **Azure OpenAI** - Enterprise OpenAI integration
+- **Google Vertex AI** - Google Cloud AI Platform
+
+### Specialized Providers
+- **Groq** - Ultra-fast inference
+- **Together AI** - Open source models
+- **Fireworks AI** - High-performance serving
+- **Replicate** - Easy model deployment
+- **Hugging Face** - Access thousands of models
+
+### And Many More
+- xAI Grok, Perplexity, Cerebras, Deepseek, Fal, Friendli, LlamaCpp, Novita, and more!
+
+## Use Cases
+
+The Go AI SDK is perfect for:
+
+- **Backend APIs**: Build AI-powered REST/GraphQL APIs
+- **Microservices**: AI capabilities in your service mesh
+- **CLI Tools**: Interactive command-line AI assistants
+- **Batch Processing**: Process large datasets with AI
+- **Real-time Streaming**: WebSocket/SSE AI responses
+- **Kubernetes Workloads**: Cloud-native AI services
+- **Edge Computing**: Deploy to edge with minimal overhead
+
+## Getting Started
+
+Install the SDK:
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+Create your first AI application:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Why is Go great for building AI applications?",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Next Steps
+
+- **[Quick Start Guide](/docs/getting-started/golang)** - Build your first agent
+- **[Foundations](/docs/foundations)** - Learn core concepts
+- **[AI SDK Core](/docs/ai-sdk-core)** - Explore the complete API
+- **[Agents](/docs/agents)** - Build autonomous agents
+- **[Advanced Topics](/docs/advanced)** - Production patterns
+
+## Community & Contribution
+
+The Go AI SDK is open source and welcomes contributions:
+
+- **GitHub**: [github.com/digitallysavvy/go-ai](https://github.com/digitallysavvy/go-ai)
+- **Issues**: Report bugs or request features
+- **Discussions**: Share ideas and get help
+- **Pull Requests**: Contribute code, docs, or examples
+
+## Philosophy
+
+The Go AI SDK is built on these principles:
+
+1. **Go Idioms First**: Use Go's natural patterns (contexts, channels, interfaces)
+2. **Type Safety**: Leverage compile-time checking wherever possible
+3. **Production Ready**: Built for real-world deployments
+4. **Provider Agnostic**: Switch providers without changing code
+5. **Performance**: Minimize overhead and maximize throughput
+6. **Developer Experience**: Clear APIs and comprehensive documentation
+
+## Comparison with Other SDKs
+
+| Feature | Go AI SDK | Python SDKs | TypeScript AI SDK |
+|---------|-----------|-------------|-------------------|
+| **Type Safety** | Compile-time | Runtime | TypeScript compile-time |
+| **Concurrency** | Native goroutines | asyncio/threads | async/await |
+| **Deployment** | Single binary | Python + deps | Node.js + deps |
+| **Performance** | Very fast | Fast | Fast |
+| **Use Case** | Backend services | Scripts, research | Full-stack apps |
+| **Memory** | Low | Medium-High | Medium |
+
+## The Future
+
+We're committed to keeping the Go AI SDK up-to-date with:
+
+- New provider integrations
+- Latest AI capabilities
+- Performance optimizations
+- Community-requested features
+- Comprehensive documentation
+
+## Get Started Today
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+Join us in bringing the power of AI to the Go ecosystem!

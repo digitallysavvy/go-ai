@@ -1,0 +1,656 @@
+---
+title: Provider & Model Management
+description: Learn how to work with multiple providers and models
+---
+
+# Provider & Model Management
+
+When you work with multiple providers and models, it is often desirable to manage them in a central place and access the models through simple string IDs.
+
+The Go AI SDK offers a **provider registry** and **middleware-based custom providers** for this purpose:
+
+- With **middleware**, you can pre-configure model settings, provide model name aliases, and enhance model behavior.
+- The **provider registry** lets you mix multiple providers and access them through simple string IDs.
+
+You can mix and match middleware, the provider registry, and custom provider configurations in your application.
+
+## Provider Registry
+
+The provider registry allows you to register multiple providers and access their models through simple string identifiers in the format `provider:model`.
+
+### Basic Setup
+
+```go
+package main
+
+import (
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func init() {
+    // Register providers
+    registry.RegisterProvider("openai", openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    }))
+
+    registry.RegisterProvider("anthropic", anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    }))
+}
+```
+
+### Using the Registry
+
+#### Language Models
+
+Access language models using the `provider:model` format:
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+// Resolve model from registry
+model, err := registry.ResolveLanguageModel("openai:gpt-4")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use with AI SDK functions
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum computing",
+})
+```
+
+#### Embedding Models
+
+```go
+embeddingModel, err := registry.ResolveEmbeddingModel("openai:text-embedding-3-small")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+})
+```
+
+### Model Aliases
+
+Create short aliases for commonly used models:
+
+```go
+func init() {
+    // Register providers
+    registry.RegisterProvider("openai", openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    }))
+
+    registry.RegisterProvider("anthropic", anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    }))
+
+    // Register aliases for easy access
+    registry.RegisterAlias("opus", "anthropic:claude-opus-4-5")
+    registry.RegisterAlias("sonnet", "anthropic:claude-sonnet-4-5")
+    registry.RegisterAlias("haiku", "anthropic:claude-haiku-4-5")
+    registry.RegisterAlias("gpt-4", "openai:gpt-4")
+    registry.RegisterAlias("gpt-4-turbo", "openai:gpt-4-turbo-preview")
+}
+
+// Use aliases
+model, err := registry.ResolveLanguageModel("opus")
+```
+
+### Custom Registry Instances
+
+You can create custom registry instances instead of using the global registry:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/registry"
+
+// Create custom registry
+myRegistry := registry.NewRegistry()
+
+// Register providers
+myRegistry.RegisterProvider("openai", openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+}))
+
+// Use custom registry
+model, err := myRegistry.ResolveLanguageModel("openai:gpt-4")
+```
+
+## Custom Providers with Middleware
+
+You can create custom provider configurations using middleware to pre-configure settings, create aliases, or limit available models.
+
+### Example: Pre-configured Model Settings
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+)
+
+func setupCustomProviders() {
+    openaiProvider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // Create a base model
+    baseModel, _ := openaiProvider.LanguageModel("gpt-4")
+
+    // Wrap with default settings
+    temperature := 0.7
+    maxTokens := 2000
+
+    customModel := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &temperature,
+                MaxTokens:   &maxTokens,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Register the custom model
+    // Note: Since we can't register a single model, we create a wrapper provider
+    // (implementation shown below)
+}
+```
+
+### Example: Model Name Aliases with Different Settings
+
+Create a configuration package that exposes different model configurations:
+
+```go
+package models
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+var (
+    // Fast model with lower temperature for quick, focused responses
+    Fast provider.LanguageModel
+
+    // Creative model with high temperature for diverse outputs
+    Creative provider.LanguageModel
+
+    // Precise model with low temperature for deterministic responses
+    Precise provider.LanguageModel
+)
+
+func init() {
+    anthropicProvider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    // Fast: Claude Haiku with optimized settings
+    haiku, _ := anthropicProvider.LanguageModel("claude-haiku-4-5")
+    temp := 0.5
+    Fast = middleware.WrapLanguageModel(
+        haiku,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &temp,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Creative: Claude Sonnet with high temperature
+    sonnet, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
+    creativeTemp := 0.9
+    Creative = middleware.WrapLanguageModel(
+        sonnet,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &creativeTemp,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Precise: Claude Opus with low temperature
+    opus, _ := anthropicProvider.LanguageModel("claude-opus-4-5")
+    preciseTemp := 0.1
+    Precise = middleware.WrapLanguageModel(
+        opus,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &preciseTemp,
+            }),
+        },
+        nil,
+        nil,
+    )
+}
+```
+
+Usage:
+
+```go
+import "myapp/models"
+
+// Use pre-configured models
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  models.Creative,
+    Prompt: "Write a creative story",
+})
+```
+
+### Example: Limited Model Set
+
+Create a constrained provider that only exposes specific models:
+
+```go
+package providers
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+type LimitedProvider struct {
+    models map[string]provider.LanguageModel
+}
+
+func NewLimitedProvider() *LimitedProvider {
+    openaiProvider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    anthropicProvider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    // Only expose specific models
+    models := make(map[string]provider.LanguageModel)
+
+    textMedium, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
+    textSmall, _ := openaiProvider.LanguageModel("gpt-4-turbo")
+
+    models["text-medium"] = textMedium
+    models["text-small"] = textSmall
+
+    return &LimitedProvider{models: models}
+}
+
+func (p *LimitedProvider) LanguageModel(modelID string) (provider.LanguageModel, error) {
+    model, ok := p.models[modelID]
+    if !ok {
+        return nil, fmt.Errorf("model not available: %s (available: text-medium, text-small)", modelID)
+    }
+    return model, nil
+}
+
+func (p *LimitedProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
+    return nil, fmt.Errorf("embedding models not available")
+}
+
+func (p *LimitedProvider) ImageModel(modelID string) (provider.ImageModel, error) {
+    return nil, fmt.Errorf("image models not available")
+}
+
+func (p *LimitedProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+    return nil, fmt.Errorf("speech models not available")
+}
+
+func (p *LimitedProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+    return nil, fmt.Errorf("transcription models not available")
+}
+
+func (p *LimitedProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
+    return nil, fmt.Errorf("reranking models not available")
+}
+```
+
+Usage:
+
+```go
+limited := providers.NewLimitedProvider()
+registry.RegisterProvider("limited", limited)
+
+// Only "text-medium" and "text-small" are available
+model, _ := registry.ResolveLanguageModel("limited:text-medium")
+```
+
+## Centralized Provider Configuration
+
+Create a central configuration file that sets up all providers and models:
+
+```go
+package config
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+)
+
+func init() {
+    setupProviders()
+    setupAliases()
+    setupCustomModels()
+}
+
+func setupProviders() {
+    // Register standard providers
+    registry.RegisterProvider("openai", openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    }))
+
+    registry.RegisterProvider("anthropic", anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    }))
+
+    registry.RegisterProvider("google", google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_API_KEY"),
+    }))
+}
+
+func setupAliases() {
+    // Short aliases for common models
+    registry.RegisterAlias("fast", "anthropic:claude-haiku-4-5")
+    registry.RegisterAlias("balanced", "anthropic:claude-sonnet-4-5")
+    registry.RegisterAlias("powerful", "anthropic:claude-opus-4-5")
+
+    registry.RegisterAlias("gpt-4", "openai:gpt-4")
+    registry.RegisterAlias("gpt-4-turbo", "openai:gpt-4-turbo-preview")
+
+    registry.RegisterAlias("gemini", "google:gemini-2.0-flash")
+}
+
+func setupCustomModels() {
+    // Set up models with pre-configured settings
+    // (Implementation depends on your needs)
+}
+```
+
+## Combining Registry, Middleware, and Custom Configuration
+
+Here's a comprehensive example combining all concepts:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+)
+
+func init() {
+    // 1. Register base providers
+    registry.RegisterProvider("openai", openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    }))
+
+    registry.RegisterProvider("anthropic", anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    }))
+
+    // 2. Set up aliases for common models
+    registry.RegisterAlias("default", "anthropic:claude-sonnet-4-5")
+    registry.RegisterAlias("fast", "anthropic:claude-haiku-4-5")
+    registry.RegisterAlias("smart", "anthropic:claude-opus-4-5")
+
+    // 3. Set up wrapped models with custom settings
+    // (Shown in CustomModels below)
+}
+
+// CustomModels provides pre-configured models with specific settings
+type CustomModels struct {
+    Creative  provider.LanguageModel // High temperature for creative tasks
+    Factual   provider.LanguageModel // Low temperature for factual responses
+    Concise   provider.LanguageModel // Limited tokens for brief responses
+}
+
+func GetCustomModels() *CustomModels {
+    anthropicProvider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    baseModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
+
+    // Creative model
+    creativeTemp := 0.9
+    creative := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &creativeTemp,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Factual model
+    factualTemp := 0.1
+    factual := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &factualTemp,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Concise model
+    conciseTemp := 0.5
+    conciseTokens := 100
+    concise := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &conciseTemp,
+                MaxTokens:   &conciseTokens,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    return &CustomModels{
+        Creative: creative,
+        Factual:  factual,
+        Concise:  concise,
+    }
+}
+
+func main() {
+    ctx := context.Background()
+    customModels := GetCustomModels()
+
+    // Use registry with aliases
+    model1, _ := registry.ResolveLanguageModel("default")
+    result1, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model1,
+        Prompt: "Explain quantum computing",
+    })
+    fmt.Println("Default:", result1.Text)
+
+    // Use custom pre-configured models
+    result2, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  customModels.Creative,
+        Prompt: "Write a creative story",
+    })
+    fmt.Println("Creative:", result2.Text)
+
+    // Use direct provider:model syntax
+    model3, _ := registry.ResolveLanguageModel("openai:gpt-4")
+    result3, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model3,
+        Prompt: "Explain photosynthesis",
+    })
+    fmt.Println("GPT-4:", result3.Text)
+}
+```
+
+## Registry Utility Functions
+
+### List Registered Providers
+
+```go
+providers := registry.ListProviders()
+fmt.Println("Available providers:", providers)
+// Output: Available providers: [openai anthropic google]
+```
+
+### List Registered Aliases
+
+```go
+aliases := registry.ListAliases()
+for alias, target := range aliases {
+    fmt.Printf("%s -> %s\n", alias, target)
+}
+// Output:
+// default -> anthropic:claude-sonnet-4-5
+// fast -> anthropic:claude-haiku-4-5
+// smart -> anthropic:claude-opus-4-5
+```
+
+### Get Provider Directly
+
+```go
+provider, err := registry.GetProvider("openai")
+if err != nil {
+    log.Fatal(err)
+}
+
+model, _ := provider.LanguageModel("gpt-4")
+```
+
+## Best Practices
+
+### 1. Centralize Configuration
+
+Keep all provider setup in a single configuration package:
+
+```
+myapp/
+├── config/
+│   └── providers.go  # All provider setup here
+├── models/
+│   └── custom.go     # Custom model configurations
+└── main.go
+```
+
+### 2. Use Environment Variables
+
+Store API keys and configuration in environment variables:
+
+```go
+openaiProvider := openai.New(openai.Config{
+    APIKey:  os.Getenv("OPENAI_API_KEY"),
+    BaseURL: os.Getenv("OPENAI_BASE_URL"), // Optional custom endpoint
+})
+```
+
+### 3. Create Semantic Aliases
+
+Use meaningful names that reflect the model's purpose:
+
+```go
+// Good: Semantic aliases
+registry.RegisterAlias("writing-assistant", "anthropic:claude-sonnet-4-5")
+registry.RegisterAlias("code-reviewer", "openai:gpt-4")
+registry.RegisterAlias("quick-qa", "anthropic:claude-haiku-4-5")
+
+// Bad: Technical aliases
+registry.RegisterAlias("model1", "anthropic:claude-sonnet-4-5")
+registry.RegisterAlias("fast-one", "anthropic:claude-haiku-4-5")
+```
+
+### 4. Document Available Models
+
+Create documentation for your team about available models:
+
+```go
+// models/README.md
+//
+// Available Models:
+//
+// default         - Claude Sonnet 4.5 (balanced performance)
+// fast            - Claude Haiku 4.5 (quick responses)
+// smart           - Claude Opus 4.5 (complex reasoning)
+// writing         - GPT-4 optimized for writing
+// code            - GPT-4 optimized for code generation
+```
+
+### 5. Handle Errors Gracefully
+
+Always check for errors when resolving models:
+
+```go
+model, err := registry.ResolveLanguageModel("nonexistent:model")
+if err != nil {
+    // Log error and fall back to default
+    log.Printf("Failed to resolve model: %v, using default", err)
+    model, _ = registry.ResolveLanguageModel("default")
+}
+```
+
+### 6. Use Type-Safe Model References
+
+For critical applications, create constants for model references:
+
+```go
+package models
+
+const (
+    DefaultModel    = "anthropic:claude-sonnet-4-5"
+    FastModel       = "anthropic:claude-haiku-4-5"
+    PowerfulModel   = "anthropic:claude-opus-4-5"
+    CodeModel       = "openai:gpt-4"
+)
+
+// Usage
+model, _ := registry.ResolveLanguageModel(models.DefaultModel)
+```
+
+## See Also
+
+- [Middleware](./40-middleware.mdx)
+- [Settings](./25-settings.mdx)
+- [Providers](../providers/01-overview.md)
+- [Error Handling](./50-error-handling.mdx)

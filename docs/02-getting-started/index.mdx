@@ -1,0 +1,136 @@
+---
+title: Getting Started
+description: Welcome to the Go AI SDK documentation!
+---
+
+# Getting Started
+
+The following guides are intended to provide you with an introduction to some of the core features provided by the Go AI SDK.
+
+## Quick Start
+
+Get started quickly with our comprehensive tutorial:
+
+- **[Go Quick Start](./02-golang.mdx)** - Build your first AI agent with the Go AI SDK in 5 minutes
+
+## Learn the Library
+
+- **[Navigating the Library](./01-navigating-the-library.mdx)** - Understand the structure and choose the right tools for your needs
+
+## What You'll Learn
+
+These guides will walk you through:
+
+1. **Setting up your environment** - Install the SDK and configure your API keys
+2. **Core concepts** - Understand providers, models, and streaming
+3. **Building an agent** - Create an interactive AI assistant
+4. **Using tools** - Extend your agent with external capabilities
+5. **Production patterns** - Best practices for real-world applications
+
+## Prerequisites
+
+To follow these guides, you'll need:
+
+- **Go 1.21+** installed on your development machine
+- **An API key** from at least one AI provider (OpenAI, Anthropic, Google, etc.)
+- **Basic Go knowledge** - Understanding of packages, error handling, and goroutines
+
+## Quick Installation
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+## Example: Your First AI Application
+
+Here's a minimal example to get you started:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain what makes Go great for AI applications.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## API Servers and Frameworks
+
+You can use the Go AI SDK with any Go web framework or server:
+
+- **net/http** - Standard library HTTP server
+- **Gin** - High-performance web framework
+- **Echo** - Minimalist web framework
+- **Fiber** - Express-inspired framework
+- **Chi** - Lightweight router
+- **Gorilla** - Web toolkit
+- **gRPC** - For high-performance RPC services
+
+Example with net/http:
+
+```go
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a story...",
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+
+    flusher, _ := w.(http.Flusher)
+
+    for chunk := range stream.TextChannel {
+        fmt.Fprintf(w, "data: %s\n\n", chunk)
+        flusher.Flush()
+    }
+}
+```
+
+## Next Steps
+
+After completing the getting started guide, explore:
+
+- **[Foundations](/docs/foundations)** - Deep dive into core concepts
+- **[AI SDK Core](/docs/ai-sdk-core)** - Complete API reference
+- **[Agents](/docs/agents)** - Build autonomous agents
+- **[Advanced Topics](/docs/advanced)** - Production-ready patterns
+
+## Need Help?
+
+- **Documentation**: You're reading it!
+- **GitHub Issues**: [Report bugs or ask questions](https://github.com/digitallysavvy/go-ai/issues)
+- **Examples**: Check the `examples/` directory in the repository

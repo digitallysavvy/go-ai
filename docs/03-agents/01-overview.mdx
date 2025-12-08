@@ -1,0 +1,392 @@
+---
+title: Overview
+description: Learn how to build agents with the Go AI SDK.
+---
+
+# Agents
+
+Agents are **large language models (LLMs)** that use **tools** in a **loop** to accomplish tasks.
+
+These components work together:
+
+- **LLMs** process input and decide the next action
+- **Tools** extend capabilities beyond text generation (reading files, calling APIs, writing to databases)
+- **Loop** orchestrates execution through:
+  - **Context management** - Maintaining conversation history and deciding what the model sees (input) at each step
+  - **Stopping conditions** - Determining when the loop (task) is complete
+
+## ToolLoopAgent
+
+The `ToolLoopAgent` handles these three components. Here's an agent that uses multiple tools in a loop to accomplish a task:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Set up provider and model
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Create agent with tools
+    weatherAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        Tools: []types.Tool{
+            {
+                Name:        "weather",
+                Description: "Get the weather in a location (in Fahrenheit)",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "location": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The location to get the weather for",
+                        },
+                    },
+                    "required": []string{"location"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    location := input["location"].(string)
+                    return map[string]interface{}{
+                        "location":    location,
+                        "temperature": 72 + rand.Intn(21) - 10,
+                    }, nil
+                },
+            },
+            {
+                Name:        "convertFahrenheitToCelsius",
+                Description: "Convert temperature from Fahrenheit to Celsius",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "temperature": map[string]interface{}{
+                            "type":        "number",
+                            "description": "Temperature in Fahrenheit",
+                        },
+                    },
+                    "required": []string{"temperature"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    temp := input["temperature"].(float64)
+                    celsius := int((temp - 32) * (5.0 / 9.0))
+                    return map[string]interface{}{
+                        "celsius": celsius,
+                    }, nil
+                },
+            },
+        },
+        MaxSteps: 20, // Agent stops after maximum of 20 steps (default: 10)
+    })
+
+    // Execute agent
+    result, err := weatherAgent.Execute(ctx, "What is the weather in San Francisco in celsius?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Final Answer:", result.Text)
+    fmt.Printf("Steps taken: %d\n", len(result.Steps))
+}
+```
+
+The agent automatically:
+
+1. Calls the `weather` tool to get the temperature in Fahrenheit
+2. Calls `convertFahrenheitToCelsius` to convert it
+3. Generates a final text response with the result
+
+The `ToolLoopAgent` handles the loop, context management, and stopping conditions.
+
+## Why Use Agents?
+
+Using agents provides several benefits:
+
+- **Reduces boilerplate** - Manages loops and message arrays automatically
+- **Improves reusability** - Define once, use throughout your application
+- **Simplifies maintenance** - Single place to update agent configuration
+- **Handles complexity** - Manages tool execution, context, and termination logic
+
+For most use cases, start with agents. Use core functions (`ai.GenerateText`, `ai.StreamText`) when you need explicit control over each step for complex structured workflows.
+
+## Basic Agent Structure
+
+Every agent needs:
+
+### 1. Model
+
+The language model that powers the agent:
+
+```go
+provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+model, _ := provider.LanguageModel("gpt-4")
+```
+
+### 2. Tools
+
+Functions the agent can call to perform actions:
+
+```go
+tools := []types.Tool{
+    {
+        Name:        "search",
+        Description: "Search the web for information",
+        Parameters:  /* JSON schema */,
+        Execute:     func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            // Implementation
+        },
+    },
+}
+```
+
+### 3. Configuration
+
+Settings that control agent behavior:
+
+```go
+config := agent.AgentConfig{
+    Model:    model,
+    Tools:    tools,
+    MaxSteps: 15,              // Maximum iterations
+    System:   "You are a helpful assistant", // System prompt
+}
+```
+
+## Agent Execution Flow
+
+When you call `agent.Execute()`, the following happens:
+
+1. **Initial Call**: Agent receives user prompt and converts it to messages
+2. **Generation**: Model generates response (text and/or tool calls)
+3. **Tool Execution**: If tool calls are present, execute them
+4. **Context Update**: Add assistant response and tool results to conversation
+5. **Loop**: Repeat steps 2-4 until stopping condition is met
+6. **Return**: Final result with text, steps, and metadata
+
+```
+┌─────────────┐
+│ User Prompt │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ Model Generate  │◄────┐
+└────────┬────────┘     │
+         │              │
+         ▼              │
+    ┌────────┐          │
+    │ Tools? │──No───►Stop
+    └───┬────┘          │
+        │Yes            │
+        ▼               │
+┌──────────────┐        │
+│ Execute Tools│        │
+└──────┬───────┘        │
+       │                │
+       └────────────────┘
+```
+
+## Stopping Conditions
+
+Agents stop when:
+
+1. **MaxSteps reached**: Agent hits the configured step limit (default: 10)
+2. **No tool calls**: Model returns text without requesting tool calls
+3. **Error occurs**: Tool execution or generation fails
+4. **Context canceled**: Context deadline or cancellation
+
+```go
+config := agent.AgentConfig{
+    Model:    model,
+    Tools:    tools,
+    MaxSteps: 20, // Stop after 20 iterations
+}
+```
+
+## Callbacks
+
+Monitor agent execution with callbacks:
+
+```go
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+    OnStepStart: func(stepNum int) {
+        fmt.Printf("Starting step %d\n", stepNum)
+    },
+    OnStepFinish: func(step types.StepResult) {
+        fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
+    },
+    OnToolCall: func(toolCall types.ToolCall) {
+        fmt.Printf("Calling tool: %s\n", toolCall.ToolName)
+    },
+    OnToolResult: func(toolResult types.ToolResult) {
+        fmt.Printf("Tool %s returned: %v\n", toolResult.ToolName, toolResult.Result)
+    },
+    OnFinish: func(result *agent.AgentResult) {
+        fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
+    },
+}
+```
+
+## Agent vs Core Functions
+
+### When to use Agents
+
+Use agents when:
+- Task requires multiple tool calls
+- You want automatic loop management
+- You need reusable agent configurations
+- You want simplified context management
+
+```go
+// Agent handles everything automatically
+agent := agent.NewToolLoopAgent(config)
+result, _ := agent.Execute(ctx, "Complex multi-step task")
+```
+
+### When to use Core Functions
+
+Use core functions when:
+- You need explicit control over each step
+- Building complex structured workflows
+- Implementing custom loop logic
+- Requiring specific error handling
+
+```go
+// Manual control over each step
+for step := 0; step < maxSteps; step++ {
+    result, _ := ai.GenerateText(ctx, options)
+    // Custom logic for each step
+    if shouldStop(result) {
+        break
+    }
+}
+```
+
+## Structured Workflows
+
+Agents are flexible and powerful, but non-deterministic. When you need reliable, repeatable outcomes with explicit control flow, use core functions with structured workflow patterns combining:
+
+- Conditional statements for explicit branching
+- Standard functions for reusable logic
+- Error handling for robustness
+- Explicit control flow for predictability
+
+[Explore workflow patterns](./03-workflows.mdx) to learn more about building structured, reliable systems.
+
+## Real-World Example
+
+Here's a practical agent that can search the web and summarize results:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    // Create research agent
+    researchAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        System: "You are a research assistant. Use the available tools to find and summarize information.",
+        Tools: []types.Tool{
+            {
+                Name:        "search",
+                Description: "Search the web for information",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "query": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The search query",
+                        },
+                    },
+                    "required": []string{"query"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    query := input["query"].(string)
+                    // Actual implementation would call a search API
+                    return fmt.Sprintf("Search results for: %s", query), nil
+                },
+            },
+            {
+                Name:        "fetchWebpage",
+                Description: "Fetch and return the content of a webpage",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "url": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The URL to fetch",
+                        },
+                    },
+                    "required": []string{"url"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    url := input["url"].(string)
+                    resp, err := http.Get(url)
+                    if err != nil {
+                        return nil, err
+                    }
+                    defer resp.Body.Close()
+                    // Actual implementation would parse and clean HTML
+                    return fmt.Sprintf("Content from %s", url), nil
+                },
+            },
+        },
+        MaxSteps: 15,
+        OnStepFinish: func(step types.StepResult) {
+            fmt.Printf("[Step %d] %s\n", step.StepNumber, step.Text)
+        },
+    })
+
+    result, err := researchAgent.Execute(ctx, "Research the latest developments in quantum computing and provide a summary")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("\n=== Final Answer ===")
+    fmt.Println(result.Text)
+    fmt.Printf("\nCompleted in %d steps\n", len(result.Steps))
+}
+```
+
+## Next Steps
+
+- **[Building Agents](./02-building-agents.mdx)** - Detailed guide to creating agents
+- **[Workflow Patterns](./03-workflows.mdx)** - Structured patterns using core functions
+- **[Loop Control](./04-loop-control.mdx)** - Advanced execution control
+- **[Configuring Call Options](./05-configuring-call-options.mdx)** - Fine-tune agent behavior
+
+## See Also
+
+- [Tools and Tool Calling](../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
+- [Generating Text](../03-ai-sdk-core/05-generating-text.mdx)
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)

@@ -1,0 +1,554 @@
+---
+title: Settings
+description: Learn how to configure the Go AI SDK.
+---
+
+# Settings
+
+Large language models (LLMs) typically provide settings to augment their output.
+
+All AI SDK functions support the following common settings in addition to the model, the [prompt](../02-foundations/03-prompts.mdx), and additional provider-specific settings:
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+maxTokens := 512
+temperature := 0.3
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Invent a new holiday and describe its traditions.",
+    MaxTokens:   &maxTokens,
+    Temperature: &temperature,
+    MaxRetries:  5,
+})
+```
+
+> **Note:** Some providers do not support all common settings. If you use a setting with a provider that does not support it, a warning will be generated. You can check the `Warnings` field in the result to see if any warnings were generated.
+
+## Common Settings
+
+### MaxTokens
+
+Maximum number of tokens to generate.
+
+```go
+maxTokens := 512
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Explain quantum computing",
+    MaxTokens: &maxTokens,
+})
+```
+
+The pointer allows you to distinguish between "not set" (nil) and "set to 0" (pointer to 0).
+
+### Temperature
+
+Temperature setting controls randomness in the output.
+
+The value is passed through to the provider. The range depends on the provider and model. For most providers, `0` means almost deterministic results, and higher values mean more randomness.
+
+It is recommended to set either `Temperature` or `TopP`, but not both.
+
+```go
+temperature := 0.7
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Write a creative story",
+    Temperature: &temperature,
+})
+```
+
+> **Note:** In Go AI SDK, temperature is not set by default (nil), allowing the provider's default to be used.
+
+### TopP
+
+Nucleus sampling - only sample from tokens that comprise the top P probability mass.
+
+The value is passed through to the provider. The range depends on the provider and model. For most providers, nucleus sampling is a number between 0 and 1. For example, 0.1 would mean that only tokens with the top 10% probability mass are considered.
+
+It is recommended to set either `Temperature` or `TopP`, but not both.
+
+```go
+topP := 0.9
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate diverse text",
+    TopP:   &topP,
+})
+```
+
+### TopK
+
+Only sample from the top K options for each subsequent token.
+
+Used to remove "long tail" low probability responses. Recommended for advanced use cases only. You usually only need to use `Temperature`.
+
+```go
+topK := 40
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    TopK:   &topK,
+})
+```
+
+### PresencePenalty
+
+The presence penalty affects the likelihood of the model to repeat information that is already in the prompt.
+
+The value is passed through to the provider. The range depends on the provider and model. For most providers, `0` means no penalty.
+
+```go
+presencePenalty := 0.6
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:           model,
+    Prompt:          "Discuss different topics",
+    PresencePenalty: &presencePenalty,
+})
+```
+
+### FrequencyPenalty
+
+The frequency penalty affects the likelihood of the model to repeatedly use the same words or phrases.
+
+The value is passed through to the provider. The range depends on the provider and model. For most providers, `0` means no penalty.
+
+```go
+frequencyPenalty := 0.8
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:            model,
+    Prompt:           "Write varied text",
+    FrequencyPenalty: &frequencyPenalty,
+})
+```
+
+### StopSequences
+
+The stop sequences to use for stopping the text generation.
+
+If set, the model will stop generating text when one of the stop sequences is generated. Providers may have limits on the number of stop sequences.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:         model,
+    Prompt:        "List three items",
+    StopSequences: []string{"\n\n", "END", "---"},
+})
+```
+
+### Seed
+
+The seed (integer) to use for random sampling. If set and supported by the model, calls will generate deterministic results.
+
+```go
+seed := 42
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate reproducible text",
+    Seed:   &seed,
+})
+```
+
+Using the same seed with the same model and prompt should produce identical results (when supported by the provider).
+
+### MaxRetries
+
+Maximum number of retries for failed requests. Set to 0 to disable retries. Default varies by provider (typically 2).
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "Generate text",
+    MaxRetries: 5, // Retry up to 5 times on failure
+})
+```
+
+Retries use exponential backoff to avoid overwhelming the provider.
+
+### Context (Timeouts and Cancellation)
+
+Go uses `context.Context` for timeouts and cancellation instead of abort signals.
+
+The context can be forwarded from a user interface to cancel the call, or to define a timeout.
+
+#### Example: Timeout
+
+```go
+import (
+    "context"
+    "time"
+)
+
+// Create context with 5 second timeout
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Invent a new holiday and describe its traditions.",
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Request timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+#### Example: Manual Cancellation
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+// Start generation in goroutine
+go func() {
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Long running task",
+    })
+    // Handle result...
+}()
+
+// Cancel after some condition
+time.Sleep(3 * time.Second)
+cancel() // Cancels the generation
+```
+
+### Headers
+
+Additional HTTP headers to be sent with the request. Only applicable for HTTP-based providers.
+
+You can use the request headers to provide additional information to the provider, depending on what the provider supports. For example, some observability providers support headers such as `Prompt-Id`.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Invent a new holiday and describe its traditions.",
+    Headers: map[string]string{
+        "Prompt-Id":      "my-prompt-id",
+        "X-Custom-Field": "custom-value",
+    },
+})
+```
+
+> **Note:** The `Headers` setting is for request-specific headers. You can also set headers in the provider configuration. These headers will be sent with every request made by the provider.
+
+## Provider Configuration Headers
+
+Set headers globally for all requests from a provider:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    Headers: map[string]string{
+        "X-Organization": "my-org-id",
+        "X-Project":      "my-project-id",
+    },
+})
+```
+
+## Provider-Specific Settings
+
+Each provider may support additional settings that are not part of the common API. Use the `ProviderOptions` field to pass provider-specific settings:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "user":           "user-12345",
+            "logit_bias":     map[string]int{"50256": -100},
+            "response_format": map[string]string{"type": "json_object"},
+        },
+    },
+})
+```
+
+Provider-specific options are documented in each provider's documentation.
+
+## Checking Warnings
+
+When using settings that aren't supported by a provider, warnings are returned:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    TopK:   &topK, // May not be supported by all providers
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check for warnings
+for _, warning := range result.Warnings {
+    fmt.Printf("Warning: %s - %s\n", warning.Type, warning.Message)
+}
+```
+
+## Settings Across Different Functions
+
+These settings are supported across all core AI SDK functions with appropriate variations:
+
+### GenerateText / StreamText
+
+```go
+maxTokens := 512
+temperature := 0.7
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Write a story",
+    MaxTokens:   &maxTokens,
+    Temperature: &temperature,
+    Seed:        &seed,
+})
+```
+
+### GenerateObject / StreamObject
+
+```go
+maxTokens := 256
+temperature := 0.3
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:       model,
+    Schema:      schema,
+    Prompt:      "Generate structured data",
+    MaxTokens:   &maxTokens,
+    Temperature: &temperature,
+})
+```
+
+### Embed / EmbedMany
+
+Embedding models typically don't use generation settings, but may support:
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model:   embeddingModel,
+    Input:   "Text to embed",
+    Headers: map[string]string{"X-User-ID": "user-123"},
+})
+```
+
+### GenerateImage
+
+Image generation uses different settings:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A beautiful landscape",
+    Size:   "1024x1024",
+    Seed:   &seed,
+    N:      4, // Number of images
+})
+```
+
+### GenerateSpeech
+
+Speech generation settings:
+
+```go
+speed := 1.5
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:  speechModel,
+    Text:   "Hello, world!",
+    Voice:  "alloy",
+    Speed:  &speed,
+})
+```
+
+### Transcribe
+
+Transcription settings:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:      transcriptionModel,
+    Audio:      audioData,
+    Language:   "en",
+    Timestamps: true,
+})
+```
+
+## Best Practices
+
+### Use Pointers for Optional Settings
+
+Go uses pointers to distinguish between "not set" and "set to zero value":
+
+```go
+// Not set (uses provider default)
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    // Temperature: nil (not set)
+})
+
+// Explicitly set to 0
+temperature := 0.0
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Generate text",
+    Temperature: &temperature, // Set to 0
+})
+```
+
+### Balance Temperature and TopP
+
+Don't set both `Temperature` and `TopP` - use one or the other:
+
+```go
+// Good: Use temperature
+temperature := 0.7
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Generate creative text",
+    Temperature: &temperature,
+})
+
+// Bad: Don't use both
+temperature := 0.7
+topP := 0.9
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Generate text",
+    Temperature: &temperature, // Don't use both
+    TopP:        &topP,        // simultaneously
+})
+```
+
+### Always Set Timeouts
+
+Use context timeouts to prevent hanging requests:
+
+```go
+import "time"
+
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+```
+
+### Handle Warnings
+
+Always check for and log warnings:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    TopK:   &topK,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+if len(result.Warnings) > 0 {
+    for _, w := range result.Warnings {
+        log.Printf("Warning: %s - %s", w.Type, w.Message)
+    }
+}
+```
+
+### Use Seeds for Reproducibility
+
+When you need consistent results (testing, demos), use seeds:
+
+```go
+seed := 42
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate reproducible output",
+    Seed:   &seed,
+})
+```
+
+## Common Setting Combinations
+
+### Deterministic Output
+
+```go
+temperature := 0.0
+seed := 42
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Explain how photosynthesis works",
+    Temperature: &temperature,
+    Seed:        &seed,
+})
+```
+
+### Creative Writing
+
+```go
+temperature := 0.9
+presencePenalty := 0.6
+frequencyPenalty := 0.3
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:            model,
+    Prompt:           "Write a creative story",
+    Temperature:      &temperature,
+    PresencePenalty:  &presencePenalty,
+    FrequencyPenalty: &frequencyPenalty,
+})
+```
+
+### Factual/Technical Output
+
+```go
+temperature := 0.2
+topP := 0.1
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Explain the TCP/IP protocol",
+    Temperature: &temperature,
+})
+```
+
+### Concise Output
+
+```go
+maxTokens := 100
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:         model,
+    Prompt:        "Summarize this article",
+    MaxTokens:     &maxTokens,
+    StopSequences: []string{"\n\n"},
+})
+```
+
+## See Also
+
+- [Generating Text](./05-generating-text.mdx)
+- [Prompts](../02-foundations/03-prompts.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [Provider Documentation](../providers/01-overview.md)

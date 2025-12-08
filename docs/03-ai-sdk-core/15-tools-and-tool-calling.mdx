@@ -1,0 +1,779 @@
+---
+title: Tool Calling
+description: Learn about tool calling and multi-step calls with the Go AI SDK.
+---
+
+# Tool Calling
+
+As covered under [Foundations](../02-foundations/04-tools.md), [tools](../02-foundations/04-tools.md) are objects that can be called by the model to perform a specific task.
+
+Go AI SDK Core tools contain several core elements:
+
+- **`Name`**: The name of the tool
+- **`Description`**: An optional description of the tool that can influence when the tool is picked
+- **`Parameters`**: A JSON schema that defines the input parameters. The schema is consumed by the LLM and also used to validate the LLM tool calls
+- **`Execute`**: An optional function that is called with the inputs from the tool call. It is optional because you might want to forward tool calls to the client or to a queue instead of executing them in the same process
+- **`Strict`**: _(optional)_ Enables strict tool calling when supported by the provider
+
+The `Tools` parameter of `GenerateText` and `StreamText` is a slice of tools:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    weatherTool := types.Tool{
+        Name:        "weather",
+        Description: "Get the weather in a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The location to get the weather for",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            location := input["location"].(string)
+            return map[string]interface{}{
+                "location":    location,
+                "temperature": 72 + rand.Intn(21) - 10,
+            }, nil
+        },
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        Tools:    []types.Tool{weatherTool},
+        MaxSteps: 5,
+        Prompt:   "What is the weather in San Francisco?",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+> **Note:** When a model uses a tool, it is called a "tool call" and the output of the tool is called a "tool result".
+
+## Strict Mode
+
+When enabled, language model providers that support strict tool calling will only generate tool calls that are valid according to your defined `Parameters` schema. This increases the reliability of tool calling. However, not all schemas may be supported in strict mode, and what is supported depends on the specific provider.
+
+By default, strict mode is disabled. You can enable it per-tool by setting `Strict: true`:
+
+```go
+weatherTool := types.Tool{
+    Name:        "weather",
+    Description: "Get the weather in a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"location"},
+    },
+    Strict: true, // Enable strict validation for this tool
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        // ...
+        return nil, nil
+    },
+}
+```
+
+> **Note:** Not all providers or models support strict mode. For those that do not, this option is ignored.
+
+## Multi-Step Calls
+
+With the `MaxSteps` setting, you can enable multi-step calls in `GenerateText` and `StreamText`. When `MaxSteps` is set and the model generates a tool call, the AI SDK will trigger a new generation passing in the tool result until there are no further tool calls or the maximum steps is reached.
+
+> **Note:** The step limit is only evaluated when the last step contains tool results.
+
+By default, when you use `GenerateText` or `StreamText`, it triggers a single generation. This works well for many use cases where you can rely on the model's training data to generate a response. However, when you provide tools, the model now has the choice to either generate a normal text response, or generate a tool call. If the model generates a tool call, its generation is complete and that step is finished.
+
+You may want the model to generate text after the tool has been executed, either to summarize the tool results in the context of the user's query. In many cases, you may also want the model to use multiple tools in a single response. This is where multi-step calls come in.
+
+### Example
+
+In the following example, there are two steps:
+
+1. **Step 1**
+   1. The prompt `"What is the weather in San Francisco?"` is sent to the model
+   2. The model generates a tool call
+   3. The tool call is executed
+
+2. **Step 2**
+   1. The tool result is sent to the model
+   2. The model generates a response considering the tool result
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: []types.Tool{
+        {
+            Name:        "weather",
+            Description: "Get the weather in a location",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "location": map[string]interface{}{
+                        "type":        "string",
+                        "description": "The location to get the weather for",
+                    },
+                },
+                "required": []string{"location"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                location := input["location"].(string)
+                return map[string]interface{}{
+                    "location":    location,
+                    "temperature": 72 + rand.Intn(21) - 10,
+                }, nil
+            },
+        },
+    },
+    MaxSteps: 5, // Stop after a maximum of 5 steps if tools were called
+    Prompt:   "What is the weather in San Francisco?",
+})
+```
+
+> **Note:** You can use `StreamText` in a similar way.
+
+### Steps
+
+To access intermediate tool calls and results, you can use the `Steps` field in the result object or the `OnFinish` callback. It contains all the text, tool calls, tool results, and more from each step.
+
+#### Example: Extract tool results from all steps
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    MaxSteps: 10,
+    Tools:    tools,
+    Prompt:   "What's the weather in Tokyo and Paris?",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Extract all tool calls from the steps
+var allToolCalls []types.ToolCall
+for _, step := range result.Steps {
+    allToolCalls = append(allToolCalls, step.ToolCalls...)
+}
+
+fmt.Printf("Total tool calls: %d\n", len(allToolCalls))
+```
+
+### OnStepFinish Callback
+
+When using `GenerateText` or `StreamText`, you can provide an `OnStepFinish` callback that is triggered when a step is finished, i.e. all text deltas, tool calls, and tool results for the step are available. When you have multiple steps, the callback is triggered for each step.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Tools:    tools,
+    MaxSteps: 5,
+    Prompt:   "What's the weather in multiple cities?",
+    OnStepFinish: func(step types.Step) {
+        // Your own logic, e.g. for saving the chat history or recording usage
+        fmt.Printf("Step %d finished\n", step.StepNumber)
+        fmt.Printf("  Text: %s\n", step.Text)
+        fmt.Printf("  Tool calls: %d\n", len(step.ToolCalls))
+        fmt.Printf("  Tool results: %d\n", len(step.ToolResults))
+        fmt.Printf("  Finish reason: %s\n", step.FinishReason)
+        fmt.Printf("  Usage: %+v\n", step.Usage)
+    },
+})
+```
+
+## Response Messages
+
+Adding the generated assistant and tool messages to your conversation history is a common task, especially if you are using multi-step tool calls.
+
+Both `GenerateText` and `StreamText` have a `Response.Messages` property that you can use to add the assistant and tool messages to your conversation history. It is also available in the `OnFinish` callback of `StreamText`.
+
+The `Response.Messages` field contains a slice of `Message` objects that you can add to your conversation history:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+messages := []types.Message{
+    {Role: "user", Content: types.TextContent{Text: "What's the weather?"}},
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+    Tools:    tools,
+    MaxSteps: 5,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Add the response messages to your conversation history
+messages = append(messages, result.Response.Messages...)
+
+// Continue the conversation
+result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+    Tools:    tools,
+    MaxSteps: 5,
+})
+```
+
+## Tool Choice
+
+You can use the `ToolChoice` setting to influence when a tool is selected. It supports the following settings:
+
+- `auto` (default): the model can choose whether and which tools to call
+- `required`: the model must call a tool. It can choose which tool to call
+- `none`: the model must not call tools
+- `specific`: the model must call the specified tool
+
+```go
+// Auto: Let the model decide (default)
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.ToolChoice{Type: "auto"},
+    Prompt:     "What's the weather?",
+})
+
+// Required: Force the model to call a tool
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.ToolChoice{Type: "required"},
+    Prompt:     "What's the weather in San Francisco?",
+})
+
+// None: Prevent the model from using tools
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.ToolChoice{Type: "none"},
+    Prompt:     "Tell me about San Francisco.",
+})
+
+// Specific: Force the model to use a specific tool
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: []types.Tool{weatherTool, calculatorTool},
+    ToolChoice: types.ToolChoice{
+        Type:     "specific",
+        ToolName: "weather",
+    },
+    Prompt: "What's the weather?",
+})
+```
+
+## Tool Execution Options
+
+When tools are called, they receive the context and input parameters. You can use the context for cancellation, timeouts, and passing request-scoped values.
+
+### Context Cancellation
+
+The abort signals from `GenerateText` and `StreamText` are forwarded to the tool execution via the context:
+
+```go
+// Create a cancellable context
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+weatherTool := types.Tool{
+    Name:        "weather",
+    Description: "Get the weather in a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        location := input["location"].(string)
+
+        // Create HTTP request with context for cancellation
+        req, err := http.NewRequestWithContext(
+            ctx,
+            "GET",
+            fmt.Sprintf("https://api.weatherapi.com/v1/current.json?q=%s", location),
+            nil,
+        )
+        if err != nil {
+            return nil, err
+        }
+
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
+
+        // Parse and return weather data
+        var data map[string]interface{}
+        json.NewDecoder(resp.Body).Decode(&data)
+        return data, nil
+    },
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  []types.Tool{weatherTool},
+    Prompt: "What's the weather in San Francisco?",
+})
+```
+
+## Complex Tool Examples
+
+### Multiple Tools
+
+Using multiple tools together:
+
+```go
+calculatorTool := types.Tool{
+    Name:        "calculator",
+    Description: "Perform mathematical calculations",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "operation": map[string]interface{}{
+                "type": "string",
+                "enum": []string{"add", "subtract", "multiply", "divide"},
+            },
+            "a": map[string]interface{}{"type": "number"},
+            "b": map[string]interface{}{"type": "number"},
+        },
+        "required": []string{"operation", "a", "b"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        op := input["operation"].(string)
+        a := input["a"].(float64)
+        b := input["b"].(float64)
+
+        var result float64
+        switch op {
+        case "add":
+            result = a + b
+        case "subtract":
+            result = a - b
+        case "multiply":
+            result = a * b
+        case "divide":
+            if b == 0 {
+                return nil, fmt.Errorf("division by zero")
+            }
+            result = a / b
+        }
+
+        return map[string]interface{}{"result": result}, nil
+    },
+}
+
+searchTool := types.Tool{
+    Name:        "web_search",
+    Description: "Search the web for information",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "The search query",
+            },
+        },
+        "required": []string{"query"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        query := input["query"].(string)
+        // Call search API
+        return map[string]interface{}{
+            "results": []string{
+                "Result 1 for: " + query,
+                "Result 2 for: " + query,
+            },
+        }, nil
+    },
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: []types.Tool{calculatorTool, searchTool, weatherTool},
+    Prompt: "Search for the population of Tokyo, then calculate what " +
+        "percentage it is of Japan's total population (125 million)",
+    MaxSteps: 5,
+})
+
+fmt.Println(result.Text)
+```
+
+### Tool with Error Handling
+
+Robust tool implementation with comprehensive error handling:
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{
+                "type":        "string",
+                "description": "City name",
+            },
+            "units": map[string]interface{}{
+                "type":    "string",
+                "enum":    []string{"celsius", "fahrenheit"},
+                "default": "celsius",
+            },
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        // Validate input
+        location, ok := input["location"].(string)
+        if !ok || location == "" {
+            return nil, fmt.Errorf("location must be a non-empty string")
+        }
+
+        units := "celsius"
+        if u, ok := input["units"].(string); ok {
+            units = u
+        }
+
+        // Check for context cancellation
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+        }
+
+        // Call weather API
+        apiKey := os.Getenv("WEATHER_API_KEY")
+        url := fmt.Sprintf(
+            "https://api.weatherapi.com/v1/current.json?key=%s&q=%s",
+            apiKey,
+            location,
+        )
+
+        req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+        if err != nil {
+            return nil, fmt.Errorf("failed to create request: %w", err)
+        }
+
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch weather: %w", err)
+        }
+        defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK {
+            return nil, fmt.Errorf("weather API returned status: %d", resp.StatusCode)
+        }
+
+        var data map[string]interface{}
+        if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+            return nil, fmt.Errorf("failed to decode response: %w", err)
+        }
+
+        // Extract and format weather data
+        current := data["current"].(map[string]interface{})
+        temp := current["temp_c"].(float64)
+        if units == "fahrenheit" {
+            temp = temp*9/5 + 32
+        }
+
+        return map[string]interface{}{
+            "location":    location,
+            "temperature": temp,
+            "units":       units,
+            "condition":   current["condition"].(map[string]interface{})["text"],
+        }, nil
+    },
+}
+```
+
+### Tool with Streaming Progress
+
+For long-running operations, you can provide progress updates:
+
+```go
+dataProcessingTool := types.Tool{
+    Name:        "process_data",
+    Description: "Process a large dataset",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "dataset_id": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"dataset_id"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        datasetID := input["dataset_id"].(string)
+
+        // Simulate long-running processing with progress updates
+        total := 100
+        for i := 0; i < total; i++ {
+            // Check for cancellation
+            select {
+            case <-ctx.Done():
+                return nil, ctx.Err()
+            default:
+            }
+
+            // Simulate work
+            time.Sleep(100 * time.Millisecond)
+
+            // In a real implementation, you might send progress
+            // via a channel or callback mechanism
+            if i%10 == 0 {
+                log.Printf("Processing: %d%% complete", i)
+            }
+        }
+
+        return map[string]interface{}{
+            "status":     "completed",
+            "dataset_id": datasetID,
+            "records":    1000,
+        }, nil
+    },
+}
+```
+
+## Tool Packaging
+
+Create reusable tool packages:
+
+```go
+// weathertools/weather.go
+package weathertools
+
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func NewWeatherTool(apiKey string) types.Tool {
+    return types.Tool{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type": "string",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            // Implementation using apiKey
+            return nil, nil
+        },
+    }
+}
+
+func NewCalculatorTool() types.Tool {
+    return types.Tool{
+        Name:        "calculator",
+        Description: "Perform calculations",
+        Parameters: map[string]interface{}{
+            // ...
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            // Implementation
+            return nil, nil
+        },
+    }
+}
+```
+
+Usage:
+
+```go
+import "myapp/weathertools"
+
+weatherTool := weathertools.NewWeatherTool(apiKey)
+calcTool := weathertools.NewCalculatorTool()
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  []types.Tool{weatherTool, calcTool},
+    Prompt: "What's the weather and calculate something",
+})
+```
+
+## Error Handling
+
+Handle tool execution errors:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Tools:    tools,
+    MaxSteps: 5,
+    Prompt:   "Use tools",
+})
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, provider.ErrNoSuchTool) {
+        fmt.Println("Model tried to call unknown tool")
+    } else if errors.Is(err, provider.ErrInvalidToolInput) {
+        fmt.Println("Model called tool with invalid inputs")
+    } else {
+        fmt.Printf("Error: %v\n", err)
+    }
+    return
+}
+
+// Check for tool errors in the steps
+for _, step := range result.Steps {
+    for _, toolResult := range step.ToolResults {
+        if toolResult.Error != nil {
+            fmt.Printf("Tool %s failed: %v\n", toolResult.ToolName, toolResult.Error)
+        }
+    }
+}
+```
+
+## Best Practices
+
+1. **Clear Descriptions**: Write clear tool descriptions to help the model know when to use them
+2. **Schema Validation**: Define comprehensive parameter schemas with descriptions
+3. **Error Handling**: Return clear error messages when tools fail
+4. **Context Support**: Respect context cancellation in long-running tools
+5. **Idempotency**: Make tools idempotent when possible
+6. **Logging**: Log tool executions for debugging
+7. **Rate Limiting**: Implement rate limiting for external API calls
+8. **Type Safety**: Use Go structs for input validation
+9. **Timeouts**: Set appropriate timeouts for external calls
+10. **Testing**: Write unit tests for tool execution logic
+
+## Concurrency and Parallel Tool Execution
+
+The Go AI SDK executes tools sequentially by default, but you can implement parallel execution patterns:
+
+```go
+type ParallelToolExecutor struct {
+    maxConcurrent int
+}
+
+func (e *ParallelToolExecutor) ExecuteTools(
+    ctx context.Context,
+    toolCalls []types.ToolCall,
+    tools map[string]types.Tool,
+) []types.ToolResult {
+    results := make([]types.ToolResult, len(toolCalls))
+    var wg sync.WaitGroup
+    sem := make(chan struct{}, e.maxConcurrent)
+
+    for i, toolCall := range toolCalls {
+        wg.Add(1)
+        go func(idx int, tc types.ToolCall) {
+            defer wg.Done()
+
+            // Acquire semaphore
+            sem <- struct{}{}
+            defer func() { <-sem }()
+
+            tool, ok := tools[tc.ToolName]
+            if !ok {
+                results[idx] = types.ToolResult{
+                    ToolCallID: tc.ToolCallID,
+                    ToolName:   tc.ToolName,
+                    Error:      fmt.Errorf("tool not found: %s", tc.ToolName),
+                }
+                return
+            }
+
+            output, err := tool.Execute(ctx, tc.Input)
+            results[idx] = types.ToolResult{
+                ToolCallID: tc.ToolCallID,
+                ToolName:   tc.ToolName,
+                Output:     output,
+                Error:      err,
+            }
+        }(i, toolCall)
+    }
+
+    wg.Wait()
+    return results
+}
+```
+
+## Advanced Patterns
+
+### Conditional Tool Selection
+
+Dynamically select tools based on context:
+
+```go
+func getAvailableTools(userRole string) []types.Tool {
+    basicTools := []types.Tool{weatherTool, calculatorTool}
+
+    if userRole == "admin" {
+        return append(basicTools, adminTools...)
+    }
+
+    return basicTools
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  getAvailableTools(user.Role),
+    Prompt: prompt,
+})
+```
+
+### Tool Chaining
+
+Chain tool results:
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: []types.Tool{searchTool, summarizeTool, translateTool},
+    Prompt: "Search for AI news, summarize it, then translate to Spanish",
+    MaxSteps: 10,
+    OnStepFinish: func(step types.Step) {
+        fmt.Printf("Step %d: Used %d tools\n", step.StepNumber, len(step.ToolCalls))
+    },
+})
+```
+
+## Next Steps
+
+- Learn about [Embeddings](./05-embeddings.md)
+- Explore [Agents](../03-agents/01-overview.md)
+- See [Tool Examples](../examples/04-tool-calling.md)
+
+## See Also
+
+- [Foundations: Tools](../02-foundations/04-tools.md)
+- [Generating Text](./02-generating-text.md)
+- [Settings](./10-settings.md)
+- [Error Handling](./13-error-handling.md)
+- [API Reference: Tool Types](../07-reference/types/tools.md)

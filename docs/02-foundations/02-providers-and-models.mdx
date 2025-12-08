@@ -1,0 +1,335 @@
+---
+title: Providers and Models
+description: Learn about the providers and models available in the Go AI SDK.
+---
+
+# Providers and Models
+
+Companies such as OpenAI and Anthropic (providers) offer access to a range of large language models (LLMs) with differing strengths and capabilities through their own APIs.
+
+Each provider typically has its own unique method for interfacing with their models, complicating the process of switching providers and increasing the risk of vendor lock-in.
+
+To solve these challenges, the Go AI SDK offers a standardized approach to interacting with LLMs through a unified provider interface that abstracts differences between providers. This unified interface allows you to switch between providers with ease while using the same API for all providers.
+
+## Unified Provider Architecture
+
+The Go AI SDK uses a consistent provider architecture where all providers implement the same interfaces:
+
+```go
+// All providers implement these interfaces
+type Provider interface {
+    LanguageModel(modelID string) (LanguageModel, error)
+    EmbeddingModel(modelID string) (EmbeddingModel, error)
+    ImageModel(modelID string) (ImageModel, error)
+    SpeechModel(modelID string) (SpeechModel, error)
+    TranscriptionModel(modelID string) (TranscriptionModel, error)
+}
+```
+
+This means switching providers is as simple as changing which provider you instantiate:
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+model1, _ := openaiProvider.LanguageModel("gpt-4")
+
+// Anthropic
+anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+model2, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+
+// Same API for both
+result1, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model1, Prompt: "Hello"})
+result2, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model2, Prompt: "Hello"})
+```
+
+## Supported Providers
+
+The Go AI SDK includes built-in support for 26 providers:
+
+### Language Model Providers
+
+- **[OpenAI](../providers/02-openai.md)** - GPT-4, GPT-3.5, o1 series
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+  ```
+
+- **[Anthropic](../providers/03-anthropic.md)** - Claude 3 (Opus, Sonnet, Haiku), Claude 4
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+  ```
+
+- **[Google](../providers/04-google.md)** - Gemini Pro, Gemini Flash
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/google"
+  ```
+
+- **[Azure OpenAI](../providers/05-azure.md)** - All Azure-hosted models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/azure"
+  ```
+
+- **[Amazon Bedrock](../providers/06-bedrock.md)** - Claude, Titan, Llama, and more
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+  ```
+
+- **[Cohere](../providers/07-cohere.md)** - Command, Command-R series
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+  ```
+
+- **[Mistral](../providers/08-mistral.md)** - Mistral Large, Medium, Small
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/mistral"
+  ```
+
+- **[Groq](../providers/groq.md)** - Fast inference with Llama, Mixtral
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/groq"
+  ```
+
+- **[DeepSeek](../providers/deepseek.md)** - DeepSeek Chat, Coder
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
+  ```
+
+- **[xAI](../providers/xai.md)** - Grok models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/xai"
+  ```
+
+- **[Perplexity](../providers/perplexity.md)** - Sonar models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
+  ```
+
+- **[Together AI](../providers/together.md)** - Llama, Mixtral, Qwen
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/together"
+  ```
+
+- **[Fireworks](../providers/fireworks.md)** - Fast inference for various models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
+  ```
+
+- **[Replicate](../providers/replicate.md)** - All hosted models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/replicate"
+  ```
+
+- **[Hugging Face](../providers/huggingface.md)** - Inference API models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
+  ```
+
+- **[Ollama](../providers/ollama.md)** - Local models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/ollama"
+  ```
+
+### Image Generation Providers
+
+- **[Stability AI](../providers/stability.md)** - Stable Diffusion
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/stability"
+  ```
+
+- **[Black Forest Labs](../providers/bfl.md)** - FLUX models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/bfl"
+  ```
+
+- **[Fal.ai](../providers/fal.md)** - Fast image generation
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/fal"
+  ```
+
+### Speech & Transcription Providers
+
+- **[ElevenLabs](../providers/elevenlabs.md)** - Text-to-speech
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/elevenlabs"
+  ```
+
+- **[Deepgram](../providers/deepgram.md)** - Speech-to-text
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/deepgram"
+  ```
+
+- **[AssemblyAI](../providers/assemblyai.md)** - Speech recognition
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/assemblyai"
+  ```
+
+### Infrastructure Providers
+
+- **[Baseten](../providers/baseten.md)** - Model serving infrastructure
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/baseten"
+  ```
+
+- **[Cerebras](../providers/cerebras.md)** - Fast inference hardware
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/cerebras"
+  ```
+
+- **[DeepInfra](../providers/deepinfra.md)** - Multi-model inference
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
+  ```
+
+- **[Vercel AI](../providers/vercel.md)** - Vercel's hosted models
+  ```go
+  import "github.com/digitallysavvy/go-ai/pkg/providers/vercel"
+  ```
+
+## Self-Hosted Models
+
+You can run models locally with:
+
+- **Ollama** - Run Llama, Mistral, and other models locally
+- **LM Studio** (via OpenAI-compatible interface)
+- Any OpenAI-compatible server
+
+Example with Ollama:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/ollama"
+
+provider := ollama.New(ollama.Config{
+    BaseURL: "http://localhost:11434",
+})
+
+model, _ := provider.LanguageModel("llama2")
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello from my local machine!",
+})
+```
+
+## Model Capabilities
+
+Different models support different capabilities. You can check what a model supports:
+
+```go
+model, _ := provider.LanguageModel("gpt-4")
+
+// Check capabilities
+if model.SupportsTools() {
+    fmt.Println("Model supports tool calling")
+}
+
+if model.SupportsStructuredOutput() {
+    fmt.Println("Model supports structured output")
+}
+
+if model.SupportsImageInput() {
+    fmt.Println("Model can process images")
+}
+```
+
+### Capability Matrix
+
+Here are the capabilities of popular models:
+
+| Provider | Model | Image Input | Structured Output | Tool Calling | Tool Streaming |
+|----------|-------|-------------|-------------------|--------------|----------------|
+| OpenAI | gpt-4 | ✓ | ✓ | ✓ | ✓ |
+| OpenAI | gpt-4-turbo | ✓ | ✓ | ✓ | ✓ |
+| OpenAI | gpt-3.5-turbo | ✗ | ✓ | ✓ | ✓ |
+| Anthropic | claude-opus-4 | ✓ | ✓ | ✓ | ✓ |
+| Anthropic | claude-sonnet-4 | ✓ | ✓ | ✓ | ✓ |
+| Anthropic | claude-3.5-haiku | ✓ | ✓ | ✓ | ✓ |
+| Google | gemini-2.0-flash | ✓ | ✓ | ✓ | ✓ |
+| Google | gemini-1.5-pro | ✓ | ✓ | ✓ | ✓ |
+| Mistral | pixtral-large | ✓ | ✓ | ✓ | ✓ |
+| Mistral | mistral-large | ✗ | ✓ | ✓ | ✓ |
+| DeepSeek | deepseek-chat | ✗ | ✓ | ✓ | ✓ |
+| Groq | llama-3.3-70b | ✗ | ✓ | ✓ | ✓ |
+
+> **Note:** This table is not exhaustive. Additional models and their capabilities can be found in the individual provider documentation pages.
+
+## Using Multiple Providers
+
+One advantage of the unified interface is that you can easily use multiple providers in the same application:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Use GPT-4 for initial response
+    openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    gpt4, _ := openaiProvider.LanguageModel("gpt-4")
+
+    result1, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  gpt4,
+        Prompt: "Generate a creative story idea",
+    })
+
+    // Use Claude for critique
+    anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+
+    result2, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  claude,
+        Prompt: fmt.Sprintf("Critique this story idea: %s", result1.Text),
+    })
+
+    fmt.Println("Story Idea:", result1.Text)
+    fmt.Println("Critique:", result2.Text)
+}
+```
+
+## Provider Registry
+
+For applications that need dynamic provider/model selection, use the registry:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/registry"
+
+// Create registry and register providers
+reg := registry.New()
+reg.RegisterProvider("openai", openaiProvider)
+reg.RegisterProvider("anthropic", anthropicProvider)
+reg.RegisterProvider("google", googleProvider)
+
+// Resolve models by string ID
+model, _ := reg.LanguageModel("openai:gpt-4")
+model2, _ := reg.LanguageModel("anthropic:claude-3-opus-20240229")
+
+// Use consistently
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello!",
+})
+```
+
+See the [Provider Registry documentation](../03-ai-sdk-core/12-provider-management.md) for more details.
+
+## Next Steps
+
+- Learn about [Prompts](./03-prompts.md)
+- Explore [Tools and Tool Calling](./04-tools.md)
+- Understand [Streaming](./05-streaming.md)
+- Check out individual [Provider Documentation](../providers/01-overview.md)
+
+## See Also
+
+- [Core API Overview](../03-ai-sdk-core/01-overview.md)
+- [Generating Text](../03-ai-sdk-core/02-generating-text.md)
+- [Provider Management](../03-ai-sdk-core/12-provider-management.md)
+- [Registry API Reference](../07-reference/registry/registry.md)

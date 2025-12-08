@@ -1,0 +1,582 @@
+---
+title: Backpressure
+description: How to handle backpressure and cancellation when working with the Go AI SDK
+---
+
+# Stream Backpressure and Cancellation
+
+This page focuses on understanding backpressure and cancellation when working with streams. You do not need to know this information to use the Go AI SDK, but for those interested, it offers a deeper dive on why and how the SDK optimally streams responses.
+
+In the following sections, we'll explore backpressure and cancellation in the context of Go channels and goroutines. We'll discuss the issues that can arise from an eager approach and demonstrate how Go's natural blocking behavior resolves them.
+
+## Backpressure and Cancellation with Channels
+
+Let's begin by setting up a simple example program using Go channels:
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+// A generator that will yield positive integers
+func integers(ch chan<- int) {
+    i := 1
+    for {
+        fmt.Printf("yielding %d\n", i)
+        ch <- i
+        i++
+
+        time.Sleep(100 * time.Millisecond)
+    }
+}
+
+// Consume data from channel
+func main() {
+    // Create a channel
+    ch := make(chan int)
+
+    // Start the generator
+    go integers(ch)
+
+    // Read values from the channel
+    for i := 0; i < 10; i++ {
+        value := <-ch
+        fmt.Printf("read %d\n", value)
+
+        time.Sleep(1 * time.Second)
+    }
+}
+```
+
+In this example, we create a generator that yields positive integers through a channel, and a consumer which reads values from that channel. The generator logs `"yielding %d"` and the consumer logs `"read %d"`. The generator sleeps for 100ms between values, while the consumer takes 1 second to process each value.
+
+## Backpressure with Unbuffered Channels
+
+If you run the program above with an **unbuffered channel**, you'll notice something important: the "yield" and "read" logs are paired. The generator blocks on `ch <- i` until the consumer reads with `<-ch`. This is **natural backpressure** - the producer automatically waits for the consumer.
+
+```go
+// Unbuffered channel - natural backpressure
+ch := make(chan int)  // Blocks until read
+```
+
+Output:
+```
+yielding 1
+read 1
+yielding 2
+read 2
+...
+```
+
+The producer and consumer are synchronized. Go's unbuffered channels provide automatic backpressure!
+
+## Problem: Buffered Channels Without Cancellation
+
+Now let's see what happens with a buffered channel:
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+func integers(ch chan<- int) {
+    i := 1
+    for {
+        fmt.Printf("yielding %d\n", i)
+        ch <- i
+        i++
+
+        time.Sleep(100 * time.Millisecond)
+    }
+}
+
+func main() {
+    // Buffered channel - can store multiple values
+    ch := make(chan int, 100)
+
+    go integers(ch)
+
+    // Only read 3 values
+    for i := 0; i < 3; i++ {
+        value := <-ch
+        fmt.Printf("read %d\n", value)
+
+        time.Sleep(1 * time.Second)
+    }
+
+    // Main function exits, but integers() goroutine continues!
+    fmt.Println("Done reading")
+    time.Sleep(2 * time.Second) // See the problem
+}
+```
+
+Output:
+```
+yielding 1
+read 1
+yielding 2
+yielding 3
+yielding 4
+...
+read 2
+yielding 5
+yielding 6
+...
+read 3
+Done reading
+yielding 7
+yielding 8
+...
+```
+
+The goroutine continues producing values even after we stop consuming! This wastes resources and can cause memory leaks.
+
+## Solution: Context Cancellation
+
+Go provides `context.Context` for cancellation:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func integers(ctx context.Context, ch chan<- int) {
+    i := 1
+    for {
+        select {
+        case <-ctx.Done():
+            fmt.Println("Generator stopped")
+            return
+        case ch <- i:
+            fmt.Printf("yielding %d\n", i)
+            i++
+        }
+
+        time.Sleep(100 * time.Millisecond)
+    }
+}
+
+func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel() // Clean up when main exits
+
+    ch := make(chan int, 100)
+
+    go integers(ctx, ch)
+
+    // Read 3 values
+    for i := 0; i < 3; i++ {
+        value := <-ch
+        fmt.Printf("read %d\n", value)
+
+        time.Sleep(1 * time.Second)
+    }
+
+    fmt.Println("Done reading")
+    cancel() // Signal generator to stop
+
+    time.Sleep(500 * time.Millisecond) // Give time to see cleanup
+}
+```
+
+Output:
+```
+yielding 1
+read 1
+yielding 2
+read 2
+yielding 3
+read 3
+Done reading
+Generator stopped
+```
+
+Perfect! The generator stops cleanly when we signal cancellation.
+
+## Backpressure in the Go AI SDK
+
+The Go AI SDK uses these principles for efficient streaming:
+
+### TextChannel - Natural Backpressure
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Count from 1 to 100 slowly, explaining each number.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Slow consumer - the producer automatically slows down
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+
+        // Simulate slow processing
+        time.Sleep(100 * time.Millisecond)
+
+        // The LLM API won't send more data faster than we can process!
+    }
+
+    if err := stream.Err(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+The `TextChannel` is an unbuffered channel, so:
+- Each chunk blocks until read
+- The SDK doesn't buffer unlimited data
+- Memory usage stays constant
+- Natural backpressure is maintained
+
+### Context Cancellation for Early Termination
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    // Create context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a very long story that never ends...",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read for a while
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+
+    // Check if cancelled
+    if err := stream.Err(); err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            fmt.Println("\n\nStream stopped after timeout - resources freed!")
+        } else {
+            log.Fatal(err)
+        }
+    }
+}
+```
+
+When the context times out or is cancelled:
+1. The SDK stops fetching from the LLM API
+2. The channel closes cleanly
+3. All resources are freed
+4. No memory leaks
+
+### User-Initiated Cancellation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Tell me a long story...",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Simulate user clicking "Stop" button after 2 seconds
+    go func() {
+        time.Sleep(2 * time.Second)
+        fmt.Println("\n[User clicked Stop button]")
+        cancel() // Stop the stream immediately
+    }()
+
+    // Process chunks
+    chunkCount := 0
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+        chunkCount++
+    }
+
+    fmt.Printf("\n\nReceived %d chunks before stopping\n", chunkCount)
+
+    // Check for cancellation
+    if ctx.Err() == context.Canceled {
+        fmt.Println("Stream cancelled by user - all resources freed")
+    }
+}
+```
+
+## Real-World Example: HTTP Streaming with Cancellation
+
+Here's how backpressure and cancellation work in a web server:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+    // Use request context - automatically cancelled if client disconnects
+    ctx := r.Context()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a long technical explanation...",
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Set up SSE headers
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+
+    // Stream to client
+    for chunk := range stream.TextChannel {
+        select {
+        case <-ctx.Done():
+            // Client disconnected - context cancelled
+            log.Println("Client disconnected, cleaning up")
+            return
+        default:
+            // Send chunk to client
+            fmt.Fprintf(w, "data: %s\n\n", chunk)
+            flusher.Flush()
+        }
+    }
+
+    if err := stream.Err(); err != nil {
+        if ctx.Err() == context.Canceled {
+            log.Println("Stream cancelled, resources freed")
+        } else {
+            log.Printf("Stream error: %v", err)
+        }
+    }
+}
+
+func main() {
+    http.HandleFunc("/stream", streamHandler)
+
+    fmt.Println("Server listening on :8080")
+    fmt.Println("Try: curl http://localhost:8080/stream")
+    fmt.Println("Press Ctrl+C in curl to see cancellation")
+
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Key benefits:
+- **Client disconnects**: Context automatically cancelled
+- **No memory leaks**: LLM API connection closed immediately
+- **Natural backpressure**: Client read speed controls data flow
+- **Clean shutdown**: All goroutines properly terminated
+
+## Best Practices
+
+### 1. Always Use Context
+
+```go
+// Good - Always pass context
+func makeRequest(ctx context.Context) error {
+    stream, err := ai.StreamText(ctx, options)
+    // ...
+}
+
+// Bad - Missing context
+func makeRequest() error {
+    stream, err := ai.StreamText(context.Background(), options)
+    // No way to cancel!
+}
+```
+
+### 2. Set Timeouts for Long Operations
+
+```go
+// Good - Timeout prevents hanging
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+stream, err := ai.StreamText(ctx, options)
+```
+
+### 3. Use Unbuffered Channels
+
+```go
+// Good - Natural backpressure
+ch := make(chan string)
+
+// Bad - Can accumulate unbounded data
+ch := make(chan string, 10000)
+```
+
+### 4. Check Context in Loops
+
+```go
+// Good - Check for cancellation
+for chunk := range stream.TextChannel {
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+        process(chunk)
+    }
+}
+
+// Better - Context check is automatic with range
+for chunk := range stream.TextChannel {
+    process(chunk)
+}
+// Channel closes when context cancelled
+```
+
+### 5. Defer Cancel Calls
+
+```go
+// Good - Ensures cleanup
+ctx, cancel := context.WithCancel(parent)
+defer cancel() // Always called
+
+result, err := doWork(ctx)
+return result, err
+```
+
+### 6. Handle Errors Properly
+
+```go
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+
+// Always check for errors after stream completes
+if err := stream.Err(); err != nil {
+    if ctx.Err() == context.Canceled {
+        log.Println("Cancelled by user")
+    } else if ctx.Err() == context.DeadlineExceeded {
+        log.Println("Timeout")
+    } else {
+        log.Printf("Stream error: %v", err)
+    }
+}
+```
+
+## Comparison: JavaScript vs Go
+
+### JavaScript (Streams API)
+```javascript
+// Requires explicit pull() implementation for backpressure
+const stream = new ReadableStream({
+  async pull(controller) {
+    const { value, done } = await iterator.next();
+    if (done) controller.close();
+    else controller.enqueue(value);
+  }
+});
+```
+
+### Go (Channels)
+```go
+// Backpressure is automatic with unbuffered channels
+ch := make(chan string)
+go func() {
+    for value := range source {
+        ch <- value  // Blocks until read
+    }
+    close(ch)
+}()
+```
+
+Go's channel model makes backpressure natural and automatic. Combined with context cancellation, Go provides elegant solutions to streaming challenges.
+
+## Next Steps
+
+- Learn about [caching](./04-caching.mdx) to optimize repeated requests
+- Explore [rate limiting](./06-rate-limiting.mdx) for production deployments
+- See [error handling](../03-ai-sdk-core/50-error-handling.mdx) for robust stream handling

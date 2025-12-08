@@ -1,0 +1,246 @@
+---
+title: Go AI SDK
+description: The Go AI SDK is a powerful toolkit for building AI applications and agents with Go, featuring support for 26+ providers.
+---
+
+# Go AI SDK
+
+The Go AI SDK is a comprehensive toolkit designed to help developers build AI-powered applications and agents using Go. It provides a unified interface for working with multiple AI providers while leveraging Go's strengths in concurrency, performance, and type safety.
+
+## Why use the Go AI SDK?
+
+Integrating large language models (LLMs) into applications is complicated and heavily dependent on the specific model provider you use.
+
+The Go AI SDK standardizes integrating artificial intelligence (AI) models across [26+ supported providers](/providers). This enables developers to focus on building great AI applications, not waste time on technical details.
+
+For example, here's how you can generate text with various models using the Go AI SDK:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Use OpenAI
+    openaiProvider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
+
+    // Use Anthropic
+    anthropicProvider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    anthropicModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
+
+    // Same API for both!
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  openaiModel, // or anthropicModel
+        Prompt: "Why is Go great for AI applications?",
+    })
+
+    fmt.Println(result.Text)
+}
+```
+
+## What is the Go AI SDK?
+
+The Go AI SDK provides:
+
+- **Unified API**: Work with 26+ AI providers through a consistent interface
+- **Type Safety**: Leverage Go's strong typing for safer AI applications
+- **Concurrency**: Built on Go's goroutines, channels, and contexts for efficient streaming
+- **Production Ready**: Comprehensive error handling, testing utilities, and telemetry
+- **Server-Side Focus**: Optimized for backend services, APIs, and agents
+
+## Core Features
+
+### Text Generation
+
+Generate text with any supported model:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum computing in simple terms.",
+})
+```
+
+### Streaming
+
+Stream responses in real-time with automatic backpressure:
+
+```go
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story about...",
+})
+
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+```
+
+### Structured Data Generation
+
+Generate type-safe structured data:
+
+```go
+type Recipe struct {
+    Name         string   `json:"name"`
+    Ingredients  []string `json:"ingredients"`
+    Instructions []string `json:"instructions"`
+}
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Generate a recipe for chocolate chip cookies.",
+    Output: &Recipe{},
+})
+```
+
+### Tool Calling
+
+Integrate external tools and APIs:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in San Francisco?",
+    Tools: map[string]ai.Tool{
+        "getWeather": {
+            Description: "Get current weather for a location",
+            Parameters: weatherSchema,
+            Execute: func(params map[string]interface{}) (interface{}, error) {
+                return fetchWeather(params["location"].(string))
+            },
+        },
+    },
+})
+```
+
+### Agent Framework
+
+Build autonomous agents with workflow support:
+
+```go
+agent := agents.New(agents.Config{
+    Model:        model,
+    Instructions: "You are a helpful assistant.",
+    Tools:        tools,
+    MaxSteps:     10,
+})
+
+result, err := agent.Execute(ctx, "Help me plan a trip to Japan")
+```
+
+## Model Providers
+
+The Go AI SDK supports 26+ model providers including:
+
+- **OpenAI** - GPT-4, GPT-4 Turbo, GPT-3.5
+- **Anthropic** - Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku
+- **Google** - Gemini Pro, Gemini Flash
+- **Mistral** - Mistral Large, Medium, Small
+- **Cohere** - Command R+, Command R
+- **Amazon Bedrock** - Access multiple models through AWS
+- **Azure OpenAI** - Enterprise OpenAI models
+- **Groq** - Ultra-fast inference
+- **Together AI** - Open source models
+- **Fireworks AI** - Fast model serving
+- And 16+ more providers!
+
+## Go-Specific Advantages
+
+### Native Concurrency
+
+Go's goroutines and channels provide natural patterns for AI workloads:
+
+```go
+// Process multiple requests concurrently
+results := make(chan string)
+
+for _, prompt := range prompts {
+    go func(p string) {
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: p,
+        })
+        results <- result.Text
+    }(prompt)
+}
+```
+
+### Context-Based Cancellation
+
+Clean cancellation and timeouts using Go's context:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Long generation...",
+})
+// Automatically cancelled after 30 seconds
+```
+
+### Automatic Backpressure
+
+Unbuffered channels provide natural flow control:
+
+```go
+for chunk := range stream.TextChannel {
+    // Processing automatically slows down generation
+    time.Sleep(100 * time.Millisecond)
+    processChunk(chunk)
+}
+```
+
+## Getting Started
+
+Ready to start building? Choose your path:
+
+- **[Quick Start](/docs/getting-started/golang)** - Build your first AI application in 5 minutes
+- **[Foundations](/docs/foundations)** - Learn core concepts
+- **[AI SDK Core](/docs/ai-sdk-core)** - Explore the complete API
+- **[Agents](/docs/agents)** - Build autonomous agents
+
+## Installation
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+## Join the Community
+
+If you have questions about anything related to the Go AI SDK, you're welcome to:
+
+- Open issues on [GitHub](https://github.com/digitallysavvy/go-ai/issues)
+- Contribute to the project
+- Share your experiences and use cases
+
+## Why Go for AI?
+
+While Python dominates AI/ML model training, Go excels at building production AI applications:
+
+- **Performance**: Fast execution and low memory overhead
+- **Concurrency**: Built-in support for parallel processing
+- **Deployment**: Single binary deployment, no dependencies
+- **Type Safety**: Catch errors at compile time
+- **Production Ready**: Excellent for APIs, microservices, and backend systems
+- **Cloud Native**: Perfect for Kubernetes, Docker, and cloud deployments
+
+The Go AI SDK brings the power of modern LLMs to Go's strengths in building scalable, production-ready systems.
