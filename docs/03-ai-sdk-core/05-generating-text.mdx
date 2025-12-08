@@ -1,0 +1,615 @@
+---
+title: Generating Text
+description: Learn how to generate text with the Go AI SDK.
+---
+
+# Generating and Streaming Text
+
+Large language models (LLMs) can generate text in response to a prompt, which can contain instructions and information to process. For example, you can ask a model to come up with a recipe, draft an email, or summarize a document.
+
+The Go AI SDK Core provides two functions to generate text from LLMs:
+
+- [`ai.GenerateText()`](#generatetext) - Generates text for a given prompt and model.
+- [`ai.StreamText()`](#streamtext) - Streams text from a given prompt and model.
+
+Advanced LLM features such as [tool calling](./04-tools-and-tool-calling.md) and [structured data generation](./03-generating-structured-data.md) are built on top of text generation.
+
+## GenerateText
+
+You can generate text using the [`ai.GenerateText()`](../07-reference/ai/generate-text.md) function. This function is ideal for non-interactive use cases where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a vegetarian lasagna recipe for 4 people.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+You can use more [advanced prompts](../02-foundations/03-prompts.md) to generate text with more complex instructions and content:
+
+```go
+article := "..." // your article text
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    System: "You are a professional writer. " +
+        "You write simple, clear, and concise content.",
+    Prompt: fmt.Sprintf("Summarize the following article in 3-5 sentences: %s", article),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+### Result Object
+
+The result object of `GenerateText` contains several fields that provide information about the generation:
+
+```go
+type GenerateTextResult struct {
+    // Content generated in the last step
+    Content []types.ContentPart
+
+    // The generated text
+    Text string
+
+    // Tool calls made in the last step
+    ToolCalls []types.ToolCall
+
+    // Tool results from the last step
+    ToolResults []types.ToolResult
+
+    // Reason the model finished generating
+    FinishReason string
+
+    // Token usage for the final step
+    Usage types.Usage
+
+    // Total usage across all steps (for multi-step generations)
+    TotalUsage types.Usage
+
+    // Warnings from the model provider
+    Warnings []types.Warning
+
+    // Additional request information
+    Request types.Request
+
+    // Additional response information
+    Response types.Response
+
+    // Provider-specific metadata
+    ProviderMetadata map[string]interface{}
+
+    // Details for all steps (useful for multi-step generations)
+    Steps []types.Step
+
+    // Sources used as references (only available for some models)
+    Sources []types.Source
+
+    // Files generated (only available for some models)
+    Files []types.File
+}
+```
+
+### Accessing Response Headers & Body
+
+Sometimes you need access to the full response from the model provider, e.g. to access some provider-specific headers or body content.
+
+You can access the raw response headers and body using the `Response` field:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Headers: %+v\n", result.Response.Headers)
+fmt.Printf("Body: %+v\n", result.Response.Body)
+```
+
+### OnFinish Callback
+
+When using `GenerateText`, you can provide an `OnFinish` callback that is triggered after the last step is finished. It contains the text, usage information, finish reason, and more:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Invent a new holiday and describe its traditions.",
+    OnFinish: func(result types.GenerateResult) {
+        // Your own logic, e.g. for saving the chat history or recording usage
+        fmt.Printf("Text: %s\n", result.Text)
+        fmt.Printf("Finish reason: %s\n", result.FinishReason)
+        fmt.Printf("Usage: %+v\n", result.Usage)
+        fmt.Printf("Steps: %d\n", len(result.Steps))
+        fmt.Printf("Total usage: %+v\n", result.TotalUsage)
+    },
+})
+```
+
+## StreamText
+
+Depending on your model and prompt, it can take a large language model (LLM) up to a minute to finish generating its response. This delay can be unacceptable for interactive use cases such as chatbots or real-time applications, where users expect immediate responses.
+
+The Go AI SDK Core provides the [`ai.StreamText()`](../07-reference/ai/stream-text.md) function which simplifies streaming text from LLMs:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Invent a new holiday and describe its traditions.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+// Stream text chunks as they arrive
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text)
+}
+```
+
+> **Note:** `StreamText` immediately starts streaming and errors become part of the stream. Use the `OnError` callback to log errors.
+
+> **Note:** `StreamText` uses backpressure and only generates tokens as they are requested. You need to consume the channel for the stream to finish.
+
+### Stream Result Object
+
+The stream result object provides access to the streamed data:
+
+```go
+type StreamTextResult struct {
+    // Channel for receiving text chunks
+    Chunks() <-chan types.StreamChunk
+
+    // Close the stream
+    Close() error
+
+    // Read all text (blocks until complete)
+    ReadAll() (string, error)
+
+    // Promises that resolve when stream finishes
+    Text string           // Complete generated text
+    Content []types.ContentPart
+    FinishReason string
+    Usage types.Usage
+    TotalUsage types.Usage
+    ToolCalls []types.ToolCall
+    ToolResults []types.ToolResult
+    Warnings []types.Warning
+    Steps []types.Step
+    Request types.Request
+    Response types.Response
+    ProviderMetadata map[string]interface{}
+    Sources []types.Source
+    Files []types.File
+}
+```
+
+### Channel-Based Streaming
+
+The Go AI SDK uses Go channels for streaming, providing a natural and idiomatic way to handle streaming data:
+
+```go
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story",
+})
+defer result.Close()
+
+// Channel closes automatically when done
+for chunk := range result.Chunks() {
+    if chunk.Error != nil {
+        fmt.Printf("Error: %v\n", chunk.Error)
+        break
+    }
+    fmt.Print(chunk.Text)
+}
+```
+
+### OnError Callback
+
+`StreamText` immediately starts streaming to enable sending data without waiting for the model. Errors become part of the stream and are not returned to prevent servers from crashing.
+
+To log errors, you can provide an `OnError` callback that is triggered when an error occurs:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    OnError: func(err error) {
+        log.Printf("Stream error: %v", err) // Your error logging logic here
+    },
+})
+```
+
+### OnChunk Callback
+
+When using `StreamText`, you can provide an `OnChunk` callback that is triggered for each chunk of the stream.
+
+It receives the following chunk types:
+
+- `text` - Text content
+- `tool-call` - Tool call
+- `tool-result` - Tool result
+- `finish` - Stream finish
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    OnChunk: func(chunk types.StreamChunk) {
+        // Implement your own logic here
+        if chunk.Type == "text" {
+            fmt.Print(chunk.Text)
+        } else if chunk.Type == "tool-call" {
+            fmt.Printf("\n[Tool call: %s]\n", chunk.ToolCall.ToolName)
+        }
+    },
+})
+```
+
+### OnFinish Callback
+
+When using `StreamText`, you can provide an `OnFinish` callback that is triggered when the stream is finished. It contains the text, usage information, finish reason, and more:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+    OnFinish: func(result types.StreamResult) {
+        // Your own logic, e.g. for saving the chat history or recording usage
+        fmt.Printf("\n\nText: %s\n", result.Text)
+        fmt.Printf("Finish reason: %s\n", result.FinishReason)
+        fmt.Printf("Usage: %+v\n", result.Usage)
+        fmt.Printf("Total usage: %+v\n", result.TotalUsage)
+    },
+})
+```
+
+### Accumulating Streamed Text
+
+If you need the complete text after streaming, you can use `ReadAll()`:
+
+```go
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story",
+})
+defer result.Close()
+
+// Option 1: Use ReadAll (blocks until complete)
+fullText, err := result.ReadAll()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(fullText)
+
+// Option 2: Manually accumulate
+var builder strings.Builder
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text) // Display to user
+    builder.WriteString(chunk.Text) // Accumulate
+}
+completeText := builder.String()
+```
+
+### Context Cancellation
+
+Streaming respects context cancellation, allowing you to stop generation early:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+go func() {
+    // Cancel after 5 seconds
+    time.Sleep(5 * time.Second)
+    cancel()
+}()
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a very long story...",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    select {
+    case <-ctx.Done():
+        fmt.Println("\n\nCancelled!")
+        return
+    default:
+        fmt.Print(chunk.Text)
+    }
+}
+```
+
+## Advanced Features
+
+### Multi-Step Generation with Tools
+
+Both `GenerateText` and `StreamText` support multi-step generation with automatic tool execution:
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        location := input["location"].(string)
+        return map[string]interface{}{
+            "temperature": 72,
+            "condition":   "sunny",
+            "location":    location,
+        }, nil
+    },
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "What's the weather in London?",
+    Tools:    []types.Tool{weatherTool},
+    MaxSteps: 5, // Allow up to 5 steps of tool calling
+})
+
+fmt.Println(result.Text)
+// Output: The weather in London is sunny with a temperature of 72°F.
+```
+
+See [Tools and Tool Calling](./04-tools-and-tool-calling.md) for more details.
+
+### Step-by-Step Processing
+
+Access intermediate steps in multi-step generations:
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "What's the weather in Tokyo and Paris?",
+    Tools:    []types.Tool{weatherTool},
+    MaxSteps: 10,
+    OnStepFinish: func(step types.Step) {
+        fmt.Printf("Step %d finished\n", step.StepNumber)
+        for _, toolCall := range step.ToolCalls {
+            fmt.Printf("  Tool: %s\n", toolCall.ToolName)
+        }
+        for _, toolResult := range step.ToolResults {
+            fmt.Printf("  Result: %v\n", toolResult.Output)
+        }
+    },
+})
+
+// Access all steps after completion
+for i, step := range result.Steps {
+    fmt.Printf("Step %d: %d tool calls, %d results\n",
+        i+1, len(step.ToolCalls), len(step.ToolResults))
+}
+```
+
+### Sources
+
+Some providers such as Perplexity and Google Generative AI include sources in the response. These are web pages that ground the response.
+
+You can access them using the `Sources` field of the result:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "List the top 5 San Francisco news from the past week.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, source := range result.Sources {
+    if source.SourceType == "url" {
+        fmt.Printf("ID: %s\n", source.ID)
+        fmt.Printf("Title: %s\n", source.Title)
+        fmt.Printf("URL: %s\n", source.URL)
+        fmt.Println()
+    }
+}
+```
+
+When streaming, sources are available in the chunks:
+
+```go
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Latest news",
+})
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    if chunk.Type == "source" && chunk.Source.SourceType == "url" {
+        fmt.Printf("Source: %s - %s\n", chunk.Source.Title, chunk.Source.URL)
+    }
+}
+```
+
+## Message-Based Generation
+
+For chat applications, use message-based generation:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+messages := []types.Message{
+    {Role: "user", Content: types.TextContent{Text: "Hi!"}},
+    {Role: "assistant", Content: types.TextContent{Text: "Hello! How can I help?"}},
+    {Role: "user", Content: types.TextContent{Text: "Tell me a joke."}},
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
+
+fmt.Println(result.Text)
+```
+
+## Settings
+
+Control generation behavior with various settings:
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:         model,
+    Prompt:        "Generate creative text",
+    Temperature:   0.8,              // Higher = more creative
+    MaxTokens:     500,              // Limit response length
+    TopP:          0.9,              // Nucleus sampling
+    TopK:          40,               // Top-k sampling
+    StopSequences: []string{"\n\n"}, // Stop at double newline
+})
+```
+
+See [Settings](./10-settings.md) for all available options.
+
+## Error Handling
+
+Handle errors appropriately:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, provider.ErrRateLimit) {
+        fmt.Println("Rate limit exceeded, retry later")
+        return
+    }
+    if errors.Is(err, provider.ErrInvalidRequest) {
+        fmt.Println("Invalid request parameters")
+        return
+    }
+    log.Fatal(err)
+}
+```
+
+See [Error Handling](./13-error-handling.md) for comprehensive error handling strategies.
+
+## Best Practices
+
+1. **Use Context**: Always pass context for cancellation and timeouts
+2. **Close Streams**: Use `defer result.Close()` for streaming
+3. **Handle Errors**: Check errors from both function calls and stream chunks
+4. **Choose Wisely**: Use `GenerateText` for short responses, `StreamText` for long ones
+5. **Set Limits**: Use `MaxTokens` to control costs and response length
+6. **Monitor Usage**: Track token usage for cost management
+7. **Cache Results**: Consider caching for repeated queries
+
+## Examples
+
+### Basic Text Generation
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum entanglement in simple terms.",
+})
+fmt.Println(result.Text)
+```
+
+### Streaming with Progress
+
+```go
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long article about AI",
+})
+defer result.Close()
+
+tokenCount := 0
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text)
+    tokenCount += len(strings.Fields(chunk.Text))
+    fmt.Printf("\r[Tokens: ~%d]", tokenCount)
+}
+fmt.Println("\nComplete!")
+```
+
+### Concurrent Generation
+
+```go
+prompts := []string{
+    "Explain photosynthesis",
+    "Explain gravity",
+    "Explain evolution",
+}
+
+var wg sync.WaitGroup
+results := make([]string, len(prompts))
+
+for i, prompt := range prompts {
+    wg.Add(1)
+    go func(idx int, p string) {
+        defer wg.Done()
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: p,
+        })
+        results[idx] = result.Text
+    }(i, prompt)
+}
+
+wg.Wait()
+
+for i, result := range results {
+    fmt.Printf("%d: %s\n\n", i+1, result)
+}
+```
+
+## Next Steps
+
+- Learn about [Generating Structured Data](./03-generating-structured-data.md)
+- Explore [Tools and Tool Calling](./04-tools-and-tool-calling.md)
+- Build [Agents](../03-agents/01-overview.md)
+
+## See Also
+
+- [Prompts](../02-foundations/03-prompts.md)
+- [Streaming](../02-foundations/05-streaming.md)
+- [Settings](./10-settings.md)
+- [Error Handling](./13-error-handling.md)
+- [API Reference: GenerateText](../07-reference/ai/generate-text.md)
+- [API Reference: StreamText](../07-reference/ai/stream-text.md)

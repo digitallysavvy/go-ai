@@ -1,0 +1,403 @@
+---
+title: Streaming
+description: Why use streaming for AI applications?
+---
+
+# Streaming
+
+Streaming conversational text UIs (like ChatGPT) have gained massive popularity over the past few months. This section explores the benefits and drawbacks of streaming and blocking interfaces.
+
+[Large language models (LLMs)](./01-overview.md#large-language-models) are extremely powerful. However, when generating long outputs, they can be very slow compared to the latency you're likely used to. If you try to build a traditional blocking UI, your users might easily find themselves waiting 5, 10, even up to 40 seconds for the entire LLM response to be generated. This can lead to a poor user experience, especially in conversational applications like chatbots. Streaming UIs can help mitigate this issue by **displaying parts of the response as they become available**.
+
+## Blocking vs Streaming
+
+### Blocking Response
+
+With a blocking response, you wait until the full response is available before displaying it:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a detailed essay about artificial intelligence.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// User waits 10-40 seconds...
+fmt.Println(result.Text) // Finally displays all at once
+```
+
+### Streaming Response
+
+With a streaming response, parts of the response are transmitted as they become available:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a detailed essay about artificial intelligence.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+// Display text as it arrives
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text) // Displays immediately
+}
+```
+
+## Real-world Impact
+
+The difference between blocking and streaming can be dramatic:
+
+- **Blocking**: User sees nothing for 30 seconds, then sees the complete response
+- **Streaming**: User starts seeing the response within 1-2 seconds, with continuous updates
+
+While streaming interfaces can greatly enhance user experiences, especially with larger language models, they aren't always necessary or beneficial. If you can achieve your desired functionality using a smaller, faster model without resorting to streaming, this route can often lead to simpler and more manageable development processes.
+
+However, regardless of the speed of your model, the Go AI SDK is designed to make implementing streaming as simple as possible.
+
+## Basic Streaming in Go
+
+The Go AI SDK uses Go channels to provide a natural streaming interface:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a poem about Go programming.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer result.Close()
+
+    // Stream text chunks as they arrive
+    for chunk := range result.Chunks() {
+        fmt.Print(chunk.Text)
+    }
+
+    fmt.Println("\n\nFinish reason:", result.FinishReason)
+}
+```
+
+## Streaming with Callbacks
+
+For more control, you can use callbacks to process each chunk:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum computing.",
+    OnChunk: func(chunk types.StreamChunk) {
+        fmt.Print(chunk.Text)
+
+        // You can also process other chunk data
+        if chunk.Usage != nil {
+            fmt.Printf("[Tokens: %d]", chunk.Usage.TotalTokens)
+        }
+    },
+    OnFinish: func(result types.StreamResult) {
+        fmt.Printf("\n\nTotal tokens: %d\n", result.Usage.TotalTokens)
+        fmt.Printf("Finish reason: %s\n", result.FinishReason)
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+// Still need to consume the channel to trigger callbacks
+for range result.Chunks() {
+}
+```
+
+## Accumulating Streamed Text
+
+If you need the complete text after streaming:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate a story.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+var fullText strings.Builder
+
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text) // Display to user
+    fullText.WriteString(chunk.Text) // Accumulate
+}
+
+// Now you have the full text
+completeStory := fullText.String()
+
+// Or use the built-in ReadAll method
+// fullText, err := result.ReadAll()
+```
+
+## Streaming with Tool Calls
+
+Streaming also works with tool calls. Tool calls are streamed as they're generated:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Tokyo and Paris?",
+    Tools:  []types.Tool{weatherTool},
+    OnChunk: func(chunk types.StreamChunk) {
+        if chunk.Text != "" {
+            fmt.Print(chunk.Text)
+        }
+
+        // Handle tool calls as they arrive
+        for _, toolCall := range chunk.ToolCalls {
+            fmt.Printf("\n[Calling tool: %s]\n", toolCall.ToolName)
+        }
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for range result.Chunks() {
+}
+```
+
+## Cancellation
+
+Streaming respects context cancellation, allowing you to stop generation early:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+go func() {
+    // Cancel after 5 seconds
+    time.Sleep(5 * time.Second)
+    cancel()
+}()
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a very long story...",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    select {
+    case <-ctx.Done():
+        fmt.Println("\n\nCancelled!")
+        return
+    default:
+        fmt.Print(chunk.Text)
+    }
+}
+```
+
+## Streaming Objects
+
+You can also stream structured data:
+
+```go
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+    Model:  model,
+    Prompt: "Generate a recipe for chocolate chip cookies",
+    Schema: recipeSchema,
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    fmt.Printf("Partial object: %s\n", chunk.PartialObject)
+}
+
+// Get final complete object
+finalRecipe := result.Object
+```
+
+## Channel-Based Architecture
+
+The Go AI SDK leverages Go's channel-based concurrency model for streaming:
+
+```go
+// Channels close automatically when done
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+})
+defer result.Close()
+
+// Safe to range over channel - will exit when complete
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text)
+}
+// Channel is closed, loop exits naturally
+```
+
+## Error Handling in Streams
+
+Handle errors during streaming:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    if chunk.Error != nil {
+        fmt.Printf("Error during streaming: %v\n", chunk.Error)
+        break
+    }
+    fmt.Print(chunk.Text)
+}
+
+// Check for final error
+if err := result.Error(); err != nil {
+    log.Printf("Stream ended with error: %v", err)
+}
+```
+
+## Concurrent Streaming
+
+Stream from multiple models concurrently:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+)
+
+func streamFromModel(ctx context.Context, model LanguageModel, prompt string, wg *sync.WaitGroup) {
+    defer wg.Done()
+
+    result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+        return
+    }
+    defer result.Close()
+
+    for chunk := range result.Chunks() {
+        fmt.Printf("[%s]: %s", model.ModelID(), chunk.Text)
+    }
+}
+
+func main() {
+    ctx := context.Background()
+    var wg sync.WaitGroup
+
+    // Stream from GPT-4 and Claude simultaneously
+    wg.Add(2)
+    go streamFromModel(ctx, gpt4Model, "What is AI?", &wg)
+    go streamFromModel(ctx, claudeModel, "What is AI?", &wg)
+
+    wg.Wait()
+}
+```
+
+## Backpressure Handling
+
+Go's channels naturally handle backpressure. If your consumer is slow, the producer will wait:
+
+```go
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    fmt.Print(chunk.Text)
+
+    // Slow consumer - producer will wait
+    time.Sleep(100 * time.Millisecond)
+}
+```
+
+## When to Use Streaming
+
+**Use streaming when:**
+- Generating long-form content (essays, stories, reports)
+- Building interactive chat applications
+- User experience is critical
+- You need to show progress
+- Working with slower models
+
+**Use blocking when:**
+- Generating short responses
+- Batch processing
+- You need the complete response before proceeding
+- Building APIs that return complete responses
+- Working with fast models
+
+## Performance Considerations
+
+Streaming adds minimal overhead:
+
+```go
+// Blocking: Simple, slightly lower overhead
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Short response",
+})
+
+// Streaming: Slightly more overhead, better UX
+result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Short response",
+})
+```
+
+For short responses (< 100 tokens), the overhead is negligible. For long responses (> 1000 tokens), streaming significantly improves perceived latency.
+
+## Next Steps
+
+- Start with [Generating Text](../03-ai-sdk-core/02-generating-text.md)
+- Learn about [Advanced Streaming](../06-advanced/04-backpressure.md)
+- Explore [Stream Helpers](../07-reference/ai/stream-text.md)
+
+## See Also
+
+- [Core API Overview](../03-ai-sdk-core/01-overview.md)
+- [Generating Structured Data](../03-ai-sdk-core/03-generating-structured-data.md)
+- [Backpressure Handling](../06-advanced/04-backpressure.md)

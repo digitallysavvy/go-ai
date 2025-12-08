@@ -1,0 +1,1110 @@
+---
+title: Workflow Patterns
+description: Learn workflow patterns for building reliable agents with the Go AI SDK.
+---
+
+# Workflow Patterns
+
+Combine the building blocks from the [overview](./01-overview.mdx) with these patterns to add structure and reliability to your agents:
+
+- [Sequential Processing](#sequential-processing-chains) - Steps executed in order
+- [Parallel Processing](#parallel-processing) - Independent tasks run simultaneously
+- [Evaluation/Feedback Loops](#evaluator-optimizer) - Results checked and improved iteratively
+- [Orchestration](#orchestrator-worker) - Coordinating multiple components
+- [Routing](#routing) - Directing work based on context
+
+## Choose Your Approach
+
+Consider these key factors:
+
+- **Flexibility vs Control** - How much freedom does the LLM need vs how tightly you must constrain its actions?
+- **Error Tolerance** - What are the consequences of mistakes in your use case?
+- **Cost Considerations** - More complex systems typically mean more LLM calls and higher costs
+- **Maintenance** - Simpler architectures are easier to debug and modify
+
+**Start with the simplest approach that meets your needs**. Add complexity only when required by:
+
+1. Breaking down tasks into clear steps
+2. Adding tools for specific capabilities
+3. Implementing feedback loops for quality control
+4. Introducing multiple agents for complex workflows
+
+Let's look at examples of these patterns in action.
+
+## Patterns with Examples
+
+These patterns, adapted from [Anthropic's guide on building effective agents](https://www.anthropic.com/research/building-effective-agents), serve as building blocks you can combine to create comprehensive workflows. Each pattern addresses specific aspects of task execution. Combine them thoughtfully to build reliable solutions for complex problems.
+
+## Sequential Processing (Chains)
+
+The simplest workflow pattern executes steps in a predefined order. Each step's output becomes input for the next step, creating a clear chain of operations. Use this pattern for tasks with well-defined sequences, like content generation pipelines or data transformation processes.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type QualityMetrics struct {
+    HasCallToAction  bool    `json:"hasCallToAction"`
+    EmotionalAppeal  float64 `json:"emotionalAppeal"`
+    Clarity          float64 `json:"clarity"`
+}
+
+func generateMarketingCopy(ctx context.Context, input string) (string, QualityMetrics, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Step 1: Generate marketing copy
+    copyResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: fmt.Sprintf("Write persuasive marketing copy for: %s. Focus on benefits and emotional appeal.", input),
+    })
+    if err != nil {
+        return "", QualityMetrics{}, err
+    }
+    copy := copyResult.Text
+
+    // Step 2: Perform quality check on copy
+    qualityResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model: model,
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "hasCallToAction": map[string]interface{}{
+                    "type":        "boolean",
+                    "description": "Whether the copy has a clear call to action",
+                },
+                "emotionalAppeal": map[string]interface{}{
+                    "type":        "number",
+                    "description": "Emotional appeal rating from 1-10",
+                    "minimum":     1,
+                    "maximum":     10,
+                },
+                "clarity": map[string]interface{}{
+                    "type":        "number",
+                    "description": "Clarity rating from 1-10",
+                    "minimum":     1,
+                    "maximum":     10,
+                },
+            },
+            "required": []string{"hasCallToAction", "emotionalAppeal", "clarity"},
+        },
+        Prompt: fmt.Sprintf(`Evaluate this marketing copy for:
+1. Presence of call to action (true/false)
+2. Emotional appeal (1-10)
+3. Clarity (1-10)
+
+Copy to evaluate: %s`, copy),
+    })
+    if err != nil {
+        return "", QualityMetrics{}, err
+    }
+
+    var metrics QualityMetrics
+    if err := qualityResult.Object.Unmarshal(&metrics); err != nil {
+        return "", QualityMetrics{}, err
+    }
+
+    // Step 3: If quality check fails, regenerate with more specific instructions
+    if !metrics.HasCallToAction || metrics.EmotionalAppeal < 7 || metrics.Clarity < 7 {
+        improvements := ""
+        if !metrics.HasCallToAction {
+            improvements += "- A clear call to action\n"
+        }
+        if metrics.EmotionalAppeal < 7 {
+            improvements += "- Stronger emotional appeal\n"
+        }
+        if metrics.Clarity < 7 {
+            improvements += "- Improved clarity and directness\n"
+        }
+
+        improvedResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model: model,
+            Prompt: fmt.Sprintf(`Rewrite this marketing copy with:
+%s
+Original copy: %s`, improvements, copy),
+        })
+        if err != nil {
+            return "", QualityMetrics{}, err
+        }
+        return improvedResult.Text, metrics, nil
+    }
+
+    return copy, metrics, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    copy, metrics, err := generateMarketingCopy(ctx, "Revolutionary new AI-powered productivity app")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Final Copy:", copy)
+    fmt.Printf("Quality Metrics: CTA=%v, Emotional=%v, Clarity=%v\n",
+        metrics.HasCallToAction, metrics.EmotionalAppeal, metrics.Clarity)
+}
+```
+
+## Routing
+
+This pattern lets the model decide which path to take through a workflow based on context and intermediate results. The model acts as an intelligent router, directing the flow of execution between different branches of your workflow. Use this when handling varied inputs that require different processing approaches. In the example below, the first LLM call's results determine the second call's model size and system prompt.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type Classification struct {
+    Reasoning  string `json:"reasoning"`
+    Type       string `json:"type"`       // "general", "refund", or "technical"
+    Complexity string `json:"complexity"` // "simple" or "complex"
+}
+
+func handleCustomerQuery(ctx context.Context, query string) (string, Classification, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Step 1: Classify the query type
+    classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model: model,
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "reasoning": map[string]interface{}{
+                    "type":        "string",
+                    "description": "Brief reasoning for classification",
+                },
+                "type": map[string]interface{}{
+                    "type":        "string",
+                    "enum":        []string{"general", "refund", "technical"},
+                    "description": "The type of customer query",
+                },
+                "complexity": map[string]interface{}{
+                    "type":        "string",
+                    "enum":        []string{"simple", "complex"},
+                    "description": "The complexity level of the query",
+                },
+            },
+            "required": []string{"reasoning", "type", "complexity"},
+        },
+        Prompt: fmt.Sprintf(`Classify this customer query:
+%s
+
+Determine:
+1. Query type (general, refund, or technical)
+2. Complexity (simple or complex)
+3. Brief reasoning for classification`, query),
+    })
+    if err != nil {
+        return "", Classification{}, err
+    }
+
+    var classification Classification
+    if err := classificationResult.Object.Unmarshal(&classification); err != nil {
+        return "", Classification{}, err
+    }
+
+    // Step 2: Route based on classification
+    // Set model based on complexity
+    var responseModel string
+    if classification.Complexity == "simple" {
+        responseModel = "gpt-4o-mini"
+    } else {
+        responseModel = "o4-mini"
+    }
+
+    // Set system prompt based on query type
+    systemPrompts := map[string]string{
+        "general":   "You are an expert customer service agent handling general inquiries.",
+        "refund":    "You are a customer service agent specializing in refund requests. Follow company policy and collect necessary information.",
+        "technical": "You are a technical support specialist with deep product knowledge. Focus on clear step-by-step troubleshooting.",
+    }
+
+    routedModel, _ := provider.LanguageModel(responseModel)
+    responseResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  routedModel,
+        System: systemPrompts[classification.Type],
+        Prompt: query,
+    })
+    if err != nil {
+        return "", Classification{}, err
+    }
+
+    return responseResult.Text, classification, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    query := "I need help resetting my password and it's not working"
+
+    response, classification, err := handleCustomerQuery(ctx, query)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Classification: %s (%s)\n", classification.Type, classification.Complexity)
+    fmt.Printf("Reasoning: %s\n", classification.Reasoning)
+    fmt.Printf("\nResponse:\n%s\n", response)
+}
+```
+
+## Parallel Processing
+
+Break down tasks into independent subtasks that execute simultaneously. This pattern uses parallel execution to improve efficiency while maintaining the benefits of structured workflows. For example, analyze multiple documents or process different aspects of a single input concurrently (like code review).
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type SecurityReview struct {
+    Vulnerabilities []string `json:"vulnerabilities"`
+    RiskLevel       string   `json:"riskLevel"` // "low", "medium", or "high"
+    Suggestions     []string `json:"suggestions"`
+}
+
+type PerformanceReview struct {
+    Issues        []string `json:"issues"`
+    Impact        string   `json:"impact"` // "low", "medium", or "high"
+    Optimizations []string `json:"optimizations"`
+}
+
+type MaintainabilityReview struct {
+    Concerns        []string `json:"concerns"`
+    QualityScore    float64  `json:"qualityScore"` // 1-10
+    Recommendations []string `json:"recommendations"`
+}
+
+func parallelCodeReview(ctx context.Context, code string) (string, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Run parallel reviews using goroutines
+    var wg sync.WaitGroup
+    var securityReview SecurityReview
+    var performanceReview PerformanceReview
+    var maintainabilityReview MaintainabilityReview
+    errChan := make(chan error, 3)
+
+    // Security review
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+            Model:  model,
+            System: "You are an expert in code security. Focus on identifying security vulnerabilities, injection risks, and authentication issues.",
+            Schema: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "vulnerabilities": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                    "riskLevel": map[string]interface{}{
+                        "type": "string",
+                        "enum": []string{"low", "medium", "high"},
+                    },
+                    "suggestions": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                },
+                "required": []string{"vulnerabilities", "riskLevel", "suggestions"},
+            },
+            Prompt: fmt.Sprintf("Review this code:\n%s", code),
+        })
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := result.Object.Unmarshal(&securityReview); err != nil {
+            errChan <- err
+        }
+    }()
+
+    // Performance review
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+            Model:  model,
+            System: "You are an expert in code performance. Focus on identifying performance bottlenecks, memory leaks, and optimization opportunities.",
+            Schema: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "issues": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                    "impact": map[string]interface{}{
+                        "type": "string",
+                        "enum": []string{"low", "medium", "high"},
+                    },
+                    "optimizations": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                },
+                "required": []string{"issues", "impact", "optimizations"},
+            },
+            Prompt: fmt.Sprintf("Review this code:\n%s", code),
+        })
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := result.Object.Unmarshal(&performanceReview); err != nil {
+            errChan <- err
+        }
+    }()
+
+    // Maintainability review
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+            Model:  model,
+            System: "You are an expert in code quality. Focus on code structure, readability, and adherence to best practices.",
+            Schema: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "concerns": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                    "qualityScore": map[string]interface{}{
+                        "type":    "number",
+                        "minimum": 1,
+                        "maximum": 10,
+                    },
+                    "recommendations": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                },
+                "required": []string{"concerns", "qualityScore", "recommendations"},
+            },
+            Prompt: fmt.Sprintf("Review this code:\n%s", code),
+        })
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := result.Object.Unmarshal(&maintainabilityReview); err != nil {
+            errChan <- err
+        }
+    }()
+
+    // Wait for all reviews to complete
+    wg.Wait()
+    close(errChan)
+
+    // Check for errors
+    for err := range errChan {
+        if err != nil {
+            return "", err
+        }
+    }
+
+    // Aggregate results
+    reviews := fmt.Sprintf(`Security Review:
+- Risk Level: %s
+- Vulnerabilities: %v
+- Suggestions: %v
+
+Performance Review:
+- Impact: %s
+- Issues: %v
+- Optimizations: %v
+
+Maintainability Review:
+- Quality Score: %.1f/10
+- Concerns: %v
+- Recommendations: %v`,
+        securityReview.RiskLevel, securityReview.Vulnerabilities, securityReview.Suggestions,
+        performanceReview.Impact, performanceReview.Issues, performanceReview.Optimizations,
+        maintainabilityReview.QualityScore, maintainabilityReview.Concerns, maintainabilityReview.Recommendations)
+
+    // Generate summary
+    summaryResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        System: "You are a technical lead summarizing multiple code reviews.",
+        Prompt: fmt.Sprintf("Synthesize these code review results into a concise summary with key actions:\n%s", reviews),
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return summaryResult.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    code := `
+func processPayment(amount float64, cardNumber string) error {
+    query := fmt.Sprintf("SELECT * FROM payments WHERE card='%s'", cardNumber)
+    db.Exec(query)
+    return nil
+}
+`
+
+    summary, err := parallelCodeReview(ctx, code)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("=== Code Review Summary ===")
+    fmt.Println(summary)
+}
+```
+
+## Orchestrator-Worker
+
+A primary model (orchestrator) coordinates the execution of specialized workers. Each worker optimizes for a specific subtask, while the orchestrator maintains overall context and ensures coherent results. This pattern excels at complex tasks requiring different types of expertise or processing.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type FileChange struct {
+    Purpose    string `json:"purpose"`
+    FilePath   string `json:"filePath"`
+    ChangeType string `json:"changeType"` // "create", "modify", or "delete"
+}
+
+type ImplementationPlan struct {
+    Files               []FileChange `json:"files"`
+    EstimatedComplexity string       `json:"estimatedComplexity"` // "low", "medium", or "high"
+}
+
+type CodeImplementation struct {
+    Explanation string `json:"explanation"`
+    Code        string `json:"code"`
+}
+
+type FileImplementation struct {
+    File           FileChange
+    Implementation CodeImplementation
+}
+
+func implementFeature(ctx context.Context, featureRequest string) (ImplementationPlan, []FileImplementation, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Orchestrator: Plan the implementation
+    planResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        System: "You are a senior software architect planning feature implementations.",
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "files": map[string]interface{}{
+                    "type": "array",
+                    "items": map[string]interface{}{
+                        "type": "object",
+                        "properties": map[string]interface{}{
+                            "purpose": map[string]interface{}{
+                                "type":        "string",
+                                "description": "The purpose of this file change",
+                            },
+                            "filePath": map[string]interface{}{
+                                "type":        "string",
+                                "description": "Path to the file",
+                            },
+                            "changeType": map[string]interface{}{
+                                "type": "string",
+                                "enum": []string{"create", "modify", "delete"},
+                            },
+                        },
+                        "required": []string{"purpose", "filePath", "changeType"},
+                    },
+                },
+                "estimatedComplexity": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"low", "medium", "high"},
+                },
+            },
+            "required": []string{"files", "estimatedComplexity"},
+        },
+        Prompt: fmt.Sprintf("Analyze this feature request and create an implementation plan:\n%s", featureRequest),
+    })
+    if err != nil {
+        return ImplementationPlan{}, nil, err
+    }
+
+    var plan ImplementationPlan
+    if err := planResult.Object.Unmarshal(&plan); err != nil {
+        return ImplementationPlan{}, nil, err
+    }
+
+    fmt.Printf("Plan created: %d files to change (Complexity: %s)\n", len(plan.Files), plan.EstimatedComplexity)
+
+    // Workers: Execute the planned changes in parallel
+    var wg sync.WaitGroup
+    fileChanges := make([]FileImplementation, len(plan.Files))
+    errChan := make(chan error, len(plan.Files))
+
+    for i, file := range plan.Files {
+        wg.Add(1)
+        go func(idx int, f FileChange) {
+            defer wg.Done()
+
+            // Each worker is specialized for the type of change
+            systemPrompts := map[string]string{
+                "create": "You are an expert at implementing new files following best practices and project patterns.",
+                "modify": "You are an expert at modifying existing code while maintaining consistency and avoiding regressions.",
+                "delete": "You are an expert at safely removing code while ensuring no breaking changes.",
+            }
+
+            changeResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+                Model:  model,
+                System: systemPrompts[f.ChangeType],
+                Schema: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "explanation": map[string]interface{}{
+                            "type":        "string",
+                            "description": "Explanation of the changes",
+                        },
+                        "code": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The implementation code",
+                        },
+                    },
+                    "required": []string{"explanation", "code"},
+                },
+                Prompt: fmt.Sprintf(`Implement the changes for %s to support:
+%s
+
+Consider the overall feature context:
+%s`, f.FilePath, f.Purpose, featureRequest),
+            })
+            if err != nil {
+                errChan <- err
+                return
+            }
+
+            var impl CodeImplementation
+            if err := changeResult.Object.Unmarshal(&impl); err != nil {
+                errChan <- err
+                return
+            }
+
+            fileChanges[idx] = FileImplementation{
+                File:           f,
+                Implementation: impl,
+            }
+
+            fmt.Printf("✓ Completed %s: %s\n", f.ChangeType, f.FilePath)
+        }(i, file)
+    }
+
+    wg.Wait()
+    close(errChan)
+
+    // Check for errors
+    for err := range errChan {
+        if err != nil {
+            return ImplementationPlan{}, nil, err
+        }
+    }
+
+    return plan, fileChanges, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    featureRequest := "Add user authentication with JWT tokens, including login, logout, and token refresh endpoints"
+
+    plan, changes, err := implementFeature(ctx, featureRequest)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("\n=== Implementation Plan ===\n")
+    fmt.Printf("Complexity: %s\n", plan.EstimatedComplexity)
+    fmt.Printf("Files to change: %d\n\n", len(changes))
+
+    for _, change := range changes {
+        fmt.Printf("=== %s: %s ===\n", change.File.ChangeType, change.File.FilePath)
+        fmt.Printf("Purpose: %s\n", change.File.Purpose)
+        fmt.Printf("Explanation: %s\n", change.Implementation.Explanation)
+        fmt.Printf("Code:\n%s\n\n", change.Implementation.Code)
+    }
+}
+```
+
+## Evaluator-Optimizer
+
+Add quality control to workflows with dedicated evaluation steps that assess intermediate results. Based on the evaluation, the workflow proceeds, retries with adjusted parameters, or takes corrective action. This creates robust workflows capable of self-improvement and error recovery.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type TranslationEvaluation struct {
+    QualityScore           float64  `json:"qualityScore"` // 1-10
+    PreservesTone          bool     `json:"preservesTone"`
+    PreservesNuance        bool     `json:"preservesNuance"`
+    CulturallyAccurate     bool     `json:"culturallyAccurate"`
+    SpecificIssues         []string `json:"specificIssues"`
+    ImprovementSuggestions []string `json:"improvementSuggestions"`
+}
+
+func translateWithFeedback(ctx context.Context, text, targetLanguage string) (string, int, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    const maxIterations = 3
+    iterations := 0
+
+    // Initial translation
+    translationResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        System: "You are an expert literary translator.",
+        Prompt: fmt.Sprintf("Translate this text to %s, preserving tone and cultural nuances:\n%s", targetLanguage, text),
+    })
+    if err != nil {
+        return "", 0, err
+    }
+    currentTranslation := translationResult.Text
+
+    // Evaluation-optimization loop
+    for iterations < maxIterations {
+        fmt.Printf("Iteration %d: Evaluating translation...\n", iterations+1)
+
+        // Evaluate current translation
+        evalResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+            Model:  model,
+            System: "You are an expert in evaluating literary translations.",
+            Schema: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "qualityScore": map[string]interface{}{
+                        "type":        "number",
+                        "minimum":     1,
+                        "maximum":     10,
+                        "description": "Overall quality score",
+                    },
+                    "preservesTone": map[string]interface{}{
+                        "type":        "boolean",
+                        "description": "Whether the translation preserves the original tone",
+                    },
+                    "preservesNuance": map[string]interface{}{
+                        "type":        "boolean",
+                        "description": "Whether the translation preserves subtle nuances",
+                    },
+                    "culturallyAccurate": map[string]interface{}{
+                        "type":        "boolean",
+                        "description": "Whether the translation is culturally accurate",
+                    },
+                    "specificIssues": map[string]interface{}{
+                        "type":        "array",
+                        "items":       map[string]string{"type": "string"},
+                        "description": "Specific issues found in the translation",
+                    },
+                    "improvementSuggestions": map[string]interface{}{
+                        "type":        "array",
+                        "items":       map[string]string{"type": "string"},
+                        "description": "Suggestions for improving the translation",
+                    },
+                },
+                "required": []string{"qualityScore", "preservesTone", "preservesNuance", "culturallyAccurate", "specificIssues", "improvementSuggestions"},
+            },
+            Prompt: fmt.Sprintf(`Evaluate this translation:
+
+Original: %s
+Translation: %s
+
+Consider:
+1. Overall quality
+2. Preservation of tone
+3. Preservation of nuance
+4. Cultural accuracy`, text, currentTranslation),
+        })
+        if err != nil {
+            return "", 0, err
+        }
+
+        var evaluation TranslationEvaluation
+        if err := evalResult.Object.Unmarshal(&evaluation); err != nil {
+            return "", 0, err
+        }
+
+        fmt.Printf("Quality Score: %.1f/10\n", evaluation.QualityScore)
+
+        // Check if quality meets threshold
+        if evaluation.QualityScore >= 8 &&
+            evaluation.PreservesTone &&
+            evaluation.PreservesNuance &&
+            evaluation.CulturallyAccurate {
+            fmt.Println("Translation meets quality standards!")
+            break
+        }
+
+        // Generate feedback for improvement
+        feedback := ""
+        for _, issue := range evaluation.SpecificIssues {
+            feedback += fmt.Sprintf("- Issue: %s\n", issue)
+        }
+        for _, suggestion := range evaluation.ImprovementSuggestions {
+            feedback += fmt.Sprintf("- Suggestion: %s\n", suggestion)
+        }
+
+        fmt.Printf("Issues found, improving translation...\n%s\n", feedback)
+
+        // Generate improved translation based on feedback
+        improvedResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are an expert literary translator.",
+            Prompt: fmt.Sprintf(`Improve this translation based on the following feedback:
+%s
+
+Original: %s
+Current Translation: %s`, feedback, text, currentTranslation),
+        })
+        if err != nil {
+            return "", 0, err
+        }
+
+        currentTranslation = improvedResult.Text
+        iterations++
+    }
+
+    return currentTranslation, iterations, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    text := "The ancient temple stood silently, a testament to forgotten wisdom and the passage of time."
+    targetLanguage := "Japanese"
+
+    translation, iterations, err := translateWithFeedback(ctx, text, targetLanguage)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("\n=== Final Translation ===\n")
+    fmt.Printf("Original: %s\n", text)
+    fmt.Printf("Translation: %s\n", translation)
+    fmt.Printf("Iterations required: %d\n", iterations)
+}
+```
+
+## Combining Patterns
+
+Real-world applications often combine multiple patterns. Here's an example that uses routing, parallel processing, and sequential steps:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type TaskType struct {
+    Type       string `json:"type"`       // "research", "code", or "content"
+    Complexity string `json:"complexity"` // "simple" or "complex"
+}
+
+func intelligentTaskProcessor(ctx context.Context, task string) (string, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Step 1: Route - Classify the task
+    classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model: model,
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "type": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"research", "code", "content"},
+                },
+                "complexity": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"simple", "complex"},
+                },
+            },
+            "required": []string{"type", "complexity"},
+        },
+        Prompt: fmt.Sprintf("Classify this task:\n%s", task),
+    })
+    if err != nil {
+        return "", err
+    }
+
+    var taskType TaskType
+    if err := classificationResult.Object.Unmarshal(&taskType); err != nil {
+        return "", err
+    }
+
+    fmt.Printf("Task classified as: %s (%s)\n", taskType.Type, taskType.Complexity)
+
+    // Step 2: Parallel - Process based on type
+    var result string
+    switch taskType.Type {
+    case "research":
+        // Parallel research from multiple angles
+        var wg sync.WaitGroup
+        results := make([]string, 3)
+        errChan := make(chan error, 3)
+
+        angles := []string{"technical", "business", "user"}
+        for i, angle := range angles {
+            wg.Add(1)
+            go func(idx int, perspective string) {
+                defer wg.Done()
+                r, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                    Model:  model,
+                    System: fmt.Sprintf("You are a %s expert.", perspective),
+                    Prompt: fmt.Sprintf("Research this from a %s perspective:\n%s", perspective, task),
+                })
+                if err != nil {
+                    errChan <- err
+                    return
+                }
+                results[idx] = r.Text
+            }(i, angle)
+        }
+        wg.Wait()
+        close(errChan)
+
+        for err := range errChan {
+            if err != nil {
+                return "", err
+            }
+        }
+
+        // Synthesize
+        synthResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: fmt.Sprintf("Synthesize these research findings:\n%s\n%s\n%s", results[0], results[1], results[2]),
+        })
+        if err != nil {
+            return "", err
+        }
+        result = synthResult.Text
+
+    case "code":
+        // Sequential code generation and review
+        codeResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are an expert programmer.",
+            Prompt: fmt.Sprintf("Implement this:\n%s", task),
+        })
+        if err != nil {
+            return "", err
+        }
+
+        reviewResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are a code reviewer.",
+            Prompt: fmt.Sprintf("Review this code and suggest improvements:\n%s", codeResult.Text),
+        })
+        if err != nil {
+            return "", err
+        }
+        result = fmt.Sprintf("Code:\n%s\n\nReview:\n%s", codeResult.Text, reviewResult.Text)
+
+    case "content":
+        // Sequential content creation with quality check
+        contentResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are a professional content writer.",
+            Prompt: task,
+        })
+        if err != nil {
+            return "", err
+        }
+        result = contentResult.Text
+    }
+
+    return result, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    tasks := []string{
+        "Research the impact of quantum computing on cryptography",
+        "Write a function to validate email addresses in Go",
+        "Create engaging social media content for a new productivity app",
+    }
+
+    for _, task := range tasks {
+        fmt.Printf("\n=== Processing Task ===\n%s\n\n", task)
+        result, err := intelligentTaskProcessor(ctx, task)
+        if err != nil {
+            log.Printf("Error processing task: %v", err)
+            continue
+        }
+        fmt.Printf("Result:\n%s\n", result)
+    }
+}
+```
+
+## Best Practices
+
+### 1. Start Simple
+
+Begin with the simplest pattern that solves your problem:
+
+```go
+// Good - Simple sequential for straightforward tasks
+func processDocument(ctx context.Context, doc string) (string, error) {
+    summary, err := generateSummary(ctx, doc)
+    if err != nil {
+        return "", err
+    }
+    return enhanceSummary(ctx, summary)
+}
+```
+
+### 2. Use Parallel Processing for Independent Tasks
+
+Run independent operations concurrently:
+
+```go
+// Good - Parallel for independent analyses
+var wg sync.WaitGroup
+results := make([]string, 3)
+
+for i, task := range independentTasks {
+    wg.Add(1)
+    go func(idx int, t string) {
+        defer wg.Done()
+        results[idx], _ = processTask(ctx, t)
+    }(i, task)
+}
+wg.Wait()
+```
+
+### 3. Add Error Handling
+
+Always handle errors properly in workflows:
+
+```go
+// Good - Proper error handling with context
+errChan := make(chan error, len(tasks))
+for _, task := range tasks {
+    go func(t string) {
+        if err := process(ctx, t); err != nil {
+            errChan <- err
+        }
+    }(task)
+}
+
+for err := range errChan {
+    if err != nil {
+        return fmt.Errorf("workflow failed: %w", err)
+    }
+}
+```
+
+### 4. Use Context for Cancellation
+
+Respect context cancellation in all steps:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
+
+// All operations respect this context
+result, err := multiStepWorkflow(ctx, input)
+```
+
+### 5. Monitor and Debug
+
+Add logging for complex workflows:
+
+```go
+func processWithLogging(ctx context.Context, input string) (string, error) {
+    log.Printf("Starting workflow for input: %s", input)
+
+    result, err := step1(ctx, input)
+    if err != nil {
+        log.Printf("Step 1 failed: %v", err)
+        return "", err
+    }
+    log.Printf("Step 1 completed")
+
+    // Continue with more steps...
+    return result, nil
+}
+```
+
+## Next Steps
+
+- Learn about [loop control](./04-loop-control.mdx) for advanced agent execution control
+- See [configuring call options](./05-configuring-call-options.mdx) for fine-tuning agent behavior
+- Explore [error handling](../03-ai-sdk-core/50-error-handling.mdx) for robust workflows

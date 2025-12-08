@@ -1,0 +1,441 @@
+---
+title: Image Generation
+description: Learn how to generate images with the Go AI SDK.
+---
+
+# Image Generation
+
+The Go AI SDK provides the [`ai.GenerateImage()`](../07-reference/ai/generate-image.md) function to generate images based on a given prompt using an image model.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    imageModel, _ := provider.ImageModel("dall-e-3")
+
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  imageModel,
+        Prompt: "Santa Claus driving a Cadillac",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Access image data
+    fmt.Printf("Image format: %s\n", result.Image.Format)
+    fmt.Printf("Image size: %d bytes\n", len(result.Image.Data))
+
+    // Save image to file
+    err = os.WriteFile("generated.png", result.Image.Data, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Image saved to generated.png")
+}
+```
+
+You can access the image data in different formats:
+
+```go
+// As bytes
+imageBytes := result.Image.Data
+
+// As base64 string
+base64String := result.Image.Base64
+
+// Get image format (png, jpeg, etc.)
+format := result.Image.Format
+```
+
+## Settings
+
+### Size and Aspect Ratio
+
+Depending on the model, you can specify either the size or the aspect ratio.
+
+#### Size
+
+The size is specified as a string in the format `{width}x{height}`. Models only support specific sizes, and the supported sizes vary by model and provider.
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    Size:   "1024x1024",
+})
+```
+
+#### Aspect Ratio
+
+The aspect ratio is specified as a string in the format `{width}:{height}`. Models only support specific aspect ratios, which vary by model and provider.
+
+```go
+provider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+imageModel, _ := provider.ImageModel("imagen-3.0-generate-002")
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:       imageModel,
+    Prompt:      "Santa Claus driving a Cadillac",
+    AspectRatio: "16:9",
+})
+```
+
+### Generating Multiple Images
+
+`GenerateImage` supports generating multiple images at once:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    N:      4, // Number of images to generate
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Access all images
+for i, image := range result.Images {
+    filename := fmt.Sprintf("image-%d.png", i+1)
+    err := os.WriteFile(filename, image.Data, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Saved %s\n", filename)
+}
+```
+
+> **Note:** `GenerateImage` will automatically batch requests as needed to generate the requested number of images.
+
+Each image model has an internal limit on how many images it can generate in a single API call. The SDK manages this automatically by batching requests appropriately. By default, the SDK uses provider-documented limits (e.g., DALL-E 3 can only generate 1 image per call, while DALL-E 2 supports up to 10).
+
+You can override this behavior using `MaxImagesPerCall`:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:             imageModel,
+    Prompt:            "Santa Claus driving a Cadillac",
+    MaxImagesPerCall:  5,  // Override default batch size
+    N:                 10, // Will make 2 calls of 5 images each
+})
+```
+
+### Providing a Seed
+
+You can provide a seed to control the output of the image generation process. If supported by the model, the same seed will always produce the same image.
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    Seed:   1234567890,
+})
+```
+
+### Provider-Specific Settings
+
+Image models often have provider- or model-specific settings. You can pass such settings using the `ProviderOptions` parameter:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    Size:   "1024x1024",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "style":   "vivid",
+            "quality": "hd",
+        },
+    },
+})
+```
+
+### Timeouts with Context
+
+Use Go's context for timeouts and cancellation:
+
+```go
+// Timeout after 60 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+defer cancel()
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Image generation timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+### Custom Headers
+
+Add custom headers to the image generation request:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    Headers: map[string]string{
+        "X-Custom-Header": "custom-value",
+    },
+})
+```
+
+### Warnings
+
+If the model returns warnings, they will be available in the `Warnings` field:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, warning := range result.Warnings {
+    fmt.Printf("Warning: %s\n", warning.Message)
+}
+```
+
+### Additional Provider Metadata
+
+Some providers expose additional metadata for the result:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Access provider-specific metadata
+if metadata, ok := result.ProviderMetadata["openai"].(map[string]interface{}); ok {
+    if images, ok := metadata["images"].([]interface{}); ok && len(images) > 0 {
+        if imageMetadata, ok := images[0].(map[string]interface{}); ok {
+            if revisedPrompt, ok := imageMetadata["revisedPrompt"].(string); ok {
+                fmt.Printf("Original prompt: %s\n", "Santa Claus driving a Cadillac")
+                fmt.Printf("Revised prompt: %s\n", revisedPrompt)
+            }
+        }
+    }
+}
+```
+
+## Error Handling
+
+Handle image generation errors:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Generate an image",
+})
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, provider.ErrNoImageGenerated) {
+        fmt.Println("No image was generated")
+    } else if errors.Is(err, provider.ErrRateLimit) {
+        fmt.Println("Rate limit exceeded")
+    } else {
+        fmt.Printf("Error: %v\n", err)
+    }
+    return
+}
+```
+
+## Practical Examples
+
+### Saving Images in Different Formats
+
+```go
+func saveImage(image ai.Image, filename string) error {
+    // Determine file extension from image format
+    ext := image.Format
+    if ext == "" {
+        ext = "png" // default
+    }
+
+    fullPath := fmt.Sprintf("%s.%s", filename, ext)
+    return os.WriteFile(fullPath, image.Data, 0644)
+}
+
+result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "Beautiful sunset",
+})
+
+saveImage(result.Image, "sunset")
+```
+
+### Generating Image Variations
+
+Generate multiple variations of the same prompt:
+
+```go
+func generateVariations(ctx context.Context, model ai.ImageModel, prompt string, count int) ([]ai.Image, error) {
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: prompt,
+        N:      count,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return result.Images, nil
+}
+
+images, _ := generateVariations(ctx, imageModel, "Abstract art with vibrant colors", 4)
+
+for i, img := range images {
+    os.WriteFile(fmt.Sprintf("variation-%d.png", i+1), img.Data, 0644)
+}
+```
+
+### Batch Image Generation
+
+Generate multiple different images:
+
+```go
+prompts := []string{
+    "A serene mountain landscape",
+    "A bustling city street at night",
+    "An underwater coral reef",
+    "A cozy coffee shop interior",
+}
+
+for i, prompt := range prompts {
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  imageModel,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Printf("Error generating image %d: %v\n", i+1, err)
+        continue
+    }
+
+    filename := fmt.Sprintf("batch-%d.png", i+1)
+    os.WriteFile(filename, result.Image.Data, 0644)
+    fmt.Printf("Generated %s: %s\n", filename, prompt)
+}
+```
+
+### Image Generation with Retry Logic
+
+```go
+func generateImageWithRetry(ctx context.Context, model ai.ImageModel, prompt string, maxRetries int) (*ai.GenerateImageResult, error) {
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            fmt.Printf("Retry attempt %d/%d\n", attempt, maxRetries)
+            time.Sleep(time.Duration(attempt) * time.Second)
+        }
+
+        result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+
+        if err == nil {
+            return result, nil
+        }
+
+        lastErr = err
+
+        // Don't retry on certain errors
+        if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+            break
+        }
+    }
+
+    return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+```
+
+## Image Models
+
+Several providers offer image generation models:
+
+| Provider | Model | Supported Sizes/Aspect Ratios |
+|----------|-------|------------------------------|
+| **xAI** | `grok-2-image` | 1024x768 (default) |
+| **OpenAI** | `gpt-image-1` | 1024x1024, 1536x1024, 1024x1536 |
+| **OpenAI** | `dall-e-3` | 1024x1024, 1792x1024, 1024x1792 |
+| **OpenAI** | `dall-e-2` | 256x256, 512x512, 1024x1024 |
+| **Amazon Bedrock** | `amazon.nova-canvas-v1:0` | 320-4096 (multiples of 16) |
+| **Fal** | `fal-ai/flux/dev` | 1:1, 3:4, 4:3, 9:16, 16:9, 9:21, 21:9 |
+| **Fal** | `fal-ai/flux-pro/v1.1-ultra` | 1:1, 3:4, 4:3, 9:16, 16:9, 9:21, 21:9 |
+| **Google** | `imagen-3.0-generate-002` | 1:1, 3:4, 4:3, 9:16, 16:9 |
+| **Black Forest Labs** | `flux-pro-1.1-ultra` | 3:7 to 7:3 aspect ratios |
+| **Stability AI** | Various via providers | Multiple sizes supported |
+
+### Example with Different Providers
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+dalleModel, _ := openaiProvider.ImageModel("dall-e-3")
+
+// Google
+googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+imagenModel, _ := googleProvider.ImageModel("imagen-3.0-generate-002")
+
+// Fal
+falProvider := fal.New(fal.Config{APIKey: os.Getenv("FAL_API_KEY")})
+fluxModel, _ := falProvider.ImageModel("fal-ai/flux/dev")
+
+// Use any model with the same API
+result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  dalleModel, // or imagenModel, or fluxModel
+    Prompt: "A beautiful landscape",
+})
+```
+
+## Best Practices
+
+1. **Set Timeouts**: Image generation can be slow; always use context with timeout
+2. **Handle Errors**: Implement proper error handling and retry logic
+3. **Validate Prompts**: Ensure prompts are appropriate and within provider guidelines
+4. **Choose Right Model**: Different models excel at different styles and use cases
+5. **Use Appropriate Sizes**: Request sizes supported by the model
+6. **Save Efficiently**: Use appropriate image formats and compression
+7. **Monitor Costs**: Track image generation usage and costs
+8. **Respect Rate Limits**: Implement rate limiting for bulk generation
+9. **Cache Results**: Cache generated images when appropriate
+10. **Test Prompts**: Iterate on prompts to get desired results
+
+## Next Steps
+
+- Learn about [Speech Generation](./08-speech-generation.md)
+- Explore [Provider Documentation](../providers/01-overview.md)
+- See [Examples](../examples/)
+
+## See Also
+
+- [Providers](../providers/01-overview.md)
+- [Settings](./10-settings.md)
+- [Error Handling](./13-error-handling.md)
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.md)

@@ -1,0 +1,723 @@
+---
+title: Caching
+description: How to handle caching when working with the Go AI SDK
+---
+
+# Caching Responses
+
+Depending on the type of application you're building, you may want to cache the responses you receive from your AI provider, at least temporarily.
+
+## Using Language Model Middleware (Recommended)
+
+The recommended approach to caching responses is using [language model middleware](../03-ai-sdk-core/40-middleware.mdx). Middleware allows you to intercept and modify calls to the language model, making it perfect for caching.
+
+Let's see how you can use language model middleware to cache responses:
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/redis/go-redis/v9"
+)
+
+// CacheMiddleware creates middleware that caches LLM responses
+func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.LanguageModelMiddleware {
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(
+            ctx context.Context,
+            model provider.LanguageModel,
+            next middleware.GenerateFunc,
+            options *provider.GenerateOptions,
+        ) (*types.GenerateResult, error) {
+            // Create cache key from options
+            cacheKey := createCacheKey(options)
+
+            // Check cache
+            cached, err := client.Get(ctx, cacheKey).Result()
+            if err == nil {
+                // Cache hit
+                var result types.GenerateResult
+                if err := json.Unmarshal([]byte(cached), &result); err == nil {
+                    fmt.Println("Cache hit for generate")
+                    return &result, nil
+                }
+            }
+
+            // Cache miss - call the model
+            result, err := next(ctx, options)
+            if err != nil {
+                return nil, err
+            }
+
+            // Store in cache
+            data, _ := json.Marshal(result)
+            client.Set(ctx, cacheKey, data, ttl)
+
+            return result, nil
+        },
+
+        WrapStream: func(
+            ctx context.Context,
+            model provider.LanguageModel,
+            next middleware.StreamFunc,
+            options *provider.GenerateOptions,
+        ) (*provider.StreamResult, error) {
+            // Create cache key
+            cacheKey := createCacheKey(options)
+
+            // Check cache
+            cached, err := client.Get(ctx, cacheKey).Result()
+            if err == nil {
+                // Cache hit - return simulated stream
+                var parts []types.StreamPart
+                if err := json.Unmarshal([]byte(cached), &parts); err == nil {
+                    fmt.Println("Cache hit for stream")
+                    return simulateStream(parts), nil
+                }
+            }
+
+            // Cache miss - call the model
+            result, err := next(ctx, options)
+            if err != nil {
+                return nil, err
+            }
+
+            // Collect stream parts for caching
+            var collectedParts []types.StreamPart
+            wrappedChan := make(chan types.StreamPart)
+
+            go func() {
+                defer close(wrappedChan)
+                for part := range result.Stream {
+                    collectedParts = append(collectedParts, part)
+                    wrappedChan <- part
+                }
+
+                // Cache the complete stream after it finishes
+                if len(collectedParts) > 0 {
+                    data, _ := json.Marshal(collectedParts)
+                    client.Set(context.Background(), cacheKey, data, ttl)
+                }
+            }()
+
+            return &provider.StreamResult{
+                Stream: wrappedChan,
+            }, nil
+        },
+    }
+}
+
+func createCacheKey(options *provider.GenerateOptions) string {
+    // Create a consistent cache key from options
+    data, _ := json.Marshal(options)
+    hash := sha256.Sum256(data)
+    return "cache:" + hex.EncodeToString(hash[:])
+}
+
+func simulateStream(parts []types.StreamPart) *provider.StreamResult {
+    ch := make(chan types.StreamPart)
+
+    go func() {
+        defer close(ch)
+
+        // Initial delay
+        time.Sleep(10 * time.Millisecond)
+
+        // Send parts with small delay between them
+        for _, part := range parts {
+            ch <- part
+            time.Sleep(10 * time.Millisecond)
+        }
+    }()
+
+    return &provider.StreamResult{
+        Stream: ch,
+    }
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Set up Redis client
+    redisClient := redis.NewClient(&redis.Options{
+        Addr: "localhost:6379",
+    })
+    defer redisClient.Close()
+
+    // Test connection
+    if err := redisClient.Ping(ctx).Err(); err != nil {
+        log.Fatalf("Failed to connect to Redis: %v", err)
+    }
+
+    // Create model with caching middleware
+    baseModel, _ := getBaseModel()
+    cachedModel := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            CacheMiddleware(redisClient, 1*time.Hour),
+        },
+        nil,
+        nil,
+    )
+
+    // First call - cache miss
+    fmt.Println("First call:")
+    result1, err := cachedModel.DoGenerate(ctx, &provider.GenerateOptions{
+        Prompt: types.Prompt{
+            Messages: []types.Message{
+                {
+                    Role: types.RoleUser,
+                    Content: []types.ContentPart{
+                        types.TextContent{Text: "What is 2+2?"},
+                    },
+                },
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Response:", result1.Text)
+
+    // Second call - cache hit
+    fmt.Println("\nSecond call:")
+    result2, err := cachedModel.DoGenerate(ctx, &provider.GenerateOptions{
+        Prompt: types.Prompt{
+            Messages: []types.Message{
+                {
+                    Role: types.RoleUser,
+                    Content: []types.ContentPart{
+                        types.TextContent{Text: "What is 2+2?"},
+                    },
+                },
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Response:", result2.Text)
+}
+
+func getBaseModel() (provider.LanguageModel, error) {
+    // Import your provider and create model
+    // provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    // return provider.LanguageModel("gpt-4")
+    return nil, nil
+}
+```
+
+This example uses Redis to store and retrieve responses, but you can use any key-value storage provider you prefer.
+
+## Caching with Different Storage Backends
+
+### In-Memory Cache
+
+For simple use cases, you can use an in-memory cache:
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+type CacheEntry struct {
+    Data      []byte
+    ExpiresAt time.Time
+}
+
+type MemoryCache struct {
+    mu    sync.RWMutex
+    cache map[string]CacheEntry
+}
+
+func NewMemoryCache() *MemoryCache {
+    return &MemoryCache{
+        cache: make(map[string]CacheEntry),
+    }
+}
+
+func (c *MemoryCache) Get(key string) ([]byte, bool) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    entry, exists := c.cache[key]
+    if !exists || time.Now().After(entry.ExpiresAt) {
+        return nil, false
+    }
+
+    return entry.Data, true
+}
+
+func (c *MemoryCache) Set(key string, data []byte, ttl time.Duration) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    c.cache[key] = CacheEntry{
+        Data:      data,
+        ExpiresAt: time.Now().Add(ttl),
+    }
+}
+
+func (c *MemoryCache) Cleanup() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    now := time.Now()
+    for key, entry := range c.cache {
+        if now.After(entry.ExpiresAt) {
+            delete(c.cache, key)
+        }
+    }
+}
+
+func MemoryCacheMiddleware(cache *MemoryCache, ttl time.Duration) *middleware.LanguageModelMiddleware {
+    // Periodic cleanup
+    go func() {
+        ticker := time.NewTicker(5 * time.Minute)
+        defer ticker.Stop()
+        for range ticker.C {
+            cache.Cleanup()
+        }
+    }()
+
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(
+            ctx context.Context,
+            model provider.LanguageModel,
+            next middleware.GenerateFunc,
+            options *provider.GenerateOptions,
+        ) (*types.GenerateResult, error) {
+            cacheKey := createCacheKey(options)
+
+            // Check cache
+            if data, found := cache.Get(cacheKey); found {
+                var result types.GenerateResult
+                if err := json.Unmarshal(data, &result); err == nil {
+                    return &result, nil
+                }
+            }
+
+            // Call model
+            result, err := next(ctx, options)
+            if err != nil {
+                return nil, err
+            }
+
+            // Cache result
+            data, _ := json.Marshal(result)
+            cache.Set(cacheKey, data, ttl)
+
+            return result, nil
+        },
+    }
+}
+
+func createCacheKey(options *provider.GenerateOptions) string {
+    data, _ := json.Marshal(options)
+    hash := sha256.Sum256(data)
+    return hex.EncodeToString(hash[:])
+}
+```
+
+### File-Based Cache
+
+For persistent caching without external dependencies:
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "os"
+    "path/filepath"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+type FileCacheEntry struct {
+    Data      json.RawMessage `json:"data"`
+    ExpiresAt time.Time       `json:"expiresAt"`
+}
+
+func FileCacheMiddleware(cacheDir string, ttl time.Duration) *middleware.LanguageModelMiddleware {
+    // Ensure cache directory exists
+    os.MkdirAll(cacheDir, 0755)
+
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(
+            ctx context.Context,
+            model provider.LanguageModel,
+            next middleware.GenerateFunc,
+            options *provider.GenerateOptions,
+        ) (*types.GenerateResult, error) {
+            cacheKey := createCacheKey(options)
+            cacheFile := filepath.Join(cacheDir, cacheKey+".json")
+
+            // Check cache file
+            if data, err := os.ReadFile(cacheFile); err == nil {
+                var entry FileCacheEntry
+                if err := json.Unmarshal(data, &entry); err == nil {
+                    // Check expiration
+                    if time.Now().Before(entry.ExpiresAt) {
+                        var result types.GenerateResult
+                        if err := json.Unmarshal(entry.Data, &result); err == nil {
+                            return &result, nil
+                        }
+                    }
+                }
+            }
+
+            // Call model
+            result, err := next(ctx, options)
+            if err != nil {
+                return nil, err
+            }
+
+            // Cache result
+            resultData, _ := json.Marshal(result)
+            entry := FileCacheEntry{
+                Data:      resultData,
+                ExpiresAt: time.Now().Add(ttl),
+            }
+            entryData, _ := json.Marshal(entry)
+            os.WriteFile(cacheFile, entryData, 0644)
+
+            return result, nil
+        },
+    }
+}
+```
+
+## Using OnFinish Callback
+
+Alternatively, you can use the `OnFinish` callback to cache responses:
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/redis/go-redis/v9"
+)
+
+func chatHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    var req struct {
+        Messages []string `json:"messages"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Create cache key
+    cacheKey := createCacheKeyFromMessages(req.Messages)
+
+    // Set up Redis
+    redisClient := redis.NewClient(&redis.Options{
+        Addr: os.Getenv("REDIS_ADDR"),
+    })
+    defer redisClient.Close()
+
+    // Check cache
+    if cached, err := redisClient.Get(ctx, cacheKey).Result(); err == nil {
+        fmt.Println("Cache hit")
+        w.Header().Set("Content-Type", "text/plain")
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte(cached))
+        return
+    }
+
+    // Set up provider
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Convert messages
+    messages := convertToMessages(req.Messages)
+
+    // Call model with OnFinish callback
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        Messages: messages,
+        OnFinish: func(result *ai.GenerateTextResult) {
+            // Cache the response
+            redisClient.Set(context.Background(), cacheKey, result.Text, 1*time.Hour)
+            fmt.Println("Cached response")
+        },
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Return response
+    w.Header().Set("Content-Type", "text/plain")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(result.Text))
+}
+
+func createCacheKeyFromMessages(messages []string) string {
+    data, _ := json.Marshal(messages)
+    hash := sha256.Sum256(data)
+    return "chat:" + hex.EncodeToString(hash[:])
+}
+
+func convertToMessages(msgs []string) []types.Message {
+    // Convert string messages to Message types
+    return nil
+}
+
+func main() {
+    http.HandleFunc("/api/chat", chatHandler)
+
+    fmt.Println("Server listening on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## Streaming with Cache
+
+For streaming responses, cache the complete stream after it finishes:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/redis/go-redis/v9"
+)
+
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    var req struct {
+        Prompt string `json:"prompt"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+
+    cacheKey := "stream:" + req.Prompt
+
+    redisClient := redis.NewClient(&redis.Options{
+        Addr: "localhost:6379",
+    })
+    defer redisClient.Close()
+
+    // Check cache
+    if cached, err := redisClient.Get(ctx, cacheKey).Result(); err == nil {
+        fmt.Println("Cache hit - sending cached stream")
+        w.Header().Set("Content-Type", "text/event-stream")
+        w.Header().Set("Cache-Control", "no-cache")
+        w.Header().Set("Connection", "keep-alive")
+
+        flusher, _ := w.(http.Flusher)
+
+        // Send cached response as if streaming
+        for _, char := range cached {
+            fmt.Fprintf(w, "data: %c\n\n", char)
+            flusher.Flush()
+        }
+        return
+    }
+
+    // No cache - stream from model
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: req.Prompt,
+        OnFinish: func(result *ai.StreamTextResult) {
+            // Cache complete response
+            redisClient.Set(context.Background(), cacheKey, result.Text, 1*time.Hour)
+            fmt.Println("Cached stream")
+        },
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Stream to client
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+
+    flusher, _ := w.(http.Flusher)
+
+    for chunk := range stream.TextChannel {
+        fmt.Fprintf(w, "data: %s\n\n", chunk)
+        flusher.Flush()
+    }
+
+    if err := stream.Err(); err != nil {
+        log.Printf("Stream error: %v", err)
+    }
+}
+
+func main() {
+    http.HandleFunc("/stream", streamHandler)
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## Best Practices
+
+### 1. Use Appropriate Cache Keys
+
+```go
+// Good - Deterministic cache key
+func createCacheKey(options *provider.GenerateOptions) string {
+    // Sort and normalize to ensure consistency
+    normalized := normalizeOptions(options)
+    data, _ := json.Marshal(normalized)
+    hash := sha256.Sum256(data)
+    return hex.EncodeToString(hash[:])
+}
+
+// Bad - Non-deterministic
+func badCacheKey(options *provider.GenerateOptions) string {
+    return fmt.Sprintf("%v", options) // String representation may vary
+}
+```
+
+### 2. Set Appropriate TTL
+
+```go
+// Different TTLs for different use cases
+const (
+    ShortTTL  = 5 * time.Minute    // Frequently changing data
+    MediumTTL = 1 * time.Hour      // Stable queries
+    LongTTL   = 24 * time.Hour     // Static content
+)
+```
+
+### 3. Handle Cache Errors Gracefully
+
+```go
+// Check cache
+if cached, err := cache.Get(key); err == nil {
+    return cached, nil
+}
+
+// If cache fails, continue with normal operation
+result, err := model.DoGenerate(ctx, options)
+if err != nil {
+    return nil, err
+}
+
+// Try to cache, but don't fail if caching fails
+_ = cache.Set(key, result, ttl)
+
+return result, nil
+```
+
+### 4. Cache Invalidation
+
+```go
+// Implement cache clearing for specific patterns
+func InvalidateCache(cache *redis.Client, pattern string) error {
+    ctx := context.Background()
+
+    iter := cache.Scan(ctx, 0, pattern, 0).Iterator()
+    for iter.Next(ctx) {
+        cache.Del(ctx, iter.Val())
+    }
+
+    return iter.Err()
+}
+
+// Usage
+InvalidateCache(redisClient, "chat:*")  // Clear all chat caches
+```
+
+### 5. Monitor Cache Performance
+
+```go
+type CacheStats struct {
+    Hits   int64
+    Misses int64
+    mu     sync.Mutex
+}
+
+func (s *CacheStats) RecordHit() {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.Hits++
+}
+
+func (s *CacheStats) RecordMiss() {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.Misses++
+}
+
+func (s *CacheStats) HitRate() float64 {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    total := s.Hits + s.Misses
+    if total == 0 {
+        return 0
+    }
+    return float64(s.Hits) / float64(total)
+}
+```
+
+## Next Steps
+
+- Learn about [rate limiting](./06-rate-limiting.mdx) for production deployments
+- Explore [middleware](../03-ai-sdk-core/40-middleware.mdx) for other use cases
+- See [model as router](./08-model-as-router.mdx) for dynamic model selection

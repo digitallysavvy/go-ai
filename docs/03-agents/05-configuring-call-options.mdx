@@ -1,0 +1,901 @@
+---
+title: Configuring Call Options
+description: Pass runtime inputs to dynamically configure agent behavior.
+---
+
+# Configuring Call Options
+
+In Go, you can dynamically configure agent behavior by creating agent factory functions that accept runtime parameters. This pattern allows you to modify agent settings based on specific request context.
+
+## Why Use Dynamic Configuration?
+
+When you need agent behavior to change based on runtime context:
+
+- **Add dynamic context** - Inject retrieved documents, user preferences, or session data into prompts
+- **Select models dynamically** - Choose faster or more capable models based on request complexity
+- **Configure tools per request** - Pass user location to search tools or adjust tool behavior
+- **Customize generation settings** - Set temperature, max tokens, or other provider-specific settings
+
+Without dynamic configuration, you'd need to create multiple agents or handle configuration logic outside the agent.
+
+## How It Works
+
+Dynamic configuration in Go uses factory functions that:
+
+1. **Accept runtime parameters** - Take configuration options as function parameters
+2. **Build agent configuration** - Construct `AgentConfig` based on those parameters
+3. **Return configured agent** - Create and return the agent ready for use
+
+## Basic Example
+
+Create an agent factory that injects user context at runtime:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type UserContext struct {
+    UserID      string
+    AccountType string // "free", "pro", or "enterprise"
+}
+
+func newSupportAgent(ctx UserContext) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    systemPrompt := fmt.Sprintf(`You are a helpful customer support agent.
+
+User context:
+- Account type: %s
+- User ID: %s
+
+Adjust your response based on the user's account level.`, ctx.AccountType, ctx.UserID)
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: systemPrompt,
+        Tools:  []types.Tool{}, // Your tools here
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Create agent with specific user context
+    supportAgent := newSupportAgent(UserContext{
+        UserID:      "user_123",
+        AccountType: "free",
+    })
+
+    result, err := supportAgent.Execute(ctx, "How do I upgrade my account?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Modifying Agent Settings
+
+Create factory functions that modify different agent settings based on runtime parameters.
+
+### Dynamic Model Selection
+
+Choose models based on request characteristics:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type QueryComplexity string
+
+const (
+    ComplexitySimple  QueryComplexity = "simple"
+    ComplexityComplex QueryComplexity = "complex"
+)
+
+func newAdaptiveAgent(complexity QueryComplexity) (*agent.ToolLoopAgent, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // Choose model based on complexity
+    var model provider.LanguageModel
+    var err error
+
+    if complexity == ComplexitySimple {
+        model, err = provider.LanguageModel("gpt-4o-mini")
+        fmt.Println("Using fast model for simple query")
+    } else {
+        model, err = provider.LanguageModel("o1-mini")
+        fmt.Println("Using powerful model for complex query")
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        MaxSteps: 15,
+    }), nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Use faster model for simple queries
+    simpleAgent, _ := newAdaptiveAgent(ComplexitySimple)
+    result1, err := simpleAgent.Execute(ctx, "What is 2+2?")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Simple answer:", result1.Text)
+
+    // Use more capable model for complex reasoning
+    complexAgent, _ := newAdaptiveAgent(ComplexityComplex)
+    result2, err := complexAgent.Execute(ctx, "Explain quantum entanglement and its implications for computing")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Complex answer:", result2.Text)
+}
+```
+
+### Dynamic Tool Configuration
+
+Configure tools based on runtime context using closures:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type Location struct {
+    City    string
+    Region  string
+    Country string
+}
+
+func newNewsAgent(userLocation Location) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Create tool with user location captured in closure
+    searchTool := types.Tool{
+        Name:        "webSearch",
+        Description: fmt.Sprintf("Search for news in %s, %s", userLocation.City, userLocation.Region),
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The search query",
+                },
+            },
+            "required": []string{"query"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            query := input["query"].(string)
+            // Use location in search
+            results := fmt.Sprintf("Searching for '%s' in %s, %s, %s",
+                query, userLocation.City, userLocation.Region, userLocation.Country)
+
+            // Actual implementation would call search API with location
+            return map[string]interface{}{
+                "results": results,
+            }, nil
+        },
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        System: fmt.Sprintf("You are a news assistant providing information for users in %s, %s.",
+            userLocation.City, userLocation.Region),
+        Tools: []types.Tool{searchTool},
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    newsAgent := newNewsAgent(Location{
+        City:    "San Francisco",
+        Region:  "California",
+        Country: "US",
+    })
+
+    result, err := newsAgent.Execute(ctx, "What are the top local news stories?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Dynamic Generation Settings
+
+Configure temperature, max tokens, and other settings:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type GenerationConfig struct {
+    Temperature *float64
+    MaxTokens   *int
+    MaxSteps    int
+}
+
+func newConfigurableAgent(config GenerationConfig) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:       model,
+        Temperature: config.Temperature,
+        MaxTokens:   config.MaxTokens,
+        MaxSteps:    config.MaxSteps,
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Creative writing configuration
+    creativeTemp := 0.9
+    creativeTokens := 1000
+    creativeAgent := newConfigurableAgent(GenerationConfig{
+        Temperature: &creativeTemp,
+        MaxTokens:   &creativeTokens,
+        MaxSteps:    10,
+    })
+
+    result1, err := creativeAgent.Execute(ctx, "Write a creative story")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Creative output:", result1.Text)
+
+    // Precise, deterministic configuration
+    preciseTemp := 0.1
+    preciseTokens := 500
+    preciseAgent := newConfigurableAgent(GenerationConfig{
+        Temperature: &preciseTemp,
+        MaxTokens:   &preciseTokens,
+        MaxSteps:    5,
+    })
+
+    result2, err := preciseAgent.Execute(ctx, "Calculate the answer precisely")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Precise output:", result2.Text)
+}
+```
+
+## Advanced Patterns
+
+### Retrieval Augmented Generation (RAG)
+
+Fetch relevant context and inject it into your agent:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+type Document struct {
+    ID      string
+    Content string
+}
+
+func vectorSearch(ctx context.Context, query string) ([]Document, error) {
+    // Simulated vector search - in production, use a vector database
+    docs := []Document{
+        {
+            ID:      "doc1",
+            Content: "Our refund policy allows returns within 30 days of purchase for a full refund.",
+        },
+        {
+            ID:      "doc2",
+            Content: "Refunds are processed within 5-7 business days to the original payment method.",
+        },
+        {
+            ID:      "doc3",
+            Content: "To request a refund, contact support@example.com with your order number.",
+        },
+    }
+    return docs, nil
+}
+
+func newRAGAgent(ctx context.Context, query string) (*agent.ToolLoopAgent, error) {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    // Fetch relevant documents
+    documents, err := vectorSearch(ctx, query)
+    if err != nil {
+        return nil, err
+    }
+
+    // Build context from documents
+    var contextParts []string
+    for _, doc := range documents {
+        contextParts = append(contextParts, doc.Content)
+    }
+    context := strings.Join(contextParts, "\n\n")
+
+    systemPrompt := fmt.Sprintf(`Answer questions using the following context:
+
+%s
+
+If the answer is not in the context, say so clearly.`, context)
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: systemPrompt,
+    }), nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    query := "What is our refund policy?"
+
+    ragAgent, err := newRAGAgent(ctx, query)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ragAgent.Execute(ctx, query)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Combining Multiple Modifications
+
+Modify multiple settings together based on user role and urgency:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type RequestConfig struct {
+    UserRole string // "admin" or "user"
+    Urgency  string // "low" or "high"
+}
+
+func readDatabaseTool() types.Tool {
+    return types.Tool{
+        Name:        "readDatabase",
+        Description: "Read data from the database",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{
+                    "type": "string",
+                },
+            },
+            "required": []string{"query"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            return map[string]interface{}{"data": "..."}, nil
+        },
+    }
+}
+
+func writeDatabaseTool() types.Tool {
+    return types.Tool{
+        Name:        "writeDatabase",
+        Description: "Write data to the database",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "data": map[string]interface{}{
+                    "type": "object",
+                },
+            },
+            "required": []string{"data"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            return map[string]interface{}{"success": true}, nil
+        },
+    }
+}
+
+func newConfiguredAgent(config RequestConfig) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // Select model based on urgency
+    var model provider.LanguageModel
+    if config.Urgency == "high" {
+        model, _ = provider.LanguageModel("gpt-4") // More capable model
+    } else {
+        model, _ = provider.LanguageModel("gpt-4o-mini") // Faster, cheaper model
+    }
+
+    // Configure tools based on user role
+    var tools []types.Tool
+    if config.UserRole == "admin" {
+        tools = []types.Tool{
+            readDatabaseTool(),
+            writeDatabaseTool(),
+        }
+    } else {
+        tools = []types.Tool{
+            readDatabaseTool(),
+        }
+    }
+
+    // Build system prompt
+    systemPrompt := fmt.Sprintf("You are a %s assistant.\n", config.UserRole)
+    if config.UserRole == "admin" {
+        systemPrompt += "You have full database access."
+    } else {
+        systemPrompt += "You have read-only access."
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: systemPrompt,
+        Tools:  tools,
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Admin with high urgency
+    adminAgent := newConfiguredAgent(RequestConfig{
+        UserRole: "admin",
+        Urgency:  "high",
+    })
+
+    result, err := adminAgent.Execute(ctx, "Update the user record")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Session-Based Configuration
+
+Create agents with session-specific configuration:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type SessionContext struct {
+    SessionID      string
+    UserPreferences map[string]string
+    ConversationHistory []types.Message
+    CreatedAt      time.Time
+}
+
+func newSessionAgent(session SessionContext) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Build personalized system prompt
+    systemPrompt := fmt.Sprintf(`You are a helpful assistant.
+
+Session ID: %s
+User preferences: %v
+Session started: %s
+
+Tailor your responses to the user's preferences.`,
+        session.SessionID,
+        session.UserPreferences,
+        session.CreatedAt.Format("2006-01-02 15:04:05"))
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: systemPrompt,
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    session := SessionContext{
+        SessionID: "sess_123",
+        UserPreferences: map[string]string{
+            "language": "English",
+            "tone":     "professional",
+            "detail":   "concise",
+        },
+        ConversationHistory: []types.Message{},
+        CreatedAt:          time.Now(),
+    }
+
+    sessionAgent := newSessionAgent(session)
+
+    result, err := sessionAgent.Execute(ctx, "Tell me about your capabilities")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Multi-Tenant Configuration
+
+Configure agents for different tenants or organizations:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+type TenantConfig struct {
+    TenantID       string
+    OrganizationName string
+    CustomBranding string
+    AllowedFeatures []string
+    MaxSteps       int
+}
+
+func newTenantAgent(tenant TenantConfig) *agent.ToolLoopAgent {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    systemPrompt := fmt.Sprintf(`You are an AI assistant for %s.
+
+%s
+
+Available features: %v
+
+Always maintain professionalism and follow the organization's guidelines.`,
+        tenant.OrganizationName,
+        tenant.CustomBranding,
+        tenant.AllowedFeatures)
+
+    // Filter tools based on allowed features
+    var tools []types.Tool
+    for _, feature := range tenant.AllowedFeatures {
+        switch feature {
+        case "search":
+            tools = append(tools, searchTool())
+        case "analytics":
+            tools = append(tools, analyticsTool())
+        case "reporting":
+            tools = append(tools, reportingTool())
+        }
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        System:   systemPrompt,
+        Tools:    tools,
+        MaxSteps: tenant.MaxSteps,
+    })
+}
+
+func searchTool() types.Tool {
+    return types.Tool{
+        Name:        "search",
+        Description: "Search for information",
+        // ... tool definition
+    }
+}
+
+func analyticsTool() types.Tool {
+    return types.Tool{
+        Name:        "analytics",
+        Description: "Analyze data",
+        // ... tool definition
+    }
+}
+
+func reportingTool() types.Tool {
+    return types.Tool{
+        Name:        "reporting",
+        Description: "Generate reports",
+        // ... tool definition
+    }
+}
+
+func main() {
+    ctx := context.Background()
+
+    tenantConfig := TenantConfig{
+        TenantID:         "tenant_xyz",
+        OrganizationName: "Acme Corporation",
+        CustomBranding:   "Acme values efficiency and innovation.",
+        AllowedFeatures:  []string{"search", "analytics"},
+        MaxSteps:         15,
+    }
+
+    tenantAgent := newTenantAgent(tenantConfig)
+
+    result, err := tenantAgent.Execute(ctx, "Analyze our sales data")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Using in HTTP Handlers
+
+Integrate dynamic agent configuration in web applications:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type ChatRequest struct {
+    Prompt      string `json:"prompt"`
+    UserID      string `json:"userId"`
+    AccountType string `json:"accountType"`
+}
+
+type ChatResponse struct {
+    Text  string `json:"text"`
+    Steps int    `json:"steps"`
+}
+
+func chatHandler(w http.ResponseWriter, r *http.Request) {
+    var req ChatRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Create agent with user context
+    supportAgent := newSupportAgentFromRequest(req)
+
+    // Execute agent
+    result, err := supportAgent.Execute(r.Context(), req.Prompt)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Return response
+    response := ChatResponse{
+        Text:  result.Text,
+        Steps: len(result.Steps),
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func newSupportAgentFromRequest(req ChatRequest) *agent.ToolLoopAgent {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    systemPrompt := fmt.Sprintf(`You are a customer support agent.
+
+User: %s (Account: %s)
+
+Adjust responses based on the account level.`, req.UserID, req.AccountType)
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: systemPrompt,
+    })
+}
+
+func main() {
+    http.HandleFunc("/api/chat", chatHandler)
+
+    fmt.Println("Server listening on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## Best Practices
+
+### 1. Use Factory Functions
+
+Create factory functions for reusable agent configurations:
+
+```go
+// Good - Reusable factory function
+func newAgentWithContext(ctx RequestContext) *agent.ToolLoopAgent {
+    // Configuration logic
+    return agent.NewToolLoopAgent(config)
+}
+
+// Bad - Inline configuration everywhere
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{...})
+```
+
+### 2. Validate Configuration
+
+Validate configuration parameters before creating agents:
+
+```go
+func newValidatedAgent(config Config) (*agent.ToolLoopAgent, error) {
+    if config.UserRole != "admin" && config.UserRole != "user" {
+        return nil, fmt.Errorf("invalid user role: %s", config.UserRole)
+    }
+
+    if config.MaxSteps < 1 || config.MaxSteps > 50 {
+        return nil, fmt.Errorf("maxSteps must be between 1 and 50")
+    }
+
+    // Create agent with validated config
+    return agent.NewToolLoopAgent(agent.AgentConfig{...}), nil
+}
+```
+
+### 3. Use Closures for Tool Configuration
+
+Capture runtime context in tool closures:
+
+```go
+func newAgentWithUserTools(userID string) *agent.ToolLoopAgent {
+    tool := types.Tool{
+        Name: "getUserData",
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            // userID is captured from outer scope
+            return fetchUserData(ctx, userID)
+        },
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Tools: []types.Tool{tool},
+    })
+}
+```
+
+### 4. Handle Errors Properly
+
+Always check for errors when creating agents:
+
+```go
+func newAgent(complexity string) (*agent.ToolLoopAgent, error) {
+    model, err := getModel(complexity)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get model: %w", err)
+    }
+
+    return agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+    }), nil
+}
+```
+
+### 5. Document Configuration Options
+
+Document what configuration options are available:
+
+```go
+// AgentOptions configures agent behavior
+type AgentOptions struct {
+    // Model complexity: "simple" uses fast models, "complex" uses powerful models
+    Complexity string
+
+    // Maximum number of reasoning steps (1-50)
+    MaxSteps int
+
+    // User context for personalization
+    UserContext UserContext
+}
+```
+
+## Next Steps
+
+- Learn about [loop control](./04-loop-control.mdx) for execution management
+- Explore [workflow patterns](./03-workflows.mdx) for complex multi-step processes
+- See [building agents](./02-building-agents.mdx) for agent fundamentals

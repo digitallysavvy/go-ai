@@ -1,0 +1,347 @@
+---
+title: Core API Overview
+description: An overview of the Go AI SDK Core API.
+---
+
+# Go AI SDK Core
+
+Large Language Models (LLMs) are advanced programs that can understand, create, and engage with human language on a large scale. They are trained on vast amounts of written material to recognize patterns in language and predict what might come next in a given piece of text.
+
+The **Go AI SDK Core** simplifies working with LLMs by offering a standardized way of integrating them into your Go applications - so you can focus on building great AI applications for your users, not waste time on technical details.
+
+For example, here's how you can generate text with various models using the Go AI SDK:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // OpenAI
+    openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    gpt4, _ := openaiProvider.LanguageModel("gpt-4")
+
+    // Anthropic
+    anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+
+    // Google
+    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+    gemini, _ := googleProvider.LanguageModel("gemini-pro")
+
+    // Same API for all providers
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  gpt4, // or claude, or gemini
+        Prompt: "Explain quantum computing in simple terms.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Core Functions
+
+The Go AI SDK Core has various functions designed for [text generation](./02-generating-text.md), [structured data generation](./03-generating-structured-data.md), and [tool usage](./04-tools-and-tool-calling.md). These functions take a standardized approach to setting up [prompts](../02-foundations/03-prompts.md) and [settings](./10-settings.md), making it easier to work with different models.
+
+### Text Generation
+
+- **[`ai.GenerateText()`](./02-generating-text.md)** - Generates text and [tool calls](./04-tools-and-tool-calling.md). This function is ideal for non-interactive use cases such as automation tasks where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
+
+- **[`ai.StreamText()`](./02-generating-text.md#streamtext)** - Stream text and tool calls. You can use the `StreamText` function for interactive use cases such as chat bots and content streaming.
+
+```go
+// Generate complete text at once
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a haiku about Go programming.",
+})
+fmt.Println(result.Text)
+
+// Stream text as it's generated
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story about AI.",
+})
+defer stream.Close()
+
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
+}
+```
+
+### Structured Data Generation
+
+- **[`ai.GenerateObject()`](./03-generating-structured-data.md)** - Generates a typed, structured object that matches a JSON schema. You can use this function to force the language model to return structured data, e.g. for information extraction, synthetic data generation, or classification tasks.
+
+- **[`ai.StreamObject()`](./03-generating-structured-data.md#stream-object)** - Stream a structured object that matches a JSON schema. You can use this function to stream generated structured data.
+
+```go
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{"type": "string"},
+        "age":  map[string]interface{}{"type": "number"},
+    },
+    "required": []string{"name", "age"},
+}
+
+result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: schema,
+    Prompt: "Generate a person profile.",
+})
+
+fmt.Printf("Object: %v\n", result.Object)
+```
+
+### Embeddings & Semantic Search
+
+- **[`ai.Embed()`](./05-embeddings.md)** - Generate a single embedding vector for text.
+- **[`ai.EmbedMany()`](./05-embeddings.md)** - Generate multiple embedding vectors in batch.
+- **Similarity Functions** - `CosineSimilarity`, `EuclideanDistance`, `DotProduct`, and more.
+
+```go
+// Single embedding
+result, _ := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "Go is a statically typed, compiled language",
+})
+
+// Batch embeddings
+results, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: []string{"text1", "text2", "text3"},
+})
+
+// Find most similar
+idx, score, _ := ai.FindMostSimilar(queryEmbedding, results.Embeddings)
+```
+
+### Document Reranking
+
+- **[`ai.Rerank()`](./06-reranking.md)** - Rerank documents based on relevance to a query.
+
+```go
+result, _ := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "What is machine learning?",
+    Documents: []string{"doc1", "doc2", "doc3"},
+    TopN:      3,
+})
+```
+
+### Multi-Modal Generation
+
+- **[`ai.GenerateImage()`](./07-image-generation.md)** - Generate images from text prompts.
+- **[`ai.GenerateSpeech()`](./08-speech-generation.md)** - Convert text to speech.
+- **[`ai.Transcribe()`](./09-transcription.md)** - Convert speech to text.
+
+```go
+// Text to image
+imageResult, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A serene mountain landscape",
+})
+
+// Text to speech
+speechResult, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+})
+
+// Speech to text
+transcription, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+## Context-Based Operations
+
+All Go AI SDK functions use `context.Context` as the first parameter, enabling:
+
+- **Cancellation**: Cancel operations in progress
+- **Timeouts**: Set deadlines for operations
+- **Request-scoped values**: Pass data through the call stack
+
+```go
+// With timeout
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Long generation...",
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Operation timed out")
+    }
+}
+```
+
+## Error Handling
+
+The Go AI SDK uses Go's standard error handling patterns. All functions return an error as the last return value:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+})
+if err != nil {
+    // Handle error
+    if errors.Is(err, provider.ErrRateLimit) {
+        fmt.Println("Rate limit exceeded")
+    }
+    log.Fatal(err)
+}
+```
+
+See [Error Handling](./13-error-handling.md) for comprehensive error handling strategies.
+
+## Configuration & Settings
+
+Control model behavior with settings:
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Generate creative text",
+    Temperature: 0.8,        // Higher = more creative
+    MaxTokens:   500,        // Limit response length
+    TopP:        0.9,        // Nucleus sampling
+    TopK:        40,         // Top-k sampling
+    StopSequences: []string{"\n\n"}, // Stop at double newline
+})
+```
+
+See [Settings](./10-settings.md) for all available options.
+
+## Middleware
+
+Add cross-cutting concerns like logging, caching, or rate limiting:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/middleware"
+
+wrappedModel := middleware.WrapLanguageModel(model, []*middleware.LanguageModelMiddleware{
+    loggingMiddleware,
+    cachingMiddleware,
+    rateLimitingMiddleware,
+}, nil, nil)
+```
+
+See [Middleware](./11-middleware.md) for details.
+
+## Telemetry
+
+Built-in OpenTelemetry support for observability:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/telemetry"
+
+// Configure telemetry
+telemetry.Configure(telemetry.Config{
+    ServiceName: "my-ai-app",
+    Enabled:     true,
+})
+
+// All AI SDK calls are automatically traced
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+})
+```
+
+See [Telemetry](./15-telemetry.md) for configuration options.
+
+## Go-Specific Features
+
+The Go AI SDK leverages Go's strengths:
+
+### Channels for Streaming
+
+```go
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+defer stream.Close()
+
+// Channels close automatically when done
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
+}
+```
+
+### Goroutines for Concurrency
+
+```go
+var wg sync.WaitGroup
+
+for _, prompt := range prompts {
+    wg.Add(1)
+    go func(p string) {
+        defer wg.Done()
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: p,
+        })
+        fmt.Println(result.Text)
+    }(prompt)
+}
+
+wg.Wait()
+```
+
+### defer for Resource Cleanup
+
+```go
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+defer stream.Close() // Always closes, even on error
+
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
+}
+```
+
+## API Reference
+
+For detailed API documentation, see the [API Reference](../07-reference/) section:
+
+- [AI Package Functions](../07-reference/ai/)
+- [Provider Interfaces](../07-reference/providers/)
+- [Type Definitions](../07-reference/types/)
+
+## Next Steps
+
+- Learn about [Generating Text](./02-generating-text.md)
+- Explore [Generating Structured Data](./03-generating-structured-data.md)
+- Understand [Tools and Tool Calling](./04-tools-and-tool-calling.md)
+- Build [Agents](../03-agents/01-overview.md)
+
+## See Also
+
+- [Foundations](../02-foundations/01-overview.md)
+- [Providers and Models](../02-foundations/02-providers-and-models.md)
+- [Examples](../examples/)

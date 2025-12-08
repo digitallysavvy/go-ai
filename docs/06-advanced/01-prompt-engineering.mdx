@@ -1,0 +1,615 @@
+---
+title: Prompt Engineering
+description: Learn how to engineer prompts for LLMs with the Go AI SDK
+---
+
+# Prompt Engineering
+
+## What is a Large Language Model (LLM)?
+
+A Large Language Model is essentially a prediction engine that takes a sequence of words as input and aims to predict the most likely sequence to follow. It does this by assigning probabilities to potential next sequences and then selecting one. The model continues to generate sequences until it meets a specified stopping criterion.
+
+These models learn by training on massive text corpuses, which means they will be better suited to some use cases than others. For example, a model trained on GitHub data would understand the probabilities of sequences in source code particularly well. However, it's crucial to understand that the generated sequences, while often seeming plausible, can sometimes be random and not grounded in reality. As these models become more accurate, many surprising abilities and applications emerge.
+
+## What is a prompt?
+
+Prompts are the starting points for LLMs. They are the inputs that trigger the model to generate text. The scope of prompt engineering involves not just crafting these prompts but also understanding related concepts such as system prompts, tokens, token limits, and context management.
+
+## Why is prompt engineering needed?
+
+Prompt engineering currently plays a pivotal role in shaping the responses of LLMs. It allows us to tweak the model to respond more effectively to a broader range of queries. This includes the use of techniques like few-shot learning, chain-of-thought prompting, and structured output generation. The performance, context window, and cost of LLMs varies between models and model providers which adds further constraints to the mix. For example, GPT-4 is more expensive than GPT-4o-mini and significantly slower, but it can also be more effective at certain tasks. Like many things in software engineering, there are trade-offs between cost and performance.
+
+## Example: Build a Slogan Generator
+
+### Start with an instruction
+
+Imagine you want to build a slogan generator for marketing campaigns. Creating catchy slogans isn't always straightforward!
+
+First, you'll need a prompt that makes it clear what you want. Let's start with a basic instruction:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Create a slogan for a coffee shop.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    // Output example: "Brew Your Day the Right Way"
+}
+```
+
+Not bad! Now, try making your instruction more specific:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Create a slogan for an organic coffee shop.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+// Output example: "Naturally Brewed, Ethically Sourced"
+```
+
+Introducing a single descriptive term to our prompt influences the completion. Essentially, crafting your prompt is the means by which you "instruct" or "program" the model.
+
+### Include examples
+
+Clear instructions are key for quality outcomes, but that might not always be enough. Let's try to enhance your instruction further:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Create three slogans for a coffee shop with live music.",
+})
+```
+
+These slogans are fine, but could be even better. Often, it's beneficial to both demonstrate and tell the model your requirements. Incorporating examples in your prompt (few-shot prompting) can aid in conveying patterns or subtleties:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    prompt := `Create three slogans for a business with unique features.
+
+Business: Bookstore with cats
+Slogans: "Purr-fect Pages", "Books and Whiskers", "Novels and Nuzzles"
+
+Business: Gym with rock climbing
+Slogans: "Peak Performance", "Reach New Heights", "Climb Your Way Fit"
+
+Business: Coffee shop with live music
+Slogans:`
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    // Output example: "Sip, Savor, and Swing", "Beans and Beats", "Melody in Every Cup"
+}
+```
+
+Great! Incorporating examples of expected output for a certain input prompted the model to generate the kind of names we aimed for.
+
+### Tweak your settings
+
+Apart from designing prompts, you can influence completions by tweaking model settings. A crucial setting is the **temperature**.
+
+With temperature set to 0, you'll get consistent, deterministic outputs:
+
+```go
+temperature := 0.0
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Temperature: &temperature,
+    Prompt:      "Create a slogan for a coffee shop.",
+})
+// Running this multiple times gives the same result
+```
+
+With temperature set higher, you get more varied and creative outputs:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    temperature := 1.0
+    prompt := `Create three slogans for a business with unique features.
+
+Business: Bookstore with cats
+Slogans: "Purr-fect Pages", "Books and Whiskers", "Novels and Nuzzles"
+
+Business: Gym with rock climbing
+Slogans: "Peak Performance", "Reach New Heights", "Climb Your Way Fit"
+
+Business: Coffee shop with live music
+Slogans:`
+
+    // Run multiple times to see variation
+    for i := 0; i < 3; i++ {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:       model,
+            Temperature: &temperature,
+            Prompt:      prompt,
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        fmt.Printf("Try %d: %s\n\n", i+1, result.Text)
+    }
+}
+```
+
+Notice the difference? With a temperature above 0, the same prompt delivers varied completions each time.
+
+Keep in mind that the model forecasts the text most likely to follow the preceding text. Temperature, a value from 0 to 1, essentially governs the model's confidence level in making these predictions. A lower temperature implies lesser risks, leading to more precise and deterministic completions. A higher temperature yields a broader range of completions.
+
+For your slogan generator, you might want a large pool of name suggestions. A moderate temperature of 0.6 should serve well:
+
+```go
+temperature := 0.6
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Temperature: &temperature,
+    Prompt:      prompt,
+})
+```
+
+## Advanced Prompting Techniques
+
+### System Prompts
+
+Use system prompts to define the model's behavior and personality:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        System: `You are a professional marketing copywriter with 10 years of experience.
+You specialize in creating memorable, punchy slogans.
+Always think about:
+- Brand voice and personality
+- Target audience
+- Emotional impact
+- Memorability`,
+        Prompt: "Create three slogans for an eco-friendly coffee shop that sources directly from farmers.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Chain-of-Thought Prompting
+
+Encourage the model to think step-by-step:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    prompt := `Create a slogan for a sustainable fashion brand. Think through this step by step:
+
+1. First, identify the key values of sustainable fashion
+2. Consider the target audience and their motivations
+3. Think about what makes this brand unique
+4. Combine these elements into a memorable slogan
+5. Present your final slogan
+
+Let's begin:`
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Role-Based Prompting
+
+Assign specific roles to the model:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    systemPrompt := `You are a brand strategist at a top advertising agency.
+Your role is to:
+- Analyze the brand's core values
+- Understand the competitive landscape
+- Create positioning statements that differentiate the brand
+- Craft slogans that resonate emotionally with the target audience`
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        System: systemPrompt,
+        Prompt: "Create a positioning statement and three slogans for a premium plant-based protein powder targeted at athletes.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Structured Output with Prompting
+
+Guide the model to return structured information:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    prompt := `Create marketing slogans for a vegan restaurant. Return your response in this exact format:
+
+PRIMARY SLOGAN: [main slogan]
+TAGLINE: [supporting tagline]
+SOCIAL MEDIA: [shorter version for social media]
+EMOTIONAL APPEAL: [one-word emotion the slogans evoke]
+
+Example:
+PRIMARY SLOGAN: "Plant Power, Every Hour"
+TAGLINE: "Deliciously sustainable dining"
+SOCIAL MEDIA: "🌱 Power Up Plant-Based"
+EMOTIONAL APPEAL: Energetic`
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Iterative Refinement
+
+Use multiple calls to refine the output:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    // Step 1: Generate initial slogans
+    result1, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Create 5 slogans for a tech startup that makes AI-powered productivity tools.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Initial slogans:")
+    fmt.Println(result1.Text)
+    fmt.Println()
+
+    // Step 2: Refine the best ones
+    refinePrompt := fmt.Sprintf(`Here are some slogans for an AI productivity tool startup:
+
+%s
+
+Pick the best 2 and refine them to be:
+- More punchy and memorable
+- Focused on the benefit to users
+- Under 6 words each`, result1.Text)
+
+    result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: refinePrompt,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Refined slogans:")
+    fmt.Println(result2.Text)
+}
+```
+
+## Best Practices
+
+### 1. Be Specific
+
+```go
+// Bad - Vague
+"Write about coffee"
+
+// Good - Specific
+"Write a 3-sentence product description for organic Ethiopian coffee beans
+emphasizing fruity notes and sustainability"
+```
+
+### 2. Use Examples (Few-Shot Learning)
+
+```go
+// Show the pattern you want
+prompt := `Convert casual text to professional:
+
+Casual: "Hey, wanna meet up?"
+Professional: "Would you be available for a meeting?"
+
+Casual: "Got your email, thx!"
+Professional: "Thank you for your email. I have received it."
+
+Casual: "Can't make it tomorrow"
+Professional:`
+```
+
+### 3. Set Constraints
+
+```go
+// Include explicit constraints
+prompt := `Create a slogan for a coffee shop.
+
+Requirements:
+- Maximum 5 words
+- Include the word "brew"
+- Sound energetic and welcoming
+- Avoid cliches like "wake up" or "smell the coffee"`
+```
+
+### 4. Specify Format
+
+```go
+// Tell the model exactly how to format output
+prompt := `Generate 3 coffee shop slogans.
+
+Format each as:
+1. [Slogan] - [Brief explanation of why it works]
+
+Example:
+1. "Grounds for Celebration" - Uses wordplay on "grounds" which means both coffee and reason`
+```
+
+### 5. Use System Prompts for Behavior
+
+```go
+// Define consistent behavior with system prompts
+system := `You are a professional copywriter. For every slogan:
+- Keep it under 6 words
+- Make it memorable and punchy
+- Avoid overused marketing cliches
+- Explain your creative rationale`
+```
+
+### 6. Iterate and Refine
+
+```go
+// Don't expect perfection on the first try
+// Generate multiple options
+temperature := 0.8
+for i := 0; i < 5; i++ {
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:       model,
+        Temperature: &temperature,
+        Prompt:      prompt,
+    })
+    fmt.Printf("Option %d: %s\n", i+1, result.Text)
+}
+```
+
+### 7. Test Different Temperatures
+
+```go
+// Low temperature (0.0-0.3): Focused, deterministic, factual
+temperature := 0.2
+
+// Medium temperature (0.4-0.7): Balanced creativity and consistency
+temperature := 0.6
+
+// High temperature (0.8-1.0): Creative, varied, exploratory
+temperature := 0.9
+```
+
+## Common Pitfalls
+
+### 1. Ambiguous Instructions
+
+```go
+// Bad
+"Make it better"
+
+// Good
+"Rewrite this slogan to be more energetic and under 5 words"
+```
+
+### 2. Conflicting Instructions
+
+```go
+// Bad - Contradictory
+"Be creative and unique, but follow these 10 exact examples"
+
+// Good - Clear expectations
+"Use these examples as inspiration for style, but create original slogans"
+```
+
+### 3. Assuming Context
+
+```go
+// Bad - No context
+"What should I do?"
+
+// Good - Full context
+"I'm creating a marketing campaign for a vegan restaurant targeting young professionals.
+What social media platforms should I focus on?"
+```
+
+## Recommended Resources
+
+Prompt Engineering is evolving rapidly, with new methods and research papers surfacing regularly. Here are some resources we recommend for learning about and experimenting with prompt engineering:
+
+- [Anthropic Prompt Engineering Guide](https://docs.anthropic.com/claude/docs/prompt-engineering)
+- [OpenAI Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
+- [Prompt Engineering Guide by Dair AI](https://www.promptingguide.ai/)
+- [Brex Prompt Engineering](https://github.com/brexhq/prompt-engineering)
+
+## Next Steps
+
+- Learn about [caching](./04-caching.mdx) to optimize repeated prompts
+- Explore [rate limiting](./06-rate-limiting.mdx) for production applications
+- See [model as router](./08-model-as-router.mdx) for dynamic model selection

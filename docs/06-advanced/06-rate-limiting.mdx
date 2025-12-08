@@ -1,0 +1,713 @@
+---
+title: Rate Limiting
+description: Learn how to rate limit your application with the Go AI SDK.
+---
+
+# Rate Limiting
+
+Rate limiting helps you protect your APIs from abuse. It involves setting a maximum threshold on the number of requests a client can make within a specified timeframe. This simple technique acts as a gatekeeper, preventing excessive usage that can degrade service performance and incur unnecessary costs.
+
+## Rate Limiting with Token Bucket (Standard Library)
+
+Go's `golang.org/x/time/rate` package provides a simple token bucket rate limiter:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "golang.org/x/time/rate"
+)
+
+// RateLimiter manages rate limits per client
+type RateLimiter struct {
+    limiters map[string]*rate.Limiter
+    mu       sync.RWMutex
+    r        rate.Limit
+    b        int
+}
+
+// NewRateLimiter creates a new rate limiter
+// r: requests per second
+// b: burst size
+func NewRateLimiter(r rate.Limit, b int) *RateLimiter {
+    return &RateLimiter{
+        limiters: make(map[string]*rate.Limiter),
+        r:        r,
+        b:        b,
+    }
+}
+
+// GetLimiter returns the rate limiter for a client
+func (rl *RateLimiter) GetLimiter(clientID string) *rate.Limiter {
+    rl.mu.Lock()
+    defer rl.mu.Unlock()
+
+    limiter, exists := rl.limiters[clientID]
+    if !exists {
+        limiter = rate.NewLimiter(rl.r, rl.b)
+        rl.limiters[clientID] = limiter
+    }
+
+    return limiter
+}
+
+// Global rate limiter: 5 requests per 30 seconds
+var rateLimiter = NewRateLimiter(rate.Limit(5.0/30.0), 5)
+
+func generateHandler(w http.ResponseWriter, r *http.Request) {
+    // Get client identifier (IP address or user ID)
+    clientIP := r.RemoteAddr
+    if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+        clientIP = forwarded
+    }
+
+    // Check rate limit
+    limiter := rateLimiter.GetLimiter(clientIP)
+    if !limiter.Allow() {
+        http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+        return
+    }
+
+    // Process request
+    var req struct {
+        Prompt string `json:"prompt"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(r.Context(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: req.Prompt,
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{
+        "text": result.Text,
+    })
+}
+
+func main() {
+    http.HandleFunc("/api/generate", generateHandler)
+
+    fmt.Println("Server listening on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## Rate Limiting with Redis (Sliding Window)
+
+For distributed systems, use Redis for shared rate limiting:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "os"
+    "strconv"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/redis/go-redis/v9"
+)
+
+type RedisRateLimiter struct {
+    client *redis.Client
+    limit  int
+    window time.Duration
+}
+
+func NewRedisRateLimiter(client *redis.Client, limit int, window time.Duration) *RedisRateLimiter {
+    return &RedisRateLimiter{
+        client: client,
+        limit:  limit,
+        window: window,
+    }
+}
+
+// Allow checks if request is allowed and increments counter
+func (rl *RedisRateLimiter) Allow(ctx context.Context, clientID string) (bool, int, error) {
+    key := fmt.Sprintf("ratelimit:%s", clientID)
+    now := time.Now().Unix()
+    windowStart := now - int64(rl.window.Seconds())
+
+    // Use Lua script for atomic operations
+    script := redis.NewScript(`
+        -- Remove old entries
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+
+        -- Count current entries
+        local count = redis.call('ZCARD', KEYS[1])
+
+        if count < tonumber(ARGV[3]) then
+            -- Add new entry
+            redis.call('ZADD', KEYS[1], ARGV[2], ARGV[2])
+            redis.call('EXPIRE', KEYS[1], ARGV[4])
+            return {1, tonumber(ARGV[3]) - count - 1}
+        else
+            return {0, 0}
+        end
+    `)
+
+    result, err := script.Run(ctx, rl.client, []string{key},
+        windowStart,                         // ARGV[1]: window start
+        now,                                 // ARGV[2]: current timestamp
+        rl.limit,                            // ARGV[3]: limit
+        int(rl.window.Seconds())+1,         // ARGV[4]: expiration
+    ).Result()
+
+    if err != nil {
+        return false, 0, err
+    }
+
+    values := result.([]interface{})
+    allowed := values[0].(int64) == 1
+    remaining := int(values[1].(int64))
+
+    return allowed, remaining, nil
+}
+
+func rateLimitHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    // Set up Redis client
+    redisClient := redis.NewClient(&redis.Options{
+        Addr: "localhost:6379",
+    })
+    defer redisClient.Close()
+
+    // Create rate limiter: 5 requests per 30 seconds
+    limiter := NewRedisRateLimiter(redisClient, 5, 30*time.Second)
+
+    // Get client ID
+    clientIP := r.RemoteAddr
+
+    // Check rate limit
+    allowed, remaining, err := limiter.Allow(ctx, clientIP)
+    if err != nil {
+        http.Error(w, "Rate limit check failed", http.StatusInternalServerError)
+        return
+    }
+
+    // Set rate limit headers
+    w.Header().Set("X-RateLimit-Limit", "5")
+    w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+
+    if !allowed {
+        w.Header().Set("Retry-After", "30")
+        http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+        return
+    }
+
+    // Process request
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello, world!",
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    fmt.Fprintf(w, result.Text)
+}
+
+func main() {
+    http.HandleFunc("/api/generate", rateLimitHandler)
+    fmt.Println("Server listening on :8080")
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+## Rate Limiting Middleware
+
+Create reusable middleware for rate limiting:
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "sync"
+
+    "golang.org/x/time/rate"
+)
+
+// RateLimitMiddleware creates middleware that rate limits requests
+func RateLimitMiddleware(requestsPerSecond float64, burst int) func(http.Handler) http.Handler {
+    type client struct {
+        limiter  *rate.Limiter
+        lastSeen time.Time
+    }
+
+    var (
+        mu      sync.Mutex
+        clients = make(map[string]*client)
+    )
+
+    // Clean up old clients periodically
+    go func() {
+        for {
+            time.Sleep(time.Minute)
+            mu.Lock()
+            for ip, client := range clients {
+                if time.Since(client.lastSeen) > 3*time.Minute {
+                    delete(clients, ip)
+                }
+            }
+            mu.Unlock()
+        }
+    }()
+
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Get client IP
+            ip := r.RemoteAddr
+            if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+                ip = forwarded
+            }
+
+            // Get or create limiter for this client
+            mu.Lock()
+            if _, exists := clients[ip]; !exists {
+                clients[ip] = &client{
+                    limiter: rate.NewLimiter(rate.Limit(requestsPerSecond), burst),
+                }
+            }
+            clients[ip].lastSeen = time.Now()
+            limiter := clients[ip].limiter
+            mu.Unlock()
+
+            // Check rate limit
+            if !limiter.Allow() {
+                http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+                return
+            }
+
+            // Continue to next handler
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func generateHandler(w http.ResponseWriter, r *http.Request) {
+    // Your handler logic here
+    fmt.Fprintf(w, "Request processed successfully")
+}
+
+func main() {
+    // Wrap handler with rate limiting middleware
+    // 5 requests per 30 seconds = 5/30 requests per second
+    handler := RateLimitMiddleware(5.0/30.0, 5)(http.HandlerFunc(generateHandler))
+
+    http.Handle("/api/generate", handler)
+    fmt.Println("Server listening on :8080")
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+## Different Rate Limiting Strategies
+
+### Fixed Window
+
+Fixed time window - simple but can have burst at window boundaries:
+
+```go
+type FixedWindowLimiter struct {
+    client *redis.Client
+    limit  int
+    window time.Duration
+}
+
+func (l *FixedWindowLimiter) Allow(ctx context.Context, key string) (bool, error) {
+    now := time.Now()
+    windowKey := fmt.Sprintf("ratelimit:%s:%d", key, now.Unix()/int64(l.window.Seconds()))
+
+    count, err := l.client.Incr(ctx, windowKey).Result()
+    if err != nil {
+        return false, err
+    }
+
+    if count == 1 {
+        l.client.Expire(ctx, windowKey, l.window)
+    }
+
+    return count <= int64(l.limit), nil
+}
+```
+
+### Sliding Window Log
+
+More accurate but uses more memory:
+
+```go
+type SlidingWindowLogLimiter struct {
+    client *redis.Client
+    limit  int
+    window time.Duration
+}
+
+func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string) (bool, error) {
+    now := time.Now()
+    windowStart := now.Add(-l.window).Unix()
+
+    // Remove old entries
+    l.client.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", windowStart))
+
+    // Count current entries
+    count, err := l.client.ZCard(ctx, key).Result()
+    if err != nil {
+        return false, err
+    }
+
+    if count < int64(l.limit) {
+        // Add new entry
+        l.client.ZAdd(ctx, key, redis.Z{
+            Score:  float64(now.Unix()),
+            Member: fmt.Sprintf("%d", now.UnixNano()),
+        })
+        l.client.Expire(ctx, key, l.window)
+        return true, nil
+    }
+
+    return false, nil
+}
+```
+
+### Token Bucket (Per User)
+
+```go
+type TokenBucketLimiter struct {
+    client      *redis.Client
+    capacity    int
+    refillRate  float64 // tokens per second
+}
+
+func (l *TokenBucketLimiter) Allow(ctx context.Context, key string) (bool, error) {
+    script := redis.NewScript(`
+        local capacity = tonumber(ARGV[1])
+        local refillRate = tonumber(ARGV[2])
+        local now = tonumber(ARGV[3])
+
+        local lastRefill = redis.call('HGET', KEYS[1], 'lastRefill')
+        local tokens = redis.call('HGET', KEYS[1], 'tokens')
+
+        if not lastRefill then
+            lastRefill = now
+            tokens = capacity
+        else
+            lastRefill = tonumber(lastRefill)
+            tokens = tonumber(tokens)
+
+            -- Calculate tokens to add
+            local elapsed = now - lastRefill
+            local tokensToAdd = elapsed * refillRate
+            tokens = math.min(capacity, tokens + tokensToAdd)
+        end
+
+        if tokens >= 1 then
+            redis.call('HSET', KEYS[1], 'tokens', tokens - 1)
+            redis.call('HSET', KEYS[1], 'lastRefill', now)
+            redis.call('EXPIRE', KEYS[1], 60)
+            return {1, tokens - 1}
+        else
+            redis.call('HSET', KEYS[1], 'lastRefill', now)
+            return {0, tokens}
+        end
+    `)
+
+    result, err := script.Run(ctx, l.client, []string{key},
+        l.capacity,
+        l.refillRate,
+        time.Now().Unix(),
+    ).Result()
+
+    if err != nil {
+        return false, err
+    }
+
+    values := result.([]interface{})
+    allowed := values[0].(int64) == 1
+
+    return allowed, nil
+}
+```
+
+## Per-User and Global Rate Limiting
+
+Implement both per-user and global limits:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "sync"
+
+    "golang.org/x/time/rate"
+)
+
+type MultiTierRateLimiter struct {
+    perUser  map[string]*rate.Limiter
+    global   *rate.Limiter
+    mu       sync.RWMutex
+}
+
+func NewMultiTierRateLimiter(globalRate rate.Limit, globalBurst int, userRate rate.Limit, userBurst int) *MultiTierRateLimiter {
+    return &MultiTierRateLimiter{
+        perUser: make(map[string]*rate.Limiter),
+        global:  rate.NewLimiter(globalRate, globalBurst),
+    }
+}
+
+func (m *MultiTierRateLimiter) Allow(userID string) (bool, string) {
+    // Check global limit first
+    if !m.global.Allow() {
+        return false, "global"
+    }
+
+    // Check per-user limit
+    m.mu.Lock()
+    if _, exists := m.perUser[userID]; !exists {
+        m.perUser[userID] = rate.NewLimiter(rate.Limit(10.0/60.0), 10) // 10 per minute
+    }
+    limiter := m.perUser[userID]
+    m.mu.Unlock()
+
+    if !limiter.Allow() {
+        return false, "user"
+    }
+
+    return true, ""
+}
+
+func rateLimitMiddleware(limiter *MultiTierRateLimiter) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Get user ID from auth or use IP
+            userID := r.Header.Get("X-User-ID")
+            if userID == "" {
+                userID = r.RemoteAddr
+            }
+
+            allowed, reason := limiter.Allow(userID)
+            if !allowed {
+                if reason == "global" {
+                    http.Error(w, "Global rate limit exceeded", http.StatusTooManyRequests)
+                } else {
+                    http.Error(w, "User rate limit exceeded", http.StatusTooManyRequests)
+                }
+                return
+            }
+
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    // Global: 100 requests per second
+    // Per user: 10 requests per minute
+    limiter := NewMultiTierRateLimiter(100, 100, rate.Limit(10.0/60.0), 10)
+
+    mux := http.NewServeMux()
+    mux.HandleFunc("/api/generate", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Request processed")
+    })
+
+    handler := rateLimitMiddleware(limiter)(mux)
+
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+## Rate Limiting for Streaming Responses
+
+Handle rate limits for streaming AI responses:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "golang.org/x/time/rate"
+)
+
+var streamLimiter = rate.NewLimiter(rate.Limit(5.0/60.0), 5) // 5 per minute
+
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+    // Check rate limit
+    if !streamLimiter.Allow() {
+        http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+        return
+    }
+
+    ctx := r.Context()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a long story...",
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+
+    flusher, _ := w.(http.Flusher)
+
+    for chunk := range stream.TextChannel {
+        fmt.Fprintf(w, "data: %s\n\n", chunk)
+        flusher.Flush()
+    }
+
+    if err := stream.Err(); err != nil {
+        fmt.Fprintf(w, "data: error: %v\n\n", err)
+    }
+}
+
+func main() {
+    http.HandleFunc("/stream", streamHandler)
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+## Best Practices
+
+### 1. Return Rate Limit Headers
+
+```go
+w.Header().Set("X-RateLimit-Limit", "5")
+w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetTime.Unix(), 10))
+
+if !allowed {
+    w.Header().Set("Retry-After", "30")
+    http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+}
+```
+
+### 2. Use Different Limits for Different Endpoints
+
+```go
+var (
+    generateLimiter = rate.NewLimiter(5.0/60.0, 5)    // 5 per minute
+    streamLimiter   = rate.NewLimiter(2.0/60.0, 2)    // 2 per minute
+    embedLimiter    = rate.NewLimiter(50.0/60.0, 50)  // 50 per minute
+)
+```
+
+### 3. Implement Graceful Degradation
+
+```go
+if !limiter.Allow() {
+    // Instead of hard failure, use a simpler/faster model
+    model, _ = provider.LanguageModel("gpt-4o-mini")
+} else {
+    model, _ = provider.LanguageModel("gpt-4")
+}
+```
+
+### 4. Clean Up Old Entries
+
+```go
+// Periodically clean up old rate limit entries
+go func() {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        mu.Lock()
+        for key, client := range clients {
+            if time.Since(client.lastSeen) > 5*time.Minute {
+                delete(clients, key)
+            }
+        }
+        mu.Unlock()
+    }
+}()
+```
+
+### 5. Monitor Rate Limit Metrics
+
+```go
+type RateLimitMetrics struct {
+    Allowed  int64
+    Rejected int64
+    mu       sync.Mutex
+}
+
+func (m *RateLimitMetrics) RecordAllowed() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.Allowed++
+}
+
+func (m *RateLimitMetrics) RecordRejected() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.Rejected++
+}
+
+func (m *RateLimitMetrics) Report() (int64, int64, float64) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    total := m.Allowed + m.Rejected
+    rejectionRate := float64(m.Rejected) / float64(total) * 100
+
+    return m.Allowed, m.Rejected, rejectionRate
+}
+```
+
+## Next Steps
+
+- Learn about [caching](./04-caching.mdx) to reduce API calls
+- Explore [middleware](../03-ai-sdk-core/40-middleware.mdx) for other cross-cutting concerns
+- See [error handling](../03-ai-sdk-core/50-error-handling.mdx) for robust error management

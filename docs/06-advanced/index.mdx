@@ -1,0 +1,48 @@
+---
+title: Advanced
+description: Learn how to use advanced functionality within the Go AI SDK
+collapsed: true
+---
+
+# Advanced
+
+This section covers advanced topics and concepts for the Go AI SDK. Working with LLMs often requires a different mental model compared to traditional software development, and Go's concurrency primitives provide powerful patterns for building production-ready AI applications.
+
+After reading these topics, you should have a better understanding of the paradigms behind the Go AI SDK and how to use them to build robust, scalable AI applications.
+
+## Topics
+
+- **[Prompt Engineering](./01-prompt-engineering.mdx)** - Learn advanced techniques for crafting effective prompts.
+
+- **[Backpressure](./03-backpressure.mdx)** - Learn how the SDK handles backpressure and cancellation with Go channels and contexts.
+
+- **[Caching](./04-caching.mdx)** - Learn how to implement caching strategies to optimize performance and reduce costs.
+
+- **[Rate Limiting](./06-rate-limiting.mdx)** - Learn how to implement rate limiting for production deployments.
+
+- **[Model as Router](./08-model-as-router.mdx)** - Learn how to use a language model as an intelligent router to select the best tool or model for each request.
+
+- **[Sequential Generations](./09-sequential-generations.mdx)** - Learn how to chain multiple AI generations together for complex workflows.
+
+## Key Concepts
+
+### Concurrency and Control Flow
+
+Go's goroutines, channels, and contexts provide natural patterns for managing AI workloads:
+- **Channels** provide automatic backpressure for streaming responses
+- **Contexts** enable clean cancellation and timeout handling
+- **Select statements** allow responsive concurrent operations
+
+### Production Patterns
+
+Building production AI applications requires:
+- Robust error handling and retry logic
+- Caching to reduce latency and costs
+- Rate limiting to prevent quota exhaustion
+- Monitoring and observability
+
+## Next Steps
+
+- Review [AI SDK Core](../03-ai-sdk-core/index.mdx) for API reference
+- Learn about [Building Agents](../03-agents/index.mdx) for autonomous workflows
+- Explore [Foundations](../02-foundations/index.mdx) for core concepts

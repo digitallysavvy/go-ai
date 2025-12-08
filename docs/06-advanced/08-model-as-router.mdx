@@ -1,0 +1,756 @@
+---
+title: Language Models as Routers
+description: Use language models to dynamically route requests to appropriate handlers
+---
+
+# Language Models as Routers
+
+Language models can act as intelligent routers, using their reasoning capabilities to determine which function or handler should process a user's request. This allows you to build applications where the model routes requests to appropriate logic based on user intent.
+
+## Probabilistic Routing with Deterministic Outputs
+
+Language models can route requests deterministically by using function calling. When provided with a set of function definitions, the model will:
+
+- Execute the function most relevant to the user query
+- Not execute any function if the query is out of scope
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "math/rand"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Define available routes as tools
+    weatherTool := types.Tool{
+        Name:        "getWeather",
+        Description: "Get the weather in a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The location to get the weather for",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            location := input["location"].(string)
+            temperature := 72 + rand.Intn(21) - 10
+            return map[string]interface{}{
+                "location":    location,
+                "temperature": temperature,
+            }, nil
+        },
+    }
+
+    // Test different queries
+    queries := []string{
+        "What is the weather in San Francisco?",     // getWeather called
+        "What is the weather in New York?",          // getWeather called
+        "What events are happening in London?",      // No function called
+    }
+
+    for _, query := range queries {
+        fmt.Printf("\nQuery: %s\n", query)
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are a friendly weather assistant!",
+            Prompt: query,
+            Tools:  []types.Tool{weatherTool},
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        if len(result.ToolCalls) > 0 {
+            fmt.Printf("Routed to: %s\n", result.ToolCalls[0].ToolName)
+        } else {
+            fmt.Println("No routing - general response")
+        }
+
+        fmt.Printf("Response: %s\n", result.Text)
+    }
+}
+```
+
+This emergent ability to choose whether a function should be executed is the model performing "reasoning". Combined with function calling, this enables language models to act as routers.
+
+## Language Models as Application Routers
+
+Traditionally, developers write explicit routing logic:
+
+```go
+// Traditional routing
+mux := http.NewServeMux()
+mux.HandleFunc("/login", handleLogin)
+mux.HandleFunc("/user/{username}", handleUserProfile)
+mux.HandleFunc("/api/events", handleEvents)
+```
+
+With language models as routers, the model determines which handler to invoke based on user intent:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+// Define application routes as tools
+func createRoutes() []types.Tool {
+    return []types.Tool{
+        {
+            Name:        "getUserProfile",
+            Description: "Get a user's profile information",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "username": map[string]interface{}{
+                        "type":        "string",
+                        "description": "The username to look up",
+                    },
+                },
+                "required": []string{"username"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                username := input["username"].(string)
+                return map[string]interface{}{
+                    "username": username,
+                    "name":     "John Doe",
+                    "email":    "john@example.com",
+                    "joined":   "2023-01-15",
+                }, nil
+            },
+        },
+        {
+            Name:        "searchEvents",
+            Description: "Search for events",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "query": map[string]interface{}{
+                        "type":        "string",
+                        "description": "Search query",
+                    },
+                    "limit": map[string]interface{}{
+                        "type":        "number",
+                        "description": "Maximum number of results",
+                    },
+                },
+                "required": []string{"query"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                query := input["query"].(string)
+                limit := 10
+                if l, ok := input["limit"].(float64); ok {
+                    limit = int(l)
+                }
+
+                return map[string]interface{}{
+                    "query":   query,
+                    "results": []string{"Event 1", "Event 2", "Event 3"},
+                    "total":   limit,
+                }, nil
+            },
+        },
+        {
+            Name:        "login",
+            Description: "Handle user authentication",
+            Parameters: map[string]interface{}{
+                "type":       "object",
+                "properties": map[string]interface{}{},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                return map[string]interface{}{
+                    "loginUrl": "/login",
+                    "message":  "Please log in to continue",
+                }, nil
+            },
+        },
+    }
+}
+
+func routeRequest(ctx context.Context, userQuery string) (*ai.GenerateTextResult, error) {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    routes := createRoutes()
+
+    return ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        System: "You are an intelligent router. Call the appropriate function based on the user's request.",
+        Prompt: userQuery,
+        Tools:  routes,
+    })
+}
+
+func main() {
+    ctx := context.Background()
+
+    queries := []string{
+        "Show me John's profile",
+        "Find upcoming tech events",
+        "I need to log in",
+    }
+
+    for _, query := range queries {
+        fmt.Printf("\n=== User Query: %s ===\n", query)
+
+        result, err := routeRequest(ctx, query)
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        if len(result.ToolCalls) > 0 {
+            fmt.Printf("Routed to: %s\n", result.ToolCalls[0].ToolName)
+            fmt.Printf("Parameters: %v\n", result.ToolCalls[0].Arguments)
+        }
+
+        fmt.Printf("Response: %s\n", result.Text)
+    }
+}
+```
+
+## Routing by Parameters
+
+Language models can extract parameters from natural language and route accordingly:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func searchArtworks(ctx context.Context, artist string) ([]string, error) {
+    // Simulated database query
+    artworks := map[string][]string{
+        "van gogh":  {"Starry Night", "Sunflowers", "Irises"},
+        "picasso":   {"Guernica", "Les Demoiselles d'Avignon", "The Weeping Woman"},
+        "monet":     {"Water Lilies", "Impression, Sunrise", "Haystacks"},
+    }
+
+    if works, exists := artworks[artist]; exists {
+        return works, nil
+    }
+
+    return []string{}, fmt.Errorf("no artworks found for %s", artist)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    searchTool := types.Tool{
+        Name:        "searchArtworks",
+        Description: "Search for artworks by a specific artist",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "artist": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The artist's name",
+                },
+            },
+            "required": []string{"artist"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            artist := input["artist"].(string)
+            works, err := searchArtworks(ctx, artist)
+            if err != nil {
+                return nil, err
+            }
+
+            return map[string]interface{}{
+                "artist":   artist,
+                "artworks": works,
+            }, nil
+        },
+    }
+
+    queries := []string{
+        "Show me paintings by Van Gogh",
+        "Find Picasso's work",
+        "What did Monet paint?",
+    }
+
+    for _, query := range queries {
+        fmt.Printf("\n=== Query: %s ===\n", query)
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            System: "You are an art search assistant.",
+            Prompt: query,
+            Tools:  []types.Tool{searchTool},
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        if len(result.ToolCalls) > 0 {
+            fmt.Printf("Routed to: %s with artist=%v\n",
+                result.ToolCalls[0].ToolName,
+                result.ToolCalls[0].Arguments["artist"])
+        }
+
+        fmt.Printf("Response: %s\n", result.Text)
+    }
+}
+```
+
+## Routing by Sequence
+
+Language models can perform multi-step routing for complex tasks:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    // Define sequential operations as tools
+    tools := []types.Tool{
+        {
+            Name:        "lookupCalendar",
+            Description: "Check the user's calendar for availability",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "date": map[string]interface{}{
+                        "type":        "string",
+                        "description": "Date to check (YYYY-MM-DD)",
+                    },
+                },
+                "required": []string{"date"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                return map[string]interface{}{
+                    "available": []string{"5:00 PM", "6:00 PM", "7:00 PM"},
+                }, nil
+            },
+        },
+        {
+            Name:        "lookupFriendsCalendar",
+            Description: "Check friends' calendars for availability",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "friends": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                    "date": map[string]interface{}{
+                        "type": "string",
+                    },
+                },
+                "required": []string{"friends", "date"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                return map[string]interface{}{
+                    "mutuallyAvailable": []string{"6:00 PM", "7:00 PM"},
+                }, nil
+            },
+        },
+        {
+            Name:        "searchNearbyPlaces",
+            Description: "Search for nearby happy hour spots",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "category": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "time": map[string]interface{}{
+                        "type": "string",
+                    },
+                },
+                "required": []string{"category"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                return map[string]interface{}{
+                    "places": []map[string]interface{}{
+                        {"name": "The Rooftop Bar", "address": "123 Main St"},
+                        {"name": "Happy Hour Spot", "address": "456 Oak Ave"},
+                    },
+                }, nil
+            },
+        },
+        {
+            Name:        "createEvent",
+            Description: "Create a calendar event and send invites",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "title": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "date": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "time": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "location": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "attendees": map[string]interface{}{
+                        "type":  "array",
+                        "items": map[string]string{"type": "string"},
+                    },
+                },
+                "required": []string{"title", "date", "time", "location", "attendees"},
+            },
+            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                return map[string]interface{}{
+                    "eventId": "evt_123",
+                    "status":  "created",
+                    "invites": "sent",
+                }, nil
+            },
+        },
+    }
+
+    // Create agent that routes through the sequence
+    eventAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        System:   "You are a helpful calendar assistant. Use the available tools to help plan events.",
+        Tools:    tools,
+        MaxSteps: 20,
+        OnToolCall: func(toolCall types.ToolCall) {
+            fmt.Printf("Step: Calling %s\n", toolCall.ToolName)
+        },
+    })
+
+    result, err := eventAgent.Execute(ctx, "Schedule a happy hour with Sarah and Mike for tomorrow evening. Find a good spot nearby.")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("\n=== Agent Response ===\n%s\n", result.Text)
+    fmt.Printf("\nCompleted in %d steps\n", len(result.Steps))
+}
+```
+
+Output:
+```
+Step: Calling lookupCalendar
+Step: Calling lookupFriendsCalendar
+Step: Calling searchNearbyPlaces
+Step: Calling createEvent
+
+=== Agent Response ===
+I've scheduled a happy hour for tomorrow at 6:00 PM at The Rooftop Bar (123 Main St).
+Invites have been sent to Sarah and Mike.
+
+Completed in 4 steps
+```
+
+## Intent-Based Routing
+
+Route to different application logic based on user intent:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type RouteHandler func(context.Context, map[string]interface{}) (interface{}, error)
+
+type Route struct {
+    Name        string
+    Description string
+    Parameters  map[string]interface{}
+    Handler     RouteHandler
+}
+
+func createApplicationRoutes() []types.Tool {
+    routes := []Route{
+        {
+            Name:        "processPayment",
+            Description: "Process a payment transaction",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "amount": map[string]interface{}{
+                        "type":        "number",
+                        "description": "Payment amount",
+                    },
+                    "currency": map[string]interface{}{
+                        "type":        "string",
+                        "description": "Currency code (USD, EUR, etc.)",
+                    },
+                },
+                "required": []string{"amount", "currency"},
+            },
+            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+                amount := params["amount"].(float64)
+                currency := params["currency"].(string)
+
+                // Process payment
+                return map[string]interface{}{
+                    "transactionId": "txn_123",
+                    "amount":        amount,
+                    "currency":      currency,
+                    "status":        "success",
+                }, nil
+            },
+        },
+        {
+            Name:        "getOrderStatus",
+            Description: "Check the status of an order",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "orderId": map[string]interface{}{
+                        "type":        "string",
+                        "description": "Order ID to check",
+                    },
+                },
+                "required": []string{"orderId"},
+            },
+            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+                orderId := params["orderId"].(string)
+
+                return map[string]interface{}{
+                    "orderId": orderId,
+                    "status":  "shipped",
+                    "eta":     "2024-01-15",
+                }, nil
+            },
+        },
+        {
+            Name:        "requestRefund",
+            Description: "Request a refund for an order",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "orderId": map[string]interface{}{
+                        "type": "string",
+                    },
+                    "reason": map[string]interface{}{
+                        "type": "string",
+                    },
+                },
+                "required": []string{"orderId", "reason"},
+            },
+            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+                orderId := params["orderId"].(string)
+                reason := params["reason"].(string)
+
+                return map[string]interface{}{
+                    "refundId": "ref_456",
+                    "orderId":  orderId,
+                    "reason":   reason,
+                    "status":   "processing",
+                }, nil
+            },
+        },
+    }
+
+    // Convert routes to tools
+    var tools []types.Tool
+    for _, route := range routes {
+        r := route // Capture for closure
+        tools = append(tools, types.Tool{
+            Name:        r.Name,
+            Description: r.Description,
+            Parameters:  r.Parameters,
+            Execute:     r.Handler,
+        })
+    }
+
+    return tools
+}
+
+func handleUserQuery(ctx context.Context, query string) error {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    tools := createApplicationRoutes()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        System: "You are a customer service assistant. Route user requests to the appropriate function.",
+        Prompt: query,
+        Tools:  tools,
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Printf("Query: %s\n", query)
+    if len(result.ToolCalls) > 0 {
+        fmt.Printf("Routed to: %s\n", result.ToolCalls[0].ToolName)
+        fmt.Printf("Parameters: %v\n", result.ToolCalls[0].Arguments)
+    }
+    fmt.Printf("Response: %s\n\n", result.Text)
+
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    queries := []string{
+        "I need to pay $50 in USD",
+        "Where is my order #12345?",
+        "I want to return order #67890 because it's damaged",
+    }
+
+    for _, query := range queries {
+        if err := handleUserQuery(ctx, query); err != nil {
+            log.Fatal(err)
+        }
+    }
+}
+```
+
+## Best Practices
+
+### 1. Clear Tool Descriptions
+
+```go
+// Good - Clear and specific
+types.Tool{
+    Name:        "searchProducts",
+    Description: "Search for products in the catalog by name, category, or description. Returns up to 10 matching products.",
+}
+
+// Bad - Vague
+types.Tool{
+    Name:        "search",
+    Description: "Search for things",
+}
+```
+
+### 2. Validate Parameters
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    amount, ok := input["amount"].(float64)
+    if !ok || amount <= 0 {
+        return nil, fmt.Errorf("invalid amount")
+    }
+
+    // Process with validated parameter
+    return processPayment(ctx, amount)
+},
+```
+
+### 3. Handle Routing Fallbacks
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: query,
+    Tools:  routes,
+})
+
+if len(result.ToolCalls) == 0 {
+    // No route matched - handle gracefully
+    return handleGeneralQuery(ctx, query)
+}
+```
+
+### 4. Log Routing Decisions
+
+```go
+OnToolCall: func(toolCall types.ToolCall) {
+    log.Printf("Routing: %s -> %s (params: %v)",
+        userQuery,
+        toolCall.ToolName,
+        toolCall.Arguments)
+},
+```
+
+### 5. Monitor Routing Accuracy
+
+```go
+type RoutingMetrics struct {
+    TotalRequests int64
+    RoutedCorrectly int64
+    RoutedIncorrectly int64
+}
+
+func (m *RoutingMetrics) RecordRouting(correct bool) {
+    m.TotalRequests++
+    if correct {
+        m.RoutedCorrectly++
+    } else {
+        m.RoutedIncorrectly++
+    }
+}
+```
+
+## Next Steps
+
+- Learn about [agents](../03-agents/01-overview.mdx) for multi-step routing
+- Explore [workflow patterns](../03-agents/03-workflows.mdx) for complex routing scenarios
+- See [tools and tool calling](../03-ai-sdk-core/15-tools-and-tool-calling.mdx) for more on function calling

@@ -1,0 +1,663 @@
+---
+title: Reranking
+description: Learn how to rerank documents with the Go AI SDK.
+---
+
+# Reranking
+
+Reranking is a technique used to improve search relevance by reordering a set of documents based on their relevance to a query. Unlike embedding-based similarity search, reranking models are specifically trained to understand the relationship between queries and documents, often producing more accurate relevance scores.
+
+## Reranking Documents
+
+The Go AI SDK provides the [`ai.Rerank()`](../07-reference/ai/rerank.md) function to rerank documents based on their relevance to a query.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := cohere.New(cohere.Config{APIKey: os.Getenv("COHERE_API_KEY")})
+    rerankModel, _ := provider.RerankingModel("rerank-v3.5")
+
+    documents := []string{
+        "sunny day at the beach",
+        "rainy afternoon in the city",
+        "snowy night in the mountains",
+    }
+
+    result, err := ai.Rerank(ctx, ai.RerankOptions{
+        Model:     rerankModel,
+        Query:     "talk about rain",
+        Documents: documents,
+        TopN:      2, // Return top 2 most relevant documents
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Ranked documents:")
+    for i, rank := range result.Ranking {
+        fmt.Printf("%d. [Score: %.4f] %s (original index: %d)\n",
+            i+1, rank.Score, rank.Document, rank.OriginalIndex)
+    }
+}
+
+// Output:
+// Ranked documents:
+// 1. [Score: 0.9000] rainy afternoon in the city (original index: 1)
+// 2. [Score: 0.3000] sunny day at the beach (original index: 0)
+```
+
+## Working with Structured Documents
+
+Reranking also supports structured documents (JSON objects), making it ideal for searching through databases, emails, or other structured content:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+)
+
+type Email struct {
+    From    string `json:"from"`
+    Subject string `json:"subject"`
+    Text    string `json:"text"`
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := cohere.New(cohere.Config{APIKey: os.Getenv("COHERE_API_KEY")})
+    rerankModel, _ := provider.RerankingModel("rerank-v3.5")
+
+    emails := []Email{
+        {
+            From:    "Paul Doe",
+            Subject: "Follow-up",
+            Text:    "We are happy to give you a discount of 20% on your next order.",
+        },
+        {
+            From:    "John McGill",
+            Subject: "Missing Info",
+            Text:    "Sorry, but here is the pricing information from Oracle: $5000/month",
+        },
+    }
+
+    // Convert to interface{} slice for reranking
+    documents := make([]interface{}, len(emails))
+    for i, email := range emails {
+        documents[i] = email
+    }
+
+    result, err := ai.Rerank(ctx, ai.RerankOptions{
+        Model:     rerankModel,
+        Query:     "Which pricing did we get from Oracle?",
+        Documents: documents,
+        TopN:      1,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Get most relevant document
+    if len(result.RerankedDocuments) > 0 {
+        topEmail := result.RerankedDocuments[0].(Email)
+        fmt.Printf("Most relevant email:\n")
+        fmt.Printf("From: %s\n", topEmail.From)
+        fmt.Printf("Subject: %s\n", topEmail.Subject)
+        fmt.Printf("Text: %s\n", topEmail.Text)
+    }
+}
+```
+
+## Understanding the Results
+
+The `Rerank` function returns a comprehensive result object:
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "talk about rain",
+    Documents: documents,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// result.Ranking: sorted array of RankItem structs
+// result.RerankedDocuments: documents sorted by relevance (convenience)
+// result.OriginalDocuments: original documents array
+```
+
+Each item in the `Ranking` slice contains:
+
+```go
+type RankItem struct {
+    OriginalIndex int         // Position in the original documents array
+    Score         float64     // Relevance score (typically 0-1, higher is more relevant)
+    Document      interface{} // The original document
+}
+```
+
+## Settings
+
+### Top-N Results
+
+Use `TopN` to limit the number of results returned. This is useful for retrieving only the most relevant documents:
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "relevant information",
+    Documents: []string{"doc1", "doc2", "doc3", "doc4", "doc5"},
+    TopN:      3, // Return only top 3 most relevant documents
+})
+```
+
+### Provider Options
+
+Reranking model settings can be configured using `ProviderOptions` for provider-specific parameters:
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "talk about rain",
+    Documents: documents,
+    ProviderOptions: map[string]interface{}{
+        "cohere": map[string]interface{}{
+            "maxTokensPerDoc": 1000, // Limit tokens per document
+        },
+    },
+})
+```
+
+### Retries
+
+The `Rerank` function accepts an optional `MaxRetries` parameter that you can use to set the maximum number of retries for the reranking process. It defaults to `2` retries (3 attempts in total). You can set it to `0` to disable retries.
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:      rerankModel,
+    Query:      "talk about rain",
+    Documents:  documents,
+    MaxRetries: 0, // Disable retries
+})
+```
+
+### Timeouts with Context
+
+Use Go's context for timeouts and cancellation:
+
+```go
+// Timeout after 5 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "talk about rain",
+    Documents: documents,
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Reranking operation timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+### Custom Headers
+
+The `Rerank` function accepts an optional `Headers` parameter that you can use to add custom headers to the reranking request:
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "talk about rain",
+    Documents: documents,
+    Headers: map[string]string{
+        "X-Custom-Header": "custom-value",
+    },
+})
+```
+
+## Response Information
+
+The `Rerank` function returns response information that includes the raw provider response:
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Query:     "talk about rain",
+    Documents: documents,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Response ID: %s\n", result.Response.ID)
+fmt.Printf("Model: %s\n", result.Response.ModelID)
+fmt.Printf("Timestamp: %v\n", result.Response.Timestamp)
+```
+
+## Practical Examples
+
+### RAG with Reranking
+
+Combine embeddings with reranking for improved retrieval:
+
+```go
+func retrieveWithReranking(
+    ctx context.Context,
+    query string,
+    documents []string,
+    embeddingModel ai.EmbeddingModel,
+    rerankModel ai.RerankingModel,
+) ([]string, error) {
+    // Step 1: Embed query and documents
+    queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: embeddingModel,
+        Input: query,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    docsResult, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model:  embeddingModel,
+        Inputs: documents,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Step 2: Find top candidates using embedding similarity
+    rankings := ai.RankBySimilarity(queryResult.Embedding, docsResult.Embeddings)
+
+    // Get top 10 candidates
+    topN := 10
+    if len(rankings) < topN {
+        topN = len(rankings)
+    }
+
+    candidates := make([]string, topN)
+    for i := 0; i < topN; i++ {
+        candidates[i] = documents[rankings[i].Index]
+    }
+
+    // Step 3: Rerank candidates for more accurate ordering
+    rerankResult, err := ai.Rerank(ctx, ai.RerankOptions{
+        Model:     rerankModel,
+        Query:     query,
+        Documents: toInterfaceSlice(candidates),
+        TopN:      3, // Get top 3 most relevant
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Convert back to strings
+    finalResults := make([]string, len(rerankResult.RerankedDocuments))
+    for i, doc := range rerankResult.RerankedDocuments {
+        finalResults[i] = doc.(string)
+    }
+
+    return finalResults, nil
+}
+
+func toInterfaceSlice(strs []string) []interface{} {
+    result := make([]interface{}, len(strs))
+    for i, s := range strs {
+        result[i] = s
+    }
+    return result
+}
+```
+
+### Semantic Search with Reranking
+
+Build a robust search system:
+
+```go
+type Document struct {
+    ID      string
+    Title   string
+    Content string
+}
+
+type SearchEngine struct {
+    documents     []Document
+    embeddings    [][]float64
+    embeddingModel ai.EmbeddingModel
+    rerankModel    ai.RerankingModel
+}
+
+func (se *SearchEngine) Search(ctx context.Context, query string, limit int) ([]Document, error) {
+    // Embed query
+    queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: se.embeddingModel,
+        Input: query,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Find top candidates using embeddings (fast first pass)
+    rankings := ai.RankBySimilarity(queryResult.Embedding, se.embeddings)
+
+    candidateCount := min(limit*3, len(rankings)) // Get 3x candidates for reranking
+    candidates := make([]Document, candidateCount)
+    candidateTexts := make([]interface{}, candidateCount)
+
+    for i := 0; i < candidateCount; i++ {
+        candidates[i] = se.documents[rankings[i].Index]
+        candidateTexts[i] = candidates[i].Content
+    }
+
+    // Rerank for accuracy (precise second pass)
+    rerankResult, err := ai.Rerank(ctx, ai.RerankOptions{
+        Model:     se.rerankModel,
+        Query:     query,
+        Documents: candidateTexts,
+        TopN:      limit,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Return reranked documents
+    results := make([]Document, len(rerankResult.RerankedDocuments))
+    for i, doc := range rerankResult.RerankedDocuments {
+        // Find original document
+        content := doc.(string)
+        for _, candidate := range candidates {
+            if candidate.Content == content {
+                results[i] = candidate
+                break
+            }
+        }
+    }
+
+    return results, nil
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+```
+
+### Multi-Query Reranking
+
+Rerank with multiple related queries:
+
+```go
+func rerankWithMultipleQueries(
+    ctx context.Context,
+    queries []string,
+    documents []string,
+    rerankModel ai.RerankingModel,
+) ([]string, error) {
+    // Aggregate scores from multiple queries
+    scoreMap := make(map[int]float64)
+
+    for _, query := range queries {
+        result, err := ai.Rerank(ctx, ai.RerankOptions{
+            Model:     rerankModel,
+            Query:     query,
+            Documents: toInterfaceSlice(documents),
+        })
+        if err != nil {
+            return nil, err
+        }
+
+        // Accumulate scores
+        for _, rank := range result.Ranking {
+            scoreMap[rank.OriginalIndex] += rank.Score
+        }
+    }
+
+    // Sort by aggregated scores
+    type scoredDoc struct {
+        index int
+        score float64
+    }
+
+    scored := make([]scoredDoc, 0, len(scoreMap))
+    for idx, score := range scoreMap {
+        scored = append(scored, scoredDoc{index: idx, score: score / float64(len(queries))})
+    }
+
+    sort.Slice(scored, func(i, j int) bool {
+        return scored[i].score > scored[j].score
+    })
+
+    // Return sorted documents
+    results := make([]string, len(scored))
+    for i, s := range scored {
+        results[i] = documents[s.index]
+    }
+
+    return results, nil
+}
+```
+
+### Filtering Before Reranking
+
+Filter documents before reranking to improve efficiency:
+
+```go
+func searchWithFiltering(
+    ctx context.Context,
+    query string,
+    documents []Document,
+    filters map[string]interface{},
+    rerankModel ai.RerankingModel,
+) ([]Document, error) {
+    // Filter documents first
+    var filtered []Document
+    for _, doc := range documents {
+        if matchesFilters(doc, filters) {
+            filtered = append(filtered, doc)
+        }
+    }
+
+    if len(filtered) == 0 {
+        return nil, nil
+    }
+
+    // Prepare for reranking
+    docTexts := make([]interface{}, len(filtered))
+    for i, doc := range filtered {
+        docTexts[i] = doc.Content
+    }
+
+    // Rerank filtered results
+    result, err := ai.Rerank(ctx, ai.RerankOptions{
+        Model:     rerankModel,
+        Query:     query,
+        Documents: docTexts,
+        TopN:      10,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Map back to original documents
+    reranked := make([]Document, len(result.RerankedDocuments))
+    for i, doc := range result.RerankedDocuments {
+        content := doc.(string)
+        for _, filteredDoc := range filtered {
+            if filteredDoc.Content == content {
+                reranked[i] = filteredDoc
+                break
+            }
+        }
+    }
+
+    return reranked, nil
+}
+
+func matchesFilters(doc Document, filters map[string]interface{}) bool {
+    // Implement your filtering logic here
+    return true
+}
+```
+
+## Reranking Providers & Models
+
+Several providers offer reranking models:
+
+| Provider | Model | Description |
+|----------|-------|-------------|
+| **Cohere** | `rerank-v3.5` | Latest multilingual reranking model |
+| **Cohere** | `rerank-english-v3.0` | English-optimized reranking |
+| **Cohere** | `rerank-multilingual-v3.0` | Multilingual reranking |
+| **Amazon Bedrock** | `amazon.rerank-v1:0` | Amazon's reranking model |
+| **Amazon Bedrock** | `cohere.rerank-v3-5:0` | Cohere via Bedrock |
+| **Together.ai** | `Salesforce/Llama-Rank-v1` | Llama-based reranking |
+| **Together.ai** | `mixedbread-ai/Mxbai-Rerank-Large-V2` | Mixedbread reranking |
+
+### Example with Different Providers
+
+```go
+// Cohere
+cohereProvider := cohere.New(cohere.Config{APIKey: os.Getenv("COHERE_API_KEY")})
+cohereModel, _ := cohereProvider.RerankingModel("rerank-v3.5")
+
+// Bedrock
+bedrockProvider := bedrock.New(bedrock.Config{
+    Region: "us-east-1",
+})
+bedrockModel, _ := bedrockProvider.RerankingModel("amazon.rerank-v1:0")
+
+// Together.ai
+togetherProvider := together.New(together.Config{APIKey: os.Getenv("TOGETHER_API_KEY")})
+togetherModel, _ := togetherProvider.RerankingModel("Salesforce/Llama-Rank-v1")
+
+// Use any model with the same API
+result, _ := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     cohereModel, // or bedrockModel, or togetherModel
+    Query:     "query",
+    Documents: documents,
+})
+```
+
+## Performance Optimization
+
+### Batch Reranking
+
+For large document sets, batch process for efficiency:
+
+```go
+func rerankLargeDataset(
+    ctx context.Context,
+    query string,
+    documents []string,
+    rerankModel ai.RerankingModel,
+    batchSize int,
+) ([]string, error) {
+    var allResults []RankItem
+
+    for i := 0; i < len(documents); i += batchSize {
+        end := i + batchSize
+        if end > len(documents) {
+            end = len(documents)
+        }
+
+        batch := documents[i:end]
+        result, err := ai.Rerank(ctx, ai.RerankOptions{
+            Model:     rerankModel,
+            Query:     query,
+            Documents: toInterfaceSlice(batch),
+        })
+        if err != nil {
+            return nil, err
+        }
+
+        // Adjust indices for global ordering
+        for _, rank := range result.Ranking {
+            rank.OriginalIndex += i
+            allResults = append(allResults, rank)
+        }
+
+        fmt.Printf("Processed %d/%d documents\n", min(end, len(documents)), len(documents))
+    }
+
+    // Sort all results by score
+    sort.Slice(allResults, func(i, j int) bool {
+        return allResults[i].Score > allResults[j].Score
+    })
+
+    // Convert to string slice
+    reranked := make([]string, len(allResults))
+    for i, rank := range allResults {
+        reranked[i] = documents[rank.OriginalIndex]
+    }
+
+    return reranked, nil
+}
+```
+
+## Best Practices
+
+1. **Use with Embeddings**: Combine reranking with embedding-based retrieval for best results
+2. **Limit Candidates**: Rerank only top-N candidates from initial retrieval (typically 10-100)
+3. **Set TopN**: Use `TopN` to limit results and reduce latency
+4. **Handle Errors**: Implement retry logic for transient failures
+5. **Monitor Performance**: Track reranking latency and adjust batch sizes
+6. **Cache Results**: Cache reranking results for repeated queries
+7. **Use Context**: Always pass context for cancellation and timeouts
+8. **Filter First**: Apply filters before reranking to reduce processing
+9. **Provider Choice**: Choose provider based on language and use case
+10. **Score Thresholds**: Consider score thresholds for quality filtering
+
+## When to Use Reranking
+
+**Use Reranking When:**
+- You need high precision for top results
+- Working with multi-modal or structured data
+- Initial retrieval returns many candidates
+- Query-document relationship is complex
+- Building production search systems
+
+**Use Embeddings When:**
+- Speed is critical
+- Working with large document sets (millions+)
+- Semantic similarity is sufficient
+- Building initial retrieval stage
+
+**Best Practice**: Use embeddings for fast initial retrieval, then rerank top candidates for precision.
+
+## Next Steps
+
+- Learn about [Image Generation](./07-image-generation.md)
+- Explore [Advanced RAG Patterns](../06-advanced/01-prompt-engineering.md)
+- See [Embeddings](./05-embeddings.md)
+
+## See Also
+
+- [Embeddings](./05-embeddings.md)
+- [Providers](../providers/01-overview.md)
+- [API Reference: Rerank](../07-reference/ai/rerank.md)

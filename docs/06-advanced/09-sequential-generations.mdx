@@ -1,0 +1,709 @@
+---
+title: Sequential Generations
+description: Learn how to implement sequential generations ("chains") with the Go AI SDK
+---
+
+# Sequential Generations
+
+When working with the Go AI SDK, you may want to create sequences of generations (often referred to as "chains" or "pipes"), where the output of one becomes the input for the next. This can be useful for creating more complex AI-powered workflows or for breaking down larger tasks into smaller, more manageable steps.
+
+## Basic Sequential Generations
+
+In a sequential chain, the output of one generation is directly used as input for the next generation. This allows you to create a series of dependent generations, where each step builds upon the previous one.
+
+Here's a basic example:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func sequentialActions(ctx context.Context) error {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Step 1: Generate blog post ideas
+    fmt.Println("=== Step 1: Generating Ideas ===")
+    ideasResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Generate 10 ideas for a blog post about making spaghetti.",
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Println("Generated Ideas:")
+    fmt.Println(ideasResult.Text)
+    fmt.Println()
+
+    // Step 2: Pick the best idea
+    fmt.Println("=== Step 2: Selecting Best Idea ===")
+    bestIdeaResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: fmt.Sprintf(`Here are some blog post ideas about making spaghetti:
+%s
+
+Pick the best idea from the list above and explain why it's the best.`, ideasResult.Text),
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Println("Best Idea:")
+    fmt.Println(bestIdeaResult.Text)
+    fmt.Println()
+
+    // Step 3: Generate an outline
+    fmt.Println("=== Step 3: Creating Outline ===")
+    outlineResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: fmt.Sprintf(`We've chosen the following blog post idea about making spaghetti:
+%s
+
+Create a detailed outline for a blog post based on this idea.`, bestIdeaResult.Text),
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Println("Blog Post Outline:")
+    fmt.Println(outlineResult.Text)
+
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    if err := sequentialActions(ctx); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+In this example, we:
+1. Generate ideas for a blog post
+2. Pick the best idea from the generated list
+3. Create an outline based on the selected idea
+
+Each step uses the output from the previous step as input for the next generation.
+
+## Sequential Refinement Pattern
+
+Iteratively refine content through multiple generations:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func refineContent(ctx context.Context, initialContent string, iterations int) (string, error) {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    currentContent := initialContent
+
+    for i := 0; i < iterations; i++ {
+        fmt.Printf("\n=== Refinement Iteration %d ===\n", i+1)
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model: model,
+            Prompt: fmt.Sprintf(`Review and improve this text:
+
+%s
+
+Make it more concise, clear, and impactful. Return only the improved version.`, currentContent),
+        })
+        if err != nil {
+            return "", err
+        }
+
+        currentContent = result.Text
+        fmt.Println(currentContent)
+    }
+
+    return currentContent, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    initialText := `The process of making spaghetti is something that many people enjoy doing.
+It involves boiling water in a pot, adding salt to the water, putting the spaghetti noodles
+into the boiling water, and then waiting for them to cook for the appropriate amount of time
+before draining the water from the pot.`
+
+    fmt.Println("=== Initial Text ===")
+    fmt.Println(initialText)
+
+    finalText, err := refineContent(ctx, initialText, 3)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("\n=== Final Refined Text ===")
+    fmt.Println(finalText)
+}
+```
+
+## Extract, Transform, Load (ETL) Pattern
+
+Chain generations for data processing pipelines:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type ExtractedData struct {
+    Title       string   `json:"title"`
+    KeyPoints   []string `json:"keyPoints"`
+    Entities    []string `json:"entities"`
+}
+
+type TransformedData struct {
+    Summary     string `json:"summary"`
+    Category    string `json:"category"`
+    Sentiment   string `json:"sentiment"`
+}
+
+func extractData(ctx context.Context, model provider.LanguageModel, rawText string) (*ExtractedData, error) {
+    fmt.Println("=== Step 1: Extract Data ===")
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model: model,
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "title": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The main title or topic",
+                },
+                "keyPoints": map[string]interface{}{
+                    "type":        "array",
+                    "items":       map[string]string{"type": "string"},
+                    "description": "Key points from the text",
+                },
+                "entities": map[string]interface{}{
+                    "type":        "array",
+                    "items":       map[string]string{"type": "string"},
+                    "description": "Important entities mentioned",
+                },
+            },
+            "required": []string{"title", "keyPoints", "entities"},
+        },
+        Prompt: fmt.Sprintf("Extract structured data from this text:\n\n%s", rawText),
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    var extracted ExtractedData
+    if err := result.Object.Unmarshal(&extracted); err != nil {
+        return nil, err
+    }
+
+    fmt.Printf("Extracted: %+v\n\n", extracted)
+    return &extracted, nil
+}
+
+func transformData(ctx context.Context, model provider.LanguageModel, extracted *ExtractedData) (*TransformedData, error) {
+    fmt.Println("=== Step 2: Transform Data ===")
+
+    extractedJSON, _ := json.Marshal(extracted)
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model: model,
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "summary": map[string]interface{}{
+                    "type":        "string",
+                    "description": "A one-sentence summary",
+                },
+                "category": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The category this belongs to",
+                },
+                "sentiment": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"positive", "neutral", "negative"},
+                },
+            },
+            "required": []string{"summary", "category", "sentiment"},
+        },
+        Prompt: fmt.Sprintf("Transform this extracted data into a summary:\n\n%s", string(extractedJSON)),
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    var transformed TransformedData
+    if err := result.Object.Unmarshal(&transformed); err != nil {
+        return nil, err
+    }
+
+    fmt.Printf("Transformed: %+v\n\n", transformed)
+    return &transformed, nil
+}
+
+func loadData(ctx context.Context, extracted *ExtractedData, transformed *TransformedData) error {
+    fmt.Println("=== Step 3: Load Data ===")
+
+    // Simulate saving to database
+    fmt.Printf("Saving to database:\n")
+    fmt.Printf("  Title: %s\n", extracted.Title)
+    fmt.Printf("  Summary: %s\n", transformed.Summary)
+    fmt.Printf("  Category: %s\n", transformed.Category)
+    fmt.Printf("  Sentiment: %s\n", transformed.Sentiment)
+    fmt.Printf("  Key Points: %v\n", extracted.KeyPoints)
+
+    return nil
+}
+
+func etlPipeline(ctx context.Context, rawText string) error {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Extract
+    extracted, err := extractData(ctx, model, rawText)
+    if err != nil {
+        return err
+    }
+
+    // Transform
+    transformed, err := transformData(ctx, model, extracted)
+    if err != nil {
+        return err
+    }
+
+    // Load
+    return loadData(ctx, extracted, transformed)
+}
+
+func main() {
+    ctx := context.Background()
+
+    rawText := `Breaking: Major tech company announces new AI breakthrough.
+The revolutionary system achieves unprecedented accuracy in natural language understanding.
+Researchers say this could transform how we interact with technology.
+Industry experts are calling it a game-changer for artificial intelligence.`
+
+    if err := etlPipeline(ctx, rawText); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+## Multi-Model Sequential Pipeline
+
+Use different models for different steps:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func multiModelPipeline(ctx context.Context, userQuery string) error {
+    // Use fast model for classification
+    openaiProvider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    fastModel, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+
+    fmt.Println("=== Step 1: Classify Query (Fast Model) ===")
+    classifyResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  fastModel,
+        Prompt: fmt.Sprintf("Classify this query as 'technical', 'creative', or 'analytical':\n\n%s", userQuery),
+    })
+    if err != nil {
+        return err
+    }
+
+    classification := classifyResult.Text
+    fmt.Printf("Classification: %s\n\n", classification)
+
+    // Use appropriate model based on classification
+    anthropicProvider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    var processingModel provider.LanguageModel
+    if classification == "technical" {
+        processingModel, _ = openaiProvider.LanguageModel("gpt-4")
+    } else {
+        processingModel, _ = anthropicProvider.LanguageModel("claude-sonnet-4-5")
+    }
+
+    fmt.Println("=== Step 2: Process Query (Specialized Model) ===")
+    processResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  processingModel,
+        Prompt: userQuery,
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Printf("Response: %s\n\n", processResult.Text)
+
+    // Use fast model for summary
+    fmt.Println("=== Step 3: Summarize (Fast Model) ===")
+    summaryResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  fastModel,
+        Prompt: fmt.Sprintf("Summarize this in one sentence:\n\n%s", processResult.Text),
+    })
+    if err != nil {
+        return err
+    }
+
+    fmt.Printf("Summary: %s\n", summaryResult.Text)
+
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    if err := multiModelPipeline(ctx, "Explain quantum entanglement and its applications in computing"); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+## Error Handling in Chains
+
+Handle errors gracefully in sequential pipelines:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type PipelineStep struct {
+    Name        string
+    Execute     func(context.Context, string) (string, error)
+    RetryCount  int
+    SkipOnError bool
+}
+
+func runPipeline(ctx context.Context, steps []PipelineStep, initialInput string) (string, error) {
+    currentInput := initialInput
+
+    for i, step := range steps {
+        fmt.Printf("\n=== Step %d: %s ===\n", i+1, step.Name)
+
+        var result string
+        var err error
+
+        // Retry logic
+        for attempt := 0; attempt <= step.RetryCount; attempt++ {
+            if attempt > 0 {
+                fmt.Printf("Retry attempt %d/%d\n", attempt, step.RetryCount)
+            }
+
+            result, err = step.Execute(ctx, currentInput)
+            if err == nil {
+                break
+            }
+
+            if attempt == step.RetryCount {
+                if step.SkipOnError {
+                    fmt.Printf("Error (skipping): %v\n", err)
+                    result = currentInput // Use previous input
+                    break
+                } else {
+                    return "", fmt.Errorf("step %s failed after %d retries: %w", step.Name, step.RetryCount, err)
+                }
+            }
+        }
+
+        currentInput = result
+        fmt.Printf("Output: %s\n", result)
+    }
+
+    return currentInput, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    steps := []PipelineStep{
+        {
+            Name:       "Generate Draft",
+            RetryCount: 2,
+            Execute: func(ctx context.Context, input string) (string, error) {
+                result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                    Model:  model,
+                    Prompt: fmt.Sprintf("Write a draft about: %s", input),
+                })
+                if err != nil {
+                    return "", err
+                }
+                return result.Text, nil
+            },
+        },
+        {
+            Name:        "Add Examples",
+            RetryCount:  1,
+            SkipOnError: true, // Skip if this fails
+            Execute: func(ctx context.Context, input string) (string, error) {
+                result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                    Model:  model,
+                    Prompt: fmt.Sprintf("Add 2 examples to this text:\n\n%s", input),
+                })
+                if err != nil {
+                    return "", err
+                }
+                return result.Text, nil
+            },
+        },
+        {
+            Name:       "Polish",
+            RetryCount: 2,
+            Execute: func(ctx context.Context, input string) (string, error) {
+                result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                    Model:  model,
+                    Prompt: fmt.Sprintf("Polish and improve this text:\n\n%s", input),
+                })
+                if err != nil {
+                    return "", err
+                }
+                return result.Text, nil
+            },
+        },
+    }
+
+    finalResult, err := runPipeline(ctx, steps, "How to make spaghetti")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("\n=== Final Result ===")
+    fmt.Println(finalResult)
+}
+```
+
+## Parallel Sequential Branches
+
+Execute multiple sequential chains in parallel:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type ChainResult struct {
+    Name   string
+    Output string
+    Error  error
+}
+
+func executeChain(ctx context.Context, name string, steps []string) ChainResult {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    currentOutput := ""
+
+    for i, step := range steps {
+        var prompt string
+        if i == 0 {
+            prompt = step
+        } else {
+            prompt = fmt.Sprintf("%s\n\nPrevious output:\n%s", step, currentOutput)
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+        if err != nil {
+            return ChainResult{Name: name, Error: err}
+        }
+
+        currentOutput = result.Text
+    }
+
+    return ChainResult{Name: name, Output: currentOutput}
+}
+
+func main() {
+    ctx := context.Background()
+
+    chains := map[string][]string{
+        "Technical": {
+            "Generate a technical article about quantum computing",
+            "Add code examples to the article",
+            "Write a technical summary",
+        },
+        "Marketing": {
+            "Generate marketing copy for a tech product",
+            "Add emotional appeal",
+            "Create a call to action",
+        },
+        "Educational": {
+            "Explain quantum computing for beginners",
+            "Add visual descriptions",
+            "Create quiz questions",
+        },
+    }
+
+    var wg sync.WaitGroup
+    results := make(chan ChainResult, len(chains))
+
+    // Execute chains in parallel
+    for name, steps := range chains {
+        wg.Add(1)
+        go func(chainName string, chainSteps []string) {
+            defer wg.Done()
+            fmt.Printf("Starting chain: %s\n", chainName)
+            result := executeChain(ctx, chainName, chainSteps)
+            results <- result
+        }(name, steps)
+    }
+
+    // Wait and collect results
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+
+    // Process results
+    fmt.Println("\n=== Results ===")
+    for result := range results {
+        if result.Error != nil {
+            log.Printf("Chain %s failed: %v", result.Name, result.Error)
+        } else {
+            fmt.Printf("\n--- %s Chain ---\n%s\n", result.Name, result.Output)
+        }
+    }
+}
+```
+
+## Best Practices
+
+### 1. Clear Step Descriptions
+
+```go
+// Good - Clear purpose
+fmt.Println("=== Step 1: Extract Key Information ===")
+fmt.Println("=== Step 2: Analyze Sentiment ===")
+fmt.Println("=== Step 3: Generate Summary ===")
+```
+
+### 2. Validate Intermediate Results
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    return fmt.Errorf("step failed: %w", err)
+}
+
+if result.Text == "" {
+    return fmt.Errorf("step produced empty output")
+}
+```
+
+### 3. Use Context for Cancellation
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+// All steps respect the timeout
+step1, err := generateStep1(ctx, input)
+step2, err := generateStep2(ctx, step1)
+```
+
+### 4. Log Progress
+
+```go
+log.Printf("Pipeline started with input: %s", initialInput)
+log.Printf("Step 1 completed: %d tokens used", result1.Usage.TotalTokens)
+log.Printf("Step 2 completed: %d tokens used", result2.Usage.TotalTokens)
+log.Printf("Pipeline completed: total %d tokens", totalTokens)
+```
+
+### 5. Consider Caching
+
+```go
+// Cache intermediate results to avoid re-computation
+cacheKey := fmt.Sprintf("step1:%s", hash(input))
+if cached, found := cache.Get(cacheKey); found {
+    return cached, nil
+}
+
+result, err := executeStep(ctx, input)
+cache.Set(cacheKey, result, 1*time.Hour)
+return result, err
+```
+
+## Next Steps
+
+- Learn about [agents](../03-agents/01-overview.mdx) for automated sequential workflows
+- Explore [workflow patterns](../03-agents/03-workflows.mdx) for complex multi-step processes
+- See [caching](./04-caching.mdx) to optimize repeated sequential operations

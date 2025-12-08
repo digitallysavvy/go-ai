@@ -1,0 +1,328 @@
+---
+title: Navigating the Library
+description: Learn how to navigate the Go AI SDK and choose the right tools for your needs.
+---
+
+# Navigating the Library
+
+The Go AI SDK is a powerful toolkit for building AI applications in Go. This page will help you pick the right tools for your requirements.
+
+## SDK Structure
+
+The Go AI SDK is organized into several key packages:
+
+### Core Packages
+
+- **`pkg/ai`** - Main package with high-level functions (`GenerateText`, `StreamText`, `GenerateObject`, etc.)
+- **`pkg/providers`** - All 26+ provider implementations (OpenAI, Anthropic, Google, etc.)
+- **`pkg/agents`** - Agent framework for building autonomous workflows
+- **`pkg/middleware`** - Middleware for logging, retry, telemetry
+- **`pkg/testing`** - Testing utilities and mock providers
+
+### Optional Packages
+
+- **`pkg/embeddings`** - Vector embeddings for semantic search
+- **`pkg/media`** - Image generation, speech, transcription
+- **`pkg/schema`** - JSON Schema utilities for structured output
+- **`pkg/telemetry`** - OpenTelemetry integration
+
+## Choosing the Right Tool
+
+When deciding which part of the SDK to use, consider your use case:
+
+| Package | Purpose | When to Use |
+|---------|---------|-------------|
+| **`ai.GenerateText`** | Generate text completions | Single-shot text generation, no streaming needed |
+| **`ai.StreamText`** | Stream text responses | Real-time responses, user interfaces, long generations |
+| **`ai.GenerateObject`** | Generate structured data | Type-safe JSON output, data extraction |
+| **`ai.StreamObject`** | Stream structured data | Real-time structured data with progress updates |
+| **`agents`** | Build autonomous agents | Multi-step workflows, tool calling, decision making |
+| **`middleware`** | Wrap provider calls | Logging, retry logic, observability |
+
+## Use Case Guide
+
+### Simple Text Generation
+
+For straightforward text generation without streaming:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum computing.",
+})
+```
+
+**Use when:**
+- You don't need real-time updates
+- The response is short
+- You're building batch processes
+
+### Streaming Responses
+
+For real-time streaming to users:
+
+```go
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long essay...",
+})
+
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+```
+
+**Use when:**
+- Building user-facing applications
+- Responses are long
+- You want to show progress
+- Implementing SSE or WebSocket endpoints
+
+### Structured Data Extraction
+
+For extracting structured information:
+
+```go
+type EmailSummary struct {
+    Sender    string   `json:"sender"`
+    Subject   string   `json:"subject"`
+    KeyPoints []string `json:"key_points"`
+    Priority  string   `json:"priority"`
+}
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Summarize this email: ...",
+    Output: &EmailSummary{},
+})
+
+summary := result.Object
+fmt.Printf("Priority: %s\n", summary.Priority)
+```
+
+**Use when:**
+- You need structured JSON output
+- Type safety is important
+- Building data pipelines
+- Extracting information from text
+
+### Building Agents
+
+For complex, multi-step workflows:
+
+```go
+agent := agents.New(agents.Config{
+    Model:        model,
+    Instructions: "You are a customer support agent.",
+    Tools: map[string]ai.Tool{
+        "searchKB":     searchKnowledgeBase,
+        "createTicket": createSupportTicket,
+        "checkStatus":  checkOrderStatus,
+    },
+    MaxSteps: 10,
+})
+
+result, err := agent.Execute(ctx, "Help me track my order #12345")
+```
+
+**Use when:**
+- You need multi-step reasoning
+- Agents should use external tools
+- Building autonomous workflows
+- Implementing complex business logic
+
+## Environment Compatibility
+
+The Go AI SDK works in any Go environment:
+
+| Environment | AI SDK Core | Agents | Middleware | All Features |
+|-------------|-------------|--------|------------|--------------|
+| **HTTP Server** (net/http) | ✓ | ✓ | ✓ | ✓ |
+| **Gin** | ✓ | ✓ | ✓ | ✓ |
+| **Echo** | ✓ | ✓ | ✓ | ✓ |
+| **Fiber** | ✓ | ✓ | ✓ | ✓ |
+| **gRPC** | ✓ | ✓ | ✓ | ✓ |
+| **CLI Applications** | ✓ | ✓ | ✓ | ✓ |
+| **Background Jobs** | ✓ | ✓ | ✓ | ✓ |
+| **Serverless** (Lambda, Cloud Functions) | ✓ | ✓ | ✓ | ✓ |
+
+## Provider Selection
+
+Choose the right provider for your needs:
+
+### Development
+
+For quick prototyping and development:
+- **OpenAI** - Easy to use, well-documented
+- **Anthropic** - Excellent for complex reasoning
+- **Groq** - Ultra-fast for testing
+
+### Production
+
+For production deployments:
+- **Azure OpenAI** - Enterprise SLAs and compliance
+- **Amazon Bedrock** - AWS integration and security
+- **Google Vertex AI** - GCP integration
+
+### Cost Optimization
+
+For cost-conscious applications:
+- **Groq** - Fast and affordable
+- **Together AI** - Competitive pricing
+- **Mistral** - Open models, good value
+
+### Specialized Use Cases
+
+- **Long Context**: Anthropic Claude (200K+ tokens)
+- **Code Generation**: OpenAI GPT-4, Codestral
+- **Fast Inference**: Groq, Fireworks
+- **Open Source**: Together AI, Replicate, Hugging Face
+
+## Package Import Guide
+
+### Minimum Imports
+
+For basic text generation:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+```
+
+### With Structured Output
+
+Add schema support:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+```
+
+### With Agents
+
+Include the agent framework:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/agents"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+```
+
+### With Middleware
+
+Add observability:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+```
+
+## Feature Matrix
+
+| Feature | GenerateText | StreamText | GenerateObject | StreamObject | Agents |
+|---------|--------------|------------|----------------|--------------|--------|
+| **Text Output** | ✓ | ✓ | - | - | ✓ |
+| **Streaming** | - | ✓ | - | ✓ | ✓ |
+| **Structured Output** | - | - | ✓ | ✓ | ✓ |
+| **Tool Calling** | ✓ | ✓ | - | - | ✓ |
+| **Multi-Step** | Manual | Manual | - | - | Automatic |
+| **Conversation Memory** | Manual | Manual | - | - | Automatic |
+
+## Decision Tree
+
+**Need real-time updates?**
+- Yes → Use `StreamText` or `StreamObject`
+- No → Continue
+
+**Need structured data?**
+- Yes → Use `GenerateObject` or `StreamObject`
+- No → Continue
+
+**Need multi-step workflows?**
+- Yes → Use `agents` package
+- No → Use `GenerateText`
+
+## Best Practices
+
+### 1. Always Use Context
+
+```go
+// Good - with timeout
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, options)
+```
+
+### 2. Handle Errors Properly
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    switch e := err.(type) {
+    case *ai.APIConnectionError:
+        // Retry with backoff
+    case *ai.RateLimitError:
+        // Wait and retry
+    default:
+        return err
+    }
+}
+```
+
+### 3. Use Appropriate Concurrency
+
+```go
+// Process multiple prompts concurrently
+var wg sync.WaitGroup
+semaphore := make(chan struct{}, 5) // Limit to 5 concurrent requests
+
+for _, prompt := range prompts {
+    wg.Add(1)
+    go func(p string) {
+        defer wg.Done()
+        semaphore <- struct{}{}
+        defer func() { <-semaphore }()
+
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: p,
+        })
+        // Process result
+    }(prompt)
+}
+
+wg.Wait()
+```
+
+### 4. Choose the Right Model
+
+```go
+// Fast, cheap model for simple tasks
+quickModel, _ := provider.LanguageModel("gpt-3.5-turbo")
+
+// Powerful model for complex reasoning
+smartModel, _ := provider.LanguageModel("gpt-4")
+
+// Use based on task complexity
+model := quickModel
+if isComplexTask {
+    model = smartModel
+}
+```
+
+## Next Steps
+
+- **[Go Quick Start](./02-golang.mdx)** - Build your first AI application
+- **[Foundations](../02-foundations)** - Learn core concepts
+- **[AI SDK Core](../03-ai-sdk-core)** - Explore the complete API
+- **[Agents](../03-agents)** - Build autonomous agents

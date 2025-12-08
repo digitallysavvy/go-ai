@@ -1,0 +1,638 @@
+---
+title: Error Handling
+description: Learn how to handle errors in the Go AI SDK Core
+---
+
+# Error Handling
+
+The Go AI SDK provides robust error handling with specific error types for different failure scenarios. All errors follow Go's standard error handling patterns.
+
+## Handling Regular Errors
+
+Regular errors are returned from functions and should be checked using Go's idiomatic error handling:
+
+```go
+import (
+    "context"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a vegetarian lasagna recipe for 4 people.",
+    })
+    if err != nil {
+        // Handle error
+        log.Printf("Error generating text: %v", err)
+        return
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+See [Error Types](#error-types) below for more information on the different types of errors that may be returned.
+
+## Handling Streaming Errors
+
+When errors occur during streaming, you should check for errors both while reading from the stream channel and after the stream completes.
+
+### Simple Text Streaming
+
+```go
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a vegetarian lasagna recipe for 4 people.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read from stream
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+
+    // Check for errors after stream completes
+    if err := stream.Err(); err != nil {
+        log.Printf("Stream error: %v", err)
+        return
+    }
+}
+```
+
+### Full Stream with Error Chunks
+
+Full streams support error chunks within the stream itself. You should handle both chunk errors and post-stream errors:
+
+```go
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+)
+
+func main() {
+    ctx := context.Background()
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a vegetarian lasagna recipe for 4 people.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read from full stream
+    for chunk := range stream.FullChannel {
+        switch chunk.Type {
+        case provider.ChunkTypeText:
+            fmt.Print(chunk.Text)
+
+        case provider.ChunkTypeToolCall:
+            fmt.Printf("Tool call: %s\n", chunk.ToolCall.ToolName)
+
+        case provider.ChunkTypeError:
+            // Handle error chunk
+            log.Printf("Error in stream: %v", chunk.Error)
+
+        case provider.ChunkTypeFinish:
+            fmt.Printf("\nFinished: %s\n", chunk.FinishReason)
+        }
+    }
+
+    // Check for errors after stream completes
+    if err := stream.Err(); err != nil {
+        log.Printf("Stream error: %v", err)
+        return
+    }
+}
+```
+
+## Handling Context Cancellation
+
+Go uses `context.Context` for cancellation and timeouts. When a context is canceled, operations return a context error:
+
+```go
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    // Create context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a very long story...",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+
+    // Check if operation was canceled or timed out
+    if err := stream.Err(); err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            fmt.Println("\nOperation timed out")
+        } else if ctx.Err() == context.Canceled {
+            fmt.Println("\nOperation was canceled")
+        } else {
+            fmt.Printf("\nStream error: %v\n", err)
+        }
+    }
+}
+```
+
+### OnFinish Callback with Context
+
+The `OnFinish` callback is only called when the operation completes normally. It is **not** called when the context is canceled:
+
+```go
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a story...",
+    OnFinish: func(result *ai.StreamTextResult) {
+        // Called only on normal completion, NOT on cancellation
+        fmt.Printf("Completed after %d steps\n", len(result.Steps))
+        fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+    },
+})
+
+// Handle context cancellation separately
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+
+if ctx.Err() == context.Canceled {
+    fmt.Println("Stream was canceled")
+    // Perform cleanup operations here
+}
+```
+
+## Error Types
+
+The Go AI SDK provides several specific error types for different failure scenarios. Use `errors.Is()` and `errors.As()` to check for specific error types.
+
+### Provider Error
+
+Represents an error from an AI provider (e.g., invalid API key, model not found, rate limiting):
+
+```go
+import (
+    "errors"
+    "fmt"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+if err != nil {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        fmt.Printf("Provider: %s\n", providerErr.Provider)
+        fmt.Printf("Status Code: %d\n", providerErr.StatusCode)
+        fmt.Printf("Error Code: %s\n", providerErr.ErrorCode)
+        fmt.Printf("Message: %s\n", providerErr.Message)
+        return
+    }
+}
+```
+
+### Rate Limit Error
+
+Represents a rate limit error from a provider:
+
+```go
+import (
+    "errors"
+    "time"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+if err != nil {
+    var rateLimitErr *providererrors.RateLimitError
+    if errors.As(err, &rateLimitErr) {
+        fmt.Printf("Rate limit exceeded for %s\n", rateLimitErr.Provider)
+
+        if rateLimitErr.RetryAfterSeconds != nil {
+            fmt.Printf("Retry after %d seconds\n", *rateLimitErr.RetryAfterSeconds)
+            time.Sleep(time.Duration(*rateLimitErr.RetryAfterSeconds) * time.Second)
+            // Retry the request...
+        }
+        return
+    }
+}
+```
+
+### Validation Error
+
+Represents a validation error (e.g., invalid parameters, schema validation failure):
+
+```go
+import (
+    "errors"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: invalidSchema,
+    Prompt: "Generate object",
+})
+if err != nil {
+    var validationErr *providererrors.ValidationError
+    if errors.As(err, &validationErr) {
+        fmt.Printf("Validation failed on field: %s\n", validationErr.Field)
+        fmt.Printf("Error: %s\n", validationErr.Message)
+        return
+    }
+}
+```
+
+### Tool Execution Error
+
+Represents an error during tool execution:
+
+```go
+import (
+    "errors"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Use the weather tool",
+    Tools:  []types.Tool{weatherTool},
+})
+if err != nil {
+    var toolErr *providererrors.ToolExecutionError
+    if errors.As(err, &toolErr) {
+        fmt.Printf("Tool %s failed (call ID: %s)\n", toolErr.ToolName, toolErr.ToolCallID)
+        fmt.Printf("Error: %s\n", toolErr.Message)
+        return
+    }
+}
+```
+
+### Stream Error
+
+Represents an error during streaming:
+
+```go
+import (
+    "errors"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate text",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+
+if err := stream.Err(); err != nil {
+    var streamErr *providererrors.StreamError
+    if errors.As(err, &streamErr) {
+        fmt.Printf("Stream error: %s\n", streamErr.Message)
+        return
+    }
+}
+```
+
+### Standard Errors
+
+The SDK also provides standard error variables for common cases:
+
+```go
+import (
+    "errors"
+
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+// Check for specific standard errors
+if errors.Is(err, providererrors.ErrInvalidInput) {
+    fmt.Println("Invalid input parameters")
+}
+
+if errors.Is(err, providererrors.ErrModelNotFound) {
+    fmt.Println("Model not found")
+}
+
+if errors.Is(err, providererrors.ErrProviderNotFound) {
+    fmt.Println("Provider not found")
+}
+
+if errors.Is(err, providererrors.ErrToolNotFound) {
+    fmt.Println("Tool not found")
+}
+
+if errors.Is(err, providererrors.ErrValidationFailed) {
+    fmt.Println("Validation failed")
+}
+
+if errors.Is(err, providererrors.ErrUnsupportedFeature) {
+    fmt.Println("Feature not supported by provider")
+}
+```
+
+## Comprehensive Error Handling Example
+
+Here's a complete example showing robust error handling:
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt string, maxRetries int) (*ai.GenerateTextResult, error) {
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            fmt.Printf("Retry attempt %d/%d\n", attempt, maxRetries)
+
+            // Exponential backoff
+            backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+            select {
+            case <-time.After(backoff):
+            case <-ctx.Done():
+                return nil, ctx.Err()
+            }
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+
+        if err == nil {
+            return result, nil
+        }
+
+        lastErr = err
+
+        // Handle different error types
+        var rateLimitErr *providererrors.RateLimitError
+        if errors.As(err, &rateLimitErr) {
+            // Rate limit - respect retry-after if provided
+            if rateLimitErr.RetryAfterSeconds != nil {
+                fmt.Printf("Rate limited, waiting %d seconds...\n", *rateLimitErr.RetryAfterSeconds)
+                select {
+                case <-time.After(time.Duration(*rateLimitErr.RetryAfterSeconds) * time.Second):
+                    continue
+                case <-ctx.Done():
+                    return nil, ctx.Err()
+                }
+            }
+            continue
+        }
+
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) {
+            // Check if error is retryable (5xx errors)
+            if providerErr.StatusCode >= 500 && providerErr.StatusCode < 600 {
+                fmt.Printf("Provider error %d, retrying...\n", providerErr.StatusCode)
+                continue
+            }
+            // 4xx errors are not retryable
+            return nil, fmt.Errorf("non-retryable provider error: %w", err)
+        }
+
+        // Don't retry on context errors
+        if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+            return nil, err
+        }
+
+        // Don't retry on validation errors
+        if providererrors.IsValidationError(err) {
+            return nil, fmt.Errorf("validation error: %w", err)
+        }
+    }
+
+    return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := generateWithRetry(ctx, model, "Explain quantum computing", 3)
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Always Check Errors
+
+Never ignore errors - always check and handle them appropriately:
+
+```go
+// Good
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    return fmt.Errorf("failed to generate text: %w", err)
+}
+
+// Bad
+result, _ := ai.GenerateText(ctx, options)
+```
+
+### 2. Use Error Wrapping
+
+Wrap errors to provide context:
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    return fmt.Errorf("failed to process user request: %w", err)
+}
+```
+
+### 3. Check Specific Error Types
+
+Use `errors.As()` and `errors.Is()` to check for specific errors:
+
+```go
+var rateLimitErr *providererrors.RateLimitError
+if errors.As(err, &rateLimitErr) {
+    // Handle rate limit specifically
+}
+```
+
+### 4. Handle Context Cancellation
+
+Always respect context cancellation:
+
+```go
+for chunk := range stream.TextChannel {
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+        fmt.Print(chunk)
+    }
+}
+```
+
+### 5. Use Defer for Cleanup
+
+Use defer to ensure cleanup happens even on error:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel() // Always called, even on error
+
+result, err := ai.GenerateText(ctx, options)
+// ...
+```
+
+### 6. Log Errors Appropriately
+
+Log errors with sufficient context for debugging:
+
+```go
+if err != nil {
+    log.Printf("Failed to generate text for user %s: %v", userID, err)
+    return err
+}
+```
+
+### 7. Don't Retry Non-Retryable Errors
+
+Some errors shouldn't be retried (validation errors, 4xx errors):
+
+```go
+if providererrors.IsValidationError(err) {
+    return err // Don't retry
+}
+
+var providerErr *providererrors.ProviderError
+if errors.As(err, &providerErr) && providerErr.StatusCode >= 400 && providerErr.StatusCode < 500 {
+    return err // Don't retry 4xx errors
+}
+```
+
+### 8. Implement Exponential Backoff
+
+When retrying, use exponential backoff to avoid overwhelming the service:
+
+```go
+for attempt := 0; attempt <= maxRetries; attempt++ {
+    if attempt > 0 {
+        backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+        time.Sleep(backoff)
+    }
+    // Attempt operation...
+}
+```
+
+### 9. Check Stream Errors After Completion
+
+Always check for errors after a stream completes:
+
+```go
+for chunk := range stream.TextChannel {
+    fmt.Print(chunk)
+}
+
+if err := stream.Err(); err != nil {
+    return fmt.Errorf("stream failed: %w", err)
+}
+```
+
+### 10. Use OnFinish for Success Cases Only
+
+Remember that `OnFinish` is only called on successful completion:
+
+```go
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model: model,
+    Prompt: "...",
+    OnFinish: func(result *ai.StreamTextResult) {
+        // Only called on success
+        saveToDatabase(result)
+    },
+})
+
+// Handle cancellation/errors separately
+if ctx.Err() == context.Canceled {
+    cleanupPartialResults()
+}
+```
+
+## See Also
+
+- [Generating Text](./05-generating-text.mdx)
+- [Streaming](../02-foundations/05-streaming.mdx)
+- [Settings](./25-settings.mdx)
+- [Error Types Reference](../07-reference/errors/)

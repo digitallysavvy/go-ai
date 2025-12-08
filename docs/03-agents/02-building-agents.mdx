@@ -1,0 +1,1003 @@
+---
+title: Building Agents
+description: Complete guide to creating agents with the ToolLoopAgent.
+---
+
+# Building Agents
+
+The `ToolLoopAgent` provides a structured way to encapsulate LLM configuration, tools, and behavior into reusable components. It handles the agent loop for you, allowing the LLM to call tools multiple times in sequence to accomplish complex tasks. Define agents once and use them across your application.
+
+## Why Use ToolLoopAgent?
+
+When building AI applications, you often need to:
+
+- **Reuse configurations** - Same model settings, tools, and prompts across different parts of your application
+- **Maintain consistency** - Ensure the same behavior and capabilities throughout your codebase
+- **Simplify API routes** - Reduce boilerplate in your endpoints
+- **Type safety** - Get full compile-time type checking for your agent's configuration
+
+The `ToolLoopAgent` provides a single place to define your agent's behavior.
+
+## Creating an Agent
+
+Define an agent by calling `NewToolLoopAgent` with your desired configuration:
+
+```go
+package main
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are a helpful assistant.",
+        Tools:  []types.Tool{
+            // Your tools here
+        },
+    })
+}
+```
+
+## Configuration Options
+
+The `AgentConfig` struct accepts all the same settings as `GenerateText` and `StreamText`. Configure:
+
+### Model and System Instructions
+
+```go
+package main
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are an expert software engineer.",
+    })
+}
+```
+
+### Tools
+
+Provide tools that the agent can use to accomplish tasks:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    codeAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        Tools: []types.Tool{
+            {
+                Name:        "runCode",
+                Description: "Execute Python code",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "code": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The Python code to execute",
+                        },
+                    },
+                    "required": []string{"code"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    code := input["code"].(string)
+                    // Execute code and return result
+                    return map[string]interface{}{
+                        "output": "Code executed successfully",
+                    }, nil
+                },
+            },
+        },
+    })
+}
+```
+
+### Loop Control
+
+By default, agents run for 10 steps (`MaxSteps: 10`). In each step, the model either generates text or calls a tool. If it generates text, the agent completes. If it calls a tool, the SDK executes that tool.
+
+To let agents call multiple tools in sequence, configure `MaxSteps` to allow more steps. After each tool execution, the agent triggers a new generation where the model can call another tool or generate text:
+
+```go
+package main
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        MaxSteps: 20, // Allow up to 20 steps
+    })
+}
+```
+
+Each step represents one generation (which results in either text or a tool call). The loop continues until:
+
+- A finish reason other than `FinishReasonToolCalls` is returned, or
+- A tool execution fails, or
+- A tool call needs approval (if `ToolApprovalRequired` is true), or
+- The step limit (`MaxSteps`) is reached
+
+Learn more about [loop control](/docs/03-agents/04-loop-control.mdx).
+
+### Generation Settings
+
+Control temperature, max tokens, and other generation parameters:
+
+```go
+package main
+
+import (
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    temperature := 0.7
+    maxTokens := 2000
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:       model,
+        System:      "You are a creative writer.",
+        Temperature: &temperature,
+        MaxTokens:   &maxTokens,
+    })
+}
+```
+
+## Define Agent Behavior with System Instructions
+
+System instructions define your agent's behavior, personality, and constraints. They set the context for all interactions and guide how the agent responds to user queries and uses tools.
+
+### Basic System Instructions
+
+Set the agent's role and expertise:
+
+```go
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:  model,
+    System: "You are an expert data analyst. You provide clear insights from complex data.",
+})
+```
+
+### Detailed Behavioral Instructions
+
+Provide specific guidelines for agent behavior:
+
+```go
+codeReviewAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    System: `You are a senior software engineer conducting code reviews.
+
+Your approach:
+- Focus on security vulnerabilities first
+- Identify performance bottlenecks
+- Suggest improvements for readability and maintainability
+- Be constructive and educational in your feedback
+- Always explain why something is an issue and how to fix it`,
+})
+```
+
+### Constrain Agent Behavior
+
+Set boundaries and ensure consistent behavior:
+
+```go
+customerSupportAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    System: `You are a customer support specialist for an e-commerce platform.
+
+Rules:
+- Never make promises about refunds without checking the policy
+- Always be empathetic and professional
+- If you don't know something, say so and offer to escalate
+- Keep responses concise and actionable
+- Never share internal company information`,
+    Tools: []types.Tool{
+        checkOrderStatusTool,
+        lookupPolicyTool,
+        createTicketTool,
+    },
+})
+```
+
+### Tool Usage Instructions
+
+Guide how the agent should use available tools:
+
+```go
+researchAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    System: `You are a research assistant with access to search and document tools.
+
+When researching:
+1. Always start with a broad search to understand the topic
+2. Use document analysis for detailed information
+3. Cross-reference multiple sources before drawing conclusions
+4. Cite your sources when presenting information
+5. If information conflicts, present both viewpoints`,
+    Tools: []types.Tool{
+        webSearchTool,
+        analyzeDocumentTool,
+        extractQuotesTool,
+    },
+})
+```
+
+### Format and Style Instructions
+
+Control the output format and communication style:
+
+```go
+technicalWriterAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    System: `You are a technical documentation writer.
+
+Writing style:
+- Use clear, simple language
+- Avoid jargon unless necessary
+- Structure information with headers and bullet points
+- Include code examples where relevant
+- Write in second person ("you" instead of "the user")
+
+Always format responses in Markdown.`,
+})
+```
+
+## Using an Agent
+
+Once defined, you can use your agent with its execution methods:
+
+### Execute with Simple Prompt
+
+Use `Execute()` for one-time text generation with a simple prompt:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are a helpful assistant.",
+        Tools:  []types.Tool{weatherTool},
+    })
+
+    result, err := myAgent.Execute(ctx, "What is the weather like?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Execute with Message History
+
+Use `ExecuteWithMessages()` for conversations with history:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are a helpful assistant.",
+    })
+
+    // Create conversation history
+    messages := []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What is 2+2?"},
+            },
+        },
+        {
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "2+2 equals 4."},
+            },
+        },
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What about 3+3?"},
+            },
+        },
+    }
+
+    result, err := myAgent.ExecuteWithMessages(ctx, messages)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Monitoring Agent Execution with Callbacks
+
+Monitor and debug agent behavior with callbacks:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        System:   "You are a helpful research assistant.",
+        Tools:    []types.Tool{searchTool, analysisTool},
+        MaxSteps: 15,
+
+        OnStepStart: func(stepNum int) {
+            fmt.Printf("Starting step %d\n", stepNum)
+        },
+
+        OnStepFinish: func(step types.StepResult) {
+            fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
+            fmt.Printf("  Tokens used: %d\n", step.Usage.TotalTokens)
+        },
+
+        OnToolCall: func(toolCall types.ToolCall) {
+            fmt.Printf("Calling tool: %s\n", toolCall.ToolName)
+            fmt.Printf("  Arguments: %v\n", toolCall.Arguments)
+        },
+
+        OnToolResult: func(toolResult types.ToolResult) {
+            if toolResult.Error != nil {
+                fmt.Printf("Tool %s failed: %v\n", toolResult.ToolName, toolResult.Error)
+            } else {
+                fmt.Printf("Tool %s returned: %v\n", toolResult.ToolName, toolResult.Result)
+            }
+        },
+
+        OnFinish: func(result *agent.AgentResult) {
+            fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
+            fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+        },
+    })
+
+    result, err := myAgent.Execute(ctx, "Research the latest developments in quantum computing")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("\n=== Final Answer ===")
+    fmt.Println(result.Text)
+}
+```
+
+## Tool Approval and Human-in-the-Loop
+
+Require human approval before executing tools:
+
+```go
+package main
+
+import (
+    "bufio"
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Create agent with tool approval
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are a helpful assistant with access to various tools.",
+        Tools: []types.Tool{
+            {
+                Name:        "deleteFile",
+                Description: "Delete a file from the filesystem",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "path": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The file path to delete",
+                        },
+                    },
+                    "required": []string{"path"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    path := input["path"].(string)
+                    err := os.Remove(path)
+                    if err != nil {
+                        return nil, err
+                    }
+                    return map[string]interface{}{
+                        "success": true,
+                        "message": fmt.Sprintf("Deleted file: %s", path),
+                    }, nil
+                },
+            },
+        },
+        MaxSteps:             10,
+        ToolApprovalRequired: true,
+        ToolApprover: func(toolCall types.ToolCall) bool {
+            fmt.Printf("\n=== Tool Approval Required ===\n")
+            fmt.Printf("Tool: %s\n", toolCall.ToolName)
+            fmt.Printf("Arguments: %v\n", toolCall.Arguments)
+            fmt.Print("Approve this tool call? (yes/no): ")
+
+            reader := bufio.NewReader(os.Stdin)
+            response, _ := reader.ReadString('\n')
+            response = strings.TrimSpace(strings.ToLower(response))
+
+            approved := response == "yes" || response == "y"
+            if approved {
+                fmt.Println("✓ Tool call approved")
+            } else {
+                fmt.Println("✗ Tool call rejected")
+            }
+            return approved
+        },
+    })
+
+    result, err := myAgent.Execute(ctx, "Please clean up the temp directory")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("\n=== Final Answer ===")
+    fmt.Println(result.Text)
+}
+```
+
+## Updating Agent Configuration
+
+Modify agent configuration at runtime:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:  model,
+        System: "You are a helpful assistant.",
+        Tools:  []types.Tool{},
+    })
+
+    // Update system prompt
+    myAgent.SetSystem("You are now an expert mathematician.")
+
+    // Add a tool
+    myAgent.AddTool(types.Tool{
+        Name:        "calculate",
+        Description: "Perform a calculation",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "expression": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The mathematical expression to evaluate",
+                },
+            },
+            "required": []string{"expression"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            expr := input["expression"].(string)
+            // Evaluate expression (simplified example)
+            return map[string]interface{}{
+                "result": 42,
+            }, nil
+        },
+    })
+
+    // Update max steps
+    myAgent.SetMaxSteps(20)
+
+    // Remove a tool
+    myAgent.RemoveTool("calculate")
+
+    result, err := myAgent.Execute(ctx, "Solve a complex problem")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Accessing Agent Results
+
+The `AgentResult` provides detailed information about the agent's execution:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model:    model,
+        System:   "You are a helpful assistant.",
+        Tools:    []types.Tool{weatherTool, calculatorTool},
+        MaxSteps: 15,
+    })
+
+    result, err := myAgent.Execute(ctx, "What's the weather in Paris and how many hours until sunset?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Access final text
+    fmt.Println("Final Answer:", result.Text)
+
+    // Access all steps taken
+    fmt.Printf("\nSteps taken: %d\n", len(result.Steps))
+    for _, step := range result.Steps {
+        fmt.Printf("  Step %d: %s\n", step.StepNumber, step.Text)
+        if len(step.ToolCalls) > 0 {
+            fmt.Printf("    Tool calls: %d\n", len(step.ToolCalls))
+        }
+    }
+
+    // Access tool results
+    fmt.Printf("\nTools used: %d\n", len(result.ToolResults))
+    for _, tr := range result.ToolResults {
+        if tr.Error != nil {
+            fmt.Printf("  %s: Error - %v\n", tr.ToolName, tr.Error)
+        } else {
+            fmt.Printf("  %s: Success\n", tr.ToolName)
+        }
+    }
+
+    // Access usage information
+    fmt.Printf("\nToken Usage:\n")
+    fmt.Printf("  Prompt tokens: %d\n", result.Usage.PromptTokens)
+    fmt.Printf("  Completion tokens: %d\n", result.Usage.CompletionTokens)
+    fmt.Printf("  Total tokens: %d\n", result.Usage.TotalTokens)
+
+    // Check finish reason
+    fmt.Printf("\nFinish Reason: %s\n", result.FinishReason)
+
+    // Check warnings
+    if len(result.Warnings) > 0 {
+        fmt.Printf("\nWarnings: %d\n", len(result.Warnings))
+        for _, warning := range result.Warnings {
+            fmt.Printf("  %s: %s\n", warning.Type, warning.Message)
+        }
+    }
+}
+```
+
+## Complete Example: Research Agent
+
+Here's a complete example of a research agent with tools, callbacks, and proper error handling:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create provider and model
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, err := provider.LanguageModel("claude-sonnet-4-5")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Create research agent with tools
+    researchAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        System: `You are a research assistant. Use the available tools to find and analyze information.
+
+Guidelines:
+- Start with broad searches to understand the topic
+- Use webpage fetching for detailed information
+- Synthesize information from multiple sources
+- Cite your sources in your final answer`,
+        Tools: []types.Tool{
+            {
+                Name:        "search",
+                Description: "Search the web for information",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "query": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The search query",
+                        },
+                    },
+                    "required": []string{"query"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    query := input["query"].(string)
+                    fmt.Printf("[Search] Query: %s\n", query)
+
+                    // Actual implementation would call a search API
+                    return map[string]interface{}{
+                        "results": []map[string]interface{}{
+                            {
+                                "title": "Example Result 1",
+                                "url":   "https://example.com/1",
+                                "snippet": "Sample search result...",
+                            },
+                        },
+                    }, nil
+                },
+            },
+            {
+                Name:        "fetchWebpage",
+                Description: "Fetch and return the content of a webpage",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "url": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The URL to fetch",
+                        },
+                    },
+                    "required": []string{"url"},
+                },
+                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                    url := input["url"].(string)
+                    fmt.Printf("[Fetch] URL: %s\n", url)
+
+                    resp, err := http.Get(url)
+                    if err != nil {
+                        return nil, fmt.Errorf("failed to fetch URL: %w", err)
+                    }
+                    defer resp.Body.Close()
+
+                    body, err := io.ReadAll(resp.Body)
+                    if err != nil {
+                        return nil, fmt.Errorf("failed to read response: %w", err)
+                    }
+
+                    // Actual implementation would parse and clean HTML
+                    return map[string]interface{}{
+                        "url":     url,
+                        "content": string(body),
+                    }, nil
+                },
+            },
+        },
+        MaxSteps: 15,
+
+        // Add callbacks for monitoring
+        OnStepStart: func(stepNum int) {
+            fmt.Printf("\n[Agent] Starting step %d\n", stepNum)
+        },
+
+        OnStepFinish: func(step types.StepResult) {
+            if step.Text != "" {
+                fmt.Printf("[Agent] Step %d: %s\n", step.StepNumber, step.Text)
+            }
+        },
+
+        OnToolCall: func(toolCall types.ToolCall) {
+            fmt.Printf("[Agent] Calling tool: %s\n", toolCall.ToolName)
+        },
+
+        OnFinish: func(result *agent.AgentResult) {
+            fmt.Printf("\n[Agent] Completed in %d steps\n", len(result.Steps))
+            fmt.Printf("[Agent] Total tokens: %d\n", result.Usage.TotalTokens)
+        },
+    })
+
+    // Execute agent
+    result, err := researchAgent.Execute(
+        ctx,
+        "Research the latest developments in quantum computing and provide a summary with key points",
+    )
+    if err != nil {
+        log.Fatalf("Agent execution failed: %v", err)
+    }
+
+    // Display results
+    fmt.Println("\n=== Final Answer ===")
+    fmt.Println(result.Text)
+
+    fmt.Println("\n=== Agent Statistics ===")
+    fmt.Printf("Steps: %d\n", len(result.Steps))
+    fmt.Printf("Tools used: %d\n", len(result.ToolResults))
+    fmt.Printf("Total tokens: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Finish reason: %s\n", result.FinishReason)
+}
+```
+
+## Best Practices
+
+### 1. Clear System Instructions
+
+Provide clear, specific instructions about the agent's role and behavior:
+
+```go
+// Good - Clear and specific
+agent.AgentConfig{
+    System: `You are a code review assistant. Focus on security, performance, and maintainability.
+
+Rules:
+- Identify potential bugs and security issues
+- Suggest specific improvements with code examples
+- Explain why changes are needed
+- Be constructive and educational`,
+}
+
+// Bad - Too vague
+agent.AgentConfig{
+    System: "You help with code",
+}
+```
+
+### 2. Appropriate MaxSteps
+
+Set `MaxSteps` based on task complexity:
+
+```go
+// Simple tasks - fewer steps
+agent.AgentConfig{
+    MaxSteps: 5,  // Quick Q&A, simple calculations
+}
+
+// Complex tasks - more steps
+agent.AgentConfig{
+    MaxSteps: 20, // Research, multi-step analysis
+}
+```
+
+### 3. Tool Descriptions
+
+Write clear tool descriptions that help the model understand when to use each tool:
+
+```go
+// Good - Clear purpose and usage
+types.Tool{
+    Name:        "getWeather",
+    Description: "Get current weather for a specific city. Use when user asks about weather conditions, temperature, or forecast.",
+}
+
+// Bad - Unclear
+types.Tool{
+    Name:        "getWeather",
+    Description: "Weather",
+}
+```
+
+### 4. Error Handling in Tools
+
+Always handle errors properly in tool execution functions:
+
+```go
+types.Tool{
+    Name:        "fetchData",
+    Description: "Fetch data from API",
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        // Good - Proper error handling
+        data, err := fetchFromAPI(ctx, input)
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch data: %w", err)
+        }
+        return data, nil
+    },
+}
+```
+
+### 5. Use Callbacks for Monitoring
+
+Add callbacks in development to understand agent behavior:
+
+```go
+agent.AgentConfig{
+    OnToolCall: func(toolCall types.ToolCall) {
+        log.Printf("Tool: %s, Args: %v", toolCall.ToolName, toolCall.Arguments)
+    },
+    OnToolResult: func(toolResult types.ToolResult) {
+        if toolResult.Error != nil {
+            log.Printf("Tool %s failed: %v", toolResult.ToolName, toolResult.Error)
+        }
+    },
+}
+```
+
+### 6. Context Usage
+
+Always pass and respect context for cancellation and timeouts:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+result, err := myAgent.Execute(ctx, prompt)
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        log.Println("Agent execution timed out")
+    }
+    return err
+}
+```
+
+### 7. Tool Approval for Dangerous Operations
+
+Require approval for operations that modify state or access sensitive data:
+
+```go
+agent.AgentConfig{
+    ToolApprovalRequired: true,
+    ToolApprover: func(toolCall types.ToolCall) bool {
+        // Implement your approval logic
+        return userApproves(toolCall)
+    },
+}
+```
+
+## Next Steps
+
+Now that you understand building agents, you can:
+
+- Explore [workflow patterns](./03-workflows.mdx) for structured patterns using core functions
+- Learn about [loop control](./04-loop-control.mdx) for advanced execution control
+- See [configuring call options](./05-configuring-call-options.mdx) for fine-tuning behavior

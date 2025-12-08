@@ -1,0 +1,675 @@
+---
+title: Embeddings
+description: Learn how to embed values with the Go AI SDK.
+---
+
+# Embeddings
+
+Embeddings are a way to represent words, phrases, or images as vectors in a high-dimensional space. In this space, similar words are close to each other, and the distance between words can be used to measure their similarity.
+
+## Embedding a Single Value
+
+The Go AI SDK provides the [`ai.Embed()`](../07-reference/ai/embed.md) function to embed single values, which is useful for tasks such as finding similar words or phrases or clustering text.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    embeddingModel, _ := provider.EmbeddingModel("text-embedding-3-small")
+
+    // 'Embedding' is a single embedding vector ([]float64)
+    result, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: embeddingModel,
+        Input: "sunny day at the beach",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Embedding dimensions: %d\n", len(result.Embedding))
+    fmt.Printf("First 5 values: %v\n", result.Embedding[:5])
+}
+```
+
+## Embedding Many Values
+
+When loading data, e.g. when preparing a data store for retrieval-augmented generation (RAG), it is often useful to embed many values at once (batch embedding).
+
+The Go AI SDK provides the [`ai.EmbedMany()`](../07-reference/ai/embed-many.md) function for this purpose.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    embeddingModel, _ := provider.EmbeddingModel("text-embedding-3-small")
+
+    // 'Embeddings' is a slice of embedding vectors ([][]float64).
+    // It is sorted in the same order as the input values.
+    result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model: embeddingModel,
+        Inputs: []string{
+            "sunny day at the beach",
+            "rainy afternoon in the city",
+            "snowy night in the mountains",
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
+    for i, embedding := range result.Embeddings {
+        fmt.Printf("Embedding %d: %d dimensions\n", i+1, len(embedding))
+    }
+}
+```
+
+## Embedding Similarity
+
+After embedding values, you can calculate the similarity between them using the similarity functions provided by the Go AI SDK. This is useful to e.g. find similar words or phrases in a dataset. You can also rank and filter related items based on their similarity.
+
+### Cosine Similarity
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    embeddingModel, _ := provider.EmbeddingModel("text-embedding-3-small")
+
+    result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model: embeddingModel,
+        Inputs: []string{
+            "sunny day at the beach",
+            "rainy afternoon in the city",
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Calculate cosine similarity
+    similarity := ai.CosineSimilarity(result.Embeddings[0], result.Embeddings[1])
+    fmt.Printf("Cosine similarity: %.4f\n", similarity)
+}
+```
+
+### Available Similarity Functions
+
+The Go AI SDK provides several similarity functions:
+
+```go
+// Cosine Similarity (range: -1 to 1, higher is more similar)
+similarity := ai.CosineSimilarity(embedding1, embedding2)
+
+// Euclidean Distance (lower is more similar)
+distance := ai.EuclideanDistance(embedding1, embedding2)
+
+// Dot Product (higher is more similar)
+dotProduct := ai.DotProduct(embedding1, embedding2)
+
+// Manhattan Distance (lower is more similar)
+manhattan := ai.ManhattanDistance(embedding1, embedding2)
+```
+
+### Finding Most Similar
+
+Find the most similar embedding from a list:
+
+```go
+queryResult, _ := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "ocean waves crashing",
+})
+
+candidatesResult, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model: embeddingModel,
+    Inputs: []string{
+        "sunny day at the beach",
+        "rainy afternoon in the city",
+        "snowy night in the mountains",
+        "tropical island paradise",
+    },
+})
+
+// Find most similar
+mostSimilarIdx, similarity, _ := ai.FindMostSimilar(
+    queryResult.Embedding,
+    candidatesResult.Embeddings,
+)
+
+fmt.Printf("Most similar: index %d with similarity %.4f\n", mostSimilarIdx, similarity)
+```
+
+### Ranking by Similarity
+
+Rank all embeddings by similarity:
+
+```go
+rankings := ai.RankBySimilarity(queryResult.Embedding, candidatesResult.Embeddings)
+
+fmt.Println("Rankings (most to least similar):")
+for i, rank := range rankings {
+    fmt.Printf("%d. Index %d - Similarity: %.4f\n", i+1, rank.Index, rank.Similarity)
+}
+```
+
+## Token Usage
+
+Many providers charge based on the number of tokens used to generate embeddings. Both `Embed` and `EmbedMany` provide token usage information in the `Usage` field of the result:
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Tokens used: %d\n", result.Usage.Tokens)
+```
+
+For `EmbedMany`:
+
+```go
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: []string{"text1", "text2", "text3"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Total tokens used: %d\n", result.Usage.Tokens)
+```
+
+## Settings
+
+### Provider Options
+
+Embedding model settings can be configured using `ProviderOptions` for provider-specific parameters:
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "dimensions": 512, // Reduce embedding dimensions
+        },
+    },
+})
+```
+
+### Parallel Requests
+
+The `EmbedMany` function supports parallel processing with configurable `MaxParallelCalls` to optimize performance:
+
+```go
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:            embeddingModel,
+    MaxParallelCalls: 2, // Limit parallel requests
+    Inputs: []string{
+        "sunny day at the beach",
+        "rainy afternoon in the city",
+        "snowy night in the mountains",
+    },
+})
+```
+
+### Retries
+
+Both `Embed` and `EmbedMany` accept an optional `MaxRetries` parameter that you can use to set the maximum number of retries for the embedding process. It defaults to `2` retries (3 attempts in total). You can set it to `0` to disable retries.
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model:      embeddingModel,
+    Input:      "sunny day at the beach",
+    MaxRetries: 0, // Disable retries
+})
+```
+
+### Timeouts with Context
+
+Use Go's context for timeouts and cancellation:
+
+```go
+// Timeout after 5 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Embedding operation timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+### Custom Headers
+
+Both `Embed` and `EmbedMany` accept an optional `Headers` parameter that you can use to add custom headers to the embedding request:
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+    Headers: map[string]string{
+        "X-Custom-Header": "custom-value",
+    },
+})
+```
+
+## Response Information
+
+Both `Embed` and `EmbedMany` return response information that includes the raw provider response:
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "sunny day at the beach",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Response ID: %s\n", result.Response.ID)
+fmt.Printf("Model: %s\n", result.Response.ModelID)
+fmt.Printf("Timestamp: %v\n", result.Response.Timestamp)
+```
+
+## Embedding Middleware
+
+You can enhance embedding models, e.g. to set default values, using middleware:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/middleware"
+
+// Wrap model with default settings
+wrappedModel := middleware.WrapEmbeddingModel(embeddingModel, &middleware.EmbeddingModelMiddleware{
+    BeforeEmbed: func(ctx context.Context, input string) (context.Context, string, error) {
+        // Pre-process input
+        fmt.Printf("Embedding: %s\n", input)
+        return ctx, input, nil
+    },
+    AfterEmbed: func(ctx context.Context, embedding []float64, err error) ([]float64, error) {
+        // Post-process embedding
+        if err == nil {
+            fmt.Printf("Generated embedding with %d dimensions\n", len(embedding))
+        }
+        return embedding, err
+    },
+})
+
+result, _ := ai.Embed(ctx, ai.EmbedOptions{
+    Model: wrappedModel,
+    Input: "sunny day at the beach",
+})
+```
+
+## Practical Examples
+
+### Semantic Search
+
+Build a simple semantic search:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+type Document struct {
+    ID        string
+    Text      string
+    Embedding []float64
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Documents to search
+    docs := []string{
+        "The quick brown fox jumps over the lazy dog",
+        "Machine learning is a subset of artificial intelligence",
+        "Go is a statically typed, compiled programming language",
+        "Python is widely used for data science and machine learning",
+    }
+
+    // Embed all documents
+    docsResult, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model:  embeddingModel,
+        Inputs: docs,
+    })
+
+    // Create document objects
+    documents := make([]Document, len(docs))
+    for i, text := range docs {
+        documents[i] = Document{
+            ID:        fmt.Sprintf("doc-%d", i+1),
+            Text:      text,
+            Embedding: docsResult.Embeddings[i],
+        }
+    }
+
+    // Search query
+    query := "programming languages"
+    queryResult, _ := ai.Embed(ctx, ai.EmbedOptions{
+        Model: embeddingModel,
+        Input: query,
+    })
+
+    // Find most similar document
+    var bestMatch Document
+    var bestSimilarity float64 = -1
+
+    for _, doc := range documents {
+        similarity := ai.CosineSimilarity(queryResult.Embedding, doc.Embedding)
+        if similarity > bestSimilarity {
+            bestSimilarity = similarity
+            bestMatch = doc
+        }
+    }
+
+    fmt.Printf("Query: %s\n", query)
+    fmt.Printf("Best match (%.4f): %s\n", bestSimilarity, bestMatch.Text)
+}
+```
+
+### Clustering
+
+Group similar texts together:
+
+```go
+func clusterTexts(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, threshold float64) [][]int {
+    // Embed all texts
+    result, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model:  embeddingModel,
+        Inputs: texts,
+    })
+
+    // Simple clustering based on similarity threshold
+    var clusters [][]int
+    visited := make([]bool, len(texts))
+
+    for i := range texts {
+        if visited[i] {
+            continue
+        }
+
+        // Start new cluster
+        cluster := []int{i}
+        visited[i] = true
+
+        // Find similar texts
+        for j := i + 1; j < len(texts); j++ {
+            if visited[j] {
+                continue
+            }
+
+            similarity := ai.CosineSimilarity(
+                result.Embeddings[i],
+                result.Embeddings[j],
+            )
+
+            if similarity >= threshold {
+                cluster = append(cluster, j)
+                visited[j] = true
+            }
+        }
+
+        clusters = append(clusters, cluster)
+    }
+
+    return clusters
+}
+```
+
+### RAG (Retrieval-Augmented Generation)
+
+Combine embeddings with text generation:
+
+```go
+func answerWithRAG(ctx context.Context, query string, documents []Document, model ai.LanguageModel, embeddingModel ai.EmbeddingModel) (string, error) {
+    // Embed query
+    queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: embeddingModel,
+        Input: query,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    // Find top 3 most relevant documents
+    rankings := ai.RankBySimilarity(queryResult.Embedding, getEmbeddings(documents))
+    topDocs := rankings[:min(3, len(rankings))]
+
+    // Build context from relevant documents
+    var context strings.Builder
+    context.WriteString("Context:\n")
+    for _, rank := range topDocs {
+        context.WriteString(fmt.Sprintf("- %s\n", documents[rank.Index].Text))
+    }
+
+    // Generate answer using context
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: fmt.Sprintf("%s\n\nQuestion: %s\n\nAnswer:", context.String(), query),
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func getEmbeddings(docs []Document) [][]float64 {
+    embeddings := make([][]float64, len(docs))
+    for i, doc := range docs {
+        embeddings[i] = doc.Embedding
+    }
+    return embeddings
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+```
+
+## Embedding Providers & Models
+
+Several providers offer embedding models:
+
+| Provider | Model | Embedding Dimensions |
+|----------|-------|---------------------|
+| **OpenAI** | `text-embedding-3-large` | 3072 |
+| **OpenAI** | `text-embedding-3-small` | 1536 |
+| **OpenAI** | `text-embedding-ada-002` | 1536 |
+| **Google** | `gemini-embedding-001` | 3072 |
+| **Google** | `text-embedding-004` | 768 |
+| **Mistral** | `mistral-embed` | 1024 |
+| **Cohere** | `embed-english-v3.0` | 1024 |
+| **Cohere** | `embed-multilingual-v3.0` | 1024 |
+| **Cohere** | `embed-english-light-v3.0` | 384 |
+| **Cohere** | `embed-multilingual-light-v3.0` | 384 |
+| **Amazon Bedrock** | `amazon.titan-embed-text-v1` | 1536 |
+| **Amazon Bedrock** | `amazon.titan-embed-text-v2:0` | 1024 |
+
+### Example with Different Providers
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+openaiModel, _ := openaiProvider.EmbeddingModel("text-embedding-3-small")
+
+// Google
+googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+googleModel, _ := googleProvider.EmbeddingModel("gemini-embedding-001")
+
+// Mistral
+mistralProvider := mistral.New(mistral.Config{APIKey: os.Getenv("MISTRAL_API_KEY")})
+mistralModel, _ := mistralProvider.EmbeddingModel("mistral-embed")
+
+// Use any model with the same API
+result, _ := ai.Embed(ctx, ai.EmbedOptions{
+    Model: openaiModel, // or googleModel, or mistralModel
+    Input: "text to embed",
+})
+```
+
+## Performance Optimization
+
+### Batch Processing
+
+Process large datasets efficiently:
+
+```go
+func embedLargeDataset(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, batchSize int) ([][]float64, error) {
+    var allEmbeddings [][]float64
+
+    for i := 0; i < len(texts); i += batchSize {
+        end := i + batchSize
+        if end > len(texts) {
+            end = len(texts)
+        }
+
+        batch := texts[i:end]
+        result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+            Model:            embeddingModel,
+            Inputs:           batch,
+            MaxParallelCalls: 3,
+        })
+        if err != nil {
+            return nil, err
+        }
+
+        allEmbeddings = append(allEmbeddings, result.Embeddings...)
+
+        fmt.Printf("Processed %d/%d texts\n", min(end, len(texts)), len(texts))
+    }
+
+    return allEmbeddings, nil
+}
+```
+
+### Caching Embeddings
+
+Cache embeddings to avoid recomputing:
+
+```go
+type EmbeddingCache struct {
+    cache map[string][]float64
+    mu    sync.RWMutex
+}
+
+func (c *EmbeddingCache) Get(text string) ([]float64, bool) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    embedding, ok := c.cache[text]
+    return embedding, ok
+}
+
+func (c *EmbeddingCache) Set(text string, embedding []float64) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.cache[text] = embedding
+}
+
+func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model ai.EmbeddingModel) ([]float64, error) {
+    // Check cache first
+    if embedding, ok := c.Get(text); ok {
+        return embedding, nil
+    }
+
+    // Generate embedding
+    result, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: model,
+        Input: text,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Cache result
+    c.Set(text, result.Embedding)
+    return result.Embedding, nil
+}
+```
+
+## Best Practices
+
+1. **Choose Right Model**: Select embedding model based on your use case (dimension size vs accuracy trade-off)
+2. **Batch Processing**: Use `EmbedMany` for multiple texts to reduce API calls
+3. **Cache Results**: Cache embeddings to avoid recomputing
+4. **Normalize Embeddings**: Some models require normalization for accurate similarity calculations
+5. **Handle Errors**: Implement retry logic for transient failures
+6. **Monitor Usage**: Track token usage to manage costs
+7. **Use Context**: Always pass context for cancellation and timeouts
+8. **Parallel Processing**: Use `MaxParallelCalls` for large batches
+9. **Storage**: Consider dimensionality reduction for storage efficiency
+10. **Similarity Threshold**: Tune similarity thresholds based on your specific use case
+
+## Next Steps
+
+- Learn about [Reranking](./06-reranking.md)
+- Explore [RAG Patterns](../06-advanced/01-prompt-engineering.md)
+- See [Embedding Examples](../examples/05-embeddings.md)
+
+## See Also
+
+- [Similarity Functions](../07-reference/ai/similarity-functions.md)
+- [Providers](../providers/01-overview.md)
+- [Middleware](./11-middleware.md)
+- [API Reference: Embed](../07-reference/ai/embed.md)
+- [API Reference: EmbedMany](../07-reference/ai/embed-many.md)

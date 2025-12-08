@@ -1,0 +1,595 @@
+---
+title: Telemetry
+description: Using OpenTelemetry with the Go AI SDK Core
+---
+
+# Telemetry
+
+> **Note:** AI SDK Telemetry is experimental and may change in the future.
+
+The Go AI SDK uses [OpenTelemetry](https://opentelemetry.io/) to collect telemetry data. OpenTelemetry is an open-source observability framework designed to provide standardized instrumentation for collecting telemetry data.
+
+Check out the [AI SDK Observability Integrations](/providers/observability) to see providers that offer monitoring and tracing for AI SDK applications.
+
+## Enabling Telemetry
+
+Telemetry is disabled by default. You can enable it by passing telemetry settings to AI SDK functions:
+
+```go
+import (
+    "context"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/telemetry"
+    "go.opentelemetry.io/otel/attribute"
+)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short story about a cat.",
+    Telemetry: &telemetry.Settings{
+        IsEnabled: true,
+    },
+})
+```
+
+When telemetry is enabled, you can control whether to record input values and output values. By default, both are enabled. You can disable them for privacy, data transfer, or performance reasons:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short story about a cat.",
+    Telemetry: &telemetry.Settings{
+        IsEnabled:     true,
+        RecordInputs:  false, // Don't record sensitive inputs
+        RecordOutputs: true,  // Record outputs
+    },
+})
+```
+
+## Telemetry Settings
+
+### FunctionID
+
+Provide a `FunctionID` to identify the function that the telemetry data is for:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short story about a cat.",
+    Telemetry: &telemetry.Settings{
+        IsEnabled:  true,
+        FunctionID: "story-generator",
+    },
+})
+```
+
+### Metadata
+
+Include additional metadata in telemetry spans:
+
+```go
+import "go.opentelemetry.io/otel/attribute"
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short story about a cat.",
+    Telemetry: &telemetry.Settings{
+        IsEnabled:  true,
+        FunctionID: "story-generator",
+        Metadata: map[string]attribute.Value{
+            "user_id":    attribute.String("user-123"),
+            "session_id": attribute.String("session-456"),
+            "version":    attribute.String("v1.0"),
+        },
+    },
+})
+```
+
+### Custom Tracer
+
+Provide a custom OpenTelemetry tracer instead of using the global tracer:
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+// Create custom tracer provider
+tp := trace.NewTracerProvider()
+tracer := tp.Tracer("my-custom-tracer")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short story about a cat.",
+    Telemetry: &telemetry.Settings{
+        IsEnabled: true,
+        Tracer:    tracer,
+    },
+})
+```
+
+## Fluent API for Settings
+
+Use the fluent API to build telemetry settings:
+
+```go
+telemetrySettings := telemetry.DefaultSettings().
+    WithEnabled(true).
+    WithFunctionID("story-generator").
+    WithRecordInputs(false).
+    WithMetadata(map[string]attribute.Value{
+        "environment": attribute.String("production"),
+    })
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Generate text",
+    Telemetry: telemetrySettings,
+})
+```
+
+## Setting Up OpenTelemetry in Go
+
+Before using telemetry, you need to configure OpenTelemetry in your application:
+
+### Basic Setup
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func initTelemetry() func() {
+    // Create stdout exporter
+    exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+    if err != nil {
+        log.Fatalf("failed to create exporter: %v", err)
+    }
+
+    // Create tracer provider
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+    )
+
+    // Set global tracer provider
+    otel.SetTracerProvider(tp)
+
+    // Return cleanup function
+    return func() {
+        if err := tp.Shutdown(context.Background()); err != nil {
+            log.Printf("Error shutting down tracer provider: %v", err)
+        }
+    }
+}
+
+func main() {
+    // Initialize telemetry
+    cleanup := initTelemetry()
+    defer cleanup()
+
+    // Your application code...
+}
+```
+
+### Jaeger Setup
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/exporters/jaeger"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func initJaeger() func() {
+    // Create Jaeger exporter
+    exporter, err := jaeger.New(jaeger.WithCollectorEndpoint(
+        jaeger.WithEndpoint("http://localhost:14268/api/traces"),
+    ))
+    if err != nil {
+        log.Fatalf("failed to create Jaeger exporter: %v", err)
+    }
+
+    // Create tracer provider
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+        trace.WithSampler(trace.AlwaysSample()),
+    )
+
+    otel.SetTracerProvider(tp)
+
+    return func() {
+        if err := tp.Shutdown(context.Background()); err != nil {
+            log.Printf("Error shutting down tracer provider: %v", err)
+        }
+    }
+}
+```
+
+### OTLP (OpenTelemetry Protocol) Setup
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func initOTLP() func() {
+    // Create OTLP exporter
+    exporter, err := otlptracehttp.New(context.Background(),
+        otlptracehttp.WithEndpoint("localhost:4318"),
+        otlptracehttp.WithInsecure(),
+    )
+    if err != nil {
+        log.Fatalf("failed to create OTLP exporter: %v", err)
+    }
+
+    // Create tracer provider
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+    )
+
+    otel.SetTracerProvider(tp)
+
+    return func() {
+        if err := tp.Shutdown(context.Background()); err != nil {
+            log.Printf("Error shutting down tracer provider: %v", err)
+        }
+    }
+}
+```
+
+## Collected Data
+
+The Go AI SDK records spans and attributes following OpenTelemetry conventions.
+
+### GenerateText
+
+Records the following spans:
+
+**`ai.generateText` span:**
+- Full length of the generateText call
+- Contains one or more `ai.generateText.doGenerate` spans
+- Attributes:
+  - `operation.name`: `ai.generateText` + function ID
+  - `ai.operationId`: `"ai.generateText"`
+  - `ai.model.id`: Model identifier
+  - `ai.model.provider`: Provider name
+  - `ai.prompt`: The prompt used
+  - `ai.response.text`: Generated text (if RecordOutputs is true)
+  - `ai.response.finishReason`: Finish reason
+  - `ai.usage.promptTokens`: Input tokens used
+  - `ai.usage.completionTokens`: Output tokens used
+  - `ai.usage.totalTokens`: Total tokens used
+  - `ai.telemetry.functionId`: Function ID from settings
+  - Custom metadata attributes
+
+**`ai.generateText.doGenerate` span:**
+- Individual provider call
+- Attributes:
+  - `operation.name`: `ai.generateText.doGenerate` + function ID
+  - `ai.operationId`: `"ai.generateText.doGenerate"`
+  - `ai.prompt.messages`: Messages sent to provider
+  - `ai.response.text`: Generated text
+  - `ai.response.finishReason`: Finish reason
+  - `ai.response.model`: Actual model used by provider
+  - `gen_ai.system`: Provider name
+  - `gen_ai.request.model`: Requested model
+  - `gen_ai.request.temperature`: Temperature setting
+  - `gen_ai.request.max_tokens`: Max tokens setting
+  - `gen_ai.usage.input_tokens`: Input tokens
+  - `gen_ai.usage.output_tokens`: Output tokens
+
+### StreamText
+
+Records the following spans:
+
+**`ai.streamText` span:**
+- Full length of the streamText call
+- Contains `ai.streamText.doStream` span
+- Same attributes as `ai.generateText`, plus:
+  - `ai.response.msToFirstChunk`: Time to first chunk (milliseconds)
+  - `ai.response.msToFinish`: Time to completion (milliseconds)
+  - `ai.response.avgCompletionTokensPerSecond`: Tokens per second
+
+**`ai.streamText.doStream` span:**
+- Individual provider stream call
+- Emits `ai.stream.firstChunk` event when first chunk received
+- Same attributes as `ai.generateText.doGenerate`, plus streaming metrics
+
+### GenerateObject
+
+Records the following spans:
+
+**`ai.generateObject` span:**
+- Full length of the generateObject call
+- Attributes:
+  - Same as `ai.generateText`, plus:
+  - `ai.schema`: Stringified JSON schema
+  - `ai.schema.name`: Schema name
+  - `ai.schema.description`: Schema description
+  - `ai.response.object`: Generated object (stringified JSON)
+  - `ai.settings.output`: Output type (`object`, `array`, `no-schema`, etc.)
+
+**`ai.generateObject.doGenerate` span:**
+- Individual provider call
+- Attributes similar to `ai.generateText.doGenerate`
+
+### StreamObject
+
+Records the following spans:
+
+**`ai.streamObject` span:**
+- Full length of the streamObject call
+- Same attributes as `ai.generateObject`, plus streaming metrics
+
+**`ai.streamObject.doStream` span:**
+- Individual provider stream call
+- Emits `ai.stream.firstChunk` event
+
+### Embed
+
+Records the following spans:
+
+**`ai.embed` span:**
+- Full length of the embed call
+- Attributes:
+  - `operation.name`: `ai.embed` + function ID
+  - `ai.operationId`: `"ai.embed"`
+  - `ai.model.id`: Model identifier
+  - `ai.model.provider`: Provider name
+  - `ai.value`: Input value (if RecordInputs is true)
+  - `ai.embedding`: Stringified embedding vector (if RecordOutputs is true)
+  - `ai.usage.tokens`: Tokens used
+
+**`ai.embed.doEmbed` span:**
+- Provider embed call
+- Similar attributes
+
+### EmbedMany
+
+Records the following spans:
+
+**`ai.embedMany` span:**
+- Full length of the embedMany call
+- Attributes:
+  - `operation.name`: `ai.embedMany` + function ID
+  - `ai.operationId`: `"ai.embedMany"`
+  - `ai.values`: Input values array
+  - `ai.embeddings`: Array of stringified embeddings
+  - `ai.usage.tokens`: Total tokens used
+
+**`ai.embedMany.doEmbed` span:**
+- Individual provider call
+- May be multiple spans if batching occurs
+
+### Tool Calls
+
+When tools are executed, `ai.toolCall` spans are recorded:
+
+- `operation.name`: `"ai.toolCall"`
+- `ai.operationId`: `"ai.toolCall"`
+- `ai.toolCall.name`: Tool name
+- `ai.toolCall.id`: Tool call ID
+- `ai.toolCall.args`: Tool input arguments
+- `ai.toolCall.result`: Tool output (if successful and serializable)
+
+## Example: Complete Telemetry Setup
+
+Here's a complete example showing telemetry setup and usage:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/telemetry"
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func initTelemetry() func() {
+    exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+    if err != nil {
+        log.Fatalf("failed to create exporter: %v", err)
+    }
+
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+        trace.WithSampler(trace.AlwaysSample()),
+    )
+
+    otel.SetTracerProvider(tp)
+
+    return func() {
+        if err := tp.Shutdown(context.Background()); err != nil {
+            log.Printf("Error shutting down tracer provider: %v", err)
+        }
+    }
+}
+
+func main() {
+    // Initialize telemetry
+    cleanup := initTelemetry()
+    defer cleanup()
+
+    ctx := context.Background()
+
+    // Set up provider and model
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Configure telemetry settings
+    telemetrySettings := &telemetry.Settings{
+        IsEnabled:     true,
+        RecordInputs:  true,
+        RecordOutputs: true,
+        FunctionID:    "story-generator",
+        Metadata: map[string]attribute.Value{
+            "user_id":     attribute.String("user-123"),
+            "environment": attribute.String("production"),
+            "version":     attribute.String("v1.0"),
+        },
+    }
+
+    // Generate text with telemetry
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     model,
+        Prompt:    "Write a short story about a cat.",
+        Telemetry: telemetrySettings,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Disable Sensitive Data Recording
+
+Disable input/output recording for sensitive data:
+
+```go
+telemetrySettings := &telemetry.Settings{
+    IsEnabled:     true,
+    RecordInputs:  false, // Don't record sensitive prompts
+    RecordOutputs: false, // Don't record sensitive responses
+    FunctionID:    "sensitive-operation",
+}
+```
+
+### 2. Use Meaningful Function IDs
+
+Use descriptive function IDs to group related operations:
+
+```go
+// Good
+FunctionID: "user-chat-response"
+FunctionID: "document-summarization"
+FunctionID: "code-generation"
+
+// Bad
+FunctionID: "func1"
+FunctionID: "test"
+```
+
+### 3. Add Contextual Metadata
+
+Include metadata that helps with debugging and analysis:
+
+```go
+Metadata: map[string]attribute.Value{
+    "user_id":      attribute.String(userID),
+    "request_id":   attribute.String(requestID),
+    "feature_flag": attribute.Bool(featureEnabled),
+    "model_type":   attribute.String("gpt-4"),
+}
+```
+
+### 4. Use Sampling for High-Volume Applications
+
+For high-traffic applications, use sampling to reduce overhead:
+
+```go
+import "go.opentelemetry.io/otel/sdk/trace"
+
+tp := trace.NewTracerProvider(
+    trace.WithBatcher(exporter),
+    trace.WithSampler(trace.TraceIDRatioBased(0.1)), // Sample 10% of traces
+)
+```
+
+### 5. Configure Appropriate Exporters
+
+Choose exporters based on your observability stack:
+
+- **Stdout**: Development and debugging
+- **Jaeger**: Self-hosted tracing
+- **OTLP**: Cloud providers (Datadog, New Relic, Honeycomb, etc.)
+- **Zipkin**: Existing Zipkin infrastructure
+
+### 6. Monitor Performance Impact
+
+Telemetry has a small performance cost. Monitor and adjust:
+
+```go
+// Disable telemetry for performance-critical paths
+criticalOp, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    prompt,
+    Telemetry: nil, // Disabled
+})
+
+// Enable telemetry for monitored paths
+monitoredOp, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    prompt,
+    Telemetry: telemetrySettings,
+})
+```
+
+### 7. Use Environment-Based Configuration
+
+Configure telemetry based on environment:
+
+```go
+func getTelemetrySettings(env string) *telemetry.Settings {
+    if env == "production" {
+        return &telemetry.Settings{
+            IsEnabled:     true,
+            RecordInputs:  false, // Privacy in production
+            RecordOutputs: false,
+            FunctionID:    "prod-operation",
+        }
+    }
+
+    // Full telemetry in development
+    return &telemetry.Settings{
+        IsEnabled:     true,
+        RecordInputs:  true,
+        RecordOutputs: true,
+        FunctionID:    "dev-operation",
+    }
+}
+```
+
+## OpenTelemetry Semantic Conventions
+
+The Go AI SDK follows [OpenTelemetry Semantic Conventions for GenAI operations](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/), including:
+
+- `gen_ai.system`: Provider identifier
+- `gen_ai.request.model`: Requested model
+- `gen_ai.request.temperature`: Temperature setting
+- `gen_ai.request.max_tokens`: Maximum tokens
+- `gen_ai.response.finish_reasons`: Finish reasons
+- `gen_ai.usage.input_tokens`: Input token count
+- `gen_ai.usage.output_tokens`: Output token count
+
+## See Also
+
+- [Error Handling](./50-error-handling.mdx)
+- [Testing](./55-testing.mdx)
+- [Middleware](./40-middleware.mdx)
+- [OpenTelemetry Go Documentation](https://opentelemetry.io/docs/instrumentation/go/)

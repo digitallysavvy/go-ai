@@ -1,0 +1,631 @@
+---
+title: Speech Generation
+description: Learn how to generate speech from text with the Go AI SDK.
+---
+
+# Speech Generation
+
+> **Note:** Speech generation is an experimental feature.
+
+The Go AI SDK provides the [`ai.GenerateSpeech()`](../07-reference/ai/generate-speech.md) function to generate speech from text using a speech model.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    speechModel, _ := provider.SpeechModel("tts-1")
+
+    result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+        Model: speechModel,
+        Text:  "Hello, world!",
+        Voice: "alloy",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save audio to file
+    err = os.WriteFile("output.mp3", result.Audio, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Audio saved to output.mp3")
+}
+```
+
+## Accessing Audio Data
+
+To access the generated audio:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+})
+
+// Audio bytes
+audioData := result.Audio
+
+// MIME type (e.g., "audio/mpeg")
+mimeType := result.MimeType
+
+// Usage information
+charCount := result.Usage.CharacterCount
+fmt.Printf("Processed %d characters\n", charCount)
+```
+
+## Settings
+
+### Voice Selection
+
+Different models support different voices. Check your provider's documentation for available voices:
+
+```go
+// OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "nova",
+})
+```
+
+### Speech Speed
+
+Control the speed of speech generation (typically 0.25 to 4.0):
+
+```go
+speed := 1.5 // 1.5x speed
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+    Speed: &speed,
+})
+```
+
+### Language Setting
+
+You can specify the language for speech generation (provider support varies):
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:    speechModel,
+    Text:     "Hola, mundo!",
+    Voice:    "alloy",
+    Language: "es", // Spanish
+})
+```
+
+### Audio Format
+
+Some providers allow you to specify the output audio format:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:  speechModel,
+    Text:   "Hello, world!",
+    Voice:  "alloy",
+    Format: "mp3", // or "wav", "opus", "flac", etc.
+})
+```
+
+### Provider-Specific Settings
+
+You can set model-specific settings with the `ProviderOptions` parameter:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "responseFormat": "opus",
+            "speed":          1.25,
+        },
+    },
+})
+```
+
+### Timeouts with Context
+
+Use Go's context for timeouts and cancellation:
+
+```go
+import "time"
+
+// Timeout after 30 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Speech generation timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+### Custom Headers
+
+Add custom headers to the speech generation request:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+    Headers: map[string]string{
+        "X-Custom-Header": "custom-value",
+    },
+})
+```
+
+### Warnings
+
+If the model returns warnings, they will be available in the `Warnings` field:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, warning := range result.Warnings {
+    fmt.Printf("Warning: %s\n", warning.Message)
+}
+```
+
+## Error Handling
+
+When `ai.GenerateSpeech()` cannot generate valid audio, it returns an error:
+
+```go
+import "errors"
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello, world!",
+    Voice: "alloy",
+})
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, ai.ErrNoSpeechGenerated) {
+        fmt.Println("No speech was generated")
+        fmt.Printf("Cause: %v\n", errors.Unwrap(err))
+    } else if errors.Is(err, provider.ErrRateLimit) {
+        fmt.Println("Rate limit exceeded")
+    } else if errors.Is(err, provider.ErrInvalidVoice) {
+        fmt.Println("Invalid voice specified")
+    } else {
+        fmt.Printf("Speech generation error: %v\n", err)
+    }
+    return
+}
+```
+
+Common speech generation errors:
+
+- **ErrNoSpeechGenerated**: The model failed to generate audio
+- **ErrRateLimit**: Rate limit exceeded
+- **ErrInvalidVoice**: Unsupported voice
+- **ErrTextTooLong**: Text exceeds maximum length
+- **context.DeadlineExceeded**: Operation timed out
+- **context.Canceled**: Operation was canceled
+
+## Practical Examples
+
+### Generate and Save Audio
+
+```go
+func generateAndSaveAudio(ctx context.Context, model ai.SpeechModel, text, voice, outputPath string) error {
+    result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+        Model: model,
+        Text:  text,
+        Voice: voice,
+    })
+    if err != nil {
+        return fmt.Errorf("speech generation failed: %w", err)
+    }
+
+    err = os.WriteFile(outputPath, result.Audio, 0644)
+    if err != nil {
+        return fmt.Errorf("failed to save audio: %w", err)
+    }
+
+    fmt.Printf("Audio saved to %s (%d bytes)\n", outputPath, len(result.Audio))
+    return nil
+}
+```
+
+### Generate Multiple Voices
+
+```go
+func generateWithMultipleVoices(ctx context.Context, model ai.SpeechModel, text string, voices []string) error {
+    for i, voice := range voices {
+        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+            Model: model,
+            Text:  text,
+            Voice: voice,
+        })
+        if err != nil {
+            return fmt.Errorf("failed to generate with voice %s: %w", voice, err)
+        }
+
+        filename := fmt.Sprintf("output-%s.mp3", voice)
+        err = os.WriteFile(filename, result.Audio, 0644)
+        if err != nil {
+            return fmt.Errorf("failed to save %s: %w", filename, err)
+        }
+
+        fmt.Printf("%d. Generated %s\n", i+1, filename)
+    }
+
+    return nil
+}
+
+// Usage
+voices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+generateWithMultipleVoices(ctx, speechModel, "Hello, world!", voices)
+```
+
+### Text-to-Speech with Retry Logic
+
+```go
+func generateSpeechWithRetry(ctx context.Context, model ai.SpeechModel, text, voice string, maxRetries int) (*ai.GenerateSpeechResult, error) {
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            fmt.Printf("Retry attempt %d/%d\n", attempt, maxRetries)
+            time.Sleep(time.Duration(attempt) * time.Second)
+        }
+
+        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+            Model: model,
+            Text:  text,
+            Voice: voice,
+        })
+
+        if err == nil {
+            return result, nil
+        }
+
+        lastErr = err
+
+        // Don't retry on certain errors
+        if errors.Is(err, context.Canceled) ||
+           errors.Is(err, context.DeadlineExceeded) ||
+           errors.Is(err, provider.ErrInvalidVoice) {
+            break
+        }
+    }
+
+    return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+```
+
+### Batch Text-to-Speech
+
+```go
+func batchGenerateSpeech(ctx context.Context, model ai.SpeechModel, texts []string, voice string) ([][]byte, error) {
+    audioFiles := make([][]byte, len(texts))
+
+    for i, text := range texts {
+        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+            Model: model,
+            Text:  text,
+            Voice: voice,
+        })
+        if err != nil {
+            return nil, fmt.Errorf("failed to generate audio for text %d: %w", i, err)
+        }
+
+        audioFiles[i] = result.Audio
+        fmt.Printf("Generated audio %d/%d (%d bytes)\n", i+1, len(texts), len(result.Audio))
+    }
+
+    return audioFiles, nil
+}
+```
+
+### Parallel Speech Generation with Goroutines
+
+```go
+func generateSpeechParallel(ctx context.Context, model ai.SpeechModel, texts []string, voice string) ([][]byte, error) {
+    type result struct {
+        index int
+        audio []byte
+        err   error
+    }
+
+    resultChan := make(chan result, len(texts))
+    audioFiles := make([][]byte, len(texts))
+
+    // Start goroutines
+    for i, text := range texts {
+        go func(index int, textContent string) {
+            speech, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+                Model: model,
+                Text:  textContent,
+                Voice: voice,
+            })
+            if err != nil {
+                resultChan <- result{index: index, err: err}
+                return
+            }
+
+            resultChan <- result{index: index, audio: speech.Audio}
+        }(i, text)
+    }
+
+    // Collect results
+    for i := 0; i < len(texts); i++ {
+        res := <-resultChan
+        if res.err != nil {
+            return nil, fmt.Errorf("speech generation failed for text %d: %w", res.index, res.err)
+        }
+        audioFiles[res.index] = res.audio
+    }
+
+    return audioFiles, nil
+}
+```
+
+### Generate Speech with Different Speeds
+
+```go
+func generateAtDifferentSpeeds(ctx context.Context, model ai.SpeechModel, text, voice string) error {
+    speeds := []float64{0.5, 0.75, 1.0, 1.25, 1.5, 2.0}
+
+    for _, speed := range speeds {
+        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+            Model: model,
+            Text:  text,
+            Voice: voice,
+            Speed: &speed,
+        })
+        if err != nil {
+            return fmt.Errorf("failed to generate at speed %.2fx: %w", speed, err)
+        }
+
+        filename := fmt.Sprintf("output-%.2fx.mp3", speed)
+        err = os.WriteFile(filename, result.Audio, 0644)
+        if err != nil {
+            return fmt.Errorf("failed to save %s: %w", filename, err)
+        }
+
+        fmt.Printf("Generated %s at %.2fx speed\n", filename, speed)
+    }
+
+    return nil
+}
+```
+
+### Streaming to HTTP Response
+
+```go
+import "net/http"
+
+func speechHandler(w http.ResponseWriter, r *http.Request) {
+    text := r.URL.Query().Get("text")
+    voice := r.URL.Query().Get("voice")
+
+    if text == "" || voice == "" {
+        http.Error(w, "Missing text or voice parameter", http.StatusBadRequest)
+        return
+    }
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    speechModel, _ := provider.SpeechModel("tts-1")
+
+    result, err := ai.GenerateSpeech(r.Context(), ai.GenerateSpeechOptions{
+        Model: speechModel,
+        Text:  text,
+        Voice: voice,
+    })
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Speech generation failed: %v", err), http.StatusInternalServerError)
+        return
+    }
+
+    // Set appropriate headers
+    w.Header().Set("Content-Type", result.MimeType)
+    w.Header().Set("Content-Length", fmt.Sprintf("%d", len(result.Audio)))
+    w.Header().Set("Content-Disposition", "inline; filename=\"speech.mp3\"")
+
+    // Write audio data
+    w.Write(result.Audio)
+}
+```
+
+### Long Text with Chunking
+
+```go
+import "strings"
+
+func generateLongText(ctx context.Context, model ai.SpeechModel, longText, voice string, maxChunkSize int) ([]byte, error) {
+    // Split text into chunks
+    sentences := strings.Split(longText, ". ")
+    var chunks []string
+    var currentChunk strings.Builder
+
+    for _, sentence := range sentences {
+        if currentChunk.Len()+len(sentence) > maxChunkSize {
+            chunks = append(chunks, currentChunk.String())
+            currentChunk.Reset()
+        }
+        currentChunk.WriteString(sentence)
+        currentChunk.WriteString(". ")
+    }
+
+    if currentChunk.Len() > 0 {
+        chunks = append(chunks, currentChunk.String())
+    }
+
+    // Generate audio for each chunk
+    var allAudio []byte
+    for i, chunk := range chunks {
+        fmt.Printf("Generating chunk %d/%d...\n", i+1, len(chunks))
+
+        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+            Model: model,
+            Text:  chunk,
+            Voice: voice,
+        })
+        if err != nil {
+            return nil, fmt.Errorf("failed to generate chunk %d: %w", i+1, err)
+        }
+
+        allAudio = append(allAudio, result.Audio...)
+    }
+
+    return allAudio, nil
+}
+```
+
+## Speech Models
+
+Several providers offer speech synthesis models:
+
+| Provider | Model | Voices | Languages |
+|----------|-------|--------|-----------|
+| **OpenAI** | `tts-1` | alloy, echo, fable, onyx, nova, shimmer | Multiple |
+| **OpenAI** | `tts-1-hd` | alloy, echo, fable, onyx, nova, shimmer | Multiple |
+| **OpenAI** | `gpt-4o-mini-tts` | alloy, echo, fable, onyx, nova, shimmer | Multiple |
+| **ElevenLabs** | `eleven_v3` | Custom voices | 30+ languages |
+| **ElevenLabs** | `eleven_multilingual_v2` | Custom voices | Multilingual |
+| **ElevenLabs** | `eleven_flash_v2_5` | Custom voices | Fast, low latency |
+| **ElevenLabs** | `eleven_flash_v2` | Custom voices | Fast |
+| **ElevenLabs** | `eleven_turbo_v2_5` | Custom voices | Ultra-fast |
+| **ElevenLabs** | `eleven_turbo_v2` | Custom voices | Ultra-fast |
+| **LMNT** | `aurora` | Various | English |
+| **LMNT** | `blizzard` | Various | English |
+| **Hume** | `default` | Expressive | English |
+
+### Example with Different Providers
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+openaiModel, _ := openaiProvider.SpeechModel("tts-1-hd")
+
+// ElevenLabs
+elevenProvider := elevenlabs.New(elevenlabs.Config{APIKey: os.Getenv("ELEVENLABS_API_KEY")})
+elevenModel, _ := elevenProvider.SpeechModel("eleven_multilingual_v2")
+
+// LMNT
+lmntProvider := lmnt.New(lmnt.Config{APIKey: os.Getenv("LMNT_API_KEY")})
+lmntModel, _ := lmntProvider.SpeechModel("aurora")
+
+// Use any model with the same API
+result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: openaiModel, // or elevenModel, or lmntModel
+    Text:  "Hello, world!",
+    Voice: "alloy", // voice name depends on provider
+})
+```
+
+## Supported Audio Formats
+
+Common audio formats supported by providers:
+
+- **MP3** (audio/mpeg) - Most common, good compression
+- **WAV** (audio/wav) - Uncompressed, high quality
+- **Opus** (audio/opus) - Efficient for speech, low latency
+- **AAC** (audio/aac) - Good quality, streaming-friendly
+- **FLAC** (audio/flac) - Lossless compression
+- **PCM** (audio/pcm) - Raw audio data
+
+Format availability varies by provider. Check provider documentation for specific support.
+
+## Best Practices
+
+1. **Choose the Right Model**: Balance quality, speed, and cost
+2. **Set Timeouts**: Speech generation can be slow; always use context with timeout
+3. **Handle Errors**: Implement proper error handling and retry logic
+4. **Select Appropriate Voice**: Test different voices for your use case
+5. **Monitor Costs**: Track character usage and generation costs
+6. **Respect Rate Limits**: Implement rate limiting for bulk generation
+7. **Use Parallel Processing**: For multiple texts, use goroutines
+8. **Chunk Long Texts**: Split long texts into manageable chunks
+9. **Cache Results**: Store generated audio when appropriate
+10. **Test Quality**: Validate audio quality before production use
+
+## Performance Tips
+
+### Rate Limiting
+
+```go
+import "golang.org/x/time/rate"
+
+// Create rate limiter (e.g., 10 requests per minute)
+limiter := rate.NewLimiter(rate.Every(6*time.Second), 1)
+
+func generateSpeechWithRateLimit(ctx context.Context, model ai.SpeechModel, text, voice string) (*ai.GenerateSpeechResult, error) {
+    // Wait for rate limiter
+    if err := limiter.Wait(ctx); err != nil {
+        return nil, err
+    }
+
+    return ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+        Model: model,
+        Text:  text,
+        Voice: voice,
+    })
+}
+```
+
+### Character Count Validation
+
+```go
+func validateTextLength(text string, maxChars int) error {
+    if len(text) > maxChars {
+        return fmt.Errorf("text too long: %d characters (max: %d)", len(text), maxChars)
+    }
+    return nil
+}
+
+// Before generating speech
+if err := validateTextLength(text, 4096); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Next Steps
+
+- Learn about [Transcription](./36-transcription.mdx)
+- Explore [Settings](./25-settings.mdx)
+- See [Provider Documentation](../providers/01-overview.md)
+
+## See Also
+
+- [Providers](../providers/01-overview.md)
+- [Settings](./25-settings.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.md)

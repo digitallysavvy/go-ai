@@ -1,0 +1,613 @@
+---
+title: Transcription
+description: Learn how to transcribe audio with the Go AI SDK.
+---
+
+# Transcription
+
+> **Note:** Transcription is an experimental feature.
+
+The Go AI SDK provides the [`ai.Transcribe()`](../07-reference/ai/transcribe.md) function to transcribe audio using a transcription model.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    transcriptionModel, _ := provider.TranscriptionModel("whisper-1")
+
+    // Read audio file
+    audioData, err := os.ReadFile("audio.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+        Model: transcriptionModel,
+        Audio: audioData,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Transcript:", result.Text)
+}
+```
+
+## Audio Input Formats
+
+The `Audio` field accepts `[]byte` containing the audio data. You can load audio from various sources:
+
+### From File
+
+```go
+audioData, err := os.ReadFile("audio.mp3")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+```
+
+### From HTTP Response
+
+```go
+resp, err := http.Get("https://example.com/audio.mp3")
+if err != nil {
+    log.Fatal(err)
+}
+defer resp.Body.Close()
+
+audioData, err := io.ReadAll(resp.Body)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+```
+
+### From Base64 String
+
+```go
+import "encoding/base64"
+
+base64Audio := "UklGRi..." // base64 encoded audio
+audioData, err := base64.StdEncoding.DecodeString(base64Audio)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+```
+
+## Accessing Results
+
+To access the generated transcript and metadata:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Transcript text
+text := result.Text // e.g. "Hello, world!"
+
+// Segments with timestamps (if available)
+for _, segment := range result.Segments {
+    fmt.Printf("[%.2f-%.2f] %s\n", segment.Start, segment.End, segment.Text)
+}
+
+// Detected language (if available)
+if result.Language != "" {
+    fmt.Printf("Detected language: %s\n", result.Language)
+}
+
+// Audio duration
+fmt.Printf("Duration: %.2f seconds\n", result.Usage.DurationSeconds)
+```
+
+## Settings
+
+### Language Hint
+
+You can provide a language hint to improve transcription accuracy:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:    transcriptionModel,
+    Audio:    audioData,
+    Language: "en", // ISO 639-1 language code
+})
+```
+
+### Timestamps
+
+Request word or segment-level timestamps:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:      transcriptionModel,
+    Audio:      audioData,
+    Timestamps: true,
+})
+
+// Access timestamps
+for _, segment := range result.Segments {
+    fmt.Printf("[%.2f-%.2f] %s\n", segment.Start, segment.End, segment.Text)
+}
+```
+
+### MIME Type
+
+Specify the audio format explicitly:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:    transcriptionModel,
+    Audio:    audioData,
+    MimeType: "audio/mpeg", // or "audio/wav", "audio/webm", etc.
+})
+```
+
+### Provider-Specific Settings
+
+Transcription models often have provider- or model-specific settings which you can set using the `ProviderOptions` parameter:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "timestampGranularities": []string{"word"},
+            "prompt":                 "Custom vocabulary: Anthropic, Claude",
+        },
+    },
+})
+```
+
+### Timeouts with Context
+
+Use Go's context for timeouts and cancellation:
+
+```go
+import "time"
+
+// Timeout after 30 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        fmt.Println("Transcription timed out")
+    }
+    log.Fatal(err)
+}
+```
+
+### Custom Headers
+
+Add custom headers to the transcription request:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+    Headers: map[string]string{
+        "X-Custom-Header": "custom-value",
+    },
+})
+```
+
+### Warnings
+
+If the model returns warnings, they will be available in the `Warnings` field:
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, warning := range result.Warnings {
+    fmt.Printf("Warning: %s\n", warning.Message)
+}
+```
+
+## Error Handling
+
+When `ai.Transcribe()` cannot generate a valid transcript, it returns an error:
+
+```go
+import "errors"
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioData,
+})
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, ai.ErrNoTranscriptGenerated) {
+        fmt.Println("No transcript was generated")
+        fmt.Printf("Cause: %v\n", errors.Unwrap(err))
+    } else if errors.Is(err, provider.ErrRateLimit) {
+        fmt.Println("Rate limit exceeded")
+    } else if errors.Is(err, provider.ErrInvalidAudioFormat) {
+        fmt.Println("Invalid audio format")
+    } else {
+        fmt.Printf("Transcription error: %v\n", err)
+    }
+    return
+}
+```
+
+Common transcription errors:
+
+- **ErrNoTranscriptGenerated**: The model failed to generate a transcript
+- **ErrRateLimit**: Rate limit exceeded
+- **ErrInvalidAudioFormat**: Unsupported or corrupted audio format
+- **ErrAudioTooLong**: Audio exceeds maximum duration
+- **context.DeadlineExceeded**: Operation timed out
+- **context.Canceled**: Operation was canceled
+
+## Practical Examples
+
+### Transcribe with Automatic Language Detection
+
+```go
+func transcribeAudio(ctx context.Context, model ai.TranscriptionModel, audioPath string) (*ai.TranscribeResult, error) {
+    audioData, err := os.ReadFile(audioPath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read audio: %w", err)
+    }
+
+    result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+        Model: model,
+        Audio: audioData,
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    fmt.Printf("Detected language: %s\n", result.Language)
+    fmt.Printf("Duration: %.2f seconds\n", result.Usage.DurationSeconds)
+
+    return result, nil
+}
+```
+
+### Batch Transcription
+
+```go
+func transcribeMultipleFiles(ctx context.Context, model ai.TranscriptionModel, audioPaths []string) ([]string, error) {
+    transcripts := make([]string, len(audioPaths))
+
+    for i, path := range audioPaths {
+        audioData, err := os.ReadFile(path)
+        if err != nil {
+            return nil, fmt.Errorf("failed to read %s: %w", path, err)
+        }
+
+        result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+            Model: model,
+            Audio: audioData,
+        })
+        if err != nil {
+            return nil, fmt.Errorf("failed to transcribe %s: %w", path, err)
+        }
+
+        transcripts[i] = result.Text
+        fmt.Printf("Transcribed %s: %d characters\n", path, len(result.Text))
+    }
+
+    return transcripts, nil
+}
+```
+
+### Parallel Transcription with Goroutines
+
+```go
+func transcribeParallel(ctx context.Context, model ai.TranscriptionModel, audioPaths []string) ([]string, error) {
+    type result struct {
+        index int
+        text  string
+        err   error
+    }
+
+    resultChan := make(chan result, len(audioPaths))
+    transcripts := make([]string, len(audioPaths))
+
+    // Start goroutines
+    for i, path := range audioPaths {
+        go func(index int, audioPath string) {
+            audioData, err := os.ReadFile(audioPath)
+            if err != nil {
+                resultChan <- result{index: index, err: err}
+                return
+            }
+
+            transcription, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+                Model: model,
+                Audio: audioData,
+            })
+            if err != nil {
+                resultChan <- result{index: index, err: err}
+                return
+            }
+
+            resultChan <- result{index: index, text: transcription.Text}
+        }(i, path)
+    }
+
+    // Collect results
+    for i := 0; i < len(audioPaths); i++ {
+        res := <-resultChan
+        if res.err != nil {
+            return nil, fmt.Errorf("transcription failed for file %d: %w", res.index, res.err)
+        }
+        transcripts[res.index] = res.text
+    }
+
+    return transcripts, nil
+}
+```
+
+### Transcription with Timestamps
+
+```go
+func transcribeWithTimestamps(ctx context.Context, model ai.TranscriptionModel, audioPath string) error {
+    audioData, err := os.ReadFile(audioPath)
+    if err != nil {
+        return err
+    }
+
+    result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+        Model:      model,
+        Audio:      audioData,
+        Timestamps: true,
+    })
+    if err != nil {
+        return err
+    }
+
+    // Print timestamped transcript
+    fmt.Println("Timestamped Transcript:")
+    fmt.Println("======================")
+
+    for _, segment := range result.Segments {
+        minutes := int(segment.Start) / 60
+        seconds := int(segment.Start) % 60
+        fmt.Printf("[%02d:%02d] %s\n", minutes, seconds, segment.Text)
+    }
+
+    return nil
+}
+```
+
+### Transcription with Retry Logic
+
+```go
+func transcribeWithRetry(ctx context.Context, model ai.TranscriptionModel, audioData []byte, maxRetries int) (*ai.TranscribeResult, error) {
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            fmt.Printf("Retry attempt %d/%d\n", attempt, maxRetries)
+            time.Sleep(time.Duration(attempt) * time.Second)
+        }
+
+        result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+            Model: model,
+            Audio: audioData,
+        })
+
+        if err == nil {
+            return result, nil
+        }
+
+        lastErr = err
+
+        // Don't retry on certain errors
+        if errors.Is(err, context.Canceled) ||
+           errors.Is(err, context.DeadlineExceeded) ||
+           errors.Is(err, provider.ErrInvalidAudioFormat) {
+            break
+        }
+    }
+
+    return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+```
+
+### Save Transcript to File
+
+```go
+func transcribeAndSave(ctx context.Context, model ai.TranscriptionModel, audioPath, outputPath string) error {
+    audioData, err := os.ReadFile(audioPath)
+    if err != nil {
+        return fmt.Errorf("failed to read audio: %w", err)
+    }
+
+    result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+        Model: model,
+        Audio: audioData,
+    })
+    if err != nil {
+        return fmt.Errorf("transcription failed: %w", err)
+    }
+
+    // Save to file
+    err = os.WriteFile(outputPath, []byte(result.Text), 0644)
+    if err != nil {
+        return fmt.Errorf("failed to write transcript: %w", err)
+    }
+
+    fmt.Printf("Transcript saved to %s\n", outputPath)
+    return nil
+}
+```
+
+## Transcription Models
+
+Several providers offer transcription models:
+
+| Provider | Model | Notes |
+|----------|-------|-------|
+| **OpenAI** | `whisper-1` | General-purpose transcription |
+| **OpenAI** | `gpt-4o-transcribe` | GPT-4o with transcription |
+| **OpenAI** | `gpt-4o-mini-transcribe` | Faster, cost-effective |
+| **ElevenLabs** | `scribe_v1` | High-quality transcription |
+| **ElevenLabs** | `scribe_v1_experimental` | Experimental features |
+| **Groq** | `whisper-large-v3-turbo` | Fast transcription |
+| **Groq** | `whisper-large-v3` | High accuracy |
+| **Azure OpenAI** | `whisper-1` | Azure-hosted Whisper |
+| **Azure OpenAI** | `gpt-4o-transcribe` | Azure GPT-4o |
+| **Azure OpenAI** | `gpt-4o-mini-transcribe` | Azure GPT-4o Mini |
+| **Rev.ai** | `machine` | Standard machine transcription |
+| **Rev.ai** | `low_cost` | Budget-friendly option |
+| **Rev.ai** | `fusion` | Hybrid human+machine |
+| **Deepgram** | `base` | Base model (+ variants) |
+| **Deepgram** | `enhanced` | Enhanced accuracy |
+| **Deepgram** | `nova` | Latest model |
+| **Deepgram** | `nova-2` | Nova 2nd generation |
+| **Deepgram** | `nova-3` | Nova 3rd generation |
+| **Gladia** | `default` | Standard transcription |
+| **AssemblyAI** | `best` | Highest accuracy |
+| **AssemblyAI** | `nano` | Fast, lightweight |
+| **Fal** | `whisper` | Whisper model |
+| **Fal** | `wizper` | Optimized variant |
+
+### Example with Different Providers
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+whisperModel, _ := openaiProvider.TranscriptionModel("whisper-1")
+
+// Groq
+groqProvider := groq.New(groq.Config{APIKey: os.Getenv("GROQ_API_KEY")})
+groqModel, _ := groqProvider.TranscriptionModel("whisper-large-v3-turbo")
+
+// AssemblyAI
+assemblyProvider := assemblyai.New(assemblyai.Config{APIKey: os.Getenv("ASSEMBLYAI_API_KEY")})
+assemblyModel, _ := assemblyProvider.TranscriptionModel("best")
+
+// Use any model with the same API
+result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: whisperModel, // or groqModel, or assemblyModel
+    Audio: audioData,
+})
+```
+
+## Supported Audio Formats
+
+Most transcription providers support common audio formats:
+
+- **MP3** (audio/mpeg, audio/mp3)
+- **WAV** (audio/wav)
+- **M4A** (audio/mp4, audio/m4a)
+- **WebM** (audio/webm)
+- **OGG** (audio/ogg)
+- **FLAC** (audio/flac)
+
+Maximum file sizes and durations vary by provider. Check provider documentation for specific limits.
+
+## Best Practices
+
+1. **Choose the Right Model**: Balance speed, accuracy, and cost based on your needs
+2. **Set Timeouts**: Transcription can be slow; always use context with timeout
+3. **Handle Errors**: Implement proper error handling and retry logic
+4. **Provide Language Hints**: When known, language hints improve accuracy
+5. **Use Appropriate Format**: Some providers work better with specific audio formats
+6. **Monitor Costs**: Track transcription usage and costs
+7. **Respect Rate Limits**: Implement rate limiting for bulk transcription
+8. **Use Parallel Processing**: For multiple files, use goroutines
+9. **Validate Audio**: Check file size and format before transcription
+10. **Cache Results**: Store transcripts to avoid redundant API calls
+
+## Performance Tips
+
+### Optimize Audio Files
+
+```go
+// Check file size before transcription
+func checkAudioSize(path string, maxSizeMB int) error {
+    info, err := os.Stat(path)
+    if err != nil {
+        return err
+    }
+
+    sizeMB := float64(info.Size()) / (1024 * 1024)
+    if sizeMB > float64(maxSizeMB) {
+        return fmt.Errorf("audio file too large: %.2f MB (max: %d MB)", sizeMB, maxSizeMB)
+    }
+
+    return nil
+}
+```
+
+### Rate Limiting
+
+```go
+import "golang.org/x/time/rate"
+
+// Create rate limiter (e.g., 10 requests per minute)
+limiter := rate.NewLimiter(rate.Every(6*time.Second), 1)
+
+func transcribeWithRateLimit(ctx context.Context, model ai.TranscriptionModel, audioData []byte) (*ai.TranscribeResult, error) {
+    // Wait for rate limiter
+    if err := limiter.Wait(ctx); err != nil {
+        return nil, err
+    }
+
+    return ai.Transcribe(ctx, ai.TranscribeOptions{
+        Model: model,
+        Audio: audioData,
+    })
+}
+```
+
+## Next Steps
+
+- Learn about [Speech Generation](./37-speech.md)
+- Explore [Error Handling](./50-error-handling.md)
+- See [Provider Documentation](../providers/01-overview.md)
+
+## See Also
+
+- [Providers](../providers/01-overview.md)
+- [Settings](./25-settings.md)
+- [Error Handling](./50-error-handling.md)
+- [API Reference: Transcribe](../07-reference/ai/transcribe.md)

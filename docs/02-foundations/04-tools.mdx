@@ -1,0 +1,481 @@
+---
+title: Tools
+description: Learn about tools with the Go AI SDK.
+---
+
+# Tools
+
+While [large language models (LLMs)](./01-overview.md#large-language-models) have incredible generation capabilities, they struggle with discrete tasks (e.g. mathematics) and interacting with the outside world (e.g. getting the weather).
+
+Tools are actions that an LLM can invoke. The results of these actions can be reported back to the LLM to be considered in the next response.
+
+For example, when you ask an LLM for the "weather in London", and there is a weather tool available, it could call a tool with London as the argument. The tool would then fetch the weather data and return it to the LLM. The LLM can then use this information in its response.
+
+## What is a tool?
+
+A tool is an object that can be called by the model to perform a specific task. You can use tools with [`ai.GenerateText()`](../07-reference/ai/generate-text.md) and [`ai.StreamText()`](../07-reference/ai/stream-text.md) by passing one or more tools to the `Tools` field.
+
+A tool in Go consists of several properties:
+
+```go
+type Tool struct {
+    Name        string                 // Required: name of the tool
+    Description string                 // Optional: description to guide when tool is picked
+    Parameters  map[string]interface{} // Required: JSON schema for tool input
+    Execute     func(context.Context, map[string]interface{}) (interface{}, error) // Optional: execution function
+}
+```
+
+If the LLM decides to use a tool, it will generate a tool call. Tools with an `Execute` function are run automatically when these calls are generated. The output of the tool calls are returned using tool result objects.
+
+You can automatically pass tool results back to the LLM using [multi-step calls](../03-ai-sdk-core/04-tools-and-tool-calling.md#multi-step-calls) with `StreamText` and `GenerateText`.
+
+## Basic Tool Example
+
+Here's a simple weather tool:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    weatherTool := types.Tool{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "City name",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            location := input["location"].(string)
+            // In a real application, you would call a weather API here
+            return map[string]interface{}{
+                "temperature": 72,
+                "condition":   "sunny",
+                "location":    location,
+            }, nil
+        },
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "What's the weather in San Francisco?",
+        Tools:  []types.Tool{weatherTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Tool Schemas
+
+Schemas define the parameters for tools and validate the [tool calls](../03-ai-sdk-core/04-tools-and-tool-calling.md). The Go AI SDK uses JSON Schema format for tool parameters.
+
+### JSON Schema
+
+You can define schemas using Go's `map[string]interface{}`:
+
+```go
+recipeSchema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "recipe": map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "name": map[string]interface{}{
+                    "type": "string",
+                },
+                "ingredients": map[string]interface{}{
+                    "type": "array",
+                    "items": map[string]interface{}{
+                        "type": "object",
+                        "properties": map[string]interface{}{
+                            "name": map[string]interface{}{
+                                "type": "string",
+                            },
+                            "amount": map[string]interface{}{
+                                "type": "string",
+                            },
+                        },
+                    },
+                },
+                "steps": map[string]interface{}{
+                    "type": "array",
+                    "items": map[string]interface{}{
+                        "type": "string",
+                    },
+                },
+            },
+        },
+    },
+}
+```
+
+### Using Go Structs
+
+For better type safety, you can generate JSON schemas from Go structs:
+
+```go
+type RecipeInput struct {
+    Recipe struct {
+        Name        string `json:"name"`
+        Ingredients []struct {
+            Name   string `json:"name"`
+            Amount string `json:"amount"`
+        } `json:"ingredients"`
+        Steps []string `json:"steps"`
+    } `json:"recipe"`
+}
+
+// Use a JSON schema generation library or manually create the schema
+// from your struct definition
+```
+
+## Multi-Step Tool Calling
+
+The Go AI SDK automatically handles multi-step tool execution. When a model makes tool calls, the SDK:
+
+1. Executes the tools
+2. Adds the results to the conversation
+3. Sends back to the model for the next response
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in London and Paris?",
+    Tools:  []types.Tool{weatherTool},
+    MaxSteps: 5, // Allow up to 5 steps of tool calling
+})
+```
+
+## Tool Choice
+
+You can control when and which tools the model should use:
+
+```go
+// Auto: Let the model decide when to use tools (default)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "What's the weather?",
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.AutoToolChoice(),
+})
+
+// None: Prevent the model from using any tools
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "What's the weather?",
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.NoneToolChoice(),
+})
+
+// Required: Force the model to use at least one tool
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "What's the weather?",
+    Tools:      []types.Tool{weatherTool},
+    ToolChoice: types.RequiredToolChoice(),
+})
+
+// Specific: Force the model to use a specific tool
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "What's the weather?",
+    Tools:      []types.Tool{weatherTool, calculatorTool},
+    ToolChoice: types.SpecificToolChoice("get_weather"),
+})
+```
+
+## Complex Tool Example
+
+Here's a more complex example with multiple tools:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "math"
+    "net/http"
+    "encoding/json"
+    "io"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := provider.LanguageModel("claude-3-sonnet-20240229")
+
+    // Calculator tool
+    calculatorTool := types.Tool{
+        Name:        "calculator",
+        Description: "Perform mathematical calculations",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "operation": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"add", "subtract", "multiply", "divide", "power"},
+                },
+                "a": map[string]interface{}{"type": "number"},
+                "b": map[string]interface{}{"type": "number"},
+            },
+            "required": []string{"operation", "a", "b"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            op := input["operation"].(string)
+            a := input["a"].(float64)
+            b := input["b"].(float64)
+
+            var result float64
+            switch op {
+            case "add":
+                result = a + b
+            case "subtract":
+                result = a - b
+            case "multiply":
+                result = a * b
+            case "divide":
+                if b == 0 {
+                    return nil, fmt.Errorf("division by zero")
+                }
+                result = a / b
+            case "power":
+                result = math.Pow(a, b)
+            default:
+                return nil, fmt.Errorf("unknown operation: %s", op)
+            }
+
+            return map[string]interface{}{"result": result}, nil
+        },
+    }
+
+    // Web search tool
+    searchTool := types.Tool{
+        Name:        "web_search",
+        Description: "Search the web for information",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The search query",
+                },
+            },
+            "required": []string{"query"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            query := input["query"].(string)
+            // In a real application, call a search API
+            return map[string]interface{}{
+                "results": []string{
+                    "Result 1 for: " + query,
+                    "Result 2 for: " + query,
+                },
+            }, nil
+        },
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        Prompt:   "Search for the population of Tokyo, then calculate what percentage it is of Japan's total population (125 million)",
+        Tools:    []types.Tool{calculatorTool, searchTool},
+        MaxSteps: 5,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Tool Execution Callbacks
+
+You can monitor tool execution with callbacks:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Tokyo?",
+    Tools:  []types.Tool{weatherTool},
+    OnStepFinish: func(step types.Step) {
+        fmt.Printf("Step %d finished\n", step.StepNumber)
+        for _, toolCall := range step.ToolCalls {
+            fmt.Printf("  Tool: %s, Args: %v\n", toolCall.ToolName, toolCall.Input)
+        }
+        for _, toolResult := range step.ToolResults {
+            fmt.Printf("  Result: %v\n", toolResult.Output)
+        }
+    },
+})
+```
+
+## Error Handling
+
+Tools should handle errors gracefully:
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters:  weatherSchema,
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        location, ok := input["location"].(string)
+        if !ok {
+            return nil, fmt.Errorf("location must be a string")
+        }
+
+        // Call weather API
+        resp, err := http.Get(fmt.Sprintf("https://api.weather.com/v1/%s", location))
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch weather: %w", err)
+        }
+        defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK {
+            return nil, fmt.Errorf("weather API returned status: %d", resp.StatusCode)
+        }
+
+        var data map[string]interface{}
+        if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+            return nil, fmt.Errorf("failed to decode response: %w", err)
+        }
+
+        return data, nil
+    },
+}
+```
+
+## Context Cancellation
+
+Tools respect context cancellation:
+
+```go
+weatherTool := types.Tool{
+    Name:       "get_weather",
+    Parameters: weatherSchema,
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        // Check if context is cancelled
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+        }
+
+        // Create request with context
+        req, _ := http.NewRequestWithContext(ctx, "GET", weatherURL, nil)
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
+
+        // ... rest of implementation
+    },
+}
+```
+
+## Tool Packages
+
+Since tools are just Go structs, they can be packaged and distributed as Go modules. This makes it easy to share reusable tools across projects.
+
+### Creating a Tool Package
+
+```go
+// weathertools/weather.go
+package weathertools
+
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func GetWeatherTool(apiKey string) types.Tool {
+    return types.Tool{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type": "string",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            // Implementation
+            return nil, nil
+        },
+    }
+}
+```
+
+### Using a Tool Package
+
+```go
+import "github.com/yourusername/weathertools"
+
+weatherTool := weathertools.GetWeatherTool(apiKey)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather?",
+    Tools:  []types.Tool{weatherTool},
+})
+```
+
+## Best Practices
+
+1. **Clear Names**: Use descriptive tool names that clearly indicate their purpose
+2. **Good Descriptions**: Write clear descriptions to help the model know when to use the tool
+3. **Schema Validation**: Define comprehensive parameter schemas with descriptions
+4. **Error Handling**: Return clear error messages when tools fail
+5. **Context Support**: Respect context cancellation in long-running tools
+6. **Idempotency**: Make tools idempotent when possible
+7. **Logging**: Log tool executions for debugging
+8. **Rate Limiting**: Implement rate limiting for external API calls
+
+## Next Steps
+
+- Learn about [Streaming](./05-streaming.md)
+- Explore [Tools and Tool Calling](../03-ai-sdk-core/04-tools-and-tool-calling.md)
+- Build [Agents](../03-agents/01-overview.md)
+
+## See Also
+
+- [Generating Text](../03-ai-sdk-core/02-generating-text.md)
+- [Tool Types Reference](../07-reference/types/tools.md)
+- [Error Handling](../03-ai-sdk-core/13-error-handling.md)
+- [Agent Overview](../03-agents/01-overview.md)
