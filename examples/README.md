@@ -29,7 +29,7 @@ Production-ready server implementations:
 - **[fiber-server](./fiber-server)** - Fiber framework for high-performance HTTP servers
 - **[chi-server](./chi-server)** - Chi router for lightweight, composable middleware
 
-### 📦 Structured Output (3 examples)
+### 📦 Structured Output (4 examples)
 
 Type-safe JSON generation:
 
@@ -38,7 +38,7 @@ Type-safe JSON generation:
 - **[generate-object/complex](./generate-object/complex)** - Deep nesting, optional fields
 - **[stream-object](./stream-object)** - Real-time structured output streaming
 
-### 🤖 AI Providers (6 examples)
+### 🤖 AI Providers (8 examples)
 
 Provider-specific features:
 
@@ -94,7 +94,7 @@ Test patterns for AI applications:
 - **[testing/unit](./testing/unit)** - Unit tests with mocks and benchmarks
 - **[testing/integration](./testing/integration)** - Integration tests with real API calls
 
-### 🎨 Modalities (3 examples)
+### 🎨 Modalities (4 examples)
 
 Image, speech, and multimodal AI:
 
@@ -301,7 +301,7 @@ When adding new examples:
 | Provider Examples | ✅ (30+ providers) | ✅ (Core providers) | Core complete |
 | Agents | ✅ | ✅ | Complete |
 | Middleware | ✅ | ✅ | Complete |
-| MCP | ✅ | ✅ (2 examples) | Complete |
+| MCP | ✅ | ✅ (4 examples) | Complete |
 | Testing | ✅ | ✅ (2 examples) | Complete |
 | Image Generation | ✅ | ✅ | Complete |
 

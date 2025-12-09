@@ -241,13 +241,50 @@ While Python dominates AI/ML model training, **Go excels at building production 
 
 ## Examples
 
-Check out the [examples directory](./examples) for complete working applications:
+We provide **50+ production-ready examples** covering every feature. See the [examples directory](./examples) for complete working code.
 
-- **CLI Chat** - Interactive command-line AI assistant
-- **HTTP Streaming** - Server-Sent Events (SSE) API
-- **Agent Workflows** - Multi-step autonomous agents
-- **RAG Pipeline** - Retrieval-augmented generation
-- **Embeddings Search** - Semantic similarity search
+### 🚀 HTTP Servers (5 examples)
+- **[http-server](./examples/http-server)** - Standard `net/http` with SSE streaming
+- **[gin-server](./examples/gin-server)** - Gin framework integration
+- **[echo-server](./examples/echo-server)**, **[fiber-server](./examples/fiber-server)**, **[chi-server](./examples/chi-server)** - More frameworks
+
+### 📦 Structured Output (4 examples)
+- **[generate-object](./examples/generate-object)** - Type-safe JSON generation (basic, validation, complex)
+- **[stream-object](./examples/stream-object)** - Real-time structured streaming
+
+### 🤖 Provider Features (8 examples)
+- **[OpenAI](./examples/providers/openai)** - Reasoning (o1), structured outputs, vision
+- **[Anthropic](./examples/providers/anthropic)** - Caching, extended thinking, PDF support
+- **[Google](./examples/providers/google)**, **[Azure](./examples/providers/azure)** - Integration patterns
+
+### 🧠 Agents (5 examples)
+- **[math-agent](./examples/agents/math-agent)** - Multi-tool math solver
+- **[web-search-agent](./examples/agents/web-search-agent)** - Research and fact-checking
+- **[streaming-agent](./examples/agents/streaming-agent)** - Real-time step visualization
+- **[multi-agent](./examples/agents/multi-agent)**, **[supervisor-agent](./examples/agents/supervisor-agent)** - Coordinated systems
+
+### 🛠️ Production Patterns (7 examples)
+- **[Middleware](./examples/middleware)** - Logging, caching, rate limiting, retry, telemetry
+- **[Testing](./examples/testing)** - Unit and integration test patterns
+- **[MCP](./examples/mcp)** - Model Context Protocol (stdio, HTTP, auth, tools)
+
+### 🎨 Multimodal (5 examples)
+- **[Image Generation](./examples/image-generation)** - DALL-E, Stable Diffusion
+- **[Speech](./examples/speech)** - Text-to-speech and speech-to-text
+- **[Multimodal Audio](./examples/multimodal/audio)** - Audio analysis patterns
+
+### 🔬 Advanced (4 examples)
+- **[Reranking](./examples/rerank)** - Document reranking for search quality
+- **[Semantic Router](./examples/complex/semantic-router)** - AI-based intent classification
+- **[Benchmarks](./examples/benchmarks)** - Throughput and latency measurement
+
+**All examples:**
+- ✅ Compile and pass `go vet`
+- ✅ Include comprehensive README with usage
+- ✅ Follow Go best practices
+- ✅ Work with real API calls
+
+[Browse all 50+ examples →](./examples)
 
 ## Documentation
 
