@@ -69,7 +69,7 @@ When answering questions:
 5. Fact-check important claims`,
 		Tools:    tools,
 		MaxSteps: &maxSteps,
-		OnStepFinish: func(step types.StepResult) {
+		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
 					fmt.Printf("  [Tool] %s: %v\n", tc.ToolName, tc.Arguments)
@@ -113,7 +113,7 @@ func createWebSearchTool() types.Tool {
 			},
 			"required": []string{"query"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			query := params["query"].(string)
 			numResults := 5
 			if n, ok := params["numResults"].(float64); ok {
@@ -168,7 +168,7 @@ func createPageContentTool() types.Tool {
 			},
 			"required": []string{"url"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			url := params["url"].(string)
 
 			// Simulate page content retrieval
@@ -201,7 +201,7 @@ func createFactCheckTool() types.Tool {
 			},
 			"required": []string{"claim"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			claim := params["claim"].(string)
 
 			// Simulate fact checking

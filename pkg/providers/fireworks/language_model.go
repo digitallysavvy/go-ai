@@ -143,11 +143,8 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertFireworksUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -168,6 +165,53 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+}
+
+// convertFireworksUsage converts Fireworks usage to detailed Usage struct
+func convertFireworksUsage(usage fireworksUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+	var cachedTokens int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	}
+	var reasoningTokens int64
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	}
+	if cachedTokens > 0 {
+		noCacheTokens := promptTokens - cachedTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: nil,
+		}
+	}
+	if reasoningTokens > 0 {
+		textTokens := completionTokens - reasoningTokens
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &textTokens,
+			ReasoningTokens: &reasoningTokens,
+		}
+	}
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+	if usage.PromptTokensDetails != nil {
+		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
+	return result
 }
 
 func convertFinishReason(reason string) types.FinishReason {
@@ -204,11 +248,22 @@ type fireworksResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage fireworksUsage `json:"usage"`
+}
+
+// fireworksUsage represents Fireworks usage information with detailed token tracking
+type fireworksUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 type fireworksStreamChunk struct {

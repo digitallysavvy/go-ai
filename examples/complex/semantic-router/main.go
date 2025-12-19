@@ -21,7 +21,7 @@ type Route struct {
 }
 
 // SemanticRouter routes user queries to appropriate handlers
-type SemanticRouter struct{
+type SemanticRouter struct {
 	routes []Route
 	model  provider.LanguageModel
 }
@@ -279,11 +279,11 @@ Respond with intent only.`, userContext, contextQuery)
 
 	fmt.Println("\n=== Advanced Patterns ===")
 	patterns := map[string]string{
-		"Fallback routing":    "Route to default handler if confidence < threshold",
-		"Hybrid routing":      "Combine semantic + rule-based routing",
-		"A/B testing routes":  "Route to different handlers for experimentation",
-		"Priority routing":    "High-priority intents bypass queue",
-		"Regional routing":    "Route based on user location/language",
+		"Fallback routing":   "Route to default handler if confidence < threshold",
+		"Hybrid routing":     "Combine semantic + rule-based routing",
+		"A/B testing routes": "Route to different handlers for experimentation",
+		"Priority routing":   "High-priority intents bypass queue",
+		"Regional routing":   "Route based on user location/language",
 	}
 
 	for pattern, description := range patterns {

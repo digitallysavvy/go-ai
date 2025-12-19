@@ -220,7 +220,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		}
 
 		// Execute the tool
-		result, err := tool.Execute(ctx, call.Arguments)
+		execOptions := types.ToolExecutionOptions{
+			ToolCallID: call.ID,
+		}
+		result, err := tool.Execute(ctx, call.Arguments, execOptions)
 		results[i] = types.ToolResult{
 			ToolCallID: call.ID,
 			ToolName:   call.ToolName,

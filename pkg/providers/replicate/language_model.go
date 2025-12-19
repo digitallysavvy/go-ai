@@ -200,11 +200,7 @@ func (m *LanguageModel) convertResponse(prediction replicatePrediction) *types.G
 	return &types.GenerateResult{
 		Text:         text,
 		FinishReason: types.FinishReasonStop,
-		Usage: types.Usage{
-			InputTokens:  0,
-			OutputTokens: 0,
-			TotalTokens:  0,
-		},
+		Usage:        types.Usage{}, // Replicate doesn't provide token counts
 	}
 }
 

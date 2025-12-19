@@ -293,7 +293,7 @@ func handleTools(w http.ResponseWriter, r *http.Request) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			location := params["location"].(string)
 			unit := "fahrenheit"
 			if u, ok := params["unit"].(string); ok {

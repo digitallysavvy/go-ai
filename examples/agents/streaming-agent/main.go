@@ -77,7 +77,7 @@ func runStreamingAgent(ctx context.Context, model provider.LanguageModel, query 
 Use available tools to gather information. Think step by step and explain your process.`,
 		Tools:    tools,
 		MaxSteps: &maxSteps,
-		OnStepFinish: func(step types.StepResult) {
+		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepCount++
 			fmt.Printf("\n[Step %d]\n", stepCount)
 
@@ -152,7 +152,7 @@ func createResearchTool() types.Tool {
 			},
 			"required": []string{"query"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			query := params["query"].(string)
 			depth := "detailed"
 			if d, ok := params["depth"].(string); ok {
@@ -215,7 +215,7 @@ func createDataAnalysisTool() types.Tool {
 			},
 			"required": []string{"dataset"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			dataset := params["dataset"].(string)
 
 			// Simulate analysis
@@ -264,7 +264,7 @@ func createCodeAnalyzerTool() types.Tool {
 			},
 			"required": []string{"code"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			code := params["code"].(string)
 			language := "go"
 			if lang, ok := params["language"].(string); ok {
@@ -297,9 +297,9 @@ func createCodeAnalyzerTool() types.Tool {
 			}
 
 			return map[string]interface{}{
-				"language":   language,
+				"language":    language,
 				"linesOfCode": len(strings.Split(code, "\n")),
-				"issues":     issues,
+				"issues":      issues,
 				"summary": map[string]interface{}{
 					"critical": 1,
 					"warning":  1,

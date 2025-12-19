@@ -69,7 +69,7 @@ Solve the problem step by step, using the tools as needed.
 Show your work and explain your reasoning.`,
 		Tools:    tools,
 		MaxSteps: &maxSteps,
-		OnStepFinish: func(step types.StepResult) {
+		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepNum++
 			fmt.Printf("  Step %d:\n", stepNum)
 
@@ -124,7 +124,7 @@ func createCalculatorTool() types.Tool {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			operation := params["operation"].(string)
 			a := params["a"].(float64)
 			b := params["b"].(float64)
@@ -168,7 +168,7 @@ func createSquareRootTool() types.Tool {
 			},
 			"required": []string{"number"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			number := params["number"].(float64)
 			if number < 0 {
 				return nil, fmt.Errorf("cannot calculate square root of negative number")
@@ -201,7 +201,7 @@ func createPowerTool() types.Tool {
 			},
 			"required": []string{"base", "exponent"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			base := params["base"].(float64)
 			exponent := params["exponent"].(float64)
 
@@ -231,7 +231,7 @@ func createFactorialTool() types.Tool {
 			},
 			"required": []string{"n"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			// Handle both float64 and string from JSON
 			var n int64
 			switch v := params["n"].(type) {

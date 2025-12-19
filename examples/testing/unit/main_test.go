@@ -30,9 +30,9 @@ func (m *MockModel) DoGenerate(ctx context.Context, options interface{}) (*ai.Ge
 	}, nil
 }
 
-func (m *MockModel) ModelID() string       { return "mock-model" }
-func (m *MockModel) Provider() string      { return "mock" }
-func (m *MockModel) MaxTokens() int        { return 4096 }
+func (m *MockModel) ModelID() string         { return "mock-model" }
+func (m *MockModel) Provider() string        { return "mock" }
+func (m *MockModel) MaxTokens() int          { return 4096 }
 func (m *MockModel) SupportsStreaming() bool { return false }
 
 func TestGenerateText(t *testing.T) {

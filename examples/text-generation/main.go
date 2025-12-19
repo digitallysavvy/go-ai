@@ -104,7 +104,7 @@ func toolCallingExample(ctx context.Context, model provider.LanguageModel) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			location := params["location"].(string)
 			// Simulate weather API call
 			return map[string]interface{}{

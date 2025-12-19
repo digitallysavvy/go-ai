@@ -157,13 +157,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 // convertResponse converts an Anthropic response to GenerateResult
+// Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response anthropicResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage: types.Usage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
-			TotalTokens:  response.Usage.InputTokens + response.Usage.OutputTokens,
-		},
+		Usage:       convertAnthropicUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -206,24 +203,79 @@ func (m *LanguageModel) convertResponse(response anthropicResponse) *types.Gener
 	return result
 }
 
+// convertAnthropicUsage converts Anthropic usage to detailed Usage struct
+// Implements v6.0 detailed token tracking with prompt caching
+func convertAnthropicUsage(usage anthropicUsage) types.Usage {
+	inputTokens := int64(usage.InputTokens)
+	outputTokens := int64(usage.OutputTokens)
+	cacheCreationTokens := int64(usage.CacheCreationInputTokens)
+	cacheReadTokens := int64(usage.CacheReadInputTokens)
+
+	// Calculate total input tokens (includes all cache-related tokens)
+	totalInputTokens := inputTokens + cacheCreationTokens + cacheReadTokens
+	totalTokens := totalInputTokens + outputTokens
+
+	result := types.Usage{
+		InputTokens:  &totalInputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Set input token details
+	// Anthropic provides: input_tokens (regular), cache_creation_input_tokens (write), cache_read_input_tokens (read)
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &inputTokens,
+		CacheReadTokens:  &cacheReadTokens,
+		CacheWriteTokens: &cacheCreationTokens,
+	}
+
+	// Anthropic doesn't provide reasoning tokens breakdown yet
+	// So we just set the total output tokens as text tokens
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &outputTokens,
+		ReasoningTokens: nil,
+	}
+
+	// Store raw usage for provider-specific details
+	result.Raw = map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+	}
+
+	if usage.CacheCreationInputTokens > 0 {
+		result.Raw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.CacheReadInputTokens > 0 {
+		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+
+	return result
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("anthropic", 0, "", err.Error(), err)
 }
 
 // anthropicResponse represents the Anthropic API response
+// Updated in v6.0 to support prompt caching
 type anthropicResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Content    []anthropicContent `json:"content"`
-	Model      string `json:"model"`
-	StopReason string `json:"stop_reason"`
-	StopSequence string `json:"stop_sequence,omitempty"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	Role         string             `json:"role"`
+	Content      []anthropicContent `json:"content"`
+	Model        string             `json:"model"`
+	StopReason   string             `json:"stop_reason"`
+	StopSequence string             `json:"stop_sequence,omitempty"`
+	Usage        anthropicUsage     `json:"usage"`
+}
+
+// anthropicUsage represents Anthropic usage information with cache tracking
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // v6.0
 }
 
 // anthropicContent represents content in an Anthropic response

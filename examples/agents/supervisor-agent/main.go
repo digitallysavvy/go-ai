@@ -15,9 +15,9 @@ import (
 
 // SubAgent represents a specialized worker agent
 type SubAgent struct {
-	name        string
-	role        string
-	model       provider.LanguageModel
+	name         string
+	role         string
+	model        provider.LanguageModel
 	systemPrompt string
 }
 
@@ -258,7 +258,7 @@ func (s *SupervisorAgent) createDelegationTool() types.Tool {
 			},
 			"required": []string{"agent", "task"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			agentID := params["agent"].(string)
 			task := params["task"].(string)
 

@@ -94,7 +94,7 @@ func mockCalculatorTool() types.Tool {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return "8", nil // Mock result
 		},
 	}

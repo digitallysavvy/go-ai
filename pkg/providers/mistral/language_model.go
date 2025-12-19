@@ -146,11 +146,8 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertMistralUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -171,6 +168,42 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+}
+
+// convertMistralUsage converts Mistral usage to detailed Usage struct
+// Implements v6.0 detailed token tracking (simple format - no cache or reasoning)
+func convertMistralUsage(usage mistralUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Mistral doesn't support cache or reasoning tokens
+	// All input tokens are "no cache" and all output tokens are "text"
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &promptTokens,
+		CacheReadTokens:  nil,
+		CacheWriteTokens: nil,
+	}
+
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &completionTokens,
+		ReasoningTokens: nil,
+	}
+
+	// Store raw usage
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+
+	return result
 }
 
 func convertFinishReason(reason string) types.FinishReason {
@@ -209,11 +242,14 @@ type mistralResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage mistralUsage `json:"usage"`
+}
+
+// mistralUsage represents Mistral usage information
+type mistralUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type mistralStreamChunk struct {

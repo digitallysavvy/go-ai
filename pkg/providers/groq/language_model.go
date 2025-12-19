@@ -146,11 +146,8 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertGroqUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -165,6 +162,32 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 				Arguments: args,
 			}
 		}
+	}
+	return result
+}
+
+func convertGroqUsage(usage groqUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &promptTokens,
+		CacheReadTokens:  nil,
+		CacheWriteTokens: nil,
+	}
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &completionTokens,
+		ReasoningTokens: nil,
+	}
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
 	}
 	return result
 }
@@ -207,11 +230,13 @@ type groqResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage groqUsage `json:"usage"`
+}
+
+type groqUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type groqStreamChunk struct {

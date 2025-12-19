@@ -26,13 +26,13 @@ type User struct {
 // ProductReview represents a product review with constraints
 type ProductReview struct {
 	ProductName string   `json:"productName"`
-	Rating      int      `json:"rating"`      // 1-5
-	Title       string   `json:"title"`       // Max 100 chars
-	Comment     string   `json:"comment"`     // Max 500 chars
-	Pros        []string `json:"pros"`        // At least 1
-	Cons        []string `json:"cons"`        // At least 1
+	Rating      int      `json:"rating"`  // 1-5
+	Title       string   `json:"title"`   // Max 100 chars
+	Comment     string   `json:"comment"` // Max 500 chars
+	Pros        []string `json:"pros"`    // At least 1
+	Cons        []string `json:"cons"`    // At least 1
 	Verified    bool     `json:"verified"`
-	Helpful     int      `json:"helpful"`     // Min 0
+	Helpful     int      `json:"helpful"` // Min 0
 }
 
 func main() {
@@ -94,7 +94,7 @@ func generateUserProfile(ctx context.Context, model provider.LanguageModel) {
 				"type": "boolean",
 			},
 		},
-		"required": []string{"id", "name", "email", "age", "role", "isActive"},
+		"required":             []string{"id", "name", "email", "age", "role", "isActive"},
 		"additionalProperties": false,
 	})
 

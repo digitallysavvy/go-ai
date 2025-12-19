@@ -169,18 +169,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 }
 
 // convertResponse converts a Google response to GenerateResult
+// Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response googleResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
+		Usage:       convertGoogleUsage(response.UsageMetadata),
 		RawResponse: response,
-	}
-
-	// Extract usage if available
-	if response.UsageMetadata != nil {
-		result.Usage = types.Usage{
-			InputTokens:  response.UsageMetadata.PromptTokenCount,
-			OutputTokens: response.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:  response.UsageMetadata.TotalTokenCount,
-		}
 	}
 
 	// Extract content from first candidate
@@ -228,7 +221,71 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("google", 0, "", err.Error(), err)
 }
 
+// convertGoogleUsage converts Google usage to detailed Usage struct
+// Implements v6.0 detailed token tracking with cache and reasoning tokens
+func convertGoogleUsage(usage *googleUsageMetadata) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+
+	promptTokens := int64(usage.PromptTokenCount)
+	candidatesTokens := int64(usage.CandidatesTokenCount)
+	cachedContentTokens := int64(usage.CachedContentTokenCount)
+	thoughtsTokens := int64(usage.ThoughtsTokenCount)
+
+	// Calculate totals
+	totalOutputTokens := candidatesTokens + thoughtsTokens
+	totalTokens := promptTokens + totalOutputTokens
+
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &totalOutputTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Set input token details (cache information)
+	// Google provides cachedContentTokenCount for cache reads
+	if cachedContentTokens > 0 {
+		noCacheTokens := promptTokens - cachedContentTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:   &noCacheTokens,
+			CacheReadTokens: &cachedContentTokens,
+			// Google doesn't report cache write tokens separately
+			CacheWriteTokens: nil,
+		}
+	}
+
+	// Set output token details (text vs reasoning tokens)
+	// Google provides thoughtsTokenCount for reasoning in Gemini thinking models
+	if thoughtsTokens > 0 {
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &candidatesTokens,
+			ReasoningTokens: &thoughtsTokens,
+		}
+	}
+
+	// Store raw usage for provider-specific details
+	result.Raw = map[string]interface{}{
+		"promptTokenCount":     usage.PromptTokenCount,
+		"candidatesTokenCount": usage.CandidatesTokenCount,
+		"totalTokenCount":      usage.TotalTokenCount,
+	}
+
+	if usage.CachedContentTokenCount > 0 {
+		result.Raw["cachedContentTokenCount"] = usage.CachedContentTokenCount
+	}
+	if usage.ThoughtsTokenCount > 0 {
+		result.Raw["thoughtsTokenCount"] = usage.ThoughtsTokenCount
+	}
+	if usage.TrafficType != "" {
+		result.Raw["trafficType"] = usage.TrafficType
+	}
+
+	return result
+}
+
 // googleResponse represents the Google API response
+// Updated in v6.0 to support detailed usage tracking
 type googleResponse struct {
 	Candidates []struct {
 		Content struct {
@@ -238,11 +295,17 @@ type googleResponse struct {
 		FinishReason string `json:"finishReason"`
 		Index        int    `json:"index"`
 	} `json:"candidates"`
-	UsageMetadata *struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
-	} `json:"usageMetadata,omitempty"`
+	UsageMetadata *googleUsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+// googleUsageMetadata represents Google's usage information with detailed token tracking
+type googleUsageMetadata struct {
+	PromptTokenCount        int    `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int    `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount         int    `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount int    `json:"cachedContentTokenCount,omitempty"` // v6.0 - cache read
+	ThoughtsTokenCount      int    `json:"thoughtsTokenCount,omitempty"`      // v6.0 - reasoning tokens
+	TrafficType             string `json:"trafficType,omitempty"`             // v6.0 - metadata
 }
 
 // googlePart represents a part in Google's content structure

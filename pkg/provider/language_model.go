@@ -5,7 +5,6 @@ import (
 	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // LanguageModel represents a language model (V3 specification)
@@ -72,12 +71,22 @@ type GenerateOptions struct {
 }
 
 // ResponseFormat specifies the format of the response
+// Updated in v6.0 to support name and description for provider guidance
 type ResponseFormat struct {
-	// Type of response format ("text", "json_object", "json_schema")
+	// Type of response format ("text", "json", "json_object", "json_schema")
 	Type string
 
-	// Schema for JSON response (when Type is "json_schema")
-	Schema schema.Schema
+	// Schema for JSON response (when Type is "json" or "json_schema")
+	// Can be a map[string]interface{} (JSON Schema) or schema.Schema
+	Schema interface{}
+
+	// Name is an optional name for the output
+	// Used by some providers (e.g., OpenAI, Anthropic) for additional LLM guidance
+	Name string
+
+	// Description is an optional description of the expected output
+	// Used by some providers for additional LLM guidance
+	Description string
 }
 
 // TextStream represents a streaming text response

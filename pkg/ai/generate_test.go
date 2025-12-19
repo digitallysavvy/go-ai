@@ -21,10 +21,11 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 			if opts.Prompt.Messages[0].Role != types.RoleUser {
 				t.Errorf("expected user role, got %s", opts.Prompt.Messages[0].Role)
 			}
+			input, output, total := int64(5), int64(10), int64(15)
 			return &types.GenerateResult{
 				Text:         "Hello! I'm an AI assistant.",
 				FinishReason: types.FinishReasonStop,
-				Usage:        types.Usage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15},
+				Usage:        types.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total},
 			}, nil
 		},
 	}
@@ -224,7 +225,7 @@ func TestGenerateText_ToolCalling(t *testing.T) {
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
 			Parameters:  map[string]interface{}{"type": "object"},
-			Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				toolCalled = true
 				return map[string]interface{}{"temperature": 72, "condition": "sunny"}, nil
 			},
@@ -285,7 +286,7 @@ func TestGenerateText_MultiStepToolCalling(t *testing.T) {
 		{
 			Name:        "step_tool",
 			Description: "A tool that runs in steps",
-			Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				stepCount++
 				return map[string]interface{}{"step": stepCount}, nil
 			},
@@ -333,7 +334,7 @@ func TestGenerateText_ToolNotFound(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "existing_tool", Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) { return nil, nil }},
+		{Name: "existing_tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return nil, nil }},
 	}
 
 	callCount := 0
@@ -381,7 +382,7 @@ func TestGenerateText_ToolExecutionError(t *testing.T) {
 	tools := []types.Tool{
 		{
 			Name: "failing_tool",
-			Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				return nil, toolError
 			},
 		},
@@ -431,7 +432,7 @@ func TestGenerateText_MaxStepsLimit(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -479,7 +480,7 @@ func TestGenerateText_OnStepFinishCallback(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "Hello",
-		OnStepFinish: func(step types.StepResult) {
+		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepCallbacks++
 		},
 	})
@@ -510,7 +511,7 @@ func TestGenerateText_OnFinishCallback(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "Hello",
-		OnFinish: func(result *GenerateTextResult) {
+		OnFinish: func(ctx context.Context, result *GenerateTextResult, userContext interface{}) {
 			finishCalled = true
 			capturedResult = result
 		},
@@ -536,24 +537,26 @@ func TestGenerateText_UsageTracking(t *testing.T) {
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 			callCount++
 			if callCount == 1 {
+				input1, output1, total1 := int64(10), int64(5), int64(15)
 				return &types.GenerateResult{
 					FinishReason: types.FinishReasonToolCalls,
-					Usage:        types.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+					Usage:        types.Usage{InputTokens: &input1, OutputTokens: &output1, TotalTokens: &total1},
 					ToolCalls: []types.ToolCall{
 						{ID: "1", ToolName: "tool", Arguments: map[string]interface{}{}},
 					},
 				}, nil
 			}
+			input, output, total := int64(20), int64(10), int64(30)
 			return &types.GenerateResult{
 				Text:         "done",
 				FinishReason: types.FinishReasonStop,
-				Usage:        types.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30},
+				Usage:        types.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total},
 			}, nil
 		},
 	}
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
@@ -566,14 +569,14 @@ func TestGenerateText_UsageTracking(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Usage should be accumulated
-	if result.Usage.InputTokens != 30 {
-		t.Errorf("expected 30 input tokens, got %d", result.Usage.InputTokens)
+	if result.Usage.InputTokens == nil || *result.Usage.InputTokens != 30 {
+		t.Errorf("expected 30 input tokens, got %v", result.Usage.InputTokens)
 	}
-	if result.Usage.OutputTokens != 15 {
-		t.Errorf("expected 15 output tokens, got %d", result.Usage.OutputTokens)
+	if result.Usage.OutputTokens == nil || *result.Usage.OutputTokens != 15 {
+		t.Errorf("expected 15 output tokens, got %v", result.Usage.OutputTokens)
 	}
-	if result.Usage.TotalTokens != 45 {
-		t.Errorf("expected 45 total tokens, got %d", result.Usage.TotalTokens)
+	if result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 45 {
+		t.Errorf("expected 45 total tokens, got %v", result.Usage.TotalTokens)
 	}
 }
 

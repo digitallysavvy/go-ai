@@ -340,7 +340,7 @@ func TestGenerateObject_OnFinishCallback(t *testing.T) {
 		Model:  model,
 		Prompt: "Generate",
 		Schema: testSchema,
-		OnFinish: func(result *GenerateObjectResult) {
+		OnFinish: func(ctx context.Context, result *GenerateObjectResult, userContext interface{}) {
 			finishCalled = true
 		},
 	})
@@ -517,10 +517,11 @@ func TestGenerateObject_UsageTracking(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			input, output, total := int64(10), int64(20), int64(30)
 			return &types.GenerateResult{
 				Text:         `{"data": "test"}`,
 				FinishReason: types.FinishReasonStop,
-				Usage:        types.Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+				Usage:        types.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total},
 			}, nil
 		},
 	}
@@ -536,8 +537,8 @@ func TestGenerateObject_UsageTracking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Usage.TotalTokens != 30 {
-		t.Errorf("expected 30 total tokens, got %d", result.Usage.TotalTokens)
+	if result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 30 {
+		t.Errorf("expected 30 total tokens, got %v", result.Usage.TotalTokens)
 	}
 }
 

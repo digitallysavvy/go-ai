@@ -48,7 +48,7 @@ func generateCompanyStructure(ctx context.Context, model provider.LanguageModel)
 			"company": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"name": map[string]interface{}{"type": "string"},
+					"name":    map[string]interface{}{"type": "string"},
 					"founded": map[string]interface{}{"type": "integer"},
 					"headquarters": map[string]interface{}{
 						"type": "object",
@@ -89,9 +89,9 @@ func generateCompanyStructure(ctx context.Context, model provider.LanguageModel)
 												"items": map[string]interface{}{
 													"type": "object",
 													"properties": map[string]interface{}{
-														"name":     map[string]interface{}{"type": "string"},
-														"role":     map[string]interface{}{"type": "string"},
-														"email":    map[string]interface{}{"type": "string"},
+														"name":  map[string]interface{}{"type": "string"},
+														"role":  map[string]interface{}{"type": "string"},
+														"email": map[string]interface{}{"type": "string"},
 														"seniority": map[string]interface{}{
 															"type": "string",
 															"enum": []string{"junior", "mid", "senior", "lead"},
@@ -104,8 +104,8 @@ func generateCompanyStructure(ctx context.Context, model provider.LanguageModel)
 												"items": map[string]interface{}{
 													"type": "object",
 													"properties": map[string]interface{}{
-														"name":     map[string]interface{}{"type": "string"},
-														"status":   map[string]interface{}{
+														"name": map[string]interface{}{"type": "string"},
+														"status": map[string]interface{}{
 															"type": "string",
 															"enum": []string{"planning", "active", "completed", "on-hold"},
 														},
@@ -147,8 +147,8 @@ func generateEcommerceOrder(ctx context.Context, model provider.LanguageModel) {
 			"order": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"orderId":     map[string]interface{}{"type": "string"},
-					"orderDate":   map[string]interface{}{"type": "string"},
+					"orderId":   map[string]interface{}{"type": "string"},
+					"orderDate": map[string]interface{}{"type": "string"},
 					"orderStatus": map[string]interface{}{
 						"type": "string",
 						"enum": []string{"pending", "processing", "shipped", "delivered", "cancelled"},
@@ -165,7 +165,7 @@ func generateEcommerceOrder(ctx context.Context, model provider.LanguageModel) {
 								"items": map[string]interface{}{
 									"type": "object",
 									"properties": map[string]interface{}{
-										"type":    map[string]interface{}{
+										"type": map[string]interface{}{
 											"type": "string",
 											"enum": []string{"billing", "shipping"},
 										},
@@ -217,20 +217,20 @@ func generateEcommerceOrder(ctx context.Context, model provider.LanguageModel) {
 					"pricing": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"subtotal":        map[string]interface{}{"type": "number"},
-							"tax":             map[string]interface{}{"type": "number"},
-							"shipping":        map[string]interface{}{"type": "number"},
-							"discount":        map[string]interface{}{"type": "number"},
-							"total":           map[string]interface{}{"type": "number"},
-							"currency":        map[string]interface{}{"type": "string"},
+							"subtotal": map[string]interface{}{"type": "number"},
+							"tax":      map[string]interface{}{"type": "number"},
+							"shipping": map[string]interface{}{"type": "number"},
+							"discount": map[string]interface{}{"type": "number"},
+							"total":    map[string]interface{}{"type": "number"},
+							"currency": map[string]interface{}{"type": "string"},
 						},
 					},
 					"shipping": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"method":          map[string]interface{}{"type": "string"},
-							"carrier":         map[string]interface{}{"type": "string"},
-							"trackingNumber":  map[string]interface{}{"type": "string"},
+							"method":            map[string]interface{}{"type": "string"},
+							"carrier":           map[string]interface{}{"type": "string"},
+							"trackingNumber":    map[string]interface{}{"type": "string"},
 							"estimatedDelivery": map[string]interface{}{"type": "string"},
 						},
 					},
@@ -261,15 +261,15 @@ func generateCourseCurriculum(ctx context.Context, model provider.LanguageModel)
 			"course": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"title":       map[string]interface{}{"type": "string"},
-					"code":        map[string]interface{}{"type": "string"},
-					"credits":     map[string]interface{}{"type": "integer"},
-					"level":       map[string]interface{}{
+					"title":   map[string]interface{}{"type": "string"},
+					"code":    map[string]interface{}{"type": "string"},
+					"credits": map[string]interface{}{"type": "integer"},
+					"level": map[string]interface{}{
 						"type": "string",
 						"enum": []string{"beginner", "intermediate", "advanced"},
 					},
 					"prerequisites": map[string]interface{}{
-						"type": "array",
+						"type":  "array",
 						"items": map[string]interface{}{"type": "string"},
 					},
 					"instructor": map[string]interface{}{
@@ -297,18 +297,18 @@ func generateCourseCurriculum(ctx context.Context, model provider.LanguageModel)
 										"properties": map[string]interface{}{
 											"lessonNumber": map[string]interface{}{"type": "integer"},
 											"title":        map[string]interface{}{"type": "string"},
-											"type":         map[string]interface{}{
+											"type": map[string]interface{}{
 												"type": "string",
 												"enum": []string{"video", "reading", "quiz", "assignment", "lab"},
 											},
-											"duration":     map[string]interface{}{"type": "string"},
+											"duration": map[string]interface{}{"type": "string"},
 											"resources": map[string]interface{}{
 												"type": "array",
 												"items": map[string]interface{}{
 													"type": "object",
 													"properties": map[string]interface{}{
 														"title": map[string]interface{}{"type": "string"},
-														"type":  map[string]interface{}{
+														"type": map[string]interface{}{
 															"type": "string",
 															"enum": []string{"video", "pdf", "link", "code"},
 														},
@@ -341,9 +341,9 @@ func generateCourseCurriculum(ctx context.Context, model provider.LanguageModel)
 								"items": map[string]interface{}{
 									"type": "object",
 									"properties": map[string]interface{}{
-										"grade":       map[string]interface{}{"type": "string"},
-										"minPercent":  map[string]interface{}{"type": "integer"},
-										"maxPercent":  map[string]interface{}{"type": "integer"},
+										"grade":      map[string]interface{}{"type": "string"},
+										"minPercent": map[string]interface{}{"type": "integer"},
+										"maxPercent": map[string]interface{}{"type": "integer"},
 									},
 								},
 							},

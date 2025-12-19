@@ -162,7 +162,7 @@ func agentExample(ctx context.Context) {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			op := params["operation"].(string)
 			a := params["a"].(float64)
 			b := params["b"].(float64)
@@ -198,7 +198,7 @@ func agentExample(ctx context.Context) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			location := params["location"].(string)
 			// Simulate API call
 			return map[string]interface{}{

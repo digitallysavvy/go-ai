@@ -35,11 +35,11 @@ type Cache interface {
 
 // CacheStats tracks cache performance
 type CacheStats struct {
-	Hits        int
-	Misses      int
-	Evictions   int
+	Hits             int
+	Misses           int
+	Evictions        int
 	TotalTokensSaved int
-	CostSaved   float64
+	CostSaved        float64
 }
 
 // MemoryCache implements in-memory caching with TTL
@@ -163,16 +163,16 @@ func (c *MemoryCache) cleanup() {
 
 // CachingMiddleware wraps AI operations with caching
 type CachingMiddleware struct {
-	cache      Cache
-	keyFunc    func(ai.GenerateTextOptions) string
-	cacheable  func(ai.GenerateTextOptions) bool
+	cache     Cache
+	keyFunc   func(ai.GenerateTextOptions) string
+	cacheable func(ai.GenerateTextOptions) bool
 }
 
 func NewCachingMiddleware(cache Cache) *CachingMiddleware {
 	return &CachingMiddleware{
-		cache:      cache,
-		keyFunc:    defaultKeyFunc,
-		cacheable:  defaultCacheable,
+		cache:     cache,
+		keyFunc:   defaultKeyFunc,
+		cacheable: defaultCacheable,
 	}
 }
 
@@ -367,7 +367,7 @@ func main() {
 				"location": map[string]interface{}{"type": "string"},
 			},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return map[string]interface{}{"temp": 72, "condition": "sunny"}, nil
 		},
 	}

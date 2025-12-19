@@ -82,7 +82,7 @@ func generateCharacters(ctx context.Context, model provider.LanguageModel) {
 		Model:  model,
 		Prompt: "Generate 3 fantasy RPG characters with unique abilities and backstories",
 		Schema: characterSchema,
-		OnFinish: func(result *ai.GenerateObjectResult) {
+		OnFinish: func(ctx context.Context, result *ai.GenerateObjectResult, userContext interface{}) {
 			fmt.Println("✓ Generation complete!")
 		},
 	})
@@ -141,7 +141,7 @@ func generateProductCatalog(ctx context.Context, model provider.LanguageModel) {
 		Model:  model,
 		Prompt: "Generate a catalog of 4 tech products (laptops, phones, tablets) with realistic specs",
 		Schema: productSchema,
-		OnFinish: func(result *ai.GenerateObjectResult) {
+		OnFinish: func(ctx context.Context, result *ai.GenerateObjectResult, userContext interface{}) {
 			fmt.Println("✓ Catalog generated!")
 		},
 	})
@@ -200,7 +200,7 @@ func generateTaskList(ctx context.Context, model provider.LanguageModel) {
 		Model:  model,
 		Prompt: "Create a project plan for building a mobile app with 5 tasks including dependencies",
 		Schema: taskSchema,
-		OnFinish: func(result *ai.GenerateObjectResult) {
+		OnFinish: func(ctx context.Context, result *ai.GenerateObjectResult, userContext interface{}) {
 			fmt.Println("✓ Task list generated!")
 		},
 	})

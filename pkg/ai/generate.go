@@ -9,6 +9,7 @@ import (
 )
 
 // GenerateTextOptions contains options for text generation
+// Updated in v6.0 with Output system and Context flow
 type GenerateTextOptions struct {
 	// Model to use for generation
 	Model provider.LanguageModel
@@ -35,12 +36,62 @@ type GenerateTextOptions struct {
 	// Maximum number of tool calling steps (default: 10)
 	MaxSteps *int
 
-	// Response format (for structured output)
+	// ========================================================================
+	// Output Specification (v6.0 - NEW)
+	// ========================================================================
+
+	// Output specifies how to handle and parse model output
+	// Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput()
+	// If nil, defaults to text output
+	Output interface{} // Output[any, any]
+
+	// ResponseFormat (for structured output) - DEPRECATED: Use Output instead
+	// Kept for backward compatibility
 	ResponseFormat *provider.ResponseFormat
 
-	// Callbacks
-	OnStepFinish func(step types.StepResult)
-	OnFinish     func(result *GenerateTextResult)
+	// ========================================================================
+	// Context Flow (v6.0 - NEW)
+	// ========================================================================
+
+	// ExperimentalContext is user-defined context that flows through the conversation
+	// This context is passed to:
+	// - Tool execution functions (via ToolExecutionOptions)
+	// - PrepareStep callback
+	// - OnStepFinish callback
+	// - OnFinish callback
+	ExperimentalContext interface{}
+
+	// ========================================================================
+	// Callbacks (Updated signatures in v6.0)
+	// ========================================================================
+
+	// PrepareStep is called before each generation step
+	// Allows modification of options before the next step
+	// Receives the user context if ExperimentalContext is set
+	PrepareStep func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions
+
+	// OnStepFinish is called after each generation step completes
+	// Receives the user context if ExperimentalContext is set
+	OnStepFinish func(ctx context.Context, step types.StepResult, userContext interface{})
+
+	// OnFinish is called when generation completes
+	// Receives the user context if ExperimentalContext is set
+	OnFinish func(ctx context.Context, result *GenerateTextResult, userContext interface{})
+}
+
+// PrepareStepOptions contains options that can be modified before each step
+type PrepareStepOptions struct {
+	// Messages for the next step
+	Messages []types.Message
+
+	// User context (from ExperimentalContext)
+	UserContext interface{}
+
+	// Current step number
+	StepNumber int
+
+	// Accumulated usage so far
+	AccumulatedUsage types.Usage
 }
 
 // GenerateTextResult contains the result of text generation
@@ -138,8 +189,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 		// Check if there are tool calls to execute
 		if len(genResult.ToolCalls) > 0 && len(opts.Tools) > 0 {
-			// Execute tools
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools)
+			// Execute tools with context flow (v6.0)
+			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, opts.ExperimentalContext, &result.Usage)
 			if err != nil {
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
@@ -183,9 +234,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)
 
-		// Call step finish callback
+		// Call step finish callback (v6.0: with user context)
 		if opts.OnStepFinish != nil {
-			opts.OnStepFinish(stepResult)
+			opts.OnStepFinish(ctx, stepResult, opts.ExperimentalContext)
 		}
 
 		// Check if we should continue
@@ -194,16 +245,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		}
 	}
 
-	// Call finish callback
+	// Call finish callback (v6.0: with user context)
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
 }
 
 // executeTools executes a list of tool calls
-func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool) ([]types.ToolResult, error) {
+// Updated in v6.0 to pass ToolExecutionOptions with ToolCallID and UserContext
+func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, userContext interface{}, usage *types.Usage) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
 
 	for i, call := range toolCalls {
@@ -225,8 +277,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			continue
 		}
 
-		// Execute the tool
-		result, err := tool.Execute(ctx, call.Arguments)
+		// Prepare execution options (v6.0)
+		execOptions := types.ToolExecutionOptions{
+			ToolCallID:  call.ID,
+			UserContext: userContext,
+			Usage:       usage,
+			Metadata:    make(map[string]interface{}),
+		}
+
+		// Execute the tool with new signature
+		result, err := tool.Execute(ctx, call.Arguments, execOptions)
 		results[i] = types.ToolResult{
 			ToolCallID: call.ID,
 			ToolName:   call.ToolName,

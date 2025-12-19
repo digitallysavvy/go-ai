@@ -55,7 +55,10 @@ type GenerateObjectOptions struct {
 	Seed             *int
 
 	// Callbacks
-	OnFinish func(result *GenerateObjectResult)
+	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
+
+	// ExperimentalContext allows passing custom context through generation lifecycle
+	ExperimentalContext interface{}
 }
 
 // GenerateObjectResult contains the result of object generation
@@ -173,7 +176,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions) (*Gener
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -223,7 +226,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions) (*Genera
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -280,7 +283,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions) (*Generat
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -322,7 +325,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions) (*Gen
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -371,7 +374,10 @@ type StreamObjectOptions struct {
 
 	// Callbacks
 	OnChunk  func(partialObject interface{})
-	OnFinish func(result *GenerateObjectResult)
+	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
+
+	// ExperimentalContext allows passing custom context through generation lifecycle
+	ExperimentalContext interface{}
 }
 
 // StreamObject performs streaming object generation
@@ -388,18 +394,19 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// For now, fall back to non-streaming generation
 	// TODO: Implement proper streaming object parsing
 	genOpts := GenerateObjectOptions{
-		Model:            opts.Model,
-		Prompt:           opts.Prompt,
-		Messages:         opts.Messages,
-		System:           opts.System,
-		Schema:           opts.Schema,
-		Temperature:      opts.Temperature,
-		MaxTokens:        opts.MaxTokens,
-		TopP:             opts.TopP,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		PresencePenalty:  opts.PresencePenalty,
-		Seed:             opts.Seed,
-		OnFinish:         opts.OnFinish,
+		Model:               opts.Model,
+		Prompt:              opts.Prompt,
+		Messages:            opts.Messages,
+		System:              opts.System,
+		Schema:              opts.Schema,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		Seed:                opts.Seed,
+		OnFinish:            opts.OnFinish,
+		ExperimentalContext: opts.ExperimentalContext,
 	}
 
 	return GenerateObject(ctx, genOpts)

@@ -82,7 +82,7 @@ func generateCalendarEvent(ctx context.Context, model provider.LanguageModel) {
 				},
 			},
 		},
-		"required": []string{"title", "date", "time", "duration"},
+		"required":             []string{"title", "date", "time", "duration"},
 		"additionalProperties": false,
 	})
 

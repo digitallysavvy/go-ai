@@ -13,10 +13,10 @@ import (
 )
 
 type Agent struct {
-	name   string
-	role   string
-	tools  []types.Tool
-	model  provider.LanguageModel
+	name  string
+	role  string
+	tools []types.Tool
+	model provider.LanguageModel
 }
 
 func (a *Agent) Process(ctx context.Context, task string) (string, error) {
