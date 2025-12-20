@@ -58,7 +58,7 @@ func main() {
                     },
                     "required": []string{"location"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     location := input["location"].(string)
                     return map[string]interface{}{
                         "location":    location,
@@ -79,7 +79,7 @@ func main() {
                     },
                     "required": []string{"temperature"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     temp := input["temperature"].(float64)
                     celsius := int((temp - 32) * (5.0 / 9.0))
                     return map[string]interface{}{
@@ -226,7 +226,7 @@ config := agent.AgentConfig{
     OnStepStart: func(stepNum int) {
         fmt.Printf("Starting step %d\n", stepNum)
     },
-    OnStepFinish: func(step types.StepResult) {
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
     },
     OnToolCall: func(toolCall types.ToolCall) {
@@ -235,7 +235,7 @@ config := agent.AgentConfig{
     OnToolResult: func(toolResult types.ToolResult) {
         fmt.Printf("Tool %s returned: %v\n", toolResult.ToolName, toolResult.Result)
     },
-    OnFinish: func(result *agent.AgentResult) {
+    OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
         fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
     },
 }
@@ -330,7 +330,7 @@ func main() {
                     },
                     "required": []string{"query"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     query := input["query"].(string)
                     // Actual implementation would call a search API
                     return fmt.Sprintf("Search results for: %s", query), nil
@@ -349,7 +349,7 @@ func main() {
                     },
                     "required": []string{"url"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     url := input["url"].(string)
                     resp, err := http.Get(url)
                     if err != nil {
@@ -362,7 +362,7 @@ func main() {
             },
         },
         MaxSteps: 15,
-        OnStepFinish: func(step types.StepResult) {
+        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
             fmt.Printf("[Step %d] %s\n", step.StepNumber, step.Text)
         },
     })

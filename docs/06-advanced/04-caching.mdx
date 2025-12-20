@@ -482,7 +482,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:    model,
         Messages: messages,
-        OnFinish: func(result *ai.GenerateTextResult) {
+        OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userContext interface{}) {
             // Cache the response
             redisClient.Set(context.Background(), cacheKey, result.Text, 1*time.Hour)
             fmt.Println("Cached response")
@@ -579,7 +579,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: req.Prompt,
-        OnFinish: func(result *ai.StreamTextResult) {
+        OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
             // Cache complete response
             redisClient.Set(context.Background(), cacheKey, result.Text, 1*time.Hour)
             fmt.Println("Cached stream")

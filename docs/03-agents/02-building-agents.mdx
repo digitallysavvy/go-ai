@@ -116,7 +116,7 @@ func main() {
                     },
                     "required": []string{"code"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     code := input["code"].(string)
                     // Execute code and return result
                     return map[string]interface{}{
@@ -440,7 +440,7 @@ func main() {
             fmt.Printf("Starting step %d\n", stepNum)
         },
 
-        OnStepFinish: func(step types.StepResult) {
+        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
             fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
             fmt.Printf("  Tokens used: %d\n", step.Usage.TotalTokens)
         },
@@ -458,7 +458,7 @@ func main() {
             }
         },
 
-        OnFinish: func(result *agent.AgentResult) {
+        OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
             fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
             fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
         },
@@ -520,7 +520,7 @@ func main() {
                     },
                     "required": []string{"path"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     path := input["path"].(string)
                     err := os.Remove(path)
                     if err != nil {
@@ -614,7 +614,7 @@ func main() {
             },
             "required": []string{"expression"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             expr := input["expression"].(string)
             // Evaluate expression (simplified example)
             return map[string]interface{}{
@@ -773,7 +773,7 @@ Guidelines:
                     },
                     "required": []string{"query"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     query := input["query"].(string)
                     fmt.Printf("[Search] Query: %s\n", query)
 
@@ -802,7 +802,7 @@ Guidelines:
                     },
                     "required": []string{"url"},
                 },
-                Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     url := input["url"].(string)
                     fmt.Printf("[Fetch] URL: %s\n", url)
 
@@ -832,7 +832,7 @@ Guidelines:
             fmt.Printf("\n[Agent] Starting step %d\n", stepNum)
         },
 
-        OnStepFinish: func(step types.StepResult) {
+        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
             if step.Text != "" {
                 fmt.Printf("[Agent] Step %d: %s\n", step.StepNumber, step.Text)
             }
@@ -842,7 +842,7 @@ Guidelines:
             fmt.Printf("[Agent] Calling tool: %s\n", toolCall.ToolName)
         },
 
-        OnFinish: func(result *agent.AgentResult) {
+        OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
             fmt.Printf("\n[Agent] Completed in %d steps\n", len(result.Steps))
             fmt.Printf("[Agent] Total tokens: %d\n", result.Usage.TotalTokens)
         },
@@ -935,7 +935,7 @@ Always handle errors properly in tool execution functions:
 types.Tool{
     Name:        "fetchData",
     Description: "Fetch data from API",
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // Good - Proper error handling
         data, err := fetchFromAPI(ctx, input)
         if err != nil {

@@ -285,7 +285,7 @@ When using `StreamText`, you can provide an `OnFinish` callback that is triggere
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Generate text",
-    OnFinish: func(result types.StreamResult) {
+    OnFinish: func(ctx context.Context, result types.StreamResult, userContext interface{}) {
         // Your own logic, e.g. for saving the chat history or recording usage
         fmt.Printf("\n\nText: %s\n", result.Text)
         fmt.Printf("Finish reason: %s\n", result.FinishReason)
@@ -372,7 +372,7 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         location := input["location"].(string)
         return map[string]interface{}{
             "temperature": 72,

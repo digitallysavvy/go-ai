@@ -116,7 +116,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
             fmt.Printf("[Tokens: %d]", chunk.Usage.TotalTokens)
         }
     },
-    OnFinish: func(result types.StreamResult) {
+    OnFinish: func(ctx context.Context, result types.StreamResult, userContext interface{}) {
         fmt.Printf("\n\nTotal tokens: %d\n", result.Usage.TotalTokens)
         fmt.Printf("Finish reason: %s\n", result.FinishReason)
     },
