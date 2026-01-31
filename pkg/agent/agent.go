@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -39,6 +40,22 @@ type AgentResult struct {
 
 // AgentConfig contains configuration for an agent
 type AgentConfig struct {
+	// ========================================================================
+	// Identity (v6.0.41 - NEW)
+	// ========================================================================
+
+	// ID is a unique identifier for the agent
+	// Useful for tracking and logging which agent performed actions
+	ID string
+
+	// Version is the version of the agent (e.g., "agent-v1", "1.0.0")
+	// Useful for versioning agent behavior and configurations
+	Version string
+
+	// ========================================================================
+	// Core Configuration
+	// ========================================================================
+
 	// Model to use for the agent
 	Model provider.LanguageModel
 
@@ -57,12 +74,53 @@ type AgentConfig struct {
 	// MaxTokens per generation
 	MaxTokens *int
 
+	// Timeout provides granular timeout controls
+	// Supports total timeout, per-step timeout, and per-chunk timeout
+	Timeout *ai.TimeoutConfig
+
+	// ========================================================================
+	// Dynamic Configuration (v6.0.41 - NEW)
+	// ========================================================================
+
+	// PrepareCall is called before each generation step
+	// Allows dynamic modification of the agent's configuration per step
+	// This is useful for:
+	// - Adjusting system prompts based on context
+	// - Changing temperature/parameters dynamically
+	// - Modifying available tools based on state
+	// - Adding contextual information
+	//
+	// Example:
+	//   PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+	//       // Adjust system prompt based on step number
+	//       if config.StepNumber > 5 {
+	//           config.System = "Be more concise."
+	//       }
+	//       return config
+	//   }
+	PrepareCall func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig
+
+	// ========================================================================
+	// Experimental Features (v6.0.41 - NEW)
+	// ========================================================================
+
+	// ExperimentalDownload enables file download support in agents
+	// When enabled, agents can download files from URLs and process them
+	ExperimentalDownload bool
+
+	// ========================================================================
 	// Callbacks
+	// ========================================================================
+
 	OnStepStart  func(stepNum int)
 	OnStepFinish func(step types.StepResult)
 	OnToolCall   func(toolCall types.ToolCall)
 	OnToolResult func(toolResult types.ToolResult)
 	OnFinish     func(result *AgentResult)
+
+	// ========================================================================
+	// Tool Approval
+	// ========================================================================
 
 	// ToolApprovalRequired determines if tools require approval before execution
 	ToolApprovalRequired bool
@@ -70,6 +128,33 @@ type AgentConfig struct {
 	// ToolApprover is called when a tool needs approval (if ToolApprovalRequired is true)
 	// Should return true to approve, false to reject
 	ToolApprover func(toolCall types.ToolCall) bool
+}
+
+// PrepareCallConfig contains configuration that can be modified before each call
+type PrepareCallConfig struct {
+	// StepNumber is the current step number
+	StepNumber int
+
+	// System prompt for this call
+	System string
+
+	// Messages for this call
+	Messages []types.Message
+
+	// Tools available for this call
+	Tools []types.Tool
+
+	// Temperature for this call
+	Temperature *float64
+
+	// MaxTokens for this call
+	MaxTokens *int
+
+	// AccumulatedUsage is the total usage so far
+	AccumulatedUsage types.Usage
+
+	// CustomData allows passing custom data between PrepareCall invocations
+	CustomData interface{}
 }
 
 // DefaultAgentConfig returns a config with sensible defaults

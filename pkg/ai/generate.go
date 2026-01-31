@@ -37,6 +37,14 @@ type GenerateTextOptions struct {
 	MaxSteps *int
 
 	// ========================================================================
+	// Timeout Configuration (v6.0.41 - NEW)
+	// ========================================================================
+
+	// Timeout provides granular timeout controls
+	// Supports total timeout, per-step timeout, and per-chunk timeout (for streaming)
+	Timeout *TimeoutConfig
+
+	// ========================================================================
 	// Output Specification (v6.0 - NEW)
 	// ========================================================================
 
@@ -129,6 +137,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Apply total timeout if configured
+	var cancel context.CancelFunc
+	if opts.Timeout != nil && opts.Timeout.HasTotal() {
+		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
+		defer cancel()
+	}
+
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
 
@@ -148,6 +163,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
+		// Apply per-step timeout if configured
+		stepCtx := ctx
+		var stepCancel context.CancelFunc
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
+			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+			defer stepCancel()
+		}
+
 		// Build generate options
 		genOpts := &provider.GenerateOptions{
 			Prompt: types.Prompt{
@@ -167,8 +190,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			ResponseFormat:   opts.ResponseFormat,
 		}
 
-		// Call the model
-		genResult, err := opts.Model.DoGenerate(ctx, genOpts)
+		// Call the model with step context
+		genResult, err := opts.Model.DoGenerate(stepCtx, genOpts)
 		if err != nil {
 			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
 		}

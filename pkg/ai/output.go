@@ -252,13 +252,26 @@ type arrayOutput[ELEMENT any] struct {
 // ArrayOutput creates an output specification for generating arrays of elements
 // When the model generates a text response, it will return an array of elements.
 //
-// Example:
+// Element Streaming:
+// ArrayOutput supports element streaming, which allows you to receive individual
+// array elements as they are generated during streaming. Use the ElementStream or
+// ElementStreamWithOutput functions to access this functionality.
+//
+// Example (Standard):
 //
 //	output := ArrayOutput[Person](ArrayOutputOptions[Person]{
 //	    ElementSchema: schema.NewSimpleJSONSchema(personSchema),
 //	    Name:          "people",
 //	    Description:   "List of people",
 //	})
+//
+// Example (With Element Streaming):
+//
+//	result, _ := StreamText(ctx, StreamTextOptions{...})
+//	elements := ElementStreamWithOutput(result, output)
+//	for elem := range elements {
+//	    fmt.Printf("Element %d: %v\n", elem.Index, elem.Element)
+//	}
 func ArrayOutput[ELEMENT any](opts ArrayOutputOptions[ELEMENT]) Output[[]ELEMENT, []ELEMENT] {
 	return &arrayOutput[ELEMENT]{
 		elementSchema: opts.ElementSchema,

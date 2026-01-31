@@ -36,6 +36,10 @@ type StreamTextOptions struct {
 	// Response format (for structured output)
 	ResponseFormat *provider.ResponseFormat
 
+	// Timeout provides granular timeout controls
+	// Supports total timeout, per-step timeout, and per-chunk timeout
+	Timeout *TimeoutConfig
+
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
 	OnFinish func(result *StreamTextResult)
@@ -57,6 +61,9 @@ type StreamTextResult struct {
 
 	// Error that occurred during streaming
 	err error
+
+	// Timeout configuration for per-chunk timeouts
+	timeout *TimeoutConfig
 }
 
 // StreamText performs streaming text generation
@@ -64,6 +71,13 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
+	}
+
+	// Apply total timeout if configured
+	if opts.Timeout != nil && opts.Timeout.HasTotal() {
+		var cancel context.CancelFunc
+		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
+		defer cancel()
 	}
 
 	// Build prompt
@@ -93,7 +107,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// Create result
 	result := &StreamTextResult{
-		stream: stream,
+		stream:  stream,
+		timeout: opts.Timeout,
 	}
 
 	// Start goroutine to process chunks and call callbacks
@@ -106,8 +121,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 // processStream processes the stream and calls callbacks
 func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
+	ctx := context.Background()
 	for {
-		chunk, err := r.stream.Next()
+		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
 			break
 		}
@@ -173,8 +189,9 @@ func (r *StreamTextResult) Close() error {
 
 // ReadAll reads all chunks from the stream and returns the complete text
 func (r *StreamTextResult) ReadAll() (string, error) {
+	ctx := context.Background()
 	for {
-		chunk, err := r.stream.Next()
+		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
 			break
 		}
@@ -199,6 +216,39 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	return r.text, nil
 }
 
+// nextChunk reads the next chunk with optional per-chunk timeout
+func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk, error) {
+	// If no per-chunk timeout, just call Next() directly
+	if r.timeout == nil || !r.timeout.HasPerChunk() {
+		return r.stream.Next()
+	}
+
+	// Use per-chunk timeout
+	chunkCtx, cancel := r.timeout.CreateTimeoutContext(ctx, "chunk")
+	defer cancel()
+
+	// Channel to receive the chunk
+	type chunkResult struct {
+		chunk *provider.StreamChunk
+		err   error
+	}
+	resultCh := make(chan chunkResult, 1)
+
+	// Start goroutine to read chunk
+	go func() {
+		chunk, err := r.stream.Next()
+		resultCh <- chunkResult{chunk: chunk, err: err}
+	}()
+
+	// Wait for chunk or timeout
+	select {
+	case result := <-resultCh:
+		return result.chunk, result.err
+	case <-chunkCtx.Done():
+		return nil, fmt.Errorf("chunk timeout exceeded: %w", chunkCtx.Err())
+	}
+}
+
 // Chunks returns a channel that streams chunks
 // This provides an idiomatic Go way to consume the stream
 func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
@@ -206,8 +256,9 @@ func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 
 	go func() {
 		defer close(ch)
+		ctx := context.Background()
 		for {
-			chunk, err := r.stream.Next()
+			chunk, err := r.nextChunk(ctx)
 			if err == io.EOF {
 				break
 			}

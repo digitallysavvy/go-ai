@@ -117,6 +117,11 @@ type StreamChunk struct {
 
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
+
+	// AbortReason provides context when a stream is aborted
+	// This can be due to timeouts, user cancellation, or errors
+	// Useful for debugging and understanding stream termination
+	AbortReason string
 }
 
 // ChunkType represents the type of stream chunk

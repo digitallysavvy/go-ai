@@ -46,6 +46,13 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Apply total timeout if configured
+	var cancel context.CancelFunc
+	if a.config.Timeout != nil && a.config.Timeout.HasTotal() {
+		ctx, cancel = a.config.Timeout.CreateTimeoutContext(ctx, "total")
+		defer cancel()
+	}
+
 	// Initialize result
 	result := &AgentResult{
 		Steps:       []types.StepResult{},
@@ -56,6 +63,9 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	currentMessages := make([]types.Message, len(messages))
 	copy(currentMessages, messages)
 
+	// Custom data for PrepareCall (persists across steps)
+	var customData interface{}
+
 	// Execute agent loop
 	for stepNum := 1; stepNum <= a.config.MaxSteps; stepNum++ {
 		// Call step start callback
@@ -63,8 +73,9 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 			a.config.OnStepStart(stepNum)
 		}
 
-		// Execute one step
-		stepResult, shouldContinue, err := a.executeStep(ctx, stepNum, currentMessages)
+		// Execute one step with custom data
+		stepResult, shouldContinue, newCustomData, err := a.executeStep(ctx, stepNum, currentMessages, result.Usage, customData)
+		customData = newCustomData
 		if err != nil {
 			return nil, fmt.Errorf("step %d failed: %w", stepNum, err)
 		}
@@ -142,23 +153,48 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 }
 
 // executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages []types.Message) (*types.StepResult, bool, error) {
-	// Build generate options
+func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages []types.Message, accumulatedUsage types.Usage, customData interface{}) (*types.StepResult, bool, interface{}, error) {
+	// Apply per-step timeout if configured
+	stepCtx := ctx
+	var stepCancel context.CancelFunc
+	if a.config.Timeout != nil && a.config.Timeout.HasPerStep() {
+		stepCtx, stepCancel = a.config.Timeout.CreateTimeoutContext(ctx, "step")
+		defer stepCancel()
+	}
+
+	// Prepare call configuration
+	callConfig := PrepareCallConfig{
+		StepNumber:       stepNum,
+		System:           a.config.System,
+		Messages:         messages,
+		Tools:            a.config.Tools,
+		Temperature:      a.config.Temperature,
+		MaxTokens:        a.config.MaxTokens,
+		AccumulatedUsage: accumulatedUsage,
+		CustomData:       customData,
+	}
+
+	// Call PrepareCall hook if configured
+	if a.config.PrepareCall != nil {
+		callConfig = a.config.PrepareCall(ctx, callConfig)
+	}
+
+	// Build generate options using potentially modified config
 	genOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
-			Messages: messages,
-			System:   a.config.System,
+			Messages: callConfig.Messages,
+			System:   callConfig.System,
 		},
-		Temperature: a.config.Temperature,
-		MaxTokens:   a.config.MaxTokens,
-		Tools:       a.config.Tools,
+		Temperature: callConfig.Temperature,
+		MaxTokens:   callConfig.MaxTokens,
+		Tools:       callConfig.Tools,
 		ToolChoice:  types.AutoToolChoice(),
 	}
 
-	// Call the model
-	genResult, err := a.config.Model.DoGenerate(ctx, genOpts)
+	// Call the model with step context
+	genResult, err := a.config.Model.DoGenerate(stepCtx, genOpts)
 	if err != nil {
-		return nil, false, err
+		return nil, false, callConfig.CustomData, err
 	}
 
 	// Create step result
@@ -175,7 +211,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 	// Determine if we should continue
 	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(genResult.ToolCalls) > 0
 
-	return stepResult, shouldContinue, nil
+	return stepResult, shouldContinue, callConfig.CustomData, nil
 }
 
 // executeTools executes a list of tool calls with optional approval
