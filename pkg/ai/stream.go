@@ -40,6 +40,11 @@ type StreamTextOptions struct {
 	// Supports total timeout, per-step timeout, and per-chunk timeout
 	Timeout *TimeoutConfig
 
+	// ExperimentalRetention controls what data is retained from LLM requests/responses.
+	// Useful for reducing memory consumption with images or large contexts.
+	// Default (nil) retains everything for backwards compatibility.
+	ExperimentalRetention *types.RetentionSettings
+
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
 	OnFinish func(result *StreamTextResult)

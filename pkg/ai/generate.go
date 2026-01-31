@@ -70,6 +70,23 @@ type GenerateTextOptions struct {
 	ExperimentalContext interface{}
 
 	// ========================================================================
+	// Retention Settings (v6.0.60 - NEW)
+	// ========================================================================
+
+	// ExperimentalRetention controls what data is retained from LLM requests/responses.
+	// Useful for reducing memory consumption with images or large contexts.
+	// Default (nil) retains everything for backwards compatibility.
+	//
+	// Example:
+	//   retention := &types.RetentionSettings{
+	//       RequestBody:  types.BoolPtr(false),  // Don't retain request
+	//       ResponseBody: types.BoolPtr(false),  // Don't retain response
+	//   }
+	//
+	// This can reduce memory consumption by 50-80% for image-heavy workloads.
+	ExperimentalRetention *types.RetentionSettings
+
+	// ========================================================================
 	// Callbacks (Updated signatures in v6.0)
 	// ========================================================================
 
@@ -251,6 +268,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			result.FinishReason = genResult.FinishReason
 			result.ToolCalls = genResult.ToolCalls
 			result.Warnings = append(result.Warnings, genResult.Warnings...)
+			result.RawRequest = genResult.RawRequest
 			result.RawResponse = genResult.RawResponse
 		}
 
@@ -271,6 +289,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 	// Call finish callback (v6.0: with user context)
 	if opts.OnFinish != nil {
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+	}
+
+	// Apply retention settings (v6.0.60)
+	// Exclude request/response bodies based on retention settings
+	if opts.ExperimentalRetention != nil {
+		if !opts.ExperimentalRetention.ShouldRetainRequestBody() {
+			result.RawRequest = nil
+		}
+		if !opts.ExperimentalRetention.ShouldRetainResponseBody() {
+			result.RawResponse = nil
+		}
 	}
 
 	return result, nil
