@@ -21,9 +21,9 @@ type LogEntry struct {
 	Model        string                 `json:"model"`
 	Prompt       string                 `json:"prompt"`
 	Response     string                 `json:"response"`
-	InputTokens  int                    `json:"inputTokens"`
-	OutputTokens int                    `json:"outputTokens"`
-	TotalTokens  int                    `json:"totalTokens"`
+	InputTokens  int64                  `json:"inputTokens"`
+	OutputTokens int64                  `json:"outputTokens"`
+	TotalTokens  int64                  `json:"totalTokens"`
 	Duration     time.Duration          `json:"duration"`
 	FinishReason types.FinishReason     `json:"finishReason"`
 	Error        string                 `json:"error,omitempty"`
@@ -139,9 +139,9 @@ func (m *LoggingMiddleware) GenerateText(
 	}
 
 	entry.Response = result.Text
-	entry.InputTokens = result.Usage.InputTokens
-	entry.OutputTokens = result.Usage.OutputTokens
-	entry.TotalTokens = result.Usage.TotalTokens
+	entry.InputTokens = result.Usage.GetInputTokens()
+	entry.OutputTokens = result.Usage.GetOutputTokens()
+	entry.TotalTokens = result.Usage.GetTotalTokens()
 	entry.FinishReason = result.FinishReason
 
 	m.logger.Log(entry)

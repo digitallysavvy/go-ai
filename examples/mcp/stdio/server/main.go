@@ -164,7 +164,7 @@ func (s *MCPServer) handleToolCall(req MCPRequest) MCPResponse {
 		arguments = make(map[string]interface{})
 	}
 
-	result, err := tool.Execute(context.Background(), arguments)
+	result, err := tool.Execute(context.Background(), arguments, types.ToolExecutionOptions{})
 	if err != nil {
 		return s.errorResponse(req.ID, -32603, "Execution error", err.Error())
 	}
@@ -227,9 +227,9 @@ func (s *MCPServer) handleGenerate(req MCPRequest) MCPResponse {
 		Result: map[string]interface{}{
 			"text": result.Text,
 			"usage": map[string]interface{}{
-				"inputTokens":  result.Usage.InputTokens,
-				"outputTokens": result.Usage.OutputTokens,
-				"totalTokens":  result.Usage.TotalTokens,
+				"inputTokens":  result.Usage.GetInputTokens(),
+				"outputTokens": result.Usage.GetOutputTokens(),
+				"totalTokens":  result.Usage.GetTotalTokens(),
 			},
 		},
 	}

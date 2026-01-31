@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -53,7 +54,7 @@ func main() {
 }
 
 // totalTimeoutExample demonstrates using a total timeout
-func totalTimeoutExample(ctx context.Context, model ai.LanguageModel) {
+func totalTimeoutExample(ctx context.Context, model provider.LanguageModel) {
 	total := 30 * time.Second
 	timeout := &ai.TimeoutConfig{
 		Total: &total,
@@ -74,7 +75,7 @@ func totalTimeoutExample(ctx context.Context, model ai.LanguageModel) {
 }
 
 // perStepTimeoutExample demonstrates using per-step timeout for multi-step operations
-func perStepTimeoutExample(ctx context.Context, model ai.LanguageModel) {
+func perStepTimeoutExample(ctx context.Context, model provider.LanguageModel) {
 	perStep := 10 * time.Second
 	timeout := &ai.TimeoutConfig{
 		PerStep: &perStep,
@@ -96,7 +97,7 @@ func perStepTimeoutExample(ctx context.Context, model ai.LanguageModel) {
 }
 
 // perChunkTimeoutExample demonstrates per-chunk timeout for streaming
-func perChunkTimeoutExample(ctx context.Context, model ai.LanguageModel) {
+func perChunkTimeoutExample(ctx context.Context, model provider.LanguageModel) {
 	perChunk := 5 * time.Second
 	timeout := &ai.TimeoutConfig{
 		PerChunk: &perChunk,
@@ -124,7 +125,7 @@ func perChunkTimeoutExample(ctx context.Context, model ai.LanguageModel) {
 }
 
 // combinedTimeoutExample demonstrates using multiple timeout types together
-func combinedTimeoutExample(ctx context.Context, model ai.LanguageModel) {
+func combinedTimeoutExample(ctx context.Context, model provider.LanguageModel) {
 	total := 30 * time.Second
 	perStep := 10 * time.Second
 	perChunk := 5 * time.Second
@@ -149,7 +150,7 @@ func combinedTimeoutExample(ctx context.Context, model ai.LanguageModel) {
 	// Process stream chunks
 	chunks := result.Chunks()
 	for chunk := range chunks {
-		if chunk.Type == ai.ChunkTypeText {
+		if chunk.Type == provider.ChunkTypeText {
 			fmt.Print(chunk.Text)
 		}
 	}
@@ -157,7 +158,7 @@ func combinedTimeoutExample(ctx context.Context, model ai.LanguageModel) {
 }
 
 // builderPatternExample demonstrates using the builder pattern for timeout config
-func builderPatternExample(ctx context.Context, model ai.LanguageModel) {
+func builderPatternExample(ctx context.Context, model provider.LanguageModel) {
 	// Use builder pattern to create timeout config
 	timeout := (&ai.TimeoutConfig{}).
 		WithTotal(30 * time.Second).

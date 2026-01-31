@@ -8,6 +8,11 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// Helper function to create int64 pointers
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
 // MockModel implements a mock language model for testing
 type MockModel struct {
 	response string
@@ -22,9 +27,9 @@ func (m *MockModel) DoGenerate(ctx context.Context, options interface{}) (*ai.Ge
 	return &ai.GenerateTextResult{
 		Text: m.response,
 		Usage: types.Usage{
-			InputTokens:  10,
-			OutputTokens: 20,
-			TotalTokens:  30,
+			InputTokens:  int64Ptr(10),
+			OutputTokens: int64Ptr(20),
+			TotalTokens:  int64Ptr(30),
 		},
 		FinishReason: "stop",
 	}, nil
@@ -47,8 +52,8 @@ func TestGenerateText(t *testing.T) {
 		t.Errorf("Expected 'Hello, World!', got '%s'", result.Text)
 	}
 
-	if result.Usage.TotalTokens != 30 {
-		t.Errorf("Expected 30 tokens, got %d", result.Usage.TotalTokens)
+	if result.Usage.GetTotalTokens() != 30 {
+		t.Errorf("Expected 30 tokens, got %d", result.Usage.GetTotalTokens())
 	}
 }
 

@@ -38,7 +38,7 @@ type CacheStats struct {
 	Hits             int
 	Misses           int
 	Evictions        int
-	TotalTokensSaved int
+	TotalTokensSaved int64
 	CostSaved        float64
 }
 
@@ -83,11 +83,11 @@ func (c *MemoryCache) Get(key string) (*CacheEntry, bool) {
 	// Update hit count
 	entry.Hits++
 	c.stats.Hits++
-	c.stats.TotalTokensSaved += entry.Result.Usage.TotalTokens
+	c.stats.TotalTokensSaved += entry.Result.Usage.GetTotalTokens()
 
 	// Estimate cost saved (GPT-4 pricing: $0.03 input, $0.06 output per 1K tokens)
-	costSaved := float64(entry.Result.Usage.InputTokens)*0.03/1000 +
-		float64(entry.Result.Usage.OutputTokens)*0.06/1000
+	costSaved := float64(entry.Result.Usage.GetInputTokens())*0.03/1000 +
+		float64(entry.Result.Usage.GetOutputTokens())*0.06/1000
 	c.stats.CostSaved += costSaved
 
 	return entry, true

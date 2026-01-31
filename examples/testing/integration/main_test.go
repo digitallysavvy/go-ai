@@ -39,12 +39,12 @@ func TestIntegrationGenerate(t *testing.T) {
 		t.Error("Expected non-empty response")
 	}
 
-	if result.Usage.TotalTokens == 0 {
+	if result.Usage.GetTotalTokens() == 0 {
 		t.Error("Expected non-zero token usage")
 	}
 
 	t.Logf("Response: %s", result.Text)
-	t.Logf("Tokens: %d", result.Usage.TotalTokens)
+	t.Logf("Tokens: %d", result.Usage.GetTotalTokens())
 }
 
 func TestIntegrationWithTools(t *testing.T) {

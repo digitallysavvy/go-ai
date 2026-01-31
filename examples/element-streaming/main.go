@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -61,7 +62,7 @@ func main() {
 }
 
 // streamTodoItems demonstrates basic element streaming
-func streamTodoItems(ctx context.Context, model ai.LanguageModel) {
+func streamTodoItems(ctx context.Context, model provider.LanguageModel) {
 	// Define the schema for a todo item
 	todoSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
 		"type": "object",
@@ -99,7 +100,7 @@ func streamTodoItems(ctx context.Context, model ai.LanguageModel) {
 }
 
 // streamProducts demonstrates element streaming with products
-func streamProducts(ctx context.Context, model ai.LanguageModel) {
+func streamProducts(ctx context.Context, model provider.LanguageModel) {
 	// Define the schema for a product
 	productSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
 		"type": "object",
@@ -136,7 +137,7 @@ func streamProducts(ctx context.Context, model ai.LanguageModel) {
 }
 
 // streamWithCallbacks demonstrates element streaming with callbacks
-func streamWithCallbacks(ctx context.Context, model ai.LanguageModel) {
+func streamWithCallbacks(ctx context.Context, model provider.LanguageModel) {
 	// Define the schema for a todo item
 	todoSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
 		"type": "object",
