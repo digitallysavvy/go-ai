@@ -406,7 +406,17 @@ func main() {
 
 ## Monitoring Agent Execution with Callbacks
 
-Monitor and debug agent behavior with callbacks:
+Monitor and debug agent behavior with lifecycle callbacks. Callbacks fire at key points during agent execution, providing visibility into the agent's decision-making process and allowing you to implement custom logic like logging, monitoring, or budget controls.
+
+### Available Callbacks
+
+- **OnStepStart** - Called before each agent step begins
+- **OnStepFinish** - Called after each step completes (most useful for monitoring)
+- **OnToolCall** - Called when a tool is about to be executed
+- **OnToolResult** - Called after a tool execution completes
+- **OnFinish** - Called when the entire agent execution completes
+
+### Basic Callback Example
 
 ```go
 package main
@@ -440,9 +450,11 @@ func main() {
             fmt.Printf("Starting step %d\n", stepNum)
         },
 
-        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        OnStepFinish: func(step types.StepResult) {
             fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
-            fmt.Printf("  Tokens used: %d\n", step.Usage.TotalTokens)
+            if step.Usage.TotalTokens != nil {
+                fmt.Printf("  Tokens used: %d\n", *step.Usage.TotalTokens)
+            }
         },
 
         OnToolCall: func(toolCall types.ToolCall) {
@@ -458,9 +470,11 @@ func main() {
             }
         },
 
-        OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
+        OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
-            fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+            if result.Usage.TotalTokens != nil {
+                fmt.Printf("Total tokens used: %d\n", *result.Usage.TotalTokens)
+            }
         },
     })
 
@@ -471,6 +485,101 @@ func main() {
 
     fmt.Println("\n=== Final Answer ===")
     fmt.Println(result.Text)
+}
+```
+
+### OnStepFinish Callback
+
+The `OnStepFinish` callback is called after each agent step completes. It provides detailed information about what happened during the step, making it the most useful callback for monitoring, logging, and implementing custom control logic.
+
+#### StepResult Structure
+
+The `StepResult` passed to `OnStepFinish` contains:
+
+- `StepNumber` (int) - The step number (1-indexed)
+- `Text` (string) - Text generated in this step
+- `ToolCalls` ([]ToolCall) - Tool calls made in this step
+- `ToolResults` ([]ToolResult) - Results from tool executions
+- `FinishReason` (FinishReason) - Why this step ended ("stop", "tool-calls", "length", etc.)
+- `RawFinishReason` (string) - Raw finish reason from the provider
+- `Usage` (Usage) - Token usage for this step
+- `Warnings` ([]Warning) - Warnings generated during this step
+- `ResponseMessages` ([]Message) - The assistant message generated in this step
+
+#### Common Use Cases
+
+**Logging and Debugging:**
+
+```go
+OnStepFinish: func(step types.StepResult) {
+    log.Printf("[Step %d] Generated: %s", step.StepNumber, step.Text)
+    log.Printf("[Step %d] Tool calls: %d, Tokens: %d",
+        step.StepNumber,
+        len(step.ToolCalls),
+        getTokens(step.Usage.TotalTokens))
+}
+```
+
+**Token Usage Monitoring:**
+
+```go
+totalTokens := int64(0)
+
+OnStepFinish: func(step types.StepResult) {
+    if step.Usage.TotalTokens != nil {
+        totalTokens += *step.Usage.TotalTokens
+    }
+
+    fmt.Printf("Step %d: %d tokens (total: %d)\n",
+        step.StepNumber,
+        getTokens(step.Usage.TotalTokens),
+        totalTokens)
+
+    if totalTokens > 10000 {
+        log.Println("WARNING: Approaching token limit")
+    }
+}
+```
+
+**Warning Detection:**
+
+```go
+OnStepFinish: func(step types.StepResult) {
+    if len(step.Warnings) > 0 {
+        for _, warning := range step.Warnings {
+            log.Printf("WARNING [%s]: %s", warning.Type, warning.Message)
+        }
+    }
+}
+```
+
+**Pattern Analysis:**
+
+```go
+OnStepFinish: func(step types.StepResult) {
+    // Detect inefficient tool usage
+    if len(step.ToolCalls) > 3 {
+        log.Printf("Multiple tool calls in step %d - consider optimization",
+            step.StepNumber)
+    }
+
+    // Track tool usage patterns
+    for _, tc := range step.ToolCalls {
+        metrics.RecordToolUsage(tc.ToolName)
+    }
+}
+```
+
+See the [OnStepFinish examples](../../examples/agents/callbacks/) for complete working examples.
+
+**Helper function for safely accessing token counts:**
+
+```go
+func getTokens(tokens *int64) int64 {
+    if tokens == nil {
+        return 0
+    }
+    return *tokens
 }
 ```
 
@@ -700,9 +809,15 @@ func main() {
 
     // Access usage information
     fmt.Printf("\nToken Usage:\n")
-    fmt.Printf("  Prompt tokens: %d\n", result.Usage.PromptTokens)
-    fmt.Printf("  Completion tokens: %d\n", result.Usage.CompletionTokens)
-    fmt.Printf("  Total tokens: %d\n", result.Usage.TotalTokens)
+    if result.Usage.InputTokens != nil {
+        fmt.Printf("  Input tokens: %d\n", *result.Usage.InputTokens)
+    }
+    if result.Usage.OutputTokens != nil {
+        fmt.Printf("  Output tokens: %d\n", *result.Usage.OutputTokens)
+    }
+    if result.Usage.TotalTokens != nil {
+        fmt.Printf("  Total tokens: %d\n", *result.Usage.TotalTokens)
+    }
 
     // Check finish reason
     fmt.Printf("\nFinish Reason: %s\n", result.FinishReason)
@@ -832,7 +947,7 @@ Guidelines:
             fmt.Printf("\n[Agent] Starting step %d\n", stepNum)
         },
 
-        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        OnStepFinish: func(step types.StepResult) {
             if step.Text != "" {
                 fmt.Printf("[Agent] Step %d: %s\n", step.StepNumber, step.Text)
             }
@@ -842,9 +957,11 @@ Guidelines:
             fmt.Printf("[Agent] Calling tool: %s\n", toolCall.ToolName)
         },
 
-        OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
+        OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("\n[Agent] Completed in %d steps\n", len(result.Steps))
-            fmt.Printf("[Agent] Total tokens: %d\n", result.Usage.TotalTokens)
+            if result.Usage.TotalTokens != nil {
+                fmt.Printf("[Agent] Total tokens: %d\n", *result.Usage.TotalTokens)
+            }
         },
     })
 
@@ -864,7 +981,9 @@ Guidelines:
     fmt.Println("\n=== Agent Statistics ===")
     fmt.Printf("Steps: %d\n", len(result.Steps))
     fmt.Printf("Tools used: %d\n", len(result.ToolResults))
-    fmt.Printf("Total tokens: %d\n", result.Usage.TotalTokens)
+    if result.Usage.TotalTokens != nil {
+        fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+    }
     fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }
 ```
