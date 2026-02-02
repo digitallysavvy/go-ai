@@ -55,8 +55,14 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
 				return nil, fmt.Errorf("tool returned error: %v", result.Content)
 			}
 
-			// Convert result content to a simple format
-			return c.convertToolResult(result), nil
+			// Convert MCP content to AI SDK content parts
+			// This properly handles images to prevent 200K+ token explosions
+			contentParts, err := ConvertMCPContentToAISDK(result.Content)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert MCP content: %w", err)
+			}
+
+			return contentParts, nil
 		},
 		// Mark this as provider-executed since it's executed via MCP
 		ToModelOutput: func(ctx context.Context, options types.ToModelOutputOptions) (types.ToolResultOutput, error) {
@@ -66,61 +72,31 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
 	}
 }
 
-// convertToolResult converts MCP tool result to a simple Go format
-func (c *MCPToolConverter) convertToolResult(result *CallToolResult) interface{} {
-	if len(result.Content) == 0 {
-		return nil
-	}
-
-	// If there's only one content item, return it directly
-	if len(result.Content) == 1 {
-		return c.convertContentItem(result.Content[0])
-	}
-
-	// Multiple content items - return as array
-	contents := make([]interface{}, len(result.Content))
-	for i, item := range result.Content {
-		contents[i] = c.convertContentItem(item)
-	}
-	return contents
-}
-
-// convertContentItem converts a single MCP content item
-func (c *MCPToolConverter) convertContentItem(item ToolResultContent) interface{} {
-	switch item.Type {
-	case "text":
-		return item.Text
-	case "image":
-		return map[string]interface{}{
-			"type":     "image",
-			"data":     item.Data,
-			"mimeType": item.MimeType,
-		}
-	case "resource":
-		return map[string]interface{}{
-			"type": "resource",
-			"uri":  item.URI,
-		}
-	default:
-		return item
-	}
-}
-
 // convertToModelOutput converts a tool result to model-readable output
 func (c *MCPToolConverter) convertToModelOutput(result interface{}) types.ToolResultOutput {
-	// Try to convert to JSON string for model consumption
-	jsonBytes, err := json.Marshal(result)
-	if err != nil {
-		// Fall back to string representation
+	// Result is already []types.ContentPart from Execute function
+	// The AI SDK will handle the content parts directly
+	contentParts, ok := result.([]types.ContentPart)
+	if !ok {
+		// Fallback for backward compatibility
+		jsonBytes, err := json.Marshal(result)
+		if err != nil {
+			return types.ToolResultOutput{
+				Type:    "text",
+				Content: fmt.Sprintf("%v", result),
+			}
+		}
 		return types.ToolResultOutput{
 			Type:    "text",
-			Content: fmt.Sprintf("%v", result),
+			Content: string(jsonBytes),
 		}
 	}
 
+	// Return content parts as structured data
+	// Images will be handled properly, preventing the 200K+ token explosion bug
 	return types.ToolResultOutput{
-		Type:    "text",
-		Content: string(jsonBytes),
+		Type: "custom",
+		Data: contentParts,
 	}
 }
 

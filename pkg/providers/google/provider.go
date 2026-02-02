@@ -97,6 +97,16 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 	return nil, fmt.Errorf("Google does not support reranking")
 }
 
+// VideoModel returns a video generation model by ID
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	// Validate model ID
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewVideoModel(p, modelID), nil
+}
+
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client

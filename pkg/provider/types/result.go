@@ -14,6 +14,10 @@ type GenerateResult struct {
 	// Token usage information
 	Usage Usage `json:"usage"`
 
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	ContextManagement interface{} `json:"contextManagement,omitempty"`
+
 	// Raw request sent to the provider (for debugging)
 	RawRequest interface{} `json:"rawRequest,omitempty"`
 
@@ -96,6 +100,36 @@ type TranscriptionTimestamp struct {
 	End float64 `json:"end"`
 }
 
+// VideoResult contains the result of a video generation operation
+type VideoResult struct {
+	// Generated video data
+	Video []byte `json:"video"`
+
+	// MIME type of the video
+	MimeType string `json:"mimeType"`
+
+	// Optional URL if video is hosted
+	URL string `json:"url,omitempty"`
+
+	// Usage information
+	Usage VideoUsage `json:"usage"`
+
+	// Warnings from the provider
+	Warnings []Warning `json:"warnings,omitempty"`
+}
+
+// GeneratedFile represents a generated file (video, audio, image, etc.)
+type GeneratedFile struct {
+	// Data is the raw file data
+	Data []byte `json:"data,omitempty"`
+
+	// URL is the URL to the file (if available)
+	URL string `json:"url,omitempty"`
+
+	// MediaType is the MIME type of the file (e.g., "video/mp4", "image/png")
+	MediaType string `json:"mediaType"`
+}
+
 // StepResult represents the result of a single step in multi-step generation
 // Used for tool calling loops and agent workflows
 type StepResult struct {
@@ -119,6 +153,10 @@ type StepResult struct {
 
 	// Usage for this step
 	Usage Usage `json:"usage"`
+
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	ContextManagement interface{} `json:"contextManagement,omitempty"`
 
 	// Warnings from this step
 	Warnings []Warning `json:"warnings,omitempty"`

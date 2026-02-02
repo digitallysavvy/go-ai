@@ -184,6 +184,15 @@ type TranscriptionUsage struct {
 	DurationSeconds float64 `json:"durationSeconds"`
 }
 
+// VideoUsage represents usage for video generation operations
+type VideoUsage struct {
+	// Number of videos generated
+	VideoCount int `json:"videoCount"`
+
+	// Duration of generated videos in seconds
+	TotalDurationSeconds float64 `json:"totalDurationSeconds,omitempty"`
+}
+
 // Warning represents a warning message from the provider
 type Warning struct {
 	// Type of warning

@@ -166,14 +166,42 @@ func (m *BedrockAnthropicLanguageModel) buildRequestBody(opts *provider.Generate
 
 	// Convert messages (Anthropic format)
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToAnthropicMessages(opts.Prompt.Messages)
+		messages := prompt.ToAnthropicMessages(opts.Prompt.Messages)
+		// Insert cache points in messages if configured
+		if m.provider.cacheConfig != nil && len(m.provider.cacheConfig.CacheMessageIndices) > 0 {
+			messages = m.insertMessageCachePoints(messages, m.provider.cacheConfig)
+		}
+		body["messages"] = messages
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		messages := prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		// Insert cache points in messages if configured
+		if m.provider.cacheConfig != nil && len(m.provider.cacheConfig.CacheMessageIndices) > 0 {
+			messages = m.insertMessageCachePoints(messages, m.provider.cacheConfig)
+		}
+		body["messages"] = messages
 	}
 
 	// Add system message separately (Anthropic requires this)
 	if opts.Prompt.System != "" {
-		body["system"] = opts.Prompt.System
+		// If cache config is enabled for system, use array format with cache point
+		if m.provider.cacheConfig != nil && m.provider.cacheConfig.CacheSystem {
+			systemBlocks := []interface{}{
+				map[string]interface{}{"text": opts.Prompt.System},
+			}
+
+			// Add cache point after system message
+			cachePoint := CreateBedrockCachePoint(m.provider.cacheConfig.TTL)
+			systemBlocks = append(systemBlocks, map[string]interface{}{
+				"cachePoint": map[string]interface{}{
+					"type": cachePoint.Type,
+					"ttl":  cachePoint.TTL,
+				},
+			})
+
+			body["system"] = systemBlocks
+		} else {
+			body["system"] = opts.Prompt.System
+		}
 	}
 
 	// Set max_tokens (required by Anthropic)
@@ -203,7 +231,26 @@ func (m *BedrockAnthropicLanguageModel) buildRequestBody(opts *provider.Generate
 		preparedTools := m.provider.PrepareTools(opts.Tools)
 
 		// Convert to Anthropic format
-		body["tools"] = tool.ToAnthropicFormat(preparedTools)
+		toolsArray := tool.ToAnthropicFormat(preparedTools)
+
+		// If cache config is enabled for tools, append cache point
+		if m.provider.cacheConfig != nil && m.provider.cacheConfig.CacheTools {
+			cachePoint := CreateBedrockCachePoint(m.provider.cacheConfig.TTL)
+			// Convert to []interface{} for appending
+			toolsWithCache := make([]interface{}, len(toolsArray)+1)
+			for i, t := range toolsArray {
+				toolsWithCache[i] = t
+			}
+			toolsWithCache[len(toolsArray)] = map[string]interface{}{
+				"cachePoint": map[string]interface{}{
+					"type": cachePoint.Type,
+					"ttl":  cachePoint.TTL,
+				},
+			}
+			body["tools"] = toolsWithCache
+		} else {
+			body["tools"] = toolsArray
+		}
 
 		// Handle tool choice
 		if opts.ToolChoice.Type != "" {
@@ -324,13 +371,13 @@ func (m *BedrockAnthropicLanguageModel) convertResponse(response anthropicRespon
 
 // anthropicResponse represents the response from Anthropic API
 type anthropicResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
+	ID         string             `json:"id"`
+	Type       string             `json:"type"`
+	Role       string             `json:"role"`
 	Content    []anthropicContent `json:"content"`
-	Model      string `json:"model"`
-	StopReason string `json:"stop_reason"`
-	Usage      anthropicUsage `json:"usage"`
+	Model      string             `json:"model"`
+	StopReason string             `json:"stop_reason"`
+	Usage      anthropicUsage     `json:"usage"`
 }
 
 // anthropicContent represents a content block in the response
@@ -373,6 +420,54 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	}
 
 	return result
+}
+
+// insertMessageCachePoints inserts cache points at specified message indices
+func (m *BedrockAnthropicLanguageModel) insertMessageCachePoints(messages []map[string]interface{}, config *CacheConfig) []map[string]interface{} {
+	if len(config.CacheMessageIndices) == 0 {
+		return messages
+	}
+
+	cachePoint := CreateBedrockCachePoint(config.TTL)
+	cachePointBlock := map[string]interface{}{
+		"type": "cachePoint",
+		"cachePoint": map[string]interface{}{
+			"type": cachePoint.Type,
+			"ttl":  cachePoint.TTL,
+		},
+	}
+
+	// Process messages and insert cache points
+	for _, idx := range config.CacheMessageIndices {
+		if idx < 0 || idx >= len(messages) {
+			continue // Skip invalid indices
+		}
+
+		// Get the message at the index
+		messageMap := messages[idx]
+
+		// Get the content array
+		content, ok := messageMap["content"].([]interface{})
+		if !ok {
+			// If content is a string, convert to array format
+			if contentStr, isStr := messageMap["content"].(string); isStr {
+				content = []interface{}{
+					map[string]interface{}{
+						"type": "text",
+						"text": contentStr,
+					},
+				}
+			} else {
+				continue
+			}
+		}
+
+		// Append cache point to content
+		content = append(content, cachePointBlock)
+		messageMap["content"] = content
+	}
+
+	return messages
 }
 
 // bedrockAnthropicStream implements provider.TextStream for Bedrock Anthropic streaming

@@ -152,6 +152,10 @@ type GenerateTextResult struct {
 	// Token usage information
 	Usage types.Usage
 
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	ContextManagement interface{}
+
 	// Warnings from the provider
 	Warnings []types.Warning
 
@@ -287,6 +291,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			result.Text = genResult.Text
 			result.FinishReason = genResult.FinishReason
 			result.ToolCalls = genResult.ToolCalls
+			result.ContextManagement = genResult.ContextManagement
 			result.Warnings = append(result.Warnings, genResult.Warnings...)
 			result.RawRequest = genResult.RawRequest
 			result.RawResponse = genResult.RawResponse

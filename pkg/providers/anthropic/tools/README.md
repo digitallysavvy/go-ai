@@ -2,6 +2,8 @@
 
 This package provides Anthropic-specific tools for advanced agent capabilities including computer control, code execution, and tool search.
 
+> **💡 Tip:** For custom tools (non-provider tools), you can enable prompt caching to reduce costs by up to 90%. See [Tool Caching](../README.md#tool-caching-prompt-caching) for details.
+
 ## Tools Overview
 
 ### 1. Computer Use (`computer_20251124`)

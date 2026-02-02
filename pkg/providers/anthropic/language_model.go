@@ -20,13 +20,15 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+	options  *ModelOptions
 }
 
 // NewLanguageModel creates a new Anthropic language model
-func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
+func NewLanguageModel(provider *Provider, modelID string, options *ModelOptions) *LanguageModel {
 	return &LanguageModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  options,
 	}
 }
 
@@ -72,7 +74,33 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
-	// Make API request
+	// Add beta header if context management is enabled
+	if m.options != nil && m.options.ContextManagement != nil {
+		// Need to make request with custom headers
+		httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
+			Method: http.MethodPost,
+			Path:   "/v1/messages",
+			Body:   reqBody,
+			Headers: map[string]string{
+				"anthropic-beta": BetaHeaderContextManagement,
+			},
+		})
+		if err != nil {
+			return nil, m.handleError(err)
+		}
+		defer httpResp.Body.Close()
+
+		// Parse response
+		var response anthropicResponse
+		if err := json.NewDecoder(httpResp.Body).Decode(&response); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		// Convert response to GenerateResult
+		return m.convertResponse(response), nil
+	}
+
+	// Make API request without beta header
 	var response anthropicResponse
 	err := m.provider.client.PostJSON(ctx, "/v1/messages", reqBody, &response)
 	if err != nil {
@@ -88,14 +116,22 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Build request body with streaming enabled
 	reqBody := m.buildRequestBody(opts, true)
 
+	// Prepare headers
+	headers := map[string]string{
+		"Accept": "text/event-stream",
+	}
+
+	// Add beta header if context management is enabled
+	if m.options != nil && m.options.ContextManagement != nil {
+		headers["anthropic-beta"] = BetaHeaderContextManagement
+	}
+
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/messages",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/messages",
+		Body:    reqBody,
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -147,17 +183,22 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 
 	// Add tools if present
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToAnthropicFormat(opts.Tools)
+		body["tools"] = ToAnthropicFormatWithCache(opts.Tools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToAnthropic(opts.ToolChoice)
 		}
+	}
+
+	// Add context management if configured (beta feature)
+	if m.options != nil && m.options.ContextManagement != nil {
+		body["context_management"] = m.options.ContextManagement
 	}
 
 	return body
 }
 
 // convertResponse converts an Anthropic response to GenerateResult
-// Updated in v6.0 to support detailed usage tracking
+// Updated in v6.0 to support detailed usage tracking and context management
 func (m *LanguageModel) convertResponse(response anthropicResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertAnthropicUsage(response.Usage),
@@ -198,6 +239,14 @@ func (m *LanguageModel) convertResponse(response anthropicResponse) *types.Gener
 		result.FinishReason = types.FinishReasonStop
 	default:
 		result.FinishReason = types.FinishReasonOther
+	}
+
+	// Extract context management (check root level first, then usage block)
+	if response.ContextManagement != nil {
+		result.ContextManagement = response.ContextManagement
+	} else if response.Usage.ContextManagement != nil {
+		// Fallback to legacy location in usage block
+		result.ContextManagement = response.Usage.ContextManagement
 	}
 
 	return result
@@ -258,7 +307,7 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // anthropicResponse represents the Anthropic API response
-// Updated in v6.0 to support prompt caching
+// Updated in v6.0 to support prompt caching and context management
 type anthropicResponse struct {
 	ID           string             `json:"id"`
 	Type         string             `json:"type"`
@@ -268,14 +317,18 @@ type anthropicResponse struct {
 	StopReason   string             `json:"stop_reason"`
 	StopSequence string             `json:"stop_sequence,omitempty"`
 	Usage        anthropicUsage     `json:"usage"`
+	// Root-level context management (new location - takes precedence)
+	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 }
 
-// anthropicUsage represents Anthropic usage information with cache tracking
+// anthropicUsage represents Anthropic usage information with cache tracking and context management
 type anthropicUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // v6.0
+	// Legacy location for context management (fallback)
+	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 }
 
 // anthropicContent represents content in an Anthropic response
@@ -353,14 +406,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 
 	case "message_delta":
-		// Parse message delta for finish reason
+		// Parse message delta for finish reason and context management
 		var delta struct {
 			Delta struct {
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage struct {
 				OutputTokens int `json:"output_tokens"`
+				// Legacy location for context management
+				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 			} `json:"usage"`
+			// Root-level context management (new location - takes precedence)
+			ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 			return nil, fmt.Errorf("failed to parse message delta: %w", err)
@@ -379,10 +436,19 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				finishReason = types.FinishReasonOther
 			}
 
-			return &provider.StreamChunk{
+			chunk := &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
-			}, nil
+			}
+
+			// Extract context management (check root level first, then usage block)
+			if delta.ContextManagement != nil {
+				chunk.ContextManagement = delta.ContextManagement
+			} else if delta.Usage.ContextManagement != nil {
+				chunk.ContextManagement = delta.Usage.ContextManagement
+			}
+
+			return chunk, nil
 		}
 
 	case "message_stop":

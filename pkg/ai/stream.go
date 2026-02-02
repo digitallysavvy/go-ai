@@ -67,6 +67,10 @@ type StreamTextResult struct {
 	// Usage information (set when stream completes)
 	usage types.Usage
 
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	contextManagement interface{}
+
 	// Error that occurred during streaming
 	err error
 
@@ -146,9 +150,12 @@ func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onF
 			r.text += chunk.Text
 		}
 
-		// Update finish reason and usage
+		// Update finish reason, usage, and context management
 		if chunk.Type == provider.ChunkTypeFinish {
 			r.finishReason = chunk.FinishReason
+			if chunk.ContextManagement != nil {
+				r.contextManagement = chunk.ContextManagement
+			}
 		}
 		if chunk.Usage != nil {
 			r.usage = *chunk.Usage
@@ -186,6 +193,12 @@ func (r *StreamTextResult) Usage() types.Usage {
 	return r.usage
 }
 
+// ContextManagement returns context management statistics (Anthropic-specific)
+// Only available after stream completes
+func (r *StreamTextResult) ContextManagement() interface{} {
+	return r.contextManagement
+}
+
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
 	return r.err
@@ -213,9 +226,12 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			r.text += chunk.Text
 		}
 
-		// Update finish reason and usage
+		// Update finish reason, usage, and context management
 		if chunk.Type == provider.ChunkTypeFinish {
 			r.finishReason = chunk.FinishReason
+			if chunk.ContextManagement != nil {
+				r.contextManagement = chunk.ContextManagement
+			}
 		}
 		if chunk.Usage != nil {
 			r.usage = *chunk.Usage

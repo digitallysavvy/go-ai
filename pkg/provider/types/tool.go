@@ -49,6 +49,12 @@ type Tool struct {
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 
+	// ProviderOptions contains provider-specific options for the tool
+	// This allows passing provider-specific configuration without polluting the main Tool struct
+	// Example: Anthropic cache_control, OpenAI response_format, etc.
+	// The value should be provider-specific types (e.g., anthropic.ToolOptions)
+	ProviderOptions interface{} `json:"-"`
+
 	// ========================================================================
 	// Tool Input Streaming Callbacks (for streaming tool calls)
 	// ========================================================================

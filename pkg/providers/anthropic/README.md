@@ -162,6 +162,189 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+## Tool Caching (Prompt Caching)
+
+Reduce costs by up to 90% for repeated tool definitions using Anthropic's prompt caching feature.
+
+### Quick Start
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+// Enable caching on tool definitions
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters:  weatherSchema,
+    Execute:     getWeatherFunc,
+    ProviderOptions: anthropic.WithToolCache("5m"), // Cache for 5 minutes
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: messages,
+    Tools: map[string]types.Tool{
+        "get_weather": weatherTool,
+    },
+})
+```
+
+### Cache TTL Options
+
+**5 minutes** (default) - Best for short interactive sessions
+```go
+ProviderOptions: anthropic.WithToolCache("5m")
+```
+
+**1 hour** - Best for longer sessions (requires Claude 4.5 models)
+```go
+ProviderOptions: anthropic.WithToolCache("1h")
+```
+
+### Cost Savings
+
+Tool caching dramatically reduces costs for repeated tool definitions:
+
+| Scenario | Without Caching | With Caching | Savings |
+|----------|----------------|--------------|---------|
+| 10 tool definitions per request | 100% cost | 10% cost | 90% |
+| 50 tool definitions per request | 100% cost | 2% cost | 98% |
+
+**Example:** With 10 tools totaling 5,000 tokens:
+- First request: 5,000 input tokens (full cost)
+- Subsequent requests (within TTL): 500 input tokens (90% savings)
+
+### Best Practices
+
+1. **Cache stable tools** - Tools with unchanging definitions benefit most
+2. **Use 5m for short sessions** - Interactive sessions, quick tasks
+3. **Use 1h for long sessions** - Complex workflows, extended conversations
+4. **Batch similar requests** - Maximize cache hits within TTL window
+5. **Monitor cache metrics** - Check usage.cache_read_tokens in responses
+
+### Advanced Configuration
+
+```go
+// Custom cache control
+tool := types.Tool{
+    Name:        "complex_tool",
+    Description: "Complex multi-step tool",
+    Parameters:  schema,
+    ProviderOptions: &anthropic.ToolOptions{
+        CacheControl: &anthropic.CacheControl{
+            Type: "ephemeral",
+            TTL:  "1h",
+        },
+    },
+}
+```
+
+### Checking Cache Usage
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check if cache was used
+if result.Usage != nil && result.Usage.InputDetails != nil {
+    cacheRead := result.Usage.InputDetails.CacheReadTokens
+    cacheWrite := result.Usage.InputDetails.CacheWriteTokens
+
+    fmt.Printf("Cache read: %d tokens\n", *cacheRead)
+    fmt.Printf("Cache write: %d tokens\n", *cacheWrite)
+}
+```
+
+### When to Use Tool Caching
+
+✅ **Use caching when:**
+- Tool definitions are large (>1000 tokens)
+- Using 5+ tools repeatedly
+- Running agentic workflows with multiple requests
+- Tool definitions don't change between requests
+
+❌ **Don't use caching when:**
+- Tool definitions change frequently
+- Using only 1-2 small tools
+- Making infrequent, isolated requests
+- TTL is shorter than request intervals
+
+### Model Compatibility
+
+| Model | 5m TTL | 1h TTL |
+|-------|--------|--------|
+| Claude Opus 4.5 | ✅ | ✅ |
+| Claude Sonnet 4.5 | ✅ | ✅ |
+| Claude Sonnet 4 | ✅ | ❌ |
+| Claude Haiku 4 | ✅ | ❌ |
+
+See [Anthropic Prompt Caching Docs](https://docs.anthropic.com/claude/docs/prompt-caching) for more details.
+
+## Context Management (Beta)
+
+Automatically clean up conversation history to prevent context window overflow in long conversations.
+
+### Quick Start
+
+```go
+// Enable context management when creating the model
+model, err := provider.LanguageModelWithOptions("claude-sonnet-4", &anthropic.ModelOptions{
+    ContextManagement: &anthropic.ContextManagement{
+        Strategies: []string{anthropic.StrategyClearToolUses},
+    },
+})
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: longConversation, // Many tool calls or thinking blocks
+})
+
+// Check what was cleaned up
+if result.ContextManagement != nil {
+    cm := result.ContextManagement.(*anthropic.ContextManagementResponse)
+    fmt.Printf("Tool uses cleared: %d\n", cm.ToolUsesCleared)
+    fmt.Printf("Messages deleted: %d\n", cm.MessagesDeleted)
+}
+```
+
+### Available Strategies
+
+**`clear_tool_uses`** - Remove old tool call/result pairs
+Best for: Agentic workflows, multi-turn tool use
+Keeps: Final tool results, assistant reasoning
+
+**`clear_thinking`** - Remove extended thinking blocks
+Best for: Complex analysis, long-form reasoning
+Keeps: Final conclusions, removes thinking process
+
+**Both strategies** - Maximum context savings
+Best for: Very long conversations with tools AND reasoning
+
+### Why Use Context Management?
+
+- **Avoid hitting context limits** - Long conversations can exceed 200K tokens
+- **Reduce costs** - Fewer tokens = lower costs (thinking blocks use 10x tokens)
+- **Maintain performance** - Smaller context = faster responses
+- **No code changes** - Just configure strategies, Anthropic handles the rest
+
+### Example Response
+
+```go
+type ContextManagementResponse struct {
+    MessagesDeleted       int // Complete messages removed
+    MessagesTruncated     int // Messages partially truncated
+    ToolUsesCleared       int // Tool uses removed (clear_tool_uses)
+    ThinkingBlocksCleared int // Thinking blocks removed (clear_thinking)
+}
+```
+
+See [examples/providers/anthropic/context-management/](../../../examples/providers/anthropic/context-management/) for detailed examples.
+
 ## Available Tools
 
 See [tools/README.md](tools/README.md) for complete documentation.
@@ -216,6 +399,7 @@ See the `/examples/providers/anthropic/` directory for complete examples:
 - `computer-use/` - Computer control
 - `code-execution/` - Python and bash execution
 - `tool-search/` - Large-scale tool discovery
+- `context-management/` - Automatic conversation history cleanup
 
 ## Testing
 

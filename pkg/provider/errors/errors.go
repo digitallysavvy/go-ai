@@ -76,9 +76,21 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 	}
 }
 
+// ValidationContext provides detailed context for validation errors
+type ValidationContext struct {
+	// Field path in dot notation (e.g., "message.parts[3].data")
+	Field string
+
+	// Entity name (e.g., "tool_call", "message")
+	EntityName string
+
+	// Entity identifier (e.g., "call_abc123", message ID)
+	EntityID string
+}
+
 // ValidationError represents a validation error
 type ValidationError struct {
-	// Field that failed validation
+	// Field that failed validation (deprecated, use Context.Field instead)
 	Field string
 
 	// Error message
@@ -86,10 +98,62 @@ type ValidationError struct {
 
 	// Underlying cause
 	Cause error
+
+	// Validation context with field path, entity name, and entity ID
+	Context *ValidationContext
+
+	// Value that failed validation (for debugging)
+	Value interface{}
 }
 
 // Error implements the error interface
 func (e *ValidationError) Error() string {
+	var contextPrefix string
+
+	// Use new context if available, otherwise fall back to Field for backward compatibility
+	if e.Context != nil {
+		contextPrefix = "Type validation failed"
+
+		// Add field path if present
+		if e.Context.Field != "" {
+			contextPrefix += fmt.Sprintf(" for %s", e.Context.Field)
+		}
+
+		// Add entity information in parentheses
+		if e.Context.EntityName != "" || e.Context.EntityID != "" {
+			contextPrefix += " ("
+			var parts []string
+			if e.Context.EntityName != "" {
+				parts = append(parts, e.Context.EntityName)
+			}
+			if e.Context.EntityID != "" {
+				parts = append(parts, fmt.Sprintf("id: %q", e.Context.EntityID))
+			}
+			for i, part := range parts {
+				if i > 0 {
+					contextPrefix += ", "
+				}
+				contextPrefix += part
+			}
+			contextPrefix += ")"
+		}
+
+		contextPrefix += ":"
+
+		// Format the full error message
+		msg := contextPrefix
+		if e.Value != nil {
+			msg += fmt.Sprintf("\nValue: %+v.", e.Value)
+		}
+		if e.Message != "" {
+			msg += fmt.Sprintf("\nError message: %s", e.Message)
+		} else if e.Cause != nil {
+			msg += fmt.Sprintf("\nError message: %v", e.Cause)
+		}
+		return msg
+	}
+
+	// Backward compatibility path
 	if e.Field != "" {
 		return fmt.Sprintf("validation error on field '%s': %s", e.Field, e.Message)
 	}
@@ -107,12 +171,51 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &validationErr)
 }
 
-// NewValidationError creates a new validation error
+// NewValidationError creates a new validation error (backward compatible)
 func NewValidationError(field, message string, cause error) *ValidationError {
 	return &ValidationError{
 		Field:   field,
 		Message: message,
 		Cause:   cause,
+	}
+}
+
+// NewValidationErrorWithContext creates a new validation error with context
+func NewValidationErrorWithContext(value interface{}, message string, cause error, context *ValidationContext) *ValidationError {
+	return &ValidationError{
+		Value:   value,
+		Message: message,
+		Cause:   cause,
+		Context: context,
+	}
+}
+
+// WrapValidationError wraps an error with validation context
+// Returns existing error if it's already a ValidationError with matching context
+func WrapValidationError(value interface{}, cause error, context *ValidationContext) *ValidationError {
+	// Check if it's already a ValidationError with matching context
+	var existingErr *ValidationError
+	if errors.As(cause, &existingErr) &&
+		existingErr.Value == value &&
+		existingErr.Context != nil &&
+		context != nil &&
+		existingErr.Context.Field == context.Field &&
+		existingErr.Context.EntityName == context.EntityName &&
+		existingErr.Context.EntityID == context.EntityID {
+		return existingErr
+	}
+
+	// Create new ValidationError with context
+	message := ""
+	if existingErr != nil && existingErr.Message != "" {
+		message = existingErr.Message
+	}
+
+	return &ValidationError{
+		Value:   value,
+		Message: message,
+		Cause:   cause,
+		Context: context,
 	}
 }
 

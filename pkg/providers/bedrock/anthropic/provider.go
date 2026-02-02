@@ -45,6 +45,10 @@ type Config struct {
 
 	// HTTPClient allows custom HTTP client configuration
 	HTTPClient *http.Client
+
+	// CacheConfig specifies prompt caching configuration
+	// If set, cache points will be automatically inserted at configured positions
+	CacheConfig *CacheConfig
 }
 
 // BedrockAnthropicProvider implements native Anthropic Messages API via AWS Bedrock
@@ -63,6 +67,9 @@ type BedrockAnthropicProvider struct {
 
 	// Beta header mappings for computer use tools
 	toolBetaMap map[string]string
+
+	// Cache configuration for prompt caching
+	cacheConfig *CacheConfig
 }
 
 // New creates a new Bedrock Anthropic provider
@@ -88,6 +95,7 @@ func New(config Config) *BedrockAnthropicProvider {
 		bearerToken: config.BearerToken,
 		baseURL:     baseURL,
 		httpClient:  httpClient,
+		cacheConfig: config.CacheConfig,
 
 		// Tool version upgrades for Bedrock compatibility
 		toolVersionMap: map[string]string{

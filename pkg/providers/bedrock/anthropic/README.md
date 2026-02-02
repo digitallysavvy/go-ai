@@ -191,12 +191,30 @@ result, err := ai.GenerateText(ctx, ai.GenerateOptions{
 
 ### Prompt Caching
 
-Bedrock Anthropic supports Anthropic's prompt caching for reduced latency and costs:
+Bedrock Anthropic supports Anthropic's prompt caching with configurable Time-To-Live (TTL) for reduced latency and costs.
+
+#### Cache TTL Options
+
+- **5 minutes (default)**: Ideal for short interactive sessions
+- **1 hour**: Ideal for longer sessions (requires Claude 4.5 Sonnet v2, Opus, or Haiku)
+
+#### Basic Usage with Default 5m TTL
 
 ```go
+provider := bedrockAnthropic.New(bedrockAnthropic.Config{
+    Region: "us-east-1",
+    Credentials: credentials,
+    CacheConfig: bedrockAnthropic.NewCacheConfig(
+        bedrockAnthropic.WithSystemCache(),
+    ),
+})
+
+model, _ := provider.LanguageModel("us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
 result, err := ai.GenerateText(ctx, ai.GenerateOptions{
     Model:  model,
-    Prompt: largeContext + "\n\nQuestion: ...",
+    System: largeContext, // This will be cached with 5m TTL
+    Prompt: "Question: ...",
 })
 
 // Check cache statistics
@@ -207,6 +225,64 @@ if result.Usage.InputDetails != nil {
         *result.Usage.InputDetails.CacheReadTokens)
 }
 ```
+
+#### Extended 1-Hour Cache
+
+```go
+ttl := bedrockAnthropic.CacheTTL1Hour
+provider := bedrockAnthropic.New(bedrockAnthropic.Config{
+    Region: "us-east-1",
+    Credentials: credentials,
+    CacheConfig: bedrockAnthropic.NewCacheConfig(
+        bedrockAnthropic.WithCacheTTL(ttl),
+        bedrockAnthropic.WithSystemCache(),
+    ),
+})
+```
+
+#### Cache Tools
+
+```go
+provider := bedrockAnthropic.New(bedrockAnthropic.Config{
+    Region: "us-east-1",
+    Credentials: credentials,
+    CacheConfig: bedrockAnthropic.NewCacheConfig(
+        bedrockAnthropic.WithCacheTTL(bedrockAnthropic.CacheTTL1Hour),
+        bedrockAnthropic.WithSystemCache(),
+        bedrockAnthropic.WithToolCache(),
+    ),
+})
+
+// Tool definitions will be cached for 1 hour
+result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+    Model:  model,
+    System: "You are a helpful assistant.",
+    Prompt: "What's the weather?",
+    Tools:  []ai.Tool{weatherTool, calculatorTool},
+})
+```
+
+#### Cache Specific Messages
+
+```go
+provider := bedrockAnthropic.New(bedrockAnthropic.Config{
+    Region: "us-east-1",
+    Credentials: credentials,
+    CacheConfig: bedrockAnthropic.NewCacheConfig(
+        bedrockAnthropic.WithCacheTTL(bedrockAnthropic.CacheTTL1Hour),
+        bedrockAnthropic.WithMessageCacheIndices(0, 2), // Cache messages at index 0 and 2
+    ),
+})
+```
+
+#### Model Support for 1-Hour Cache
+
+The 1-hour cache TTL is supported by:
+- `us.anthropic.claude-4-5-sonnet-v2:0` (Claude Sonnet 4.5 v2)
+- `us.anthropic.claude-4-5-opus-20250514:0` (Claude Opus 4.5)
+- `us.anthropic.claude-4-5-haiku-20250510:0` (Claude Haiku 4.5)
+
+All caching-capable models support the default 5-minute TTL.
 
 ### Image Input
 
@@ -253,6 +329,157 @@ prompt := types.Prompt{
 }
 ```
 
+## Message Validation
+
+Validate message structures before sending to Bedrock to catch errors early and get detailed feedback.
+
+### Quick Start
+
+```go
+import bedrock "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+
+// Validate a single message
+message := types.Message{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "Hello!"},
+    },
+}
+
+if err := bedrock.ValidateMessage(message); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Validate Multiple Messages
+
+```go
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Analyze this image"},
+            types.ImageContent{
+                Image:    imageData,
+                MimeType: "image/png",
+            },
+        },
+    },
+    {
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "I can see..."},
+        },
+    },
+}
+
+if err := bedrock.ValidateMessages(messages); err != nil {
+    log.Fatalf("Invalid messages: %v", err)
+}
+```
+
+### Validation Rules
+
+The validator checks all content types for Bedrock compatibility:
+
+**Text Content:**
+- ✅ Text must not be empty
+- ✅ Must have non-empty type
+
+**Image Content:**
+- ✅ Must have either Image data or URL
+- ✅ Image data requires MimeType
+- ✅ Supported MIME types: image/png, image/jpeg, image/gif, image/webp
+
+**File Content:**
+- ✅ Must have Data
+- ✅ Must have MimeType
+- ✅ Supported for PDF documents
+
+**Tool Result Content:**
+- ✅ Must have ToolCallID
+- ✅ Must have ToolName
+- ✅ Result can be any type
+
+**Reasoning Content:**
+- ✅ Text must not be empty
+- ✅ Used for extended thinking blocks
+
+### Error Messages
+
+Validation errors include detailed context for debugging:
+
+```go
+err := bedrock.ValidateMessage(message)
+// Error examples:
+// "message role is required"
+// "text content at index 0 is empty (role: user)"
+// "image content at index 1 must have either Image data or URL (role: user)"
+// "file content at index 2 missing MimeType (role: user)"
+// "tool result content at index 0 missing tool call ID (role: tool)"
+```
+
+### When to Use Validation
+
+✅ **Use validation when:**
+- Building dynamic message construction
+- Handling user-provided content
+- Creating multi-modal messages (text + images + files)
+- Debugging message format issues
+- Testing message structures
+
+❌ **Skip validation when:**
+- Using static, known-good messages
+- Performance is critical (validation adds minimal overhead)
+- Messages are generated by trusted SDK functions
+
+### Validation in Practice
+
+```go
+func createMultiModalMessage(text string, imagePath string) (types.Message, error) {
+    imageData, err := os.ReadFile(imagePath)
+    if err != nil {
+        return types.Message{}, err
+    }
+
+    message := types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: text},
+            types.ImageContent{
+                Image:    imageData,
+                MimeType: "image/png",
+            },
+        },
+    }
+
+    // Validate before using
+    if err := bedrock.ValidateMessage(message); err != nil {
+        return types.Message{}, fmt.Errorf("invalid message: %w", err)
+    }
+
+    return message, nil
+}
+```
+
+### Content Type Reference
+
+| Content Type | Required Fields | Optional Fields | Notes |
+|--------------|----------------|-----------------|-------|
+| `text` | Text | - | Must not be empty |
+| `image` | Image OR URL | MimeType (if using Image data) | Supports base64 or URL |
+| `file` | Data, MimeType | Filename | For PDF documents |
+| `tool-result` | ToolCallID, ToolName | Result, Error | Tool execution results |
+| `reasoning` | Text | - | Extended thinking blocks |
+
+### Performance
+
+Validation is lightweight:
+- **Runtime:** O(n) where n = number of content parts
+- **Memory:** No allocations during validation
+- **Overhead:** <1ms for typical messages
+- **Fail-fast:** Returns on first error
+
 ## Examples
 
 See the [examples](../../../../examples/providers/bedrock-anthropic/) directory for complete working examples:
@@ -263,7 +490,10 @@ See the [examples](../../../../examples/providers/bedrock-anthropic/) directory 
 - **computer-use**: Computer control tools
 - **text-editor**: File editing tool
 - **bash**: Shell command execution
-- **prompt-caching**: Prompt caching for cost reduction
+- **prompt-caching**: Prompt caching for cost reduction (default 5m TTL)
+- **cache-ttl-5m**: Prompt caching with 5-minute TTL
+- **cache-ttl-1h**: Prompt caching with 1-hour TTL
+- **cache-with-tools**: Tool definition caching
 - **image**: Image analysis
 - **pdf**: PDF document processing
 - **multi-step**: Multi-step agent with tools
@@ -287,6 +517,9 @@ type Config struct {
 
     // Custom HTTP client (optional)
     HTTPClient *http.Client
+
+    // Cache configuration for prompt caching (optional)
+    CacheConfig *CacheConfig
 }
 
 type AWSCredentials struct {

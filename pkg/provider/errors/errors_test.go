@@ -409,6 +409,277 @@ func TestNewRateLimitError(t *testing.T) {
 	}
 }
 
+func TestValidationError_ErrorWithContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		Field:      "message.parts[3].data",
+		EntityName: "tool_call",
+		EntityID:   "call_abc123",
+	}
+
+	err := NewValidationErrorWithContext(
+		map[string]string{"foo": "bar"},
+		"Invalid type",
+		nil,
+		ctx,
+	)
+
+	errStr := err.Error()
+	if !contains(errStr, "message.parts[3].data") {
+		t.Error("expected error to contain field path")
+	}
+	if !contains(errStr, "tool_call") {
+		t.Error("expected error to contain entity name")
+	}
+	if !contains(errStr, "call_abc123") {
+		t.Error("expected error to contain entity ID")
+	}
+	if !contains(errStr, "Invalid type") {
+		t.Error("expected error to contain message")
+	}
+}
+
+func TestValidationError_ErrorWithContextFieldOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		Field: "user.email",
+	}
+
+	err := NewValidationErrorWithContext(
+		"invalid@",
+		"Invalid email format",
+		nil,
+		ctx,
+	)
+
+	errStr := err.Error()
+	if !contains(errStr, "user.email") {
+		t.Error("expected error to contain field path")
+	}
+	if !contains(errStr, "Invalid email format") {
+		t.Error("expected error to contain message")
+	}
+}
+
+func TestValidationError_ErrorWithContextEntityOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		EntityName: "message",
+		EntityID:   "msg_123",
+	}
+
+	err := NewValidationErrorWithContext(
+		nil,
+		"Missing required field",
+		nil,
+		ctx,
+	)
+
+	errStr := err.Error()
+	if !contains(errStr, "message") {
+		t.Error("expected error to contain entity name")
+	}
+	if !contains(errStr, "msg_123") {
+		t.Error("expected error to contain entity ID")
+	}
+}
+
+func TestValidationError_ErrorWithContextNoValue(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		Field:      "settings.timeout",
+		EntityName: "config",
+	}
+
+	err := NewValidationErrorWithContext(
+		nil,
+		"Timeout must be positive",
+		nil,
+		ctx,
+	)
+
+	errStr := err.Error()
+	if !contains(errStr, "settings.timeout") {
+		t.Error("expected error to contain field path")
+	}
+	if !contains(errStr, "config") {
+		t.Error("expected error to contain entity name")
+	}
+	if !contains(errStr, "Timeout must be positive") {
+		t.Error("expected error to contain message")
+	}
+}
+
+func TestValidationError_ErrorBackwardCompatibility(t *testing.T) {
+	t.Parallel()
+
+	// Test that old-style ValidationError still works
+	err := NewValidationError("temperature", "must be between 0 and 2", nil)
+
+	errStr := err.Error()
+	if !contains(errStr, "temperature") {
+		t.Error("expected error to contain field name")
+	}
+	if !contains(errStr, "must be between 0 and 2") {
+		t.Error("expected error to contain message")
+	}
+	if contains(errStr, "Type validation failed") {
+		t.Error("expected old-style format, not new context format")
+	}
+}
+
+func TestWrapValidationError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("underlying validation error")
+	ctx := &ValidationContext{
+		Field:      "data.items[0].name",
+		EntityName: "item",
+		EntityID:   "item_456",
+	}
+
+	err := WrapValidationError(map[string]interface{}{"invalid": true}, cause, ctx)
+
+	if err.Context == nil {
+		t.Error("expected context to be set")
+	}
+	if err.Context.Field != "data.items[0].name" {
+		t.Errorf("expected field 'data.items[0].name', got %s", err.Context.Field)
+	}
+	if err.Context.EntityName != "item" {
+		t.Errorf("expected entity name 'item', got %s", err.Context.EntityName)
+	}
+	if err.Context.EntityID != "item_456" {
+		t.Errorf("expected entity ID 'item_456', got %s", err.Context.EntityID)
+	}
+
+	errStr := err.Error()
+	if !contains(errStr, "data.items[0].name") {
+		t.Error("expected error to contain field path")
+	}
+}
+
+func TestWrapValidationError_PreservesExisting(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		Field:      "user.id",
+		EntityName: "user",
+		EntityID:   "user_789",
+	}
+
+	// Create original error with same context
+	original := NewValidationErrorWithContext(
+		"test_value",
+		"original message",
+		nil,
+		ctx,
+	)
+
+	// Wrap with same value and context
+	wrapped := WrapValidationError("test_value", original, ctx)
+
+	// Should return the same error instance
+	if wrapped != original {
+		t.Error("expected WrapValidationError to return original error when context matches")
+	}
+}
+
+func TestWrapValidationError_CreatesNewWhenDifferent(t *testing.T) {
+	t.Parallel()
+
+	ctx1 := &ValidationContext{
+		Field: "field1",
+	}
+
+	ctx2 := &ValidationContext{
+		Field: "field2",
+	}
+
+	original := NewValidationErrorWithContext(
+		"value",
+		"message",
+		nil,
+		ctx1,
+	)
+
+	// Wrap with different context
+	wrapped := WrapValidationError("value", original, ctx2)
+
+	// Should create a new error
+	if wrapped == original {
+		t.Error("expected WrapValidationError to create new error when context differs")
+	}
+	if wrapped.Context.Field != "field2" {
+		t.Errorf("expected new error to have field 'field2', got %s", wrapped.Context.Field)
+	}
+}
+
+func TestNewValidationErrorWithContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := &ValidationContext{
+		Field:      "config.api.endpoint",
+		EntityName: "api_config",
+		EntityID:   "cfg_001",
+	}
+
+	value := map[string]string{"endpoint": "invalid://"}
+	err := NewValidationErrorWithContext(value, "Invalid URL scheme", nil, ctx)
+
+	if err.Value == nil {
+		t.Error("expected value to be set")
+	}
+	if err.Message != "Invalid URL scheme" {
+		t.Errorf("expected message 'Invalid URL scheme', got %s", err.Message)
+	}
+	if err.Context == nil {
+		t.Error("expected context to be set")
+	}
+	if err.Context.Field != "config.api.endpoint" {
+		t.Errorf("expected field 'config.api.endpoint', got %s", err.Context.Field)
+	}
+	if err.Context.EntityName != "api_config" {
+		t.Errorf("expected entity name 'api_config', got %s", err.Context.EntityName)
+	}
+	if err.Context.EntityID != "cfg_001" {
+		t.Errorf("expected entity ID 'cfg_001', got %s", err.Context.EntityID)
+	}
+}
+
+func TestValidationError_ErrorWithCauseAndContext(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("schema mismatch")
+	ctx := &ValidationContext{
+		Field:      "response.data",
+		EntityName: "api_response",
+	}
+
+	err := NewValidationErrorWithContext(
+		nil,
+		"Response validation failed",
+		cause,
+		ctx,
+	)
+
+	if err.Cause != cause {
+		t.Error("expected cause to be set")
+	}
+
+	errStr := err.Error()
+	if !contains(errStr, "response.data") {
+		t.Error("expected error to contain field path")
+	}
+	if !contains(errStr, "api_response") {
+		t.Error("expected error to contain entity name")
+	}
+}
+
 func TestSentinelErrors(t *testing.T) {
 	t.Parallel()
 

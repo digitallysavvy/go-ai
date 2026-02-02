@@ -16,13 +16,19 @@ import (
 type EmbeddingModel struct {
 	provider *Provider
 	modelID  string
+	options  *EmbeddingOptions
 }
 
 // NewEmbeddingModel creates a new AWS Bedrock embedding model
-func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
+func NewEmbeddingModel(provider *Provider, modelID string, options ...*EmbeddingOptions) *EmbeddingModel {
+	var opts *EmbeddingOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	return &EmbeddingModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  opts,
 	}
 }
 
@@ -54,8 +60,51 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string) (*types.EmbeddingResult, error) {
-	reqBody := map[string]interface{}{
-		"inputText": input,
+	// Determine model type and construct request body accordingly
+	var reqBody map[string]interface{}
+
+	// Check if this is a Cohere model
+	if len(m.modelID) >= 6 && m.modelID[:6] == "cohere" {
+		// Validate Cohere options if provided
+		if m.options != nil && m.options.CohereOptions != nil {
+			if err := m.options.CohereOptions.Validate(); err != nil {
+				return nil, err
+			}
+		}
+
+		// Build Cohere request
+		cohereOpts := DefaultCohereEmbeddingOptions()
+		if m.options != nil && m.options.CohereOptions != nil {
+			cohereOpts = *m.options.CohereOptions
+		}
+
+		reqBody = map[string]interface{}{
+			"texts":      []string{input},
+			"input_type": string(cohereOpts.InputType),
+		}
+
+		if cohereOpts.OutputDimension != nil {
+			reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
+		}
+
+		if cohereOpts.Truncate != "" {
+			reqBody["truncate"] = string(cohereOpts.Truncate)
+		}
+	} else {
+		// Titan or other models
+		reqBody = map[string]interface{}{
+			"inputText": input,
+		}
+
+		// Add Titan-specific options if provided
+		if m.options != nil && m.options.TitanOptions != nil {
+			if m.options.TitanOptions.Dimensions != nil {
+				reqBody["dimensions"] = *m.options.TitanOptions.Dimensions
+			}
+			if m.options.TitanOptions.Normalize != nil {
+				reqBody["normalize"] = *m.options.TitanOptions.Normalize
+			}
+		}
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -103,19 +152,45 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string) (*types.Embe
 		return nil, fmt.Errorf("AWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var embeddingResp struct {
-		Embedding []float64 `json:"embedding"`
-	}
+	// Parse response based on model type
+	var embedding []float64
+	var inputTokens int
 
-	if err := json.Unmarshal(respBody, &embeddingResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if len(m.modelID) >= 6 && m.modelID[:6] == "cohere" {
+		// Cohere response format
+		var cohereResp struct {
+			Embeddings [][]float64 `json:"embeddings"`
+		}
+
+		if err := json.Unmarshal(respBody, &cohereResp); err != nil {
+			return nil, fmt.Errorf("failed to decode Cohere response: %w", err)
+		}
+
+		if len(cohereResp.Embeddings) == 0 {
+			return nil, fmt.Errorf("no embeddings in response")
+		}
+
+		embedding = cohereResp.Embeddings[0]
+		inputTokens = len(input) / 4 // Approximate
+	} else {
+		// Titan response format
+		var titanResp struct {
+			Embedding []float64 `json:"embedding"`
+		}
+
+		if err := json.Unmarshal(respBody, &titanResp); err != nil {
+			return nil, fmt.Errorf("failed to decode Titan response: %w", err)
+		}
+
+		embedding = titanResp.Embedding
+		inputTokens = len(input) / 4 // Approximate
 	}
 
 	return &types.EmbeddingResult{
-		Embedding: embeddingResp.Embedding,
+		Embedding: embedding,
 		Usage: types.EmbeddingUsage{
-			InputTokens: len(input) / 4, // Approximate
-			TotalTokens: len(input) / 4,
+			InputTokens: inputTokens,
+			TotalTokens: inputTokens,
 		},
 	}, nil
 }

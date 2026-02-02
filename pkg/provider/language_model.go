@@ -126,6 +126,11 @@ type StreamChunk struct {
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
 
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata
+	ContextManagement interface{}
+
 	// AbortReason provides context when a stream is aborted
 	// This can be due to timeouts, user cancellation, or errors
 	// Useful for debugging and understanding stream termination
