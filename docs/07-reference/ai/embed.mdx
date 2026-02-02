@@ -1,0 +1,192 @@
+---
+title: Embed
+description: API reference for Embed function
+---
+
+# Embed
+
+Generates a vector embedding for a single text input using an embedding model.
+
+## Signature
+
+```go
+func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error)
+```
+
+## Parameters
+
+### EmbedOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.EmbeddingModel | Yes | Embedding model to use |
+| Input | string | Yes | Text to embed |
+
+## Return Value
+
+### EmbedResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Embedding | []float64 | Vector embedding |
+| Usage | types.EmbeddingUsage | Token usage information |
+
+## Examples
+
+### Basic Embedding
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.EmbeddingModel("text-embedding-3-small")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.Embed(context.Background(), ai.EmbedOptions{
+        Model: model,
+        Input: "The quick brown fox jumps over the lazy dog",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Embedding dimensions: %d\n", len(result.Embedding))
+    fmt.Printf("First 5 values: %v\n", result.Embedding[:5])
+    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Semantic Search
+
+```go
+// Embed query
+queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: model,
+    Input: "machine learning algorithms",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Embed documents
+docs := []string{
+    "Neural networks are a type of machine learning model",
+    "The weather today is sunny and warm",
+    "Deep learning uses multiple layers of neural networks",
+}
+
+var docEmbeddings [][]float64
+for _, doc := range docs {
+    result, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: model,
+        Input: doc,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    docEmbeddings = append(docEmbeddings, result.Embedding)
+}
+
+// Find most similar document
+idx, similarity, err := ai.FindMostSimilar(queryResult.Embedding, docEmbeddings)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Most similar document: %s\n", docs[idx])
+fmt.Printf("Similarity score: %.4f\n", similarity)
+```
+
+### Calculate Similarity
+
+```go
+result1, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: model,
+    Input: "artificial intelligence",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+result2, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: model,
+    Input: "machine learning",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+similarity, err := ai.CosineSimilarity(result1.Embedding, result2.Embedding)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Cosine similarity: %.4f\n", similarity)
+```
+
+### With Different Providers
+
+```go
+// OpenAI
+openaiProvider := openai.New(openai.Config{APIKey: "key"})
+openaiModel, _ := openaiProvider.EmbeddingModel("text-embedding-3-small")
+
+result1, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: openaiModel,
+    Input: "test input",
+})
+
+// Cohere
+cohereProvider := cohere.New(cohere.Config{APIKey: "key"})
+cohereModel, _ := cohereProvider.EmbeddingModel("embed-english-v3.0")
+
+result2, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: cohereModel,
+    Input: "test input",
+})
+
+fmt.Printf("OpenAI dimensions: %d\n", len(result1.Embedding))
+fmt.Printf("Cohere dimensions: %d\n", len(result2.Embedding))
+```
+
+## Error Handling
+
+```go
+result, err := ai.Embed(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "input is required"):
+        log.Println("Missing required input text")
+    case strings.Contains(err.Error(), "embedding failed"):
+        log.Println("Embedding generation error:", err)
+    case errors.Is(err, context.DeadlineExceeded):
+        log.Println("Request timed out")
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [EmbedMany](./embed-many.mdx) - Batch embedding generation
+- [CosineSimilarity](./cosine-similarity.mdx) - Calculate similarity between embeddings
+- [Embedding Models Guide](../../03-providers/embedding-models.mdx)
+- [RAG Guide](../../05-retrieval/rag.mdx)

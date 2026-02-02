@@ -1,0 +1,313 @@
+---
+title: Tool
+description: API reference for Tool definition
+---
+
+# Tool
+
+Defines a tool that language models can call to perform actions or retrieve information.
+
+## Type Definition
+
+```go
+type Tool struct {
+    Name               string
+    Description        string
+    Title              string
+    Parameters         interface{}
+    Execute            ToolExecutor
+    ToModelOutput      ToModelOutputFunc
+    InputExamples      []ToolInputExample
+    Strict             bool
+    NeedsApproval      interface{}
+    ProviderExecuted   bool
+    ProviderOptions    interface{}
+    OnInputStart       OnInputStartFunc
+    OnInputDelta       OnInputDeltaFunc
+    OnInputAvailable   OnInputAvailableFunc
+}
+```
+
+## Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Name | string | Yes | Unique tool name |
+| Description | string | Yes | What the tool does (helps model decide when to use it) |
+| Title | string | No | Short human-readable title |
+| Parameters | interface{} | Yes | JSON Schema for tool input parameters |
+| Execute | ToolExecutor | Yes | Function that executes the tool |
+| ToModelOutput | ToModelOutputFunc | No | Custom result formatting for model |
+| InputExamples | []ToolInputExample | No | Example inputs to guide the model |
+| Strict | bool | No | Enable strict schema enforcement |
+| NeedsApproval | interface{} | No | Whether execution requires approval (bool or func) |
+| ProviderExecuted | bool | No | Whether provider executes this tool |
+| ProviderOptions | interface{} | No | Provider-specific options |
+| OnInputStart | OnInputStartFunc | No | Called when input streaming starts |
+| OnInputDelta | OnInputDeltaFunc | No | Called for each input delta |
+| OnInputAvailable | OnInputAvailableFunc | No | Called when input is complete |
+
+## ToolExecutor Signature
+
+```go
+type ToolExecutor func(
+    ctx context.Context,
+    input map[string]interface{},
+    options ToolExecutionOptions,
+) (interface{}, error)
+```
+
+## Examples
+
+### Basic Tool
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func main() {
+    weatherTool := types.Tool{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "City name or coordinates",
+                },
+                "units": map[string]interface{}{
+                    "type":        "string",
+                    "enum":        []string{"celsius", "fahrenheit"},
+                    "description": "Temperature units",
+                },
+            },
+            "required": []string{"location"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            location := input["location"].(string)
+            units := "celsius"
+            if u, ok := input["units"].(string); ok {
+                units = u
+            }
+
+            // Implement weather API call
+            return map[string]interface{}{
+                "location":    location,
+                "temperature": 22,
+                "units":       units,
+                "condition":   "sunny",
+            }, nil
+        },
+    }
+
+    fmt.Printf("Tool: %s\n", weatherTool.Name)
+}
+```
+
+### Tool with Input Examples
+
+```go
+calculatorTool := types.Tool{
+    Name:        "calculator",
+    Description: "Perform mathematical calculations",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "expression": map[string]interface{}{
+                "type":        "string",
+                "description": "Mathematical expression to evaluate",
+            },
+        },
+        "required": []string{"expression"},
+    },
+    InputExamples: []types.ToolInputExample{
+        {
+            Input: map[string]interface{}{
+                "expression": "2 + 2",
+            },
+            Description: "Simple addition",
+        },
+        {
+            Input: map[string]interface{}{
+                "expression": "sqrt(16) * 3",
+            },
+            Description: "Expression with function",
+        },
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        expr := input["expression"].(string)
+        // Implement calculator logic
+        return fmt.Sprintf("Result: %s", expr), nil
+    },
+}
+```
+
+### Tool with Strict Schema
+
+```go
+strictTool := types.Tool{
+    Name:        "create_user",
+    Description: "Create a new user account",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "username": map[string]interface{}{
+                "type":      "string",
+                "minLength": 3,
+                "maxLength": 20,
+            },
+            "email": map[string]interface{}{
+                "type":   "string",
+                "format": "email",
+            },
+            "age": map[string]interface{}{
+                "type":    "integer",
+                "minimum": 13,
+            },
+        },
+        "required":             []string{"username", "email"},
+        "additionalProperties": false,
+    },
+    Strict: true, // Enforce strict schema validation
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        // Create user
+        return map[string]interface{}{
+            "success": true,
+            "userId":  "user123",
+        }, nil
+    },
+}
+```
+
+### Tool with Approval Required
+
+```go
+deleteFileTool := types.Tool{
+    Name:        "delete_file",
+    Description: "Delete a file from the system",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "filepath": map[string]interface{}{
+                "type": "string",
+            },
+        },
+        "required": []string{"filepath"},
+    },
+    NeedsApproval: true, // Require approval before execution
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        filepath := input["filepath"].(string)
+        // Delete file logic
+        return fmt.Sprintf("Deleted: %s", filepath), nil
+    },
+}
+```
+
+### Tool with Conditional Approval
+
+```go
+sendEmailTool := types.Tool{
+    Name:        "send_email",
+    Description: "Send an email",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "to":      map[string]interface{}{"type": "string"},
+            "subject": map[string]interface{}{"type": "string"},
+            "body":    map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"to", "subject", "body"},
+    },
+    NeedsApproval: types.NeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}) bool {
+        // Only require approval for external emails
+        to := input["to"].(string)
+        return !strings.HasSuffix(to, "@company.com")
+    }),
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        // Send email logic
+        return "Email sent", nil
+    },
+}
+```
+
+### Tool with Custom Output Formatting
+
+```go
+searchTool := types.Tool{
+    Name:        "web_search",
+    Description: "Search the web",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"query"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        // Return structured search results
+        return []map[string]interface{}{
+            {"title": "Result 1", "url": "https://example.com/1"},
+            {"title": "Result 2", "url": "https://example.com/2"},
+        }, nil
+    },
+    ToModelOutput: func(ctx context.Context, opts types.ToModelOutputOptions) (types.ToolResultOutput, error) {
+        // Format results for model consumption
+        results := opts.Result.([]map[string]interface{})
+        var formatted string
+        for i, r := range results {
+            formatted += fmt.Sprintf("%d. %s (%s)\n", i+1, r["title"], r["url"])
+        }
+        return types.ToolResultOutput{
+            Type:    "text",
+            Content: formatted,
+        }, nil
+    },
+}
+```
+
+### Database Query Tool
+
+```go
+queryTool := types.Tool{
+    Name:        "query_database",
+    Description: "Query the database for information",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "table": map[string]interface{}{
+                "type": "string",
+                "enum": []string{"users", "orders", "products"},
+            },
+            "filters": map[string]interface{}{
+                "type": "object",
+            },
+        },
+        "required": []string{"table"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        table := input["table"].(string)
+        filters := input["filters"]
+
+        // Query database
+        results := []map[string]interface{}{
+            {"id": 1, "name": "Item 1"},
+            {"id": 2, "name": "Item 2"},
+        }
+
+        return results, nil
+    },
+}
+```
+
+## See Also
+
+- [DynamicTool](./dynamic-tool.mdx) - Create tools dynamically
+- [GenerateText](./generate-text.mdx) - Using tools with generation
+- [Tool Calling Guide](../../04-generation/tool-calling.mdx)

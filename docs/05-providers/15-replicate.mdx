@@ -1,0 +1,127 @@
+---
+title: Replicate Provider
+description: Setup and usage guide for Replicate model marketplace with Go-AI SDK
+---
+
+# Replicate Provider
+
+Replicate provides a marketplace to run any open-source model through a simple API. Perfect for experimentation and accessing diverse models including image generation, video, and specialized models.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/replicate"
+)
+```
+
+### Configuration
+
+```go
+provider := replicate.New(replicate.Config{
+    APIKey: os.Getenv("REPLICATE_API_KEY"),
+})
+
+model, err := provider.LanguageModel("meta/meta-llama-3-70b-instruct")
+```
+
+### Get API Key
+
+```bash
+export REPLICATE_API_KEY=r8_...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Price | Best For |
+|----------|---------|-------|----------|
+| meta/meta-llama-3-70b-instruct | 8K | $0.65/1M | General purpose |
+| mistralai/mixtral-8x7b-instruct-v0.1 | 32K | $0.30/1M | Balanced |
+
+### Image Generation
+
+| Model ID | Quality | Price | Best For |
+|----------|---------|-------|----------|
+| stability-ai/sdxl | High | $0.0119/run | Images |
+| black-forest-labs/flux-pro | Excellent | $0.055/run | Professional |
+| black-forest-labs/flux-schnell | Good | $0.003/run | Fast |
+
+### Video Generation
+
+| Model ID | Quality | Price | Best For |
+|----------|---------|-------|----------|
+| stability-ai/stable-video-diffusion | Medium | $0.10/run | Video from image |
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/replicate"
+)
+
+func main() {
+    provider := replicate.New(replicate.Config{
+        APIKey: os.Getenv("REPLICATE_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("meta/meta-llama-3-70b-instruct")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain Replicate")
+    fmt.Println(result.Text)
+}
+```
+
+### Image Generation
+
+```go
+imageModel, err := provider.ImageModel("black-forest-labs/flux-pro")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(imageModel,
+    "A cyberpunk city at night",
+    ai.WithImageSize("1024x1024"),
+)
+
+fmt.Printf("Image URL: %s\n", result.Images[0].URL)
+```
+
+## Best Practices
+
+1. **Model Discovery**
+   - Browse Replicate marketplace for models
+   - Try different models easily
+   - Great for prototyping
+
+2. **Cost Management**
+   - Pay-per-run pricing
+   - Monitor usage carefully
+   - Cache results when possible
+
+3. **Use Cases**
+   - Experimentation and testing
+   - Specialized model access
+   - Image/video generation
+
+## See Also
+
+- [Replicate Documentation](https://replicate.com/docs)
+- [Model Marketplace](https://replicate.com/explore)

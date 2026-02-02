@@ -1,0 +1,298 @@
+---
+title: JSON Schema
+description: API reference for JSON Schema types and validation
+---
+
+# JSON Schema
+
+Types and utilities for working with JSON Schema in structured output generation.
+
+## Schema Interface
+
+```go
+type Schema interface {
+    Validator() Validator
+}
+```
+
+Interface for schema definitions that can be used with structured output.
+
+## Validator Interface
+
+```go
+type Validator interface {
+    Validate(data interface{}) error
+    JSONSchema() map[string]interface{}
+}
+```
+
+Interface for validating data against a schema.
+
+## Creating Schemas
+
+### JSONSchemaValidator
+
+```go
+func NewJSONSchema(schema map[string]interface{}) *JSONSchemaValidator
+```
+
+Creates a validator from a JSON Schema object.
+
+### SimpleJSONSchema
+
+```go
+func NewSimpleJSONSchema(schema map[string]interface{}) *SimpleJSONSchema
+```
+
+Creates a simple JSON schema implementation.
+
+### StructValidator
+
+```go
+func NewStructSchema(targetType reflect.Type) *StructValidator
+```
+
+Creates a validator from a Go struct type.
+
+## Examples
+
+### Basic JSON Schema
+
+```go
+package main
+
+import (
+    "github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func main() {
+    personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "name": map[string]interface{}{
+                "type":        "string",
+                "description": "Person's full name",
+            },
+            "age": map[string]interface{}{
+                "type":        "integer",
+                "minimum":     0,
+                "description": "Person's age in years",
+            },
+            "email": map[string]interface{}{
+                "type":        "string",
+                "format":      "email",
+                "description": "Email address",
+            },
+        },
+        "required": []string{"name", "age"},
+        "additionalProperties": false,
+    })
+
+    // Use with GenerateObject
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Prompt: "Generate a person",
+        Schema: personSchema,
+    })
+}
+```
+
+### Array Schema
+
+```go
+tasksSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "array",
+    "items": map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "id":          map[string]interface{}{"type": "integer"},
+            "description": map[string]interface{}{"type": "string"},
+            "completed":   map[string]interface{}{"type": "boolean"},
+        },
+        "required": []string{"id", "description", "completed"},
+    },
+})
+```
+
+### Nested Schema
+
+```go
+companySchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{"type": "string"},
+        "address": map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "street":  map[string]interface{}{"type": "string"},
+                "city":    map[string]interface{}{"type": "string"},
+                "country": map[string]interface{}{"type": "string"},
+            },
+            "required": []string{"city", "country"},
+        },
+        "employees": map[string]interface{}{
+            "type": "array",
+            "items": map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "name":     map[string]interface{}{"type": "string"},
+                    "position": map[string]interface{}{"type": "string"},
+                },
+            },
+        },
+    },
+    "required": []string{"name"},
+})
+```
+
+### Enum Schema
+
+```go
+statusSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "string",
+    "enum": []string{"pending", "in_progress", "completed", "cancelled"},
+})
+```
+
+### With Patterns and Constraints
+
+```go
+userSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "username": map[string]interface{}{
+            "type":      "string",
+            "pattern":   "^[a-zA-Z0-9_]{3,20}$",
+            "minLength": 3,
+            "maxLength": 20,
+        },
+        "password": map[string]interface{}{
+            "type":      "string",
+            "minLength": 8,
+        },
+        "age": map[string]interface{}{
+            "type":    "integer",
+            "minimum": 13,
+            "maximum": 120,
+        },
+    },
+    "required": []string{"username", "password"},
+})
+```
+
+### Using with GenerateObject
+
+```go
+recipeSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{
+            "type":        "string",
+            "description": "Name of the recipe",
+        },
+        "ingredients": map[string]interface{}{
+            "type":        "array",
+            "description": "List of ingredients",
+            "items":       map[string]interface{}{"type": "string"},
+        },
+        "steps": map[string]interface{}{
+            "type":        "array",
+            "description": "Cooking steps",
+            "items":       map[string]interface{}{"type": "string"},
+        },
+        "cookTime": map[string]interface{}{
+            "type":        "integer",
+            "description": "Cooking time in minutes",
+        },
+    },
+    "required": []string{"name", "ingredients", "steps"},
+})
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Generate a recipe for chocolate chip cookies",
+    Schema: recipeSchema,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Validating Data
+
+```go
+schema := schema.NewSimpleJSONSchema(personSchema)
+
+data := map[string]interface{}{
+    "name": "John Doe",
+    "age":  30,
+}
+
+if err := schema.Validator().Validate(data); err != nil {
+    log.Printf("Validation failed: %v", err)
+}
+```
+
+### Getting JSON Schema
+
+```go
+schema := schema.NewSimpleJSONSchema(personSchema)
+jsonSchema := schema.Validator().JSONSchema()
+
+// Returns the original schema map
+fmt.Printf("Schema: %+v\n", jsonSchema)
+```
+
+## JSON Schema Types
+
+Common JSON Schema property types:
+
+- `"string"` - String values
+- `"integer"` - Integer numbers
+- `"number"` - Any numbers (including floats)
+- `"boolean"` - Boolean values
+- `"object"` - Nested objects
+- `"array"` - Arrays of items
+- `"null"` - Null values
+
+## Common Constraints
+
+### String Constraints
+
+```go
+"minLength": 1,
+"maxLength": 100,
+"pattern": "^[A-Z][a-z]+$",
+"format": "email", // or "uri", "date-time", etc.
+```
+
+### Number Constraints
+
+```go
+"minimum": 0,
+"maximum": 100,
+"multipleOf": 5,
+```
+
+### Array Constraints
+
+```go
+"minItems": 1,
+"maxItems": 10,
+"uniqueItems": true,
+```
+
+### Object Constraints
+
+```go
+"required": []string{"field1", "field2"},
+"additionalProperties": false,
+"minProperties": 1,
+"maxProperties": 10,
+```
+
+## See Also
+
+- [GenerateObject](../ai/generate-object.mdx) - Structured object generation
+- [StreamObject](../ai/stream-object.mdx) - Streaming structured output
+- [Structured Output Guide](../../04-generation/structured-output.mdx)

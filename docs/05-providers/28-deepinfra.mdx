@@ -1,0 +1,326 @@
+---
+title: DeepInfra Provider
+description: Setup and usage guide for DeepInfra serverless GPU inference with Go-AI SDK
+---
+
+# DeepInfra Provider
+
+DeepInfra provides serverless GPU inference for open-source models with excellent performance and competitive pricing. Access hundreds of models through a simple API with no infrastructure management.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // DeepInfra uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("DEEPINFRA_API_KEY"),
+    BaseURL: "https://api.deepinfra.com/v1/openai",
+})
+
+model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct")
+```
+
+### Get API Key
+
+1. Sign up at [deepinfra.com](https://deepinfra.com)
+2. Get API key from dashboard
+3. Set environment variable:
+
+```bash
+export DEEPINFRA_API_KEY=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Parameters | Input Price | Output Price | Best For |
+|----------|-----------|-------------|--------------|----------|
+| meta-llama/Meta-Llama-3.1-70B-Instruct | 70B | $0.52/1M | $0.75/1M | General purpose |
+| meta-llama/Meta-Llama-3.1-8B-Instruct | 8B | $0.06/1M | $0.06/1M | Fast, cheap |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 47B | $0.24/1M | $0.24/1M | Balanced |
+| Qwen/Qwen2.5-72B-Instruct | 72B | $0.35/1M | $0.40/1M | Multilingual |
+| microsoft/WizardLM-2-8x22B | 141B | $0.65/1M | $0.65/1M | Complex tasks |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| BAAI/bge-large-en-v1.5 | 1024 | $0.005/1M | English embeddings |
+| sentence-transformers/all-MiniLM-L6-v2 | 384 | $0.005/1M | Fast embeddings |
+
+### Vision Models
+
+| Model ID | Capability | Price | Best For |
+|----------|-----------|-------|----------|
+| meta-llama/Llama-3.2-90B-Vision-Instruct | Vision | $0.50/1M | Image understanding |
+
+## Provider-Specific Features
+
+### Serverless Infrastructure
+
+No infrastructure management required:
+
+```go
+// Automatic scaling and GPU allocation
+result, err := ai.GenerateText(model, prompt)
+// DeepInfra handles all infrastructure
+```
+
+### Pay-Per-Use
+
+Pay only for actual inference time:
+
+```go
+// No idle costs, no minimum commitments
+result, err := ai.GenerateText(model, prompt)
+// Charged only for tokens used
+```
+
+### Wide Model Selection
+
+Access hundreds of open-source models:
+
+```go
+// Browse available models
+models := []string{
+    "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "google/gemma-2-9b-it",
+    "microsoft/Phi-3-medium-128k-instruct",
+    "Qwen/Qwen2.5-72B-Instruct",
+}
+
+for _, modelID := range models {
+    model, err := provider.LanguageModel(modelID)
+    // Test different models easily
+}
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("DEEPINFRA_API_KEY"),
+        BaseURL: "https://api.deepinfra.com/v1/openai",
+    })
+
+    model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain serverless GPU inference")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("Cost: $%.6f\n",
+        calculateCost(result.Usage.PromptTokens,
+            result.Usage.CompletionTokens))
+}
+
+func calculateCost(inputTokens, outputTokens int) float64 {
+    inputCost := float64(inputTokens) * 0.52 / 1_000_000
+    outputCost := float64(outputTokens) * 0.75 / 1_000_000
+    return inputCost + outputCost
+}
+```
+
+### Model Comparison
+
+```go
+func compareModels(prompt string) {
+    models := map[string]string{
+        "Llama 3.1 70B": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+        "Mixtral 8x7B":  "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "Qwen 2.5 72B":  "Qwen/Qwen2.5-72B-Instruct",
+    }
+
+    for name, modelID := range models {
+        model, err := provider.LanguageModel(modelID)
+        if err != nil {
+            log.Printf("Failed to load %s: %v", name, err)
+            continue
+        }
+
+        start := time.Now()
+        result, err := ai.GenerateText(model, prompt)
+        if err != nil {
+            log.Printf("Failed %s: %v", name, err)
+            continue
+        }
+
+        elapsed := time.Since(start)
+        fmt.Printf("\n=== %s ===\n", name)
+        fmt.Printf("Response: %s\n", result.Text)
+        fmt.Printf("Time: %v\n", elapsed)
+        fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+    }
+}
+```
+
+### Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("BAAI/bge-large-en-v1.5")
+if err != nil {
+    log.Fatal(err)
+}
+
+texts := []string{
+    "DeepInfra provides serverless AI",
+    "GPU inference without infrastructure",
+    "Open-source models on demand",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %d embeddings of dimension %d\n",
+    len(embeddings), len(embeddings[0]))
+
+// Use embeddings for semantic search, clustering, etc.
+```
+
+### Streaming
+
+```go
+stream, err := ai.StreamText(model, "Write a detailed article")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use Llama 3.1 70B for high quality
+   - Use Llama 3.1 8B for cost efficiency
+   - Use Mixtral for balanced performance
+   - Use Qwen for multilingual tasks
+
+2. **Cost Optimization**
+   - Compare prices across models
+   - Use smaller models for simple tasks
+   - Monitor token usage
+   - Cache results when appropriate
+
+3. **Performance**
+   - Serverless = no cold starts to worry about
+   - Automatic scaling for traffic spikes
+   - Geographic distribution for low latency
+
+4. **Reliability**
+   - Implement retry logic
+   - Handle rate limits gracefully
+   - Monitor API status
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Varies by plan:
+- Free tier: 10 requests/min
+- Pay-as-you-go: Higher limits
+- Enterprise: Custom limits
+
+### Pricing Comparison
+
+```go
+func compareProviderCosts(inputTokens, outputTokens int) {
+    providers := map[string][2]float64{
+        "DeepInfra Llama 70B":  {0.52 / 1_000_000, 0.75 / 1_000_000},
+        "DeepInfra Llama 8B":   {0.06 / 1_000_000, 0.06 / 1_000_000},
+        "DeepInfra Mixtral":    {0.24 / 1_000_000, 0.24 / 1_000_000},
+        "DeepInfra Qwen 72B":   {0.35 / 1_000_000, 0.40 / 1_000_000},
+    }
+
+    fmt.Println("Cost comparison for 1M input + 1M output tokens:")
+    for provider, rates := range providers {
+        inputCost := float64(inputTokens) * rates[0]
+        outputCost := float64(outputTokens) * rates[1]
+        totalCost := inputCost + outputCost
+        fmt.Printf("%s: $%.2f\n", provider, totalCost)
+    }
+}
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if strings.Contains(err.Error(), "rate_limit") {
+        log.Println("Rate limited, implement backoff")
+        time.Sleep(time.Second * 5)
+        // Retry
+    } else if strings.Contains(err.Error(), "model_not_found") {
+        log.Fatal("Model not available on DeepInfra")
+    } else if strings.Contains(err.Error(), "insufficient_credits") {
+        log.Fatal("Add credits to account")
+    }
+    log.Fatal(err)
+}
+```
+
+## Advanced Features
+
+### Custom Deployments
+
+Deploy custom models:
+
+```go
+// Contact DeepInfra for custom model deployments
+// Bring your own fine-tuned models
+```
+
+### API Compatibility
+
+Works with OpenAI SDK:
+
+```go
+// DeepInfra is OpenAI-compatible
+// Easy migration from OpenAI
+// Use same code, just change base URL
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [DeepInfra Documentation](https://deepinfra.com/docs)
+- [DeepInfra Model Library](https://deepinfra.com/models)
+- [Together AI Provider](13-together.mdx) - Alternative
+- [Fireworks AI Provider](14-fireworks.mdx) - Alternative

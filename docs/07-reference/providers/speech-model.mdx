@@ -1,0 +1,84 @@
+---
+title: SpeechModel Interface
+description: API reference for SpeechModel interface
+---
+
+# SpeechModel Interface
+
+Interface that all speech synthesis (text-to-speech) model implementations must satisfy.
+
+## Interface Definition
+
+```go
+type SpeechModel interface {
+    // Metadata
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    // Speech synthesis
+    DoGenerate(ctx context.Context, opts *SpeechGenerateOptions) (*types.SpeechResult, error)
+}
+```
+
+## Methods
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| SpecificationVersion() | - | string | Specification version |
+| Provider() | - | string | Provider name |
+| ModelID() | - | string | Model identifier |
+| DoGenerate() | ctx, *SpeechGenerateOptions | *types.SpeechResult, error | Generate speech audio |
+
+## SpeechGenerateOptions
+
+```go
+type SpeechGenerateOptions struct {
+    Text  string
+    Voice string
+    Speed *float64
+}
+```
+
+## Examples
+
+### Using a Speech Model
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.SpeechModel("tts-1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+        Text:  "Hello, world!",
+        Voice: "alloy",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    os.WriteFile("output.mp3", result.Audio, 0644)
+}
+```
+
+## See Also
+
+- [GenerateSpeech](../ai/generate-speech.mdx) - High-level speech generation
+- [TranscriptionModel](./transcription-model.mdx) - Speech-to-text interface
+- [Custom Provider](./custom-provider.mdx) - Implementing custom providers

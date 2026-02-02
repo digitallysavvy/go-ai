@@ -1,0 +1,124 @@
+---
+title: Baseten Provider
+description: Setup and usage guide for Baseten ML model deployment with Go-AI SDK
+---
+
+# Baseten Provider
+
+Baseten provides serverless infrastructure for deploying and scaling ML models. Deploy any model from HuggingFace, custom models, or optimized inference endpoints.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/baseten"
+)
+```
+
+### Configuration
+
+```go
+provider := baseten.New(baseten.Config{
+    APIKey: os.Getenv("BASETEN_API_KEY"),
+})
+
+model, err := provider.LanguageModel("model-id")
+```
+
+### Get API Key
+
+```bash
+export BASETEN_API_KEY=...
+```
+
+## Features
+
+### Deploy Any Model
+
+Deploy models from HuggingFace or custom:
+
+```go
+// Deploy from HuggingFace
+deployment := baseten.NewDeployment(baseten.DeploymentConfig{
+    Name:  "my-llama-deployment",
+    Model: "meta-llama/Llama-2-7b-chat-hf",
+    GPU:   "A100",
+})
+
+modelID, err := deployment.Deploy()
+```
+
+### Autoscaling
+
+Automatic scaling based on demand:
+
+```go
+deployment := baseten.NewDeployment(baseten.DeploymentConfig{
+    Name:       "my-model",
+    Model:      "model-id",
+    MinReplicas: 0,  // Scale to zero
+    MaxReplicas: 10,
+    GPU:        "A10",
+})
+```
+
+### Private Deployment
+
+Deploy models privately:
+
+```go
+provider := baseten.New(baseten.Config{
+    APIKey:  os.Getenv("BASETEN_API_KEY"),
+    Private: true, // Private VPC
+})
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/baseten"
+)
+
+func main() {
+    provider := baseten.New(baseten.Config{
+        APIKey: os.Getenv("BASETEN_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("model-id")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain Baseten")
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+1. **Deployment**
+   - Use autoscaling for variable load
+   - Scale to zero for development
+   - Monitor GPU utilization
+
+2. **Cost Management**
+   - Pay per second of compute
+   - Scale to zero when idle
+   - Choose appropriate GPU
+
+## See Also
+
+- [Baseten Documentation](https://docs.baseten.co)

@@ -1,0 +1,282 @@
+---
+title: EmbedMany
+description: API reference for EmbedMany function
+---
+
+# EmbedMany
+
+Generates vector embeddings for multiple text inputs in a single batch operation for better performance.
+
+## Signature
+
+```go
+func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, error)
+```
+
+## Parameters
+
+### EmbedManyOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.EmbeddingModel | Yes | Embedding model to use |
+| Inputs | []string | Yes | Texts to embed (at least one required) |
+
+## Return Value
+
+### EmbedManyResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Embeddings | [][]float64 | Vector embeddings (one per input) |
+| Usage | types.EmbeddingUsage | Token usage information |
+
+## Examples
+
+### Basic Batch Embedding
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.EmbeddingModel("text-embedding-3-small")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    texts := []string{
+        "The cat sat on the mat",
+        "Dogs are loyal companions",
+        "Birds can fly in the sky",
+    }
+
+    result, err := ai.EmbedMany(context.Background(), ai.EmbedManyOptions{
+        Model:  model,
+        Inputs: texts,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
+    for i, emb := range result.Embeddings {
+        fmt.Printf("Text %d: %d dimensions\n", i+1, len(emb))
+    }
+    fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Document Indexing
+
+```go
+// Prepare documents for indexing
+documents := []string{
+    "Introduction to machine learning and AI",
+    "Natural language processing techniques",
+    "Computer vision and image recognition",
+    "Reinforcement learning algorithms",
+    "Deep neural network architectures",
+}
+
+// Batch embed all documents
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  model,
+    Inputs: documents,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Store embeddings in database or vector store
+for i, embedding := range result.Embeddings {
+    fmt.Printf("Indexing document %d with embedding of size %d\n",
+        i, len(embedding))
+    // store(documents[i], embedding)
+}
+```
+
+### Similarity Matrix
+
+```go
+texts := []string{
+    "machine learning",
+    "artificial intelligence",
+    "deep learning",
+    "weather forecast",
+}
+
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  model,
+    Inputs: texts,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Calculate pairwise similarities
+fmt.Println("Similarity Matrix:")
+for i := 0; i < len(result.Embeddings); i++ {
+    for j := 0; j < len(result.Embeddings); j++ {
+        sim, _ := ai.CosineSimilarity(
+            result.Embeddings[i],
+            result.Embeddings[j],
+        )
+        fmt.Printf("%.3f ", sim)
+    }
+    fmt.Println()
+}
+```
+
+### Ranking by Similarity
+
+```go
+// Query
+queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: model,
+    Input: "neural networks",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Candidate documents
+candidates := []string{
+    "Deep learning uses neural networks",
+    "The weather is sunny today",
+    "Convolutional neural networks for images",
+    "Recipe for chocolate cake",
+}
+
+// Batch embed candidates
+candidatesResult, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  model,
+    Inputs: candidates,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Rank by similarity
+indices, scores, err := ai.RankBySimilarity(
+    queryResult.Embedding,
+    candidatesResult.Embeddings,
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Ranked results:")
+for i, idx := range indices {
+    fmt.Printf("%d. %s (score: %.4f)\n", i+1, candidates[idx], scores[i])
+}
+```
+
+### Chunked Processing for Large Datasets
+
+```go
+// Process large dataset in chunks
+documents := loadDocuments() // Assume this loads many documents
+chunkSize := 100
+
+var allEmbeddings [][]float64
+
+for i := 0; i < len(documents); i += chunkSize {
+    end := i + chunkSize
+    if end > len(documents) {
+        end = len(documents)
+    }
+
+    chunk := documents[i:end]
+
+    result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model:  model,
+        Inputs: chunk,
+    })
+    if err != nil {
+        log.Printf("Error embedding chunk %d: %v", i/chunkSize, err)
+        continue
+    }
+
+    allEmbeddings = append(allEmbeddings, result.Embeddings...)
+    fmt.Printf("Processed chunk %d/%d\n",
+        (i/chunkSize)+1,
+        (len(documents)+chunkSize-1)/chunkSize)
+}
+
+fmt.Printf("Total embeddings generated: %d\n", len(allEmbeddings))
+```
+
+### With Different Embedding Dimensions
+
+```go
+// Different models have different dimensions
+providers := []struct {
+    name  string
+    model provider.EmbeddingModel
+}{
+    {"OpenAI Small", openaiSmallModel},
+    {"OpenAI Large", openaiLargeModel},
+    {"Cohere", cohereModel},
+}
+
+texts := []string{"test", "example", "sample"}
+
+for _, p := range providers {
+    result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+        Model:  p.model,
+        Inputs: texts,
+    })
+    if err != nil {
+        log.Printf("Error with %s: %v", p.name, err)
+        continue
+    }
+
+    fmt.Printf("%s: %d dimensions\n", p.name, len(result.Embeddings[0]))
+}
+```
+
+## Error Handling
+
+```go
+result, err := ai.EmbedMany(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "at least one input is required"):
+        log.Println("Inputs slice is empty")
+    case strings.Contains(err.Error(), "batch embedding failed"):
+        log.Println("Batch embedding error:", err)
+    case errors.Is(err, context.DeadlineExceeded):
+        log.Println("Request timed out")
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+
+// Verify we got embeddings for all inputs
+if len(result.Embeddings) != len(opts.Inputs) {
+    log.Printf("Warning: expected %d embeddings, got %d",
+        len(opts.Inputs), len(result.Embeddings))
+}
+```
+
+## See Also
+
+- [Embed](./embed.mdx) - Single text embedding
+- [CosineSimilarity](./cosine-similarity.mdx) - Calculate similarity
+- [Embedding Models Guide](../../03-providers/embedding-models.mdx)
+- [RAG Guide](../../05-retrieval/rag.mdx)

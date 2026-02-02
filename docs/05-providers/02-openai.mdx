@@ -1,0 +1,550 @@
+---
+title: OpenAI Provider
+description: Setup and usage guide for OpenAI models (GPT-4, GPT-5, o1, o3) with Go-AI SDK
+---
+
+# OpenAI Provider
+
+OpenAI provides industry-leading language models including GPT-4o, GPT-5, and reasoning models like o1 and o3. Known for high-quality responses, extensive capabilities, and comprehensive API features.
+
+## Setup
+
+### Installation
+
+The OpenAI provider is included in the Go-AI SDK:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+
+model, err := provider.LanguageModel("gpt-4o")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [platform.openai.com](https://platform.openai.com)
+2. Navigate to API Keys section
+3. Create new secret key
+4. Set environment variable:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+## Available Models
+
+### GPT-4 Series (Latest Generation)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gpt-4o | 128K | $2.50/1M | $10.00/1M | General purpose, multimodal |
+| gpt-4o-mini | 128K | $0.15/1M | $0.60/1M | Fast, cost-effective tasks |
+| gpt-4-turbo | 128K | $10.00/1M | $30.00/1M | Complex tasks, vision |
+| gpt-4 | 8K | $30.00/1M | $60.00/1M | Legacy high-quality |
+
+### GPT-5 Series (Frontier)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gpt-5 | 200K | TBA | TBA | Next-generation reasoning |
+
+### o-Series (Reasoning Models)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| o1 | 200K | $15.00/1M | $60.00/1M | Complex reasoning, math |
+| o1-mini | 128K | $3.00/1M | $12.00/1M | Fast reasoning tasks |
+| o3 | 200K | TBA | TBA | Advanced reasoning (preview) |
+| o3-mini | 128K | TBA | TBA | Efficient reasoning |
+
+### GPT-3.5 Series (Legacy)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gpt-3.5-turbo | 16K | $0.50/1M | $1.50/1M | Simple, fast tasks |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| text-embedding-3-large | 3072 | $0.13/1M | High-quality embeddings |
+| text-embedding-3-small | 1536 | $0.02/1M | Cost-effective embeddings |
+| text-embedding-ada-002 | 1536 | $0.10/1M | Legacy embeddings |
+
+### Image Generation Models
+
+| Model ID | Quality | Speed | Price | Best For |
+|----------|---------|-------|-------|----------|
+| dall-e-3 | Excellent | Medium | $0.040/image | High-quality images |
+| dall-e-2 | Good | Fast | $0.020/image | Quick generations |
+
+### Speech Models
+
+| Model ID | Type | Quality | Price | Best For |
+|----------|------|---------|-------|----------|
+| tts-1 | TTS | Good | $15/1M chars | Fast synthesis |
+| tts-1-hd | TTS | High | $30/1M chars | High-quality voices |
+| whisper-1 | STT | Excellent | $0.006/min | Transcription |
+
+## Provider-Specific Features
+
+### Structured Output (JSON Mode)
+
+OpenAI supports native JSON mode for reliable structured output:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/ai"
+
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]string{"type": "string"},
+        "age":  map[string]string{"type": "number"},
+        "email": map[string]string{"type": "string"},
+    },
+    "required": []string{"name", "age"},
+}
+
+result, err := ai.GenerateObject(model, schema,
+    "Extract person info: John Doe, 30 years old, john@example.com")
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Structured data: %+v\n", result.Object)
+```
+
+### Vision Capabilities
+
+GPT-4o and GPT-4-turbo support image understanding:
+
+```go
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("What's in this image?",
+            ai.WithImageURL("https://example.com/image.jpg"),
+        ),
+    ),
+)
+```
+
+### Function Calling
+
+Define tools that the model can call:
+
+```go
+weatherTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]string{
+                    "type":        "string",
+                    "description": "City name",
+                },
+                "unit": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"celsius", "fahrenheit"},
+                },
+            },
+            "required": []string{"location"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "What's the weather in San Francisco?",
+    ai.WithTools(weatherTool),
+)
+
+if result.ToolCalls != nil {
+    for _, call := range result.ToolCalls {
+        fmt.Printf("Tool: %s, Args: %v\n", call.Function.Name, call.Function.Arguments)
+    }
+}
+```
+
+### Reasoning Models (o1/o3)
+
+o1 and o3 models use extended thinking for complex problems:
+
+```go
+// o1 uses internal reasoning tokens (not visible in response)
+model, err := provider.LanguageModel("o1")
+
+result, err := ai.GenerateText(model,
+    "Solve this complex math problem: Find the derivative of f(x) = x^3 * sin(x)")
+
+fmt.Println(result.Text)
+// Output includes detailed step-by-step reasoning
+```
+
+Note: o1 models do not support:
+- System messages
+- Streaming
+- Temperature settings
+- Function calling (use o1-mini for some tool support)
+
+### Streaming Responses
+
+Stream text generation for real-time output:
+
+```go
+stream, err := ai.StreamText(model, "Write a long story about AI")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+
+if stream.Error() != nil {
+    log.Fatal(stream.Error())
+}
+```
+
+### Response Format
+
+Control output format:
+
+```go
+result, err := ai.GenerateText(model, "Generate a JSON object",
+    ai.WithResponseFormat(ai.ResponseFormat{
+        Type: "json_object",
+    }),
+)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("gpt-4o")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain quantum computing in simple terms")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Chat Conversation
+
+```go
+messages := []ai.Message{
+    ai.SystemMessage("You are a helpful coding assistant"),
+    ai.UserMessage("How do I reverse a string in Go?"),
+}
+
+result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+
+// Continue conversation
+messages = append(messages,
+    ai.AssistantMessage(result.Text),
+    ai.UserMessage("Can you make it more efficient?"),
+)
+
+result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+```
+
+### Image Generation with DALL-E
+
+```go
+imageModel, err := provider.ImageModel("dall-e-3")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(imageModel, "A futuristic city with flying cars",
+    ai.WithImageSize("1024x1024"),
+    ai.WithImageQuality("hd"),
+    ai.WithImageStyle("vivid"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Image URL: %s\n", result.Images[0].URL)
+```
+
+### Text Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("text-embedding-3-large")
+if err != nil {
+    log.Fatal(err)
+}
+
+texts := []string{
+    "The quick brown fox",
+    "jumps over the lazy dog",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, embedding := range embeddings {
+    fmt.Printf("Text %d: %d dimensions\n", i, len(embedding))
+}
+```
+
+### Speech Synthesis
+
+```go
+ttsModel, err := provider.SpeechModel("tts-1-hd")
+if err != nil {
+    log.Fatal(err)
+}
+
+audio, err := ai.GenerateSpeech(ttsModel, "Hello, welcome to Go-AI SDK",
+    ai.WithVoice("alloy"),
+    ai.WithSpeechFormat("mp3"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Save audio file
+os.WriteFile("output.mp3", audio, 0644)
+```
+
+### Transcription with Whisper
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("whisper-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+audioFile, err := os.Open("audio.mp3")
+if err != nil {
+    log.Fatal(err)
+}
+defer audioFile.Close()
+
+result, err := ai.Transcribe(transcriptionModel, audioFile,
+    ai.WithTranscriptionLanguage("en"),
+    ai.WithTranscriptionPrompt("Technical discussion about AI"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+## Advanced Configuration
+
+### Custom HTTP Client
+
+```go
+import "net/http"
+
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    HTTPClient: &http.Client{
+        Timeout: time.Second * 120,
+        Transport: &http.Transport{
+            MaxIdleConns:       10,
+            IdleConnTimeout:    90 * time.Second,
+            DisableCompression: false,
+        },
+    },
+})
+```
+
+### Custom Base URL (for proxies)
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("OPENAI_API_KEY"),
+    BaseURL: "https://your-proxy.com/v1",
+})
+```
+
+### Organization and Project IDs
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:         os.Getenv("OPENAI_API_KEY"),
+    OrganizationID: "org-xxxxx",
+    ProjectID:      "proj-xxxxx",
+})
+```
+
+## Error Handling
+
+### Common Errors
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if openaiErr, ok := err.(*openai.Error); ok {
+        switch openaiErr.Code {
+        case "invalid_api_key":
+            log.Fatal("Invalid API key")
+        case "model_not_found":
+            log.Fatal("Model not found")
+        case "context_length_exceeded":
+            log.Fatal("Prompt too long")
+        case "rate_limit_exceeded":
+            log.Println("Rate limited, retrying...")
+            time.Sleep(time.Second * 5)
+        case "insufficient_quota":
+            log.Fatal("Insufficient quota")
+        default:
+            log.Printf("OpenAI error: %s - %s", openaiErr.Code, openaiErr.Message)
+        }
+    }
+    log.Fatal(err)
+}
+```
+
+### Rate Limit Handling
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/ai"
+
+func generateWithBackoff(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+    maxRetries := 3
+    baseDelay := time.Second
+
+    for i := 0; i < maxRetries; i++ {
+        result, err := ai.GenerateText(model, prompt)
+        if err == nil {
+            return result, nil
+        }
+
+        if errors.Is(err, ai.ErrRateLimitExceeded) {
+            delay := baseDelay * time.Duration(math.Pow(2, float64(i)))
+            log.Printf("Rate limited, waiting %v", delay)
+            time.Sleep(delay)
+            continue
+        }
+
+        return nil, err
+    }
+
+    return nil, fmt.Errorf("max retries exceeded")
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use `gpt-4o` for general tasks with vision support
+   - Use `gpt-4o-mini` for cost-effective, fast responses
+   - Use `o1` for complex reasoning and math problems
+   - Use `gpt-3.5-turbo` for simple, high-volume tasks
+
+2. **Cost Optimization**
+   - Monitor token usage with `result.Usage`
+   - Use shorter system messages
+   - Implement response caching for repeated queries
+   - Use `max_tokens` to limit response length
+
+3. **Performance**
+   - Use streaming for long responses
+   - Implement connection pooling for high-volume apps
+   - Batch embedding requests (up to 2048 inputs)
+   - Use `gpt-4o-mini` for latency-sensitive applications
+
+4. **Error Handling**
+   - Always implement retry logic for rate limits
+   - Handle context length errors gracefully
+   - Log API errors for debugging
+   - Implement fallback models
+
+5. **Security**
+   - Never expose API keys in client code
+   - Use environment variables for credentials
+   - Implement rate limiting on your API
+   - Validate user inputs before sending
+
+## Rate Limits & Pricing
+
+### Rate Limits (Tier 3)
+
+| Model | RPM | TPM | RPD |
+|-------|-----|-----|-----|
+| gpt-4o | 5,000 | 800,000 | 10,000 |
+| gpt-4o-mini | 10,000 | 2,000,000 | 10,000 |
+| o1 | 500 | 100,000 | 5,000 |
+| gpt-3.5-turbo | 10,000 | 2,000,000 | 10,000 |
+
+RPM = Requests per minute, TPM = Tokens per minute, RPD = Requests per day
+
+### Cost Estimation
+
+```go
+func estimateCost(promptTokens, completionTokens int, model string) float64 {
+    prices := map[string][2]float64{
+        "gpt-4o":         {2.50 / 1_000_000, 10.00 / 1_000_000},
+        "gpt-4o-mini":    {0.15 / 1_000_000, 0.60 / 1_000_000},
+        "o1":             {15.00 / 1_000_000, 60.00 / 1_000_000},
+        "gpt-3.5-turbo":  {0.50 / 1_000_000, 1.50 / 1_000_000},
+    }
+
+    price, ok := prices[model]
+    if !ok {
+        return 0
+    }
+
+    return float64(promptTokens)*price[0] + float64(completionTokens)*price[1]
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Core Concepts: Language Models](../02-core-concepts/language-models.mdx)
+- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
+- [Azure OpenAI Provider](05-azure.mdx) - For enterprise deployment

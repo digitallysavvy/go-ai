@@ -1,0 +1,236 @@
+---
+title: Message Types
+description: API reference for message types
+---
+
+# Message Types
+
+Types for representing messages in conversations between users, assistants, and tools.
+
+## MessageRole
+
+```go
+type MessageRole string
+
+const (
+    RoleSystem    MessageRole = "system"
+    RoleUser      MessageRole = "user"
+    RoleAssistant MessageRole = "assistant"
+    RoleTool      MessageRole = "tool"
+)
+```
+
+Message roles define who is speaking in a conversation:
+- `RoleSystem`: System instructions that guide model behavior
+- `RoleUser`: User input or queries
+- `RoleAssistant`: Model-generated responses
+- `RoleTool`: Tool execution results
+
+## Message
+
+```go
+type Message struct {
+    Role    MessageRole   `json:"role"`
+    Content []ContentPart `json:"content"`
+    Name    string        `json:"name,omitempty"`
+}
+```
+
+Represents a single message in a conversation.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Role | MessageRole | Role of the message sender |
+| Content | []ContentPart | Content parts (text, images, tool results) |
+| Name | string | Optional sender name |
+
+## ContentPart Interface
+
+```go
+type ContentPart interface {
+    ContentType() string
+}
+```
+
+Interface for different types of message content.
+
+## TextContent
+
+```go
+type TextContent struct {
+    Text string `json:"text"`
+}
+```
+
+Text content in a message.
+
+## ReasoningContent
+
+```go
+type ReasoningContent struct {
+    Text string `json:"text"`
+}
+```
+
+Reasoning or thinking content (for models that expose reasoning, like OpenAI o1).
+
+## ImageContent
+
+```go
+type ImageContent struct {
+    Image    []byte `json:"image"`
+    MimeType string `json:"mimeType"`
+    URL      string `json:"url,omitempty"`
+}
+```
+
+Image content in a message.
+
+## FileContent
+
+```go
+type FileContent struct {
+    Data     []byte `json:"data"`
+    MimeType string `json:"mimeType"`
+    Filename string `json:"filename,omitempty"`
+}
+```
+
+File attachment in a message.
+
+## ToolResultContent
+
+```go
+type ToolResultContent struct {
+    ToolCallID string      `json:"toolCallId"`
+    ToolName   string      `json:"toolName"`
+    Result     interface{} `json:"result"`
+    Error      string      `json:"error,omitempty"`
+}
+```
+
+Tool execution result in a message.
+
+## Prompt
+
+```go
+type Prompt struct {
+    Messages []Message
+    System   string
+    Text     string
+}
+```
+
+Represents a prompt that can be either a simple string or a list of messages.
+
+## Examples
+
+### User Message
+
+```go
+package main
+
+import (
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func main() {
+    message := types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Hello, how are you?"},
+        },
+    }
+}
+```
+
+### Assistant Message
+
+```go
+message := types.Message{
+    Role: types.RoleAssistant,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "I'm doing well, thank you!"},
+    },
+}
+```
+
+### Multi-turn Conversation
+
+```go
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What is the capital of France?"},
+        },
+    },
+    {
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "The capital of France is Paris."},
+        },
+    },
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What is its population?"},
+        },
+    },
+}
+```
+
+### Message with Image
+
+```go
+imageData, _ := os.ReadFile("image.jpg")
+
+message := types.Message{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "What's in this image?"},
+        types.ImageContent{
+            Image:    imageData,
+            MimeType: "image/jpeg",
+        },
+    },
+}
+```
+
+### Tool Result Message
+
+```go
+message := types.Message{
+    Role: types.RoleTool,
+    Content: []types.ContentPart{
+        types.ToolResultContent{
+            ToolCallID: "call_abc123",
+            ToolName:   "get_weather",
+            Result: map[string]interface{}{
+                "temperature": 72,
+                "condition":   "sunny",
+            },
+        },
+    },
+}
+```
+
+### System Message
+
+```go
+message := types.Message{
+    Role: types.RoleSystem,
+    Content: []types.ContentPart{
+        types.TextContent{
+            Text: "You are a helpful assistant that answers questions concisely.",
+        },
+    },
+}
+```
+
+## See Also
+
+- [Tool Types](./tools.mdx) - Tool-related types
+- [GenerateText](../ai/generate-text.mdx) - Using messages for generation

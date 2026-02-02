@@ -1,0 +1,217 @@
+---
+title: Groq Provider
+description: Setup and usage guide for Groq ultra-fast LPU inference with Go-AI SDK
+---
+
+# Groq Provider
+
+Groq provides the fastest AI inference in the world using custom Language Processing Units (LPUs). Offers speeds up to 10x faster than traditional GPUs, perfect for latency-sensitive applications.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Groq uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("GROQ_API_KEY"),
+    BaseURL: "https://api.groq.com/openai/v1",
+})
+
+model, err := provider.LanguageModel("llama-3.3-70b-versatile")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [console.groq.com](https://console.groq.com)
+2. Create API key
+3. Set environment variable:
+
+```bash
+export GROQ_API_KEY=gsk_...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Tokens/Sec | Best For |
+|----------|---------|-----------|----------|
+| llama-3.3-70b-versatile | 128K | 300+ | Best balance |
+| llama-3.2-90b-vision-preview | 128K | 250+ | Multimodal |
+| llama-3.1-70b-versatile | 128K | 300+ | General purpose |
+| mixtral-8x7b-32768 | 32K | 500+ | Very fast |
+| gemma2-9b-it | 8K | 800+ | Ultra-fast |
+
+All models FREE in public beta with rate limits.
+
+## Provider-Specific Features
+
+### Ultra-Fast Streaming
+
+Groq excels at real-time streaming:
+
+```go
+stream, err := ai.StreamText(model, "Write a story")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+// Tokens arrive at 300-800 tokens/second
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+### Tool Use
+
+Function calling with high-speed inference:
+
+```go
+tools := []ai.Tool{
+    {
+        Type: "function",
+        Function: ai.FunctionDefinition{
+            Name: "calculate",
+            Description: "Perform calculation",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "expression": map[string]string{"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "What is 234 * 567?",
+    ai.WithTools(tools...),
+)
+```
+
+### JSON Mode
+
+```go
+result, err := ai.GenerateText(model,
+    "Extract structured data from: John, age 30",
+    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
+)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("GROQ_API_KEY"),
+        BaseURL: "https://api.groq.com/openai/v1",
+    })
+
+    model, err := provider.LanguageModel("llama-3.3-70b-versatile")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    start := time.Now()
+    result, err := ai.GenerateText(model, "Explain Groq LPU technology")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    elapsed := time.Since(start)
+    fmt.Println(result.Text)
+    fmt.Printf("\nCompleted in %v (%.0f tokens/sec)\n",
+        elapsed,
+        float64(result.Usage.CompletionTokens)/elapsed.Seconds())
+}
+```
+
+### Real-Time Chat Application
+
+```go
+func streamChat(model ai.LanguageModel, message string) {
+    stream, err := ai.StreamText(model, message)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer stream.Close()
+
+    // Ultra-fast streaming for real-time UX
+    for chunk := range stream.TextChannel() {
+        fmt.Print(chunk)
+        // No perceptible delay between tokens
+    }
+    fmt.Println()
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use llama-3.3-70b for best quality
+   - Use mixtral-8x7b for speed
+   - Use gemma2-9b for ultra-fast responses
+
+2. **Leverage Speed**
+   - Use streaming for real-time UX
+   - Build interactive applications
+   - Enable instant feedback loops
+
+3. **Cost Management**
+   - Free during beta period
+   - Monitor rate limits
+   - Plan for future pricing
+
+## Rate Limits
+
+### Free Tier
+
+| Model | RPM | RPD | Tokens/Min |
+|-------|-----|-----|------------|
+| Llama 3.3 70B | 30 | 14,400 | 6,000 |
+| Mixtral 8x7B | 30 | 14,400 | 5,000 |
+| Gemma 9B | 30 | 14,400 | 15,000 |
+
+## Error Handling
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if strings.Contains(err.Error(), "rate_limit") {
+        log.Println("Rate limited - wait before retry")
+        time.Sleep(time.Second * 2)
+    }
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Groq Documentation](https://console.groq.com/docs)

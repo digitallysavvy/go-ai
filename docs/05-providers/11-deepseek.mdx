@@ -1,0 +1,160 @@
+---
+title: DeepSeek Provider
+description: Setup and usage guide for DeepSeek reasoning models with Go-AI SDK
+---
+
+# DeepSeek Provider
+
+DeepSeek provides advanced reasoning models with exceptional performance at competitive prices. Known for strong math, coding, and logical reasoning capabilities.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // DeepSeek uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
+    BaseURL: "https://api.deepseek.com/v1",
+})
+
+model, err := provider.LanguageModel("deepseek-chat")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [platform.deepseek.com](https://platform.deepseek.com)
+2. Create API key
+3. Set environment variable:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| deepseek-chat | 64K | $0.27/1M | $1.10/1M | General purpose |
+| deepseek-reasoner | 64K | $0.55/1M | $2.19/1M | Complex reasoning |
+| deepseek-coder | 128K | $0.14/1M | $0.28/1M | Code generation |
+
+## Provider-Specific Features
+
+### Reasoning Mode
+
+Extended thinking for complex problems:
+
+```go
+model, err := provider.LanguageModel("deepseek-reasoner")
+
+result, err := ai.GenerateText(model,
+    "Solve this logic puzzle: Three friends...",
+)
+
+// Response includes reasoning process
+if result.ReasoningContent != "" {
+    fmt.Println("Reasoning:", result.ReasoningContent)
+}
+```
+
+### Code Generation
+
+Optimized for programming tasks:
+
+```go
+codeModel, err := provider.LanguageModel("deepseek-coder")
+
+result, err := ai.GenerateText(codeModel,
+    "Implement a thread-safe LRU cache in Go",
+)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
+        BaseURL: "https://api.deepseek.com/v1",
+    })
+
+    model, err := provider.LanguageModel("deepseek-chat")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain gradient descent")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Complex Reasoning
+
+```go
+reasoner, err := provider.LanguageModel("deepseek-reasoner")
+
+result, err := ai.GenerateText(reasoner,
+    "A farmer has 100 feet of fence. What's the maximum area he can enclose?",
+)
+
+fmt.Println("Reasoning:", result.ReasoningContent)
+fmt.Println("Answer:", result.Text)
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use deepseek-chat for general tasks
+   - Use deepseek-reasoner for math/logic problems
+   - Use deepseek-coder for programming
+
+2. **Cost Optimization**
+   - Significantly cheaper than GPT-4
+   - Great for high-volume applications
+   - Excellent price-performance ratio
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+| Model | RPM | Tokens/Min |
+|-------|-----|------------|
+| DeepSeek Chat | 60 | 200K |
+| DeepSeek Reasoner | 30 | 100K |
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [DeepSeek Documentation](https://platform.deepseek.com/docs)

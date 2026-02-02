@@ -1,0 +1,234 @@
+---
+title: Middleware Interface
+description: API reference for middleware interfaces
+---
+
+# Middleware Interface
+
+Interfaces for implementing custom middleware to intercept and modify model behavior.
+
+## LanguageModelMiddleware
+
+```go
+type LanguageModelMiddleware struct {
+    WrapGenerate func(next GenerateFunc) GenerateFunc
+    WrapStream   func(next StreamFunc) StreamFunc
+}
+```
+
+Middleware for language models that can intercept both generation and streaming calls.
+
+### GenerateFunc
+
+```go
+type GenerateFunc func(
+    ctx context.Context,
+    opts *provider.GenerateOptions,
+) (*types.GenerateResult, error)
+```
+
+Function signature for generation calls.
+
+### StreamFunc
+
+```go
+type StreamFunc func(
+    ctx context.Context,
+    opts *provider.GenerateOptions,
+) (provider.TextStream, error)
+```
+
+Function signature for streaming calls.
+
+## EmbeddingModelMiddleware
+
+```go
+type EmbeddingModelMiddleware struct {
+    WrapEmbed     func(next EmbedFunc) EmbedFunc
+    WrapEmbedMany func(next EmbedManyFunc) EmbedManyFunc
+}
+```
+
+Middleware for embedding models.
+
+## Examples
+
+### Logging Middleware
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func LoggingMiddleware() *middleware.LanguageModelMiddleware {
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+                start := time.Now()
+                log.Printf("Starting generation...")
+
+                result, err := next(ctx, opts)
+
+                duration := time.Since(start)
+                if err != nil {
+                    log.Printf("Generation failed after %v: %v", duration, err)
+                } else {
+                    log.Printf("Generation completed in %v (%d tokens)",
+                        duration, result.Usage.TotalTokens)
+                }
+
+                return result, err
+            }
+        },
+    }
+}
+```
+
+### Retry Middleware
+
+```go
+func RetryMiddleware(maxRetries int) *middleware.LanguageModelMiddleware {
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+                var result *types.GenerateResult
+                var err error
+
+                for attempt := 0; attempt < maxRetries; attempt++ {
+                    result, err = next(ctx, opts)
+                    if err == nil {
+                        return result, nil
+                    }
+
+                    if !isRetryable(err) {
+                        return nil, err
+                    }
+
+                    log.Printf("Retry attempt %d/%d", attempt+1, maxRetries)
+                    time.Sleep(time.Duration(attempt+1) * time.Second)
+                }
+
+                return nil, fmt.Errorf("max retries exceeded: %w", err)
+            }
+        },
+    }
+}
+
+func isRetryable(err error) bool {
+    return strings.Contains(err.Error(), "rate limit") ||
+        strings.Contains(err.Error(), "timeout")
+}
+```
+
+### Caching Middleware
+
+```go
+type CacheMiddleware struct {
+    cache map[string]*types.GenerateResult
+    mu    sync.RWMutex
+}
+
+func NewCacheMiddleware() *middleware.LanguageModelMiddleware {
+    cm := &CacheMiddleware{
+        cache: make(map[string]*types.GenerateResult),
+    }
+
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+                // Generate cache key from prompt
+                key := generateCacheKey(opts)
+
+                // Check cache
+                cm.mu.RLock()
+                if cached, ok := cm.cache[key]; ok {
+                    cm.mu.RUnlock()
+                    log.Println("Cache hit!")
+                    return cached, nil
+                }
+                cm.mu.RUnlock()
+
+                // Cache miss - call next
+                result, err := next(ctx, opts)
+                if err != nil {
+                    return nil, err
+                }
+
+                // Store in cache
+                cm.mu.Lock()
+                cm.cache[key] = result
+                cm.mu.Unlock()
+
+                return result, nil
+            }
+        },
+    }
+}
+```
+
+### Token Counter Middleware
+
+```go
+type TokenCounter struct {
+    totalTokens int
+    mu          sync.Mutex
+}
+
+func (tc *TokenCounter) Middleware() *middleware.LanguageModelMiddleware {
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+                result, err := next(ctx, opts)
+                if err != nil {
+                    return nil, err
+                }
+
+                tc.mu.Lock()
+                tc.totalTokens += result.Usage.TotalTokens
+                tc.mu.Unlock()
+
+                return result, nil
+            }
+        },
+    }
+}
+
+func (tc *TokenCounter) Total() int {
+    tc.mu.Lock()
+    defer tc.mu.Unlock()
+    return tc.totalTokens
+}
+```
+
+### Rate Limiting Middleware
+
+```go
+func RateLimitMiddleware(requestsPerMinute int) *middleware.LanguageModelMiddleware {
+    limiter := rate.NewLimiter(rate.Every(time.Minute/time.Duration(requestsPerMinute)), 1)
+
+    return &middleware.LanguageModelMiddleware{
+        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+                if err := limiter.Wait(ctx); err != nil {
+                    return nil, fmt.Errorf("rate limit wait failed: %w", err)
+                }
+
+                return next(ctx, opts)
+            }
+        },
+    }
+}
+```
+
+## See Also
+
+- [WrapLanguageModel](./wrap-language-model.mdx) - Apply middleware to models
+- [Built-in Middleware](./built-in-middleware.mdx) - Available middleware catalog

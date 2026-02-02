@@ -1,0 +1,150 @@
+---
+title: EmbeddingModel Interface
+description: API reference for EmbeddingModel interface
+---
+
+# EmbeddingModel Interface
+
+Interface that all embedding model implementations must satisfy.
+
+## Interface Definition
+
+```go
+type EmbeddingModel interface {
+    // Metadata
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    // Capability methods
+    MaxEmbeddingsPerCall() int
+    SupportsParallelCalls() bool
+
+    // Embedding methods
+    DoEmbed(ctx context.Context, input string) (*types.EmbeddingResult, error)
+    DoEmbedMany(ctx context.Context, inputs []string) (*types.EmbeddingsResult, error)
+}
+```
+
+## Methods
+
+### Metadata Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| SpecificationVersion() | string | Returns specification version |
+| Provider() | string | Provider name (e.g., "openai", "cohere") |
+| ModelID() | string | Model ID (e.g., "text-embedding-3-small") |
+
+### Capability Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| MaxEmbeddingsPerCall() | int | Maximum embeddings per API call (0 for unlimited) |
+| SupportsParallelCalls() | bool | Whether model supports parallel calls for batching |
+
+### Embedding Methods
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| DoEmbed() | ctx, string | *types.EmbeddingResult, error | Generate single embedding |
+| DoEmbedMany() | ctx, []string | *types.EmbeddingsResult, error | Generate multiple embeddings |
+
+## Examples
+
+### Using an Embedding Model
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Get an embedding model
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.EmbeddingModel("text-embedding-3-small")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Check capabilities
+    fmt.Printf("Model: %s\n", model.ModelID())
+    fmt.Printf("Provider: %s\n", model.Provider())
+    fmt.Printf("Max embeddings per call: %d\n", model.MaxEmbeddingsPerCall())
+    fmt.Printf("Supports parallel calls: %v\n", model.SupportsParallelCalls())
+
+    // Generate embedding
+    result, err := model.DoEmbed(context.Background(), "Hello, world!")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Embedding dimensions: %d\n", len(result.Embedding))
+}
+```
+
+### Batch Embeddings
+
+```go
+texts := []string{
+    "First text",
+    "Second text",
+    "Third text",
+}
+
+result, err := model.DoEmbedMany(ctx, texts)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
+for i, emb := range result.Embeddings {
+    fmt.Printf("Text %d: %d dimensions\n", i+1, len(emb))
+}
+```
+
+### Respecting Max Embeddings Limit
+
+```go
+func embedLargeDataset(model provider.EmbeddingModel, texts []string) ([][]float64, error) {
+    maxPerCall := model.MaxEmbeddingsPerCall()
+    if maxPerCall <= 0 {
+        maxPerCall = len(texts) // Unlimited
+    }
+
+    var allEmbeddings [][]float64
+
+    for i := 0; i < len(texts); i += maxPerCall {
+        end := i + maxPerCall
+        if end > len(texts) {
+            end = len(texts)
+        }
+
+        batch := texts[i:end]
+        result, err := model.DoEmbedMany(ctx, batch)
+        if err != nil {
+            return nil, err
+        }
+
+        allEmbeddings = append(allEmbeddings, result.Embeddings...)
+    }
+
+    return allEmbeddings, nil
+}
+```
+
+## See Also
+
+- [LanguageModel](./language-model.mdx) - Language model interface
+- [Embed](../ai/embed.mdx) - High-level embedding function
+- [EmbedMany](../ai/embed-many.mdx) - Batch embedding function
+- [Custom Provider](./custom-provider.mdx) - Implementing custom providers

@@ -1,0 +1,411 @@
+# [Package/Type Name]
+
+<!--
+  INSTRUCTIONS:
+  1. Replace [Package/Type Name] with the actual name (e.g., "Client", "Request")
+  2. Provide a brief 1-2 sentence description
+  3. Fill in all sections below
+  4. Include all public methods/functions
+  5. Provide complete, runnable examples
+  6. Document all parameters and return values
+  7. Include error cases and handling
+  8. Link to related types and guides
+-->
+
+Brief description of what this package/type does and its primary purpose.
+
+## Package
+
+```go
+import "github.com/teilomillet/go-ai/[package-path]"
+```
+
+## Overview
+
+Detailed explanation of:
+- What this type/package represents
+- Its role in the SDK architecture
+- When and why to use it
+- Key concepts developers should understand
+
+## Type Definition
+
+```go
+type TypeName struct {
+    // Field1 is a description of what this field does
+    Field1 string
+
+    // Field2 is a description of what this field does
+    Field2 int
+
+    // unexported fields...
+}
+```
+
+## Constructor
+
+### NewTypeName
+
+```go
+func NewTypeName(param1 Type1, options ...Option) *TypeName
+```
+
+Creates a new instance of TypeName.
+
+**Parameters:**
+- `param1` (Type1): Description of what this parameter does
+- `options` (variadic Option): Optional configuration functions
+
+**Returns:**
+- `*TypeName`: A configured instance
+
+**Example:**
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai/[package]"
+)
+
+func main() {
+    instance := package.NewTypeName(
+        "parameter-value",
+        package.WithOption1("value1"),
+        package.WithOption2(42),
+    )
+
+    fmt.Printf("Created: %+v\n", instance)
+}
+```
+
+## Methods
+
+### MethodName
+
+```go
+func (t *TypeName) MethodName(ctx context.Context, param1 Type1) (ReturnType, error)
+```
+
+Brief description of what this method does.
+
+**Parameters:**
+- `ctx` (context.Context): Context for cancellation and timeouts
+- `param1` (Type1): Description of parameter
+
+**Returns:**
+- `ReturnType`: Description of return value
+- `error`: Error if operation fails
+
+**Errors:**
+- `ErrInvalidInput`: Returned when input validation fails
+- `ErrTimeout`: Returned when operation exceeds deadline
+- `ErrNotFound`: Returned when resource doesn't exist
+
+**Example:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/teilomillet/go-ai/[package]"
+)
+
+func main() {
+    instance := package.NewTypeName("config-value")
+
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    result, err := instance.MethodName(ctx, "input-value")
+    if err != nil {
+        log.Fatalf("Method failed: %v", err)
+    }
+
+    fmt.Printf("Result: %+v\n", result)
+}
+```
+
+### AnotherMethod
+
+```go
+func (t *TypeName) AnotherMethod(param1 Type1, param2 Type2) ReturnType
+```
+
+Description of this method.
+
+**Parameters:**
+- `param1` (Type1): Description
+- `param2` (Type2): Description
+
+**Returns:**
+- `ReturnType`: Description
+
+**Example:**
+
+```go
+result := instance.AnotherMethod("value1", 42)
+fmt.Println(result)
+```
+
+## Options
+
+Configuration options for creating instances.
+
+### WithOption1
+
+```go
+func WithOption1(value string) Option
+```
+
+Sets the option1 value.
+
+**Parameters:**
+- `value` (string): The value to set
+
+**Example:**
+
+```go
+instance := package.NewTypeName(
+    "param",
+    package.WithOption1("custom-value"),
+)
+```
+
+### WithOption2
+
+```go
+func WithOption2(value int) Option
+```
+
+Sets the option2 value.
+
+**Parameters:**
+- `value` (int): The value to set (must be positive)
+
+**Example:**
+
+```go
+instance := package.NewTypeName(
+    "param",
+    package.WithOption2(100),
+)
+```
+
+## Fields
+
+### Field1
+
+```go
+Field1 string
+```
+
+Description of what this field stores and how it's used.
+
+**Type:** `string`
+
+**Access:** Read/Write
+
+**Example:**
+
+```go
+instance.Field1 = "new-value"
+fmt.Println(instance.Field1)
+```
+
+### Field2
+
+```go
+Field2 int
+```
+
+Description of this field.
+
+**Type:** `int`
+
+**Access:** Read-only (set via options)
+
+**Default:** `0`
+
+## Complete Example
+
+Full working example demonstrating typical usage:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/teilomillet/go-ai/[package]"
+)
+
+func main() {
+    // Create instance with options
+    instance := package.NewTypeName(
+        "configuration-value",
+        package.WithOption1("custom"),
+        package.WithOption2(100),
+    )
+
+    // Set up context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    // Use primary method
+    result, err := instance.MethodName(ctx, "input")
+    if err != nil {
+        log.Fatalf("Operation failed: %v", err)
+    }
+
+    // Process result
+    fmt.Printf("Success: %+v\n", result)
+
+    // Use secondary methods
+    additional := instance.AnotherMethod("value", 42)
+    fmt.Printf("Additional: %+v\n", additional)
+}
+```
+
+## Error Handling
+
+### Common Errors
+
+#### ErrInvalidInput
+
+Occurs when input validation fails.
+
+**Cause:** Invalid parameter values or missing required fields
+
+**Example:**
+
+```go
+result, err := instance.MethodName(ctx, "")
+if err != nil {
+    if errors.Is(err, package.ErrInvalidInput) {
+        log.Println("Input validation failed")
+        // Correct the input and retry
+    }
+}
+```
+
+#### ErrTimeout
+
+Occurs when operation exceeds context deadline.
+
+**Cause:** Operation takes longer than allowed timeout
+
+**Example:**
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result, err := instance.MethodName(ctx, input)
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Println("Operation timed out")
+        // Increase timeout or optimize operation
+    }
+}
+```
+
+## Best Practices
+
+1. **Always use context**: Pass context to methods that support it for proper cancellation and timeout handling
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+result, err := instance.MethodName(ctx, input)
+```
+
+2. **Check errors**: Always check and handle errors appropriately
+
+```go
+if err != nil {
+    return fmt.Errorf("operation failed: %w", err)
+}
+```
+
+3. **Use options pattern**: Configure instances with functional options for flexibility
+
+```go
+instance := package.NewTypeName(
+    required,
+    package.WithOption1(value1),
+    package.WithOption2(value2),
+)
+```
+
+4. **Resource cleanup**: Ensure proper cleanup of resources if applicable
+
+```go
+defer instance.Close()
+```
+
+## Performance Considerations
+
+- List any performance characteristics developers should be aware of
+- Memory usage patterns
+- Concurrency safety (thread-safe or not)
+- Recommended usage patterns for high-performance scenarios
+
+Example:
+- This type is safe for concurrent use by multiple goroutines
+- Consider pooling instances if creating many short-lived instances
+- Methods are blocking; use goroutines for parallel operations
+
+## Common Pitfalls
+
+1. **Pitfall name**: Description of common mistake
+
+**Wrong:**
+```go
+// Incorrect usage
+instance.MethodName(nil, value) // Don't pass nil context
+```
+
+**Correct:**
+```go
+// Correct usage
+ctx := context.Background()
+instance.MethodName(ctx, value)
+```
+
+2. **Another pitfall**: Description
+
+## Related Types
+
+- [RelatedType1](./related-type-1.mdx): Brief description of relationship
+- [RelatedType2](./related-type-2.mdx): Brief description of relationship
+
+## Related Documentation
+
+- [User Guide: Topic](../guides/topic.mdx): How to use this in practice
+- [Troubleshooting: Issues](../troubleshooting/issues.mdx): Common problems
+- [Examples: Use Cases](../examples/use-cases.mdx): Real-world examples
+
+## Version History
+
+> **Added in:** v1.0.0
+
+> **Changed in v1.2.0:** Added new methods and options
+
+> **Deprecated in v2.0.0:** Use [NewType](./new-type.mdx) instead
+
+## See Also
+
+- [Package Documentation](https://pkg.go.dev/github.com/teilomillet/go-ai/[package])
+- [Source Code](https://github.com/teilomillet/go-ai/tree/main/[package])

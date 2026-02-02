@@ -1,0 +1,693 @@
+---
+title: Rate Limit Issues
+description: Handling rate limiting and quota exhaustion in Go AI SDK
+---
+
+# Rate Limit Issues
+
+This guide covers how to handle rate limiting errors from AI providers and implement effective rate limiting strategies.
+
+## Understanding Rate Limits
+
+AI providers enforce rate limits to prevent abuse and ensure fair resource allocation:
+
+- **RPM (Requests Per Minute)**: Maximum API calls per minute
+- **TPM (Tokens Per Minute)**: Maximum tokens processed per minute
+- **TPD (Tokens Per Day)**: Maximum tokens processed per day
+- **Concurrent Requests**: Maximum simultaneous requests
+
+## Common Rate Limit Errors
+
+### Error: "Rate Limit Exceeded"
+
+**Symptoms:**
+```
+Error: Rate limit exceeded
+Status Code: 429
+X-RateLimit-Limit: 3500
+X-RateLimit-Remaining: 0
+Retry-After: 60
+```
+
+**Cause:**
+Exceeded the provider's rate limit for requests or tokens.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func generateWithRateLimitHandling(ctx context.Context, model interface{}, prompt string) (string, error) {
+    maxRetries := 3
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            log.Printf("Retry attempt %d/%d", attempt, maxRetries)
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+
+        if err == nil {
+            return result.Text, nil
+        }
+
+        lastErr = err
+
+        // Check if it's a rate limit error
+        var rateLimitErr *providererrors.RateLimitError
+        if errors.As(err, &rateLimitErr) {
+            log.Printf("Rate limit hit for %s", rateLimitErr.Provider)
+
+            // Use Retry-After header if provided
+            if rateLimitErr.RetryAfterSeconds != nil {
+                waitDuration := time.Duration(*rateLimitErr.RetryAfterSeconds) * time.Second
+                log.Printf("Waiting %v before retry (from Retry-After header)...", waitDuration)
+
+                select {
+                case <-time.After(waitDuration):
+                    continue
+                case <-ctx.Done():
+                    return "", ctx.Err()
+                }
+            }
+
+            // Default exponential backoff if no Retry-After
+            backoff := time.Duration(1<<uint(attempt)) * time.Second
+            log.Printf("Waiting %v before retry...", backoff)
+
+            select {
+            case <-time.After(backoff):
+                continue
+            case <-ctx.Done():
+                return "", ctx.Err()
+            }
+        }
+
+        // Not a rate limit error, don't retry
+        return "", err
+    }
+
+    return "", fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    text, err := generateWithRateLimitHandling(ctx, model, "Explain quantum computing")
+    if err != nil {
+        log.Fatalf("Failed: %v", err)
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Implementing Client-Side Rate Limiting
+
+### Token Bucket Rate Limiter
+
+Use Go's `golang.org/x/time/rate` package to prevent hitting rate limits:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "golang.org/x/time/rate"
+)
+
+// RateLimitedGenerator wraps AI generation with rate limiting
+type RateLimitedGenerator struct {
+    model   interface{}
+    limiter *rate.Limiter
+}
+
+func NewRateLimitedGenerator(model interface{}, requestsPerMinute float64) *RateLimitedGenerator {
+    // Convert RPM to requests per second
+    rps := requestsPerMinute / 60.0
+
+    return &RateLimitedGenerator{
+        model:   model,
+        limiter: rate.NewLimiter(rate.Limit(rps), 1), // burst of 1
+    }
+}
+
+func (g *RateLimitedGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+    // Wait for rate limiter to allow request
+    if err := g.limiter.Wait(ctx); err != nil {
+        return "", fmt.Errorf("rate limiter error: %w", err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  g.model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Limit to 50 requests per minute
+    generator := NewRateLimitedGenerator(model, 50)
+
+    // Make multiple requests - they'll be automatically rate limited
+    for i := 0; i < 10; i++ {
+        text, err := generator.Generate(ctx, fmt.Sprintf("Request %d: Say hello", i))
+        if err != nil {
+            log.Printf("Request %d failed: %v", i, err)
+            continue
+        }
+        fmt.Printf("Request %d: %s\n", i, text)
+    }
+}
+```
+
+### Token-Based Rate Limiting
+
+Track token usage to stay within TPM limits:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// TokenBucket tracks token usage and enforces TPM limits
+type TokenBucket struct {
+    maxTokensPerMinute int
+    tokens             int
+    lastRefill         time.Time
+    mu                 sync.Mutex
+}
+
+func NewTokenBucket(maxTokensPerMinute int) *TokenBucket {
+    return &TokenBucket{
+        maxTokensPerMinute: maxTokensPerMinute,
+        tokens:             maxTokensPerMinute,
+        lastRefill:         time.Now(),
+    }
+}
+
+func (tb *TokenBucket) refill() {
+    now := time.Now()
+    elapsed := now.Sub(tb.lastRefill)
+
+    if elapsed >= time.Minute {
+        tb.tokens = tb.maxTokensPerMinute
+        tb.lastRefill = now
+    } else {
+        // Proportional refill
+        tokensToAdd := int(float64(tb.maxTokensPerMinute) * elapsed.Seconds() / 60.0)
+        tb.tokens = min(tb.tokens+tokensToAdd, tb.maxTokensPerMinute)
+        if tokensToAdd > 0 {
+            tb.lastRefill = now
+        }
+    }
+}
+
+func (tb *TokenBucket) Wait(ctx context.Context, estimatedTokens int) error {
+    tb.mu.Lock()
+    defer tb.mu.Unlock()
+
+    for {
+        tb.refill()
+
+        if tb.tokens >= estimatedTokens {
+            tb.tokens -= estimatedTokens
+            return nil
+        }
+
+        // Calculate wait time
+        tokensNeeded := estimatedTokens - tb.tokens
+        waitSeconds := float64(tokensNeeded) / float64(tb.maxTokensPerMinute) * 60.0
+        waitDuration := time.Duration(waitSeconds * float64(time.Second))
+
+        log.Printf("Not enough tokens, waiting %v...", waitDuration)
+
+        // Release lock while waiting
+        tb.mu.Unlock()
+        select {
+        case <-time.After(waitDuration):
+            tb.mu.Lock()
+        case <-ctx.Done():
+            tb.mu.Lock()
+            return ctx.Err()
+        }
+    }
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// TokenAwareGenerator manages token-based rate limiting
+type TokenAwareGenerator struct {
+    model  interface{}
+    bucket *TokenBucket
+}
+
+func NewTokenAwareGenerator(model interface{}, tokensPerMinute int) *TokenAwareGenerator {
+    return &TokenAwareGenerator{
+        model:  model,
+        bucket: NewTokenBucket(tokensPerMinute),
+    }
+}
+
+func (g *TokenAwareGenerator) Generate(ctx context.Context, prompt string, maxTokens int) (string, error) {
+    // Estimate total tokens (prompt + response)
+    estimatedPromptTokens := len(prompt) / 4 // Rough estimate: 1 token ~= 4 chars
+    estimatedTotalTokens := estimatedPromptTokens + maxTokens
+
+    // Wait for token availability
+    if err := g.bucket.Wait(ctx, estimatedTotalTokens); err != nil {
+        return "", err
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     g.model,
+        Prompt:    prompt,
+        MaxTokens: maxTokens,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    // Update bucket with actual token usage
+    actualTokens := result.Usage.TotalTokens
+    difference := actualTokens - estimatedTotalTokens
+    if difference > 0 {
+        // We used more than estimated, remove additional tokens
+        g.bucket.mu.Lock()
+        g.bucket.tokens -= difference
+        g.bucket.mu.Unlock()
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Limit to 10,000 tokens per minute
+    generator := NewTokenAwareGenerator(model, 10000)
+
+    text, err := generator.Generate(ctx, "Explain quantum computing", 500)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Concurrent Request Management
+
+### Limiting Concurrent Requests
+
+Use a semaphore to limit concurrent API calls:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// Semaphore limits concurrent operations
+type Semaphore struct {
+    ch chan struct{}
+}
+
+func NewSemaphore(maxConcurrent int) *Semaphore {
+    return &Semaphore{
+        ch: make(chan struct{}, maxConcurrent),
+    }
+}
+
+func (s *Semaphore) Acquire(ctx context.Context) error {
+    select {
+    case s.ch <- struct{}{}:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+func (s *Semaphore) Release() {
+    <-s.ch
+}
+
+// ConcurrentGenerator limits concurrent API requests
+type ConcurrentGenerator struct {
+    model     interface{}
+    semaphore *Semaphore
+}
+
+func NewConcurrentGenerator(model interface{}, maxConcurrent int) *ConcurrentGenerator {
+    return &ConcurrentGenerator{
+        model:     model,
+        semaphore: NewSemaphore(maxConcurrent),
+    }
+}
+
+func (g *ConcurrentGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+    // Acquire semaphore
+    if err := g.semaphore.Acquire(ctx); err != nil {
+        return "", err
+    }
+    defer g.semaphore.Release()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  g.model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Limit to 5 concurrent requests
+    generator := NewConcurrentGenerator(model, 5)
+
+    prompts := []string{
+        "Explain quantum computing",
+        "What is machine learning?",
+        "Describe photosynthesis",
+        "How do computers work?",
+        "What is DNA?",
+        "Explain relativity",
+        "What is electricity?",
+        "Describe the water cycle",
+    }
+
+    var wg sync.WaitGroup
+    results := make([]string, len(prompts))
+
+    for i, prompt := range prompts {
+        wg.Add(1)
+        go func(index int, p string) {
+            defer wg.Done()
+
+            text, err := generator.Generate(ctx, p)
+            if err != nil {
+                log.Printf("Request %d failed: %v", index, err)
+                return
+            }
+
+            results[index] = text
+            fmt.Printf("Completed request %d\n", index)
+        }(i, prompt)
+    }
+
+    wg.Wait()
+
+    for i, result := range results {
+        if result != "" {
+            fmt.Printf("\n=== Result %d ===\n%s\n", i, result)
+        }
+    }
+}
+```
+
+## Provider-Specific Rate Limits
+
+### OpenAI Rate Limits
+
+```go
+// OpenAI GPT-4 typical limits:
+// - Free tier: 3 RPM, 40,000 TPM
+// - Tier 1: 500 RPM, 30,000 TPM
+// - Tier 2: 5,000 RPM, 450,000 TPM
+
+const (
+    OpenAITier1RPM = 500
+    OpenAITier1TPM = 30000
+)
+
+limiter := rate.NewLimiter(rate.Limit(float64(OpenAITier1RPM)/60.0), 5)
+```
+
+### Anthropic Rate Limits
+
+```go
+// Claude typical limits:
+// - Free tier: 5 RPM, 20,000 TPM
+// - Tier 1: 50 RPM, 40,000 TPM
+// - Tier 2: 1,000 RPM, 80,000 TPM
+
+const (
+    AnthropicTier1RPM = 50
+    AnthropicTier1TPM = 40000
+)
+
+limiter := rate.NewLimiter(rate.Limit(float64(AnthropicTier1RPM)/60.0), 3)
+```
+
+### Google AI Rate Limits
+
+```go
+// Gemini typical limits:
+// - Free tier: 15 RPM, 32,000 TPM
+// - Paid tier: 1,000 RPM, 4,000,000 TPM
+
+const (
+    GoogleFreeRPM = 15
+    GoogleFreTPM = 32000
+)
+
+limiter := rate.NewLimiter(rate.Limit(float64(GoogleFreeRPM)/60.0), 1)
+```
+
+## Monitoring Rate Limit Usage
+
+### Track and Log Rate Limits
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// RateLimitTracker monitors rate limit usage
+type RateLimitTracker struct {
+    requestCount int
+    tokenCount   int
+    periodStart  time.Time
+    mu           sync.Mutex
+}
+
+func NewRateLimitTracker() *RateLimitTracker {
+    return &RateLimitTracker{
+        periodStart: time.Now(),
+    }
+}
+
+func (t *RateLimitTracker) RecordRequest(tokens int) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    now := time.Now()
+    if now.Sub(t.periodStart) >= time.Minute {
+        // New period
+        log.Printf("Rate limit stats - Last minute: %d requests, %d tokens", t.requestCount, t.tokenCount)
+        t.requestCount = 0
+        t.tokenCount = 0
+        t.periodStart = now
+    }
+
+    t.requestCount++
+    t.tokenCount += tokens
+}
+
+func (t *RateLimitTracker) GetStats() (requests, tokens int, elapsed time.Duration) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    return t.requestCount, t.tokenCount, time.Since(t.periodStart)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    tracker := NewRateLimitTracker()
+
+    // Start monitoring goroutine
+    go func() {
+        ticker := time.NewTicker(10 * time.Second)
+        defer ticker.Stop()
+
+        for range ticker.C {
+            requests, tokens, elapsed := tracker.GetStats()
+            rpm := float64(requests) / elapsed.Minutes()
+            tpm := float64(tokens) / elapsed.Minutes()
+            log.Printf("Current rate: %.1f RPM, %.1f TPM", rpm, tpm)
+        }
+    }()
+
+    // Make requests
+    for i := 0; i < 20; i++ {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: fmt.Sprintf("Request %d", i),
+        })
+        if err != nil {
+            log.Printf("Request failed: %v", err)
+            continue
+        }
+
+        tracker.RecordRequest(result.Usage.TotalTokens)
+        time.Sleep(2 * time.Second) // Space out requests
+    }
+}
+```
+
+## Best Practices
+
+### 1. Implement Retry with Backoff
+
+Always respect `Retry-After` headers and use exponential backoff:
+
+```go
+if rateLimitErr.RetryAfterSeconds != nil {
+    time.Sleep(time.Duration(*rateLimitErr.RetryAfterSeconds) * time.Second)
+} else {
+    time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+}
+```
+
+### 2. Use Client-Side Rate Limiting
+
+Prevent hitting provider limits by implementing client-side limiting:
+
+```go
+limiter := rate.NewLimiter(rate.Limit(requestsPerMinute/60.0), burstSize)
+limiter.Wait(ctx) // Wait before making request
+```
+
+### 3. Monitor and Alert
+
+Track rate limit usage and set up alerts:
+
+```go
+if rpm > 0.8 * maxRPM {
+    log.Warn("Approaching rate limit threshold")
+}
+```
+
+### 4. Use Appropriate Batch Sizes
+
+Don't send too many requests at once:
+
+```go
+batchSize := 5
+for i := 0; i < len(prompts); i += batchSize {
+    batch := prompts[i:min(i+batchSize, len(prompts))]
+    processBatch(batch)
+    time.Sleep(time.Minute) // Wait between batches
+}
+```
+
+### 5. Implement Circuit Breakers
+
+Stop making requests after repeated rate limit errors:
+
+```go
+if consecutiveRateLimitErrors > 3 {
+    log.Error("Too many rate limit errors, circuit breaker activated")
+    time.Sleep(5 * time.Minute)
+    consecutiveRateLimitErrors = 0
+}
+```
+
+## See Also
+
+- [Provider Errors](./02-provider-errors.mdx)
+- [Performance Optimization](./08-performance.mdx)
+- [Rate Limiting Guide](../06-advanced/06-rate-limiting.mdx)
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)

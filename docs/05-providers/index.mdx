@@ -1,0 +1,249 @@
+---
+title: Providers
+description: Complete guide to AI providers supported by the Go-AI SDK
+---
+
+# Providers
+
+The Go-AI SDK supports 28+ AI providers, giving you access to the latest language models, embedding models, image generation, speech synthesis, and transcription services.
+
+## Provider Categories
+
+### Top Providers
+
+The most popular and widely-used AI providers:
+
+- [OpenAI](02-openai.mdx) - GPT-4, GPT-5, o1, o3 models
+- [Anthropic](03-anthropic.mdx) - Claude Sonnet, Opus, Haiku
+- [Google](04-google.mdx) - Gemini models
+- [Azure OpenAI](05-azure.mdx) - Enterprise OpenAI deployment
+- [AWS Bedrock](06-bedrock.mdx) - Multi-model AWS platform
+
+### Popular Providers
+
+High-performance providers with specialized capabilities:
+
+- [Cohere](07-cohere.mdx) - Command and Embed models
+- [Mistral AI](08-mistral.mdx) - Open-source language models
+- [Groq](09-groq.mdx) - Ultra-fast inference
+- [xAI](10-xai.mdx) - Grok models
+- [DeepSeek](11-deepseek.mdx) - Advanced reasoning models
+- [Perplexity](12-perplexity.mdx) - Search-augmented AI
+
+### Open Source & Serving
+
+Platforms for running open-source models:
+
+- [Together AI](13-together.mdx) - Open-source model hosting
+- [Fireworks AI](14-fireworks.mdx) - Fast open-source inference
+- [Replicate](15-replicate.mdx) - Run any open-source model
+- [HuggingFace](16-huggingface.mdx) - Inference API for HF models
+- [Ollama](17-ollama.mdx) - Local model deployment
+- [Google Vertex AI](18-google-vertex.mdx) - Enterprise AI platform
+
+### Specialized Providers
+
+Providers for specific use cases:
+
+- [Cloudflare Workers AI](19-cloudflare.mdx) - Edge AI inference
+- [Stability AI](20-stability.mdx) - Image generation (Stable Diffusion)
+- [Black Forest Labs](21-bfl.mdx) - FLUX image models
+- [FAL](22-fal.mdx) - Image and video generation
+- [ElevenLabs](23-elevenlabs.mdx) - Speech synthesis
+- [Deepgram](24-deepgram.mdx) - Speech transcription
+- [AssemblyAI](25-assemblyai.mdx) - Audio intelligence
+- [Baseten](26-baseten.mdx) - ML model deployment
+- [Cerebras](27-cerebras.mdx) - Ultra-fast inference
+- [DeepInfra](28-deepinfra.mdx) - Serverless GPU inference
+
+## Quick Start
+
+### 1. Install the SDK
+
+```go
+go get github.com/digitallysavvy/go-ai
+```
+
+### 2. Choose a Provider
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+
+model, err := provider.LanguageModel("gpt-4")
+```
+
+### 3. Generate Text
+
+```go
+result, err := ai.GenerateText(model, "What is the Go-AI SDK?")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Text)
+```
+
+## Provider Comparison
+
+### Language Models
+
+| Provider | Best Models | Context Length | Streaming | Tools | Reasoning |
+|----------|-------------|----------------|-----------|-------|-----------|
+| OpenAI | GPT-4o, o1, o3 | 128K+ | Yes | Yes | Yes (o1/o3) |
+| Anthropic | Claude Opus 4.5 | 200K | Yes | Yes | Yes |
+| Google | Gemini 2.0 Flash | 1M+ | Yes | Yes | Yes |
+| Groq | Llama 3.3 | 8K-128K | Yes | Yes | No |
+| DeepSeek | DeepSeek-V3 | 64K | Yes | Yes | Yes |
+
+### Image Generation
+
+| Provider | Best Models | Speed | Quality | Features |
+|----------|-------------|-------|---------|----------|
+| Stability AI | SDXL, SD3 | Fast | High | Flexible |
+| Black Forest Labs | FLUX.1 Pro | Medium | Excellent | Photorealistic |
+| FAL | FLUX, SD | Very Fast | High | Video support |
+
+### Speech & Audio
+
+| Provider | Capability | Quality | Speed | Features |
+|----------|-----------|---------|-------|----------|
+| ElevenLabs | TTS | Excellent | Fast | Voice cloning |
+| Deepgram | STT | Excellent | Real-time | Diarization |
+| AssemblyAI | STT | Excellent | Fast | Summarization |
+
+## Provider Selection Guide
+
+### For Production Applications
+
+**Best Overall**: OpenAI, Anthropic, Google
+- Enterprise-grade reliability
+- Excellent documentation
+- Strong safety measures
+
+### For Cost-Effective Solutions
+
+**Best Value**: Groq, Together AI, DeepInfra
+- Lower pricing
+- Good performance
+- Open-source model access
+
+### For Specialized Tasks
+
+**Image Generation**: Stability AI, Black Forest Labs, FAL
+**Speech Synthesis**: ElevenLabs
+**Transcription**: Deepgram, AssemblyAI
+**Fast Inference**: Groq, Cerebras
+**Local Deployment**: Ollama
+
+### For Enterprise
+
+**Best Choice**: Azure OpenAI, AWS Bedrock, Google Vertex AI
+- Private deployment options
+- Compliance features
+- SLA guarantees
+
+## Configuration Patterns
+
+### Environment Variables
+
+```go
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+```
+
+### Custom Base URL
+
+```go
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("API_KEY"),
+    BaseURL: "https://custom-endpoint.com/v1",
+})
+```
+
+### Regional Configuration
+
+```go
+provider := azure.New(azure.Config{
+    APIKey: os.Getenv("AZURE_API_KEY"),
+    Endpoint: "https://my-resource.openai.azure.com",
+    DeploymentName: "gpt-4",
+})
+```
+
+## Common Features
+
+### Streaming
+
+All major providers support streaming responses:
+
+```go
+stream, err := ai.StreamText(model, "Write a story")
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+### Tool Calling
+
+Most providers support function calling:
+
+```go
+result, err := ai.GenerateText(model, "What's the weather?",
+    ai.WithTools(weatherTool),
+)
+```
+
+### Structured Output
+
+Generate JSON conforming to a schema:
+
+```go
+result, err := ai.GenerateObject(model, schema, "Describe a person")
+```
+
+## Error Handling
+
+### Rate Limits
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if errors.Is(err, ai.ErrRateLimitExceeded) {
+        time.Sleep(time.Second * 5)
+        // Retry
+    }
+}
+```
+
+### Provider-Specific Errors
+
+Each provider has unique error codes and handling - see individual provider documentation.
+
+## Best Practices
+
+1. **Use Environment Variables**: Never hardcode API keys
+2. **Handle Rate Limits**: Implement exponential backoff
+3. **Monitor Costs**: Track token usage across providers
+4. **Test Locally**: Use Ollama for development
+5. **Fallback Providers**: Have backup providers configured
+6. **Validate Models**: Check model availability before deployment
+
+## Next Steps
+
+- Explore the [Overview Guide](01-overview.mdx) for detailed provider concepts
+- Read individual provider documentation for specific features
+- Check [API Reference](../07-reference/ai/generate-text.mdx) for complete API details
+- Review [Examples](../03-examples/index.mdx) for implementation patterns
+
+## See Also
+
+- [Quick Start Guide](../01-introduction/quick-start.mdx)
+- [Core Concepts](../02-core-concepts/index.mdx)
+- [API Reference](../07-reference/index.mdx)

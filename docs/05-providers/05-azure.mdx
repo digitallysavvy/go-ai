@@ -1,0 +1,544 @@
+---
+title: Azure OpenAI Provider
+description: Setup and usage guide for Azure OpenAI Service with Go-AI SDK
+---
+
+# Azure OpenAI Provider
+
+Azure OpenAI Service provides enterprise-grade deployment of OpenAI models with Microsoft's infrastructure, security, and compliance features. Ideal for organizations requiring private deployment, SLA guarantees, and regional data residency.
+
+## Setup
+
+### Installation
+
+The Azure OpenAI provider is included in the Go-AI SDK:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/azure"
+)
+```
+
+### Configuration
+
+```go
+provider := azure.New(azure.Config{
+    APIKey:         os.Getenv("AZURE_OPENAI_API_KEY"),
+    Endpoint:       os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    DeploymentName: "gpt-4o-deployment",
+    APIVersion:     "2024-02-15-preview",
+})
+
+model, err := provider.LanguageModel("gpt-4o")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get Started
+
+1. Create Azure OpenAI resource in [Azure Portal](https://portal.azure.com)
+2. Deploy models through Azure AI Studio
+3. Get credentials from Keys and Endpoint section
+4. Set environment variables:
+
+```bash
+export AZURE_OPENAI_API_KEY=your-key
+export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+```
+
+## Available Models
+
+Azure OpenAI supports the same models as OpenAI, but you must deploy them in your Azure resource.
+
+### GPT-4 Series
+
+| Model | Deployment Name | Context | Features |
+|-------|----------------|---------|----------|
+| GPT-4o | gpt-4o | 128K | Multimodal, fast |
+| GPT-4o-mini | gpt-4o-mini | 128K | Cost-effective |
+| GPT-4 Turbo | gpt-4-turbo | 128K | Vision support |
+| GPT-4 | gpt-4 | 8K | Legacy |
+
+### GPT-3.5 Series
+
+| Model | Deployment Name | Context | Features |
+|-------|----------------|---------|----------|
+| GPT-3.5 Turbo | gpt-35-turbo | 16K | Fast, affordable |
+
+### Embedding Models
+
+| Model | Deployment Name | Dimensions | Features |
+|-------|----------------|------------|----------|
+| text-embedding-3-large | text-embedding-3-large | 3072 | High quality |
+| text-embedding-3-small | text-embedding-3-small | 1536 | Fast |
+| text-embedding-ada-002 | text-embedding-ada-002 | 1536 | Legacy |
+
+### Image Generation
+
+| Model | Deployment Name | Quality | Speed |
+|-------|----------------|---------|-------|
+| DALL-E 3 | dall-e-3 | High | Medium |
+
+### Speech Models
+
+| Model | Deployment Name | Type | Quality |
+|-------|----------------|------|---------|
+| TTS | tts-1 | TTS | Standard |
+| TTS HD | tts-1-hd | TTS | High |
+| Whisper | whisper-1 | STT | Excellent |
+
+## Provider-Specific Features
+
+### Regional Deployment
+
+Deploy models in specific Azure regions for compliance:
+
+```go
+// US East deployment
+provider := azure.New(azure.Config{
+    Endpoint: "https://your-resource-eastus.openai.azure.com",
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+})
+
+// EU deployment for GDPR compliance
+provider = azure.New(azure.Config{
+    Endpoint: "https://your-resource-westeurope.openai.azure.com",
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+})
+```
+
+### Managed Identity Authentication
+
+Use Azure Active Directory instead of API keys:
+
+```go
+import "github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
+credential, err := azidentity.NewDefaultAzureCredential(nil)
+if err != nil {
+    log.Fatal(err)
+}
+
+provider := azure.New(azure.Config{
+    Endpoint:   os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    Credential: credential,
+})
+```
+
+### Private Endpoints
+
+Access Azure OpenAI through private virtual networks:
+
+```go
+provider := azure.New(azure.Config{
+    Endpoint: "https://your-resource.privatelink.openai.azure.com",
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+})
+```
+
+### Content Filtering
+
+Azure OpenAI includes built-in content filtering:
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if azureErr, ok := err.(*azure.Error); ok {
+        if azureErr.Code == "content_filter" {
+            log.Printf("Content filtered: %s", azureErr.ContentFilterResults)
+        }
+    }
+}
+
+// Access filter results even on success
+if result.ContentFilterResults != nil {
+    fmt.Printf("Filter scores: %+v\n", result.ContentFilterResults)
+}
+```
+
+### Deployment Management
+
+Use custom deployment names:
+
+```go
+// Create provider with deployment mapping
+provider := azure.New(azure.Config{
+    Endpoint: os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+    Deployments: map[string]string{
+        "gpt-4o":      "my-gpt4o-deployment",
+        "gpt-4o-mini": "my-gpt4o-mini-deployment",
+        "gpt-35-turbo": "my-gpt35-deployment",
+    },
+})
+
+// SDK automatically uses correct deployment
+model, err := provider.LanguageModel("gpt-4o")
+// Uses "my-gpt4o-deployment" behind the scenes
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/azure"
+)
+
+func main() {
+    provider := azure.New(azure.Config{
+        Endpoint:   os.Getenv("AZURE_OPENAI_ENDPOINT"),
+        APIKey:     os.Getenv("AZURE_OPENAI_API_KEY"),
+        APIVersion: "2024-02-15-preview",
+    })
+
+    model, err := provider.LanguageModel("gpt-4o")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain Azure OpenAI Service benefits")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Managed Identity Authentication
+
+```go
+import (
+    "github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+    "github.com/digitallysavvy/go-ai/pkg/providers/azure"
+)
+
+func main() {
+    // Use default Azure credential chain
+    // (managed identity, Azure CLI, environment variables)
+    credential, err := azidentity.NewDefaultAzureCredential(nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    provider := azure.New(azure.Config{
+        Endpoint:   "https://your-resource.openai.azure.com",
+        Credential: credential,
+        APIVersion: "2024-02-15-preview",
+    })
+
+    model, err := provider.LanguageModel("gpt-4o")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Hello from Azure!")
+    fmt.Println(result.Text)
+}
+```
+
+### Multi-Region Deployment
+
+```go
+type MultiRegionProvider struct {
+    primary   *azure.Provider
+    secondary *azure.Provider
+}
+
+func (m *MultiRegionProvider) GenerateText(prompt string) (*ai.GenerateTextResult, error) {
+    model, err := m.primary.LanguageModel("gpt-4o")
+    if err == nil {
+        result, err := ai.GenerateText(model, prompt)
+        if err == nil {
+            return result, nil
+        }
+    }
+
+    // Fallback to secondary region
+    log.Println("Primary region failed, using secondary")
+    model, err = m.secondary.LanguageModel("gpt-4o")
+    if err != nil {
+        return nil, err
+    }
+
+    return ai.GenerateText(model, prompt)
+}
+
+func main() {
+    multiRegion := &MultiRegionProvider{
+        primary: azure.New(azure.Config{
+            Endpoint: "https://resource-eastus.openai.azure.com",
+            APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+        }),
+        secondary: azure.New(azure.Config{
+            Endpoint: "https://resource-westus.openai.azure.com",
+            APIKey:   os.Getenv("AZURE_OPENAI_API_KEY_WEST"),
+        }),
+    }
+
+    result, err := multiRegion.GenerateText("Hello!")
+}
+```
+
+### Content Filtering Analysis
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if azureErr, ok := err.(*azure.Error); ok {
+        if azureErr.Code == "content_filter" {
+            log.Printf("Content blocked by filters:")
+            for category, details := range azureErr.ContentFilterResults {
+                log.Printf("  %s: severity=%s, filtered=%v",
+                    category, details.Severity, details.Filtered)
+            }
+            return nil, fmt.Errorf("content policy violation")
+        }
+    }
+    return nil, err
+}
+
+// Check filter results on successful response
+if result.ContentFilterResults != nil {
+    for category, details := range result.ContentFilterResults {
+        if details.Severity == "high" {
+            log.Printf("Warning: high %s score detected", category)
+        }
+    }
+}
+```
+
+### Image Generation with DALL-E 3
+
+```go
+imageModel, err := provider.ImageModel("dall-e-3")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(imageModel,
+    "A modern office building in Azure blue colors",
+    ai.WithImageSize("1024x1024"),
+    ai.WithImageQuality("hd"),
+)
+
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated image URL: %s\n", result.Images[0].URL)
+```
+
+## Advanced Configuration
+
+### Multiple Deployments
+
+```go
+provider := azure.New(azure.Config{
+    Endpoint: os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+    Deployments: map[string]string{
+        // Map model IDs to deployment names
+        "gpt-4o":                  "production-gpt4o",
+        "gpt-4o-mini":             "production-gpt4o-mini",
+        "gpt-35-turbo":            "production-gpt35",
+        "text-embedding-3-large":  "embedding-large",
+    },
+    APIVersion: "2024-02-15-preview",
+})
+```
+
+### Custom Headers
+
+```go
+provider := azure.New(azure.Config{
+    Endpoint: os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+    DefaultHeaders: map[string]string{
+        "X-Request-ID": "unique-request-id",
+        "X-Client-Name": "my-app",
+    },
+})
+```
+
+### Connection Pooling
+
+```go
+provider := azure.New(azure.Config{
+    Endpoint: os.Getenv("AZURE_OPENAI_ENDPOINT"),
+    APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
+    HTTPClient: &http.Client{
+        Transport: &http.Transport{
+            MaxIdleConns:        100,
+            MaxIdleConnsPerHost: 10,
+            IdleConnTimeout:     90 * time.Second,
+        },
+        Timeout: 120 * time.Second,
+    },
+})
+```
+
+## Error Handling
+
+### Common Errors
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if azureErr, ok := err.(*azure.Error); ok {
+        switch azureErr.Code {
+        case "invalid_api_key":
+            log.Fatal("Invalid API key")
+        case "DeploymentNotFound":
+            log.Fatal("Deployment not found - check deployment name")
+        case "content_filter":
+            log.Println("Content filtered by Azure policy")
+        case "quota_exceeded":
+            log.Fatal("Quota exceeded")
+        case "rate_limit_exceeded":
+            log.Printf("Rate limited, retry after %d seconds", azureErr.RetryAfter)
+        default:
+            log.Printf("Azure error: %s - %s", azureErr.Code, azureErr.Message)
+        }
+    }
+}
+```
+
+### Quota Management
+
+```go
+// Monitor and handle quota limits
+func generateWithQuotaCheck(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+    result, err := ai.GenerateText(model, prompt)
+    if err != nil {
+        if azureErr, ok := err.(*azure.Error); ok {
+            if azureErr.Code == "quota_exceeded" {
+                // Alert admin
+                alertQuotaExceeded()
+                // Switch to different deployment/region
+                return useBackupDeployment(prompt)
+            }
+        }
+    }
+    return result, err
+}
+```
+
+## Best Practices
+
+1. **Deployment Strategy**
+   - Use separate deployments for dev/staging/prod
+   - Deploy in multiple regions for high availability
+   - Monitor deployment quotas and scale accordingly
+
+2. **Authentication**
+   - Use Managed Identity for Azure-hosted applications
+   - Rotate API keys regularly if using key-based auth
+   - Use Azure Key Vault for credential management
+
+3. **Cost Management**
+   - Monitor usage through Azure Cost Management
+   - Set up budget alerts
+   - Use Provisioned Throughput Units (PTU) for predictable costs
+   - Right-size deployments based on actual usage
+
+4. **Security**
+   - Use private endpoints for VNet integration
+   - Enable Azure AD authentication
+   - Configure content filtering policies
+   - Enable diagnostic logging
+
+5. **Performance**
+   - Deploy in regions close to users
+   - Use connection pooling
+   - Implement retry logic with exponential backoff
+   - Cache responses when appropriate
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Rate limits are set per deployment in Azure OpenAI:
+
+- **Pay-as-you-go**: Token-per-minute (TPM) limits
+- **Provisioned**: Guaranteed throughput with PTUs
+
+| Model | Default TPM | PTU Option |
+|-------|-------------|------------|
+| GPT-4o | 30K - 150K | Available |
+| GPT-4o-mini | 60K - 300K | Available |
+| GPT-3.5 Turbo | 120K - 600K | Available |
+
+### Pricing
+
+Azure OpenAI pricing is similar to OpenAI with two models:
+
+**Pay-as-you-go**
+- Same per-token pricing as OpenAI
+- No minimum commitment
+- Variable costs based on usage
+
+**Provisioned Throughput Units (PTU)**
+- Fixed monthly cost per PTU
+- Guaranteed throughput
+- Predictable costs for high-volume scenarios
+- PTU pricing: ~$25-50 per PTU/month (region dependent)
+
+### Cost Estimation
+
+```go
+type CostTracker struct {
+    usageByModel map[string]ai.Usage
+    mu           sync.Mutex
+}
+
+func (ct *CostTracker) Track(model string, usage ai.Usage) {
+    ct.mu.Lock()
+    defer ct.mu.Unlock()
+
+    current := ct.usageByModel[model]
+    current.PromptTokens += usage.PromptTokens
+    current.CompletionTokens += usage.CompletionTokens
+    ct.usageByModel[model] = current
+}
+
+func (ct *CostTracker) EstimatedCost() float64 {
+    ct.mu.Lock()
+    defer ct.mu.Unlock()
+
+    total := 0.0
+    rates := map[string][2]float64{
+        "gpt-4o":      {2.50 / 1_000_000, 10.00 / 1_000_000},
+        "gpt-4o-mini": {0.15 / 1_000_000, 0.60 / 1_000_000},
+    }
+
+    for model, usage := range ct.usageByModel {
+        if rate, ok := rates[model]; ok {
+            inputCost := float64(usage.PromptTokens) * rate[0]
+            outputCost := float64(usage.CompletionTokens) * rate[1]
+            total += inputCost + outputCost
+        }
+    }
+
+    return total
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [OpenAI Provider](02-openai.mdx) - OpenAI direct access
+- [Azure OpenAI Documentation](https://learn.microsoft.com/azure/ai-services/openai/)
+- [Azure OpenAI Quotas](https://learn.microsoft.com/azure/ai-services/openai/quotas-limits)

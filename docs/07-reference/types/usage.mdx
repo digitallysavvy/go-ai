@@ -1,0 +1,206 @@
+---
+title: Usage Types
+description: API reference for usage and token tracking types
+---
+
+# Usage Types
+
+Types for tracking token usage and costs across API calls.
+
+## Usage
+
+```go
+type Usage struct {
+    PromptTokens     int
+    CompletionTokens int
+    TotalTokens      int
+    CachedTokens     int
+}
+```
+
+Token usage information for language model calls.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| PromptTokens | int | Tokens in the input prompt |
+| CompletionTokens | int | Tokens in the generated completion |
+| TotalTokens | int | Total tokens (prompt + completion) |
+| CachedTokens | int | Tokens served from cache (if applicable) |
+
+### Methods
+
+```go
+func (u Usage) Add(other Usage) Usage
+```
+
+Adds two usage objects together (for accumulating usage across multiple calls).
+
+## EmbeddingUsage
+
+```go
+type EmbeddingUsage struct {
+    TotalTokens int
+}
+```
+
+Token usage information for embedding calls.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| TotalTokens | int | Total tokens processed |
+
+## Examples
+
+### Basic Usage Tracking
+
+```go
+package main
+
+import (
+    "fmt"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func main() {
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello, world!",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    usage := result.Usage
+    fmt.Printf("Prompt tokens: %d\n", usage.PromptTokens)
+    fmt.Printf("Completion tokens: %d\n", usage.CompletionTokens)
+    fmt.Printf("Total tokens: %d\n", usage.TotalTokens)
+}
+```
+
+### Accumulate Usage Across Calls
+
+```go
+var totalUsage types.Usage
+
+for i := 0; i < 5; i++ {
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: fmt.Sprintf("Question %d", i),
+    })
+    if err != nil {
+        log.Printf("Error on call %d: %v", i, err)
+        continue
+    }
+
+    totalUsage = totalUsage.Add(result.Usage)
+}
+
+fmt.Printf("Total usage across all calls:\n")
+fmt.Printf("  Prompt tokens: %d\n", totalUsage.PromptTokens)
+fmt.Printf("  Completion tokens: %d\n", totalUsage.CompletionTokens)
+fmt.Printf("  Total tokens: %d\n", totalUsage.TotalTokens)
+```
+
+### Track Cached Tokens
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: longPrompt,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+if result.Usage.CachedTokens > 0 {
+    fmt.Printf("Cache hit! %d tokens served from cache\n",
+        result.Usage.CachedTokens)
+    fmt.Printf("Savings: %.1f%%\n",
+        float64(result.Usage.CachedTokens)/float64(result.Usage.TotalTokens)*100)
+}
+```
+
+### Estimate Cost
+
+```go
+// Example pricing (adjust for your provider/model)
+const (
+    promptTokenCost     = 0.00001  // $0.01 per 1K tokens
+    completionTokenCost = 0.00003  // $0.03 per 1K tokens
+)
+
+usage := result.Usage
+cost := float64(usage.PromptTokens)*promptTokenCost +
+    float64(usage.CompletionTokens)*completionTokenCost
+
+fmt.Printf("Estimated cost: $%.6f\n", cost)
+```
+
+### Monitor Usage in Multi-Step Generation
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Complex multi-step task",
+    Tools:  tools,
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
+        fmt.Printf("Step %d usage:\n", step.StepNumber)
+        fmt.Printf("  Tokens: %d\n", step.Usage.TotalTokens)
+    },
+    OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userCtx interface{}) {
+        fmt.Printf("Final total usage: %d tokens\n", result.Usage.TotalTokens)
+    },
+})
+```
+
+### Embedding Usage
+
+```go
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: documents,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Embedding usage: %d tokens\n", result.Usage.TotalTokens)
+```
+
+### Usage Budget Enforcement
+
+```go
+const maxTokens = 10000
+var usedTokens int
+
+for _, task := range tasks {
+    if usedTokens >= maxTokens {
+        fmt.Println("Token budget exceeded")
+        break
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: task,
+    })
+    if err != nil {
+        log.Printf("Error: %v", err)
+        continue
+    }
+
+    usedTokens += result.Usage.TotalTokens
+    fmt.Printf("Used %d/%d tokens\n", usedTokens, maxTokens)
+}
+```
+
+## See Also
+
+- [GenerateText](../ai/generate-text.mdx) - Text generation with usage tracking
+- [Embed](../ai/embed.mdx) - Embedding generation with usage tracking
+- [Error Types](./errors.mdx) - Error handling

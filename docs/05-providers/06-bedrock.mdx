@@ -1,0 +1,460 @@
+---
+title: AWS Bedrock Provider
+description: Setup and usage guide for AWS Bedrock multi-model platform with Go-AI SDK
+---
+
+# AWS Bedrock Provider
+
+AWS Bedrock provides access to multiple foundation models from different providers through a single API. Includes models from Anthropic, Meta, Cohere, AI21, Amazon, and more with enterprise-grade security and compliance.
+
+## Setup
+
+### Installation
+
+The AWS Bedrock provider is included in the Go-AI SDK:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+)
+```
+
+### Configuration
+
+```go
+provider := bedrock.New(bedrock.Config{
+    Region:          "us-east-1",
+    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+})
+
+model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get Started
+
+1. Sign up for AWS account at [aws.amazon.com](https://aws.amazon.com)
+2. Request model access in [Bedrock Console](https://console.aws.amazon.com/bedrock)
+3. Create IAM user with Bedrock permissions
+4. Set environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=us-east-1
+```
+
+## Available Models
+
+### Anthropic Claude Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| anthropic.claude-3-5-sonnet-20241022-v2:0 | 200K | $3.00/1M | $15.00/1M | Best balance |
+| anthropic.claude-3-opus-20240229-v1:0 | 200K | $15.00/1M | $75.00/1M | Complex tasks |
+| anthropic.claude-3-haiku-20240307-v1:0 | 200K | $0.25/1M | $1.25/1M | Fast responses |
+
+### Meta Llama Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| meta.llama3-3-70b-instruct-v1:0 | 128K | $0.99/1M | $0.99/1M | Open source |
+| meta.llama3-2-90b-instruct-v1:0 | 128K | $2.65/1M | $2.65/1M | Multimodal |
+| meta.llama3-2-11b-instruct-v1:0 | 128K | $0.35/1M | $0.35/1M | Efficient |
+
+### Amazon Titan Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| amazon.titan-text-premier-v1:0 | 32K | $0.50/1M | $1.50/1M | General purpose |
+| amazon.titan-text-express-v1 | 8K | $0.20/1M | $0.60/1M | Fast, cheap |
+
+### Cohere Command Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| cohere.command-r-plus-v1:0 | 128K | $3.00/1M | $15.00/1M | RAG, search |
+| cohere.command-r-v1:0 | 128K | $0.50/1M | $1.50/1M | Cost-effective |
+
+### AI21 Jurassic Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| ai21.jamba-1-5-large-v1:0 | 256K | $2.00/1M | $8.00/1M | Long context |
+| ai21.jamba-1-5-mini-v1:0 | 256K | $0.20/1M | $0.40/1M | Fast tasks |
+
+### Mistral AI Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| mistral.mistral-large-2407-v1:0 | 128K | $3.00/1M | $9.00/1M | Complex reasoning |
+| mistral.mistral-small-2402-v1:0 | 32K | $1.00/1M | $3.00/1M | Efficient |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| amazon.titan-embed-text-v2:0 | 1024 | $0.02/1M | General embeddings |
+| cohere.embed-english-v3 | 1024 | $0.10/1M | English text |
+| cohere.embed-multilingual-v3 | 1024 | $0.10/1M | Multilingual |
+
+### Image Generation
+
+| Model ID | Quality | Price | Best For |
+|----------|---------|-------|----------|
+| amazon.titan-image-generator-v2:0 | High | $0.04/image | General images |
+| stability.stable-diffusion-xl-v1 | High | $0.04/image | Artistic |
+
+## Provider-Specific Features
+
+### Model Access Control
+
+Request access to specific models:
+
+```go
+// Check model access
+models, err := provider.ListAvailableModels()
+for _, model := range models {
+    fmt.Printf("%s: %s\n", model.ID, model.Status)
+}
+```
+
+### Cross-Region Inference
+
+Use models across AWS regions:
+
+```go
+provider := bedrock.New(bedrock.Config{
+    Region:          "us-east-1",
+    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    InferenceProfile: "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+})
+```
+
+### Guardrails
+
+Apply AWS Bedrock Guardrails for content filtering:
+
+```go
+result, err := ai.GenerateText(model, prompt,
+    ai.WithGuardrails(ai.Guardrails{
+        ID:      "your-guardrail-id",
+        Version: "1",
+    }),
+)
+```
+
+### Agents
+
+Use Bedrock Agents for autonomous task execution:
+
+```go
+agent := bedrock.NewAgent(bedrock.AgentConfig{
+    AgentID:      "agent-id",
+    AgentAliasID: "alias-id",
+    Region:       "us-east-1",
+})
+
+result, err := agent.InvokeAgent("Complete this task for me")
+```
+
+### Knowledge Bases
+
+Query Bedrock Knowledge Bases:
+
+```go
+kb := bedrock.NewKnowledgeBase(bedrock.KnowledgeBaseConfig{
+    KnowledgeBaseID: "kb-id",
+    Region:          "us-east-1",
+})
+
+results, err := kb.Query("What is our refund policy?")
+for _, result := range results {
+    fmt.Printf("Source: %s\nContent: %s\n", result.Source, result.Content)
+}
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+)
+
+func main() {
+    provider := bedrock.New(bedrock.Config{
+        Region:          "us-east-1",
+        AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+        SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    })
+
+    model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain AWS Bedrock benefits")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Multi-Model Comparison
+
+```go
+models := []string{
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "meta.llama3-3-70b-instruct-v1:0",
+    "cohere.command-r-plus-v1:0",
+}
+
+prompt := "Write a haiku about clouds"
+
+for _, modelID := range models {
+    model, err := provider.LanguageModel(modelID)
+    if err != nil {
+        log.Printf("Failed to load %s: %v", modelID, err)
+        continue
+    }
+
+    result, err := ai.GenerateText(model, prompt)
+    if err != nil {
+        log.Printf("Failed to generate with %s: %v", modelID, err)
+        continue
+    }
+
+    fmt.Printf("\n=== %s ===\n%s\n", modelID, result.Text)
+}
+```
+
+### Image Generation with Titan
+
+```go
+imageModel, err := provider.ImageModel("amazon.titan-image-generator-v2:0")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(imageModel,
+    "A serene mountain landscape at sunset",
+    ai.WithImageSize("1024x1024"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Save image
+imageData, err := downloadImage(result.Images[0].URL)
+os.WriteFile("output.png", imageData, 0644)
+```
+
+### Embeddings with Cohere
+
+```go
+embeddingModel, err := provider.EmbeddingModel("cohere.embed-english-v3")
+if err != nil {
+    log.Fatal(err)
+}
+
+texts := []string{
+    "AWS Bedrock provides access to foundation models",
+    "Amazon offers cloud computing services",
+    "Machine learning powers AI applications",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %d embeddings\n", len(embeddings))
+```
+
+### Streaming with Claude
+
+```go
+model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := ai.StreamText(model, "Write a detailed essay about serverless computing")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+## Advanced Configuration
+
+### IAM Role Authentication
+
+```go
+// Use IAM role credentials (for EC2, ECS, Lambda)
+provider := bedrock.New(bedrock.Config{
+    Region: "us-east-1",
+    // Credentials automatically loaded from IAM role
+})
+```
+
+### Session Token (STS)
+
+```go
+provider := bedrock.New(bedrock.Config{
+    Region:          "us-east-1",
+    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+})
+```
+
+### Custom Endpoint
+
+```go
+provider := bedrock.New(bedrock.Config{
+    Region:   "us-east-1",
+    Endpoint: "https://bedrock-runtime.us-east-1.amazonaws.com",
+})
+```
+
+## Error Handling
+
+### Common Errors
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if bedrockErr, ok := err.(*bedrock.Error); ok {
+        switch bedrockErr.Code {
+        case "AccessDeniedException":
+            log.Fatal("Access denied - check IAM permissions")
+        case "ResourceNotFoundException":
+            log.Fatal("Model not found - request access in Bedrock console")
+        case "ThrottlingException":
+            log.Println("Throttled, retrying...")
+            time.Sleep(time.Second * 5)
+        case "ValidationException":
+            log.Printf("Invalid request: %s", bedrockErr.Message)
+        case "ModelNotReadyException":
+            log.Println("Model still loading, retry later")
+        case "ServiceQuotaExceededException":
+            log.Fatal("Quota exceeded - request limit increase")
+        default:
+            log.Printf("Bedrock error: %s - %s", bedrockErr.Code, bedrockErr.Message)
+        }
+    }
+}
+```
+
+### IAM Permission Requirements
+
+Minimum IAM policy for Bedrock:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "arn:aws:bedrock:*::foundation-model/*"
+    }
+  ]
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use Claude for complex reasoning and analysis
+   - Use Llama for cost-effective open-source alternative
+   - Use Titan for AWS-native integration
+   - Use Cohere for RAG and search applications
+
+2. **Cost Management**
+   - Compare prices across providers
+   - Use smaller models for simple tasks
+   - Monitor usage with AWS Cost Explorer
+   - Set up billing alerts
+
+3. **Security**
+   - Use IAM roles instead of access keys
+   - Apply least privilege IAM policies
+   - Enable CloudTrail logging
+   - Use VPC endpoints for private access
+
+4. **Performance**
+   - Choose region closest to users
+   - Use cross-region inference for high availability
+   - Implement caching for repeated queries
+   - Use streaming for long responses
+
+5. **Compliance**
+   - Review model provider compliance certifications
+   - Use Guardrails for content filtering
+   - Enable logging for audit trails
+   - Configure data retention policies
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Varies by model and region:
+
+| Model Family | Default Tokens/Min | Burst |
+|--------------|-------------------|-------|
+| Claude | 100K - 400K | 200K |
+| Llama | 200K - 800K | 400K |
+| Titan | 400K - 1.6M | 800K |
+
+Request quota increases through AWS Support.
+
+### Cost Comparison
+
+```go
+func compareCosts(promptTokens, completionTokens int) {
+    models := map[string][2]float64{
+        "Claude Sonnet 3.5": {3.00 / 1_000_000, 15.00 / 1_000_000},
+        "Llama 3.3 70B":     {0.99 / 1_000_000, 0.99 / 1_000_000},
+        "Command R+":        {3.00 / 1_000_000, 15.00 / 1_000_000},
+        "Titan Premier":     {0.50 / 1_000_000, 1.50 / 1_000_000},
+    }
+
+    for model, rates := range models {
+        cost := float64(promptTokens)*rates[0] + float64(completionTokens)*rates[1]
+        fmt.Printf("%s: $%.4f\n", model, cost)
+    }
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Anthropic Provider](03-anthropic.mdx) - Direct Anthropic access
+- [AWS Bedrock Documentation](https://docs.aws.amazon.com/bedrock/)
+- [Bedrock Model Access](https://console.aws.amazon.com/bedrock/home#/modelaccess)

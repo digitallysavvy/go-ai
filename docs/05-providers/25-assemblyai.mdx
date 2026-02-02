@@ -1,0 +1,364 @@
+---
+title: AssemblyAI Provider
+description: Setup and usage guide for AssemblyAI audio intelligence with Go-AI SDK
+---
+
+# AssemblyAI Provider
+
+AssemblyAI provides advanced audio intelligence including transcription, speaker diarization, sentiment analysis, content moderation, and topic detection. Perfect for comprehensive audio analysis.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/assemblyai"
+)
+```
+
+### Configuration
+
+```go
+provider := assemblyai.New(assemblyai.Config{
+    APIKey: os.Getenv("ASSEMBLYAI_API_KEY"),
+})
+
+model, err := provider.TranscriptionModel("best")
+```
+
+### Get API Key
+
+```bash
+export ASSEMBLYAI_API_KEY=...
+```
+
+## Available Models
+
+### Transcription Models
+
+| Model ID | Accuracy | Speed | Best For |
+|----------|----------|-------|----------|
+| best | Excellent | Medium | Highest accuracy |
+| nano | Good | Very Fast | Real-time |
+
+## Provider-Specific Features
+
+### Comprehensive Audio Intelligence
+
+AssemblyAI goes beyond transcription:
+
+```go
+audioURL := uploadAudio("meeting.mp3")
+
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithSpeakerLabels(true),       // Diarization
+    ai.WithSentimentAnalysis(true),   // Sentiment per sentence
+    ai.WithEntityDetection(true),     // Named entities
+    ai.WithTopicDetection(true),      // IAB categories
+    ai.WithContentSafety(true),       // Moderation
+    ai.WithSummarization(true),       // Auto-summary
+)
+
+// Rich results
+fmt.Println("Transcript:", result.Text)
+fmt.Println("Summary:", result.Summary)
+
+for _, utterance := range result.Utterances {
+    fmt.Printf("[Speaker %s] %s (Sentiment: %s)\n",
+        utterance.Speaker, utterance.Text, utterance.Sentiment)
+}
+
+for _, topic := range result.Topics {
+    fmt.Printf("Topic: %s (%.2f relevance)\n", topic.Text, topic.Relevance)
+}
+```
+
+### Sentiment Analysis
+
+Understand emotions in audio:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithSentimentAnalysis(true),
+)
+
+for _, sentence := range result.SentimentAnalysisResults {
+    fmt.Printf("%s: %s (confidence: %.2f)\n",
+        sentence.Text,
+        sentence.Sentiment, // POSITIVE, NEGATIVE, NEUTRAL
+        sentence.Confidence,
+    )
+}
+```
+
+### Entity Detection
+
+Extract names, organizations, locations:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithEntityDetection(true),
+)
+
+for _, entity := range result.Entities {
+    fmt.Printf("%s: %s\n", entity.EntityType, entity.Text)
+    // Outputs: PERSON: John Smith, LOCATION: New York, etc.
+}
+```
+
+### Content Moderation
+
+Detect sensitive content:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithContentSafety(true),
+)
+
+for _, safety := range result.ContentSafetyLabels.Results {
+    if safety.Severity > 0.7 {
+        fmt.Printf("Warning: %s detected at %.2fs\n",
+            safety.Label, safety.Timestamp)
+    }
+}
+```
+
+### Topic Detection
+
+Identify topics using IAB taxonomy:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithTopicDetection(true),
+)
+
+for _, topic := range result.IABCategories.Results {
+    fmt.Printf("Topic: %s (%.2f%%)\n", topic.Label, topic.Relevance*100)
+}
+```
+
+### Auto Chapters
+
+Automatically chapter long audio:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithAutoChapters(true),
+)
+
+for i, chapter := range result.Chapters {
+    fmt.Printf("Chapter %d: %s\n", i+1, chapter.Headline)
+    fmt.Printf("  Summary: %s\n", chapter.Summary)
+    fmt.Printf("  Time: %.2fs - %.2fs\n", chapter.Start, chapter.End)
+}
+```
+
+### Key Phrases
+
+Extract important phrases:
+
+```go
+result, err := ai.Transcribe(model, audioURL,
+    ai.WithAutoHighlights(true),
+)
+
+for _, highlight := range result.AutoHighlights.Results {
+    fmt.Printf("Key phrase: %s (count: %d)\n",
+        highlight.Text, highlight.Count)
+}
+```
+
+## Examples
+
+### Basic Transcription
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/assemblyai"
+)
+
+func main() {
+    provider := assemblyai.New(assemblyai.Config{
+        APIKey: os.Getenv("ASSEMBLYAI_API_KEY"),
+    })
+
+    model, err := provider.TranscriptionModel("best")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Upload audio first
+    audioURL, err := provider.UploadFile("recording.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.Transcribe(model, audioURL,
+        ai.WithSpeakerLabels(true),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Comprehensive Analysis
+
+```go
+func analyzeAudio(audioPath string) error {
+    model, _ := provider.TranscriptionModel("best")
+
+    // Upload
+    audioURL, err := provider.UploadFile(audioPath)
+    if err != nil {
+        return err
+    }
+
+    // Transcribe with all features
+    result, err := ai.Transcribe(model, audioURL,
+        ai.WithSpeakerLabels(true),
+        ai.WithSentimentAnalysis(true),
+        ai.WithEntityDetection(true),
+        ai.WithTopicDetection(true),
+        ai.WithContentSafety(true),
+        ai.WithSummarization(true),
+        ai.WithAutoChapters(true),
+        ai.WithAutoHighlights(true),
+    )
+    if err != nil {
+        return err
+    }
+
+    // Print comprehensive report
+    fmt.Println("=== TRANSCRIPT ===")
+    fmt.Println(result.Text)
+
+    fmt.Println("\n=== SUMMARY ===")
+    fmt.Println(result.Summary)
+
+    fmt.Println("\n=== KEY PHRASES ===")
+    for _, highlight := range result.AutoHighlights.Results {
+        fmt.Printf("- %s\n", highlight.Text)
+    }
+
+    fmt.Println("\n=== TOPICS ===")
+    for _, topic := range result.IABCategories.Results {
+        fmt.Printf("- %s (%.1f%%)\n", topic.Label, topic.Relevance*100)
+    }
+
+    fmt.Println("\n=== ENTITIES ===")
+    for _, entity := range result.Entities {
+        fmt.Printf("- %s: %s\n", entity.EntityType, entity.Text)
+    }
+
+    return nil
+}
+```
+
+### Real-Time Transcription
+
+```go
+func realtimeTranscribe() error {
+    model, _ := provider.TranscriptionModel("nano")
+
+    stream, err := ai.StreamTranscribe(model,
+        ai.WithTranscriptionLanguage("en"),
+    )
+    if err != nil {
+        return err
+    }
+    defer stream.Close()
+
+    // Send audio
+    go sendAudioToStream(stream)
+
+    // Receive transcripts
+    for transcript := range stream.TranscriptChannel() {
+        if transcript.IsFinal {
+            fmt.Printf("\n%s\n", transcript.Text)
+        } else {
+            fmt.Printf("\r%s", transcript.Text)
+        }
+    }
+
+    return nil
+}
+```
+
+## Best Practices
+
+1. **Feature Selection**
+   - Enable only needed features
+   - More features = longer processing
+   - Consider cost of add-ons
+
+2. **Audio Quality**
+   - Clear audio improves accuracy
+   - Remove background noise when possible
+   - 16kHz+ sample rate recommended
+
+3. **Processing**
+   - Upload large files to AssemblyAI
+   - Poll for completion
+   - Store results for reuse
+
+4. **Cost Management**
+   - Monitor feature usage
+   - Batch process when possible
+   - Cache results
+
+## Rate Limits & Pricing
+
+### Pricing
+
+| Feature | Price |
+|---------|-------|
+| Transcription | $0.00025/second (~$0.015/min) |
+| Speaker diarization | +$0.0001/second |
+| Sentiment analysis | +$0.00005/second |
+| Entity detection | +$0.00005/second |
+| Topic detection | +$0.00005/second |
+| Content safety | +$0.00005/second |
+| Summarization | +$0.00005/second |
+
+### Rate Limits
+
+- 100 concurrent requests
+- 500 files uploading simultaneously
+
+## Error Handling
+
+```go
+result, err := ai.Transcribe(model, audioURL)
+if err != nil {
+    if aaiErr, ok := err.(*assemblyai.Error); ok {
+        switch aaiErr.Status {
+        case "error":
+            log.Printf("Transcription failed: %s", aaiErr.Error)
+        case "queued":
+            log.Println("Still in queue, retry later")
+        case "processing":
+            log.Println("Still processing, retry later")
+        default:
+            log.Printf("AssemblyAI error: %v", aaiErr)
+        }
+    }
+}
+```
+
+## See Also
+
+- [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
+- [AssemblyAI Documentation](https://www.assemblyai.com/docs)
+- [Deepgram Provider](24-deepgram.mdx) - Alternative

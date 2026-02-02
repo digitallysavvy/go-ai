@@ -1,0 +1,797 @@
+# [Guide Title]
+
+<!--
+  INSTRUCTIONS:
+  1. Replace [Guide Title] with descriptive title (e.g., "Streaming Responses", "Error Handling")
+  2. Focus on HOW to accomplish a specific task
+  3. Include complete, runnable examples
+  4. Show both basic and advanced usage
+  5. Cover common pitfalls and best practices
+  6. Link to relevant API reference documentation
+  7. Provide troubleshooting guidance
+-->
+
+Brief 1-2 sentence description of what this guide covers and what you'll learn.
+
+## Overview
+
+Comprehensive introduction that explains:
+- What this feature/capability is
+- Why you would want to use it
+- When it's appropriate to use
+- What prerequisites you need
+
+## Prerequisites
+
+Before starting this guide, you should:
+
+- Have Go 1.21 or later installed
+- Have completed the [Getting Started guide](../01-getting-started/quick-start.mdx)
+- Understand [prerequisite concept](../02-core-concepts/concept.mdx)
+- Have an API key configured
+
+## Basic Usage
+
+### Step 1: [First Step]
+
+Explanation of the first step.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Step 1 code with clear comments
+    client := gai.NewClient("your-api-key")
+
+    // Continue with clear, simple example
+}
+```
+
+### Step 2: [Second Step]
+
+Explanation of the second step and what it accomplishes.
+
+```go
+// Build on the previous step
+request := &gai.Request{
+    Model: "claude-3-5-sonnet-20241022",
+    Messages: []gai.Message{
+        {Role: "user", Content: "Hello!"},
+    },
+}
+```
+
+### Step 3: [Third Step]
+
+Explanation of the final basic step.
+
+```go
+// Complete the basic example
+response, err := client.Generate(context.Background(), request)
+if err != nil {
+    log.Fatalf("Error: %v", err)
+}
+
+fmt.Println(response.Content)
+```
+
+### Complete Basic Example
+
+Here's the complete basic example:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+    "github.com/teilomillet/go-ai/providers/anthropic"
+)
+
+func main() {
+    // Create client
+    client := gai.NewClient(
+        "your-api-key",
+        gai.WithProvider(anthropic.NewProvider()),
+    )
+
+    // Create request
+    request := &gai.Request{
+        Model: "claude-3-5-sonnet-20241022",
+        Messages: []gai.Message{
+            {Role: "user", Content: "Hello, world!"},
+        },
+    }
+
+    // Generate response
+    response, err := client.Generate(context.Background(), request)
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    // Display result
+    fmt.Printf("Response: %s\n", response.Content)
+}
+```
+
+## Advanced Usage
+
+### [Advanced Feature 1]
+
+Description of more advanced usage pattern.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Advanced configuration
+    client := gai.NewClient(
+        "your-api-key",
+        gai.WithAdvancedOption1(value1),
+        gai.WithAdvancedOption2(value2),
+    )
+
+    // Advanced usage pattern
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    request := &gai.Request{
+        Model: "claude-3-5-sonnet-20241022",
+        Messages: messages,
+        Options: &gai.RequestOptions{
+            Temperature: 0.7,
+            MaxTokens:   2000,
+            // Advanced options
+        },
+    }
+
+    response, err := client.Generate(ctx, request)
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    fmt.Println(response.Content)
+}
+```
+
+### [Advanced Feature 2]
+
+Another advanced usage pattern.
+
+```go
+// Example showing advanced technique
+func advancedFunction() error {
+    // Implementation
+    return nil
+}
+```
+
+### [Advanced Feature 3]
+
+Additional advanced capability.
+
+```go
+// Example demonstrating the feature
+```
+
+## Configuration Options
+
+### Option 1: [Option Name]
+
+**Type:** `Type`
+
+**Default:** `default-value`
+
+**Description:** What this option does and when to use it.
+
+**Example:**
+
+```go
+client := gai.NewClient(
+    apiKey,
+    gai.WithOption1(customValue),
+)
+```
+
+### Option 2: [Option Name]
+
+**Type:** `Type`
+
+**Default:** `default-value`
+
+**Description:** What this option does and when to use it.
+
+**Example:**
+
+```go
+request := &gai.Request{
+    Options: &gai.RequestOptions{
+        Option2: value,
+    },
+}
+```
+
+## Use Cases
+
+### Use Case 1: [Scenario Name]
+
+Description of a real-world scenario where this is useful.
+
+**Example:**
+
+```go
+// Complete example for this use case
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Implementation specific to this use case
+    client := gai.NewClient("your-api-key")
+
+    // Scenario-specific code
+    result, err := performTask(client)
+    if err != nil {
+        log.Fatalf("Task failed: %v", err)
+    }
+
+    fmt.Printf("Result: %+v\n", result)
+}
+
+func performTask(client *gai.Client) (interface{}, error) {
+    // Task implementation
+    return nil, nil
+}
+```
+
+### Use Case 2: [Scenario Name]
+
+Another real-world scenario.
+
+**Example:**
+
+```go
+// Example for this use case
+```
+
+### Use Case 3: [Scenario Name]
+
+Additional use case example.
+
+**Example:**
+
+```go
+// Example for this use case
+```
+
+## Best Practices
+
+### 1. [Best Practice Name]
+
+Explanation of why this is important.
+
+**Do:**
+
+```go
+// Example of correct approach
+client := gai.NewClient(
+    apiKey,
+    gai.WithBestPracticeOption(),
+)
+```
+
+**Don't:**
+
+```go
+// Example of what to avoid
+client := gai.NewClient(apiKey)
+// Missing important configuration
+```
+
+### 2. [Best Practice Name]
+
+Another important practice.
+
+**Do:**
+
+```go
+// Correct approach
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+```
+
+**Don't:**
+
+```go
+// Avoid this
+ctx := context.Background() // No timeout
+```
+
+### 3. [Best Practice Name]
+
+Additional best practice.
+
+### 4. Error Handling
+
+Always implement proper error handling:
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    // Check for specific error types
+    if errors.Is(err, gai.ErrRateLimited) {
+        // Handle rate limiting
+        log.Println("Rate limited, implementing backoff")
+        time.Sleep(5 * time.Second)
+        // Retry logic
+    } else if errors.Is(err, gai.ErrInvalidInput) {
+        // Handle validation errors
+        return fmt.Errorf("invalid input: %w", err)
+    } else {
+        // Handle other errors
+        return fmt.Errorf("generation failed: %w", err)
+    }
+}
+```
+
+### 5. Resource Management
+
+Properly manage resources:
+
+```go
+// Use defer for cleanup
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+// Close streams when done
+stream, err := client.GenerateStream(ctx, request)
+if err != nil {
+    return err
+}
+defer stream.Close()
+```
+
+## Common Pitfalls
+
+### Pitfall 1: [Common Mistake]
+
+**Problem:** Description of what developers often do wrong.
+
+**Symptom:** What happens when you make this mistake.
+
+**Wrong:**
+
+```go
+// Incorrect implementation
+result := incorrectApproach()
+```
+
+**Correct:**
+
+```go
+// Correct implementation
+result := correctApproach()
+if err != nil {
+    // Proper error handling
+}
+```
+
+**Why:** Explanation of why the correct approach is better.
+
+### Pitfall 2: [Common Mistake]
+
+**Problem:** Another common mistake.
+
+**Wrong:**
+
+```go
+// What not to do
+```
+
+**Correct:**
+
+```go
+// What to do instead
+```
+
+### Pitfall 3: [Common Mistake]
+
+**Problem:** Additional common mistake.
+
+**Solution:** How to avoid or fix it.
+
+## Error Handling
+
+### Common Errors
+
+#### Error Type 1
+
+**Error:** `ErrSpecificError`
+
+**Cause:** What causes this error.
+
+**Example:**
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    if errors.Is(err, gai.ErrSpecificError) {
+        log.Printf("Specific error occurred: %v", err)
+        // Handle appropriately
+    }
+}
+```
+
+**Solution:** How to fix or prevent this error.
+
+#### Error Type 2
+
+**Error:** `ErrAnotherError`
+
+**Cause:** What causes this error.
+
+**Example:**
+
+```go
+// Error handling example
+```
+
+**Solution:** How to resolve it.
+
+### Error Handling Pattern
+
+Complete error handling pattern for this feature:
+
+```go
+func handleRequest(client *gai.Client, request *gai.Request) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    response, err := client.Generate(ctx, request)
+    if err != nil {
+        // Handle different error types
+        switch {
+        case errors.Is(err, gai.ErrRateLimited):
+            return handleRateLimit(client, request)
+        case errors.Is(err, gai.ErrInvalidInput):
+            return fmt.Errorf("invalid request: %w", err)
+        case errors.Is(err, context.DeadlineExceeded):
+            return fmt.Errorf("request timed out: %w", err)
+        default:
+            return fmt.Errorf("generation failed: %w", err)
+        }
+    }
+
+    // Process successful response
+    processResponse(response)
+    return nil
+}
+
+func handleRateLimit(client *gai.Client, request *gai.Request) error {
+    // Implement exponential backoff
+    backoff := time.Second
+    maxRetries := 3
+
+    for i := 0; i < maxRetries; i++ {
+        time.Sleep(backoff)
+        response, err := client.Generate(context.Background(), request)
+        if err == nil {
+            processResponse(response)
+            return nil
+        }
+        if !errors.Is(err, gai.ErrRateLimited) {
+            return err
+        }
+        backoff *= 2
+    }
+
+    return fmt.Errorf("max retries exceeded")
+}
+```
+
+## Performance Considerations
+
+### Optimization 1: [Optimization Name]
+
+Description of performance consideration.
+
+```go
+// Example showing optimized approach
+```
+
+**Impact:** How this affects performance.
+
+### Optimization 2: [Optimization Name]
+
+Another performance tip.
+
+```go
+// Example
+```
+
+### Optimization 3: [Optimization Name]
+
+Additional optimization.
+
+### Benchmarking
+
+How to measure performance:
+
+```go
+import "testing"
+
+func BenchmarkFeature(b *testing.B) {
+    client := gai.NewClient("your-api-key")
+    request := &gai.Request{
+        Model:    "claude-3-5-sonnet-20241022",
+        Messages: messages,
+    }
+
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        _, err := client.Generate(context.Background(), request)
+        if err != nil {
+            b.Fatalf("Error: %v", err)
+        }
+    }
+}
+```
+
+## Testing
+
+### Unit Testing
+
+How to test code using this feature:
+
+```go
+package mypackage_test
+
+import (
+    "context"
+    "testing"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func TestFeature(t *testing.T) {
+    // Setup
+    client := gai.NewClient("test-api-key")
+
+    // Test case
+    request := &gai.Request{
+        Model: "claude-3-5-sonnet-20241022",
+        Messages: []gai.Message{
+            {Role: "user", Content: "test"},
+        },
+    }
+
+    // Execute
+    response, err := client.Generate(context.Background(), request)
+
+    // Assert
+    if err != nil {
+        t.Fatalf("Unexpected error: %v", err)
+    }
+    if response.Content == "" {
+        t.Error("Expected non-empty response")
+    }
+}
+```
+
+### Integration Testing
+
+How to write integration tests:
+
+```go
+func TestIntegration(t *testing.T) {
+    // Integration test example
+}
+```
+
+### Mocking
+
+How to mock for testing:
+
+```go
+// Mock example
+```
+
+## Troubleshooting
+
+### Issue 1: [Problem Description]
+
+**Symptoms:**
+- Symptom 1
+- Symptom 2
+
+**Possible Causes:**
+- Cause 1
+- Cause 2
+
+**Solutions:**
+
+1. **Solution 1:** Step-by-step fix
+
+```go
+// Code example for solution
+```
+
+2. **Solution 2:** Alternative fix
+
+```go
+// Code example
+```
+
+### Issue 2: [Problem Description]
+
+**Symptoms:** What you observe
+
+**Solution:** How to fix
+
+```go
+// Example fix
+```
+
+### Issue 3: [Problem Description]
+
+**Symptoms:** What you observe
+
+**Solution:** How to fix
+
+### Debugging Tips
+
+```go
+import "log"
+
+// Enable verbose logging
+client := gai.NewClient(
+    apiKey,
+    gai.WithDebug(true),
+)
+
+// Log requests and responses
+log.Printf("Request: %+v\n", request)
+response, err := client.Generate(ctx, request)
+log.Printf("Response: %+v\n", response)
+log.Printf("Error: %v\n", err)
+```
+
+## Real-World Example
+
+Complete, production-ready example:
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/teilomillet/go-ai"
+    "github.com/teilomillet/go-ai/providers/anthropic"
+)
+
+func main() {
+    // Initialize client with production settings
+    apiKey := os.Getenv("ANTHROPIC_API_KEY")
+    if apiKey == "" {
+        log.Fatal("ANTHROPIC_API_KEY not set")
+    }
+
+    client := gai.NewClient(
+        apiKey,
+        gai.WithProvider(anthropic.NewProvider()),
+        gai.WithTimeout(60*time.Second),
+    )
+
+    // Execute task with error handling
+    if err := executeTask(client); err != nil {
+        log.Fatalf("Task failed: %v", err)
+    }
+
+    log.Println("Task completed successfully")
+}
+
+func executeTask(client *gai.Client) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    request := &gai.Request{
+        Model: "claude-3-5-sonnet-20241022",
+        Messages: []gai.Message{
+            {
+                Role:    "system",
+                Content: "You are a helpful assistant.",
+            },
+            {
+                Role:    "user",
+                Content: "Explain the concept briefly.",
+            },
+        },
+        Options: &gai.RequestOptions{
+            Temperature: 0.7,
+            MaxTokens:   1000,
+        },
+    }
+
+    response, err := client.Generate(ctx, request)
+    if err != nil {
+        return handleError(err)
+    }
+
+    fmt.Printf("Response:\n%s\n", response.Content)
+    fmt.Printf("Tokens used: %d\n", response.Usage.TotalTokens)
+
+    return nil
+}
+
+func handleError(err error) error {
+    switch {
+    case errors.Is(err, gai.ErrRateLimited):
+        return fmt.Errorf("rate limited, try again later: %w", err)
+    case errors.Is(err, gai.ErrInvalidInput):
+        return fmt.Errorf("invalid input: %w", err)
+    case errors.Is(err, context.DeadlineExceeded):
+        return fmt.Errorf("request timed out: %w", err)
+    default:
+        return fmt.Errorf("generation failed: %w", err)
+    }
+}
+```
+
+## Summary
+
+Key takeaways:
+- Point 1: Main concept learned
+- Point 2: Important practice
+- Point 3: Critical consideration
+
+## Next Steps
+
+After completing this guide:
+- [Related guide 1](./related-guide-1.mdx)
+- [Related guide 2](./related-guide-2.mdx)
+- [Advanced topic](./advanced-topic.mdx)
+
+## Related Documentation
+
+- [API Reference: Client](../07-reference/api/client.mdx)
+- [API Reference: Request](../07-reference/api/request.mdx)
+- [Provider Documentation](../03-providers/anthropic.mdx)
+- [Core Concepts](../02-core-concepts/client-configuration.mdx)
+
+## Additional Resources
+
+- [External resource 1](https://example.com)
+- [External resource 2](https://example.com)
+- [Community examples](https://github.com/examples)

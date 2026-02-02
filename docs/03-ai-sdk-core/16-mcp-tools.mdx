@@ -1,0 +1,787 @@
+---
+title: Model Context Protocol (MCP)
+description: Learn how to connect to Model Context Protocol (MCP) servers and use their tools with Go-AI SDK.
+---
+
+# Model Context Protocol (MCP)
+
+The Go-AI SDK supports connecting to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers to access their tools, resources, and prompts. This enables your AI applications to discover and use capabilities across various services through a standardized interface.
+
+## Overview
+
+MCP (Model Context Protocol) is an open protocol that allows AI applications to:
+
+- **Discover Tools**: Automatically detect available functions from MCP servers
+- **Execute Tools**: Call remote functions and get structured results
+- **Access Resources**: Read data from various sources (files, databases, APIs)
+- **Use Prompts**: Retrieve reusable prompt templates
+
+## Installation
+
+The MCP package is included in the Go-AI SDK:
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/mcp"
+)
+```
+
+## Initializing an MCP Client
+
+We recommend using HTTP transport for production deployments. The stdio transport should only be used for connecting to local servers as it cannot be deployed to production environments.
+
+### HTTP Transport (Recommended)
+
+For production deployments, use the HTTP transport:
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/mcp"
+)
+
+ctx := context.Background()
+
+// Create HTTP transport
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL:       "https://your-server.com/mcp",
+    TimeoutMS: 30000,
+
+    // Optional: Add custom headers
+    Headers: map[string]string{
+        "Authorization": "Bearer my-api-key",
+    },
+})
+
+// Create client
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:    "my-go-app",
+    ClientVersion: "1.0.0",
+})
+
+// Connect
+err := client.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+### HTTP with OAuth Authentication
+
+For authenticated MCP servers:
+
+```go
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL:       "https://mcp.example.com",
+    TimeoutMS: 30000,
+    OAuth: &mcp.OAuthConfig{
+        ClientID:     "your-client-id",
+        ClientSecret: "your-client-secret",
+        TokenURL:     "https://auth.example.com/token",
+    },
+})
+
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:    "my-go-app",
+    ClientVersion: "1.0.0",
+})
+
+err := client.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+### Stdio Transport (Local Servers Only)
+
+<Note type="warning">
+  The stdio transport should only be used for local development with MCP servers running as child processes.
+</Note>
+
+```go
+// Create stdio transport for local Node.js MCP server
+transport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
+    Command: "node",
+    Args:    []string{"server.mjs"},
+
+    // Optional: Set working directory
+    WorkingDir: "/path/to/mcp/server",
+
+    // Optional: Set environment variables
+    Env: []string{
+        "API_KEY=your-api-key",
+    },
+})
+
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:    "my-go-app",
+    ClientVersion: "1.0.0",
+})
+
+err := client.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+### Closing the MCP Client
+
+After initialization, you should close the MCP client based on your usage pattern:
+
+- **Short-lived usage**: Close the client when the response is finished
+- **Long-running clients**: Keep the client open but ensure it's closed when the application terminates
+
+```go
+// For short-lived usage
+client := setupMCPClient()
+defer client.Close()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: tools,
+    Prompt: "Your prompt here",
+})
+
+// Client closes automatically via defer
+```
+
+```go
+// For long-running applications
+client := setupMCPClient()
+
+// Register cleanup handler
+c := make(chan os.Signal, 1)
+signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+go func() {
+    <-c
+    client.Close()
+    os.Exit(0)
+}()
+
+// Use client throughout application lifecycle
+```
+
+## Using MCP Tools
+
+The Go-AI SDK provides two approaches for working with MCP tools:
+
+### Approach 1: Schema Discovery (Recommended)
+
+With schema discovery, all tools offered by the server are automatically listed and converted to Go-AI SDK tools:
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/mcp"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+ctx := context.Background()
+
+// Set up MCP client
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL: "https://mcp.example.com",
+})
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:    "my-app",
+    ClientVersion: "1.0.0",
+})
+
+err := client.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Convert MCP tools to Go-AI SDK tools
+converter := mcp.NewMCPToolConverter(client)
+tools, err := converter.ConvertToGoAITools(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use tools with AI model
+model, _ := openai.New().LanguageModel("gpt-4")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Brooklyn, NY?",
+    Tools:  tools, // All MCP tools are available
+})
+
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+This approach is simpler and automatically stays in sync with server changes. However, you won't have compile-time type safety for tool parameters.
+
+### Approach 2: Schema Definition
+
+For better type safety and control, you can define specific tools and their schemas:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// Define tool schema
+weatherTool := ai.Tool{
+    Name:        "get-weather",
+    Description: "Get weather information for a location",
+    Parameters: types.JSONSchema{
+        Type: "object",
+        Properties: map[string]types.JSONSchema{
+            "location": {
+                Type:        "string",
+                Description: "City name",
+            },
+            "units": {
+                Type: "string",
+                Enum: []string{"celsius", "fahrenheit"},
+                Description: "Temperature units",
+            },
+        },
+        Required: []string{"location"},
+    },
+    Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+        // Call MCP tool manually
+        result, err := client.CallTool(ctx, &mcp.CallToolRequest{
+            Name: "get-weather",
+            Arguments: args,
+        })
+        if err != nil {
+            return nil, err
+        }
+
+        // Convert result
+        return mcp.ConvertMCPContentToAISDK(result.Content), nil
+    },
+}
+
+// Use with AI model
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the temperature in Paris?",
+    Tools:  []ai.Tool{weatherTool},
+})
+```
+
+This approach provides full type safety and lets you catch parameter mismatches during development.
+
+## Image Content Handling
+
+<Note type="important">
+  The Go-AI SDK automatically handles image content from MCP tools to prevent token explosions (200K+ tokens per image).
+</Note>
+
+When MCP tools return images (screenshots, charts, diagrams), the SDK properly converts them to the AI SDK's native image format:
+
+```go
+// MCP server returns tool result with image
+// {
+//   "type": "image",
+//   "data": "iVBORw0KGgo...",  // base64 data
+//   "mimeType": "image/png"
+// }
+
+// Automatically converted to ImageContent
+// - Base64 decoded to bytes
+// - Token usage: ~1K instead of 200K+
+// - Cost savings: ~99% reduction
+
+// Use tools that return images normally:
+tools, _ := converter.ConvertToGoAITools(ctx)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Create a sales chart and analyze it",
+    Tools:  tools, // Tool may return image
+})
+
+// Images in results are properly handled
+// No token explosion
+```
+
+### Supported Image Formats
+
+The SDK handles all standard image formats:
+
+1. **Base64 data**: Raw base64-encoded image
+2. **Data URLs**: `data:image/png;base64,...`
+3. **HTTP/HTTPS URLs**: Remote image URLs
+
+### Performance Impact
+
+- **Without image handling**: 200K+ tokens per image
+- **With proper handling**: ~1K tokens per image
+- **Cost savings**: ~$1.99 per image for GPT-4 Turbo (~99% reduction)
+
+## Using MCP Resources
+
+Resources are application-driven data sources that provide context to the model. Unlike tools (which are model-controlled), your application decides when to fetch and pass resources as context.
+
+### Listing Resources
+
+List all available resources from the MCP server:
+
+```go
+resources, err := client.ListResources(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, resource := range resources {
+    fmt.Printf("Resource: %s (%s)\n", resource.Name, resource.URI)
+    fmt.Printf("  Description: %s\n", resource.Description)
+    fmt.Printf("  MIME Type: %s\n", resource.MimeType)
+}
+```
+
+### Reading Resource Contents
+
+Read the contents of a specific resource by its URI:
+
+```go
+resourceData, err := client.ReadResource(ctx, &mcp.ReadResourceRequest{
+    URI: "file:///example/document.txt",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use resource content in prompt
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Prompt: fmt.Sprintf("Summarize this document:\n\n%s",
+        resourceData.Contents[0].Text),
+})
+```
+
+### Listing Resource Templates
+
+Resource templates are dynamic URI patterns that allow flexible queries:
+
+```go
+templates, err := client.ListResourceTemplates(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, template := range templates {
+    fmt.Printf("Template: %s\n", template.Name)
+    fmt.Printf("  URI Template: %s\n", template.URITemplate)
+    fmt.Printf("  Description: %s\n", template.Description)
+}
+```
+
+## Using MCP Prompts
+
+<Note type="warning">
+  MCP Prompts is an experimental feature and may change in the future.
+</Note>
+
+Prompts are user-controlled templates that servers expose for clients to list and retrieve with optional arguments.
+
+### Listing Prompts
+
+```go
+prompts, err := client.ListPrompts(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, prompt := range prompts {
+    fmt.Printf("Prompt: %s\n", prompt.Name)
+    fmt.Printf("  Description: %s\n", prompt.Description)
+
+    if len(prompt.Arguments) > 0 {
+        fmt.Println("  Arguments:")
+        for _, arg := range prompt.Arguments {
+            fmt.Printf("    - %s (%s): %s\n",
+                arg.Name, arg.Required, arg.Description)
+        }
+    }
+}
+```
+
+### Getting a Prompt
+
+Retrieve prompt messages, optionally passing arguments:
+
+```go
+prompt, err := client.GetPrompt(ctx, &mcp.GetPromptRequest{
+    Name: "code_review",
+    Arguments: map[string]string{
+        "code": "func add(a, b int) int { return a + b }",
+        "language": "go",
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Convert prompt messages to AI SDK messages
+messages := make([]types.Message, len(prompt.Messages))
+for i, msg := range prompt.Messages {
+    messages[i] = types.Message{
+        Role:    msg.Role,
+        Content: []types.ContentPart{
+            types.TextContent{Text: msg.Content.Text},
+        },
+    }
+}
+
+// Use prompt messages with AI model
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
+```
+
+## Complete Example
+
+Here's a complete example that demonstrates all MCP features:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/mcp"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // 1. Set up MCP client with HTTP transport
+    transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+        URL:       os.Getenv("MCP_SERVER_URL"),
+        TimeoutMS: 30000,
+        Headers: map[string]string{
+            "Authorization": "Bearer " + os.Getenv("MCP_API_KEY"),
+        },
+    })
+
+    client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+        ClientName:    "go-ai-example",
+        ClientVersion: "1.0.0",
+    })
+
+    err := client.Connect(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Ensure cleanup
+    defer client.Close()
+
+    // Handle interrupt signal
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+    go func() {
+        <-c
+        client.Close()
+        os.Exit(0)
+    }()
+
+    // 2. List available resources
+    resources, err := client.ListResources(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Available resources:")
+    for _, r := range resources {
+        fmt.Printf("  - %s: %s\n", r.Name, r.Description)
+    }
+
+    // 3. Convert MCP tools to AI SDK tools
+    converter := mcp.NewMCPToolConverter(client)
+    tools, err := converter.ConvertToGoAITools(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("\nConverted %d MCP tools\n\n", len(tools))
+
+    // 4. Use tools with AI model
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: "Use the available tools to get the current weather " +
+                "in Brooklyn, New York and create a chart showing " +
+                "temperature trends",
+        Tools: tools,
+        MaxSteps: 5, // Allow multiple tool calls
+    })
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 5. Display results
+    fmt.Println("AI Response:")
+    fmt.Println(result.Text)
+
+    // Show tool calls made
+    if len(result.Steps) > 0 {
+        fmt.Println("\nTool Calls:")
+        for i, step := range result.Steps {
+            fmt.Printf("  Step %d:\n", i+1)
+            for _, call := range step.ToolCalls {
+                fmt.Printf("    - %s(%v)\n", call.Name, call.Arguments)
+            }
+        }
+    }
+
+    // Display usage statistics
+    fmt.Printf("\nUsage: %d input tokens, %d output tokens\n",
+        result.Usage.PromptTokens,
+        result.Usage.CompletionTokens)
+}
+```
+
+## Error Handling
+
+Handle common MCP errors gracefully:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/mcp"
+
+// Connect with error handling
+err := client.Connect(ctx)
+if err != nil {
+    if mcp.IsConnectionError(err) {
+        log.Printf("Failed to connect to MCP server: %v", err)
+        // Retry or fallback logic
+    } else {
+        log.Fatal(err)
+    }
+}
+
+// Tool execution with error handling
+result, err := client.CallTool(ctx, &mcp.CallToolRequest{
+    Name: "get-weather",
+    Arguments: map[string]interface{}{
+        "location": "New York",
+    },
+})
+
+if err != nil {
+    if mcp.IsToolExecutionError(err) {
+        log.Printf("Tool execution failed: %v", err)
+        // Handle tool failure
+    } else if mcp.IsTimeoutError(err) {
+        log.Printf("Tool execution timed out: %v", err)
+        // Retry with longer timeout
+    } else {
+        log.Fatal(err)
+    }
+}
+```
+
+## Best Practices
+
+### 1. Use HTTP Transport in Production
+
+```go
+// ✅ Good: HTTP transport for production
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL: "https://mcp.production.com",
+})
+
+// ❌ Avoid: Stdio transport in production (won't work)
+transport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
+    Command: "node", // Cannot deploy to cloud
+})
+```
+
+### 2. Always Close the Client
+
+```go
+// ✅ Good: Use defer to ensure cleanup
+client := setupMCPClient()
+defer client.Close()
+
+// ✅ Good: Handle signals for long-running apps
+c := make(chan os.Signal, 1)
+signal.Notify(c, os.Interrupt)
+go func() {
+    <-c
+    client.Close()
+    os.Exit(0)
+}()
+```
+
+### 3. Handle Context Cancellation
+
+```go
+// ✅ Good: Respect context cancellation
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: tools,
+    Prompt: prompt,
+})
+
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        log.Println("Request timed out")
+    }
+    return err
+}
+```
+
+### 4. Use Schema Discovery for Simplicity
+
+```go
+// ✅ Good: Simple schema discovery
+converter := mcp.NewMCPToolConverter(client)
+tools, err := converter.ConvertToGoAITools(ctx)
+
+// Use all available tools
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  tools,
+    Prompt: "Use whatever tools you need",
+})
+```
+
+### 5. Monitor Token Usage
+
+```go
+// ✅ Good: Monitor usage to catch image token explosions
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Tools: tools,
+    Prompt: prompt,
+})
+
+if err != nil {
+    return err
+}
+
+// Check if image handling is working correctly
+if result.Usage.PromptTokens > 100000 {
+    log.Printf("WARNING: High token usage (%d) - possible image handling issue",
+        result.Usage.PromptTokens)
+}
+```
+
+## Testing
+
+The MCP package includes comprehensive tests:
+
+```bash
+# Run all MCP tests
+go test ./pkg/mcp/... -v
+
+# Run tests with coverage
+go test ./pkg/mcp/... -cover
+
+# Run specific test
+go test ./pkg/mcp -run TestContentConversion -v
+```
+
+## Troubleshooting
+
+### Connection Failures
+
+If you cannot connect to an MCP server:
+
+```go
+// Enable debug logging
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL:       "https://mcp.example.com",
+    DebugMode: true, // Enable verbose logging
+})
+
+// Check network connectivity
+// - Verify the URL is correct
+// - Check firewall settings
+// - Test with curl: curl https://mcp.example.com/mcp
+```
+
+### Tool Execution Failures
+
+If tools fail to execute:
+
+```go
+// Check tool availability
+tools, err := converter.ConvertToGoAITools(ctx)
+if err != nil {
+    log.Fatal("Failed to convert tools:", err)
+}
+
+fmt.Printf("Available tools: %d\n", len(tools))
+for _, tool := range tools {
+    fmt.Printf("  - %s: %s\n", tool.Name, tool.Description)
+}
+
+// Test tool manually
+result, err := client.CallTool(ctx, &mcp.CallToolRequest{
+    Name: "problem-tool",
+    Arguments: map[string]interface{}{},
+})
+if err != nil {
+    fmt.Printf("Tool error: %v\n", err)
+}
+```
+
+### High Token Usage with Images
+
+If you're seeing unexpectedly high token usage:
+
+```go
+// This should NOT happen with proper image handling
+// but if you see 200K+ token usage, check:
+
+// 1. Verify image conversion is working
+result, err := client.CallTool(ctx, &mcp.CallToolRequest{
+    Name: "create-chart",
+    Arguments: args,
+})
+
+// 2. Inspect the result content
+for _, content := range result.Content {
+    if content.Type == "image" {
+        fmt.Println("Image found - should be converted to bytes")
+        // If you see base64 text here, there's a problem
+    }
+}
+```
+
+## See Also
+
+- [MCP Specification](https://spec.modelcontextprotocol.io/)
+- [Generating Text](./05-generating-text.mdx)
+- [Tools](../02-foundations/04-tools.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [Advanced: Tool Calling](../06-advanced/07-tool-calling.mdx)

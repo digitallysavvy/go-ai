@@ -1,0 +1,588 @@
+---
+title: Schema Validation Errors
+description: Fixing JSON schema validation errors in Go AI SDK
+---
+
+# Schema Validation Errors
+
+This guide covers JSON schema validation errors when generating structured data with the Go AI SDK.
+
+## Schema Definition Errors
+
+### Error: "Invalid Schema Format"
+
+**Symptoms:**
+```
+Error: schema validation failed: invalid type definition
+Error: missing required field in schema
+```
+
+**Cause:**
+Incorrectly formatted JSON schema or missing required fields.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Define struct with comprehensive JSON schema tags
+type Recipe struct {
+    Name         string   `json:"name" jsonschema:"required,minLength=1,maxLength=100,description=Recipe name"`
+    Description  string   `json:"description" jsonschema:"required,minLength=10,description=Recipe description"`
+    Ingredients  []string `json:"ingredients" jsonschema:"required,minItems=1,description=List of ingredients"`
+    Steps        []string `json:"steps" jsonschema:"required,minItems=1,description=Cooking instructions"`
+    PrepTime     int      `json:"prepTime" jsonschema:"required,minimum=1,description=Preparation time in minutes"`
+    CookTime     int      `json:"cookTime" jsonschema:"required,minimum=1,description=Cooking time in minutes"`
+    Servings     int      `json:"servings" jsonschema:"required,minimum=1,maximum=20,description=Number of servings"`
+    Difficulty   string   `json:"difficulty" jsonschema:"required,enum=easy,enum=medium,enum=hard,description=Recipe difficulty level"`
+    Cuisine      string   `json:"cuisine" jsonschema:"description=Type of cuisine"`
+    IsVegetarian bool     `json:"isVegetarian" jsonschema:"description=Whether the recipe is vegetarian"`
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Generate schema with proper configuration
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false, // Strict validation
+        DoNotReference:            true,  // Inline definitions
+        RequiredFromJSONSchemaTags: true, // Use jsonschema tags
+    }
+    schema := reflector.Reflect(&Recipe{})
+
+    // Validate schema before using
+    schemaBytes, err := json.MarshalIndent(schema, "", "  ")
+    if err != nil {
+        log.Fatalf("Invalid schema: %v", err)
+    }
+    log.Printf("Generated schema:\n%s", schemaBytes)
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: schema,
+        Prompt: "Create a lasagna recipe for 4 people",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate object: %v", err)
+    }
+
+    var recipe Recipe
+    if err := json.Unmarshal(result.Object, &recipe); err != nil {
+        log.Fatalf("Failed to unmarshal result: %v", err)
+    }
+
+    fmt.Printf("Recipe: %s\n", recipe.Name)
+    fmt.Printf("Prep time: %d minutes\n", recipe.PrepTime)
+    fmt.Printf("Servings: %d\n", recipe.Servings)
+}
+```
+
+## Type Mismatch Errors
+
+### Error: "Generated Object Type Mismatch"
+
+**Symptoms:**
+```
+Error: json: cannot unmarshal string into Go value of type int
+Error: field type mismatch
+```
+
+**Cause:**
+Model generates JSON that doesn't match your struct types.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "strconv"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Custom type with JSON unmarshaling
+type FlexibleInt int
+
+func (f *FlexibleInt) UnmarshalJSON(data []byte) error {
+    // Try to unmarshal as int first
+    var i int
+    if err := json.Unmarshal(data, &i); err == nil {
+        *f = FlexibleInt(i)
+        return nil
+    }
+
+    // If that fails, try as string
+    var s string
+    if err := json.Unmarshal(data, &s); err != nil {
+        return err
+    }
+
+    // Convert string to int
+    i, err := strconv.Atoi(s)
+    if err != nil {
+        return fmt.Errorf("cannot convert %q to int: %w", s, err)
+    }
+
+    *f = FlexibleInt(i)
+    return nil
+}
+
+// Product with flexible types
+type Product struct {
+    Name        string      `json:"name" jsonschema:"required"`
+    Price       FlexibleInt `json:"price" jsonschema:"required,type=integer,description=Price in cents"`
+    Quantity    FlexibleInt `json:"quantity" jsonschema:"required,type=integer,description=Quantity available"`
+    InStock     bool        `json:"inStock" jsonschema:"required"`
+    Description string      `json:"description" jsonschema:"required"`
+}
+
+// Validation after unmarshaling
+func (p *Product) Validate() error {
+    if p.Name == "" {
+        return fmt.Errorf("name is required")
+    }
+    if p.Price < 0 {
+        return fmt.Errorf("price must be non-negative")
+    }
+    if p.Quantity < 0 {
+        return fmt.Errorf("quantity must be non-negative")
+    }
+    return nil
+}
+
+func generateProduct(ctx context.Context, model interface{}, prompt string) (*Product, error) {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&Product{})
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: schema,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("generation failed: %w", err)
+    }
+
+    var product Product
+    if err := json.Unmarshal(result.Object, &product); err != nil {
+        // Log the raw JSON for debugging
+        log.Printf("Raw JSON: %s", string(result.Object))
+        return nil, fmt.Errorf("unmarshal failed: %w", err)
+    }
+
+    // Validate after unmarshaling
+    if err := product.Validate(); err != nil {
+        return nil, fmt.Errorf("validation failed: %w", err)
+    }
+
+    return &product, nil
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    product, err := generateProduct(ctx, model, "Create a laptop product listing")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Product: %s - $%.2f\n", product.Name, float64(product.Price)/100)
+}
+```
+
+## Nested Structure Errors
+
+### Error: "Complex Nested Schema Validation Failed"
+
+**Symptoms:**
+```
+Error: nested object validation failed
+Error: array item schema mismatch
+```
+
+**Cause:**
+Complex nested structures not properly defined in schema.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Address is a nested structure
+type Address struct {
+    Street  string `json:"street" jsonschema:"required,description=Street address"`
+    City    string `json:"city" jsonschema:"required,description=City name"`
+    State   string `json:"state" jsonschema:"required,pattern=^[A-Z]{2}$,description=Two-letter state code"`
+    ZipCode string `json:"zipCode" jsonschema:"required,pattern=^[0-9]{5}$,description=Five-digit ZIP code"`
+}
+
+// OrderItem represents a single item in an order
+type OrderItem struct {
+    ProductID   string  `json:"productId" jsonschema:"required,description=Product identifier"`
+    ProductName string  `json:"productName" jsonschema:"required,description=Product name"`
+    Quantity    int     `json:"quantity" jsonschema:"required,minimum=1,description=Quantity ordered"`
+    UnitPrice   float64 `json:"unitPrice" jsonschema:"required,minimum=0,description=Price per unit"`
+    Subtotal    float64 `json:"subtotal" jsonschema:"required,minimum=0,description=Line item total"`
+}
+
+// Order is the top-level structure with nested objects
+type Order struct {
+    OrderID        string      `json:"orderId" jsonschema:"required,description=Unique order identifier"`
+    CustomerName   string      `json:"customerName" jsonschema:"required,description=Customer full name"`
+    CustomerEmail  string      `json:"customerEmail" jsonschema:"required,format=email,description=Customer email address"`
+    ShippingAddr   Address     `json:"shippingAddress" jsonschema:"required,description=Shipping address"`
+    BillingAddr    Address     `json:"billingAddress" jsonschema:"required,description=Billing address"`
+    Items          []OrderItem `json:"items" jsonschema:"required,minItems=1,description=Order items"`
+    Subtotal       float64     `json:"subtotal" jsonschema:"required,minimum=0,description=Subtotal before tax"`
+    Tax            float64     `json:"tax" jsonschema:"required,minimum=0,description=Tax amount"`
+    ShippingCost   float64     `json:"shippingCost" jsonschema:"required,minimum=0,description=Shipping cost"`
+    Total          float64     `json:"total" jsonschema:"required,minimum=0,description=Total amount"`
+    Status         string      `json:"status" jsonschema:"required,enum=pending,enum=processing,enum=shipped,enum=delivered,description=Order status"`
+}
+
+// Validate ensures the order data is consistent
+func (o *Order) Validate() error {
+    // Validate items
+    if len(o.Items) == 0 {
+        return fmt.Errorf("order must have at least one item")
+    }
+
+    // Calculate and verify subtotal
+    calculatedSubtotal := 0.0
+    for i, item := range o.Items {
+        if item.Quantity <= 0 {
+            return fmt.Errorf("item %d: quantity must be positive", i)
+        }
+        if item.UnitPrice < 0 {
+            return fmt.Errorf("item %d: price cannot be negative", i)
+        }
+
+        expectedSubtotal := float64(item.Quantity) * item.UnitPrice
+        if item.Subtotal != expectedSubtotal {
+            log.Printf("Warning: item %d subtotal mismatch (expected %.2f, got %.2f)",
+                i, expectedSubtotal, item.Subtotal)
+        }
+
+        calculatedSubtotal += item.Subtotal
+    }
+
+    // Verify order totals
+    if o.Subtotal != calculatedSubtotal {
+        log.Printf("Warning: order subtotal mismatch (expected %.2f, got %.2f)",
+            calculatedSubtotal, o.Subtotal)
+    }
+
+    expectedTotal := o.Subtotal + o.Tax + o.ShippingCost
+    if o.Total != expectedTotal {
+        log.Printf("Warning: order total mismatch (expected %.2f, got %.2f)",
+            expectedTotal, o.Total)
+    }
+
+    return nil
+}
+
+func generateOrder(ctx context.Context, model interface{}) (*Order, error) {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+        RequiredFromJSONSchemaTags: true,
+    }
+    schema := reflector.Reflect(&Order{})
+
+    // Log schema for debugging
+    schemaJSON, _ := json.MarshalIndent(schema, "", "  ")
+    log.Printf("Schema:\n%s", schemaJSON)
+
+    prompt := `Generate a sample order for Jane Smith (jane@example.com) who ordered:
+- 2x Laptop at $999.99 each
+- 1x Mouse at $29.99
+Ship to: 123 Main St, Boston, MA 02101
+Same billing address
+Tax rate: 6.25%
+Shipping: $15.00`
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: schema,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("generation failed: %w", err)
+    }
+
+    // Log raw JSON for debugging
+    log.Printf("Generated JSON:\n%s", string(result.Object))
+
+    var order Order
+    if err := json.Unmarshal(result.Object, &order); err != nil {
+        return nil, fmt.Errorf("unmarshal failed: %w", err)
+    }
+
+    // Validate the order
+    if err := order.Validate(); err != nil {
+        return nil, fmt.Errorf("validation failed: %w", err)
+    }
+
+    return &order, nil
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    order, err := generateOrder(ctx, model)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Order %s for %s\n", order.OrderID, order.CustomerName)
+    fmt.Printf("Items: %d\n", len(order.Items))
+    fmt.Printf("Total: $%.2f\n", order.Total)
+}
+```
+
+## Array Validation Errors
+
+### Error: "Array Items Don't Match Schema"
+
+**Symptoms:**
+```
+Error: array item validation failed at index 2
+Error: array contains items of wrong type
+```
+
+**Cause:**
+Array items don't conform to the specified item schema.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Task with validation
+type Task struct {
+    ID          string `json:"id" jsonschema:"required,pattern=^TASK-[0-9]+$,description=Task ID in format TASK-XXX"`
+    Title       string `json:"title" jsonschema:"required,minLength=5,maxLength=100,description=Task title"`
+    Description string `json:"description" jsonschema:"required,minLength=10,description=Detailed task description"`
+    Priority    string `json:"priority" jsonschema:"required,enum=low,enum=medium,enum=high,enum=urgent,description=Task priority"`
+    Status      string `json:"status" jsonschema:"required,enum=todo,enum=in_progress,enum=done,description=Task status"`
+    Assignee    string `json:"assignee" jsonschema:"required,minLength=1,description=Person assigned to task"`
+    DueDate     string `json:"dueDate" jsonschema:"required,format=date,description=Due date in YYYY-MM-DD format"`
+}
+
+// TaskList with array validation
+type TaskList struct {
+    ProjectName string `json:"projectName" jsonschema:"required,description=Project name"`
+    Tasks       []Task `json:"tasks" jsonschema:"required,minItems=3,maxItems=10,description=List of tasks"`
+}
+
+// Validate all tasks in the list
+func (tl *TaskList) Validate() error {
+    if len(tl.Tasks) == 0 {
+        return fmt.Errorf("task list cannot be empty")
+    }
+
+    taskIDs := make(map[string]bool)
+
+    for i, task := range tl.Tasks {
+        // Check for duplicate IDs
+        if taskIDs[task.ID] {
+            return fmt.Errorf("duplicate task ID at index %d: %s", i, task.ID)
+        }
+        taskIDs[task.ID] = true
+
+        // Validate individual task
+        if err := validateTask(&task, i); err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+
+func validateTask(task *Task, index int) error {
+    if task.Title == "" {
+        return fmt.Errorf("task %d: title is required", index)
+    }
+    if task.Description == "" {
+        return fmt.Errorf("task %d: description is required", index)
+    }
+
+    validPriorities := map[string]bool{"low": true, "medium": true, "high": true, "urgent": true}
+    if !validPriorities[task.Priority] {
+        return fmt.Errorf("task %d: invalid priority %q", index, task.Priority)
+    }
+
+    validStatuses := map[string]bool{"todo": true, "in_progress": true, "done": true}
+    if !validStatuses[task.Status] {
+        return fmt.Errorf("task %d: invalid status %q", index, task.Status)
+    }
+
+    return nil
+}
+
+func generateTaskList(ctx context.Context, model interface{}) (*TaskList, error) {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+        RequiredFromJSONSchemaTags: true,
+    }
+    schema := reflector.Reflect(&TaskList{})
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: schema,
+        Prompt: "Generate a task list for a website redesign project with 5 tasks",
+    })
+    if err != nil {
+        return nil, fmt.Errorf("generation failed: %w", err)
+    }
+
+    var taskList TaskList
+    if err := json.Unmarshal(result.Object, &taskList); err != nil {
+        log.Printf("Raw JSON: %s", string(result.Object))
+        return nil, fmt.Errorf("unmarshal failed: %w", err)
+    }
+
+    // Validate the task list
+    if err := taskList.Validate(); err != nil {
+        return nil, fmt.Errorf("validation failed: %w", err)
+    }
+
+    return &taskList, nil
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    taskList, err := generateTaskList(ctx, model)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Project: %s\n", taskList.ProjectName)
+    fmt.Printf("Tasks: %d\n", len(taskList.Tasks))
+    for i, task := range taskList.Tasks {
+        fmt.Printf("%d. [%s] %s (Priority: %s, Assignee: %s)\n",
+            i+1, task.Status, task.Title, task.Priority, task.Assignee)
+    }
+}
+```
+
+## Best Practices
+
+### 1. Use Comprehensive JSON Schema Tags
+
+```go
+type Field struct {
+    Name string `json:"name" jsonschema:"required,minLength=1,maxLength=100,description=Field name"`
+}
+```
+
+### 2. Always Validate After Unmarshaling
+
+```go
+var result MyType
+json.Unmarshal(data, &result)
+if err := result.Validate(); err != nil {
+    return fmt.Errorf("validation failed: %w", err)
+}
+```
+
+### 3. Log Raw JSON on Errors
+
+```go
+if err := json.Unmarshal(result.Object, &myStruct); err != nil {
+    log.Printf("Raw JSON: %s", string(result.Object))
+    return err
+}
+```
+
+### 4. Use Flexible Types When Needed
+
+```go
+type FlexibleType struct {
+    Value interface{} `json:"value"`
+}
+
+func (f *FlexibleType) UnmarshalJSON(data []byte) error {
+    // Custom unmarshaling logic
+}
+```
+
+### 5. Test Schema Generation
+
+```go
+schema := reflector.Reflect(&YourType{})
+schemaJSON, _ := json.MarshalIndent(schema, "", "  ")
+log.Printf("Generated schema:\n%s", schemaJSON)
+```
+
+## See Also
+
+- [Generating Structured Data](../03-ai-sdk-core/10-generating-structured-data.mdx)
+- [Tool Calling Errors](./06-tool-calling-errors.mdx)
+- [Common Errors](./01-common-errors.mdx)
+- [Schema Reference](../07-reference/schema/json-schema.mdx)

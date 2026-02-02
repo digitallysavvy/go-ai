@@ -1,0 +1,359 @@
+---
+title: Deepgram Provider
+description: Setup and usage guide for Deepgram speech transcription with Go-AI SDK
+---
+
+# Deepgram Provider
+
+Deepgram provides fast, accurate speech-to-text transcription with real-time streaming capabilities, speaker diarization, and support for 40+ languages.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepgram"
+)
+```
+
+### Configuration
+
+```go
+provider := deepgram.New(deepgram.Config{
+    APIKey: os.Getenv("DEEPGRAM_API_KEY"),
+})
+
+model, err := provider.TranscriptionModel("nova-2")
+```
+
+### Get API Key
+
+```bash
+export DEEPGRAM_API_KEY=...
+```
+
+## Available Models
+
+### Transcription Models
+
+| Model ID | Accuracy | Speed | Price | Best For |
+|----------|----------|-------|-------|----------|
+| nova-2 | Excellent | Fast | $0.0043/min | Best overall |
+| nova-2-phonecall | Excellent | Fast | $0.0043/min | Phone calls |
+| nova-2-meeting | Excellent | Fast | $0.0043/min | Meetings |
+| enhanced | Very Good | Fast | $0.0145/min | General purpose |
+| base | Good | Very Fast | $0.0125/min | Cost-effective |
+
+## Provider-Specific Features
+
+### Real-Time Streaming
+
+Stream audio for live transcription:
+
+```go
+stream, err := ai.StreamTranscribe(model,
+    ai.WithTranscriptionLanguage("en"),
+    ai.WithDiarization(true),
+)
+defer stream.Close()
+
+// Send audio chunks
+audioFile, _ := os.Open("live-audio.wav")
+buf := make([]byte, 4096)
+for {
+    n, err := audioFile.Read(buf)
+    if err != nil {
+        break
+    }
+    stream.Write(buf[:n])
+}
+
+// Receive transcriptions
+for transcript := range stream.TranscriptChannel() {
+    fmt.Printf("[%s] %s\n", transcript.Speaker, transcript.Text)
+}
+```
+
+### Speaker Diarization
+
+Identify who said what:
+
+```go
+audioFile, _ := os.Open("meeting.mp3")
+
+result, err := ai.Transcribe(model, audioFile,
+    ai.WithDiarization(true),
+    ai.WithNumSpeakers(3), // Optional: specify number of speakers
+)
+
+for _, word := range result.Words {
+    fmt.Printf("Speaker %d: %s\n", word.Speaker, word.Text)
+}
+```
+
+### Punctuation & Formatting
+
+Automatic punctuation and formatting:
+
+```go
+result, err := ai.Transcribe(model, audioFile,
+    ai.WithPunctuation(true),
+    ai.WithParagraphs(true),
+    ai.WithUtterances(true),
+)
+
+// Well-formatted transcript with punctuation
+fmt.Println(result.Text)
+```
+
+### Keywords & Search
+
+Boost recognition of specific terms:
+
+```go
+result, err := ai.Transcribe(model, audioFile,
+    ai.WithKeywords([]string{"Go-AI", "SDK", "API", "Kubernetes"}),
+    ai.WithKeywordBoost(2.0), // Boost factor
+)
+```
+
+### Language Detection
+
+Automatic language detection:
+
+```go
+result, err := ai.Transcribe(model, audioFile,
+    ai.WithLanguageDetection(true),
+)
+
+fmt.Printf("Detected language: %s\n", result.Language)
+```
+
+### Redaction
+
+Automatically redact sensitive information:
+
+```go
+result, err := ai.Transcribe(model, audioFile,
+    ai.WithRedaction([]string{"pci", "ssn"}),
+)
+
+// Credit cards and SSNs replaced with [REDACTED]
+```
+
+## Examples
+
+### Basic Transcription
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepgram"
+)
+
+func main() {
+    provider := deepgram.New(deepgram.Config{
+        APIKey: os.Getenv("DEEPGRAM_API_KEY"),
+    })
+
+    model, err := provider.TranscriptionModel("nova-2")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    audioFile, err := os.Open("recording.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer audioFile.Close()
+
+    result, err := ai.Transcribe(model, audioFile,
+        ai.WithTranscriptionLanguage("en"),
+        ai.WithPunctuation(true),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Transcript:")
+    fmt.Println(result.Text)
+    fmt.Printf("\nConfidence: %.2f%%\n", result.Confidence*100)
+}
+```
+
+### Meeting Transcription
+
+```go
+func transcribeMeeting(audioPath string) (*ai.TranscribeResult, error) {
+    model, _ := provider.TranscriptionModel("nova-2-meeting")
+
+    audioFile, err := os.Open(audioPath)
+    if err != nil {
+        return nil, err
+    }
+    defer audioFile.Close()
+
+    return ai.Transcribe(model, audioFile,
+        ai.WithDiarization(true),
+        ai.WithPunctuation(true),
+        ai.WithParagraphs(true),
+        ai.WithSmartFormat(true),
+        ai.WithKeywords([]string{"quarterly", "revenue", "targets"}),
+    )
+}
+```
+
+### Real-Time Captioning
+
+```go
+func liveCaptions(audioStream io.Reader) error {
+    model, _ := provider.TranscriptionModel("nova-2")
+
+    stream, err := ai.StreamTranscribe(model,
+        ai.WithTranscriptionLanguage("en"),
+        ai.WithInterimResults(true), // Get partial results
+    )
+    if err != nil {
+        return err
+    }
+    defer stream.Close()
+
+    // Send audio in background
+    go func() {
+        buf := make([]byte, 4096)
+        for {
+            n, err := audioStream.Read(buf)
+            if err != nil {
+                stream.Close()
+                return
+            }
+            stream.Write(buf[:n])
+        }
+    }()
+
+    // Display captions
+    for transcript := range stream.TranscriptChannel() {
+        if transcript.IsFinal {
+            fmt.Printf("\r%s\n", transcript.Text)
+        } else {
+            fmt.Printf("\r%s", transcript.Text)
+        }
+    }
+
+    return nil
+}
+```
+
+### Batch Transcription
+
+```go
+func transcribeBatch(audioFiles []string) error {
+    model, _ := provider.TranscriptionModel("nova-2")
+
+    var wg sync.WaitGroup
+    results := make(chan string, len(audioFiles))
+
+    for _, path := range audioFiles {
+        wg.Add(1)
+        go func(filePath string) {
+            defer wg.Done()
+
+            audioFile, err := os.Open(filePath)
+            if err != nil {
+                return
+            }
+            defer audioFile.Close()
+
+            result, err := ai.Transcribe(model, audioFile)
+            if err != nil {
+                return
+            }
+
+            results <- fmt.Sprintf("%s: %s", filePath, result.Text)
+        }(path)
+    }
+
+    wg.Wait()
+    close(results)
+
+    for result := range results {
+        fmt.Println(result)
+    }
+
+    return nil
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use nova-2 for best accuracy
+   - Use nova-2-phonecall for phone audio
+   - Use nova-2-meeting for conferences
+   - Use base for high-volume, cost-sensitive tasks
+
+2. **Audio Quality**
+   - Use WAV or FLAC for best results
+   - 16kHz+ sample rate recommended
+   - Mono audio for phone calls
+   - Stereo for meetings/interviews
+
+3. **Real-Time Streaming**
+   - Send audio chunks regularly (100-250ms)
+   - Handle interim results for smooth UX
+   - Implement reconnection logic
+
+4. **Cost Optimization**
+   - Cache transcripts
+   - Use appropriate model for task
+   - Batch process when possible
+
+## Rate Limits & Pricing
+
+### Pricing
+
+- Nova-2: $0.0043/minute
+- Enhanced: $0.0145/minute
+- Base: $0.0125/minute
+
+Additional features:
+- Diarization: +$0.01/minute
+- Redaction: Included
+
+### Rate Limits
+
+Varies by plan - check dashboard.
+
+## Error Handling
+
+```go
+result, err := ai.Transcribe(model, audioFile)
+if err != nil {
+    if dgErr, ok := err.(*deepgram.Error); ok {
+        switch dgErr.Code {
+        case "invalid_api_key":
+            log.Fatal("Invalid API key")
+        case "insufficient_funds":
+            log.Fatal("Insufficient credits")
+        case "invalid_audio":
+            log.Fatal("Audio format not supported")
+        default:
+            log.Printf("Deepgram error: %s", dgErr.Message)
+        }
+    }
+}
+```
+
+## See Also
+
+- [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
+- [Deepgram Documentation](https://developers.deepgram.com)
+- [AssemblyAI Provider](25-assemblyai.mdx) - Alternative

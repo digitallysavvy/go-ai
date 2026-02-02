@@ -1,0 +1,184 @@
+---
+title: Transcribe
+description: API reference for Transcribe function
+---
+
+# Transcribe
+
+Converts speech audio to text using speech recognition models.
+
+## Signature
+
+```go
+func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error)
+```
+
+## Parameters
+
+### TranscribeOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.TranscriptionModel | Yes | Transcription model to use |
+| Audio | []byte | Yes | Audio data in binary format |
+| AudioFormat | string | No | Audio format (wav, mp3, m4a, etc.) |
+| Language | string | No | Language code (e.g., "en", "es", "fr") |
+| Prompt | string | No | Optional context to guide transcription |
+| Temperature | *float64 | No | Sampling temperature for generation |
+| TimestampGranularity | string | No | "word" or "segment" timestamps |
+| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+
+## Return Value
+
+### TranscribeResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Text | string | Transcribed text |
+| Segments | []TranscriptSegment | Timestamped segments |
+| Words | []TranscriptWord | Word-level timestamps |
+| Language | string | Detected language |
+| Duration | float64 | Audio duration in seconds |
+| Response | types.TranscriptionResponse | Response metadata |
+
+## Examples
+
+### Basic Transcription
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.TranscriptionModel("whisper-1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read audio file
+    audioData, err := os.ReadFile("audio.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.Transcribe(context.Background(), ai.TranscribeOptions{
+        Model:       model,
+        Audio:       audioData,
+        AudioFormat: "mp3",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Transcription:", result.Text)
+}
+```
+
+### With Language Specification
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:       model,
+    Audio:       audioData,
+    AudioFormat: "wav",
+    Language:    "en",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Text: %s\n", result.Text)
+fmt.Printf("Detected language: %s\n", result.Language)
+```
+
+### With Timestamps
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:                model,
+    Audio:                audioData,
+    TimestampGranularity: "segment",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Segments:")
+for _, segment := range result.Segments {
+    fmt.Printf("[%.2fs - %.2fs]: %s\n",
+        segment.Start, segment.End, segment.Text)
+}
+```
+
+### Word-level Timestamps
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:                model,
+    Audio:                audioData,
+    TimestampGranularity: "word",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Words:")
+for _, word := range result.Words {
+    fmt.Printf("[%.2fs]: %s\n", word.Start, word.Word)
+}
+```
+
+### With Context Prompt
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:       model,
+    Audio:       audioData,
+    AudioFormat: "m4a",
+    Prompt:      "Discussion about machine learning and AI",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Transcription:", result.Text)
+```
+
+## Error Handling
+
+```go
+result, err := ai.Transcribe(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "audio is required"):
+        log.Println("Missing required audio data")
+    case strings.Contains(err.Error(), "unsupported format"):
+        log.Println("Audio format not supported")
+    case strings.Contains(err.Error(), "audio too long"):
+        log.Println("Audio file exceeds maximum duration")
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [GenerateSpeech](./generate-speech.mdx) - Text-to-speech generation
+- [Transcription Models Guide](../../03-providers/transcription-models.mdx)
+- [Audio Processing Guide](../../06-media/audio.mdx)

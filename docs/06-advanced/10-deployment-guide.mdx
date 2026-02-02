@@ -1,0 +1,751 @@
+---
+title: Deployment Guide
+description: Deploying Go AI applications to production environments
+---
+
+# Deployment Guide
+
+This comprehensive guide covers deploying Go AI SDK applications to production, including binary compilation, containerization, and cloud deployment.
+
+## Binary Compilation
+
+### Building Production Binaries
+
+```bash
+# Build for current platform
+go build -o ai-app main.go
+
+# Build with optimizations
+go build -ldflags="-s -w" -o ai-app main.go
+
+# Cross-compile for different platforms
+GOOS=linux GOARCH=amd64 go build -o ai-app-linux-amd64 main.go
+GOOS=darwin GOARCH=amd64 go build -o ai-app-darwin-amd64 main.go
+GOOS=windows GOARCH=amd64 go build -o ai-app-windows-amd64.exe main.go
+
+# Build with version information
+VERSION=$(git describe --tags --always --dirty)
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+go build -ldflags="-X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME" -o ai-app main.go
+```
+
+### Application Structure
+
+```go
+package main
+
+import (
+    "context"
+    "flag"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+var (
+    Version   = "dev"
+    BuildTime = "unknown"
+)
+
+type Config struct {
+    APIKey      string
+    Model       string
+    Port        int
+    LogLevel    string
+    Environment string
+}
+
+func loadConfig() *Config {
+    cfg := &Config{}
+
+    flag.StringVar(&cfg.APIKey, "api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key")
+    flag.StringVar(&cfg.Model, "model", "gpt-4o-mini", "Model to use")
+    flag.IntVar(&cfg.Port, "port", 8080, "Port to listen on")
+    flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+    flag.StringVar(&cfg.Environment, "env", "production", "Environment (development, staging, production)")
+    flag.Parse()
+
+    if cfg.APIKey == "" {
+        log.Fatal("API key is required")
+    }
+
+    return cfg
+}
+
+func main() {
+    cfg := loadConfig()
+
+    log.Printf("Starting AI service v%s (built %s)", Version, BuildTime)
+    log.Printf("Environment: %s", cfg.Environment)
+
+    // Setup graceful shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+    go func() {
+        <-sigCh
+        log.Println("Received shutdown signal...")
+        cancel()
+    }()
+
+    // Initialize provider
+    provider := openai.New(openai.Config{
+        APIKey: cfg.APIKey,
+    })
+    model, err := provider.LanguageModel(cfg.Model)
+    if err != nil {
+        log.Fatalf("Failed to initialize model: %v", err)
+    }
+
+    // Start application
+    if err := run(ctx, model, cfg); err != nil {
+        log.Fatalf("Application error: %v", err)
+    }
+
+    log.Println("Shutdown complete")
+}
+
+func run(ctx context.Context, model interface{}, cfg *Config) error {
+    // Your application logic here
+    log.Printf("Application running on port %d", cfg.Port)
+
+    <-ctx.Done()
+    return nil
+}
+```
+
+## Docker Deployment
+
+### Multi-Stage Dockerfile
+
+```dockerfile
+# Build stage
+FROM golang:1.22-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build binary
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.Version=${VERSION:-dev} -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -o ai-app \
+    ./cmd/server
+
+# Runtime stage
+FROM alpine:3.19
+
+# Install CA certificates for HTTPS
+RUN apk --no-cache add ca-certificates
+
+# Create non-root user
+RUN addgroup -g 1000 appuser && \
+    adduser -D -u 1000 -G appuser appuser
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/ai-app .
+
+# Change ownership
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/app/ai-app", "health"] || exit 1
+
+# Run application
+ENTRYPOINT ["/app/ai-app"]
+CMD ["serve"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  ai-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-latest}
+    image: ai-app:${VERSION:-latest}
+    container_name: ai-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL=gpt-4o-mini
+      - LOG_LEVEL=info
+      - ENVIRONMENT=production
+    env_file:
+      - .env.production
+    volumes:
+      - ./data:/app/data
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "/app/ai-app", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: ai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ai-network
+
+networks:
+  ai-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+```
+
+### Build and Run
+
+```bash
+# Build image
+docker build -t ai-app:latest .
+
+# Run container
+docker run -d \
+  --name ai-app \
+  -p 8080:8080 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  ai-app:latest
+
+# Run with docker-compose
+docker-compose up -d
+
+# View logs
+docker logs -f ai-app
+
+# Stop
+docker-compose down
+```
+
+## Cloud Deployment
+
+### AWS Deployment (EC2)
+
+```bash
+#!/bin/bash
+# deploy-aws.sh
+
+# Build binary for Linux
+GOOS=linux GOARCH=amd64 go build -o ai-app main.go
+
+# Create deployment package
+tar -czf deploy.tar.gz ai-app .env.production
+
+# Upload to EC2
+scp deploy.tar.gz ec2-user@your-instance:/home/ec2-user/
+
+# SSH and deploy
+ssh ec2-user@your-instance << 'EOF'
+    cd /home/ec2-user
+    tar -xzf deploy.tar.gz
+
+    # Stop existing service
+    sudo systemctl stop ai-app
+
+    # Replace binary
+    sudo mv ai-app /opt/ai-app/
+    sudo chmod +x /opt/ai-app/ai-app
+
+    # Start service
+    sudo systemctl start ai-app
+    sudo systemctl status ai-app
+EOF
+```
+
+#### Systemd Service File
+
+```ini
+# /etc/systemd/system/ai-app.service
+[Unit]
+Description=AI Application Service
+After=network.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/opt/ai-app
+ExecStart=/opt/ai-app/ai-app serve
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-app
+
+# Environment
+Environment="OPENAI_API_KEY=your-key-here"
+EnvironmentFile=/opt/ai-app/.env.production
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ai-app/data
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### AWS ECS (Fargate)
+
+```json
+{
+  "family": "ai-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "ai-app",
+      "image": "your-account.dkr.ecr.us-east-1.amazonaws.com/ai-app:latest",
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "ENVIRONMENT",
+          "value": "production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "OPENAI_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:account:secret:openai-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ai-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "/app/ai-app health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
+```
+
+### Google Cloud Run
+
+```bash
+# Build and push image
+gcloud builds submit --tag gcr.io/your-project/ai-app
+
+# Deploy to Cloud Run
+gcloud run deploy ai-app \
+  --image gcr.io/your-project/ai-app \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "ENVIRONMENT=production" \
+  --set-secrets "OPENAI_API_KEY=openai-key:latest" \
+  --memory 512Mi \
+  --cpu 1 \
+  --min-instances 0 \
+  --max-instances 10 \
+  --concurrency 80 \
+  --timeout 300
+```
+
+### Azure Container Apps
+
+```bash
+# Create resource group
+az group create --name ai-app-rg --location eastus
+
+# Create container app environment
+az containerapp env create \
+  --name ai-app-env \
+  --resource-group ai-app-rg \
+  --location eastus
+
+# Deploy container app
+az containerapp create \
+  --name ai-app \
+  --resource-group ai-app-rg \
+  --environment ai-app-env \
+  --image your-registry.azurecr.io/ai-app:latest \
+  --target-port 8080 \
+  --ingress external \
+  --secrets openai-key=$OPENAI_API_KEY \
+  --env-vars "ENVIRONMENT=production" "OPENAI_API_KEY=secretref:openai-key" \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --min-replicas 1 \
+  --max-replicas 5
+```
+
+### Fly.io Deployment
+
+```toml
+# fly.toml
+app = "ai-app"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  MODEL = "gpt-4o-mini"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "1s"
+    restart_limit = 0
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+```
+
+```bash
+# Deploy to Fly.io
+fly launch
+fly secrets set OPENAI_API_KEY=$OPENAI_API_KEY
+fly deploy
+fly status
+fly logs
+```
+
+## Configuration Management
+
+### Environment Variables
+
+```go
+package config
+
+import (
+    "fmt"
+    "os"
+    "strconv"
+    "time"
+)
+
+type Config struct {
+    // API Configuration
+    APIKey   string
+    Model    string
+    Provider string
+
+    // Server Configuration
+    Port         int
+    ReadTimeout  time.Duration
+    WriteTimeout time.Duration
+
+    // Application Configuration
+    Environment string
+    LogLevel    string
+    Debug       bool
+
+    // Rate Limiting
+    RateLimit      int
+    RateLimitWindow time.Duration
+
+    // Caching
+    CacheEnabled bool
+    CacheTTL     time.Duration
+}
+
+func Load() (*Config, error) {
+    cfg := &Config{
+        APIKey:          getEnv("OPENAI_API_KEY", ""),
+        Model:           getEnv("MODEL", "gpt-4o-mini"),
+        Provider:        getEnv("PROVIDER", "openai"),
+        Port:            getEnvInt("PORT", 8080),
+        ReadTimeout:     getEnvDuration("READ_TIMEOUT", 30*time.Second),
+        WriteTimeout:    getEnvDuration("WRITE_TIMEOUT", 30*time.Second),
+        Environment:     getEnv("ENVIRONMENT", "production"),
+        LogLevel:        getEnv("LOG_LEVEL", "info"),
+        Debug:           getEnvBool("DEBUG", false),
+        RateLimit:       getEnvInt("RATE_LIMIT", 100),
+        RateLimitWindow: getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
+        CacheEnabled:    getEnvBool("CACHE_ENABLED", true),
+        CacheTTL:        getEnvDuration("CACHE_TTL", 5*time.Minute),
+    }
+
+    if err := cfg.Validate(); err != nil {
+        return nil, err
+    }
+
+    return cfg, nil
+}
+
+func (c *Config) Validate() error {
+    if c.APIKey == "" {
+        return fmt.Errorf("API key is required")
+    }
+    if c.Port < 1 || c.Port > 65535 {
+        return fmt.Errorf("invalid port: %d", c.Port)
+    }
+    return nil
+}
+
+func getEnv(key, defaultValue string) string {
+    if value := os.Getenv(key); value != "" {
+        return value
+    }
+    return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+    if value := os.Getenv(key); value != "" {
+        if intValue, err := strconv.Atoi(value); err == nil {
+            return intValue
+        }
+    }
+    return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+    if value := os.Getenv(key); value != "" {
+        if boolValue, err := strconv.ParseBool(value); err == nil {
+            return boolValue
+        }
+    }
+    return defaultValue
+}
+
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+    if value := os.Getenv(key); value != "" {
+        if duration, err := time.ParseDuration(value); err == nil {
+            return duration
+        }
+    }
+    return defaultValue
+}
+```
+
+## Monitoring and Health Checks
+
+### Health Check Endpoint
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "net/http"
+    "time"
+)
+
+type HealthStatus struct {
+    Status      string                 `json:"status"`
+    Version     string                 `json:"version"`
+    Uptime      string                 `json:"uptime"`
+    Checks      map[string]CheckResult `json:"checks"`
+}
+
+type CheckResult struct {
+    Status  string `json:"status"`
+    Message string `json:"message,omitempty"`
+}
+
+var startTime = time.Now()
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+    defer cancel()
+
+    status := HealthStatus{
+        Status:  "healthy",
+        Version: Version,
+        Uptime:  time.Since(startTime).String(),
+        Checks:  make(map[string]CheckResult),
+    }
+
+    // Check AI provider connection
+    if err := checkAIProvider(ctx); err != nil {
+        status.Checks["ai_provider"] = CheckResult{
+            Status:  "unhealthy",
+            Message: err.Error(),
+        }
+        status.Status = "unhealthy"
+    } else {
+        status.Checks["ai_provider"] = CheckResult{Status: "healthy"}
+    }
+
+    // Check database (if applicable)
+    // if err := checkDatabase(ctx); err != nil { ... }
+
+    // Set response status code
+    statusCode := http.StatusOK
+    if status.Status != "healthy" {
+        statusCode = http.StatusServiceUnavailable
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteStatus(statusCode)
+    json.NewEncoder(w).Encode(status)
+}
+
+func checkAIProvider(ctx context.Context) error {
+    // Test AI provider connectivity
+    // Return error if unhealthy
+    return nil
+}
+```
+
+## Production Best Practices
+
+### 1. Use Environment-Specific Configuration
+
+```bash
+# .env.production
+ENVIRONMENT=production
+LOG_LEVEL=info
+DEBUG=false
+OPENAI_API_KEY=sk-...
+
+# .env.staging
+ENVIRONMENT=staging
+LOG_LEVEL=debug
+DEBUG=true
+```
+
+### 2. Implement Graceful Shutdown
+
+```go
+sigCh := make(chan os.Signal, 1)
+signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+<-sigCh
+log.Println("Shutting down gracefully...")
+
+// Stop accepting new requests
+// Complete in-flight requests
+// Close connections
+```
+
+### 3. Add Structured Logging
+
+```go
+import "go.uber.org/zap"
+
+logger, _ := zap.NewProduction()
+defer logger.Sync()
+
+logger.Info("request_processed",
+    zap.String("request_id", requestID),
+    zap.Int("status_code", statusCode),
+    zap.Duration("duration", duration),
+)
+```
+
+### 4. Monitor Performance
+
+```go
+import "github.com/prometheus/client_golang/prometheus"
+
+var (
+    requestDuration = prometheus.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name: "ai_request_duration_seconds",
+            Help: "AI request duration in seconds",
+        },
+        []string{"model", "status"},
+    )
+)
+```
+
+### 5. Implement Rate Limiting
+
+```go
+import "golang.org/x/time/rate"
+
+limiter := rate.NewLimiter(rate.Limit(100), 10)
+
+if !limiter.Allow() {
+    http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+    return
+}
+```
+
+## See Also
+
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)
+- [Testing](../03-ai-sdk-core/55-testing.mdx)
+- [Rate Limiting](./06-rate-limiting.mdx)
+- [Caching](./04-caching.mdx)

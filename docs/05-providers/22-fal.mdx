@@ -1,0 +1,188 @@
+---
+title: FAL Provider
+description: Setup and usage guide for FAL fast image and video generation with Go-AI SDK
+---
+
+# FAL Provider
+
+FAL provides ultra-fast inference for image and video generation models. Known for speed optimization and support for latest models including FLUX, Stable Diffusion, and video generation.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fal"
+)
+```
+
+### Configuration
+
+```go
+provider := fal.New(fal.Config{
+    APIKey: os.Getenv("FAL_KEY"),
+})
+
+model, err := provider.ImageModel("fal-ai/flux-pro")
+```
+
+### Get API Key
+
+```bash
+export FAL_KEY=...
+```
+
+## Available Models
+
+### Image Generation
+
+| Model ID | Quality | Speed | Price | Best For |
+|----------|---------|-------|-------|----------|
+| fal-ai/flux-pro | Excellent | Fast | $0.05/image | High quality |
+| fal-ai/flux-schnell | Good | Very Fast | $0.003/image | Speed |
+| fal-ai/stable-diffusion-xl | High | Fast | $0.03/image | General |
+
+### Video Generation
+
+| Model ID | Quality | Speed | Price | Best For |
+|----------|---------|-------|-------|----------|
+| fal-ai/stable-video-diffusion | Medium | Medium | $0.10/video | Video from image |
+| fal-ai/runway-gen3 | High | Slow | $0.50/video | High quality video |
+
+## Provider-Specific Features
+
+### Ultra-Fast Inference
+
+FAL optimizes for speed:
+
+```go
+start := time.Now()
+result, err := ai.GenerateImage(model, "A sunset over mountains")
+elapsed := time.Since(start)
+fmt.Printf("Generated in %v\n", elapsed) // ~1-2 seconds
+```
+
+### Video Generation
+
+Create videos from text or images:
+
+```go
+videoModel, err := provider.VideoModel("fal-ai/stable-video-diffusion")
+
+// Generate from image
+initImage, _ := os.ReadFile("frame.png")
+
+result, err := ai.GenerateVideo(videoModel,
+    ai.WithInitImage(initImage),
+    ai.WithVideoFrames(25),
+    ai.WithVideoFPS(10),
+)
+
+os.WriteFile("output.mp4", result.Video, 0644)
+```
+
+### Real-Time Generation
+
+Streaming image generation:
+
+```go
+stream, err := ai.StreamImage(model, "Progressive reveal of landscape")
+for update := range stream.Updates() {
+    // Receive progressive image updates
+    displayPartialImage(update.Data)
+}
+```
+
+## Examples
+
+### Basic Image Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fal"
+)
+
+func main() {
+    provider := fal.New(fal.Config{
+        APIKey: os.Getenv("FAL_KEY"),
+    })
+
+    model, err := provider.ImageModel("fal-ai/flux-schnell")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    start := time.Now()
+    result, err := ai.GenerateImage(model, "A peaceful zen garden")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Generated in %v\n", time.Since(start))
+    os.WriteFile("garden.png", result.Images[0].Data, 0644)
+}
+```
+
+### Fast Batch Generation
+
+```go
+prompts := []string{
+    "A red apple",
+    "A green apple",
+    "A yellow apple",
+}
+
+// Parallel generation
+var wg sync.WaitGroup
+for i, prompt := range prompts {
+    wg.Add(1)
+    go func(idx int, p string) {
+        defer wg.Done()
+
+        result, err := ai.GenerateImage(model, p)
+        if err != nil {
+            return
+        }
+
+        filename := fmt.Sprintf("apple_%d.png", idx)
+        os.WriteFile(filename, result.Images[0].Data, 0644)
+    }(i, prompt)
+}
+wg.Wait()
+```
+
+## Best Practices
+
+1. **Speed Optimization**
+   - Use flux-schnell for rapid iteration
+   - Parallel requests for batches
+   - Leverage fast inference for real-time apps
+
+2. **Quality vs Speed**
+   - Use schnell for previews
+   - Use pro for finals
+   - Balance based on use case
+
+3. **Cost Management**
+   - Schnell is very cost-effective
+   - Cache results
+   - Use for high-volume applications
+
+## Rate Limits & Pricing
+
+Check dashboard for current limits and pricing.
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [FAL Documentation](https://fal.ai/docs)

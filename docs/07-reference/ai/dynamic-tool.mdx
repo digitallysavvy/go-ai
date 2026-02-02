@@ -1,0 +1,118 @@
+---
+title: DynamicTool
+description: API reference for DynamicTool helper
+---
+
+# DynamicTool
+
+Helper function to create tools dynamically from function signatures and descriptions.
+
+## Signature
+
+```go
+func DynamicTool(name string, description string, fn interface{}) (types.Tool, error)
+```
+
+## Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| name | string | Unique tool name |
+| description | string | What the tool does |
+| fn | interface{} | Function to wrap as a tool |
+
+## Examples
+
+### Basic Dynamic Tool
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func getWeather(location string, units string) (string, error) {
+    return fmt.Sprintf("Weather in %s: 72°F", location), nil
+}
+
+func main() {
+    tool, err := ai.DynamicTool(
+        "get_weather",
+        "Get current weather for a location",
+        getWeather,
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Use tool with GenerateText
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "What's the weather in Tokyo?",
+        Tools:  []types.Tool{tool},
+    })
+}
+```
+
+### With Context
+
+```go
+func searchDatabase(ctx context.Context, query string) ([]string, error) {
+    // Database search implementation
+    return []string{"result1", "result2"}, nil
+}
+
+tool, err := ai.DynamicTool(
+    "search_db",
+    "Search the database",
+    searchDatabase,
+)
+```
+
+### With Multiple Parameters
+
+```go
+func sendEmail(to string, subject string, body string) error {
+    // Email sending logic
+    fmt.Printf("Sending email to %s\n", to)
+    return nil
+}
+
+tool, err := ai.DynamicTool(
+    "send_email",
+    "Send an email to a recipient",
+    sendEmail,
+)
+```
+
+### With Struct Return
+
+```go
+type SearchResult struct {
+    Title string
+    URL   string
+    Score float64
+}
+
+func webSearch(query string, limit int) ([]SearchResult, error) {
+    return []SearchResult{
+        {Title: "Result 1", URL: "https://example.com", Score: 0.95},
+    }, nil
+}
+
+tool, err := ai.DynamicTool(
+    "web_search",
+    "Search the web and return results",
+    webSearch,
+)
+```
+
+## See Also
+
+- [Tool](./tool.mdx) - Manual tool definition
+- [Tool Calling Guide](../../04-generation/tool-calling.mdx)

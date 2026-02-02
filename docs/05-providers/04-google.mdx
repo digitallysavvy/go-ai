@@ -1,0 +1,543 @@
+---
+title: Google Provider
+description: Setup and usage guide for Google Gemini models with Go-AI SDK
+---
+
+# Google Provider
+
+Google provides the Gemini family of models through Google AI Studio. Gemini models offer exceptional multimodal capabilities, massive context windows (up to 1M+ tokens), and competitive pricing.
+
+## Setup
+
+### Installation
+
+The Google provider is included in the Go-AI SDK:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+```
+
+### Configuration
+
+```go
+provider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_API_KEY"),
+})
+
+model, err := provider.LanguageModel("gemini-2.0-flash")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Visit [makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey)
+2. Create new API key
+3. Set environment variable:
+
+```bash
+export GOOGLE_API_KEY=AI...
+```
+
+## Available Models
+
+### Gemini 2.0 Series (Latest)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gemini-2.0-flash | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Fast, multimodal |
+| gemini-2.0-flash-thinking | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Reasoning tasks |
+
+### Gemini 1.5 Series
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gemini-1.5-pro | 2M | $1.25/1M (≤128K)<br/>$2.50/1M (>128K) | $5.00/1M (≤128K)<br/>$10.00/1M (>128K) | Complex analysis |
+| gemini-1.5-flash | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Fast responses |
+| gemini-1.5-flash-8b | 1M | $0.0375/1M (≤128K)<br/>$0.075/1M (>128K) | $0.15/1M (≤128K)<br/>$0.30/1M (>128K) | Cost-effective |
+
+### Gemini 1.0 Series (Legacy)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| gemini-1.0-pro | 32K | $0.50/1M | $1.50/1M | General purpose |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| text-embedding-004 | 768 | Free | Semantic search |
+| textembedding-gecko@003 | 768 | Free | Legacy embeddings |
+
+## Provider-Specific Features
+
+### Massive Context Windows
+
+Gemini supports up to 2M tokens of context:
+
+```go
+// Process entire codebases or books
+hugeDocument := loadDocument("book.txt") // up to 2M tokens
+
+result, err := ai.GenerateText(model,
+    fmt.Sprintf("Summarize this book:\n\n%s", hugeDocument))
+```
+
+### Multimodal Capabilities
+
+Gemini excels at processing text, images, video, and audio together:
+
+```go
+// Image understanding
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Describe this image in detail",
+            ai.WithImageURL("https://example.com/photo.jpg"),
+        ),
+    ),
+)
+
+// Multiple images
+result, err = ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Compare these images",
+            ai.WithImageURL("https://example.com/before.jpg"),
+            ai.WithImageURL("https://example.com/after.jpg"),
+        ),
+    ),
+)
+
+// Video understanding
+result, err = ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("What happens in this video?",
+            ai.WithVideoURL("https://example.com/video.mp4"),
+        ),
+    ),
+)
+```
+
+### Function Calling
+
+Gemini supports sophisticated function calling:
+
+```go
+weatherTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "City and country",
+                },
+                "unit": map[string]interface{}{
+                    "type": "string",
+                    "enum": []string{"celsius", "fahrenheit"},
+                },
+            },
+            "required": []string{"location"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "What's the weather in Tokyo?",
+    ai.WithTools(weatherTool),
+)
+
+for _, call := range result.ToolCalls {
+    fmt.Printf("Function: %s\nArgs: %v\n", call.Function.Name, call.Function.Arguments)
+}
+```
+
+### Grounding with Google Search
+
+Connect Gemini to real-time web information:
+
+```go
+result, err := ai.GenerateText(model,
+    "What are the latest developments in quantum computing?",
+    ai.WithGrounding(ai.Grounding{
+        GoogleSearch: true,
+    }),
+)
+
+// Response includes citations
+for _, citation := range result.Citations {
+    fmt.Printf("Source: %s\n", citation.URL)
+}
+```
+
+### JSON Mode
+
+Structured output generation:
+
+```go
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "title":  map[string]string{"type": "string"},
+        "author": map[string]string{"type": "string"},
+        "year":   map[string]string{"type": "integer"},
+        "genre":  map[string]interface{}{
+            "type": "array",
+            "items": map[string]string{"type": "string"},
+        },
+    },
+    "required": []string{"title", "author", "year"},
+}
+
+result, err := ai.GenerateObject(model, schema,
+    "Extract book metadata: '1984 by George Orwell, published 1949'")
+```
+
+### Streaming
+
+Real-time response streaming:
+
+```go
+stream, err := ai.StreamText(model, "Write a long story")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+### Thinking Mode
+
+Gemini 2.0 Flash Thinking uses extended reasoning:
+
+```go
+model, err := provider.LanguageModel("gemini-2.0-flash-thinking")
+
+result, err := ai.GenerateText(model,
+    "Solve this logic puzzle: Three friends...")
+
+// Response includes reasoning steps
+if result.Thinking != "" {
+    fmt.Println("Reasoning:", result.Thinking)
+}
+fmt.Println("Answer:", result.Text)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+
+func main() {
+    provider := google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("gemini-2.0-flash")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain machine learning in simple terms")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Image Analysis
+
+```go
+imageData, err := os.ReadFile("chart.png")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Analyze this chart and extract key insights",
+            ai.WithImageData(
+                base64.StdEncoding.EncodeToString(imageData),
+                "image/png",
+            ),
+        ),
+    ),
+)
+
+fmt.Println(result.Text)
+```
+
+### Video Analysis
+
+```go
+// Upload video file
+videoData, err := os.ReadFile("demo.mp4")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Describe what happens in this video",
+            ai.WithVideoData(
+                base64.StdEncoding.EncodeToString(videoData),
+                "video/mp4",
+            ),
+        ),
+    ),
+)
+
+fmt.Println(result.Text)
+```
+
+### Document Processing with Large Context
+
+```go
+// Load multiple documents
+docs := []string{
+    loadFile("doc1.txt"),
+    loadFile("doc2.txt"),
+    loadFile("doc3.txt"),
+}
+combined := strings.Join(docs, "\n\n---\n\n")
+
+result, err := ai.GenerateText(model,
+    fmt.Sprintf("Analyze these documents and identify common themes:\n\n%s", combined))
+```
+
+### Grounded Search Responses
+
+```go
+result, err := ai.GenerateText(model,
+    "What are the current COVID-19 vaccination rates in major countries?",
+    ai.WithGrounding(ai.Grounding{
+        GoogleSearch: true,
+    }),
+)
+
+fmt.Println("Answer:", result.Text)
+
+fmt.Println("\nSources:")
+for _, citation := range result.Citations {
+    fmt.Printf("- %s: %s\n", citation.Title, citation.URL)
+}
+```
+
+### Text Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("text-embedding-004")
+if err != nil {
+    log.Fatal(err)
+}
+
+texts := []string{
+    "Go is a programming language",
+    "Python is popular for AI",
+    "JavaScript runs in browsers",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Calculate similarity
+similarity := cosineSimilarity(embeddings[0], embeddings[1])
+fmt.Printf("Similarity: %.2f\n", similarity)
+```
+
+### Multi-Turn Conversation
+
+```go
+messages := []ai.Message{
+    ai.UserMessage("What is the capital of France?"),
+}
+
+result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+messages = append(messages,
+    ai.AssistantMessage(result.Text),
+    ai.UserMessage("What's the population?"),
+)
+
+result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+```
+
+## Advanced Configuration
+
+### Custom HTTP Client
+
+```go
+provider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_API_KEY"),
+    HTTPClient: &http.Client{
+        Timeout: time.Minute * 5,
+        Transport: &http.Transport{
+            MaxIdleConns:    100,
+            IdleConnTimeout: 90 * time.Second,
+        },
+    },
+})
+```
+
+### Safety Settings
+
+```go
+result, err := ai.GenerateText(model, prompt,
+    ai.WithSafetySettings(ai.SafetySettings{
+        HarmCategoryHateSpeech:          ai.BlockLowAndAbove,
+        HarmCategoryDangerousContent:    ai.BlockMediumAndAbove,
+        HarmCategorySexuallyExplicit:    ai.BlockMediumAndAbove,
+        HarmCategoryHarassment:          ai.BlockMediumAndAbove,
+    }),
+)
+```
+
+### Generation Config
+
+```go
+result, err := ai.GenerateText(model, prompt,
+    ai.WithTemperature(0.9),
+    ai.WithTopP(0.95),
+    ai.WithTopK(40),
+    ai.WithMaxTokens(2048),
+)
+```
+
+## Error Handling
+
+### Common Errors
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if googleErr, ok := err.(*google.Error); ok {
+        switch googleErr.Code {
+        case 400:
+            log.Printf("Invalid request: %s", googleErr.Message)
+        case 401:
+            log.Fatal("Invalid API key")
+        case 403:
+            log.Fatal("Permission denied or quota exceeded")
+        case 404:
+            log.Fatal("Model not found")
+        case 429:
+            log.Println("Rate limited, retrying...")
+            time.Sleep(time.Second * 5)
+        case 500, 503:
+            log.Println("Service error, retrying...")
+            time.Sleep(time.Second * 10)
+        default:
+            log.Printf("Google AI error: %d - %s", googleErr.Code, googleErr.Message)
+        }
+    }
+    return nil, err
+}
+```
+
+### Content Filtering
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if googleErr, ok := err.(*google.Error); ok {
+        if googleErr.Code == 400 && strings.Contains(googleErr.Message, "SAFETY") {
+            log.Println("Content blocked by safety filters")
+            // Try with adjusted safety settings
+        }
+    }
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use `gemini-2.0-flash` for fast, multimodal tasks
+   - Use `gemini-1.5-pro` for complex reasoning with huge context
+   - Use `gemini-1.5-flash-8b` for cost-effective high-volume tasks
+
+2. **Context Management**
+   - Take advantage of massive context windows
+   - Include full documents rather than chunking
+   - Use structured prompts for better results
+
+3. **Multimodal Input**
+   - Compress images appropriately (max 20MB)
+   - Use clear, specific instructions for vision tasks
+   - Combine multiple modalities for richer context
+
+4. **Cost Optimization**
+   - Monitor context length (pricing changes after 128K)
+   - Use flash-8b for simple tasks
+   - Cache repeated queries on your side
+
+5. **Safety**
+   - Adjust safety settings based on use case
+   - Handle content filtering gracefully
+   - Log filtered content for review
+
+## Rate Limits & Pricing
+
+### Rate Limits (Free Tier)
+
+| Model | RPM | TPM | RPD |
+|-------|-----|-----|-----|
+| Gemini 2.0 Flash | 15 | 1M | 1,500 |
+| Gemini 1.5 Pro | 2 | 32K | 50 |
+| Gemini 1.5 Flash | 15 | 1M | 1,500 |
+
+RPM = Requests per minute, TPM = Tokens per minute, RPD = Requests per day
+
+Paid tier offers significantly higher limits.
+
+### Context-Based Pricing
+
+```go
+func calculateGeminiCost(inputTokens, outputTokens int, model string) float64 {
+    // Pricing changes based on context length
+    var inputRate, outputRate float64
+
+    if inputTokens <= 128000 {
+        // Low context pricing
+        inputRate = 0.075 / 1_000_000  // for flash models
+        outputRate = 0.30 / 1_000_000
+    } else {
+        // High context pricing (2x)
+        inputRate = 0.15 / 1_000_000
+        outputRate = 0.60 / 1_000_000
+    }
+
+    return float64(inputTokens)*inputRate + float64(outputTokens)*outputRate
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Google Vertex AI Provider](18-google-vertex.mdx) - Enterprise deployment
+- [Google AI Studio Documentation](https://ai.google.dev/docs)
+- [Gemini API Reference](https://ai.google.dev/api/rest)

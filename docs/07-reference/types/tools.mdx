@@ -1,0 +1,195 @@
+---
+title: Tool Types
+description: API reference for tool-related types
+---
+
+# Tool Types
+
+Types related to tool definitions, tool calls, and tool execution.
+
+## Tool
+
+See [Tool API Reference](../ai/tool.mdx) for complete documentation.
+
+## ToolCall
+
+```go
+type ToolCall struct {
+    ID        string                 `json:"id"`
+    ToolName  string                 `json:"toolName"`
+    Arguments map[string]interface{} `json:"arguments"`
+}
+```
+
+Represents a tool call made by the model.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| ID | string | Unique identifier for this tool call |
+| ToolName | string | Name of the tool to call |
+| Arguments | map[string]interface{} | Arguments to pass to the tool |
+
+## ToolResult
+
+```go
+type ToolResult struct {
+    ToolCallID       string      `json:"toolCallId"`
+    ToolName         string      `json:"toolName"`
+    Result           interface{} `json:"result"`
+    Error            error       `json:"error,omitempty"`
+    ProviderExecuted bool        `json:"providerExecuted,omitempty"`
+}
+```
+
+Result of executing a tool.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| ToolCallID | string | ID of the tool call this result corresponds to |
+| ToolName | string | Name of the tool that was executed |
+| Result | interface{} | Result of the tool execution |
+| Error | error | Error if execution failed |
+| ProviderExecuted | bool | Whether provider executed this tool |
+
+## ToolChoice
+
+```go
+type ToolChoice struct {
+    Type     ToolChoiceType `json:"type"`
+    ToolName string         `json:"toolName,omitempty"`
+}
+```
+
+Specifies how the model should choose tools.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Type | ToolChoiceType | Type of tool choice |
+| ToolName | string | Specific tool name (for ToolChoiceTool type) |
+
+## ToolChoiceType
+
+```go
+type ToolChoiceType string
+
+const (
+    ToolChoiceAuto     ToolChoiceType = "auto"
+    ToolChoiceNone     ToolChoiceType = "none"
+    ToolChoiceRequired ToolChoiceType = "required"
+    ToolChoiceTool     ToolChoiceType = "tool"
+)
+```
+
+Types of tool choice strategies:
+- `ToolChoiceAuto`: Model decides whether to use tools
+- `ToolChoiceNone`: Model cannot use tools
+- `ToolChoiceRequired`: Model must use at least one tool
+- `ToolChoiceTool`: Model must use a specific tool
+
+## ToolExecutor
+
+```go
+type ToolExecutor func(
+    ctx context.Context,
+    input map[string]interface{},
+    options ToolExecutionOptions,
+) (interface{}, error)
+```
+
+Function signature for tool execution.
+
+## ToolExecutionOptions
+
+```go
+type ToolExecutionOptions struct {
+    ToolCallID  string
+    UserContext interface{}
+    Usage       *Usage
+    Metadata    map[string]interface{}
+}
+```
+
+Options passed to tool execution.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| ToolCallID | string | Unique ID of this tool call |
+| UserContext | interface{} | User-defined context |
+| Usage | *Usage | Current token usage |
+| Metadata | map[string]interface{} | Additional metadata |
+
+## Examples
+
+### Create Tool Call
+
+```go
+package main
+
+import (
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func main() {
+    toolCall := types.ToolCall{
+        ID:       "call_abc123",
+        ToolName: "get_weather",
+        Arguments: map[string]interface{}{
+            "location": "Tokyo",
+            "units":    "celsius",
+        },
+    }
+}
+```
+
+### Auto Tool Choice
+
+```go
+toolChoice := types.AutoToolChoice()
+// Equivalent to:
+// types.ToolChoice{Type: types.ToolChoiceAuto}
+```
+
+### Required Tool Choice
+
+```go
+toolChoice := types.RequiredToolChoice()
+// Model must call at least one tool
+```
+
+### Specific Tool Choice
+
+```go
+toolChoice := types.SpecificToolChoice("get_weather")
+// Model must call the "get_weather" tool
+```
+
+### Handle Tool Result
+
+```go
+toolResult := types.ToolResult{
+    ToolCallID: "call_abc123",
+    ToolName:   "get_weather",
+    Result: map[string]interface{}{
+        "temperature": 22,
+        "condition":   "sunny",
+    },
+}
+
+if toolResult.Error != nil {
+    log.Printf("Tool failed: %v", toolResult.Error)
+}
+```
+
+## See Also
+
+- [Tool](../ai/tool.mdx) - Tool definition
+- [Message Types](./messages.mdx) - Message types
+- [Tool Calling Guide](../../04-generation/tool-calling.mdx)

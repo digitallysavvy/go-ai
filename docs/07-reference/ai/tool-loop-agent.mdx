@@ -1,0 +1,122 @@
+---
+title: ToolLoopAgent
+description: API reference for ToolLoopAgent function
+---
+
+# ToolLoopAgent
+
+Creates an agent that continuously uses tools in a loop until the task is complete or max steps is reached.
+
+## Signature
+
+```go
+func ToolLoopAgent(ctx context.Context, opts ToolLoopAgentOptions) (*ToolLoopAgentResult, error)
+```
+
+## Parameters
+
+### ToolLoopAgentOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model for the agent |
+| Task | string | Yes | Task description |
+| Tools | []types.Tool | Yes | Available tools |
+| MaxSteps | *int | No | Maximum tool-use steps (default: 10) |
+| SystemPrompt | string | No | Custom system instructions |
+| StopCondition | func(AgentState) bool | No | Custom stop condition |
+| OnToolCall | func(ToolCallEvent) | No | Called before each tool call |
+| OnToolResult | func(ToolResultEvent) | No | Called after each tool execution |
+| OnComplete | func(*ToolLoopAgentResult) | No | Called when loop completes |
+
+## Return Value
+
+### ToolLoopAgentResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Success | bool | Whether task completed successfully |
+| FinalAnswer | string | Agent's final answer |
+| Steps | []ToolLoopStep | All steps in the loop |
+| TotalToolCalls | int | Total number of tool calls made |
+| Usage | types.Usage | Total token usage |
+| StopReason | string | Why the loop stopped |
+
+## Examples
+
+### Basic Tool Loop Agent
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.ToolLoopAgent(context.Background(), ai.ToolLoopAgentOptions{
+        Model: model,
+        Task:  "Find and compare prices of three popular smartphones",
+        Tools: []types.Tool{searchTool, priceCompareTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Answer: %s\n", result.FinalAnswer)
+    fmt.Printf("Tool calls: %d\n", result.TotalToolCalls)
+}
+```
+
+### With Custom Stop Condition
+
+```go
+stopCondition := func(state ai.AgentState) bool {
+    // Stop if we've found what we need
+    return state.HasResult && state.ToolCallCount >= 3
+}
+
+result, err := ai.ToolLoopAgent(ctx, ai.ToolLoopAgentOptions{
+    Model:         model,
+    Task:          "Research topic and gather 3 key facts",
+    Tools:         tools,
+    StopCondition: stopCondition,
+})
+```
+
+### With Tool Call Monitoring
+
+```go
+result, err := ai.ToolLoopAgent(ctx, ai.ToolLoopAgentOptions{
+    Model: model,
+    Task:  "Complex multi-step research task",
+    Tools: tools,
+    OnToolCall: func(event ai.ToolCallEvent) {
+        fmt.Printf("Calling tool: %s\n", event.ToolName)
+        fmt.Printf("Arguments: %+v\n", event.Arguments)
+    },
+    OnToolResult: func(event ai.ToolResultEvent) {
+        fmt.Printf("Tool result: %+v\n", event.Result)
+        if event.Error != nil {
+            fmt.Printf("Tool error: %v\n", event.Error)
+        }
+    },
+})
+```
+
+## See Also
+
+- [Agent](./agent.mdx) - Basic agent function
+- [Tool](./tool.mdx) - Tool definition
+- [Agents Guide](../../07-agents/overview.mdx)

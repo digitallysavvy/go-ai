@@ -1,0 +1,150 @@
+---
+title: Agent
+description: API reference for Agent function
+---
+
+# Agent
+
+Creates an autonomous agent that can use tools and make decisions to complete tasks.
+
+## Signature
+
+```go
+func Agent(ctx context.Context, opts AgentOptions) (*AgentResult, error)
+```
+
+## Parameters
+
+### AgentOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model for the agent |
+| Task | string | Yes | Task description for the agent |
+| Tools | []types.Tool | Yes | Tools available to the agent |
+| MaxSteps | *int | No | Maximum steps (default: 10) |
+| SystemPrompt | string | No | Custom system instructions |
+| InitialMessages | []types.Message | No | Initial conversation context |
+| OnStep | func(AgentStep) | No | Called after each step |
+| OnComplete | func(*AgentResult) | No | Called when task completes |
+
+## Return Value
+
+### AgentResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Success | bool | Whether task was completed successfully |
+| Result | string | Final result or answer |
+| Steps | []AgentStep | All steps taken by the agent |
+| Usage | types.Usage | Total token usage |
+| Error | error | Error if task failed |
+
+## Examples
+
+### Basic Agent
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Define tools
+    searchTool := types.Tool{
+        Name:        "search",
+        Description: "Search the web for information",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{
+                    "type":        "string",
+                    "description": "Search query",
+                },
+            },
+            "required": []string{"query"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            query := input["query"].(string)
+            // Implement search logic
+            return fmt.Sprintf("Search results for: %s", query), nil
+        },
+    }
+
+    result, err := ai.Agent(context.Background(), ai.AgentOptions{
+        Model: model,
+        Task:  "Find the current weather in Tokyo",
+        Tools: []types.Tool{searchTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Task completed: %v\n", result.Success)
+    fmt.Printf("Result: %s\n", result.Result)
+    fmt.Printf("Steps taken: %d\n", len(result.Steps))
+}
+```
+
+### Agent with Multiple Tools
+
+```go
+calculatorTool := types.Tool{
+    Name:        "calculator",
+    Description: "Perform mathematical calculations",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "expression": map[string]interface{}{
+                "type": "string",
+            },
+        },
+        "required": []string{"expression"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        // Implement calculator
+        return "42", nil
+    },
+}
+
+result, err := ai.Agent(ctx, ai.AgentOptions{
+    Model: model,
+    Task:  "Calculate 15% tip on a $85 bill",
+    Tools: []types.Tool{calculatorTool},
+})
+```
+
+### Agent with Step Tracking
+
+```go
+result, err := ai.Agent(ctx, ai.AgentOptions{
+    Model: model,
+    Task:  "Research and summarize recent AI developments",
+    Tools: tools,
+    OnStep: func(step ai.AgentStep) {
+        fmt.Printf("Step %d: %s\n", step.StepNumber, step.Action)
+        if len(step.ToolCalls) > 0 {
+            fmt.Printf("  Tool calls: %d\n", len(step.ToolCalls))
+        }
+    },
+})
+```
+
+## See Also
+
+- [ToolLoopAgent](./tool-loop-agent.mdx) - Extended agent with tool loop
+- [Tool](./tool.mdx) - Tool definition
+- [Agents Guide](../../07-agents/overview.mdx)

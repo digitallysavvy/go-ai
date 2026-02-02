@@ -1,0 +1,253 @@
+---
+title: Error Types
+description: API reference for error types
+---
+
+# Error Types
+
+Error types returned by Go-AI SDK functions.
+
+## Common Errors
+
+The SDK uses standard Go errors with descriptive messages. Common error patterns include:
+
+### Validation Errors
+
+```go
+- "model is required"
+- "prompt is required"
+- "input is required"
+- "documents are required"
+- "query is required"
+- "schema is required"
+```
+
+### Execution Errors
+
+```go
+- "generation failed: ..."
+- "embedding failed: ..."
+- "reranking failed: ..."
+- "tool execution failed: ..."
+- "stream error: ..."
+```
+
+### Provider Errors
+
+```go
+- "API key not found"
+- "rate limit exceeded"
+- "invalid model"
+- "content policy violation"
+```
+
+## Error Handling Patterns
+
+### Basic Error Handling
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "log"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func main() {
+    result, err := ai.GenerateText(ctx, opts)
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Timeout Errors
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Println("Request timed out")
+        return
+    }
+    log.Fatal(err)
+}
+```
+
+### Cancellation Errors
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+go func() {
+    time.Sleep(5 * time.Second)
+    cancel()
+}()
+
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    if errors.Is(err, context.Canceled) {
+        log.Println("Request was canceled")
+        return
+    }
+    log.Fatal(err)
+}
+```
+
+### Validation Errors
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Must provide a model")
+    case strings.Contains(err.Error(), "prompt is required"):
+        log.Println("Must provide a prompt or messages")
+    default:
+        log.Println("Unknown validation error:", err)
+    }
+    return
+}
+```
+
+### Provider-Specific Errors
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "API key"):
+        log.Println("Invalid or missing API key")
+    case strings.Contains(err.Error(), "rate limit"):
+        log.Println("Rate limited - retry later")
+        time.Sleep(time.Minute)
+        // Retry logic
+    case strings.Contains(err.Error(), "content policy"):
+        log.Println("Content policy violation")
+    case strings.Contains(err.Error(), "invalid model"):
+        log.Println("Model not found or not supported")
+    default:
+        log.Println("Provider error:", err)
+    }
+    return
+}
+```
+
+### Retry Logic
+
+```go
+func generateWithRetry(ctx context.Context, opts ai.GenerateTextOptions, maxRetries int) (*ai.GenerateTextResult, error) {
+    var result *ai.GenerateTextResult
+    var err error
+
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        result, err = ai.GenerateText(ctx, opts)
+        if err == nil {
+            return result, nil
+        }
+
+        // Check if error is retryable
+        if strings.Contains(err.Error(), "rate limit") {
+            waitTime := time.Duration(attempt+1) * time.Second
+            log.Printf("Rate limited, retrying in %v (attempt %d/%d)",
+                waitTime, attempt+1, maxRetries)
+            time.Sleep(waitTime)
+            continue
+        }
+
+        // Non-retryable error
+        return nil, err
+    }
+
+    return nil, fmt.Errorf("max retries exceeded: %w", err)
+}
+```
+
+### Tool Execution Errors
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get weather",
+    Parameters:  weatherSchema,
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        location, ok := input["location"].(string)
+        if !ok {
+            return nil, fmt.Errorf("location must be a string")
+        }
+
+        weather, err := fetchWeather(location)
+        if err != nil {
+            return nil, fmt.Errorf("failed to fetch weather: %w", err)
+        }
+
+        return weather, nil
+    },
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather?",
+    Tools:  []types.Tool{weatherTool},
+})
+if err != nil {
+    if strings.Contains(err.Error(), "tool execution failed") {
+        log.Println("A tool failed during execution:", err)
+    }
+}
+```
+
+### Stream Errors
+
+```go
+result, err := ai.StreamText(ctx, opts)
+if err != nil {
+    log.Fatal("Failed to start stream:", err)
+}
+defer result.Close()
+
+for {
+    chunk, err := result.Stream().Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Printf("Stream error: %v", err)
+        break
+    }
+
+    // Process chunk
+}
+
+// Check for accumulated errors
+if result.Err() != nil {
+    log.Printf("Stream had errors: %v", result.Err())
+}
+```
+
+### Schema Validation Errors
+
+```go
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Generate user data",
+    Schema: schema,
+})
+if err != nil {
+    if strings.Contains(err.Error(), "validation failed") {
+        log.Println("Generated object doesn't match schema:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [GenerateText](../ai/generate-text.mdx) - Text generation
+- [Usage Types](./usage.mdx) - Token usage tracking
+- [Tool Types](./tools.mdx) - Tool-related types

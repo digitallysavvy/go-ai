@@ -1,0 +1,250 @@
+---
+title: Stability AI Provider
+description: Setup and usage guide for Stability AI image generation with Go-AI SDK
+---
+
+# Stability AI Provider
+
+Stability AI provides state-of-the-art image generation models including Stable Diffusion XL, SD3, and more. Known for high-quality, customizable image synthesis.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/stability"
+)
+```
+
+### Configuration
+
+```go
+provider := stability.New(stability.Config{
+    APIKey: os.Getenv("STABILITY_API_KEY"),
+})
+
+model, err := provider.ImageModel("stable-diffusion-xl-1024-v1-0")
+```
+
+### Get API Key
+
+```bash
+export STABILITY_API_KEY=sk-...
+```
+
+## Available Models
+
+### Image Generation
+
+| Model ID | Resolution | Price | Best For |
+|----------|-----------|-------|----------|
+| stable-diffusion-xl-1024-v1-0 | 1024x1024 | $0.04/image | High quality |
+| sd3-large | 1024x1024 | $0.065/image | Latest generation |
+| sd3-medium | 1024x1024 | $0.035/image | Balanced |
+| stable-diffusion-v1-6 | 512x512 | $0.02/image | Fast, cheap |
+
+### Upscaling
+
+| Model ID | Scale | Price | Best For |
+|----------|-------|-------|----------|
+| esrgan-v1-x2plus | 2x | $0.02/image | Enhance details |
+
+## Provider-Specific Features
+
+### Advanced Control
+
+```go
+result, err := ai.GenerateImage(model, "A serene landscape",
+    ai.WithImageSize("1024x1024"),
+    ai.WithSteps(30), // More steps = better quality
+    ai.WithCFGScale(7.5), // Prompt adherence
+    ai.WithSeed(12345), // Reproducibility
+    ai.WithNegativePrompt("blurry, low quality"),
+)
+```
+
+### Image-to-Image
+
+Transform existing images:
+
+```go
+initImage, _ := os.ReadFile("input.png")
+
+result, err := ai.GenerateImage(model,
+    "Transform into oil painting",
+    ai.WithInitImage(initImage),
+    ai.WithImageStrength(0.8), // How much to change
+)
+```
+
+### Inpainting
+
+Edit specific parts of images:
+
+```go
+image, _ := os.ReadFile("photo.png")
+mask, _ := os.ReadFile("mask.png")
+
+result, err := ai.GenerateImage(model,
+    "Add mountains in background",
+    ai.WithInitImage(image),
+    ai.WithMaskImage(mask),
+)
+```
+
+### Upscaling
+
+Enhance image resolution:
+
+```go
+upscaleModel, err := provider.ImageModel("esrgan-v1-x2plus")
+
+lowResImage, _ := os.ReadFile("low-res.png")
+
+result, err := ai.UpscaleImage(upscaleModel, lowResImage)
+```
+
+## Examples
+
+### Basic Image Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/stability"
+)
+
+func main() {
+    provider := stability.New(stability.Config{
+        APIKey: os.Getenv("STABILITY_API_KEY"),
+    })
+
+    model, err := provider.ImageModel("stable-diffusion-xl-1024-v1-0")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateImage(model,
+        "A futuristic cityscape at sunset, photorealistic",
+        ai.WithImageSize("1024x1024"),
+        ai.WithSteps(40),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save image
+    imageData := result.Images[0].Data
+    err = os.WriteFile("output.png", imageData, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Image saved to output.png")
+}
+```
+
+### Batch Generation
+
+```go
+prompts := []string{
+    "A red sports car",
+    "A blue sports car",
+    "A green sports car",
+}
+
+for i, prompt := range prompts {
+    result, err := ai.GenerateImage(model, prompt,
+        ai.WithSeed(12345+i), // Consistent seed base
+    )
+    if err != nil {
+        log.Printf("Failed to generate %d: %v", i, err)
+        continue
+    }
+
+    filename := fmt.Sprintf("car_%d.png", i)
+    os.WriteFile(filename, result.Images[0].Data, 0644)
+}
+```
+
+### Variations
+
+Generate variations of an image:
+
+```go
+originalImage, _ := os.ReadFile("original.png")
+
+for i := 0; i < 4; i++ {
+    result, err := ai.GenerateImage(model,
+        "Artistic variation",
+        ai.WithInitImage(originalImage),
+        ai.WithImageStrength(0.6),
+        ai.WithSeed(i), // Different seed for each
+    )
+
+    filename := fmt.Sprintf("variation_%d.png", i)
+    os.WriteFile(filename, result.Images[0].Data, 0644)
+}
+```
+
+## Best Practices
+
+1. **Quality Control**
+   - Use 30-50 steps for best quality
+   - Adjust CFG scale (7-10 typical)
+   - Use negative prompts
+   - Experiment with seeds
+
+2. **Prompt Engineering**
+   - Be specific and detailed
+   - Include style keywords
+   - Mention quality (4k, detailed, etc)
+   - Use negative prompts effectively
+
+3. **Cost Optimization**
+   - Start with lower resolution
+   - Upscale final images
+   - Batch similar requests
+   - Cache generated images
+
+4. **Performance**
+   - Use appropriate model for task
+   - Balance quality vs speed
+   - Parallelize generations
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Varies by plan - typical limits:
+- 150 images/min (standard)
+- 500 images/min (premium)
+
+### Cost Management
+
+```go
+func estimateImageCost(model string, count int) float64 {
+    prices := map[string]float64{
+        "stable-diffusion-xl-1024-v1-0": 0.04,
+        "sd3-large":                      0.065,
+        "sd3-medium":                     0.035,
+        "stable-diffusion-v1-6":         0.02,
+    }
+
+    return prices[model] * float64(count)
+}
+```
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [Stability AI Documentation](https://platform.stability.ai/docs)
+- [Black Forest Labs Provider](21-bfl.mdx) - Alternative image generation

@@ -1,0 +1,56 @@
+---
+title: StepCountIs
+description: API reference for StepCountIs helper
+---
+
+# StepCountIs
+
+Helper function to check if the step count matches a specific value. Useful in PrepareStep callbacks.
+
+## Signature
+
+```go
+func StepCountIs(stepNumber int, target int) bool
+```
+
+## Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| stepNumber | int | Current step number |
+| target | int | Target step number to check |
+
+## Examples
+
+### Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this problem step by step",
+    Tools:  tools,
+    PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+        if ai.StepCountIs(step.StepNumber, 3) {
+            fmt.Println("On step 3, adding guidance...")
+            // Modify options for step 3
+        }
+        return step
+    },
+})
+```
+
+### First Step Check
+
+```go
+PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+    if ai.StepCountIs(step.StepNumber, 1) {
+        fmt.Println("First step - initializing...")
+    }
+    return step
+}
+```
+
+## See Also
+
+- [GenerateText](./generate-text.mdx) - Text generation with steps
+- [HasToolCall](./has-tool-call.mdx) - Check for tool calls

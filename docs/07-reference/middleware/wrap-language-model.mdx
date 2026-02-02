@@ -1,0 +1,143 @@
+---
+title: WrapLanguageModel
+description: API reference for WrapLanguageModel function
+---
+
+# WrapLanguageModel
+
+Wraps a language model with middleware to add additional behavior like default settings, logging, or caching.
+
+## Signature
+
+```go
+func WrapLanguageModel(
+    model provider.LanguageModel,
+    middleware []*LanguageModelMiddleware,
+    beforeGenerate func(*provider.GenerateOptions),
+    afterGenerate func(*types.GenerateResult),
+) provider.LanguageModel
+```
+
+## Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| model | provider.LanguageModel | Base language model to wrap |
+| middleware | []*LanguageModelMiddleware | Array of middleware to apply |
+| beforeGenerate | func | Called before each generation |
+| afterGenerate | func | Called after each generation |
+
+## Examples
+
+### Basic Wrapping
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Create base model
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    baseModel, _ := provider.LanguageModel("gpt-4")
+
+    // Wrap with default settings
+    temperature := 0.7
+    wrapped := middleware.WrapLanguageModel(
+        baseModel,
+        []*middleware.LanguageModelMiddleware{
+            middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+                Temperature: &temperature,
+            }),
+        },
+        nil,
+        nil,
+    )
+
+    // Use wrapped model
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  wrapped,
+        Prompt: "Hello!",
+        // Temperature will default to 0.7
+    })
+}
+```
+
+### With Logging
+
+```go
+wrapped := middleware.WrapLanguageModel(
+    baseModel,
+    nil,
+    func(opts *provider.GenerateOptions) {
+        log.Printf("Generating with model: %v", opts.Prompt)
+    },
+    func(result *types.GenerateResult) {
+        log.Printf("Generated %d tokens", result.Usage.TotalTokens)
+    },
+)
+```
+
+### Multiple Middleware
+
+```go
+temperature := 0.7
+maxTokens := 500
+
+wrapped := middleware.WrapLanguageModel(
+    baseModel,
+    []*middleware.LanguageModelMiddleware{
+        middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+            Temperature: &temperature,
+            MaxTokens:   &maxTokens,
+        }),
+        middleware.LoggingMiddleware(),
+        middleware.CachingMiddleware(),
+    },
+    nil,
+    nil,
+)
+```
+
+### Custom Middleware
+
+```go
+customMiddleware := &middleware.LanguageModelMiddleware{
+    WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
+        return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            // Before generation
+            start := time.Now()
+
+            // Call next middleware or model
+            result, err := next(ctx, opts)
+
+            // After generation
+            duration := time.Since(start)
+            log.Printf("Generation took %v", duration)
+
+            return result, err
+        }
+    },
+}
+
+wrapped := middleware.WrapLanguageModel(
+    baseModel,
+    []*middleware.LanguageModelMiddleware{customMiddleware},
+    nil,
+    nil,
+)
+```
+
+## See Also
+
+- [Middleware Interface](./middleware-interface.mdx) - Middleware interface definition
+- [Built-in Middleware](./built-in-middleware.mdx) - Available middleware catalog
+- [WrapProvider](./wrap-provider.mdx) - Wrap entire providers

@@ -1,0 +1,113 @@
+---
+title: Together AI Provider
+description: Setup and usage guide for Together AI open-source model hosting with Go-AI SDK
+---
+
+# Together AI Provider
+
+Together AI provides fast inference for open-source models including Llama, Mixtral, Qwen, and more. Offers competitive pricing and high-quality model hosting.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Together uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("TOGETHER_API_KEY"),
+    BaseURL: "https://api.together.xyz/v1",
+})
+
+model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+```bash
+export TOGETHER_API_KEY=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo | 131K | $0.88/1M | $0.88/1M | General purpose |
+| meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo | 131K | $0.18/1M | $0.18/1M | Fast, cheap |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 32K | $0.60/1M | $0.60/1M | Balanced |
+| Qwen/Qwen2.5-72B-Instruct-Turbo | 32K | $0.88/1M | $0.88/1M | Multilingual |
+
+### Image Generation
+
+| Model ID | Quality | Price | Best For |
+|----------|---------|-------|----------|
+| stabilityai/stable-diffusion-xl-base-1.0 | High | $0.025/image | Images |
+| black-forest-labs/FLUX.1-schnell | High | $0.025/image | Fast generation |
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("TOGETHER_API_KEY"),
+        BaseURL: "https://api.together.xyz/v1",
+    })
+
+    model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain open-source AI")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use Llama 3.1 70B for best quality
+   - Use Llama 3.1 8B for cost efficiency
+   - Use Mixtral for balanced performance
+
+2. **Cost Optimization**
+   - Open-source models are cost-effective
+   - Monitor usage and optimize prompts
+
+## Rate Limits
+
+Varies by plan - check dashboard for limits.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Together AI Documentation](https://docs.together.ai)

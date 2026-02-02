@@ -1,0 +1,233 @@
+---
+title: GenerateObject
+description: API reference for GenerateObject function
+---
+
+# GenerateObject
+
+Generates structured JSON objects that conform to a specified schema using language models with structured output support.
+
+## Signature
+
+```go
+func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateObjectResult, error)
+```
+
+## Parameters
+
+### GenerateObjectOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model to use (must support structured output) |
+| Prompt | string | No | Simple string prompt (alternative to Messages) |
+| Messages | []types.Message | No | List of conversation messages |
+| System | string | No | System instructions |
+| Schema | schema.Schema | No | Schema for output validation (required for object/array modes) |
+| OutputMode | ObjectOutputMode | No | Output mode: object, array, enum, or no-schema (default: object) |
+| EnumValues | []string | No | Enum values (required for enum mode) |
+| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
+| MaxTokens | *int | No | Maximum tokens to generate |
+| TopP | *float64 | No | Nucleus sampling parameter |
+| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
+| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
+| Seed | *int | No | Random seed for reproducibility |
+| OnFinish | func | No | Called when generation completes |
+| ExperimentalContext | interface{} | No | User-defined context |
+
+## Return Value
+
+### GenerateObjectResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Object | interface{} | Generated object (for object/no-schema modes) |
+| Array | []interface{} | Generated array (for array mode) |
+| EnumValue | string | Selected enum value (for enum mode) |
+| Text | string | Raw JSON text |
+| FinishReason | types.FinishReason | Why generation finished |
+| Usage | types.Usage | Token usage information |
+| Warnings | []types.Warning | Provider warnings |
+
+## Examples
+
+### Basic Object Generation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+type Person struct {
+    Name string `json:"name"`
+    Age  int    `json:"age"`
+    City string `json:"city"`
+}
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Define schema
+    personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "name": map[string]interface{}{"type": "string"},
+            "age":  map[string]interface{}{"type": "integer"},
+            "city": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"name", "age", "city"},
+    })
+
+    // Generate object
+    result, err := ai.GenerateObject(context.Background(), ai.GenerateObjectOptions{
+        Model:  model,
+        Prompt: "Generate information about a fictional character named Alice",
+        Schema: personSchema,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Result: %+v\n", result.Object)
+    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Generate Into Struct
+
+```go
+type Recipe struct {
+    Name        string   `json:"name"`
+    Ingredients []string `json:"ingredients"`
+    Steps       []string `json:"steps"`
+    CookTime    int      `json:"cookTime"`
+}
+
+var recipe Recipe
+
+recipeSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name":        map[string]interface{}{"type": "string"},
+        "ingredients": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+        "steps":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+        "cookTime":    map[string]interface{}{"type": "integer"},
+    },
+    "required": []string{"name", "ingredients", "steps", "cookTime"},
+})
+
+err := ai.GenerateObjectInto(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Generate a recipe for chocolate chip cookies",
+    Schema: recipeSchema,
+}, &recipe)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Recipe: %s\n", recipe.Name)
+fmt.Printf("Ingredients: %v\n", recipe.Ingredients)
+```
+
+### Array Mode
+
+```go
+itemSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name":  map[string]interface{}{"type": "string"},
+        "price": map[string]interface{}{"type": "number"},
+    },
+    "required": []string{"name", "price"},
+})
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:      model,
+    Prompt:     "List 5 popular tech gadgets with prices",
+    Schema:     itemSchema,
+    OutputMode: ai.ObjectModeArray,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, item := range result.Array {
+    fmt.Printf("%d. %+v\n", i+1, item)
+}
+```
+
+### Enum Mode
+
+```go
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:       model,
+    Prompt:      "Classify the sentiment: 'This product is amazing!'",
+    OutputMode:  ai.ObjectModeEnum,
+    EnumValues:  []string{"positive", "negative", "neutral"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Sentiment: %s\n", result.EnumValue)
+```
+
+### No-Schema Mode
+
+```go
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:      model,
+    Prompt:     "Generate a JSON object with user profile data",
+    OutputMode: ai.ObjectModeNoSchema,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Object is returned as map[string]interface{}
+fmt.Printf("Generated: %+v\n", result.Object)
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateObject(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "schema is required"):
+        log.Println("Schema required for this output mode")
+    case strings.Contains(err.Error(), "does not support structured output"):
+        log.Println("Model doesn't support structured output")
+    case strings.Contains(err.Error(), "validation failed"):
+        log.Println("Output validation error:", err)
+    case strings.Contains(err.Error(), "failed to parse JSON"):
+        log.Println("Invalid JSON output:", err)
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [StreamObject](./stream-object.mdx) - Streaming structured output
+- [GenerateText](./generate-text.mdx) - Text generation
+- [JSON Schema](../schema/json-schema.mdx) - Schema definition
+- [Structured Output Guide](../../04-generation/structured-output.mdx)

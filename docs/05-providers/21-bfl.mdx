@@ -1,0 +1,206 @@
+---
+title: Black Forest Labs Provider
+description: Setup and usage guide for Black Forest Labs FLUX image models with Go-AI SDK
+---
+
+# Black Forest Labs Provider
+
+Black Forest Labs (founded by Stable Diffusion creators) provides FLUX models - the next generation of image synthesis with exceptional quality and prompt adherence.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/bfl"
+)
+```
+
+### Configuration
+
+```go
+provider := bfl.New(bfl.Config{
+    APIKey: os.Getenv("BFL_API_KEY"),
+})
+
+model, err := provider.ImageModel("flux-pro-1.1")
+```
+
+### Get API Key
+
+```bash
+export BFL_API_KEY=...
+```
+
+## Available Models
+
+### FLUX Models
+
+| Model ID | Quality | Speed | Price | Best For |
+|----------|---------|-------|-------|----------|
+| flux-pro-1.1 | Excellent | Medium | $0.055/image | Professional work |
+| flux-pro | Excellent | Medium | $0.05/image | High quality |
+| flux-dev | Very Good | Fast | $0.025/image | Development |
+| flux-schnell | Good | Very Fast | $0.003/image | Rapid iteration |
+
+## Provider-Specific Features
+
+### Exceptional Quality
+
+FLUX models produce photorealistic and artistically sophisticated images:
+
+```go
+result, err := ai.GenerateImage(model,
+    "A photorealistic portrait of an elderly person with expressive eyes",
+    ai.WithImageSize("1024x1024"),
+)
+```
+
+### Perfect Text Rendering
+
+FLUX excels at text in images:
+
+```go
+result, err := ai.GenerateImage(model,
+    "A storefront sign that says 'Coffee & Code' in elegant typography",
+)
+```
+
+### Advanced Prompt Understanding
+
+Complex, nuanced prompts work well:
+
+```go
+result, err := ai.GenerateImage(model,
+    "A cyberpunk street scene at night, neon reflections on wet pavement, "+
+    "shallow depth of field, cinematic composition, blade runner aesthetic",
+)
+```
+
+## Examples
+
+### Basic Image Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/bfl"
+)
+
+func main() {
+    provider := bfl.New(bfl.Config{
+        APIKey: os.Getenv("BFL_API_KEY"),
+    })
+
+    model, err := provider.ImageModel("flux-pro-1.1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateImage(model,
+        "A majestic dragon perched on a mountain peak at sunrise",
+        ai.WithImageSize("1024x1024"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    os.WriteFile("dragon.png", result.Images[0].Data, 0644)
+    fmt.Println("Image saved to dragon.png")
+}
+```
+
+### Professional Photography
+
+```go
+result, err := ai.GenerateImage(model,
+    "Professional product photography: luxury watch on marble surface, "+
+    "soft studio lighting, shallow depth of field, 85mm lens, f/1.4",
+    ai.WithImageSize("1024x1024"),
+)
+```
+
+### Artistic Styles
+
+```go
+styles := []string{
+    "oil painting, impressionist style",
+    "watercolor, loose brushstrokes",
+    "digital art, concept art style",
+    "pencil sketch, detailed cross-hatching",
+}
+
+basePrompt := "A serene forest path"
+
+for i, style := range styles {
+    prompt := fmt.Sprintf("%s, %s", basePrompt, style)
+    result, err := ai.GenerateImage(model, prompt)
+    if err != nil {
+        continue
+    }
+
+    filename := fmt.Sprintf("forest_%d.png", i)
+    os.WriteFile(filename, result.Images[0].Data, 0644)
+}
+```
+
+## Best Practices
+
+1. **Prompt Engineering**
+   - Be detailed and specific
+   - Include style, mood, lighting
+   - Mention technical details (lens, lighting, etc)
+   - FLUX understands complex descriptions
+
+2. **Model Selection**
+   - Use flux-pro-1.1 for final production
+   - Use flux-dev for development/testing
+   - Use flux-schnell for rapid prototyping
+
+3. **Quality Optimization**
+   - FLUX needs fewer iterations than SD
+   - Prompts can be more natural/conversational
+   - Text in images works reliably
+
+4. **Cost Management**
+   - Use schnell for experimentation
+   - Switch to pro for finals
+   - Batch similar requests
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Varies by plan - check dashboard.
+
+### Cost Comparison
+
+```go
+func compareFLUXCosts(imageCount int) {
+    models := map[string]float64{
+        "flux-pro-1.1":  0.055,
+        "flux-pro":      0.05,
+        "flux-dev":      0.025,
+        "flux-schnell":  0.003,
+    }
+
+    for model, price := range models {
+        total := price * float64(imageCount)
+        fmt.Printf("%s: $%.2f\n", model, total)
+    }
+}
+```
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [BFL Documentation](https://docs.bfl.ai)
+- [Stability AI Provider](20-stability.mdx) - Alternative
