@@ -43,6 +43,12 @@ type Tool struct {
 	// Can be a boolean or a function that determines approval based on input
 	NeedsApproval interface{} `json:"-"` // bool or NeedsApprovalFunc
 
+	// ProviderExecuted indicates whether this tool is executed by the provider (not locally)
+	// When true, the tool is executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
+	// When false or unset, the tool is executed locally by the client using the Execute function
+	// This affects error handling and validation behavior
+	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
 	// ========================================================================
 	// Tool Input Streaming Callbacks (for streaming tool calls)
 	// ========================================================================
@@ -170,6 +176,12 @@ type ToolResult struct {
 
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`
+
+	// ProviderExecuted indicates if this tool was executed by the provider (not locally)
+	// When true, the tool was executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
+	// When false or unset, the tool was executed locally by the client
+	// This affects error handling and validation behavior
+	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 }
 
 // ToolChoice specifies how the model should choose tools

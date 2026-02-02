@@ -45,6 +45,9 @@ type StreamTextOptions struct {
 	// Default (nil) retains everything for backwards compatibility.
 	ExperimentalRetention *types.RetentionSettings
 
+	// ProviderOptions allows passing provider-specific options
+	ProviderOptions map[string]interface{}
+
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
 	OnFinish func(result *StreamTextResult)
@@ -102,6 +105,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Tools:            opts.Tools,
 		ToolChoice:       opts.ToolChoice,
 		ResponseFormat:   opts.ResponseFormat,
+		ProviderOptions:  opts.ProviderOptions,
 	}
 
 	// Start streaming

@@ -429,11 +429,12 @@ func TestStreamObject_Basic(t *testing.T) {
 
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
-		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-			return &types.GenerateResult{
-				Text:         `{"result": "streamed"}`,
-				FinishReason: types.FinishReasonStop,
-			}, nil
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result"`},
+				{Type: provider.ChunkTypeText, Text: `: "streamed"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
 		},
 	}
 

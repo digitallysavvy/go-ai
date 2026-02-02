@@ -165,6 +165,17 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
+	// Extract OpenAI-specific provider options
+	if opts.ProviderOptions != nil {
+		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+			// Add prompt cache retention if present
+			// Supports "in_memory" (default) and "24h" (for gpt-5.1 series)
+			if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok {
+				body["prompt_cache_retention"] = promptCacheRetention
+			}
+		}
+	}
+
 	return body
 }
 

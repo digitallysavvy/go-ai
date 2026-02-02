@@ -197,15 +197,36 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 		return nil, false, callConfig.CustomData, err
 	}
 
+	// Build response message for this step
+	responseMsg := types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{},
+	}
+	if genResult.Text != "" {
+		responseMsg.Content = append(responseMsg.Content, types.TextContent{Text: genResult.Text})
+	}
+
+	// Extract raw finish reason if available
+	rawFinishReason := ""
+	if genResult.RawResponse != nil {
+		if respMap, ok := genResult.RawResponse.(map[string]interface{}); ok {
+			if fr, ok := respMap["finish_reason"].(string); ok {
+				rawFinishReason = fr
+			}
+		}
+	}
+
 	// Create step result
 	stepResult := &types.StepResult{
-		StepNumber:   stepNum,
-		Text:         genResult.Text,
-		ToolCalls:    genResult.ToolCalls,
-		ToolResults:  []types.ToolResult{},
-		FinishReason: genResult.FinishReason,
-		Usage:        genResult.Usage,
-		Warnings:     genResult.Warnings,
+		StepNumber:       stepNum,
+		Text:             genResult.Text,
+		ToolCalls:        genResult.ToolCalls,
+		ToolResults:      []types.ToolResult{},
+		FinishReason:     genResult.FinishReason,
+		RawFinishReason:  rawFinishReason,
+		Usage:            genResult.Usage,
+		Warnings:         genResult.Warnings,
+		ResponseMessages: []types.Message{responseMsg},
 	}
 
 	// Determine if we should continue
@@ -215,6 +236,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 }
 
 // executeTools executes a list of tool calls with optional approval
+// Updated in v6.0.57 to handle provider-executed (deferrable) tools
 func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
 
@@ -229,9 +251,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			approved := a.config.ToolApprover(call)
 			if !approved {
 				results[i] = types.ToolResult{
-					ToolCallID: call.ID,
-					ToolName:   call.ToolName,
-					Error:      fmt.Errorf("tool call rejected by user"),
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Error:            fmt.Errorf("tool call rejected by user"),
+					ProviderExecuted: false,
 				}
 				continue
 			}
@@ -248,32 +271,75 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 		if tool == nil {
 			results[i] = types.ToolResult{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Error:      fmt.Errorf("tool not found: %s", call.ToolName),
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Error:            fmt.Errorf("tool not found: %s", call.ToolName),
+				ProviderExecuted: false,
 			}
 			continue
 		}
 
-		// Execute the tool
-		execOptions := types.ToolExecutionOptions{
-			ToolCallID: call.ID,
-		}
-		result, err := tool.Execute(ctx, call.Arguments, execOptions)
-		results[i] = types.ToolResult{
-			ToolCallID: call.ID,
-			ToolName:   call.ToolName,
-			Result:     result,
-			Error:      err,
-		}
+		// Check if this is a provider-executed tool
+		providerExecuted := isProviderExecutedTool(tool)
 
-		// Call tool result callback
-		if a.config.OnToolResult != nil {
-			a.config.OnToolResult(results[i])
+		if providerExecuted {
+			// Provider-executed tool: result will come from provider in next response
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Result:           nil,
+				Error:            nil,
+				ProviderExecuted: true,
+			}
+
+			// Call tool result callback with pending result
+			if a.config.OnToolResult != nil {
+				a.config.OnToolResult(results[i])
+			}
+		} else {
+			// Locally-executed tool: execute now
+			execOptions := types.ToolExecutionOptions{
+				ToolCallID: call.ID,
+			}
+			result, err := tool.Execute(ctx, call.Arguments, execOptions)
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Result:           result,
+				Error:            err,
+				ProviderExecuted: false,
+			}
+
+			// Call tool result callback
+			if a.config.OnToolResult != nil {
+				a.config.OnToolResult(results[i])
+			}
 		}
 	}
 
 	return results, nil
+}
+
+// isProviderExecutedTool determines if a tool is executed by the provider
+// Provider-executed tools include:
+// - Anthropic: tool-search-bm25, tool-search-regex, web-search, web-fetch, code-execution
+// - xAI: file-search, mcp-server
+// - OpenAI: MCP tools (with approval)
+func isProviderExecutedTool(tool *types.Tool) bool {
+	// Check for common provider-executed tool names
+	providerTools := map[string]bool{
+		// Anthropic built-in tools
+		"tool-search-bm25":  true,
+		"tool-search-regex": true,
+		"web-search":        true,
+		"web-fetch":         true,
+		"code-execution":    true,
+		// xAI tools
+		"file-search": true,
+		"mcp-server":  true,
+	}
+
+	return providerTools[tool.Name]
 }
 
 // SetSystem updates the system prompt

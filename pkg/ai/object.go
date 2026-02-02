@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -391,23 +393,156 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, fmt.Errorf("schema is required")
 	}
 
-	// For now, fall back to non-streaming generation
-	// TODO: Implement proper streaming object parsing
-	genOpts := GenerateObjectOptions{
-		Model:               opts.Model,
-		Prompt:              opts.Prompt,
-		Messages:            opts.Messages,
-		System:              opts.System,
-		Schema:              opts.Schema,
-		Temperature:         opts.Temperature,
-		MaxTokens:           opts.MaxTokens,
-		TopP:                opts.TopP,
-		FrequencyPenalty:    opts.FrequencyPenalty,
-		PresencePenalty:     opts.PresencePenalty,
-		Seed:                opts.Seed,
-		OnFinish:            opts.OnFinish,
-		ExperimentalContext: opts.ExperimentalContext,
+	// Build prompt
+	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+
+	// Create streaming generation options
+	genOpts := &provider.GenerateOptions{
+		Prompt:           prompt,
+		Temperature:      opts.Temperature,
+		MaxTokens:        opts.MaxTokens,
+		TopP:             opts.TopP,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		PresencePenalty:  opts.PresencePenalty,
+		Seed:             opts.Seed,
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json_schema",
+			Schema: opts.Schema,
+		},
 	}
 
-	return GenerateObject(ctx, genOpts)
+	// Try to start streaming
+	// If streaming is not supported or fails, fall back to non-streaming
+	stream, err := opts.Model.DoStream(ctx, genOpts)
+	if err != nil || stream == nil {
+		// Fallback to non-streaming generation
+		result, err := opts.Model.DoGenerate(ctx, genOpts)
+		if err != nil {
+			return nil, fmt.Errorf("generation failed: %w", err)
+		}
+
+		// Parse final JSON
+		var finalObject interface{}
+		if err := json.Unmarshal([]byte(result.Text), &finalObject); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON: %w", err)
+		}
+
+		// Validate
+		if err := opts.Schema.Validator().Validate(finalObject); err != nil {
+			return nil, fmt.Errorf("validation failed: %w", err)
+		}
+
+		finalResult := &GenerateObjectResult{
+			Object:       finalObject,
+			Text:         result.Text,
+			FinishReason: result.FinishReason,
+			Usage:        result.Usage,
+			Warnings:     result.Warnings,
+		}
+
+		if opts.OnFinish != nil {
+			opts.OnFinish(ctx, finalResult, opts.ExperimentalContext)
+		}
+
+		return finalResult, nil
+	}
+	defer stream.Close()
+
+	// Accumulate text and track partial objects
+	var accumulatedText string
+	var lastObject interface{}
+	var usage types.Usage
+	var finishReason types.FinishReason
+
+	// Process stream chunks
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			if err.Error() == "EOF" || err.Error() == "io: read/write on closed pipe" {
+				break
+			}
+			return nil, fmt.Errorf("stream error: %w", err)
+		}
+
+		// Handle different chunk types
+		switch chunk.Type {
+		case provider.ChunkTypeText:
+			// Accumulate text
+			accumulatedText += chunk.Text
+
+			// Try to parse partial JSON
+			parseResult := parsePartialJSON(accumulatedText)
+
+			// If we successfully parsed something and it's different from last
+			if parseResult.Value != nil && !deepEqual(parseResult.Value, lastObject) {
+				// Validate against schema
+				if err := opts.Schema.Validator().Validate(parseResult.Value); err == nil {
+					// Valid partial object - emit it
+					lastObject = parseResult.Value
+
+					// Call OnChunk callback if provided
+					if opts.OnChunk != nil {
+						opts.OnChunk(lastObject)
+					}
+				}
+			}
+
+		case provider.ChunkTypeUsage:
+			if chunk.Usage != nil {
+				usage = usage.Add(*chunk.Usage)
+			}
+
+		case provider.ChunkTypeFinish:
+			finishReason = chunk.FinishReason
+			if chunk.Usage != nil {
+				usage = usage.Add(*chunk.Usage)
+			}
+		}
+	}
+
+	// Parse final JSON
+	var finalObject interface{}
+	if accumulatedText != "" {
+		if err := json.Unmarshal([]byte(accumulatedText), &finalObject); err != nil {
+			return nil, fmt.Errorf("failed to parse final JSON: %w", err)
+		}
+
+		// Validate final object
+		if err := opts.Schema.Validator().Validate(finalObject); err != nil {
+			return nil, fmt.Errorf("final object validation failed: %w", err)
+		}
+	}
+
+	// Build result
+	result := &GenerateObjectResult{
+		Object:       finalObject,
+		Text:         accumulatedText,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}
+
+	// Call OnFinish if provided
+	if opts.OnFinish != nil {
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+	}
+
+	return result, nil
+}
+
+// parsePartialJSON wraps the jsonparser.ParsePartialJSON function
+func parsePartialJSON(text string) jsonparser.ParseResult {
+	return jsonparser.ParsePartialJSON(text)
+}
+
+// deepEqual performs a deep equality check on two JSON values
+// This is used to prevent emitting duplicate partial objects during streaming
+func deepEqual(a, b interface{}) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	return reflect.DeepEqual(a, b)
 }

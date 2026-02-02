@@ -114,9 +114,16 @@ type StepResult struct {
 	// Finish reason for this step
 	FinishReason FinishReason `json:"finishReason"`
 
+	// Raw finish reason from the provider
+	RawFinishReason string `json:"rawFinishReason,omitempty"`
+
 	// Usage for this step
 	Usage Usage `json:"usage"`
 
 	// Warnings from this step
 	Warnings []Warning `json:"warnings,omitempty"`
+
+	// Response messages generated in this step
+	// Contains the assistant message with any text and tool calls
+	ResponseMessages []Message `json:"responseMessages,omitempty"`
 }

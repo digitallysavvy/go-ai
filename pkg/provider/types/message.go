@@ -43,6 +43,17 @@ func (t TextContent) ContentType() string {
 	return "text"
 }
 
+// ReasoningContent represents reasoning/thinking content in a message
+// This is used by models that expose their reasoning process (e.g., OpenAI o1, Anthropic Claude with thinking)
+type ReasoningContent struct {
+	Text string `json:"text"`
+}
+
+// ContentType implements ContentPart interface
+func (r ReasoningContent) ContentType() string {
+	return "reasoning"
+}
+
 // ImageContent represents image content in a message
 type ImageContent struct {
 	// Image data as bytes

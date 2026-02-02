@@ -68,6 +68,11 @@ type GenerateOptions struct {
 
 	// Maximum number of automatic tool call steps
 	MaxSteps *int
+
+	// Provider-specific options
+	// These are passed directly to the provider and can contain any provider-specific settings
+	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}
+	ProviderOptions map[string]interface{}
 }
 
 // ResponseFormat specifies the format of the response
@@ -109,6 +114,9 @@ type StreamChunk struct {
 	// Text content (when Type is ChunkTypeText)
 	Text string
 
+	// Reasoning content (when Type is ChunkTypeReasoning)
+	Reasoning string
+
 	// Tool call (when Type is ChunkTypeToolCall)
 	ToolCall *types.ToolCall
 
@@ -130,6 +138,9 @@ type ChunkType string
 const (
 	// ChunkTypeText indicates a text content chunk
 	ChunkTypeText ChunkType = "text"
+
+	// ChunkTypeReasoning indicates a reasoning/thinking content chunk
+	ChunkTypeReasoning ChunkType = "reasoning"
 
 	// ChunkTypeToolCall indicates a tool call chunk
 	ChunkTypeToolCall ChunkType = "tool-call"
