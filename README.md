@@ -206,6 +206,37 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 })
 ```
 
+### Memory Optimization
+
+Reduce memory consumption by 50-80% for image-heavy or large-context workloads using retention settings:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+// Enable memory optimization
+retention := &types.RetentionSettings{
+    RequestBody:  types.BoolPtr(false), // Don't retain request
+    ResponseBody: types.BoolPtr(false), // Don't retain response
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:                 model,
+    Prompt:                "Analyze this image...",
+    ExperimentalRetention: retention,
+})
+
+// Result still has usage, finish reason, text, etc.
+// But raw request/response bodies are excluded to save memory
+```
+
+Perfect for:
+- 🖼️ Image processing workloads
+- 📄 Large document analysis
+- 🔒 Privacy-sensitive applications
+- ⚡ Long-running services
+
+See [examples/features/retention](./examples/features/retention) for detailed usage.
+
 ## Supported Providers
 
 The Go AI SDK supports 26+ providers:
@@ -246,6 +277,7 @@ And many more...
 - ✅ **Registry** - Resolve models by string ID (e.g., `"openai:gpt-4"`)
 - ✅ **Context Support** - Native Go context cancellation and timeouts
 - ✅ **Streaming** - Real-time responses with automatic backpressure
+- ✅ **Memory Optimization** - Retention settings for 50-80% memory reduction
 
 ## Why Go for AI?
 
