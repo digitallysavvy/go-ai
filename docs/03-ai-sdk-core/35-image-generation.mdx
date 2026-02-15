@@ -85,12 +85,12 @@ The aspect ratio is specified as a string in the format `{width}:{height}`. Mode
 
 ```go
 provider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
-imageModel, _ := provider.ImageModel("imagen-3.0-generate-002")
+imageModel, _ := provider.ImageModel("imagen-4.0-generate-001")
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:       imageModel,
-    Prompt:      "Santa Claus driving a Cadillac",
-    AspectRatio: "16:9",
+    Model:  imageModel,
+    Prompt: "Santa Claus driving a Cadillac",
+    Size:   "1920x1080", // Automatically converts to 16:9 aspect ratio
 })
 ```
 
@@ -375,6 +375,114 @@ func generateImageWithRetry(ctx context.Context, model ai.ImageModel, prompt str
 }
 ```
 
+### Google Image Generation Examples
+
+#### Google Generative AI - Imagen 4.0
+
+```go
+// High-quality image generation with Imagen 4.0
+googleProvider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_API_KEY"),
+})
+
+imagenModel, _ := googleProvider.ImageModel("imagen-4.0-generate-001")
+
+n := 1
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imagenModel,
+    Prompt: "A serene mountain landscape at sunset with dramatic clouds",
+    N:      &n,
+    Size:   "1024x1024", // Square 1:1 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("imagen_4_output.png", result.Image, 0644)
+fmt.Printf("Generated with Imagen 4.0: %d bytes\n", len(result.Image))
+```
+
+#### Google Generative AI - Gemini Flash Image
+
+```go
+// Fast image generation with Gemini
+geminiModel, _ := googleProvider.ImageModel("gemini-2.5-flash-image")
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  geminiModel,
+    Prompt: "Abstract colorful art with geometric shapes and vibrant patterns",
+    Size:   "1920x1080", // Widescreen 16:9
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("gemini_output.png", result.Image, 0644)
+```
+
+#### Google Vertex AI - Imagen 3.0
+
+```go
+// Enterprise-grade image generation with Vertex AI
+vertexProvider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+vertexModel, _ := vertexProvider.ImageModel("imagen-3.0-generate-001")
+
+n := 1
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  vertexModel,
+    Prompt: "A futuristic cityscape at night with neon lights",
+    N:      &n,
+    Size:   "1920x1080", // 16:9 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("vertex_imagen_output.png", result.Image, 0644)
+```
+
+#### Comparing Google Models
+
+```go
+prompts := []string{
+    "A magical forest with glowing mushrooms",
+    "Cyberpunk city street at night",
+    "Mountain landscape with aurora borealis",
+}
+
+models := map[string]ai.ImageModel{
+    "imagen-4.0":    imagenModel,
+    "gemini-flash":  geminiModel,
+    "vertex-imagen": vertexModel,
+}
+
+for name, model := range models {
+    for i, prompt := range prompts {
+        result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+            Model:  model,
+            Prompt: prompt,
+            Size:   "1024x1024",
+        })
+        if err != nil {
+            log.Printf("Error with %s: %v\n", name, err)
+            continue
+        }
+
+        filename := fmt.Sprintf("%s_%d.png", name, i+1)
+        os.WriteFile(filename, result.Image, 0644)
+        fmt.Printf("✓ Generated %s\n", filename)
+    }
+}
+```
+
 ## Image Models
 
 Several providers offer image generation models:
@@ -388,7 +496,9 @@ Several providers offer image generation models:
 | **Amazon Bedrock** | `amazon.nova-canvas-v1:0` | 320-4096 (multiples of 16) |
 | **Fal** | `fal-ai/flux/dev` | 1:1, 3:4, 4:3, 9:16, 16:9, 9:21, 21:9 |
 | **Fal** | `fal-ai/flux-pro/v1.1-ultra` | 1:1, 3:4, 4:3, 9:16, 16:9, 9:21, 21:9 |
-| **Google** | `imagen-3.0-generate-002` | 1:1, 3:4, 4:3, 9:16, 16:9 |
+| **Google** | `imagen-4.0-generate-001` | 1:1, 3:4, 4:3, 9:16, 16:9 |
+| **Google** | `gemini-2.5-flash-image` | 1:1, 3:4, 4:3, 9:16, 16:9 |
+| **Google Vertex** | `imagen-3.0-generate-001` | 1:1, 3:4, 4:3, 9:16, 16:9 |
 | **Black Forest Labs** | `flux-pro-1.1-ultra` | 3:7 to 7:3 aspect ratios |
 | **Stability AI** | Various via providers | Multiple sizes supported |
 
@@ -403,9 +513,20 @@ grokModel, _ := xaiProvider.ImageModel("grok-image-1")
 openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
 dalleModel, _ := openaiProvider.ImageModel("dall-e-3")
 
-// Google
+// Google Generative AI - Imagen 4.0
 googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
-imagenModel, _ := googleProvider.ImageModel("imagen-3.0-generate-002")
+imagenModel, _ := googleProvider.ImageModel("imagen-4.0-generate-001")
+
+// Google Generative AI - Gemini Image
+geminiImageModel, _ := googleProvider.ImageModel("gemini-2.5-flash-image")
+
+// Google Vertex AI - Imagen 3.0
+vertexProvider, _ := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+vertexImagenModel, _ := vertexProvider.ImageModel("imagen-3.0-generate-001")
 
 // Fal
 falProvider := fal.New(fal.Config{APIKey: os.Getenv("FAL_API_KEY")})
@@ -413,7 +534,7 @@ fluxModel, _ := falProvider.ImageModel("fal-ai/flux/dev")
 
 // Use any model with the same API
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  grokModel, // or dalleModel, imagenModel, or fluxModel
+    Model:  imagenModel, // or grokModel, dalleModel, geminiImageModel, vertexImagenModel, or fluxModel
     Prompt: "A beautiful landscape",
 })
 ```
