@@ -181,16 +181,30 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
 	var reasoningTokens int64
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 {
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
 			CacheReadTokens:  &cachedTokens,
 			CacheWriteTokens: nil,
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
 		}
 	}
 	if reasoningTokens > 0 {
@@ -258,6 +272,9 @@ type fireworksUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`

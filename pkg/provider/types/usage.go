@@ -24,7 +24,7 @@ type Usage struct {
 }
 
 // InputTokenDetails provides a detailed breakdown of input token usage
-// Particularly useful for tracking prompt caching benefits
+// Particularly useful for tracking prompt caching benefits and text/image differentiation
 type InputTokenDetails struct {
 	// Tokens that were not cached (processed normally)
 	NoCacheTokens *int64 `json:"noCacheTokens,omitempty"`
@@ -34,6 +34,12 @@ type InputTokenDetails struct {
 
 	// Tokens that were written to cache (for future use)
 	CacheWriteTokens *int64 `json:"cacheWriteTokens,omitempty"`
+
+	// Number of text input tokens (for multimodal cost tracking)
+	TextTokens *int64 `json:"textTokens,omitempty"`
+
+	// Number of image input tokens (for multimodal cost tracking)
+	ImageTokens *int64 `json:"imageTokens,omitempty"`
 }
 
 // OutputTokenDetails provides a detailed breakdown of output token usage
@@ -61,6 +67,8 @@ func (u Usage) Add(other Usage) Usage {
 			NoCacheTokens:    addInt64Ptr(getInputDetail(u, "NoCacheTokens"), getInputDetail(other, "NoCacheTokens")),
 			CacheReadTokens:  addInt64Ptr(getInputDetail(u, "CacheReadTokens"), getInputDetail(other, "CacheReadTokens")),
 			CacheWriteTokens: addInt64Ptr(getInputDetail(u, "CacheWriteTokens"), getInputDetail(other, "CacheWriteTokens")),
+			TextTokens:       addInt64Ptr(getInputDetail(u, "TextTokens"), getInputDetail(other, "TextTokens")),
+			ImageTokens:      addInt64Ptr(getInputDetail(u, "ImageTokens"), getInputDetail(other, "ImageTokens")),
 		}
 	}
 
@@ -113,6 +121,10 @@ func getInputDetail(u Usage, field string) *int64 {
 		return u.InputDetails.CacheReadTokens
 	case "CacheWriteTokens":
 		return u.InputDetails.CacheWriteTokens
+	case "TextTokens":
+		return u.InputDetails.TextTokens
+	case "ImageTokens":
+		return u.InputDetails.ImageTokens
 	}
 	return nil
 }

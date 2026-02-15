@@ -344,3 +344,57 @@ func NewRateLimitError(provider, message string, retryAfter *int, cause error) *
 		Cause:             cause,
 	}
 }
+
+// DownloadError represents an error during file download
+type DownloadError struct {
+	// URL that was being downloaded
+	URL string
+
+	// HTTP status code (if applicable)
+	StatusCode int
+
+	// HTTP status text
+	StatusText string
+
+	// Error message
+	Message string
+
+	// Underlying cause
+	Cause error
+}
+
+// Error implements the error interface
+func (e *DownloadError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("failed to download %s: %v", e.URL, e.Cause)
+	}
+	return fmt.Sprintf("failed to download %s", e.URL)
+}
+
+// Unwrap returns the underlying cause
+func (e *DownloadError) Unwrap() error {
+	return e.Cause
+}
+
+// IsDownloadError checks if an error is a DownloadError
+func IsDownloadError(err error) bool {
+	var downloadErr *DownloadError
+	return errors.As(err, &downloadErr)
+}
+
+// NewDownloadError creates a new download error
+func NewDownloadError(url string, statusCode int, statusText, message string, cause error) *DownloadError {
+	return &DownloadError{
+		URL:        url,
+		StatusCode: statusCode,
+		StatusText: statusText,
+		Message:    message,
+		Cause:      cause,
+	}
+}

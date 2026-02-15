@@ -232,6 +232,20 @@ func convertAzureUsage(usage azureUsage) types.Usage {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
 
+	// Extract text and image tokens
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
+
 	// Calculate reasoning tokens
 	var reasoningTokens int64
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
@@ -239,12 +253,14 @@ func convertAzureUsage(usage azureUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 {
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
 			CacheReadTokens:  &cachedTokens,
 			CacheWriteTokens: nil, // Azure doesn't provide cache write tokens
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
 		}
 	}
 
@@ -325,6 +341,9 @@ type azureUsage struct {
 	// Detailed token breakdown (v6.0)
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 
 	CompletionTokensDetails *struct {

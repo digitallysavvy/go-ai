@@ -186,37 +186,36 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
 
-	// Handle image and text input tokens (new multimodal fields)
-	var imageInputTokens int64
-	if usage.ImageInputTokens != nil {
-		imageInputTokens = int64(*usage.ImageInputTokens)
+	// Handle text and image input tokens (from both direct fields and nested structure)
+	var textTokens *int64
+	var imageTokens *int64
+
+	// First try direct fields
+	if usage.TextInputTokens != nil {
+		textVal := int64(*usage.TextInputTokens)
+		textTokens = &textVal
+	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.TextTokens != nil {
+		textVal := int64(*usage.PromptTokensDetails.TextTokens)
+		textTokens = &textVal
 	}
 
-	var textInputTokens int64
-	if usage.TextInputTokens != nil {
-		textInputTokens = int64(*usage.TextInputTokens)
+	if usage.ImageInputTokens != nil {
+		imageVal := int64(*usage.ImageInputTokens)
+		imageTokens = &imageVal
+	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.ImageTokens != nil {
+		imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+		imageTokens = &imageVal
 	}
 
 	// Set input details if we have cached or multimodal tokens
-	if cachedTokens > 0 || imageInputTokens > 0 || textInputTokens > 0 {
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
 			CacheReadTokens:  &cachedTokens,
 			CacheWriteTokens: nil,
-		}
-
-		// Add multimodal token tracking to Raw
-		if imageInputTokens > 0 || textInputTokens > 0 {
-			if result.Raw == nil {
-				result.Raw = make(map[string]interface{})
-			}
-			if imageInputTokens > 0 {
-				result.Raw["image_input_tokens"] = imageInputTokens
-			}
-			if textInputTokens > 0 {
-				result.Raw["text_input_tokens"] = textInputTokens
-			}
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
 		}
 	}
 
@@ -295,6 +294,9 @@ type xaiUsage struct {
 	// Legacy structure for backward compatibility
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`

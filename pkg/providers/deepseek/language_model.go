@@ -174,13 +174,25 @@ func convertDeepseekUsage(usage deepseekUsage) types.Usage {
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cached = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
 	var reasoning int64
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cached > 0 {
+	if cached > 0 || textTokens != nil || imageTokens != nil {
 		noCache := p - cached
-		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil}
+		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
 	}
 	if reasoning > 0 {
 		text := c - reasoning
@@ -239,6 +251,9 @@ type deepseekUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`

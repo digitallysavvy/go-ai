@@ -5,29 +5,35 @@ description: API reference for usage and token tracking types
 
 # Usage Types
 
-Types for tracking token usage and costs across API calls.
+Types for tracking token usage and costs across API calls with detailed breakdowns for multimodal inputs, caching, and reasoning.
 
 ## Usage
 
 ```go
 type Usage struct {
-    PromptTokens     int
-    CompletionTokens int
-    TotalTokens      int
-    CachedTokens     int
+    InputTokens  *int64 // Total input tokens (prompt)
+    OutputTokens *int64 // Total output tokens (completion)
+    TotalTokens  *int64 // Total tokens (input + output)
+
+    InputDetails  *InputTokenDetails  // Detailed input token breakdown
+    OutputDetails *OutputTokenDetails // Detailed output token breakdown
+
+    Raw map[string]interface{} // Provider-specific raw usage data
 }
 ```
 
-Token usage information for language model calls.
+Token usage information for language model calls with v6.0 detailed tracking.
 
 ### Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| PromptTokens | int | Tokens in the input prompt |
-| CompletionTokens | int | Tokens in the generated completion |
-| TotalTokens | int | Total tokens (prompt + completion) |
-| CachedTokens | int | Tokens served from cache (if applicable) |
+| InputTokens | *int64 | Total tokens in the input (prompt) |
+| OutputTokens | *int64 | Total tokens in the output (completion) |
+| TotalTokens | *int64 | Total tokens (input + output) |
+| InputDetails | *InputTokenDetails | Detailed breakdown of input tokens (cache, text/image) |
+| OutputDetails | *OutputTokenDetails | Detailed breakdown of output tokens (text/reasoning) |
+| Raw | map[string]interface{} | Provider-specific usage data |
 
 ### Methods
 
@@ -35,23 +41,103 @@ Token usage information for language model calls.
 func (u Usage) Add(other Usage) Usage
 ```
 
-Adds two usage objects together (for accumulating usage across multiple calls).
-
-## EmbeddingUsage
+Adds two usage objects together, merging all detailed breakdowns.
 
 ```go
-type EmbeddingUsage struct {
-    TotalTokens int
+func (u Usage) GetInputTokens() int64
+func (u Usage) GetOutputTokens() int64
+func (u Usage) GetTotalTokens() int64
+```
+
+Helper methods that return 0 if the pointer is nil.
+
+## InputTokenDetails
+
+```go
+type InputTokenDetails struct {
+    NoCacheTokens    *int64 // Tokens not served from cache
+    CacheReadTokens  *int64 // Tokens read from cache
+    CacheWriteTokens *int64 // Tokens written to cache
+    TextTokens       *int64 // Text input tokens (for multimodal)
+    ImageTokens      *int64 // Image input tokens (for multimodal)
 }
 ```
 
-Token usage information for embedding calls.
+Detailed breakdown of input token usage, particularly useful for:
+- Tracking prompt caching benefits (cost savings)
+- Differentiating text vs image costs in multimodal models
 
 ### Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| TotalTokens | int | Total tokens processed |
+| NoCacheTokens | *int64 | Input tokens processed normally (not from cache) |
+| CacheReadTokens | *int64 | Input tokens read from cache (cheaper) |
+| CacheWriteTokens | *int64 | Input tokens written to cache for future use |
+| TextTokens | *int64 | Text input tokens (for multimodal cost tracking) |
+| ImageTokens | *int64 | Image input tokens (for multimodal cost tracking) |
+
+## OutputTokenDetails
+
+```go
+type OutputTokenDetails struct {
+    TextTokens      *int64 // Tokens for regular text generation
+    ReasoningTokens *int64 // Tokens for internal reasoning (o1/o3)
+}
+```
+
+Detailed breakdown of output token usage for models with reasoning capabilities.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| TextTokens | *int64 | Tokens used for regular text generation |
+| ReasoningTokens | *int64 | Tokens used for internal reasoning (not shown in output) |
+
+## Other Usage Types
+
+### EmbeddingUsage
+
+```go
+type EmbeddingUsage struct {
+    InputTokens int
+    TotalTokens int
+}
+```
+
+### ImageUsage
+
+```go
+type ImageUsage struct {
+    ImageCount int
+}
+```
+
+### SpeechUsage
+
+```go
+type SpeechUsage struct {
+    CharacterCount int
+}
+```
+
+### TranscriptionUsage
+
+```go
+type TranscriptionUsage struct {
+    DurationSeconds float64
+}
+```
+
+### VideoUsage
+
+```go
+type VideoUsage struct {
+    VideoCount           int
+    TotalDurationSeconds float64
+}
+```
 
 ## Examples
 
@@ -62,9 +148,9 @@ package main
 
 import (
     "fmt"
+    "log"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func main() {
@@ -77,9 +163,110 @@ func main() {
     }
 
     usage := result.Usage
-    fmt.Printf("Prompt tokens: %d\n", usage.PromptTokens)
-    fmt.Printf("Completion tokens: %d\n", usage.CompletionTokens)
-    fmt.Printf("Total tokens: %d\n", usage.TotalTokens)
+    fmt.Printf("Input tokens: %d\n", usage.GetInputTokens())
+    fmt.Printf("Output tokens: %d\n", usage.GetOutputTokens())
+    fmt.Printf("Total tokens: %d\n", usage.GetTotalTokens())
+}
+```
+
+### Track Text vs Image Tokens (Multimodal)
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.MessageContent{
+                {Type: types.ContentTypeText, Text: ptr("Describe this image:")},
+                {Type: types.ContentTypeImage, Image: imageURL},
+            },
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check if provider supports text/image breakdown
+if result.Usage.InputDetails != nil {
+    if result.Usage.InputDetails.TextTokens != nil {
+        fmt.Printf("Text input tokens: %d\n", *result.Usage.InputDetails.TextTokens)
+    }
+    if result.Usage.InputDetails.ImageTokens != nil {
+        fmt.Printf("Image input tokens: %d\n", *result.Usage.InputDetails.ImageTokens)
+    }
+}
+```
+
+### Estimate Cost with Multimodal Pricing
+
+```go
+// Example pricing (OpenAI GPT-4o)
+const (
+    textInputCost  = 0.0000025  // $2.50 per 1M tokens
+    imageInputCost = 0.0000075  // $7.50 per 1M tokens (approx)
+    outputCost     = 0.0000100  // $10.00 per 1M tokens
+)
+
+usage := result.Usage
+var cost float64
+
+// Calculate input cost (text + image)
+if usage.InputDetails != nil && usage.InputDetails.TextTokens != nil && usage.InputDetails.ImageTokens != nil {
+    // Accurate multimodal cost
+    cost += float64(*usage.InputDetails.TextTokens) * textInputCost
+    cost += float64(*usage.InputDetails.ImageTokens) * imageInputCost
+} else {
+    // Fallback to average rate if breakdown not available
+    cost += float64(usage.GetInputTokens()) * textInputCost
+}
+
+// Add output cost
+cost += float64(usage.GetOutputTokens()) * outputCost
+
+fmt.Printf("Estimated cost: $%.6f\n", cost)
+```
+
+### Track Cached Tokens
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: longPrompt,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+if result.Usage.InputDetails != nil && result.Usage.InputDetails.CacheReadTokens != nil {
+    cacheRead := *result.Usage.InputDetails.CacheReadTokens
+    if cacheRead > 0 {
+        total := result.Usage.GetInputTokens()
+        savings := float64(cacheRead) / float64(total) * 100
+        fmt.Printf("Cache hit! %d tokens from cache (%.1f%% savings)\n", cacheRead, savings)
+    }
+}
+```
+
+### Track Reasoning Tokens (o1/o3 Models)
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  "o3-mini",  // OpenAI reasoning model
+    Prompt: "Solve this complex problem...",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+if result.Usage.OutputDetails != nil && result.Usage.OutputDetails.ReasoningTokens != nil {
+    reasoning := *result.Usage.OutputDetails.ReasoningTokens
+    text := *result.Usage.OutputDetails.TextTokens
+
+    fmt.Printf("Text tokens: %d\n", text)
+    fmt.Printf("Reasoning tokens: %d (hidden)\n", reasoning)
+    fmt.Printf("Reasoning overhead: %.1f%%\n", float64(reasoning)/float64(text)*100)
 }
 ```
 
@@ -102,82 +289,35 @@ for i := 0; i < 5; i++ {
 }
 
 fmt.Printf("Total usage across all calls:\n")
-fmt.Printf("  Prompt tokens: %d\n", totalUsage.PromptTokens)
-fmt.Printf("  Completion tokens: %d\n", totalUsage.CompletionTokens)
-fmt.Printf("  Total tokens: %d\n", totalUsage.TotalTokens)
+fmt.Printf("  Input tokens: %d\n", totalUsage.GetInputTokens())
+fmt.Printf("  Output tokens: %d\n", totalUsage.GetOutputTokens())
+fmt.Printf("  Total tokens: %d\n", totalUsage.GetTotalTokens())
 ```
 
-### Track Cached Tokens
+### Provider-Specific Usage Data
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
-    Prompt: longPrompt,
+    Prompt: "Hello",
 })
 if err != nil {
     log.Fatal(err)
 }
 
-if result.Usage.CachedTokens > 0 {
-    fmt.Printf("Cache hit! %d tokens served from cache\n",
-        result.Usage.CachedTokens)
-    fmt.Printf("Savings: %.1f%%\n",
-        float64(result.Usage.CachedTokens)/float64(result.Usage.TotalTokens)*100)
+// Access raw provider-specific data
+if result.Usage.Raw != nil {
+    if promptDetails, ok := result.Usage.Raw["prompt_tokens_details"]; ok {
+        fmt.Printf("Provider details: %+v\n", promptDetails)
+    }
 }
-```
-
-### Estimate Cost
-
-```go
-// Example pricing (adjust for your provider/model)
-const (
-    promptTokenCost     = 0.00001  // $0.01 per 1K tokens
-    completionTokenCost = 0.00003  // $0.03 per 1K tokens
-)
-
-usage := result.Usage
-cost := float64(usage.PromptTokens)*promptTokenCost +
-    float64(usage.CompletionTokens)*completionTokenCost
-
-fmt.Printf("Estimated cost: $%.6f\n", cost)
-```
-
-### Monitor Usage in Multi-Step Generation
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Complex multi-step task",
-    Tools:  tools,
-    OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
-        fmt.Printf("Step %d usage:\n", step.StepNumber)
-        fmt.Printf("  Tokens: %d\n", step.Usage.TotalTokens)
-    },
-    OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userCtx interface{}) {
-        fmt.Printf("Final total usage: %d tokens\n", result.Usage.TotalTokens)
-    },
-})
-```
-
-### Embedding Usage
-
-```go
-result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
-    Model:  embeddingModel,
-    Inputs: documents,
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Embedding usage: %d tokens\n", result.Usage.TotalTokens)
 ```
 
 ### Usage Budget Enforcement
 
 ```go
 const maxTokens = 10000
-var usedTokens int
+var usedTokens int64
 
 for _, task := range tasks {
     if usedTokens >= maxTokens {
@@ -194,13 +334,33 @@ for _, task := range tasks {
         continue
     }
 
-    usedTokens += result.Usage.TotalTokens
+    usedTokens += result.Usage.GetTotalTokens()
     fmt.Printf("Used %d/%d tokens\n", usedTokens, maxTokens)
 }
 ```
+
+## Provider Support
+
+Different providers support different levels of usage detail:
+
+| Provider | Text/Image Tokens | Cache Tracking | Reasoning Tokens |
+|----------|-------------------|----------------|------------------|
+| OpenAI   | ✅ Yes            | ✅ Yes         | ✅ Yes (o1/o3)   |
+| XAI      | ✅ Yes            | ✅ Yes         | ✅ Yes           |
+| Google   | ✅ Yes            | ✅ Yes         | ✅ Yes (thinking)|
+| Anthropic| ❌ No             | ✅ Yes         | ❌ No            |
+| Azure    | ✅ Yes            | ✅ Yes         | ✅ Yes           |
+| Groq     | ⚠️ Partial         | ⚠️ Partial      | ⚠️ Partial       |
+| DeepSeek | ✅ Yes            | ✅ Yes         | ✅ Yes           |
+| Together | ✅ Yes            | ✅ Yes         | ✅ Yes           |
+| Fireworks| ✅ Yes            | ✅ Yes         | ✅ Yes           |
+| Others   | Varies            | Varies         | Varies           |
+
+When detailed fields are not available from a provider, the pointers will be `nil`.
 
 ## See Also
 
 - [GenerateText](../ai/generate-text.mdx) - Text generation with usage tracking
 - [Embed](../ai/embed.mdx) - Embedding generation with usage tracking
 - [Error Types](./errors.mdx) - Error handling
+- [Migration Guide](../../08-migration-guides/token-usage-differentiation.mdx) - Migrating to new usage structure

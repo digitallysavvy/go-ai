@@ -243,15 +243,38 @@ func convertGoogleUsage(usage *googleUsageMetadata) types.Usage {
 		TotalTokens:  &totalTokens,
 	}
 
-	// Set input token details (cache information)
+	// Parse text and image tokens from promptTokensDetails
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil && len(usage.PromptTokensDetails) > 0 {
+		var textCount, imageCount int64
+		for _, detail := range usage.PromptTokensDetails {
+			switch detail.Modality {
+			case "TEXT":
+				textCount += int64(detail.TokenCount)
+			case "IMAGE":
+				imageCount += int64(detail.TokenCount)
+			}
+		}
+		if textCount > 0 {
+			textTokens = &textCount
+		}
+		if imageCount > 0 {
+			imageTokens = &imageCount
+		}
+	}
+
+	// Set input token details (cache information and text/image breakdown)
 	// Google provides cachedContentTokenCount for cache reads
-	if cachedContentTokens > 0 {
+	if cachedContentTokens > 0 || textTokens != nil || imageTokens != nil {
 		noCacheTokens := promptTokens - cachedContentTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
 			CacheReadTokens: &cachedContentTokens,
 			// Google doesn't report cache write tokens separately
 			CacheWriteTokens: nil,
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
 		}
 	}
 
@@ -306,6 +329,10 @@ type googleUsageMetadata struct {
 	CachedContentTokenCount int    `json:"cachedContentTokenCount,omitempty"` // v6.0 - cache read
 	ThoughtsTokenCount      int    `json:"thoughtsTokenCount,omitempty"`      // v6.0 - reasoning tokens
 	TrafficType             string `json:"trafficType,omitempty"`             // v6.0 - metadata
+	PromptTokensDetails     []struct {
+		Modality   string `json:"modality,omitempty"`
+		TokenCount int    `json:"tokenCount,omitempty"`
+	} `json:"promptTokensDetails,omitempty"` // v6.0 - text/image token breakdown
 }
 
 // googlePart represents a part in Google's content structure
