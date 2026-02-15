@@ -18,13 +18,19 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+	options  *ModelOptions
 }
 
 // NewLanguageModel creates a new AWS Bedrock language model
-func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
+func NewLanguageModel(provider *Provider, modelID string, options ...*ModelOptions) *LanguageModel {
+	var opts *ModelOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	return &LanguageModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  opts,
 	}
 }
 
@@ -191,6 +197,18 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 
 	if opts.TopP != nil {
 		reqBody["top_p"] = *opts.TopP
+	}
+
+	// Add thinking configuration if configured
+	if m.options != nil && m.options.Thinking != nil {
+		thinkingConfig := map[string]interface{}{
+			"type": string(m.options.Thinking.Type),
+		}
+		// Only add budget_tokens for "enabled" type
+		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
+			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
+		}
+		reqBody["thinking"] = thinkingConfig
 	}
 
 	return reqBody, nil

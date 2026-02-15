@@ -162,6 +162,9 @@ const (
 
 	// BetaHeaderCompact is required for compact edits
 	BetaHeaderCompact = "compact-2026-01-12"
+
+	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
+	BetaHeaderFastMode = "fast-mode-2026-02-01"
 )
 
 // Helper functions for creating edit configurations

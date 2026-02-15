@@ -65,9 +65,10 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
 			return contentParts, nil
 		},
 		// Mark this as provider-executed since it's executed via MCP
-		ToModelOutput: func(ctx context.Context, options types.ToModelOutputOptions) (types.ToolResultOutput, error) {
+		ToModelOutput: func(ctx context.Context, options types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
 			// Convert MCP result to model-readable format
-			return c.convertToModelOutput(options.Result), nil
+			output := c.convertToModelOutput(options.Result)
+			return &output, nil
 		},
 	}
 }
@@ -78,25 +79,46 @@ func (c *MCPToolConverter) convertToModelOutput(result interface{}) types.ToolRe
 	// The AI SDK will handle the content parts directly
 	contentParts, ok := result.([]types.ContentPart)
 	if !ok {
-		// Fallback for backward compatibility
+		// Fallback for backward compatibility - return simple text
 		jsonBytes, err := json.Marshal(result)
 		if err != nil {
 			return types.ToolResultOutput{
-				Type:    "text",
-				Content: fmt.Sprintf("%v", result),
+				Type:  types.ToolResultOutputText,
+				Value: fmt.Sprintf("%v", result),
 			}
 		}
 		return types.ToolResultOutput{
-			Type:    "text",
-			Content: string(jsonBytes),
+			Type:  types.ToolResultOutputText,
+			Value: string(jsonBytes),
 		}
 	}
 
-	// Return content parts as structured data
+	// Convert ContentParts to ToolResultContentBlocks
 	// Images will be handled properly, preventing the 200K+ token explosion bug
+	contentBlocks := make([]types.ToolResultContentBlock, 0, len(contentParts))
+	for _, part := range contentParts {
+		switch p := part.(type) {
+		case types.TextContent:
+			contentBlocks = append(contentBlocks, types.TextContentBlock{
+				Text: p.Text,
+			})
+		case types.ImageContent:
+			contentBlocks = append(contentBlocks, types.ImageContentBlock{
+				Data:      p.Image,
+				MediaType: p.MimeType,
+			})
+		case types.FileContent:
+			contentBlocks = append(contentBlocks, types.FileContentBlock{
+				Data:      p.Data,
+				MediaType: p.MimeType,
+				Filename:  p.Filename,
+			})
+		}
+	}
+
 	return types.ToolResultOutput{
-		Type: "custom",
-		Data: contentParts,
+		Type:    types.ToolResultOutputContent,
+		Content: contentBlocks,
 	}
 }
 

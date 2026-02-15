@@ -63,6 +63,15 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
+// LanguageModelWithOptions returns a language model with custom options
+func (p *Provider) LanguageModelWithOptions(modelID string, options *ModelOptions) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID is required for AWS Bedrock")
+	}
+
+	return NewLanguageModel(p, modelID, options), nil
+}
+
 // EmbeddingModel returns an embedding model by ID with default options
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	if modelID == "" {

@@ -191,6 +191,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
+	// Add thinking configuration if configured (beta feature)
+	if m.options != nil && m.options.Thinking != nil {
+		thinkingConfig := map[string]interface{}{
+			"type": string(m.options.Thinking.Type),
+		}
+		// Only add budget_tokens for "enabled" type
+		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
+			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
+		}
+		body["thinking"] = thinkingConfig
+	}
+
+	// Add speed configuration if set (fast mode for Opus 4.6)
+	if m.options != nil && m.options.Speed != "" {
+		body["speed"] = string(m.options.Speed)
+	}
+
 	// Add context management if configured (beta feature)
 	if m.options != nil && m.options.ContextManagement != nil {
 		body["context_management"] = m.options.ContextManagement
@@ -321,28 +338,37 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 
 // getBetaHeaders returns the comma-separated beta headers needed for context management
 func (m *LanguageModel) getBetaHeaders() string {
-	if m.options == nil || m.options.ContextManagement == nil {
+	if m.options == nil {
 		return ""
 	}
 
 	var headers []string
-	hasCompact := false
 
-	// Check which edit types are present
-	for _, edit := range m.options.ContextManagement.Edits {
-		if _, ok := edit.(*CompactEdit); ok {
-			hasCompact = true
+	// Check context management for beta headers
+	if m.options.ContextManagement != nil {
+		hasCompact := false
+
+		// Check which edit types are present
+		for _, edit := range m.options.ContextManagement.Edits {
+			if _, ok := edit.(*CompactEdit); ok {
+				hasCompact = true
+			}
+		}
+
+		// Always add context-management header if edits are present
+		if len(m.options.ContextManagement.Edits) > 0 {
+			headers = append(headers, BetaHeaderContextManagement)
+		}
+
+		// Add compact header if compact edits are present
+		if hasCompact {
+			headers = append(headers, BetaHeaderCompact)
 		}
 	}
 
-	// Always add context-management header if edits are present
-	if len(m.options.ContextManagement.Edits) > 0 {
-		headers = append(headers, BetaHeaderContextManagement)
-	}
-
-	// Add compact header if compact edits are present
-	if hasCompact {
-		headers = append(headers, BetaHeaderCompact)
+	// Add fast mode header if fast mode is enabled
+	if m.options.Speed == SpeedFast {
+		headers = append(headers, BetaHeaderFastMode)
 	}
 
 	// Join with comma as per Anthropic API spec
@@ -399,11 +425,14 @@ type UsageIteration struct {
 
 // anthropicContent represents content in an Anthropic response
 type anthropicContent struct {
-	Type string                 `json:"type"` // "text" or "tool_use"
-	Text string                 `json:"text,omitempty"`
-	ID   string                 `json:"id,omitempty"`
-	Name string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
+	Type      string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking"
+	Text      string                 `json:"text,omitempty"`
+	ID        string                 `json:"id,omitempty"`
+	Name      string                 `json:"name,omitempty"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
+	Signature string                 `json:"signature,omitempty"` // For "thinking" type
+	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
 }
 
 // anthropicStream implements provider.TextStream for Anthropic streaming

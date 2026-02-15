@@ -28,6 +28,9 @@ type AgentResult struct {
 	// All tool results from agent execution
 	ToolResults []types.ToolResult
 
+	// Subagent delegations during execution
+	Delegations []SubagentDelegation
+
 	// Final finish reason
 	FinishReason types.FinishReason
 
@@ -64,6 +67,14 @@ type AgentConfig struct {
 
 	// Tools available to the agent
 	Tools []types.Tool
+
+	// Skills are reusable agent behaviors
+	// Skills can be registered and executed by the agent
+	Skills *SkillRegistry
+
+	// Subagents are specialized agents that can be delegated to
+	// The main agent can delegate tasks to subagents for specialized processing
+	Subagents *SubagentRegistry
 
 	// Maximum number of steps (iterations) the agent can take
 	MaxSteps int

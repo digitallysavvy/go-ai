@@ -58,7 +58,7 @@ Provider-specific features:
 **Azure:**
 - **[providers/azure](./providers/azure)** - Azure OpenAI Service integration pattern
 
-### 🧠 Agents (5 examples)
+### 🧠 Agents (8 examples)
 
 Multi-tool autonomous agents:
 
@@ -67,6 +67,9 @@ Multi-tool autonomous agents:
 - **[agents/streaming-agent](./agents/streaming-agent)** - Real-time step visualization, research, code review
 - **[agents/multi-agent](./agents/multi-agent)** - Multiple specialized agents working together
 - **[agents/supervisor-agent](./agents/supervisor-agent)** - Hierarchical agent system with supervisor coordination
+- **[agent-skills](./agent-skills)** - Reusable agent behaviors and skills (NEW)
+- **[agent-subagents](./agent-subagents)** - Hierarchical agent delegation (NEW)
+- **[agent-skills-subagents](./agent-skills-subagents)** - Combined skills and subagents (NEW)
 
 ### 🛠️ Production Middleware (5 examples)
 
@@ -266,10 +269,10 @@ go fmt .
 
 ## Examples Statistics
 
-- **Total Examples**: 50+
-- **Example Files**: 46+ (main.go + tests)
-- **READMEs**: 45+ comprehensive documentation files
-- **Lines of Code**: 15,000+
+- **Total Examples**: 53+
+- **Example Files**: 49+ (main.go + tests)
+- **READMEs**: 48+ comprehensive documentation files
+- **Lines of Code**: 16,000+
 - **Test Coverage**: All examples compile and work
 - **Feature Parity**: 100% with TypeScript SDK for server-side features
 

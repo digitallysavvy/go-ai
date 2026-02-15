@@ -92,7 +92,8 @@ type ToolExecutionOptions struct {
 
 // ToModelOutputFunc converts a tool result to model-readable output
 // This allows custom formatting of tool results
-type ToModelOutputFunc func(ctx context.Context, options ToModelOutputOptions) (ToolResultOutput, error)
+// Note: ToolResultOutput is defined in message.go and supports rich content blocks
+type ToModelOutputFunc func(ctx context.Context, options ToModelOutputOptions) (*ToolResultOutput, error)
 
 // ToModelOutputOptions contains options for converting tool results
 type ToModelOutputOptions struct {
@@ -107,18 +108,6 @@ type ToModelOutputOptions struct {
 
 	// Metadata contains additional metadata
 	Metadata map[string]interface{}
-}
-
-// ToolResultOutput represents the formatted output of a tool result
-type ToolResultOutput struct {
-	// Type of the result content ("text", "image", "document", "custom")
-	Type string
-
-	// Content is the main content (for text type)
-	Content string
-
-	// Data contains structured data for non-text types
-	Data interface{}
 }
 
 // ToolInputExample represents an example input for a tool

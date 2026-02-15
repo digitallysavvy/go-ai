@@ -20,6 +20,16 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		config.MaxSteps = 10
 	}
 
+	// Initialize skills registry if not provided
+	if config.Skills == nil {
+		config.Skills = NewSkillRegistry()
+	}
+
+	// Initialize subagents registry if not provided
+	if config.Subagents == nil {
+		config.Subagents = NewSubagentRegistry()
+	}
+
 	return &ToolLoopAgent{
 		config: config,
 	}
@@ -57,6 +67,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	result := &AgentResult{
 		Steps:       []types.StepResult{},
 		ToolResults: []types.ToolResult{},
+		Delegations: []SubagentDelegation{},
 	}
 
 	// Current conversation state
@@ -365,4 +376,98 @@ func (a *ToolLoopAgent) RemoveTool(toolName string) {
 // SetMaxSteps updates the maximum number of steps
 func (a *ToolLoopAgent) SetMaxSteps(maxSteps int) {
 	a.config.MaxSteps = maxSteps
+}
+
+// ========================================================================
+// Skills Management
+// ========================================================================
+
+// AddSkill adds a skill to the agent
+func (a *ToolLoopAgent) AddSkill(skill *Skill) error {
+	if a.config.Skills == nil {
+		a.config.Skills = NewSkillRegistry()
+	}
+	return a.config.Skills.Register(skill)
+}
+
+// RemoveSkill removes a skill from the agent by name
+func (a *ToolLoopAgent) RemoveSkill(name string) {
+	if a.config.Skills != nil {
+		a.config.Skills.Unregister(name)
+	}
+}
+
+// GetSkill retrieves a skill by name
+func (a *ToolLoopAgent) GetSkill(name string) (*Skill, bool) {
+	if a.config.Skills == nil {
+		return nil, false
+	}
+	return a.config.Skills.Get(name)
+}
+
+// ListSkills returns all registered skills
+func (a *ToolLoopAgent) ListSkills() []*Skill {
+	if a.config.Skills == nil {
+		return []*Skill{}
+	}
+	return a.config.Skills.List()
+}
+
+// ExecuteSkill runs a skill by name with the given input
+func (a *ToolLoopAgent) ExecuteSkill(ctx context.Context, name string, input string) (string, error) {
+	if a.config.Skills == nil {
+		return "", fmt.Errorf("no skills registry configured")
+	}
+	return a.config.Skills.Execute(ctx, name, input)
+}
+
+// ========================================================================
+// Subagent Management
+// ========================================================================
+
+// AddSubagent registers a subagent with the given name
+func (a *ToolLoopAgent) AddSubagent(name string, subagent Agent) error {
+	if a.config.Subagents == nil {
+		a.config.Subagents = NewSubagentRegistry()
+	}
+	return a.config.Subagents.Register(name, subagent)
+}
+
+// RemoveSubagent removes a subagent from the agent by name
+func (a *ToolLoopAgent) RemoveSubagent(name string) {
+	if a.config.Subagents != nil {
+		a.config.Subagents.Unregister(name)
+	}
+}
+
+// GetSubagent retrieves a subagent by name
+func (a *ToolLoopAgent) GetSubagent(name string) (Agent, bool) {
+	if a.config.Subagents == nil {
+		return nil, false
+	}
+	return a.config.Subagents.Get(name)
+}
+
+// ListSubagents returns all registered subagent names
+func (a *ToolLoopAgent) ListSubagents() []string {
+	if a.config.Subagents == nil {
+		return []string{}
+	}
+	return a.config.Subagents.List()
+}
+
+// DelegateToSubagent delegates execution to a named subagent
+func (a *ToolLoopAgent) DelegateToSubagent(ctx context.Context, name string, prompt string) (*AgentResult, error) {
+	if a.config.Subagents == nil {
+		return nil, fmt.Errorf("no subagents registry configured")
+	}
+	return a.config.Subagents.Execute(ctx, name, prompt)
+}
+
+// DelegateToSubagentWithMessages delegates execution to a named subagent with message history
+func (a *ToolLoopAgent) DelegateToSubagentWithMessages(ctx context.Context, name string, messages []types.Message) (*AgentResult, error) {
+	if a.config.Subagents == nil {
+		return nil, fmt.Errorf("no subagents registry configured")
+	}
+	return a.config.Subagents.ExecuteWithMessages(ctx, name, messages)
 }
