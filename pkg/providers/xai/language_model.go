@@ -168,7 +168,13 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
 	totalTokens := int64(usage.TotalTokens)
-	result := types.Usage{InputTokens: &promptTokens, OutputTokens: &completionTokens, TotalTokens: &totalTokens}
+
+	// Initialize with basic values (may be updated if cached/reasoning tokens exist)
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
 
 	// Handle cached tokens (from both direct field and nested structure)
 	var cachedTokens int64
@@ -209,7 +215,25 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 
 	// Set input details if we have cached or multimodal tokens
 	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
-		noCacheTokens := promptTokens - cachedTokens
+		// Determine if cached tokens are inclusive (part of prompt_tokens) or exclusive (additional)
+		// If cached <= prompt_tokens, they're inclusive (overlapping with prompt_tokens)
+		// If cached > prompt_tokens, they're exclusive (additional to prompt_tokens)
+		promptTokensIncludesCached := cachedTokens <= promptTokens
+
+		var totalInput, noCacheTokens int64
+		if promptTokensIncludesCached {
+			// Cached tokens are PART of prompt_tokens
+			totalInput = promptTokens
+			noCacheTokens = promptTokens - cachedTokens
+		} else {
+			// Cached tokens are ADDITIONAL to prompt_tokens
+			totalInput = promptTokens + cachedTokens
+			noCacheTokens = promptTokens
+		}
+
+		// Update the total input tokens to account for inclusivity
+		result.InputTokens = &totalInput
+
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
 			CacheReadTokens:  &cachedTokens,
@@ -220,9 +244,14 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	}
 
 	// Set output details if we have reasoning tokens
+	// In XAI Chat API, reasoning_tokens are ADDITIONAL to completion_tokens
 	if reasoningTokens > 0 {
-		textTokens := completionTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &textTokens, ReasoningTokens: &reasoningTokens}
+		totalOutput := completionTokens + reasoningTokens
+		result.OutputTokens = &totalOutput
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &completionTokens,
+			ReasoningTokens: &reasoningTokens,
+		}
 	}
 
 	// Build raw usage data
@@ -233,11 +262,31 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	result.Raw["completion_tokens"] = usage.CompletionTokens
 	result.Raw["total_tokens"] = usage.TotalTokens
 
+	// Add multimodal token counts to raw if present
+	if usage.CachedTokens != nil {
+		result.Raw["cached_tokens"] = int64(*usage.CachedTokens)
+	}
+	if usage.ReasoningTokens != nil {
+		result.Raw["reasoning_tokens"] = int64(*usage.ReasoningTokens)
+	}
+	if usage.ImageInputTokens != nil {
+		result.Raw["image_input_tokens"] = int64(*usage.ImageInputTokens)
+	}
+	if usage.TextInputTokens != nil {
+		result.Raw["text_input_tokens"] = int64(*usage.TextInputTokens)
+	}
+
 	if usage.PromptTokensDetails != nil {
 		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
 	}
 	if usage.CompletionTokensDetails != nil {
 		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
+
+	// Recalculate total tokens if input or output were adjusted
+	if result.InputTokens != nil && result.OutputTokens != nil {
+		recalculatedTotal := *result.InputTokens + *result.OutputTokens
+		result.TotalTokens = &recalculatedTotal
 	}
 
 	return result

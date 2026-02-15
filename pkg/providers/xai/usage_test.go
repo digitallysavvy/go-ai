@@ -49,6 +49,9 @@ func TestConvertXaiUsage_WithCachedTokens_NestedField(t *testing.T) {
 		TotalTokens:      150,
 		PromptTokensDetails: &struct {
 			CachedTokens *int `json:"cached_tokens,omitempty"`
+			AudioTokens  *int `json:"audio_tokens,omitempty"`
+			TextTokens   *int `json:"text_tokens,omitempty"`
+			ImageTokens  *int `json:"image_tokens,omitempty"`
 		}{
 			CachedTokens: &cachedTokens,
 		},
@@ -74,11 +77,14 @@ func TestConvertXaiUsage_WithReasoningTokens_DirectField(t *testing.T) {
 
 	result := convertXaiUsage(usage)
 
+	// Reasoning tokens are ADDITIVE in Chat API
+	assert.Equal(t, int64(70), *result.OutputTokens) // 50 + 20
+
 	assert.NotNil(t, result.OutputDetails)
 	assert.NotNil(t, result.OutputDetails.ReasoningTokens)
 	assert.Equal(t, int64(20), *result.OutputDetails.ReasoningTokens)
 	assert.NotNil(t, result.OutputDetails.TextTokens)
-	assert.Equal(t, int64(30), *result.OutputDetails.TextTokens)
+	assert.Equal(t, int64(50), *result.OutputDetails.TextTokens) // CompletionTokens
 }
 
 func TestConvertXaiUsage_WithReasoningTokens_NestedField(t *testing.T) {
@@ -98,11 +104,14 @@ func TestConvertXaiUsage_WithReasoningTokens_NestedField(t *testing.T) {
 
 	result := convertXaiUsage(usage)
 
+	// Reasoning tokens are ADDITIVE in Chat API
+	assert.Equal(t, int64(70), *result.OutputTokens) // 50 + 20
+
 	assert.NotNil(t, result.OutputDetails)
 	assert.NotNil(t, result.OutputDetails.ReasoningTokens)
 	assert.Equal(t, int64(20), *result.OutputDetails.ReasoningTokens)
 	assert.NotNil(t, result.OutputDetails.TextTokens)
-	assert.Equal(t, int64(30), *result.OutputDetails.TextTokens)
+	assert.Equal(t, int64(50), *result.OutputDetails.TextTokens) // CompletionTokens
 }
 
 func TestConvertXaiUsage_WithImageInputTokens(t *testing.T) {
@@ -140,20 +149,20 @@ func TestConvertXaiUsage_WithAllTokenTypes(t *testing.T) {
 
 	result := convertXaiUsage(usage)
 
-	// Check basic tokens
+	// Check basic tokens (with reasoning additive)
 	assert.Equal(t, int64(100), *result.InputTokens)
-	assert.Equal(t, int64(50), *result.OutputTokens)
-	assert.Equal(t, int64(150), *result.TotalTokens)
+	assert.Equal(t, int64(70), *result.OutputTokens)    // 50 + 20
+	assert.Equal(t, int64(170), *result.TotalTokens)    // 100 + 70
 
-	// Check input details (cached tokens)
+	// Check input details (cached tokens - inclusive)
 	assert.NotNil(t, result.InputDetails)
 	assert.Equal(t, int64(30), *result.InputDetails.CacheReadTokens)
 	assert.Equal(t, int64(70), *result.InputDetails.NoCacheTokens)
 
-	// Check output details (reasoning tokens)
+	// Check output details (reasoning tokens - additive)
 	assert.NotNil(t, result.OutputDetails)
 	assert.Equal(t, int64(20), *result.OutputDetails.ReasoningTokens)
-	assert.Equal(t, int64(30), *result.OutputDetails.TextTokens)
+	assert.Equal(t, int64(50), *result.OutputDetails.TextTokens)
 
 	// Check multimodal tokens in raw
 	assert.NotNil(t, result.Raw)
@@ -185,6 +194,9 @@ func TestConvertXaiUsage_RawData_WithDetails(t *testing.T) {
 		TotalTokens:      150,
 		PromptTokensDetails: &struct {
 			CachedTokens *int `json:"cached_tokens,omitempty"`
+			AudioTokens  *int `json:"audio_tokens,omitempty"`
+			TextTokens   *int `json:"text_tokens,omitempty"`
+			ImageTokens  *int `json:"image_tokens,omitempty"`
 		}{
 			CachedTokens: &cachedTokens,
 		},
@@ -219,6 +231,9 @@ func TestConvertXaiUsage_PreferDirectFields(t *testing.T) {
 		ReasoningTokens:  &directReasoning,
 		PromptTokensDetails: &struct {
 			CachedTokens *int `json:"cached_tokens,omitempty"`
+			AudioTokens  *int `json:"audio_tokens,omitempty"`
+			TextTokens   *int `json:"text_tokens,omitempty"`
+			ImageTokens  *int `json:"image_tokens,omitempty"`
 		}{
 			CachedTokens: &nestedCached,
 		},
@@ -284,4 +299,116 @@ func TestConvertXaiUsage_TextOnlyTokens(t *testing.T) {
 	assert.NotNil(t, result.Raw)
 	assert.Equal(t, int64(100), result.Raw["text_input_tokens"])
 	assert.NotContains(t, result.Raw, "image_input_tokens")
+}
+
+// Test inclusivity logic: cached_tokens <= prompt_tokens (inclusive/overlapping)
+func TestConvertXaiUsage_InclusiveCachedTokens(t *testing.T) {
+	cachedTokens := 150
+	usage := xaiUsage{
+		PromptTokens:     200,
+		CompletionTokens: 50,
+		TotalTokens:      250,
+		CachedTokens:     &cachedTokens,
+	}
+
+	result := convertXaiUsage(usage)
+
+	// Input should remain 200 (cached are part of this total)
+	assert.Equal(t, int64(200), *result.InputTokens)
+
+	// No-cache should be 200 - 150 = 50
+	assert.NotNil(t, result.InputDetails)
+	assert.Equal(t, int64(50), *result.InputDetails.NoCacheTokens)
+	assert.Equal(t, int64(150), *result.InputDetails.CacheReadTokens)
+
+	// Total should be recalculated: 200 + 50 = 250
+	assert.Equal(t, int64(250), *result.TotalTokens)
+}
+
+// Test exclusivity logic: cached_tokens > prompt_tokens (exclusive/non-overlapping)
+func TestConvertXaiUsage_ExclusiveCachedTokens(t *testing.T) {
+	cachedTokens := 4328
+	usage := xaiUsage{
+		PromptTokens:     4142,
+		CompletionTokens: 1,
+		TotalTokens:      4143,
+		CachedTokens:     &cachedTokens,
+	}
+
+	result := convertXaiUsage(usage)
+
+	// Input should be sum: 4142 + 4328 = 8470
+	assert.Equal(t, int64(8470), *result.InputTokens)
+
+	// No-cache should be all prompt tokens: 4142
+	assert.NotNil(t, result.InputDetails)
+	assert.Equal(t, int64(4142), *result.InputDetails.NoCacheTokens)
+	assert.Equal(t, int64(4328), *result.InputDetails.CacheReadTokens)
+
+	// Total should be recalculated: 8470 + 1 = 8471
+	assert.Equal(t, int64(8471), *result.TotalTokens)
+}
+
+// Test reasoning tokens are ADDITIVE in Chat API
+func TestConvertXaiUsage_ReasoningTokensAdditive(t *testing.T) {
+	reasoningTokens := 228
+	usage := xaiUsage{
+		PromptTokens:     100,
+		CompletionTokens: 1,
+		TotalTokens:      101,
+		ReasoningTokens:  &reasoningTokens,
+	}
+
+	result := convertXaiUsage(usage)
+
+	// Output should be sum: 1 + 228 = 229
+	assert.Equal(t, int64(229), *result.OutputTokens)
+
+	// Output details
+	assert.NotNil(t, result.OutputDetails)
+	assert.Equal(t, int64(1), *result.OutputDetails.TextTokens)
+	assert.Equal(t, int64(228), *result.OutputDetails.ReasoningTokens)
+
+	// Total should be recalculated: 100 + 229 = 329
+	assert.Equal(t, int64(329), *result.TotalTokens)
+}
+
+// Test full scenario with cached (exclusive) and reasoning (additive)
+func TestConvertXaiUsage_FullScenarioWithInclusivity(t *testing.T) {
+	cachedTokens := 5000   // Exclusive (> 4000)
+	reasoningTokens := 300 // Additive
+	textInputTokens := 3000
+	imageInputTokens := 1000
+	usage := xaiUsage{
+		PromptTokens:     4000,
+		CompletionTokens: 100,
+		TotalTokens:      4100,
+		CachedTokens:     &cachedTokens,
+		ReasoningTokens:  &reasoningTokens,
+		TextInputTokens:  &textInputTokens,
+		ImageInputTokens: &imageInputTokens,
+	}
+
+	result := convertXaiUsage(usage)
+
+	// Input: 4000 + 5000 = 9000 (exclusive)
+	assert.Equal(t, int64(9000), *result.InputTokens)
+
+	// Output: 100 + 300 = 400 (additive)
+	assert.Equal(t, int64(400), *result.OutputTokens)
+
+	// Total: 9000 + 400 = 9400
+	assert.Equal(t, int64(9400), *result.TotalTokens)
+
+	// Input details
+	assert.NotNil(t, result.InputDetails)
+	assert.Equal(t, int64(4000), *result.InputDetails.NoCacheTokens)
+	assert.Equal(t, int64(5000), *result.InputDetails.CacheReadTokens)
+	assert.Equal(t, int64(3000), *result.InputDetails.TextTokens)
+	assert.Equal(t, int64(1000), *result.InputDetails.ImageTokens)
+
+	// Output details
+	assert.NotNil(t, result.OutputDetails)
+	assert.Equal(t, int64(100), *result.OutputDetails.TextTokens)
+	assert.Equal(t, int64(300), *result.OutputDetails.ReasoningTokens)
 }

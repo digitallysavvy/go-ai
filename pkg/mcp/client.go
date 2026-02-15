@@ -159,6 +159,31 @@ func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
 	return result.Tools, nil
 }
 
+// GetSerializableTools returns tool definitions in a format that can be stored or transmitted.
+// Unlike ListTools, this returns the complete ListToolsResult including pagination support.
+// The result is JSON-serializable and can be used for caching, storage, or transmission.
+//
+// Example usage:
+//
+//	tools := server.GetSerializableTools(ctx)
+//	// Store tools for later use
+//	data, _ := json.Marshal(tools)
+//	cache.Set("tools", data)
+func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	params := ListToolsParams{}
+	var result ListToolsResult
+
+	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+		return nil, fmt.Errorf("failed to get serializable tools: %w", err)
+	}
+
+	return &result, nil
+}
+
 // CallTool calls a tool on the MCP server
 func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[string]interface{}) (*CallToolResult, error) {
 	if !c.initialized {

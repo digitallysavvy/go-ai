@@ -129,6 +129,35 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			"type": opts.ResponseFormat.Type,
 		}
 	}
+
+	// Handle Fireworks-specific options (thinking and reasoning for Kimi K2.5)
+	if opts.ProviderOptions != nil {
+		// Extract thinking options
+		if thinking, ok := opts.ProviderOptions["thinking"].(map[string]interface{}); ok {
+			thinkingBody := make(map[string]interface{})
+
+			if thinkingType, ok := thinking["type"].(string); ok {
+				thinkingBody["type"] = thinkingType
+			}
+
+			// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
+			if budgetTokens, ok := thinking["budgetTokens"].(int); ok {
+				thinkingBody["budget_tokens"] = budgetTokens
+			} else if budgetTokens, ok := thinking["budgetTokens"].(float64); ok {
+				thinkingBody["budget_tokens"] = int(budgetTokens)
+			}
+
+			if len(thinkingBody) > 0 {
+				body["thinking"] = thinkingBody
+			}
+		}
+
+		// Extract reasoningHistory and convert to snake_case (reasoning_history)
+		if reasoningHistory, ok := opts.ProviderOptions["reasoningHistory"].(string); ok {
+			body["reasoning_history"] = reasoningHistory
+		}
+	}
+
 	return body
 }
 
