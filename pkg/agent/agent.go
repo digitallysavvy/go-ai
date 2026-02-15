@@ -52,6 +52,19 @@ type AgentAction struct {
 
 	// Optional: reasoning or thought process behind the action
 	Reasoning string
+
+	// Run tracking (v6.0.61+)
+	// RunID is a unique identifier for this agent execution chain
+	// Use this to correlate all actions and events from a single agent run
+	RunID string
+
+	// ParentRunID is the ID of the parent run if this is a subagent or nested execution
+	// Empty for top-level agent runs
+	ParentRunID string
+
+	// Tags are user-defined labels for categorizing and filtering agent runs
+	// Examples: ["production", "experiment", "debug"], ["user:123", "session:abc"]
+	Tags []string
 }
 
 // AgentFinish represents the agent's final decision to complete execution
@@ -68,6 +81,19 @@ type AgentFinish struct {
 
 	// Optional: any additional metadata about the completion
 	Metadata map[string]interface{}
+
+	// Run tracking (v6.0.61+)
+	// RunID is a unique identifier for this agent execution chain
+	// Use this to correlate all actions and events from a single agent run
+	RunID string
+
+	// ParentRunID is the ID of the parent run if this is a subagent or nested execution
+	// Empty for top-level agent runs
+	ParentRunID string
+
+	// Tags are user-defined labels for categorizing and filtering agent runs
+	// Examples: ["production", "experiment", "debug"], ["user:123", "session:abc"]
+	Tags []string
 }
 
 // AgentConfig contains configuration for an agent

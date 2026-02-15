@@ -6,6 +6,16 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/google/uuid"
+)
+
+// Context keys for run tracking
+type contextKey string
+
+const (
+	runIDKey       contextKey = "agent_run_id"
+	parentRunIDKey contextKey = "agent_parent_run_id"
+	tagsKey        contextKey = "agent_tags"
 )
 
 // ToolLoopAgent is an agent that loops through tool calls until task completion
@@ -54,6 +64,13 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	// Validate configuration
 	if a.config.Model == nil {
 		return nil, fmt.Errorf("model is required")
+	}
+
+	// Initialize run tracking in context if not already present
+	// Generate a new run ID if one doesn't exist
+	if ctx.Value(runIDKey) == nil {
+		runID := uuid.New().String()
+		ctx = context.WithValue(ctx, runIDKey, runID)
 	}
 
 	// Extract input for OnChainStart callback
@@ -135,11 +152,19 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		if len(stepResult.ToolCalls) > 0 {
 			// Call OnAgentAction callback for each tool call
 			if a.config.OnAgentAction != nil {
+				// Extract run tracking from context
+				runID, _ := ctx.Value(runIDKey).(string)
+				parentRunID, _ := ctx.Value(parentRunIDKey).(string)
+				tags, _ := ctx.Value(tagsKey).([]string)
+
 				for _, toolCall := range stepResult.ToolCalls {
 					action := AgentAction{
-						ToolCall:   toolCall,
-						StepNumber: stepNum,
-						Reasoning:  stepResult.Text, // Include any reasoning text from the step
+						ToolCall:    toolCall,
+						StepNumber:  stepNum,
+						Reasoning:   stepResult.Text, // Include any reasoning text from the step
+						RunID:       runID,
+						ParentRunID: parentRunID,
+						Tags:        tags,
 					}
 					a.config.OnAgentAction(action)
 				}
@@ -178,6 +203,11 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 
 			// Call OnAgentFinish callback when agent reaches final answer
 			if a.config.OnAgentFinish != nil {
+				// Extract run tracking from context
+				runID, _ := ctx.Value(runIDKey).(string)
+				parentRunID, _ := ctx.Value(parentRunIDKey).(string)
+				tags, _ := ctx.Value(tagsKey).([]string)
+
 				finish := AgentFinish{
 					Output:       stepResult.Text,
 					StepNumber:   stepNum,
@@ -186,6 +216,9 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 						"total_steps": stepNum,
 						"usage":       result.Usage,
 					},
+					RunID:       runID,
+					ParentRunID: parentRunID,
+					Tags:        tags,
 				}
 				a.config.OnAgentFinish(finish)
 			}
@@ -203,15 +236,23 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 
 			// Call OnAgentFinish callback when hitting max steps
 			if a.config.OnAgentFinish != nil {
+				// Extract run tracking from context
+				runID, _ := ctx.Value(runIDKey).(string)
+				parentRunID, _ := ctx.Value(parentRunIDKey).(string)
+				tags, _ := ctx.Value(tagsKey).([]string)
+
 				finish := AgentFinish{
 					Output:       stepResult.Text,
 					StepNumber:   stepNum,
 					FinishReason: types.FinishReasonLength,
 					Metadata: map[string]interface{}{
-						"total_steps":  stepNum,
-						"usage":        result.Usage,
+						"total_steps":   stepNum,
+						"usage":         result.Usage,
 						"max_steps_hit": true,
 					},
+					RunID:       runID,
+					ParentRunID: parentRunID,
+					Tags:        tags,
 				}
 				a.config.OnAgentFinish(finish)
 			}
@@ -577,4 +618,49 @@ func (a *ToolLoopAgent) DelegateToSubagentWithMessages(ctx context.Context, name
 		return nil, fmt.Errorf("no subagents registry configured")
 	}
 	return a.config.Subagents.ExecuteWithMessages(ctx, name, messages)
+}
+
+// ========================================================================
+// Run Tracking Helpers (v6.0.61+)
+// ========================================================================
+
+// WithRunID adds a run ID to the context for tracking agent execution
+// If a run ID already exists in the context, it is preserved and this has no effect
+// Use this to provide a custom run ID or to manually initialize run tracking
+func WithRunID(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, runIDKey, runID)
+}
+
+// WithParentRunID adds a parent run ID to the context for nested/subagent executions
+// Use this when delegating to subagents to maintain the execution hierarchy
+func WithParentRunID(ctx context.Context, parentRunID string) context.Context {
+	return context.WithValue(ctx, parentRunIDKey, parentRunID)
+}
+
+// WithTags adds tags to the context for categorizing agent runs
+// Tags can be used for filtering, grouping, or labeling runs in monitoring systems
+// Example: WithTags(ctx, []string{"production", "user:123", "session:abc"})
+func WithTags(ctx context.Context, tags []string) context.Context {
+	return context.WithValue(ctx, tagsKey, tags)
+}
+
+// GetRunID retrieves the run ID from the context
+// Returns empty string if no run ID is present
+func GetRunID(ctx context.Context) string {
+	runID, _ := ctx.Value(runIDKey).(string)
+	return runID
+}
+
+// GetParentRunID retrieves the parent run ID from the context
+// Returns empty string if no parent run ID is present
+func GetParentRunID(ctx context.Context) string {
+	parentRunID, _ := ctx.Value(parentRunIDKey).(string)
+	return parentRunID
+}
+
+// GetTags retrieves the tags from the context
+// Returns nil if no tags are present
+func GetTags(ctx context.Context) []string {
+	tags, _ := ctx.Value(tagsKey).([]string)
+	return tags
 }

@@ -154,6 +154,16 @@ func main() {
 				fmt.Printf("Reasoning: %s\n", action.Reasoning)
 			}
 			fmt.Printf("Arguments: %v\n", action.ToolCall.Arguments)
+			// Run tracking (v6.0.61+)
+			if action.RunID != "" {
+				fmt.Printf("Run ID: %s\n", action.RunID)
+			}
+			if action.ParentRunID != "" {
+				fmt.Printf("Parent Run ID: %s\n", action.ParentRunID)
+			}
+			if len(action.Tags) > 0 {
+				fmt.Printf("Tags: %v\n", action.Tags)
+			}
 			fmt.Println(strings.Repeat("─", 60))
 		},
 
@@ -168,6 +178,16 @@ func main() {
 			}
 			if metadata, ok := finish.Metadata["max_steps_hit"].(bool); ok && metadata {
 				fmt.Println("⚠️  Max steps reached")
+			}
+			// Run tracking (v6.0.61+)
+			if finish.RunID != "" {
+				fmt.Printf("Run ID: %s\n", finish.RunID)
+			}
+			if finish.ParentRunID != "" {
+				fmt.Printf("Parent Run ID: %s\n", finish.ParentRunID)
+			}
+			if len(finish.Tags) > 0 {
+				fmt.Printf("Tags: %v\n", finish.Tags)
 			}
 			fmt.Println(strings.Repeat("─", 60))
 		},
@@ -211,7 +231,10 @@ func main() {
 		},
 	})
 
-	// Execute the agent
+	// Execute the agent with run tracking (v6.0.61+)
+	// Add tags to categorize this execution
+	ctx = agent.WithTags(ctx, []string{"demo", "langchain-callbacks", "multi-tool"})
+
 	fmt.Println("Starting agent with LangChain-style callbacks...")
 	fmt.Println("Question: What's the weather in San Francisco and what's 15 + 27?")
 

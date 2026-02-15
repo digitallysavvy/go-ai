@@ -1094,3 +1094,285 @@ func TestLangChainCallbacks_AllTogether(t *testing.T) {
 		t.Error("OnToolEnd was not called")
 	}
 }
+
+// Test run tracking - automatic RunID generation
+func TestRunTracking_AutomaticRunID(t *testing.T) {
+	var capturedRunID string
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnAgentFinish: func(finish AgentFinish) {
+			capturedRunID = finish.RunID
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if capturedRunID == "" {
+		t.Error("RunID was not automatically generated")
+	}
+
+	// Verify it's a valid UUID format (36 characters with dashes)
+	if len(capturedRunID) != 36 {
+		t.Errorf("RunID has invalid length: %d, expected 36", len(capturedRunID))
+	}
+}
+
+// Test run tracking - custom RunID
+func TestRunTracking_CustomRunID(t *testing.T) {
+	customRunID := "my-custom-run-id-123"
+	var capturedRunID string
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnAgentFinish: func(finish AgentFinish) {
+			capturedRunID = finish.RunID
+		},
+	})
+
+	ctx := WithRunID(context.Background(), customRunID)
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if capturedRunID != customRunID {
+		t.Errorf("Expected custom RunID %q, got %q", customRunID, capturedRunID)
+	}
+}
+
+// Test run tracking - ParentRunID and Tags
+func TestRunTracking_ParentAndTags(t *testing.T) {
+	parentRunID := "parent-run-123"
+	tags := []string{"production", "user:456", "session:abc"}
+	var capturedAction AgentAction
+	var capturedFinish AgentFinish
+
+	testTool := types.Tool{
+		Name:        "test",
+		Description: "Test tool",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"input": map[string]interface{}{"type": "string"},
+			},
+		},
+		Execute: func(ctx context.Context, args map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text: "Let me use the tool",
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call-1",
+						ToolName:  "test",
+						Arguments: map[string]interface{}{"input": "test"},
+					},
+				},
+				FinishReason: types.FinishReasonToolCalls,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnAgentAction: func(action AgentAction) {
+			capturedAction = action
+		},
+		OnAgentFinish: func(finish AgentFinish) {
+			capturedFinish = finish
+		},
+	})
+
+	ctx := context.Background()
+	ctx = WithParentRunID(ctx, parentRunID)
+	ctx = WithTags(ctx, tags)
+
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify AgentAction has tracking info
+	if capturedAction.ParentRunID != parentRunID {
+		t.Errorf("AgentAction.ParentRunID = %q, expected %q", capturedAction.ParentRunID, parentRunID)
+	}
+	if len(capturedAction.Tags) != len(tags) {
+		t.Errorf("AgentAction.Tags length = %d, expected %d", len(capturedAction.Tags), len(tags))
+	}
+	for i, tag := range tags {
+		if i < len(capturedAction.Tags) && capturedAction.Tags[i] != tag {
+			t.Errorf("AgentAction.Tags[%d] = %q, expected %q", i, capturedAction.Tags[i], tag)
+		}
+	}
+
+	// Verify AgentFinish has tracking info
+	if capturedFinish.ParentRunID != parentRunID {
+		t.Errorf("AgentFinish.ParentRunID = %q, expected %q", capturedFinish.ParentRunID, parentRunID)
+	}
+	if len(capturedFinish.Tags) != len(tags) {
+		t.Errorf("AgentFinish.Tags length = %d, expected %d", len(capturedFinish.Tags), len(tags))
+	}
+}
+
+// Test run tracking helper functions
+func TestRunTracking_Helpers(t *testing.T) {
+	ctx := context.Background()
+
+	// Test GetRunID on empty context
+	if runID := GetRunID(ctx); runID != "" {
+		t.Errorf("GetRunID on empty context should return empty string, got %q", runID)
+	}
+
+	// Test WithRunID and GetRunID
+	testRunID := "test-run-123"
+	ctx = WithRunID(ctx, testRunID)
+	if runID := GetRunID(ctx); runID != testRunID {
+		t.Errorf("GetRunID() = %q, expected %q", runID, testRunID)
+	}
+
+	// Test GetParentRunID on empty context
+	if parentRunID := GetParentRunID(context.Background()); parentRunID != "" {
+		t.Errorf("GetParentRunID on empty context should return empty string, got %q", parentRunID)
+	}
+
+	// Test WithParentRunID and GetParentRunID
+	testParentRunID := "parent-run-456"
+	ctx = WithParentRunID(ctx, testParentRunID)
+	if parentRunID := GetParentRunID(ctx); parentRunID != testParentRunID {
+		t.Errorf("GetParentRunID() = %q, expected %q", parentRunID, testParentRunID)
+	}
+
+	// Test GetTags on empty context
+	if tags := GetTags(context.Background()); tags != nil {
+		t.Errorf("GetTags on empty context should return nil, got %v", tags)
+	}
+
+	// Test WithTags and GetTags
+	testTags := []string{"tag1", "tag2", "tag3"}
+	ctx = WithTags(ctx, testTags)
+	retrievedTags := GetTags(ctx)
+	if len(retrievedTags) != len(testTags) {
+		t.Errorf("GetTags() returned %d tags, expected %d", len(retrievedTags), len(testTags))
+	}
+	for i, tag := range testTags {
+		if i < len(retrievedTags) && retrievedTags[i] != tag {
+			t.Errorf("GetTags()[%d] = %q, expected %q", i, retrievedTags[i], tag)
+		}
+	}
+}
+
+// Test run tracking - RunID propagation across steps
+func TestRunTracking_PropagationAcrossSteps(t *testing.T) {
+	var capturedRunIDs []string
+
+	testTool := types.Tool{
+		Name:        "test",
+		Description: "Test tool",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"input": map[string]interface{}{"type": "string"},
+			},
+		},
+		Execute: func(ctx context.Context, args map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text: "Step 1",
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call-1",
+						ToolName:  "test",
+						Arguments: map[string]interface{}{"input": "test"},
+					},
+				},
+				FinishReason: types.FinishReasonToolCalls,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text: "Step 2",
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call-2",
+						ToolName:  "test",
+						Arguments: map[string]interface{}{"input": "test"},
+					},
+				},
+				FinishReason: types.FinishReasonToolCalls,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnAgentAction: func(action AgentAction) {
+			capturedRunIDs = append(capturedRunIDs, action.RunID)
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should have 2 actions (one per step before final)
+	if len(capturedRunIDs) != 2 {
+		t.Fatalf("Expected 2 OnAgentAction calls, got %d", len(capturedRunIDs))
+	}
+
+	// All should have the same RunID
+	firstRunID := capturedRunIDs[0]
+	for i, runID := range capturedRunIDs {
+		if runID != firstRunID {
+			t.Errorf("RunID at index %d = %q, expected all to be %q", i, runID, firstRunID)
+		}
+	}
+}

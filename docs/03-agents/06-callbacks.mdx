@@ -473,13 +473,202 @@ config := agent.AgentConfig{
 }
 ```
 
+## Run Tracking (v6.0.61+)
+
+Run tracking enables you to correlate all callbacks, actions, and events from a single agent execution using unique identifiers. This is particularly useful for observability, debugging, and distributed tracing.
+
+### Run Tracking Fields
+
+Each `AgentAction` and `AgentFinish` includes:
+
+- **`RunID`**: Unique identifier for this agent execution chain
+- **`ParentRunID`**: ID of the parent run (for subagents/nested executions)
+- **`Tags`**: User-defined labels for categorizing runs
+
+### Automatic RunID Generation
+
+Run IDs are automatically generated when an agent starts:
+
+```go
+agent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    OnAgentAction: func(action agent.AgentAction) {
+        // RunID is automatically populated
+        log.Printf("Action in run %s: %s", action.RunID, action.ToolCall.ToolName)
+    },
+})
+
+result, err := agent.Execute(context.Background(), "question")
+// RunID is automatically generated and propagated
+```
+
+### Custom Run IDs and Tags
+
+Provide your own run ID and tags using context helpers:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/agent"
+
+ctx := context.Background()
+
+// Option 1: Add tags only (RunID auto-generated)
+ctx = agent.WithTags(ctx, []string{"production", "user:123", "session:abc"})
+
+// Option 2: Custom RunID
+ctx = agent.WithRunID(ctx, "my-custom-run-id-123")
+ctx = agent.WithTags(ctx, []string{"experiment", "variant:A"})
+
+// Option 3: Nested execution (subagent tracking)
+parentCtx := agent.WithRunID(ctx, "parent-run-456")
+subagentCtx := agent.WithParentRunID(parentCtx, "parent-run-456")
+subagentCtx = agent.WithRunID(subagentCtx, "subagent-run-789")
+
+result, err := agent.Execute(ctx, "question")
+```
+
+### Retrieving Run Tracking Info
+
+Extract run tracking information from context:
+
+```go
+runID := agent.GetRunID(ctx)
+parentRunID := agent.GetParentRunID(ctx)
+tags := agent.GetTags(ctx)
+
+log.Printf("Executing run %s with tags: %v", runID, tags)
+```
+
+### Use Cases for Run Tracking
+
+#### 1. Distributed Tracing
+
+Correlate agent execution with other services:
+
+```go
+import "go.opentelemetry.io/otel/trace"
+
+// Get trace ID from OpenTelemetry
+span := trace.SpanFromContext(ctx)
+traceID := span.SpanContext().TraceID().String()
+
+// Use trace ID as run ID for correlation
+ctx = agent.WithRunID(ctx, traceID)
+ctx = agent.WithTags(ctx, []string{"service:agent", "env:production"})
+
+config := agent.AgentConfig{
+    Model: model,
+    OnAgentAction: func(action agent.AgentAction) {
+        // Log with trace ID for correlation
+        log.Printf("[trace=%s] Agent action: %s",
+            action.RunID, action.ToolCall.ToolName)
+    },
+}
+```
+
+#### 2. Multi-Tenant Observability
+
+Track executions by user or session:
+
+```go
+// Tag runs with user/session info
+ctx = agent.WithTags(ctx, []string{
+    fmt.Sprintf("user:%s", userID),
+    fmt.Sprintf("session:%s", sessionID),
+    "plan:premium",
+})
+
+config := agent.AgentConfig{
+    OnAgentFinish: func(finish agent.AgentFinish) {
+        // Store metrics tagged by user
+        metrics.RecordAgentCompletion(
+            finish.RunID,
+            finish.Tags,
+            len(finish.Metadata),
+        )
+    },
+}
+```
+
+#### 3. A/B Testing and Experiments
+
+Track different agent configurations:
+
+```go
+experimentID := "exp-123-variant-A"
+ctx = agent.WithRunID(ctx, experimentID)
+ctx = agent.WithTags(ctx, []string{
+    "experiment:prompt-variations",
+    "variant:A",
+    "temperature:0.7",
+})
+
+config := agent.AgentConfig{
+    OnChainEnd: func(result *agent.AgentResult) {
+        // Log results for experiment analysis
+        experimentTracker.LogResult(experimentID, result)
+    },
+}
+```
+
+#### 4. Subagent Hierarchies
+
+Track parent-child relationships in delegations:
+
+```go
+func executeWithSubagent(parentCtx context.Context) {
+    parentRunID := agent.GetRunID(parentCtx)
+
+    // Create subagent context with parent tracking
+    subagentCtx := agent.WithParentRunID(context.Background(), parentRunID)
+    subagentCtx = agent.WithTags(subagentCtx, []string{"type:subagent", "role:researcher"})
+
+    subagent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        OnChainStart: func(input string, messages []types.Message) {
+            runID := agent.GetRunID(subagentCtx)
+            log.Printf("Subagent %s starting (parent: %s)", runID, parentRunID)
+        },
+    })
+
+    result, err := subagent.Execute(subagentCtx, "research question")
+}
+```
+
+#### 5. Performance Analysis
+
+Group and analyze runs by tags:
+
+```go
+ctx = agent.WithTags(ctx, []string{
+    "tool:search",
+    "complexity:high",
+    "priority:p0",
+})
+
+config := agent.AgentConfig{
+    OnChainEnd: func(result *agent.AgentResult) {
+        // Store metrics for later analysis
+        analytics.RecordExecution(analytics.Execution{
+            RunID:      agent.GetRunID(ctx),
+            Tags:       agent.GetTags(ctx),
+            Duration:   time.Since(startTime),
+            TokensUsed: result.Usage.GetTotalTokens(),
+            StepCount:  len(result.Steps),
+        })
+    },
+}
+
+// Later: Query executions by tags
+highComplexityRuns := analytics.FindByTag("complexity:high")
+```
+
 ## Examples
 
 See complete examples in `examples/agents/callbacks/`:
 
 - **onstepfinish**: Basic step tracking with OnStepFinish
 - **early-stopping**: Token limit monitoring with callbacks
-- **langchain-style**: Comprehensive example of all LangChain-style callbacks
+- **langchain-style**: Comprehensive example of all LangChain-style callbacks (includes run tracking demo)
 
 ## Next Steps
 
@@ -490,3 +679,5 @@ See complete examples in `examples/agents/callbacks/`:
 ---
 
 *Introduced in v6.0.60: LangChain-style callbacks (OnChainStart, OnChainEnd, OnChainError, OnAgentAction, OnAgentFinish, OnToolStart, OnToolEnd, OnToolError)*
+
+*Introduced in v6.0.61: Run tracking with RunID, ParentRunID, and Tags fields in AgentAction and AgentFinish*
