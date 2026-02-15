@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for AI Gateway
@@ -496,6 +497,11 @@ func (m *LanguageModel) getModelConfigHeaders(streaming bool) map[string]string 
 func (m *LanguageModel) handleError(err error) error {
 	if err == nil {
 		return nil
+	}
+
+	// Check if it's a timeout error and convert to GatewayTimeoutError
+	if gatewayerrors.IsTimeoutError(err) {
+		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
 
 	// Check if it's already a provider error

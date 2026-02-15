@@ -6,7 +6,9 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 // ImageModel implements the provider.ImageModel interface for AI Gateway
@@ -95,7 +97,20 @@ func (m *ImageModel) getModelConfigHeaders() map[string]string {
 
 // handleError converts errors to appropriate provider errors
 func (m *ImageModel) handleError(err error) error {
-	// Use the same error handling as language model
-	lm := &LanguageModel{provider: m.provider, modelID: m.modelID}
-	return lm.handleError(err)
+	if err == nil {
+		return nil
+	}
+
+	// Check if it's a timeout error and convert to GatewayTimeoutError
+	if gatewayerrors.IsTimeoutError(err) {
+		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
+	}
+
+	// Check if it's already a provider error
+	if providererrors.IsProviderError(err) {
+		return err
+	}
+
+	// Return as ProviderError
+	return providererrors.NewProviderError("gateway", 0, "", err.Error(), err)
 }

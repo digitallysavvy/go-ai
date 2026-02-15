@@ -1,0 +1,509 @@
+---
+title: Timeout Errors
+description: Understanding and resolving timeout errors in the Go-AI SDK.
+---
+
+# Timeout Errors
+
+Timeout errors occur when an AI operation takes longer than the configured timeout duration. This guide covers how to detect, handle, and prevent timeout errors.
+
+## Understanding Timeouts
+
+### Client-Side vs Server-Side Timeouts
+
+**Client-Side Timeout**: Your application's context deadline is exceeded before receiving a response.
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, model, options)
+// If this takes longer than 30 seconds, you get a timeout error
+```
+
+**Server-Side Timeout**: The provider's API times out the request.
+```go
+// Provider returns a timeout response (rare)
+// Usually appears as a 408 or 504 HTTP status code
+```
+
+## Detecting Timeout Errors
+
+### Gateway Provider
+
+The Gateway provider provides enhanced timeout error detection:
+
+```go
+import gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+
+result, err := ai.GenerateVideo(ctx, videoModel, options)
+if err != nil {
+    if gatewayerrors.IsGatewayTimeoutError(err) {
+        // This is a timeout error with troubleshooting guidance
+        fmt.Printf("Timeout: %v\n", err)
+    }
+}
+```
+
+### Standard Error Detection
+
+```go
+import (
+    "context"
+    "errors"
+)
+
+result, err := ai.GenerateText(ctx, model, options)
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        // Context timeout
+        fmt.Println("Request timed out")
+    }
+}
+```
+
+## Common Timeout Scenarios
+
+### Text Generation Timeouts
+
+```go
+// ❌ Too short for complex generation
+ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+    Prompt: "Write a detailed essay about AI...",
+    MaxTokens: ptr(4000),
+})
+// Likely to timeout
+
+// ✅ Appropriate timeout
+ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+    Prompt: "Write a detailed essay about AI...",
+    MaxTokens: ptr(4000),
+})
+```
+
+### Video Generation Timeouts
+
+Video generation typically takes several minutes:
+
+```go
+// ❌ Way too short for video generation
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+result, err := ai.GenerateVideo(ctx, videoModel, options)
+// Will timeout
+
+// ✅ Appropriate timeout for video generation
+ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+result, err := ai.GenerateVideo(ctx, videoModel, options)
+```
+
+### Streaming Timeouts
+
+For streaming operations, timeouts apply to the entire stream:
+
+```go
+// Timeout applies to full stream duration
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+defer cancel()
+
+stream, err := ai.StreamText(ctx, model, options)
+for chunk := range stream.TextStream {
+    // Process chunks
+    // If total time exceeds 5 minutes, stream stops
+}
+```
+
+## Recommended Timeouts
+
+### By Operation Type
+
+```go
+// Text Generation
+// - Simple prompts: 30-60 seconds
+ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+
+// - Complex generation: 2-5 minutes
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+
+// Video Generation
+// - Short videos (2-4s): 5-10 minutes
+ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+
+// - Long videos: 15-30 minutes
+ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+
+// - Batch videos: 20-40 minutes
+ctx, cancel := context.WithTimeout(ctx, 40*time.Minute)
+
+// Image Generation
+// - Single image: 1-2 minutes
+ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+
+// - Batch images: 3-5 minutes
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+
+// Embeddings
+// - Single embedding: 10-30 seconds
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+// - Batch embeddings: 1-5 minutes
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+```
+
+### By Provider
+
+Different providers have different typical response times:
+
+```go
+// Fast providers (OpenAI, Anthropic, Google)
+ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+
+// Medium providers (Cohere, Mistral)
+ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+
+// Slower providers (self-hosted, Ollama)
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+
+// Gateway (automatic provider selection)
+// Use longer timeouts to allow for failover
+ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+```
+
+## Handling Timeout Errors
+
+### Basic Error Handling
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, model, options)
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Println("Request timed out - consider increasing timeout")
+        return handleTimeout()
+    }
+    return fmt.Errorf("generation failed: %w", err)
+}
+```
+
+### Retry with Longer Timeout
+
+```go
+func generateWithRetry(model provider.LanguageModel, options ai.GenerateTextOptions) (*ai.GenerateTextResult, error) {
+    timeouts := []time.Duration{
+        1 * time.Minute,
+        3 * time.Minute,
+        5 * time.Minute,
+    }
+
+    for i, timeout := range timeouts {
+        ctx, cancel := context.WithTimeout(context.Background(), timeout)
+        result, err := ai.GenerateText(ctx, model, options)
+        cancel()
+
+        if err == nil {
+            return result, nil
+        }
+
+        if !errors.Is(err, context.DeadlineExceeded) {
+            // Non-timeout error, don't retry
+            return nil, err
+        }
+
+        if i < len(timeouts)-1 {
+            log.Printf("Attempt %d timed out after %v, retrying...", i+1, timeout)
+        }
+    }
+
+    return nil, fmt.Errorf("all retry attempts timed out")
+}
+```
+
+### Exponential Backoff
+
+```go
+func generateWithBackoff(model provider.LanguageModel, options ai.GenerateTextOptions) (*ai.GenerateTextResult, error) {
+    timeout := 1 * time.Minute
+    maxTimeout := 10 * time.Minute
+    maxAttempts := 5
+
+    for attempt := 0; attempt < maxAttempts; attempt++ {
+        ctx, cancel := context.WithTimeout(context.Background(), timeout)
+        result, err := ai.GenerateText(ctx, model, options)
+        cancel()
+
+        if err == nil {
+            return result, nil
+        }
+
+        if !errors.Is(err, context.DeadlineExceeded) {
+            return nil, err
+        }
+
+        // Double timeout for next attempt
+        timeout *= 2
+        if timeout > maxTimeout {
+            timeout = maxTimeout
+        }
+
+        log.Printf("Attempt %d timed out, next timeout: %v", attempt+1, timeout)
+    }
+
+    return nil, fmt.Errorf("all attempts timed out")
+}
+```
+
+## Preventing Timeouts
+
+### 1. Set Appropriate Timeouts
+
+```go
+// Consider operation complexity
+func getTimeout(opts ai.GenerateTextOptions) time.Duration {
+    baseTimeout := 30 * time.Second
+
+    // Adjust for token count
+    if opts.MaxTokens != nil && *opts.MaxTokens > 1000 {
+        baseTimeout = 2 * time.Minute
+    }
+
+    // Adjust for tools
+    if len(opts.Tools) > 0 {
+        baseTimeout += 1 * time.Minute
+    }
+
+    return baseTimeout
+}
+```
+
+### 2. Optimize Requests
+
+```go
+// Reduce MaxTokens for faster responses
+result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+    Prompt: "Explain quantum computing",
+    MaxTokens: ptr(200), // Shorter = faster
+})
+
+// Use streaming for long content
+stream, err := ai.StreamText(ctx, model, ai.StreamTextOptions{
+    Prompt: "Write a long article...",
+    // Get partial results immediately
+})
+```
+
+### 3. Use Streaming
+
+Streaming provides partial results immediately, reducing perceived latency:
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+defer cancel()
+
+stream, err := ai.StreamText(ctx, model, options)
+if err != nil {
+    return err
+}
+
+for chunk := range stream.TextStream {
+    // Display partial results immediately
+    fmt.Print(chunk)
+}
+
+if err := stream.Err(); err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Println("Stream timed out, but got partial results")
+    }
+}
+```
+
+### 4. Implement Progress Tracking
+
+```go
+type ProgressTracker struct {
+    StartTime time.Time
+    Timeout   time.Duration
+}
+
+func (p *ProgressTracker) Check() error {
+    elapsed := time.Since(p.StartTime)
+    if elapsed > p.Timeout {
+        return fmt.Errorf("operation exceeded %v", p.Timeout)
+    }
+    return nil
+}
+
+tracker := &ProgressTracker{
+    StartTime: time.Now(),
+    Timeout:   5 * time.Minute,
+}
+
+stream, err := ai.StreamText(ctx, model, options)
+for chunk := range stream.TextStream {
+    if err := tracker.Check(); err != nil {
+        log.Printf("Progress timeout: %v", err)
+        break
+    }
+    fmt.Print(chunk)
+}
+```
+
+## Async Processing
+
+For very long operations, consider async processing:
+
+```go
+type VideoJob struct {
+    ID     string
+    Status string
+    Result *ai.GenerateVideoResult
+    Error  error
+}
+
+func startVideoGeneration(opts ai.GenerateVideoOptions) *VideoJob {
+    job := &VideoJob{
+        ID:     generateJobID(),
+        Status: "pending",
+    }
+
+    go func() {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+        defer cancel()
+
+        result, err := ai.GenerateVideo(ctx, opts.Model, opts)
+        job.Result = result
+        job.Error = err
+        job.Status = "completed"
+    }()
+
+    return job
+}
+
+// Usage
+job := startVideoGeneration(options)
+fmt.Printf("Video generation started: %s\n", job.ID)
+
+// Check status later
+time.Sleep(5 * time.Minute)
+if job.Status == "completed" {
+    if job.Error != nil {
+        log.Printf("Generation failed: %v", job.Error)
+    } else {
+        log.Printf("Video ready!")
+    }
+} else {
+    log.Printf("Still generating...")
+}
+```
+
+## Timeout Error Messages
+
+### Gateway Provider Timeout Error
+
+```
+Gateway request timed out: context deadline exceeded
+
+This is a client-side timeout. To resolve this:
+1. Increase your context timeout: ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+2. For video generation, consider using longer timeouts (e.g., 10 minutes)
+3. Check your network connectivity
+4. Verify the Gateway API is accessible
+
+For more information, see: https://vercel.com/docs/ai-gateway/capabilities/video-generation#extending-timeouts
+```
+
+### Standard Context Timeout
+
+```
+context deadline exceeded
+```
+
+## Debugging Timeouts
+
+### Add Logging
+
+```go
+import "log"
+
+timeout := 2 * time.Minute
+log.Printf("Starting generation with %v timeout", timeout)
+startTime := time.Now()
+
+ctx, cancel := context.WithTimeout(context.Background(), timeout)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, model, options)
+elapsed := time.Since(startTime)
+
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Printf("Timed out after %v (limit: %v)", elapsed, timeout)
+    } else {
+        log.Printf("Failed after %v: %v", elapsed, err)
+    }
+} else {
+    log.Printf("Completed in %v", elapsed)
+}
+```
+
+### Monitor Performance
+
+```go
+type OperationMetrics struct {
+    TotalRequests   int64
+    TimeoutCount    int64
+    AverageDuration time.Duration
+}
+
+var metrics OperationMetrics
+
+func trackOperation(ctx context.Context, model provider.LanguageModel, opts ai.GenerateTextOptions) error {
+    startTime := time.Now()
+    metrics.TotalRequests++
+
+    result, err := ai.GenerateText(ctx, model, opts)
+    duration := time.Since(startTime)
+
+    if errors.Is(err, context.DeadlineExceeded) {
+        metrics.TimeoutCount++
+        log.Printf("Timeout: %d/%d requests (%.1f%%)",
+            metrics.TimeoutCount,
+            metrics.TotalRequests,
+            float64(metrics.TimeoutCount)/float64(metrics.TotalRequests)*100)
+    }
+
+    // Update average
+    metrics.AverageDuration = (metrics.AverageDuration*time.Duration(metrics.TotalRequests-1) + duration) /
+        time.Duration(metrics.TotalRequests)
+
+    return err
+}
+```
+
+## Production Best Practices
+
+1. **Set Conservative Timeouts**: Start with longer timeouts and optimize based on metrics
+2. **Implement Retry Logic**: Retry with longer timeouts on failure
+3. **Use Streaming**: Get partial results immediately
+4. **Monitor Timeout Rates**: Track and alert on high timeout rates
+5. **Adjust Based on Complexity**: Longer timeouts for complex operations
+6. **Consider Async Processing**: For very long operations (video generation)
+7. **Provide User Feedback**: Show progress indicators for long operations
+8. **Test with Real Conditions**: Test timeouts under production-like network conditions
+
+## Related Documentation
+
+- [Context Cancellation](/docs/09-troubleshooting/04-context-cancellation)
+- [Performance Optimization](/docs/09-troubleshooting/08-performance)
+- [Gateway Provider](/docs/05-providers/30-gateway)
+- [Video Generation](/docs/03-ai-sdk-core/38-video-generation)
+
+## Examples
+
+- [Timeout Handling Example](/examples/providers/gateway/timeout-handling)
+- [Video Generation Example](/examples/providers/gateway/video-generation)
+
+function ptr[T any](v T) *T {
+    return &v
+}

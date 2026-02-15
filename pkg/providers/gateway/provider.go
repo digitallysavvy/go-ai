@@ -174,6 +174,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	return NewImageModel(p, modelID), nil
 }
 
+// VideoModel returns a video generation model by ID
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewVideoModel(p, modelID), nil
+}
+
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return nil, fmt.Errorf("Gateway provider does not directly support speech synthesis models")

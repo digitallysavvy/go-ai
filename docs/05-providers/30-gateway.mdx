@@ -1,0 +1,406 @@
+---
+title: AI Gateway
+description: Use Vercel's AI Gateway for unified multi-provider access, automatic failover, and cost optimization.
+---
+
+# AI Gateway Provider
+
+The AI Gateway provider enables you to access multiple AI providers through a unified interface with automatic provider selection, failover, and cost optimization.
+
+## Features
+
+- **Unified Interface**: Single API for multiple AI providers
+- **Automatic Provider Selection**: Gateway selects the best available provider
+- **Failover Handling**: Automatic failover to alternative providers
+- **Cost Optimization**: Intelligentrouting based on cost and performance
+- **Zero Data Retention**: Option to not log or retain request data
+- **Observability**: Built-in metrics and monitoring
+- **Rate Limiting**: Automatic rate limit handling across providers
+
+## Installation
+
+The Gateway provider is included in the core Go-AI SDK:
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+## Setup
+
+### Environment Variables
+
+```bash
+export AI_GATEWAY_API_KEY="your-api-key-here"
+```
+
+### Basic Configuration
+
+```go
+package main
+
+import (
+    "github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+)
+
+func main() {
+    // Create provider with API key from environment
+    provider, err := gateway.New(gateway.Config{
+        APIKey: os.Getenv("AI_GATEWAY_API_KEY"),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Advanced Configuration
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:  "your-api-key",
+    BaseURL: "https://ai-gateway.vercel.sh/v3/ai", // Custom base URL
+    Headers: map[string]string{
+        "X-Custom-Header": "value",
+    },
+    ZeroDataRetention: true, // Enable zero data retention
+    MetadataCacheRefreshMillis: 300000, // 5 minutes
+})
+```
+
+## Text Generation
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+)
+
+// Create provider
+provider, _ := gateway.New(gateway.Config{
+    APIKey: os.Getenv("AI_GATEWAY_API_KEY"),
+})
+
+// Create language model
+// Gateway routes to the best available provider
+model, _ := provider.LanguageModel("anthropic/claude-3.5-sonnet")
+
+// Generate text
+result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    Prompt: "Explain quantum computing in simple terms.",
+    MaxTokens: ptr(200),
+})
+```
+
+## Video Generation
+
+The Gateway provider supports video generation with automatic provider selection:
+
+```go
+// Create video model
+videoModel, err := provider.VideoModel("google/veo-3.1-generate-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Generate video
+result, err := ai.GenerateVideo(context.Background(), ai.GenerateVideoOptions{
+    Model: videoModel,
+    Prompt: ai.VideoPrompt{
+        Text: "A cat playing with a ball of yarn",
+    },
+    AspectRatio: "16:9",
+    Duration:    ptr(4.0), // 4 seconds
+})
+```
+
+### Video Generation Features
+
+- **Text-to-Video**: Generate videos from text descriptions
+- **Image-to-Video**: Animate static images
+- **Batch Generation**: Generate multiple videos in one request
+- **Provider Selection**: Automatic routing to best video provider
+- **Custom Parameters**: Aspect ratio, duration, FPS, resolution
+
+### Supported Video Providers
+
+The gateway can route video requests to:
+- Google Vertex AI (Veo)
+- FAL AI
+- Replicate
+- Other configured providers
+
+### Video Generation Example
+
+```go
+videoModel, _ := provider.VideoModel("google/veo-3.1-generate-001")
+
+result, err := ai.GenerateVideo(context.Background(), ai.GenerateVideoOptions{
+    Model: videoModel,
+    Prompt: ai.VideoPrompt{
+        Text: "A serene ocean sunset with waves",
+    },
+    AspectRatio: "16:9",
+    Duration:    ptr(4.0),
+    FPS:         ptr(30),
+    ProviderOptions: map[string]interface{}{
+        "enhancePrompt": true,
+    },
+})
+
+// Access generated videos
+for _, video := range result.Videos {
+    fmt.Printf("Video URL: %s\n", video.URL)
+    fmt.Printf("Media Type: %s\n", video.MediaType)
+}
+```
+
+## Image Generation
+
+```go
+imageModel, _ := provider.ImageModel("openai/dall-e-3")
+
+result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A futuristic cityscape at sunset",
+    N:      ptr(1),
+    Size:   "1024x1024",
+})
+```
+
+## Embeddings
+
+```go
+embeddingModel, _ := provider.EmbeddingModel("openai/text-embedding-3-small")
+
+result, err := ai.Embed(context.Background(), embeddingModel, ai.EmbedOptions{
+    Values: []string{
+        "The cat sat on the mat",
+        "A dog ran through the park",
+    },
+})
+```
+
+## Provider Options
+
+Customize provider selection and behavior:
+
+```go
+result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+    Prompt: "Hello, world!",
+    ProviderOptions: map[string]interface{}{
+        "providers": []string{"anthropic", "openai", "google"},
+        "tags":      []string{"production", "fast"},
+        "order":     "cost", // "cost", "latency", or "quality"
+    },
+})
+```
+
+### Provider Option Fields
+
+- **providers**: List of providers to consider (in priority order)
+- **tags**: Routing tags for provider selection
+- **order**: Optimization strategy ("cost", "latency", "quality")
+- **zeroDataRetention**: Override global zero data retention setting
+
+## Timeout Handling
+
+The Gateway SDK provides enhanced timeout error handling with troubleshooting guidance.
+
+### Setting Timeouts
+
+```go
+import (
+    "context"
+    "time"
+    gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+)
+
+// Text generation: 30-60 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, model, options)
+
+// Video generation: 5-10 minutes
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+defer cancel()
+
+result, err := ai.GenerateVideo(ctx, videoModel, options)
+```
+
+### Detecting Timeout Errors
+
+```go
+result, err := ai.GenerateVideo(ctx, videoModel, options)
+if err != nil {
+    if gatewayerrors.IsGatewayTimeoutError(err) {
+        // This is a client-side timeout
+        // Error message includes troubleshooting guidance
+        fmt.Printf("Timeout error: %v\n", err)
+    } else {
+        // Other error
+        fmt.Printf("Error: %v\n", err)
+    }
+}
+```
+
+### Timeout Best Practices
+
+**Text Generation:**
+- Simple prompts: 30-60 seconds
+- Complex generation: 2-5 minutes
+
+**Video Generation:**
+- Short videos (2-4s): 5-10 minutes
+- Long videos: 15-30 minutes
+- Batch generation: 20-40 minutes
+
+**Image Generation:**
+- Single image: 1-2 minutes
+- Batch images: 3-5 minutes
+
+## Zero Data Retention
+
+Enable zero data retention mode to ensure requests are not logged:
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:            os.Getenv("AI_GATEWAY_API_KEY"),
+    ZeroDataRetention: true,
+})
+```
+
+## Observability
+
+The Gateway automatically includes observability headers when running on Vercel:
+
+```go
+// Automatically includes:
+// - ai-o11y-deployment-id
+// - ai-o11y-environment
+// - ai-o11y-region
+// - ai-o11y-request-id
+```
+
+## Available Models
+
+Query available models and providers:
+
+```go
+metadata, err := provider.GetAvailableModels(context.Background())
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, prov := range metadata.Providers {
+    fmt.Printf("Provider: %s\n", prov.Name)
+    for _, model := range prov.Models {
+        fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
+        fmt.Printf("    Capabilities: %v\n", model.Capabilities)
+    }
+}
+```
+
+## Credits
+
+Check your Gateway credit usage:
+
+```go
+credits, err := provider.GetCredits(context.Background())
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Available: %d\n", credits.Available)
+fmt.Printf("Used: %d\n", credits.Used)
+```
+
+## Error Handling
+
+The Gateway provides detailed error types:
+
+```go
+import gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+
+result, err := ai.GenerateText(ctx, model, options)
+if err != nil {
+    switch {
+    case gatewayerrors.IsGatewayTimeoutError(err):
+        // Handle timeout with troubleshooting guidance
+        fmt.Printf("Request timed out: %v\n", err)
+
+    case providererrors.IsRateLimitError(err):
+        // Handle rate limiting
+        fmt.Printf("Rate limited: %v\n", err)
+
+    case providererrors.IsProviderError(err):
+        // Handle provider errors
+        fmt.Printf("Provider error: %v\n", err)
+
+    default:
+        // Handle other errors
+        fmt.Printf("Error: %v\n", err)
+    }
+}
+```
+
+## Configuration Reference
+
+### Config
+
+```go
+type Config struct {
+    // APIKey is the AI Gateway API key (required)
+    // Can also be set via AI_GATEWAY_API_KEY environment variable
+    APIKey string
+
+    // BaseURL is the base URL for the AI Gateway API
+    // Default: https://ai-gateway.vercel.sh/v3/ai
+    BaseURL string
+
+    // Headers are custom headers to include in requests
+    Headers map[string]string
+
+    // MetadataCacheRefreshMillis is how frequently to refresh metadata cache
+    // Default: 300000 (5 minutes)
+    MetadataCacheRefreshMillis int64
+
+    // HTTPClient is a custom HTTP client
+    HTTPClient *http.Client
+
+    // ZeroDataRetention enables zero data retention mode
+    // When true, requests are not logged or retained
+    ZeroDataRetention bool
+}
+```
+
+## Limitations
+
+- Speech synthesis and transcription not directly supported (use specific providers)
+- Reranking models not directly supported (use specific providers)
+- Some provider-specific features may not be available through Gateway
+
+## Examples
+
+- [Basic Gateway Usage](/examples/providers/gateway/basic)
+- [Video Generation](/examples/providers/gateway/video-generation)
+- [Timeout Handling](/examples/providers/gateway/timeout-handling)
+- [Zero Data Retention](/examples/providers/gateway/zero-retention)
+- [Parallel Search](/examples/providers/gateway/parallel-search)
+
+## Related Documentation
+
+- [Video Generation Guide](/docs/03-ai-sdk-core/38-video-generation)
+- [Error Handling](/docs/09-troubleshooting/01-error-handling)
+- [Provider Overview](/docs/05-providers/01-overview)
+
+## Learn More
+
+- [AI Gateway Documentation](https://vercel.com/docs/ai-gateway)
+- [Video Generation Guide](https://vercel.com/docs/ai-gateway/capabilities/video-generation)
+- [Gateway API Reference](https://vercel.com/docs/ai-gateway/api-reference)
+
+function ptr[T any](v T) *T {
+    return &v
+}
