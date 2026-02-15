@@ -289,10 +289,10 @@ if err != nil {
 
 See the `/examples/providers/moonshot/` directory for complete examples:
 
-- `basic_chat.go` - Basic conversation
-- `thinking_reasoning.go` - Using K2.5 with thinking
-- `prompt_caching.go` - Demonstrating cache hits
-- `tool_calling.go` - Function calling
+- `basic-chat/` - Basic conversation
+- `thinking-reasoning/` - Using K2.5 with thinking
+- `prompt-caching/` - Demonstrating cache hits
+- `tool-calling/` - Function calling
 
 ## Limitations
 

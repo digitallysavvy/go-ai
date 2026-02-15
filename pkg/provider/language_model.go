@@ -193,7 +193,7 @@ type ImageModel interface {
 
 // ImageGenerateOptions contains options for image generation
 type ImageGenerateOptions struct {
-	// Text prompt for image generation
+	// Text prompt for image generation (optional for some operations like upscaling)
 	Prompt string
 
 	// Number of images to generate
@@ -202,11 +202,47 @@ type ImageGenerateOptions struct {
 	// Size of the image (e.g., "1024x1024")
 	Size string
 
+	// Aspect ratio (e.g., "16:9", "1:1")
+	AspectRatio string
+
+	// Seed for reproducible generation
+	Seed *int
+
 	// Quality setting
 	Quality string
 
 	// Style setting
 	Style string
+
+	// Files for image editing or variation generation
+	Files []ImageFile
+
+	// Mask for inpainting operations
+	Mask *ImageFile
+
+	// Provider-specific options
+	ProviderOptions map[string]interface{}
+
+	// AbortSignal for cancellation
+	AbortSignal context.Context
+
+	// Additional HTTP headers
+	Headers map[string]string
+}
+
+// ImageFile represents an image file for editing or variations
+type ImageFile struct {
+	// Type is "file" or "url"
+	Type string
+
+	// URL for type="url"
+	URL string
+
+	// Data for type="file" (base64 or binary)
+	Data []byte
+
+	// MediaType for type="file" (e.g., "image/png")
+	MediaType string
 }
 
 // SpeechModel represents a speech synthesis model

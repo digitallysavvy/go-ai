@@ -169,29 +169,78 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	completionTokens := int64(usage.CompletionTokens)
 	totalTokens := int64(usage.TotalTokens)
 	result := types.Usage{InputTokens: &promptTokens, OutputTokens: &completionTokens, TotalTokens: &totalTokens}
+
+	// Handle cached tokens (from both direct field and nested structure)
 	var cachedTokens int64
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+	if usage.CachedTokens != nil {
+		cachedTokens = int64(*usage.CachedTokens)
+	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
+
+	// Handle reasoning tokens (from both direct field and nested structure)
 	var reasoningTokens int64
-	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+	if usage.ReasoningTokens != nil {
+		reasoningTokens = int64(*usage.ReasoningTokens)
+	} else if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 {
-		noCacheTokens := promptTokens - cachedTokens
-		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCacheTokens, CacheReadTokens: &cachedTokens, CacheWriteTokens: nil}
+
+	// Handle image and text input tokens (new multimodal fields)
+	var imageInputTokens int64
+	if usage.ImageInputTokens != nil {
+		imageInputTokens = int64(*usage.ImageInputTokens)
 	}
+
+	var textInputTokens int64
+	if usage.TextInputTokens != nil {
+		textInputTokens = int64(*usage.TextInputTokens)
+	}
+
+	// Set input details if we have cached or multimodal tokens
+	if cachedTokens > 0 || imageInputTokens > 0 || textInputTokens > 0 {
+		noCacheTokens := promptTokens - cachedTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: nil,
+		}
+
+		// Add multimodal token tracking to Raw
+		if imageInputTokens > 0 || textInputTokens > 0 {
+			if result.Raw == nil {
+				result.Raw = make(map[string]interface{})
+			}
+			if imageInputTokens > 0 {
+				result.Raw["image_input_tokens"] = imageInputTokens
+			}
+			if textInputTokens > 0 {
+				result.Raw["text_input_tokens"] = textInputTokens
+			}
+		}
+	}
+
+	// Set output details if we have reasoning tokens
 	if reasoningTokens > 0 {
 		textTokens := completionTokens - reasoningTokens
 		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &textTokens, ReasoningTokens: &reasoningTokens}
 	}
-	result.Raw = map[string]interface{}{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens}
+
+	// Build raw usage data
+	if result.Raw == nil {
+		result.Raw = make(map[string]interface{})
+	}
+	result.Raw["prompt_tokens"] = usage.PromptTokens
+	result.Raw["completion_tokens"] = usage.CompletionTokens
+	result.Raw["total_tokens"] = usage.TotalTokens
+
 	if usage.PromptTokensDetails != nil {
 		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
 	}
 	if usage.CompletionTokensDetails != nil {
 		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
 	}
+
 	return result
 }
 
@@ -236,6 +285,14 @@ type xaiUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// Detailed token counts for multimodal usage
+	CachedTokens        *int `json:"cached_tokens,omitempty"`
+	ReasoningTokens     *int `json:"reasoning_tokens,omitempty"`
+	ImageInputTokens    *int `json:"image_input_tokens,omitempty"`
+	TextInputTokens     *int `json:"text_input_tokens,omitempty"`
+
+	// Legacy structure for backward compatibility
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`

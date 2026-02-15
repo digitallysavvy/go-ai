@@ -73,33 +73,134 @@ result, err := model.Generate(ctx, "Write a haiku about Go programming")
 
 ```go
 model, _ := provider.LanguageModel("qwen-vl-max")
-// Image handling coming in ALI-T11
+prompt := types.Prompt{
+    Messages: []types.Message{
+        {
+            Role: "user",
+            Content: []types.ContentPart{
+                {
+                    Type: "image",
+                    Image: &types.ImagePart{
+                        Type: "url",
+                        URL:  "https://example.com/photo.jpg",
+                    },
+                },
+                {Type: "text", Text: "What's in this image?"},
+            },
+        },
+    },
+}
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{Prompt: prompt})
 ```
 
 ### Thinking/Reasoning
 
 ```go
 model, _ := provider.LanguageModel("qwen-qwq-32b-preview")
-// Thinking support coming in ALI-T10
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Solve this logic puzzle..."},
+    ProviderOptions: map[string]interface{}{
+        "alibaba": map[string]interface{}{
+            "enable_thinking":  true,
+            "thinking_budget": 1000,
+        },
+    },
+})
+
+// Access thinking tokens
+if result.Usage.OutputDetails != nil && result.Usage.OutputDetails.ReasoningTokens != nil {
+    fmt.Printf("Reasoning tokens: %d\n", *result.Usage.OutputDetails.ReasoningTokens)
+}
 ```
 
 ### Tool Calling
 
 ```go
-// Tool calling support coming in ALI-T12
+tools := []types.Tool{
+    {
+        Name:        "get_weather",
+        Description: "Get current weather",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type": "string",
+                    "description": "City name",
+                },
+            },
+            "required": []string{"location"},
+        },
+    },
+}
+
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "What's the weather in Paris?"},
+    Tools:  tools,
+})
+
+// Handle tool calls
+if len(result.ToolCalls) > 0 {
+    // Execute tools and send results back
+}
 ```
 
 ### Prompt Caching
 
 ```go
-// Caching support coming in ALI-T15-T19
+// Caching is automatic for system prompts and repeated content
+prompt := types.Prompt{
+    System: "You are a helpful assistant...", // This will be cached
+    Text:   "User question",
+}
+
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{Prompt: prompt})
+
+// Check cache hit/miss
+if result.Usage.InputDetails != nil {
+    if result.Usage.InputDetails.CacheReadTokens != nil {
+        fmt.Printf("Cache hit: %d tokens\n", *result.Usage.InputDetails.CacheReadTokens)
+    }
+    if result.Usage.InputDetails.CacheWriteTokens != nil {
+        fmt.Printf("Cache write: %d tokens\n", *result.Usage.InputDetails.CacheWriteTokens)
+    }
+}
 ```
 
 ### Video Generation
 
 ```go
+// Text-to-video
 model, _ := provider.VideoModel("wan2.6-t2v")
-// Video generation coming in ALI-T20-T31
+duration := 5.0
+result, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "A dog playing in a park",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+})
+
+// Image-to-video
+model, _ = provider.VideoModel("wan2.6-i2v")
+result, err = model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "Add motion to the scene",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+    Image: &provider.VideoModelV3File{
+        Type: "url",
+        URL:  "https://example.com/image.jpg",
+    },
+})
+
+// Reference-to-video (style transfer)
+model, _ = provider.VideoModel("wan2.6-r2v")
+result, err = model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "A person walking",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+    Image: &provider.VideoModelV3File{
+        Type: "url",
+        URL:  "https://example.com/reference-style.jpg",
+    },
+})
 ```
 
 ## API Endpoints
@@ -109,17 +210,18 @@ model, _ := provider.VideoModel("wan2.6-t2v")
 
 ## Status
 
-🚧 **Under Development** - This provider is currently being implemented as part of PRD P0-1.
+✅ **Complete** - This provider is fully implemented with all features from PRD P0-1.
 
-Progress:
-- [x] ALI-T01: Package structure
-- [ ] ALI-T02: Build tooling
-- [ ] ALI-T03: Provider registration
-- [ ] ALI-T04: Configuration
-- [ ] ALI-T05-T14: Chat language model
-- [ ] ALI-T15-T19: Prompt caching
-- [ ] ALI-T20-T31: Video generation
-- [ ] ALI-T32-T41: Documentation & examples
+Features:
+- ✅ All 5 Qwen chat models (plus, turbo, max, qwq-32b-preview, vl-max)
+- ✅ All 6 Wan video models (text-to-video, image-to-video, reference-to-video)
+- ✅ Thinking/reasoning with token tracking
+- ✅ Prompt caching with hit/miss reporting
+- ✅ Tool calling (single and parallel)
+- ✅ Vision support (images)
+- ✅ Streaming support
+- ✅ Comprehensive test coverage
+- ✅ Complete documentation with 8 examples
 
 ## Resources
 

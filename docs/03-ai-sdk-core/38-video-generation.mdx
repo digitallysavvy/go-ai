@@ -112,6 +112,31 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 
 ## Supported Providers
 
+### XAI (Grok)
+
+**Model:** `grok-imagine-video`
+
+```go
+prov := xai.New(xai.Config{
+    APIKey: os.Getenv("XAI_API_KEY"),
+})
+model, _ := prov.VideoModel("grok-imagine-video")
+```
+
+**Features:**
+- Text-to-video generation
+- Image-to-video animation
+- Video editing with text instructions
+- 480p and 720p resolution support
+- Polling-based async generation
+
+**API Key:** Get your key at [x.ai](https://x.ai)
+
+**Supported Operations:**
+- **Text-to-Video**: Generate videos from text descriptions
+- **Image-to-Video**: Animate static images into videos
+- **Video Editing**: Modify existing videos with natural language prompts
+
 ### Google Generative AI
 
 **Model:** `gemini-2.0-flash`
@@ -268,6 +293,18 @@ type GenerateVideoResult struct {
 
 ## Provider-Specific Options
 
+### XAI
+
+```go
+ProviderOptions: map[string]interface{}{
+    "xai": map[string]interface{}{
+        "pollIntervalMs": 5000,   // Poll every 5 seconds
+        "pollTimeoutMs":  600000,  // 10 minute timeout
+        "resolution":     "720p",  // or "480p"
+    },
+}
+```
+
 ### Google
 
 ```go
@@ -361,6 +398,7 @@ Common errors:
 
 ### 1. Choose the Right Provider
 
+- **XAI**: Text-to-video, image animation, video editing support
 - **Google**: Production use, high quality
 - **FAL**: Fast iteration, prototyping
 - **Replicate**: Experimentation, specific models

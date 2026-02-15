@@ -5,7 +5,7 @@ description: Complete guide to AI providers supported by the Go-AI SDK
 
 # Providers
 
-The Go-AI SDK supports 28+ AI providers, giving you access to the latest language models, embedding models, image generation, speech synthesis, and transcription services.
+The Go-AI SDK supports 30+ AI providers, giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services.
 
 ## Provider Categories
 
@@ -45,6 +45,8 @@ Platforms for running open-source models:
 
 Providers for specific use cases:
 
+- [Alibaba Cloud](29-alibaba.mdx) - Qwen language models & Wan video generation
+- [KlingAI](29-klingai.mdx) - Professional video generation with motion control
 - [Cloudflare Workers AI](19-cloudflare.mdx) - Edge AI inference
 - [Stability AI](20-stability.mdx) - Image generation (Stable Diffusion)
 - [Black Forest Labs](21-bfl.mdx) - FLUX image models
@@ -98,13 +100,15 @@ fmt.Println(result.Text)
 | OpenAI | GPT-4o, o1, o3 | 128K+ | Yes | Yes | Yes (o1/o3) |
 | Anthropic | Claude Opus 4.5 | 200K | Yes | Yes | Yes |
 | Google | Gemini 2.0 Flash | 1M+ | Yes | Yes | Yes |
+| Alibaba | Qwen Max, QwQ | 32K | Yes | Yes | Yes (QwQ) |
 | Groq | Llama 3.3 | 8K-128K | Yes | Yes | No |
 | DeepSeek | DeepSeek-V3 | 64K | Yes | Yes | Yes |
 
-### Image Generation
+### Image & Video Generation
 
 | Provider | Best Models | Speed | Quality | Features |
 |----------|-------------|-------|---------|----------|
+| Alibaba Cloud | Wan 2.6 | Medium | High | Text/Image/Reference-to-video |
 | Stability AI | SDXL, SD3 | Fast | High | Flexible |
 | Black Forest Labs | FLUX.1 Pro | Medium | Excellent | Photorealistic |
 | FAL | FLUX, SD | Very Fast | High | Video support |
@@ -135,11 +139,13 @@ fmt.Println(result.Text)
 
 ### For Specialized Tasks
 
+**Video Generation**: KlingAI, Alibaba Cloud (Wan), FAL
 **Image Generation**: Stability AI, Black Forest Labs, FAL
 **Speech Synthesis**: ElevenLabs
 **Transcription**: Deepgram, AssemblyAI
 **Fast Inference**: Groq, Cerebras
 **Local Deployment**: Ollama
+**Chinese Language**: Alibaba Cloud (Qwen)
 
 ### For Enterprise
 

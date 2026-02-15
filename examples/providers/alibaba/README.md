@@ -46,6 +46,26 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
    ```
    Demonstrates: Image-to-video with `wan2.6-i2v-flash`
 
+### Advanced Features
+
+6. **06-vision-chat.go** - Image understanding and multi-turn conversation
+   ```bash
+   go run 06-vision-chat.go
+   ```
+   Demonstrates: Vision capabilities with `qwen-vl-max`, image analysis, multi-turn chat
+
+7. **07-tool-calling.go** - Function calling capabilities
+   ```bash
+   go run 07-tool-calling.go
+   ```
+   Demonstrates: Parallel tool calls, function execution, tool result handling
+
+8. **08-reference-to-video.go** - Style transfer video generation
+   ```bash
+   go run 08-reference-to-video.go
+   ```
+   Demonstrates: Reference-to-video with `wan2.6-r2v`, style transfer, flash variant
+
 ## Supported Models
 
 ### Qwen Chat Models
@@ -70,9 +90,15 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
 ✅ Prompt caching for cost savings
 ✅ Text-to-video generation
 ✅ Image-to-video animation
+✅ Reference-to-video style transfer
+✅ Vision and image understanding
+✅ Multi-turn conversations with images
+✅ Tool calling (function execution)
+✅ Parallel tool calls
 ✅ Aspect ratio control (16:9, 9:16, 1:1)
 ✅ Duration control (5-6 seconds)
 ✅ Provider-specific options
+✅ Flash variants for faster generation
 
 ## Notes
 

@@ -381,7 +381,7 @@ Several providers offer image generation models:
 
 | Provider | Model | Supported Sizes/Aspect Ratios |
 |----------|-------|------------------------------|
-| **xAI** | `grok-2-image` | 1024x768 (default) |
+| **xAI** | `grok-image-1` | Flexible aspect ratios (1:1, 16:9, 9:16, 4:3, etc.) |
 | **OpenAI** | `gpt-image-1` | 1024x1024, 1536x1024, 1024x1536 |
 | **OpenAI** | `dall-e-3` | 1024x1024, 1792x1024, 1024x1792 |
 | **OpenAI** | `dall-e-2` | 256x256, 512x512, 1024x1024 |
@@ -395,6 +395,10 @@ Several providers offer image generation models:
 ### Example with Different Providers
 
 ```go
+// XAI (Grok)
+xaiProvider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
+grokModel, _ := xaiProvider.ImageModel("grok-image-1")
+
 // OpenAI
 openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
 dalleModel, _ := openaiProvider.ImageModel("dall-e-3")
@@ -409,10 +413,79 @@ fluxModel, _ := falProvider.ImageModel("fal-ai/flux/dev")
 
 // Use any model with the same API
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  dalleModel, // or imagenModel, or fluxModel
+    Model:  grokModel, // or dalleModel, imagenModel, or fluxModel
     Prompt: "A beautiful landscape",
 })
 ```
+
+## Advanced Features
+
+### Image Editing
+
+Some providers support editing existing images with natural language instructions:
+
+```go
+// XAI image editing
+imageData, _ := os.ReadFile("source.jpg")
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  grokModel,
+    Prompt: "Change the sky to vibrant sunset colors",
+    Files: []ai.ImageFile{
+        {
+            Type:      "file",
+            Data:      imageData,
+            MediaType: "image/jpeg",
+        },
+    },
+})
+```
+
+### Image Inpainting
+
+Fill specific areas of an image with new content using masks:
+
+```go
+sourceImage, _ := os.ReadFile("source.jpg")
+maskImage, _ := os.ReadFile("mask.png")
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  grokModel,
+    Prompt: "Add a rainbow in the masked area",
+    Files: []ai.ImageFile{
+        {Type: "file", Data: sourceImage, MediaType: "image/jpeg"},
+    },
+    Mask: &ai.ImageFile{
+        Type:      "file",
+        Data:      maskImage,
+        MediaType: "image/png",
+    },
+})
+```
+
+**Mask Requirements:**
+- White pixels (255,255,255) indicate areas to modify
+- Black pixels (0,0,0) indicate areas to preserve
+- Mask should match source image dimensions
+
+### Image Variations
+
+Generate multiple variations of a source image:
+
+```go
+sourceImage, _ := os.ReadFile("source.jpg")
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  grokModel,
+    Prompt: "Generate creative variations with different styles",
+    N:      4,
+    Files: []ai.ImageFile{
+        {Type: "file", Data: sourceImage, MediaType: "image/jpeg"},
+    },
+})
+```
+
+> **Note:** The XAI provider can generate multiple images, but the SDK's `ImageResult` currently returns only the first image. Check `Usage.ImageCount` for the total number generated.
 
 ## Best Practices
 

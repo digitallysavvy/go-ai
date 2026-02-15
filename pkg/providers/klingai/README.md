@@ -361,11 +361,18 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+See the `examples/providers/klingai/` directory for complete working examples:
 
-- `text-to-video/` - Basic text-to-video generation
-- `image-to-video/` - Image animation with start/end frames
-- `motion-control/` - Reference motion video generation
+- `01-text-to-video.go` - Basic text-to-video generation
+- `02-image-to-video.go` - Image animation with camera control
+- `03-i2v-start-end-frames.go` - Image-to-video with start/end frame control
+- `04-motion-control.go` - Reference motion video generation (standard mode)
+- `05-motion-control-pro.go` - Reference motion video generation (pro mode)
+
+Each example includes detailed comments and error handling. Run any example with:
+```bash
+go run examples/providers/klingai/<example-name>.go
+```
 
 ## Links
 

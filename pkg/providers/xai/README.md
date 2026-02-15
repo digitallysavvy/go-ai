@@ -1,8 +1,190 @@
-# xAI Provider Tools
+# xAI (Grok) Provider
 
-This package provides tools for xAI (Grok) integration, including provider-executed tools for vector search and MCP server integration.
+Complete Go implementation of the xAI (Grok) AI provider with support for:
+- **Language Models** - Chat completion with tool calling and structured output
+- **Video Generation** - Text-to-video, image-to-video, and video editing
+- **Image Generation** - Text-to-image, editing, inpainting, outpainting, and variations
+- **Provider-Executed Tools** - FileSearch and MCP Server integration
 
-## Overview
+## Table of Contents
+
+- [Language Models](#language-models)
+- [Video Generation](#video-generation)
+- [Image Generation](#image-generation)
+- [Provider-Executed Tools](#provider-executed-tools-filesearch--mcp-server)
+  - [FileSearch Tool](#filesearch-tool)
+  - [MCPServer Tool](#mcpserver-tool)
+- [Usage Tracking](#usage-tracking)
+- [Examples](#examples)
+
+---
+
+## Language Models
+
+The xAI provider supports advanced language models with:
+- Chat completion (streaming and non-streaming)
+- Tool calling
+- Structured output
+- Comprehensive usage tracking
+
+### Basic Usage
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/xai"
+
+prov := xai.New(xai.Config{
+    APIKey: "your-api-key",
+})
+
+model, _ := prov.LanguageModel("grok-beta")
+```
+
+---
+
+## Video Generation
+
+Generate and edit videos with the `grok-imagine-video` model.
+
+### Features
+
+- **Text-to-Video**: Generate videos from text prompts
+- **Image-to-Video**: Animate static images
+- **Video Editing**: Modify existing videos
+- **Duration & Resolution Control**: 480p/720p output, custom duration
+- **Async Polling**: Automatic status polling with configurable timeouts
+
+### Text-to-Video
+
+```go
+model, _ := prov.VideoModel("grok-imagine-video")
+
+duration := 5.0
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "A sunset over the ocean with waves crashing",
+    Duration: &duration,
+    AspectRatio: "16:9",
+})
+
+videoURL := resp.Videos[0].URL
+```
+
+### Image-to-Video
+
+```go
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "Animate this scene with gentle movement",
+    Image: &provider.VideoModelV3File{
+        Type: "url",
+        URL:  "https://example.com/image.png",
+    },
+})
+```
+
+### Video Editing
+
+```go
+videoURL := "https://example.com/source-video.mp4"
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "Add dramatic lighting",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "videoUrl": videoURL,
+        },
+    },
+})
+```
+
+### Custom Polling
+
+```go
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "A dog playing fetch",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "pollIntervalMs": 2000,  // Poll every 2 seconds
+            "pollTimeoutMs":  300000, // 5 minute timeout
+        },
+    },
+})
+```
+
+---
+
+## Image Generation
+
+Generate and edit images with the dedicated `grok-image-1` model.
+
+### Features
+
+- **Text-to-Image**: Generate from text prompts
+- **Image Editing**: Modify existing images
+- **Inpainting**: Fill masked areas
+- **Outpainting**: Extend beyond boundaries
+- **Variations**: Generate multiple variations
+- **Quality Control**: Standard and HD output
+
+### Text-to-Image
+
+```go
+model, _ := prov.ImageModel("grok-image-1")
+
+n := 1
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt:      "A beautiful sunset over mountains",
+    N:           &n,
+    AspectRatio: "16:9",
+})
+
+imageData := result.Image // []byte
+```
+
+### Image Editing
+
+```go
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Change the sky to sunset colors",
+    Files: []provider.ImageFile{
+        {
+            Type: "url",
+            URL:  "https://example.com/source.png",
+        },
+    },
+})
+```
+
+### Image Inpainting
+
+```go
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Add a rainbow in the masked area",
+    Files: []provider.ImageFile{
+        {Type: "url", URL: "https://example.com/source.png"},
+    },
+    Mask: &provider.ImageFile{
+        {Type: "url", URL: "https://example.com/mask.png"},
+    },
+})
+```
+
+### Image Variations
+
+```go
+n := 4
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Generate variations",
+    N:      &n,
+    Files: []provider.ImageFile{
+        {Type: "url", URL: "https://example.com/source.png"},
+    },
+})
+
+// Note: Go ImageResult contains first image only
+// Usage.ImageCount shows total generated
+```
+
+---
+
+## Provider-Executed Tools (FileSearch & MCP Server)
 
 The xAI provider supports two specialized provider-executed tools:
 
@@ -441,10 +623,89 @@ Creates an MCP Server tool with authentication.
 
 ---
 
+## Usage Tracking
+
+All API calls return detailed usage information with multimodal token differentiation:
+
+```go
+// Video generation metadata
+resp, _ := videoModel.DoGenerate(ctx, opts)
+metadata := resp.ProviderMetadata["xai"].(map[string]interface{})
+fmt.Printf("Request ID: %s\n", metadata["requestId"])
+fmt.Printf("Video URL: %s\n", metadata["videoUrl"])
+
+// Image generation usage
+result, _ := imageModel.DoGenerate(ctx, opts)
+fmt.Printf("Generated %d images\n", result.Usage.ImageCount)
+
+// Language model usage with token differentiation
+result, _ := langModel.DoGenerate(ctx, opts)
+if result.Usage.Raw != nil {
+    if imgTokens, ok := result.Usage.Raw["image_input_tokens"]; ok {
+        fmt.Printf("Image tokens: %v\n", imgTokens)
+    }
+    if textTokens, ok := result.Usage.Raw["text_input_tokens"]; ok {
+        fmt.Printf("Text tokens: %v\n", textTokens)
+    }
+}
+```
+
+### Supported Token Types
+
+- **Basic**: prompt_tokens, completion_tokens, total_tokens
+- **Cached**: cached_tokens (prompt cache hits)
+- **Reasoning**: reasoning_tokens (thinking/reasoning)
+- **Multimodal**: image_input_tokens, text_input_tokens
+
+---
+
+## Models
+
+| Type | Model ID | Description |
+|------|----------|-------------|
+| Language | `grok-beta` | Chat with tools and structured output |
+| Video | `grok-imagine-video` | Video generation and editing |
+| Image | `grok-image-1` | Dedicated image generation and editing |
+
+---
+
+## Provider Options
+
+### Video Options
+
+```go
+ProviderOptions: map[string]interface{}{
+    "xai": map[string]interface{}{
+        "pollIntervalMs": 5000,    // Polling interval (default: 5000ms)
+        "pollTimeoutMs":  600000,  // Timeout (default: 600000ms)
+        "resolution":     "720p",  // "480p" or "720p"
+        "videoUrl":       "...",   // For video editing
+    },
+}
+```
+
+### Image Options
+
+```go
+ProviderOptions: map[string]interface{}{
+    "xai": map[string]interface{}{
+        "aspect_ratio":   "16:9",  // Custom aspect ratio
+        "output_format":  "jpeg",  // "png" or "jpeg"
+        "sync_mode":      true,    // Synchronous generation
+    },
+}
+```
+
+---
+
 ## Version History
 
 - **v6.0.61**: Initial implementation of FileSearch and MCPServer tools
-- Aligned with TypeScript AI SDK v3.0.40
+- **v6.1.0**: Added video generation support (text-to-video, image-to-video, editing)
+- **v6.1.0**: Added dedicated image model with editing, inpainting, outpainting, variations
+- **v6.1.0**: Extended ImageGenerateOptions interface (Files, Mask, AspectRatio)
+- **v6.1.0**: Added multimodal token tracking (image_input_tokens, text_input_tokens)
+- Aligned with TypeScript AI SDK v3.0.40+
 
 ---
 
