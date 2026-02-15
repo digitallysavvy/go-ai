@@ -8,8 +8,32 @@
 *.so
 *.dylib
 
+# Unix binaries (no extension) - common names
+main
+**/main
+
+# Build output directories
+bin/
+build/
+builds/*
+!builds/README.md
+dist/
+
 # Test binary, built with `go test -c`
 *.test
+
+# Common Go binary output names
+# (These are what Go creates when you run `go build` in a directory)
+clear-tool-uses
+clear-thinking
+multiple-strategies
+text-to-video
+image-to-video
+multi-provider
+math-agent
+computer-use
+code-execution
+tool-search
 
 # Code coverage profiles and other test artifacts
 *.out
@@ -32,3 +56,4 @@ go.work.sum
 # .vscode/
 
 .DS_Store
+coverage.out
