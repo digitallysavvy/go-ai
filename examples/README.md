@@ -58,7 +58,7 @@ Provider-specific features:
 **Azure:**
 - **[providers/azure](./providers/azure)** - Azure OpenAI Service integration pattern
 
-### 🧠 Agents (8 examples)
+### 🧠 Agents (11 examples)
 
 Multi-tool autonomous agents:
 
@@ -67,9 +67,12 @@ Multi-tool autonomous agents:
 - **[agents/streaming-agent](./agents/streaming-agent)** - Real-time step visualization, research, code review
 - **[agents/multi-agent](./agents/multi-agent)** - Multiple specialized agents working together
 - **[agents/supervisor-agent](./agents/supervisor-agent)** - Hierarchical agent system with supervisor coordination
-- **[agent-skills](./agent-skills)** - Reusable agent behaviors and skills (NEW)
-- **[agent-subagents](./agent-subagents)** - Hierarchical agent delegation (NEW)
-- **[agent-skills-subagents](./agent-skills-subagents)** - Combined skills and subagents (NEW)
+- **[agents/callbacks/onstepfinish](./agents/callbacks/onstepfinish)** - Track agent execution step by step
+- **[agents/callbacks/early-stopping](./agents/callbacks/early-stopping)** - Token limits and monitoring with callbacks
+- **[agents/callbacks/langchain-style](./agents/callbacks/langchain-style)** - LangChain-style callbacks for fine-grained control (NEW)
+- **[agent-skills](./agent-skills)** - Reusable agent behaviors and skills
+- **[agent-subagents](./agent-subagents)** - Hierarchical agent delegation
+- **[agent-skills-subagents](./agent-skills-subagents)** - Combined skills and subagents
 
 ### 🛠️ Production Middleware (5 examples)
 

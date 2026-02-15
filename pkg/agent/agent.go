@@ -41,6 +41,35 @@ type AgentResult struct {
 	Warnings []types.Warning
 }
 
+// AgentAction represents an action the agent has decided to take
+// This is typically a tool call that the agent wants to execute
+type AgentAction struct {
+	// The tool being called
+	ToolCall types.ToolCall
+
+	// The step number when this action was decided
+	StepNumber int
+
+	// Optional: reasoning or thought process behind the action
+	Reasoning string
+}
+
+// AgentFinish represents the agent's final decision to complete execution
+// This is called when the agent has a final answer and no more tools to call
+type AgentFinish struct {
+	// The final output text from the agent
+	Output string
+
+	// The step number when the agent finished
+	StepNumber int
+
+	// The finish reason
+	FinishReason types.FinishReason
+
+	// Optional: any additional metadata about the completion
+	Metadata map[string]interface{}
+}
+
 // AgentConfig contains configuration for an agent
 type AgentConfig struct {
 	// ========================================================================
@@ -123,11 +152,50 @@ type AgentConfig struct {
 	// Callbacks
 	// ========================================================================
 
+	// Legacy/Basic Callbacks
 	OnStepStart  func(stepNum int)
 	OnStepFinish func(step types.StepResult)
 	OnToolCall   func(toolCall types.ToolCall)
 	OnToolResult func(toolResult types.ToolResult)
 	OnFinish     func(result *AgentResult)
+
+	// LangChain/LangGraph-Style Callbacks (v6.0.60+)
+	// These callbacks provide more granular control over agent execution
+	// and align with LangChain's callback system for better interoperability
+
+	// OnChainStart is called when the agent begins execution
+	// Use this to initialize resources, start timers, or log the beginning of a chain
+	OnChainStart func(input string, messages []types.Message)
+
+	// OnChainEnd is called when the agent completes successfully
+	// Use this to clean up resources, log completion, or process final results
+	OnChainEnd func(result *AgentResult)
+
+	// OnChainError is called when the agent encounters an error during execution
+	// Use this for error logging, cleanup, or triggering fallback mechanisms
+	OnChainError func(err error)
+
+	// OnAgentAction is called when the agent decides to take an action (e.g., call a tool)
+	// This is invoked before tool execution begins
+	// Use this to log agent decisions or implement custom action approval logic
+	OnAgentAction func(action AgentAction)
+
+	// OnAgentFinish is called when the agent reaches a final answer (no more tool calls)
+	// This differs from OnChainEnd as it's called when the agent decides it's done,
+	// even if more processing remains
+	OnAgentFinish func(finish AgentFinish)
+
+	// OnToolStart is called immediately before a tool begins execution
+	// Use this to log tool invocations or start performance timers
+	OnToolStart func(toolCall types.ToolCall)
+
+	// OnToolEnd is called after a tool successfully completes execution
+	// Use this to log successful tool completions or process tool outputs
+	OnToolEnd func(toolResult types.ToolResult)
+
+	// OnToolError is called when a tool execution fails
+	// Use this for error logging, retry logic, or fallback mechanisms
+	OnToolError func(toolCall types.ToolCall, err error)
 
 	// ========================================================================
 	// Tool Approval

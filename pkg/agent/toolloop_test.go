@@ -447,3 +447,650 @@ func TestOnStepFinish_ResponseMessages(t *testing.T) {
 		t.Error("Expected text content to match generated text")
 	}
 }
+// =============================================================================
+// LangChain-Style Callbacks Tests (v6.0.60+)
+// =============================================================================
+
+// Test OnChainStart callback
+func TestOnChainStart(t *testing.T) {
+	called := false
+	var capturedInput string
+	var capturedMessages []types.Message
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Response",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnChainStart: func(input string, messages []types.Message) {
+			called = true
+			capturedInput = input
+			capturedMessages = messages
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test prompt")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnChainStart was not called")
+	}
+
+	if capturedInput != "test prompt" {
+		t.Errorf("Expected input 'test prompt', got '%s'", capturedInput)
+	}
+
+	if len(capturedMessages) != 1 {
+		t.Errorf("Expected 1 message, got %d", len(capturedMessages))
+	}
+}
+
+// Test OnChainEnd callback
+func TestOnChainEnd(t *testing.T) {
+	called := false
+	var capturedResult *AgentResult
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(20)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnChainEnd: func(result *AgentResult) {
+			called = true
+			capturedResult = result
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnChainEnd was not called")
+	}
+
+	if capturedResult == nil {
+		t.Fatal("capturedResult is nil")
+	}
+
+	if capturedResult.Text != "Final answer" {
+		t.Errorf("Expected text 'Final answer', got '%s'", capturedResult.Text)
+	}
+
+	if len(capturedResult.Steps) != 1 {
+		t.Errorf("Expected 1 step, got %d", len(capturedResult.Steps))
+	}
+}
+
+// mockErrorModel is a model that always returns an error
+type mockErrorModel struct{}
+
+func (m *mockErrorModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	return nil, fmt.Errorf("simulated model error")
+}
+
+func (m *mockErrorModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	return nil, fmt.Errorf("streaming not implemented")
+}
+
+func (m *mockErrorModel) SpecificationVersion() string       { return "v3" }
+func (m *mockErrorModel) Provider() string                    { return "mock-error" }
+func (m *mockErrorModel) ModelID() string                     { return "error-model" }
+func (m *mockErrorModel) SupportsTools() bool                 { return true }
+func (m *mockErrorModel) SupportsStructuredOutput() bool      { return false }
+func (m *mockErrorModel) DefaultObjectGenerationMode() string { return "" }
+func (m *mockErrorModel) SupportsImageUrls() bool             { return false }
+func (m *mockErrorModel) SupportsImageInput() bool            { return false }
+func (m *mockErrorModel) SupportsParallelToolCalls() bool     { return true }
+
+// Test OnChainError callback
+func TestOnChainError(t *testing.T) {
+	called := false
+	var capturedError error
+
+	mock := &mockErrorModel{}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnChainError: func(err error) {
+			called = true
+			capturedError = err
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+
+	// Expect an error from the model
+	if err == nil {
+		t.Fatal("Expected an error but got nil")
+	}
+
+	if !called {
+		t.Error("OnChainError was not called")
+	}
+
+	if capturedError == nil {
+		t.Error("capturedError is nil")
+	}
+}
+
+// Test OnAgentAction callback
+func TestOnAgentAction(t *testing.T) {
+	callCount := 0
+	var capturedActions []AgentAction
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "A test tool",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "tool result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Using tool",
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_1",
+						ToolName:  "test_tool",
+						Arguments: map[string]interface{}{"arg": "value"},
+					},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(15)},
+			},
+			{
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnAgentAction: func(action AgentAction) {
+			callCount++
+			capturedActions = append(capturedActions, action)
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("Expected OnAgentAction to be called once, got %d", callCount)
+	}
+
+	if len(capturedActions) != 1 {
+		t.Fatalf("Expected 1 captured action, got %d", len(capturedActions))
+	}
+
+	action := capturedActions[0]
+	if action.ToolCall.ToolName != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got '%s'", action.ToolCall.ToolName)
+	}
+
+	if action.StepNumber != 1 {
+		t.Errorf("Expected step number 1, got %d", action.StepNumber)
+	}
+
+	if action.Reasoning != "Using tool" {
+		t.Errorf("Expected reasoning 'Using tool', got '%s'", action.Reasoning)
+	}
+}
+
+// Test OnAgentFinish callback
+func TestOnAgentFinish(t *testing.T) {
+	called := false
+	var capturedFinish AgentFinish
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnAgentFinish: func(finish AgentFinish) {
+			called = true
+			capturedFinish = finish
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnAgentFinish was not called")
+	}
+
+	if capturedFinish.Output != "Final answer" {
+		t.Errorf("Expected output 'Final answer', got '%s'", capturedFinish.Output)
+	}
+
+	if capturedFinish.StepNumber != 1 {
+		t.Errorf("Expected step number 1, got %d", capturedFinish.StepNumber)
+	}
+
+	if capturedFinish.FinishReason != types.FinishReasonStop {
+		t.Errorf("Expected finish reason stop, got %s", capturedFinish.FinishReason)
+	}
+
+	if capturedFinish.Metadata == nil {
+		t.Error("Expected metadata to be populated")
+	}
+}
+
+// Test OnAgentFinish with max steps
+func TestOnAgentFinish_MaxSteps(t *testing.T) {
+	called := false
+	var capturedFinish AgentFinish
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Step 1",
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Step 2",
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "2", ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 2,
+		OnAgentFinish: func(finish AgentFinish) {
+			called = true
+			capturedFinish = finish
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnAgentFinish was not called when max steps reached")
+	}
+
+	if capturedFinish.FinishReason != types.FinishReasonLength {
+		t.Errorf("Expected finish reason 'length', got '%s'", capturedFinish.FinishReason)
+	}
+
+	// Check that max_steps_hit metadata is set
+	if maxStepsHit, ok := capturedFinish.Metadata["max_steps_hit"].(bool); !ok || !maxStepsHit {
+		t.Error("Expected max_steps_hit metadata to be true")
+	}
+}
+
+// Test OnToolStart callback
+func TestOnToolStart(t *testing.T) {
+	called := false
+	var capturedToolCall types.ToolCall
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "test_tool", Arguments: map[string]interface{}{}},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnToolStart: func(toolCall types.ToolCall) {
+			called = true
+			capturedToolCall = toolCall
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnToolStart was not called")
+	}
+
+	if capturedToolCall.ToolName != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got '%s'", capturedToolCall.ToolName)
+	}
+}
+
+// Test OnToolEnd callback
+func TestOnToolEnd(t *testing.T) {
+	called := false
+	var capturedResult types.ToolResult
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "success result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "test_tool", Arguments: map[string]interface{}{}},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnToolEnd: func(toolResult types.ToolResult) {
+			called = true
+			capturedResult = toolResult
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnToolEnd was not called")
+	}
+
+	if capturedResult.ToolName != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got '%s'", capturedResult.ToolName)
+	}
+
+	if capturedResult.Error != nil {
+		t.Errorf("Expected no error, got %v", capturedResult.Error)
+	}
+
+	if capturedResult.Result != "success result" {
+		t.Errorf("Expected result 'success result', got %v", capturedResult.Result)
+	}
+}
+
+// Test OnToolError callback
+func TestOnToolError(t *testing.T) {
+	called := false
+	var capturedToolCall types.ToolCall
+	var capturedError error
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return nil, fmt.Errorf("tool execution failed")
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "test_tool", Arguments: map[string]interface{}{}},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Handled error",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnToolError: func(toolCall types.ToolCall, err error) {
+			called = true
+			capturedToolCall = toolCall
+			capturedError = err
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnToolError was not called")
+	}
+
+	if capturedToolCall.ToolName != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got '%s'", capturedToolCall.ToolName)
+	}
+
+	if capturedError == nil {
+		t.Error("Expected error to be captured")
+	}
+
+	if capturedError.Error() != "tool execution failed" {
+		t.Errorf("Expected error 'tool execution failed', got '%s'", capturedError.Error())
+	}
+}
+
+// Test OnToolError with tool not found
+func TestOnToolError_ToolNotFound(t *testing.T) {
+	called := false
+	var capturedError error
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "nonexistent_tool", Arguments: map[string]interface{}{}},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		OnToolError: func(toolCall types.ToolCall, err error) {
+			called = true
+			capturedError = err
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnToolError was not called for missing tool")
+	}
+
+	if capturedError == nil {
+		t.Fatal("Expected error to be captured")
+	}
+
+	if capturedError.Error() != "tool not found: nonexistent_tool" {
+		t.Errorf("Expected 'tool not found' error, got '%s'", capturedError.Error())
+	}
+}
+
+// Test all LangChain callbacks together
+func TestLangChainCallbacks_AllTogether(t *testing.T) {
+	chainStartCalled := false
+	chainEndCalled := false
+	agentActionCalled := false
+	agentFinishCalled := false
+	toolStartCalled := false
+	toolEndCalled := false
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text:         "Using tool",
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "test_tool", Arguments: map[string]interface{}{}},
+				},
+				Usage: types.Usage{TotalTokens: intPtr(10)},
+			},
+			{
+				Text:         "Final answer",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(10)},
+			},
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		OnChainStart: func(input string, messages []types.Message) {
+			chainStartCalled = true
+		},
+		OnChainEnd: func(result *AgentResult) {
+			chainEndCalled = true
+		},
+		OnAgentAction: func(action AgentAction) {
+			agentActionCalled = true
+		},
+		OnAgentFinish: func(finish AgentFinish) {
+			agentFinishCalled = true
+		},
+		OnToolStart: func(toolCall types.ToolCall) {
+			toolStartCalled = true
+		},
+		OnToolEnd: func(toolResult types.ToolResult) {
+			toolEndCalled = true
+		},
+	})
+
+	ctx := context.Background()
+	_, err := agent.Execute(ctx, "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !chainStartCalled {
+		t.Error("OnChainStart was not called")
+	}
+	if !chainEndCalled {
+		t.Error("OnChainEnd was not called")
+	}
+	if !agentActionCalled {
+		t.Error("OnAgentAction was not called")
+	}
+	if !agentFinishCalled {
+		t.Error("OnAgentFinish was not called")
+	}
+	if !toolStartCalled {
+		t.Error("OnToolStart was not called")
+	}
+	if !toolEndCalled {
+		t.Error("OnToolEnd was not called")
+	}
+}

@@ -56,6 +56,22 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Extract input for OnChainStart callback
+	input := ""
+	if len(messages) > 0 {
+		for _, part := range messages[0].Content {
+			if textPart, ok := part.(types.TextContent); ok {
+				input = textPart.Text
+				break
+			}
+		}
+	}
+
+	// Call OnChainStart callback
+	if a.config.OnChainStart != nil {
+		a.config.OnChainStart(input, messages)
+	}
+
 	// Apply total timeout if configured
 	var cancel context.CancelFunc
 	if a.config.Timeout != nil && a.config.Timeout.HasTotal() {
@@ -88,6 +104,10 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		stepResult, shouldContinue, newCustomData, err := a.executeStep(ctx, stepNum, currentMessages, result.Usage, customData)
 		customData = newCustomData
 		if err != nil {
+			// Call OnChainError callback
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(err)
+			}
 			return nil, fmt.Errorf("step %d failed: %w", stepNum, err)
 		}
 
@@ -113,8 +133,23 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 
 		// If there are tool calls, execute them
 		if len(stepResult.ToolCalls) > 0 {
+			// Call OnAgentAction callback for each tool call
+			if a.config.OnAgentAction != nil {
+				for _, toolCall := range stepResult.ToolCalls {
+					action := AgentAction{
+						ToolCall:   toolCall,
+						StepNumber: stepNum,
+						Reasoning:  stepResult.Text, // Include any reasoning text from the step
+					}
+					a.config.OnAgentAction(action)
+				}
+			}
 			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls)
 			if err != nil {
+				// Call OnChainError callback
+				if a.config.OnChainError != nil {
+					a.config.OnChainError(err)
+				}
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
 
@@ -140,6 +175,20 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		if !shouldContinue {
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
+
+			// Call OnAgentFinish callback when agent reaches final answer
+			if a.config.OnAgentFinish != nil {
+				finish := AgentFinish{
+					Output:       stepResult.Text,
+					StepNumber:   stepNum,
+					FinishReason: stepResult.FinishReason,
+					Metadata: map[string]interface{}{
+						"total_steps": stepNum,
+						"usage":       result.Usage,
+					},
+				}
+				a.config.OnAgentFinish(finish)
+			}
 			break
 		}
 
@@ -151,8 +200,28 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 				Type:    "max_steps_reached",
 				Message: fmt.Sprintf("Agent reached maximum steps (%d)", a.config.MaxSteps),
 			})
+
+			// Call OnAgentFinish callback when hitting max steps
+			if a.config.OnAgentFinish != nil {
+				finish := AgentFinish{
+					Output:       stepResult.Text,
+					StepNumber:   stepNum,
+					FinishReason: types.FinishReasonLength,
+					Metadata: map[string]interface{}{
+						"total_steps":  stepNum,
+						"usage":        result.Usage,
+						"max_steps_hit": true,
+					},
+				}
+				a.config.OnAgentFinish(finish)
+			}
 			break
 		}
+	}
+
+	// Call OnChainEnd callback (successful completion)
+	if a.config.OnChainEnd != nil {
+		a.config.OnChainEnd(result)
 	}
 
 	// Call finish callback
@@ -261,11 +330,17 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil {
 			approved := a.config.ToolApprover(call)
 			if !approved {
+				rejectionErr := fmt.Errorf("tool call rejected by user")
 				results[i] = types.ToolResult{
 					ToolCallID:       call.ID,
 					ToolName:         call.ToolName,
-					Error:            fmt.Errorf("tool call rejected by user"),
+					Error:            rejectionErr,
 					ProviderExecuted: false,
+				}
+
+				// Call OnToolError for rejected tools
+				if a.config.OnToolError != nil {
+					a.config.OnToolError(call, rejectionErr)
 				}
 				continue
 			}
@@ -281,11 +356,17 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		}
 
 		if tool == nil {
+			notFoundErr := fmt.Errorf("tool not found: %s", call.ToolName)
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Error:            fmt.Errorf("tool not found: %s", call.ToolName),
+				Error:            notFoundErr,
 				ProviderExecuted: false,
+			}
+
+			// Call OnToolError for tool not found
+			if a.config.OnToolError != nil {
+				a.config.OnToolError(call, notFoundErr)
 			}
 			continue
 		}
@@ -295,6 +376,11 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
+			// Call OnToolStart for provider-executed tools
+			if a.config.OnToolStart != nil {
+				a.config.OnToolStart(call)
+			}
+
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
@@ -307,8 +393,18 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolResult != nil {
 				a.config.OnToolResult(results[i])
 			}
+
+			// Call OnToolEnd for provider-executed tools (they're deferred but considered started)
+			if a.config.OnToolEnd != nil {
+				a.config.OnToolEnd(results[i])
+			}
 		} else {
 			// Locally-executed tool: execute now
+			// Call OnToolStart before execution
+			if a.config.OnToolStart != nil {
+				a.config.OnToolStart(call)
+			}
+
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID: call.ID,
 			}
@@ -324,6 +420,17 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// Call tool result callback
 			if a.config.OnToolResult != nil {
 				a.config.OnToolResult(results[i])
+			}
+
+			// Call OnToolEnd or OnToolError based on execution result
+			if err != nil {
+				if a.config.OnToolError != nil {
+					a.config.OnToolError(call, err)
+				}
+			} else {
+				if a.config.OnToolEnd != nil {
+					a.config.OnToolEnd(results[i])
+				}
 			}
 		}
 	}
