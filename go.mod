@@ -7,6 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-chi/cors v1.2.2
 	github.com/gofiber/fiber/v2 v2.52.10
+	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.24.0
@@ -29,7 +30,6 @@ require (
 	github.com/go-playground/validator/v10 v10.27.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
