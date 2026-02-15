@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -308,28 +307,11 @@ func (m *VideoModel) convertPolledResponse(ctx context.Context, resp *falVideoRe
 	}, nil
 }
 
-// downloadVideo downloads video from a URL
+// downloadVideo downloads video from a URL with size limits to prevent DoS
 func (m *VideoModel) downloadVideo(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	client := &http.Client{
-		Timeout: 60 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to download video: status %d", resp.StatusCode)
-	}
-
-	return io.ReadAll(resp.Body)
+	opts := fileutil.DefaultDownloadOptions()
+	opts.Timeout = 60 * time.Second
+	return fileutil.Download(ctx, url, opts)
 }
 
 // Response types for FAL API
@@ -351,9 +333,9 @@ type falVideoResponse struct {
 }
 
 type falVideoResult struct {
-	URL         string `json:"url"`
-	ContentType string `json:"content_type,omitempty"`
-	Width       int    `json:"width,omitempty"`
-	Height      int    `json:"height,omitempty"`
+	URL         string  `json:"url"`
+	ContentType string  `json:"content_type,omitempty"`
+	Width       int     `json:"width,omitempty"`
+	Height      int     `json:"height,omitempty"`
 	Duration    float64 `json:"duration,omitempty"`
 }

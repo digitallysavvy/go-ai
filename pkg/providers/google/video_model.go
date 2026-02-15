@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -297,28 +296,12 @@ func (m *VideoModel) convertResponse(ctx context.Context, result *googleVideoOpe
 	return response, nil
 }
 
-// downloadVideo downloads video from URL and detects media type
+// downloadVideo downloads video from URL and detects media type with size limits to prevent DoS
 func (m *VideoModel) downloadVideo(ctx context.Context, url string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, "", err
-	}
+	opts := fileutil.DefaultDownloadOptions()
+	opts.Timeout = 5 * time.Minute // Videos can be large
 
-	client := &http.Client{
-		Timeout: 5 * time.Minute, // Videos can be large
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, "", fmt.Errorf("download returned status %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
+	data, err := fileutil.Download(ctx, url, opts)
 	if err != nil {
 		return nil, "", err
 	}
@@ -326,11 +309,7 @@ func (m *VideoModel) downloadVideo(ctx context.Context, url string) ([]byte, str
 	// Detect media type from content
 	mediaType := media.DetectVideoMediaType(data)
 	if mediaType == "" {
-		// Fall back to Content-Type header
-		mediaType = resp.Header.Get("Content-Type")
-		if mediaType == "" {
-			mediaType = "video/mp4" // Default assumption
-		}
+		mediaType = "video/mp4" // Default assumption
 	}
 
 	return data, mediaType, nil
@@ -340,11 +319,11 @@ func (m *VideoModel) downloadVideo(ctx context.Context, url string) ([]byte, str
 
 // googleVideoOperation represents a long-running operation
 type googleVideoOperation struct {
-	Name     string                       `json:"name"`
-	Done     bool                         `json:"done"`
-	Error    *googleOperationError        `json:"error,omitempty"`
-	Response *googleVideoOperationResult  `json:"response,omitempty"`
-	Metadata map[string]interface{}       `json:"metadata,omitempty"`
+	Name     string                      `json:"name"`
+	Done     bool                        `json:"done"`
+	Error    *googleOperationError       `json:"error,omitempty"`
+	Response *googleVideoOperationResult `json:"response,omitempty"`
+	Metadata map[string]interface{}      `json:"metadata,omitempty"`
 }
 
 // googleOperationError represents an operation error
