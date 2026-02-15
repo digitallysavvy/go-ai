@@ -75,8 +75,12 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	// Google doesn't provide image generation through this API
-	return nil, fmt.Errorf("Google does not support image generation through this API")
+	// Validate model ID
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewImageModel(p, modelID), nil
 }
 
 // SpeechModel returns a speech synthesis model by ID
