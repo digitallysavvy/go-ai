@@ -33,7 +33,7 @@ func (m *TelemetryMiddleware) GenerateText(ctx context.Context, opts ai.Generate
 	m.recordMetric("request_duration_ms", duration.Milliseconds())
 
 	if err == nil {
-		m.recordMetric("tokens_used", result.Usage.TotalTokens)
+		m.recordMetric("tokens_used", result.Usage.GetTotalTokens())
 		m.recordMetric("success_count", 1)
 	} else {
 		m.recordMetric("error_count", 1)

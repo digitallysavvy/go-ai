@@ -134,9 +134,7 @@ func analyzeLocalImage(ctx context.Context, model provider.LanguageModel) {
 	fmt.Println("\nAnalysis:")
 	fmt.Println(result.Text)
 
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("\nToken usage: %d\n", *result.Usage.TotalTokens)
-	}
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }
 
 func compareImages(ctx context.Context, model provider.LanguageModel) {

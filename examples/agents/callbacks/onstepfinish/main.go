@@ -126,6 +126,6 @@ func main() {
 	fmt.Printf("\n\n=== Final Result ===\n")
 	fmt.Printf("Text: %s\n", result.Text)
 	fmt.Printf("Total steps: %d\n", stepCount)
-	fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+	fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 	fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }

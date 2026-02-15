@@ -106,7 +106,7 @@ func (tb *ThroughputBenchmark) worker(ctx context.Context, workerID int) {
 				tb.errorCount.Add(1)
 			} else {
 				tb.successCount.Add(1)
-				tb.totalTokens.Add(int64(result.Usage.TotalTokens))
+				tb.totalTokens.Add(result.Usage.GetTotalTokens())
 			}
 		}
 	}

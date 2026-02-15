@@ -111,30 +111,24 @@ func main() {
 	// Show token usage
 	// Note: When compaction occurs, usage.Iterations will contain breakdown
 	// of tokens used for compaction vs. the actual message
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("\nToken usage: %d total\n", *result.Usage.TotalTokens)
-		if result.Usage.InputTokens != nil {
-			fmt.Printf("  Input: %d tokens\n", *result.Usage.InputTokens)
-		}
-		if result.Usage.OutputTokens != nil {
-			fmt.Printf("  Output: %d tokens\n", *result.Usage.OutputTokens)
-		}
+	fmt.Printf("\nToken usage: %d total\n", result.Usage.GetTotalTokens())
+	fmt.Printf("  Input: %d tokens\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Output: %d tokens\n", result.Usage.GetOutputTokens())
 
-		// Check if iterations data is available (indicates compaction occurred)
-		if rawUsage, ok := result.Usage.Raw.(map[string]interface{}); ok {
-			if iterations, ok := rawUsage["iterations"].([]interface{}); ok && len(iterations) > 0 {
-				fmt.Println("\n  Iterations breakdown:")
-				for i, iter := range iterations {
-					if iterMap, ok := iter.(map[string]interface{}); ok {
-						iterType := iterMap["type"]
-						inputTokens := iterMap["input_tokens"]
-						outputTokens := iterMap["output_tokens"]
-						fmt.Printf("    %d. %v: %v input, %v output\n", i+1, iterType, inputTokens, outputTokens)
-					}
+	// Check if iterations data is available (indicates compaction occurred)
+	if rawUsage, ok := result.Usage.Raw.(map[string]interface{}); ok {
+		if iterations, ok := rawUsage["iterations"].([]interface{}); ok && len(iterations) > 0 {
+			fmt.Println("\n  Iterations breakdown:")
+			for i, iter := range iterations {
+				if iterMap, ok := iter.(map[string]interface{}); ok {
+					iterType := iterMap["type"]
+					inputTokens := iterMap["input_tokens"]
+					outputTokens := iterMap["output_tokens"]
+					fmt.Printf("    %d. %v: %v input, %v output\n", i+1, iterType, inputTokens, outputTokens)
 				}
 			}
 		}
-
-		fmt.Println("\n(Compaction helps maintain context in extremely long conversations)")
 	}
+
+	fmt.Println("\n(Compaction helps maintain context in extremely long conversations)")
 }

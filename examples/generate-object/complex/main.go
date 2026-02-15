@@ -137,7 +137,7 @@ func generateCompanyStructure(ctx context.Context, model provider.LanguageModel)
 
 	jsonBytes, _ := json.MarshalIndent(result.Object, "", "  ")
 	fmt.Println(string(jsonBytes))
-	fmt.Printf("\nTokens used: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nTokens used: %d\n", result.Usage.GetTotalTokens())
 }
 
 func generateEcommerceOrder(ctx context.Context, model provider.LanguageModel) {

@@ -50,15 +50,9 @@ func main() {
 
 	// Print usage information
 	fmt.Println("\nUsage:")
-	if result.Usage.InputTokens != nil {
-		fmt.Printf("  Input tokens:  %d\n", *result.Usage.InputTokens)
-	}
-	if result.Usage.OutputTokens != nil {
-		fmt.Printf("  Output tokens: %d\n", *result.Usage.OutputTokens)
-	}
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("  Total tokens:  %d\n", *result.Usage.TotalTokens)
-	}
+	fmt.Printf("  Input tokens:  %d\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Output tokens: %d\n", result.Usage.GetOutputTokens())
+	fmt.Printf("  Total tokens:  %d\n", result.Usage.GetTotalTokens())
 	fmt.Printf("  Finish reason: %s\n", result.FinishReason)
 
 	// Example 2: Using with system message

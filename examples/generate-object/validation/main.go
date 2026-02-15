@@ -122,7 +122,7 @@ func generateUserProfile(ctx context.Context, model provider.LanguageModel) {
 	fmt.Printf("  Age: %d\n", user.Age)
 	fmt.Printf("  Role: %s\n", user.Role)
 	fmt.Printf("  Active: %v\n", user.IsActive)
-	fmt.Printf("\nTokens used: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nTokens used: %d\n", result.Usage.GetTotalTokens())
 }
 
 func generateProductReview(ctx context.Context, model provider.LanguageModel) {

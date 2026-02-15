@@ -101,9 +101,7 @@ func main() {
 		})
 
 		// Print token usage
-		if result.Usage.TotalTokens != nil {
-			fmt.Printf("(Tokens: %d)\n", *result.Usage.TotalTokens)
-		}
+		fmt.Printf("(Tokens: %d)\n", result.Usage.GetTotalTokens())
 	}
 
 	// Print conversation summary

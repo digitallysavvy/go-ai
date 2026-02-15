@@ -123,7 +123,7 @@ func main() {
 
 		// Show token usage
 		usage := stream.Usage()
-		fmt.Printf("\n\033[2m(Tokens: %d)\033[0m", usage.TotalTokens)
+		fmt.Printf("\n\033[2m(Tokens: %d)\033[0m", usage.GetTotalTokens())
 	}
 }
 

@@ -94,7 +94,7 @@ func generateCharacters(ctx context.Context, model provider.LanguageModel) {
 	fmt.Println("\nGenerated Characters:")
 	jsonBytes, _ := json.MarshalIndent(result.Object, "", "  ")
 	fmt.Println(string(jsonBytes))
-	fmt.Printf("\nToken usage: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }
 
 func generateProductCatalog(ctx context.Context, model provider.LanguageModel) {

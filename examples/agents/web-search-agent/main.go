@@ -91,7 +91,7 @@ When answering questions:
 
 	fmt.Println("\n[Answer]")
 	fmt.Println(result.Text)
-	fmt.Printf("\nSteps taken: %d | Tokens: %d\n", len(result.Steps), result.Usage.TotalTokens)
+	fmt.Printf("\nSteps taken: %d | Tokens: %d\n", len(result.Steps), result.Usage.GetTotalTokens())
 }
 
 func createWebSearchTool() types.Tool {

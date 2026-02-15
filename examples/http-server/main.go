@@ -243,9 +243,9 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	// Send completion event with usage
 	usage := stream.Usage()
 	usageJSON, _ := json.Marshal(map[string]interface{}{
-		"inputTokens":  usage.InputTokens,
-		"outputTokens": usage.OutputTokens,
-		"totalTokens":  usage.TotalTokens,
+		"inputTokens":  usage.GetInputTokens(),
+		"outputTokens": usage.GetOutputTokens(),
+		"totalTokens":  usage.GetTotalTokens(),
 	})
 
 	sendSSE(w, "done", string(usageJSON))

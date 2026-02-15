@@ -112,15 +112,9 @@ func main() {
 	// Display usage information
 	fmt.Println("Usage:")
 	fmt.Println("-" + string(make([]byte, 40)))
-	if result.Usage.InputTokens != nil {
-		fmt.Printf("Input tokens: %d\n", *result.Usage.InputTokens)
-	}
-	if result.Usage.OutputTokens != nil {
-		fmt.Printf("Output tokens: %d\n", *result.Usage.OutputTokens)
-	}
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
-	}
+	fmt.Printf("Input tokens: %d\n", result.Usage.GetInputTokens())
+	fmt.Printf("Output tokens: %d\n", result.Usage.GetOutputTokens())
+	fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 
 	fmt.Println()
 	fmt.Println("✅ MCP Server integration completed successfully")

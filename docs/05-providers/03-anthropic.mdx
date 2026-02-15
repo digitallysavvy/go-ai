@@ -619,8 +619,8 @@ func calculateCost(usage ai.Usage, model string) float64 {
     }
 
     rate := rates[model]
-    inputCost := float64(usage.PromptTokens) * rate[0]
-    outputCost := float64(usage.CompletionTokens) * rate[1]
+    inputCost := float64(usage.GetInputTokens()) * rate[0]
+    outputCost := float64(usage.GetOutputTokens()) * rate[1]
 
     return inputCost + outputCost
 }

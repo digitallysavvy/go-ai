@@ -58,7 +58,7 @@ Think through all possible approaches and explain your reasoning process.`,
 
 	fmt.Println("Solution with Extended Thinking:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 	fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }
 
@@ -118,5 +118,5 @@ Think through each aspect carefully before answering.`, code),
 
 	fmt.Println("Code Analysis:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }

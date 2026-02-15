@@ -184,9 +184,9 @@ func main() {
 		usage := result.Usage
 
 		// v6.0: Detailed token breakdown
-		fmt.Printf("Total Tokens: %d\n", getInt64Value(usage.TotalTokens))
-		fmt.Printf("Input Tokens: %d\n", getInt64Value(usage.InputTokens))
-		fmt.Printf("Output Tokens: %d\n", getInt64Value(usage.OutputTokens))
+		fmt.Printf("Total Tokens: %d\n", usage.GetTotalTokens())
+		fmt.Printf("Input Tokens: %d\n", usage.GetInputTokens())
+		fmt.Printf("Output Tokens: %d\n", usage.GetOutputTokens())
 
 		// v6.0: Cache token details (if available)
 		if usage.InputDetails != nil {
@@ -357,12 +357,4 @@ func main() {
 	fmt.Println("\nFor migration guide and more examples, see:")
 	fmt.Println("  planning/migration-guide-v6.md")
 	fmt.Println("  planning/usage-tracking-guide.md")
-}
-
-// Helper function to safely get int64 value from pointer
-func getInt64Value(val *int64) int64 {
-	if val == nil {
-		return 0
-	}
-	return *val
 }

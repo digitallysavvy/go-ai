@@ -57,9 +57,9 @@ func simpleExample(ctx context.Context, model provider.LanguageModel) {
 
 	fmt.Printf("Response: %s\n", result.Text)
 	fmt.Printf("Tokens used: %d (input: %d, output: %d)\n",
-		result.Usage.TotalTokens,
-		result.Usage.InputTokens,
-		result.Usage.OutputTokens)
+		result.Usage.GetTotalTokens(),
+		result.Usage.GetInputTokens(),
+		result.Usage.GetOutputTokens())
 }
 
 func streamingExample(ctx context.Context, model provider.LanguageModel) {
@@ -86,7 +86,7 @@ func streamingExample(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	usage := stream.Usage()
-	fmt.Printf("Tokens used: %d\n", usage.TotalTokens)
+	fmt.Printf("Tokens used: %d\n", usage.GetTotalTokens())
 }
 
 func toolCallingExample(ctx context.Context, model provider.LanguageModel) {

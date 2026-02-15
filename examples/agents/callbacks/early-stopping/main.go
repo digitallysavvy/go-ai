@@ -71,12 +71,11 @@ func main() {
 		MaxSteps: 10,
 		OnStepFinish: func(step types.StepResult) {
 			// Track cumulative token usage
-			if step.Usage.TotalTokens != nil {
-				totalTokensUsed += *step.Usage.TotalTokens
-			}
+			stepTokens := step.Usage.GetTotalTokens()
+			totalTokensUsed += stepTokens
 
 			fmt.Printf("\n--- Step %d ---\n", step.StepNumber)
-			fmt.Printf("Tokens this step: %d\n", getTokens(step.Usage.TotalTokens))
+			fmt.Printf("Tokens this step: %d\n", stepTokens)
 			fmt.Printf("Total tokens: %d / %d\n", totalTokensUsed, TOKEN_LIMIT)
 
 			// Check if we're approaching the limit
@@ -132,11 +131,4 @@ func main() {
 	} else {
 		fmt.Printf("\n✅ Execution completed within budget\n")
 	}
-}
-
-func getTokens(tokens *int64) int64 {
-	if tokens == nil {
-		return 0
-	}
-	return *tokens
 }

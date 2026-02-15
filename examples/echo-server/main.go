@@ -232,9 +232,9 @@ func handleStream(c echo.Context) error {
 	// Send completion
 	usage := stream.Usage()
 	usageJSON, _ := json.Marshal(map[string]interface{}{
-		"inputTokens":  usage.InputTokens,
-		"outputTokens": usage.OutputTokens,
-		"totalTokens":  usage.TotalTokens,
+		"inputTokens":  usage.GetInputTokens(),
+		"outputTokens": usage.GetOutputTokens(),
+		"totalTokens":  usage.GetTotalTokens(),
 	})
 
 	sendSSE(c.Response(), "done", string(usageJSON))

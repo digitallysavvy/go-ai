@@ -43,7 +43,7 @@ func main() {
 	fmt.Printf("Text: %s\n", result1.Text)
 	fmt.Printf("RawRequest present: %v\n", result1.RawRequest != nil)
 	fmt.Printf("RawResponse present: %v\n", result1.RawResponse != nil)
-	fmt.Printf("Usage: %d total tokens\n\n", *result1.Usage.TotalTokens)
+	fmt.Printf("Usage: %d total tokens\n\n", result1.Usage.GetTotalTokens())
 
 	fmt.Println("=== Example 2: Memory optimization (exclude request & response) ===")
 
@@ -65,7 +65,7 @@ func main() {
 	fmt.Printf("Text: %s\n", result2.Text)
 	fmt.Printf("RawRequest present: %v\n", result2.RawRequest != nil)
 	fmt.Printf("RawResponse present: %v\n", result2.RawResponse != nil)
-	fmt.Printf("Usage: %d total tokens\n\n", *result2.Usage.TotalTokens)
+	fmt.Printf("Usage: %d total tokens\n\n", result2.Usage.GetTotalTokens())
 
 	fmt.Println("=== Example 3: Exclude only request body ===")
 
@@ -84,7 +84,7 @@ func main() {
 	fmt.Printf("Text: %s\n", result3.Text)
 	fmt.Printf("RawRequest present: %v\n", result3.RawRequest != nil)
 	fmt.Printf("RawResponse present: %v\n", result3.RawResponse != nil)
-	fmt.Printf("Usage: %d total tokens\n\n", *result3.Usage.TotalTokens)
+	fmt.Printf("Usage: %d total tokens\n\n", result3.Usage.GetTotalTokens())
 
 	fmt.Println("✅ All retention examples completed successfully!")
 	fmt.Println("\nKey benefits of retention settings:")

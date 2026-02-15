@@ -509,8 +509,15 @@ func (ct *CostTracker) Track(model string, usage ai.Usage) {
     defer ct.mu.Unlock()
 
     current := ct.usageByModel[model]
-    current.PromptTokens += usage.PromptTokens
-    current.CompletionTokens += usage.CompletionTokens
+    inputTokens := usage.GetInputTokens()
+    outputTokens := usage.GetOutputTokens()
+    currentInput := current.GetInputTokens()
+    currentOutput := current.GetOutputTokens()
+
+    newInput := currentInput + inputTokens
+    newOutput := currentOutput + outputTokens
+    current.InputTokens = &newInput
+    current.OutputTokens = &newOutput
     ct.usageByModel[model] = current
 }
 
@@ -526,8 +533,8 @@ func (ct *CostTracker) EstimatedCost() float64 {
 
     for model, usage := range ct.usageByModel {
         if rate, ok := rates[model]; ok {
-            inputCost := float64(usage.PromptTokens) * rate[0]
-            outputCost := float64(usage.CompletionTokens) * rate[1]
+            inputCost := float64(usage.GetInputTokens()) * rate[0]
+            outputCost := float64(usage.GetOutputTokens()) * rate[1]
             total += inputCost + outputCost
         }
     }

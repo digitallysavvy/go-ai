@@ -122,11 +122,10 @@ func streamingWithTokensExample(ctx context.Context, model provider.LanguageMode
 	fmt.Println("\nStreaming Stats:")
 	fmt.Printf("  Chunks received: %d\n", chunkCount)
 	fmt.Printf("  Duration: %v\n", duration)
-	if usage.TotalTokens != nil {
-		fmt.Printf("  Total tokens: %d\n", *usage.TotalTokens)
-	}
-	if usage.OutputTokens != nil {
-		tokensPerSecond := float64(*usage.OutputTokens) / duration.Seconds()
+	fmt.Printf("  Total tokens: %d\n", usage.GetTotalTokens())
+	outputTokens := usage.GetOutputTokens()
+	if outputTokens > 0 {
+		tokensPerSecond := float64(outputTokens) / duration.Seconds()
 		fmt.Printf("  Tokens/second: %.2f\n", tokensPerSecond)
 	}
 }
@@ -175,11 +174,7 @@ func streamingLongContentExample(ctx context.Context, model provider.LanguageMod
 	usage := stream.Usage()
 	fmt.Println("\nFinal Stats:")
 	fmt.Printf("  Characters generated: %d\n", len(fullText))
-	if usage.InputTokens != nil {
-		fmt.Printf("  Input tokens: %d\n", *usage.InputTokens)
-	}
-	if usage.OutputTokens != nil {
-		fmt.Printf("  Output tokens: %d\n", *usage.OutputTokens)
-	}
+	fmt.Printf("  Input tokens: %d\n", usage.GetInputTokens())
+	fmt.Printf("  Output tokens: %d\n", usage.GetOutputTokens())
 	fmt.Printf("  Finish reason: %s\n", stream.FinishReason())
 }

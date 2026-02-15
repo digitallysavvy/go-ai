@@ -73,9 +73,9 @@ func main() {
 	// Display usage information
 	if result.Usage != nil {
 		fmt.Printf("\nUsage:\n")
-		fmt.Printf("  Prompt tokens: %d\n", result.Usage.PromptTokens)
-		fmt.Printf("  Completion tokens: %d\n", result.Usage.CompletionTokens)
-		fmt.Printf("  Total tokens: %d\n", result.Usage.TotalTokens)
+		fmt.Printf("  Prompt tokens: %d\n", result.Usage.GetInputTokens())
+		fmt.Printf("  Completion tokens: %d\n", result.Usage.GetOutputTokens())
+		fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))

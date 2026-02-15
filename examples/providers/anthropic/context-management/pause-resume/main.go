@@ -148,20 +148,18 @@ func main() {
 	fmt.Println()
 
 	// Show token usage
-	if resumedResult.Usage.TotalTokens != nil {
-		fmt.Printf("Token usage: %d total\n", *resumedResult.Usage.TotalTokens)
-		fmt.Println()
-		fmt.Println("Benefits of pause/resume:")
-		fmt.Println("  ✓ Verify compaction quality")
-		fmt.Println("  ✓ Adjust conversation if needed")
-		fmt.Println("  ✓ Debug context management")
-		fmt.Println("  ✓ Implement custom compaction logic")
-		fmt.Println()
-		fmt.Println("Without pause/resume:")
-		fmt.Println("  • Compaction happens automatically")
-		fmt.Println("  • No inspection of compacted history")
-		fmt.Println("  • Simpler but less control")
-	}
+	fmt.Printf("Token usage: %d total\n", resumedResult.Usage.GetTotalTokens())
+	fmt.Println()
+	fmt.Println("Benefits of pause/resume:")
+	fmt.Println("  ✓ Verify compaction quality")
+	fmt.Println("  ✓ Adjust conversation if needed")
+	fmt.Println("  ✓ Debug context management")
+	fmt.Println("  ✓ Implement custom compaction logic")
+	fmt.Println()
+	fmt.Println("Without pause/resume:")
+	fmt.Println("  • Compaction happens automatically")
+	fmt.Println("  • No inspection of compacted history")
+	fmt.Println("  • Simpler but less control")
 
 	fmt.Println()
 	fmt.Println("When to use PauseAfterCompaction:")

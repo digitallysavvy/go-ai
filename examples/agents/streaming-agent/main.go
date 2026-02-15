@@ -129,7 +129,7 @@ Use available tools to gather information. Think step by step and explain your p
 	fmt.Printf("\n[Statistics]\n")
 	fmt.Printf("   Steps: %d\n", stepCount)
 	fmt.Printf("   Tokens: %d (input: %d, output: %d)\n",
-		result.Usage.TotalTokens, result.Usage.InputTokens, result.Usage.OutputTokens)
+		result.Usage.GetTotalTokens(), result.Usage.GetInputTokens(), result.Usage.GetOutputTokens())
 }
 
 func createResearchTool() types.Tool {

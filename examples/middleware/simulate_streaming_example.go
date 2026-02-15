@@ -60,7 +60,7 @@ func main() {
 		case provider.ChunkTypeToolCall:
 			fmt.Printf("\n[TOOL CALL] %s: %v\n", chunk.ToolCall.ToolName, chunk.ToolCall.Arguments)
 		case provider.ChunkTypeUsage:
-			fmt.Printf("\n[USAGE] Total tokens: %d\n", *chunk.Usage.TotalTokens)
+			fmt.Printf("\n[USAGE] Total tokens: %d\n", chunk.Usage.GetTotalTokens())
 		case provider.ChunkTypeFinish:
 			fmt.Printf("\n[FINISH] Reason: %s\n", chunk.FinishReason)
 		}

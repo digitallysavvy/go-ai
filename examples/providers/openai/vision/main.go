@@ -84,7 +84,7 @@ func analyzeLocalImage(ctx context.Context, model provider.LanguageModel) {
 
 	fmt.Println("Analysis:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }
 
 func analyzeImageFromURL(ctx context.Context, model provider.LanguageModel) {

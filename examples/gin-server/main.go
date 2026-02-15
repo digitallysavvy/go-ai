@@ -217,7 +217,7 @@ func handleStream(c *gin.Context) {
 
 	// Send completion
 	usage := stream.Usage()
-	sendSSE(c.Writer, "done", fmt.Sprintf(`{"totalTokens":%d}`, usage.TotalTokens))
+	sendSSE(c.Writer, "done", fmt.Sprintf(`{"totalTokens":%d}`, usage.GetTotalTokens()))
 	c.Writer.Flush()
 }
 

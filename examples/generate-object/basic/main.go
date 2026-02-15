@@ -137,9 +137,9 @@ func generateLasagnaRecipe(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Printf("\nToken usage: %d (input: %d, output: %d)\n",
-		result.Usage.TotalTokens,
-		result.Usage.InputTokens,
-		result.Usage.OutputTokens)
+		result.Usage.GetTotalTokens(),
+		result.Usage.GetInputTokens(),
+		result.Usage.GetOutputTokens())
 }
 
 func generateVeganRecipe(ctx context.Context, model provider.LanguageModel) {
