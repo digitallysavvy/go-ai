@@ -66,6 +66,16 @@ export GOOGLE_API_KEY=AI...
 |----------|---------|-------------|--------------|----------|
 | gemini-1.0-pro | 32K | $0.50/1M | $1.50/1M | General purpose |
 
+### Image Generation Models
+
+| Model ID | Aspect Ratios | Price | Best For |
+|----------|--------------|-------|----------|
+| imagen-4.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High-quality generation |
+| imagen-4.0-ultra-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Highest quality |
+| imagen-4.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
+| gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
+| gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+
 ### Embedding Models
 
 | Model ID | Dimensions | Price | Best For |
@@ -386,6 +396,73 @@ messages = append(messages,
 
 result, err = ai.GenerateText(model, ai.WithMessages(messages...))
 ```
+
+### Image Generation
+
+Google supports both **Imagen** and **Gemini** models for text-to-image generation:
+
+```go
+// Imagen 4.0 - High quality image generation
+imageModel, err := provider.ImageModel("imagen-4.0-generate-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+n := 1
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A serene mountain landscape at sunset with dramatic clouds",
+    N:      &n,
+    Size:   "1024x1024", // Automatically converts to 1:1 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Save the image
+err = os.WriteFile("imagen_output.png", result.Image, 0644)
+```
+
+**Gemini Image Models** offer fast generation:
+
+```go
+// Gemini 2.5 Flash - Fast image generation
+geminiImageModel, err := provider.ImageModel("gemini-2.5-flash-image")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  geminiImageModel,
+    Prompt: "Abstract colorful art with geometric shapes and vibrant patterns",
+    Size:   "1920x1080", // 16:9 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Image generated: %d bytes\n", len(result.Image))
+os.WriteFile("gemini_output.png", result.Image, 0644)
+```
+
+**Supported Aspect Ratios:**
+- `1:1` - Square (1024x1024, 512x512)
+- `4:3` - Standard (1024x768)
+- `3:4` - Portrait (768x1024)
+- `16:9` - Widescreen (1920x1080, 1792x1024)
+- `9:16` - Vertical (1080x1920, 1024x1792)
+
+**Model Comparison:**
+
+| Model | Speed | Quality | Use Case |
+|-------|-------|---------|----------|
+| imagen-4.0-ultra-generate-001 | Slower | Highest | Professional work |
+| imagen-4.0-generate-001 | Medium | High | General purpose |
+| imagen-4.0-fast-generate-001 | Fast | Good | Rapid prototyping |
+| gemini-2.5-flash-image | Very Fast | Good | Quick iterations |
+| gemini-3-pro-image-preview | Fast | High | Advanced generation |
+
+**Note:** Imagen models on Google Generative AI do not support image editing. For image editing capabilities, use Google Vertex AI.
 
 ## Advanced Configuration
 

@@ -37,10 +37,17 @@ func main() {
 		APIKey: apiKey,
 	})
 
-	// Create model with context management enabled (clear_tool_uses strategy)
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", &anthropic.ModelOptions{
+	// Create model with context management enabled (clear_tool_uses edit)
+	// This will automatically clear old tool calls when input tokens exceed 10,000
+	// while keeping the 3 most recent tool uses
+	model, err := p.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
 		ContextManagement: &anthropic.ContextManagement{
-			Strategies: []string{anthropic.StrategyClearToolUses},
+			Edits: []anthropic.ContextManagementEdit{
+				anthropic.NewClearToolUsesEdit().
+					WithInputTokensTrigger(10000). // Clear when > 10K tokens
+					WithKeepToolUses(3).            // Keep last 3 tool uses
+					WithClearAtLeast(5000),         // Clear at least 5K tokens
+			},
 		},
 	})
 	if err != nil {
@@ -53,7 +60,12 @@ func main() {
 	fmt.Println()
 	fmt.Println("This example demonstrates automatic cleanup of tool use history.")
 	fmt.Println("Long conversations with many tool calls can overflow the context window.")
-	fmt.Println("Context management automatically removes old tool calls while keeping results.")
+	fmt.Println("Context management automatically removes old tool calls while keeping recent ones.")
+	fmt.Println()
+	fmt.Println("Configuration:")
+	fmt.Println("  - Trigger: When input tokens > 10,000")
+	fmt.Println("  - Keep: Last 3 tool uses")
+	fmt.Println("  - Clear at least: 5,000 tokens")
 	fmt.Println()
 
 	// Simulate a long conversation with many tool calls
@@ -96,24 +108,34 @@ func main() {
 
 	// Access context management statistics
 	if result.ContextManagement() != nil {
-		cm, ok := result.ContextManagement().(*anthropic.ContextManagementResponse)
-		if ok {
-			fmt.Println("Context Management Statistics:")
-			fmt.Printf("  Messages deleted: %d\n", cm.MessagesDeleted)
-			fmt.Printf("  Messages truncated: %d\n", cm.MessagesTruncated)
-			fmt.Printf("  Tool uses cleared: %d\n", cm.ToolUsesCleared)
-			fmt.Printf("  Thinking blocks cleared: %d\n", cm.ThinkingBlocksCleared)
+		cmr, ok := result.ContextManagement().(*anthropic.ContextManagementResponse)
+		if ok && len(cmr.AppliedEdits) > 0 {
+			fmt.Println("Context Management Applied:")
+			for _, edit := range cmr.AppliedEdits {
+				switch e := edit.(type) {
+				case *anthropic.AppliedClearToolUsesEdit:
+					fmt.Printf("  ✓ Cleared %d tool uses\n", e.ClearedToolUses)
+					fmt.Printf("    Freed %d input tokens\n", e.ClearedInputTokens)
+				}
+			}
 			fmt.Println()
 			fmt.Println("✓ Context window optimized by removing old tool calls!")
 		}
 	} else {
-		fmt.Println("No context management was needed for this conversation.")
+		fmt.Println("No context management was triggered for this conversation.")
+		fmt.Println("(Trigger threshold not reached)")
 	}
 
 	// Show token usage
 	usage := result.Usage()
 	if usage.TotalTokens != nil {
 		fmt.Printf("\nToken usage: %d total\n", *usage.TotalTokens)
-		fmt.Println("(Context management helps reduce token usage in long conversations)")
+		if usage.InputTokens != nil {
+			fmt.Printf("  Input: %d tokens\n", *usage.InputTokens)
+		}
+		if usage.OutputTokens != nil {
+			fmt.Printf("  Output: %d tokens\n", *usage.OutputTokens)
+		}
+		fmt.Println("\n(Context management helps reduce token usage in long conversations)")
 	}
 }

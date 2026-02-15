@@ -199,6 +199,76 @@ if result.Thinking != "" {
 fmt.Println("Final answer:", result.Text)
 ```
 
+### Context Management (Beta)
+
+Automatically manage conversation history to prevent context window overflows. Claude can intelligently clear old tool calls, thinking blocks, or compact entire conversations:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+
+// Create model with context management
+model, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
+    ContextManagement: &anthropic.ContextManagement{
+        Edits: []anthropic.ContextManagementEdit{
+            // Clear old tool calls after 10,000 input tokens
+            anthropic.NewClearToolUsesEdit().
+                WithInputTokensTrigger(10000).
+                WithKeepToolUses(3),
+
+            // Clear thinking blocks, keeping last 2 turns
+            anthropic.NewClearThinkingEdit().
+                WithKeepRecentTurns(2),
+
+            // Compact conversation at 50,000 tokens
+            anthropic.NewCompactEdit().
+                WithTrigger(50000),
+        },
+    },
+})
+
+// Use in long conversations - context automatically managed
+result, err := ai.GenerateText(model, longConversation...)
+
+// Check if context management was applied
+if result.ContextManagement != nil {
+    cmr := result.ContextManagement.(*anthropic.ContextManagementResponse)
+    for _, edit := range cmr.AppliedEdits {
+        switch e := edit.(type) {
+        case *anthropic.AppliedClearToolUsesEdit:
+            fmt.Printf("Cleared %d tool uses, freed %d tokens\n",
+                e.ClearedToolUses, e.ClearedInputTokens)
+        case *anthropic.AppliedClearThinkingEdit:
+            fmt.Printf("Cleared %d thinking turns, freed %d tokens\n",
+                e.ClearedThinkingTurns, e.ClearedInputTokens)
+        case *anthropic.AppliedCompactEdit:
+            fmt.Println("Conversation compacted")
+        }
+    }
+}
+```
+
+**Available Edit Types:**
+
+1. **ClearToolUses** - Removes old tool call details
+   - Configure trigger thresholds (token count or tool use count)
+   - Keep recent tool uses
+   - Exclude specific tools
+   - Control minimum tokens to clear
+
+2. **ClearThinking** - Removes extended thinking blocks
+   - Keep all thinking or specify number of recent turns
+   - Preserves final conclusions
+
+3. **Compact** - Summarizes entire conversation
+   - Most aggressive space-saving
+   - Optional pause after compaction
+   - Custom compaction instructions
+
+**Beta Headers Required:**
+- `context-management-2025-06-27` for clear_tool_uses and clear_thinking
+- `compact-2026-01-12` for compact edits
+(Headers are automatically added by the SDK)
+
 ### Streaming
 
 Stream responses for real-time output:

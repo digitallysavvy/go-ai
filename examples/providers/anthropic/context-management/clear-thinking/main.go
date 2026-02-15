@@ -21,10 +21,14 @@ func main() {
 		APIKey: apiKey,
 	})
 
-	// Create model with context management enabled (clear_thinking strategy)
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", &anthropic.ModelOptions{
+	// Create model with context management enabled (clear_thinking edit)
+	// This will keep the last 2 thinking turns and clear older ones
+	model, err := p.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
 		ContextManagement: &anthropic.ContextManagement{
-			Strategies: []string{anthropic.StrategyClearThinking},
+			Edits: []anthropic.ContextManagementEdit{
+				anthropic.NewClearThinkingEdit().
+					WithKeepRecentTurns(2), // Keep last 2 thinking turns
+			},
 		},
 	})
 	if err != nil {
@@ -37,7 +41,11 @@ func main() {
 	fmt.Println()
 	fmt.Println("This example demonstrates automatic cleanup of thinking blocks.")
 	fmt.Println("Extended thinking can consume significant context window space.")
-	fmt.Println("Context management keeps final conclusions while removing thinking process.")
+	fmt.Println("Context management keeps recent conclusions while removing old thinking processes.")
+	fmt.Println()
+	fmt.Println("Configuration:")
+	fmt.Println("  - Keep: Last 2 thinking turns")
+	fmt.Println("  - Clear: Older thinking blocks")
 	fmt.Println()
 
 	// Simulate a conversation with extended thinking
@@ -75,26 +83,34 @@ Consider edge cases and propose optimizations.`},
 
 	// Access context management statistics
 	if result.ContextManagement != nil {
-		cm, ok := result.ContextManagement.(*anthropic.ContextManagementResponse)
-		if ok {
-			fmt.Println("Context Management Statistics:")
-			fmt.Printf("  Messages deleted: %d\n", cm.MessagesDeleted)
-			fmt.Printf("  Messages truncated: %d\n", cm.MessagesTruncated)
-			fmt.Printf("  Tool uses cleared: %d\n", cm.ToolUsesCleared)
-			fmt.Printf("  Thinking blocks cleared: %d\n", cm.ThinkingBlocksCleared)
-			fmt.Println()
-			if cm.ThinkingBlocksCleared > 0 {
-				fmt.Println("✓ Context window optimized by removing old thinking blocks!")
+		cmr, ok := result.ContextManagement.(*anthropic.ContextManagementResponse)
+		if ok && len(cmr.AppliedEdits) > 0 {
+			fmt.Println("Context Management Applied:")
+			for _, edit := range cmr.AppliedEdits {
+				switch e := edit.(type) {
+				case *anthropic.AppliedClearThinkingEdit:
+					fmt.Printf("  ✓ Cleared %d thinking turns\n", e.ClearedThinkingTurns)
+					fmt.Printf("    Freed %d input tokens\n", e.ClearedInputTokens)
+				}
 			}
+			fmt.Println()
+			fmt.Println("✓ Context window optimized by removing old thinking blocks!")
 		}
 	} else {
-		fmt.Println("No context management was needed for this conversation.")
+		fmt.Println("No context management was triggered for this conversation.")
+		fmt.Println("(Not enough thinking turns to trigger clearing)")
 	}
 
 	// Show token usage
 	if result.Usage.TotalTokens != nil {
 		fmt.Printf("\nToken usage: %d total\n", *result.Usage.TotalTokens)
-		fmt.Println("(Thinking blocks can consume 10x more tokens than regular responses)")
+		if result.Usage.InputTokens != nil {
+			fmt.Printf("  Input: %d tokens\n", *result.Usage.InputTokens)
+		}
+		if result.Usage.OutputTokens != nil {
+			fmt.Printf("  Output: %d tokens\n", *result.Usage.OutputTokens)
+		}
+		fmt.Println("\n(Thinking blocks can consume 10x more tokens than regular responses)")
 		fmt.Println("(Context management helps manage this in long reasoning sessions)")
 	}
 }

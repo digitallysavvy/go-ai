@@ -1,23 +1,43 @@
 # Anthropic Context Management Examples
 
-This directory contains examples demonstrating Anthropic's context management feature for automatic conversation history cleanup.
+This directory contains examples demonstrating Anthropic's context management feature for automatic conversation history optimization.
 
 ## What is Context Management?
 
-Context management is a beta feature from Anthropic that automatically removes or truncates content from conversation history to prevent hitting context window limits. This is particularly useful in:
+Context management is a beta feature from Anthropic that automatically manages conversation history to prevent hitting context window limits. This is particularly useful in:
 
 - **Long agentic workflows** with many tool calls
 - **Extended reasoning sessions** with thinking blocks
 - **Multi-turn conversations** that accumulate context over time
+- **Near-limit conversations** that need aggressive compaction
 
 ## How It Works
 
-Anthropic's API automatically analyzes your conversation and intelligently removes content based on the strategies you configure:
+Anthropic's API provides three types of context management edits that you can configure:
 
-1. **clear_tool_uses**: Removes old tool call/result pairs while keeping final results
-2. **clear_thinking**: Removes extended thinking blocks while keeping conclusions
+### 1. Clear Tool Uses (`clear_tool_uses_20250919`)
+Removes old tool call details while keeping recent ones and final results.
 
-You can use one or both strategies depending on your use case.
+**Configuration options:**
+- `trigger`: When to activate (token count or tool use count)
+- `keep`: How many recent tool uses to preserve
+- `clearAtLeast`: Minimum tokens to clear
+- `clearToolInputs`: Whether to clear tool input content
+- `excludeTools`: Specific tools to never clear
+
+### 2. Clear Thinking (`clear_thinking_20251015`)
+Removes extended thinking blocks while keeping conclusions.
+
+**Configuration options:**
+- `keep`: Keep "all" or specify number of recent thinking turns
+
+### 3. Compact (`compact_20260112`)
+Summarizes the entire conversation history (most aggressive).
+
+**Configuration options:**
+- `trigger`: Token threshold to activate compaction
+- `pauseAfterCompaction`: Pause to inspect compacted history
+- `instructions`: Custom guidance for compaction
 
 ## Examples
 
@@ -25,10 +45,10 @@ You can use one or both strategies depending on your use case.
 
 Demonstrates cleaning up tool calls in long agentic conversations.
 
-**Use this when:**
-- You have workflows with 10+ tool interactions
-- Tool call history is cluttering context
-- You need to keep assistant reasoning but remove tool noise
+**Configuration:**
+- Trigger: Input tokens > 10,000
+- Keep: Last 3 tool uses
+- Clear at least: 5,000 tokens
 
 **Run:**
 ```bash
@@ -40,10 +60,8 @@ ANTHROPIC_API_KEY=your-key-here go run main.go
 
 Demonstrates cleaning up extended thinking blocks in reasoning tasks.
 
-**Use this when:**
-- You're using Claude for complex analysis
-- Thinking blocks are consuming too much context (10x token multiplier)
-- You want conclusions without the thinking process
+**Configuration:**
+- Keep: Last 2 thinking turns
 
 **Run:**
 ```bash
@@ -51,18 +69,46 @@ cd clear-thinking
 ANTHROPIC_API_KEY=your-key-here go run main.go
 ```
 
-### 3. Multiple Strategies (`multiple-strategies/`)
+### 3. Compact (`compact/`)
 
-Demonstrates using **both** cleanup strategies for maximum optimization.
+Demonstrates conversation compaction for extremely long conversations.
 
-**Use this when:**
-- You have very long conversations (100+ turns)
-- You're combining agentic workflows with reasoning tasks
-- You need maximum context savings
+**Configuration:**
+- Trigger: Input tokens > 50,000
+- Instructions: Custom compaction guidance
+
+**Run:**
+```bash
+cd compact
+ANTHROPIC_API_KEY=your-key-here go run main.go
+```
+
+### 4. Multiple Edit Types (`multiple-strategies/`)
+
+Demonstrates using **all three** edit types for maximum optimization.
+
+**Configuration:**
+- Clear tool uses: Trigger at 10K tokens, keep 3
+- Clear thinking: Keep last 2 turns
+- Compact: Trigger at 50K tokens
 
 **Run:**
 ```bash
 cd multiple-strategies
+ANTHROPIC_API_KEY=your-key-here go run main.go
+```
+
+### 5. Pause/Resume (`pause-resume/`)
+
+Demonstrates pausing after compaction to inspect results.
+
+**Configuration:**
+- Compact with `pauseAfterCompaction: true`
+- Allows inspection before resuming
+
+**Run:**
+```bash
+cd pause-resume
 ANTHROPIC_API_KEY=your-key-here go run main.go
 ```
 
@@ -81,9 +127,22 @@ p := anthropic.New(anthropic.Config{
 })
 
 // Create model with context management
-model, err := p.LanguageModelWithOptions("claude-sonnet-4", &anthropic.ModelOptions{
+model, err := p.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
     ContextManagement: &anthropic.ContextManagement{
-        Strategies: []string{anthropic.StrategyClearToolUses},
+        Edits: []anthropic.ContextManagementEdit{
+            // Clear tool uses after 10K tokens, keep last 3
+            anthropic.NewClearToolUsesEdit().
+                WithInputTokensTrigger(10000).
+                WithKeepToolUses(3),
+
+            // Clear thinking blocks, keep last 2 turns
+            anthropic.NewClearThinkingEdit().
+                WithKeepRecentTurns(2),
+
+            // Compact at 50K tokens
+            anthropic.NewCompactEdit().
+                WithTrigger(50000),
+        },
     },
 })
 ```
@@ -98,22 +157,34 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 // Check if context was managed
 if result.ContextManagement != nil {
-    cm := result.ContextManagement.(*anthropic.ContextManagementResponse)
+    cmr := result.ContextManagement.(*anthropic.ContextManagementResponse)
 
-    fmt.Printf("Messages deleted: %d\n", cm.MessagesDeleted)
-    fmt.Printf("Tool uses cleared: %d\n", cm.ToolUsesCleared)
-    fmt.Printf("Thinking blocks cleared: %d\n", cm.ThinkingBlocksCleared)
+    // Check each applied edit
+    for _, edit := range cmr.AppliedEdits {
+        switch e := edit.(type) {
+        case *anthropic.AppliedClearToolUsesEdit:
+            fmt.Printf("Cleared %d tool uses, freed %d tokens\n",
+                e.ClearedToolUses, e.ClearedInputTokens)
+
+        case *anthropic.AppliedClearThinkingEdit:
+            fmt.Printf("Cleared %d thinking turns, freed %d tokens\n",
+                e.ClearedThinkingTurns, e.ClearedInputTokens)
+
+        case *anthropic.AppliedCompactEdit:
+            fmt.Println("Conversation compacted")
+        }
+    }
 }
 ```
 
-## Strategy Selection Guide
+## Edit Type Selection Guide
 
-| Scenario | Strategy | Why |
+| Scenario | Edit Type | Why |
 |----------|----------|-----|
-| Agentic workflows | `clear_tool_uses` | Keeps reasoning, removes tool noise |
-| Complex analysis | `clear_thinking` | Keeps conclusions, removes process |
-| Long conversations | Both | Maximum context savings |
-| Short conversations | None needed | No optimization required |
+| Agentic workflows | ClearToolUses | Keeps reasoning, removes tool noise |
+| Complex analysis | ClearThinking | Keeps conclusions, removes process |
+| Very long conversations | Compact | Most aggressive space-saving |
+| Maximum optimization | All three | Progressive optimization |
 
 ## Benefits
 
@@ -131,11 +202,11 @@ Smaller context windows = faster responses:
 - Quicker model responses
 - Better user experience
 
-### 4. **No Code Changes**
-Just configure the strategies - Anthropic handles everything:
-- Automatic detection of when to clean up
-- Intelligent preservation of important content
-- Seamless integration with existing code
+### 4. **Fine-Grained Control**
+Configure exactly when and how context is managed:
+- Set specific triggers
+- Control what to keep
+- Customize compaction instructions
 
 ## Response Structure
 
@@ -143,10 +214,23 @@ Context management data appears in your results:
 
 ```go
 type ContextManagementResponse struct {
-    MessagesDeleted       int // Complete messages removed
-    MessagesTruncated     int // Messages partially truncated
-    ToolUsesCleared       int // Tool calls removed (clear_tool_uses)
-    ThinkingBlocksCleared int // Thinking blocks removed (clear_thinking)
+    AppliedEdits []AppliedEdit // All edits that were applied
+}
+
+type AppliedClearToolUsesEdit struct {
+    Type               string // "clear_tool_uses_20250919"
+    ClearedToolUses    int    // Number of tool uses cleared
+    ClearedInputTokens int    // Tokens freed
+}
+
+type AppliedClearThinkingEdit struct {
+    Type                 string // "clear_thinking_20251015"
+    ClearedThinkingTurns int    // Number of thinking turns cleared
+    ClearedInputTokens   int    // Tokens freed
+}
+
+type AppliedCompactEdit struct {
+    Type string // "compact_20260112"
 }
 ```
 
@@ -154,7 +238,9 @@ type ContextManagementResponse struct {
 
 Context management is currently a **beta feature** from Anthropic:
 
-- Requires beta header: `anthropic-beta: context-management-2025-01-22`
+- Requires beta headers:
+  - `context-management-2025-06-27` for clear_tool_uses and clear_thinking
+  - `compact-2026-01-12` for compact edits
 - Available on Claude 4.5+ models
 - API may change in future releases
 - The SDK automatically handles all beta header requirements
@@ -167,11 +253,49 @@ Context management is currently a **beta feature** from Anthropic:
 
 ## Best Practices
 
-1. **Start with one strategy** - Test `clear_tool_uses` OR `clear_thinking` first
-2. **Monitor the stats** - Check `ContextManagementResponse` to see what's being cleared
-3. **Use both for long sessions** - Combine strategies for maximum benefit
-4. **Don't over-optimize** - Only use context management if you're hitting limits
+1. **Start with one edit type** - Test ClearToolUses OR ClearThinking first
+2. **Monitor the results** - Check `ContextManagementResponse` to see what's being cleared
+3. **Use multiple edits for long sessions** - Combine edit types for maximum benefit
+4. **Set appropriate triggers** - Don't trigger too early or too late
 5. **Test your workflow** - Ensure important context isn't being removed
+
+## Advanced Features
+
+### Iterations with Compaction
+
+When compaction occurs, the API returns usage broken down by iteration:
+
+```go
+if rawUsage, ok := result.Usage.Raw.(map[string]interface{}); ok {
+    if iterations, ok := rawUsage["iterations"].([]interface{}); ok {
+        // First iteration: compaction
+        // Second iteration: actual message generation
+        // Total tokens consumed = sum of all iterations
+    }
+}
+```
+
+### Pause After Compaction
+
+```go
+anthropic.NewCompactEdit().
+    WithTrigger(50000).
+    WithPauseAfterCompaction(true) // Pause to inspect
+```
+
+When enabled:
+1. Compaction occurs
+2. Request pauses with compacted history
+3. You can inspect/modify the history
+4. Resume with next request
+
+### Custom Compaction Instructions
+
+```go
+anthropic.NewCompactEdit().
+    WithTrigger(50000).
+    WithInstructions("Preserve all technical decisions and API design choices")
+```
 
 ## When NOT to Use
 
@@ -185,15 +309,15 @@ Context management is currently a **beta feature** from Anthropic:
 ### Context management not activating?
 
 - Your conversation may not be long enough yet
-- Anthropic only activates it when necessary
+- Triggers haven't been reached
 - Check that you're using Claude 4.5+
 
 ### Important information being removed?
 
-- Reconsider which strategy you're using
-- `clear_tool_uses` is safer (only removes tool internals)
-- `clear_thinking` is more aggressive (removes reasoning)
-- Consider using only one strategy instead of both
+- Adjust trigger thresholds
+- Increase `keep` values
+- Use `excludeTools` for critical tools
+- Add custom compaction instructions
 
 ### Getting errors?
 
@@ -205,10 +329,10 @@ Context management is currently a **beta feature** from Anthropic:
 
 - [Anthropic Documentation](https://docs.anthropic.com/)
 - [Go-AI SDK Documentation](../../docs/)
-- [Context Management PRD](../../../../prds/p1-high/P1-1-Anthropic-Context-Management.md)
+- [Anthropic Provider Guide](../../../../docs/05-providers/03-anthropic.mdx)
 
 ## Support
 
 For issues or questions:
 - [GitHub Issues](https://github.com/digitallysavvy/go-ai/issues)
-- [Anthropic API Discord](https://discord.gg/anthropic)
+- [Anthropic Discord](https://discord.gg/anthropic)

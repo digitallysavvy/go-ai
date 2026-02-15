@@ -21,30 +21,116 @@ func TestContextManagementSerialization(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "single strategy - clear_tool_uses",
+			name: "clear_tool_uses with basic config",
 			cm: ContextManagement{
-				Strategies: []string{StrategyClearToolUses},
+				Edits: []ContextManagementEdit{
+					NewClearToolUsesEdit(),
+				},
 			},
-			expected: `{"strategies":["clear_tool_uses"]}`,
+			expected: `{"edits":[{"type":"clear_tool_uses_20250919"}]}`,
 		},
 		{
-			name: "single strategy - clear_thinking",
+			name: "clear_tool_uses with full config",
 			cm: ContextManagement{
-				Strategies: []string{StrategyClearThinking},
+				Edits: []ContextManagementEdit{
+					NewClearToolUsesEdit().
+						WithInputTokensTrigger(10000).
+						WithKeepToolUses(3).
+						WithClearAtLeast(5000).
+						WithExcludeTools("search", "calculator"),
+				},
 			},
-			expected: `{"strategies":["clear_thinking"]}`,
+			expected: `{
+				"edits": [{
+					"type": "clear_tool_uses_20250919",
+					"trigger": {"type": "input_tokens", "value": 10000},
+					"keep": {"type": "tool_uses", "value": 3},
+					"clearAtLeast": {"type": "input_tokens", "value": 5000},
+					"excludeTools": ["search", "calculator"]
+				}]
+			}`,
 		},
 		{
-			name: "multiple strategies",
+			name: "clear_thinking with keep all",
 			cm: ContextManagement{
-				Strategies: []string{StrategyClearToolUses, StrategyClearThinking},
+				Edits: []ContextManagementEdit{
+					NewClearThinkingEdit().WithKeepAll(),
+				},
 			},
-			expected: `{"strategies":["clear_tool_uses","clear_thinking"]}`,
+			expected: `{
+				"edits": [{
+					"type": "clear_thinking_20251015",
+					"keep": "all"
+				}]
+			}`,
 		},
 		{
-			name:     "empty strategies",
-			cm:       ContextManagement{},
-			expected: `{}`,
+			name: "clear_thinking with keep recent turns",
+			cm: ContextManagement{
+				Edits: []ContextManagementEdit{
+					NewClearThinkingEdit().WithKeepRecentTurns(2),
+				},
+			},
+			expected: `{
+				"edits": [{
+					"type": "clear_thinking_20251015",
+					"keep": {"type": "thinking_turns", "value": 2}
+				}]
+			}`,
+		},
+		{
+			name: "compact with basic config",
+			cm: ContextManagement{
+				Edits: []ContextManagementEdit{
+					NewCompactEdit(),
+				},
+			},
+			expected: `{"edits":[{"type":"compact_20260112"}]}`,
+		},
+		{
+			name: "compact with full config",
+			cm: ContextManagement{
+				Edits: []ContextManagementEdit{
+					NewCompactEdit().
+						WithTrigger(50000).
+						WithPauseAfterCompaction(true).
+						WithInstructions("Keep recent context"),
+				},
+			},
+			expected: `{
+				"edits": [{
+					"type": "compact_20260112",
+					"trigger": {"type": "input_tokens", "value": 50000},
+					"pauseAfterCompaction": true,
+					"instructions": "Keep recent context"
+				}]
+			}`,
+		},
+		{
+			name: "multiple edits",
+			cm: ContextManagement{
+				Edits: []ContextManagementEdit{
+					NewClearToolUsesEdit().WithInputTokensTrigger(10000),
+					NewClearThinkingEdit().WithKeepRecentTurns(1),
+					NewCompactEdit().WithTrigger(50000),
+				},
+			},
+			expected: `{
+				"edits": [
+					{
+						"type": "clear_tool_uses_20250919",
+						"trigger": {"type": "input_tokens", "value": 10000}
+					},
+					{
+						"type": "clear_thinking_20251015",
+						"keep": {"type": "thinking_turns", "value": 1}
+					},
+					{
+						"type": "compact_20260112",
+						"trigger": {"type": "input_tokens", "value": 50000}
+					}
+				]
+			}`,
 		},
 	}
 
@@ -62,43 +148,95 @@ func TestContextManagementResponseDeserialization(t *testing.T) {
 	tests := []struct {
 		name     string
 		jsonData string
-		expected ContextManagementResponse
+		validate func(*testing.T, *ContextManagementResponse)
 	}{
 		{
-			name: "tool uses cleared",
+			name: "clear_tool_uses applied",
 			jsonData: `{
-				"messages_deleted": 2,
-				"tool_uses_cleared": 5
+				"applied_edits": [{
+					"type": "clear_tool_uses_20250919",
+					"cleared_tool_uses": 5,
+					"cleared_input_tokens": 1500
+				}]
 			}`,
-			expected: ContextManagementResponse{
-				MessagesDeleted: 2,
-				ToolUsesCleared: 5,
+			validate: func(t *testing.T, cmr *ContextManagementResponse) {
+				require.Len(t, cmr.AppliedEdits, 1)
+				edit, ok := cmr.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+				require.True(t, ok)
+				assert.Equal(t, "clear_tool_uses_20250919", edit.Type)
+				assert.Equal(t, 5, edit.ClearedToolUses)
+				assert.Equal(t, 1500, edit.ClearedInputTokens)
 			},
 		},
 		{
-			name: "thinking blocks cleared",
+			name: "clear_thinking applied",
 			jsonData: `{
-				"messages_truncated": 1,
-				"thinking_blocks_cleared": 3
+				"applied_edits": [{
+					"type": "clear_thinking_20251015",
+					"cleared_thinking_turns": 3,
+					"cleared_input_tokens": 2000
+				}]
 			}`,
-			expected: ContextManagementResponse{
-				MessagesTruncated:     1,
-				ThinkingBlocksCleared: 3,
+			validate: func(t *testing.T, cmr *ContextManagementResponse) {
+				require.Len(t, cmr.AppliedEdits, 1)
+				edit, ok := cmr.AppliedEdits[0].(*AppliedClearThinkingEdit)
+				require.True(t, ok)
+				assert.Equal(t, "clear_thinking_20251015", edit.Type)
+				assert.Equal(t, 3, edit.ClearedThinkingTurns)
+				assert.Equal(t, 2000, edit.ClearedInputTokens)
 			},
 		},
 		{
-			name: "all fields populated",
+			name: "compact applied",
 			jsonData: `{
-				"messages_deleted": 1,
-				"messages_truncated": 2,
-				"tool_uses_cleared": 3,
-				"thinking_blocks_cleared": 4
+				"applied_edits": [{
+					"type": "compact_20260112"
+				}]
 			}`,
-			expected: ContextManagementResponse{
-				MessagesDeleted:       1,
-				MessagesTruncated:     2,
-				ToolUsesCleared:       3,
-				ThinkingBlocksCleared: 4,
+			validate: func(t *testing.T, cmr *ContextManagementResponse) {
+				require.Len(t, cmr.AppliedEdits, 1)
+				edit, ok := cmr.AppliedEdits[0].(*AppliedCompactEdit)
+				require.True(t, ok)
+				assert.Equal(t, "compact_20260112", edit.Type)
+			},
+		},
+		{
+			name: "multiple edits applied",
+			jsonData: `{
+				"applied_edits": [
+					{
+						"type": "clear_tool_uses_20250919",
+						"cleared_tool_uses": 3,
+						"cleared_input_tokens": 1000
+					},
+					{
+						"type": "clear_thinking_20251015",
+						"cleared_thinking_turns": 2,
+						"cleared_input_tokens": 800
+					}
+				]
+			}`,
+			validate: func(t *testing.T, cmr *ContextManagementResponse) {
+				require.Len(t, cmr.AppliedEdits, 2)
+
+				edit1, ok := cmr.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+				require.True(t, ok)
+				assert.Equal(t, 3, edit1.ClearedToolUses)
+				assert.Equal(t, 1000, edit1.ClearedInputTokens)
+
+				edit2, ok := cmr.AppliedEdits[1].(*AppliedClearThinkingEdit)
+				require.True(t, ok)
+				assert.Equal(t, 2, edit2.ClearedThinkingTurns)
+				assert.Equal(t, 800, edit2.ClearedInputTokens)
+			},
+		},
+		{
+			name: "empty applied_edits",
+			jsonData: `{
+				"applied_edits": []
+			}`,
+			validate: func(t *testing.T, cmr *ContextManagementResponse) {
+				assert.Len(t, cmr.AppliedEdits, 0)
 			},
 		},
 	}
@@ -108,7 +246,7 @@ func TestContextManagementResponseDeserialization(t *testing.T) {
 			var result ContextManagementResponse
 			err := json.Unmarshal([]byte(tt.jsonData), &result)
 			require.NoError(t, err)
-			assert.Equal(t, tt.expected, result)
+			tt.validate(t, &result)
 		})
 	}
 }
@@ -120,15 +258,18 @@ func TestParseContextManagement_RootLevel(t *testing.T) {
 		"type": "message",
 		"role": "assistant",
 		"content": [{"type": "text", "text": "Hello"}],
-		"model": "claude-sonnet-4",
+		"model": "claude-sonnet-4-5",
 		"stop_reason": "end_turn",
 		"usage": {
 			"input_tokens": 100,
 			"output_tokens": 50
 		},
 		"context_management": {
-			"messages_deleted": 2,
-			"tool_uses_cleared": 5
+			"applied_edits": [{
+				"type": "clear_tool_uses_20250919",
+				"cleared_tool_uses": 5,
+				"cleared_input_tokens": 1500
+			}]
 		}
 	}`
 
@@ -136,8 +277,12 @@ func TestParseContextManagement_RootLevel(t *testing.T) {
 	err := json.Unmarshal([]byte(responseJSON), &response)
 	require.NoError(t, err)
 	require.NotNil(t, response.ContextManagement)
-	assert.Equal(t, 2, response.ContextManagement.MessagesDeleted)
-	assert.Equal(t, 5, response.ContextManagement.ToolUsesCleared)
+	require.Len(t, response.ContextManagement.AppliedEdits, 1)
+
+	edit, ok := response.ContextManagement.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+	require.True(t, ok)
+	assert.Equal(t, 5, edit.ClearedToolUses)
+	assert.Equal(t, 1500, edit.ClearedInputTokens)
 }
 
 // TestParseContextManagement_UsageLevel tests parsing context management from usage block (legacy)
@@ -147,13 +292,17 @@ func TestParseContextManagement_UsageLevel(t *testing.T) {
 		"type": "message",
 		"role": "assistant",
 		"content": [{"type": "text", "text": "Hello"}],
-		"model": "claude-sonnet-4",
+		"model": "claude-sonnet-4-5",
 		"stop_reason": "end_turn",
 		"usage": {
 			"input_tokens": 100,
 			"output_tokens": 50,
 			"context_management": {
-				"thinking_blocks_cleared": 3
+				"applied_edits": [{
+					"type": "clear_thinking_20251015",
+					"cleared_thinking_turns": 3,
+					"cleared_input_tokens": 2000
+				}]
 			}
 		}
 	}`
@@ -162,7 +311,12 @@ func TestParseContextManagement_UsageLevel(t *testing.T) {
 	err := json.Unmarshal([]byte(responseJSON), &response)
 	require.NoError(t, err)
 	require.NotNil(t, response.Usage.ContextManagement)
-	assert.Equal(t, 3, response.Usage.ContextManagement.ThinkingBlocksCleared)
+	require.Len(t, response.Usage.ContextManagement.AppliedEdits, 1)
+
+	edit, ok := response.Usage.ContextManagement.AppliedEdits[0].(*AppliedClearThinkingEdit)
+	require.True(t, ok)
+	assert.Equal(t, 3, edit.ClearedThinkingTurns)
+	assert.Equal(t, 2000, edit.ClearedInputTokens)
 }
 
 // TestParseContextManagement_RootLevelTakesPrecedence tests that root level is preferred
@@ -172,18 +326,25 @@ func TestParseContextManagement_RootLevelTakesPrecedence(t *testing.T) {
 		"type": "message",
 		"role": "assistant",
 		"content": [{"type": "text", "text": "Hello"}],
-		"model": "claude-sonnet-4",
+		"model": "claude-sonnet-4-5",
 		"stop_reason": "end_turn",
 		"usage": {
 			"input_tokens": 100,
 			"output_tokens": 50,
 			"context_management": {
-				"messages_deleted": 1
+				"applied_edits": [{
+					"type": "clear_tool_uses_20250919",
+					"cleared_tool_uses": 1,
+					"cleared_input_tokens": 100
+				}]
 			}
 		},
 		"context_management": {
-			"messages_deleted": 2,
-			"tool_uses_cleared": 5
+			"applied_edits": [{
+				"type": "clear_tool_uses_20250919",
+				"cleared_tool_uses": 5,
+				"cleared_input_tokens": 1500
+			}]
 		}
 	}`
 
@@ -196,399 +357,284 @@ func TestParseContextManagement_RootLevelTakesPrecedence(t *testing.T) {
 	require.NotNil(t, response.Usage.ContextManagement)
 
 	// Root level should have correct values
-	assert.Equal(t, 2, response.ContextManagement.MessagesDeleted)
-	assert.Equal(t, 5, response.ContextManagement.ToolUsesCleared)
+	require.Len(t, response.ContextManagement.AppliedEdits, 1)
+	rootEdit, ok := response.ContextManagement.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+	require.True(t, ok)
+	assert.Equal(t, 5, rootEdit.ClearedToolUses)
+	assert.Equal(t, 1500, rootEdit.ClearedInputTokens)
 
 	// Usage level should also have its values
-	assert.Equal(t, 1, response.Usage.ContextManagement.MessagesDeleted)
-}
-
-// TestModelOptionsWithContextManagement tests creating a model with context management options
-func TestModelOptionsWithContextManagement(t *testing.T) {
-	p := New(Config{
-		APIKey: "test-key",
-	})
-
-	options := &ModelOptions{
-		ContextManagement: &ContextManagement{
-			Strategies: []string{StrategyClearToolUses},
-		},
-	}
-
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", options)
-	require.NoError(t, err)
-	require.NotNil(t, model)
-
-	lm, ok := model.(*LanguageModel)
+	require.Len(t, response.Usage.ContextManagement.AppliedEdits, 1)
+	usageEdit, ok := response.Usage.ContextManagement.AppliedEdits[0].(*AppliedClearToolUsesEdit)
 	require.True(t, ok)
-	require.NotNil(t, lm.options)
-	require.NotNil(t, lm.options.ContextManagement)
-	assert.Equal(t, []string{StrategyClearToolUses}, lm.options.ContextManagement.Strategies)
+	assert.Equal(t, 1, usageEdit.ClearedToolUses)
+	assert.Equal(t, 100, usageEdit.ClearedInputTokens)
 }
 
-// TestDoGenerate_WithContextManagement tests non-streaming generation with context management
-func TestDoGenerate_WithContextManagement(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify beta header is present
-		betaHeader := r.Header.Get("anthropic-beta")
-		assert.Equal(t, BetaHeaderContextManagement, betaHeader)
-
-		// Parse request body
-		var reqBody map[string]interface{}
-		err := json.NewDecoder(r.Body).Decode(&reqBody)
-		require.NoError(t, err)
-
-		// Verify context_management is in request
-		_, ok := reqBody["context_management"]
-		require.True(t, ok)
-
-		// Return mock response with context management
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":          "msg_123",
-			"type":        "message",
-			"role":        "assistant",
-			"content":     []map[string]string{{"type": "text", "text": "Hello"}},
-			"model":       "claude-sonnet-4",
-			"stop_reason": "end_turn",
-			"usage": map[string]int{
-				"input_tokens":  100,
-				"output_tokens": 50,
-			},
-			"context_management": map[string]int{
-				"messages_deleted":  2,
-				"tool_uses_cleared": 5,
-			},
-		})
-	}))
-	defer server.Close()
-
-	// Create provider with test server
-	p := New(Config{
-		APIKey:  "test-key",
-		BaseURL: server.URL,
-	})
-
-	// Create model with context management
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", &ModelOptions{
-		ContextManagement: &ContextManagement{
-			Strategies: []string{StrategyClearToolUses},
-		},
-	})
-	require.NoError(t, err)
-
-	// Generate text
-	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Text: "Hello",
-		},
-		MaxTokens: intPtr(100),
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Verify context management was extracted
-	require.NotNil(t, result.ContextManagement)
-	cm, ok := result.ContextManagement.(*ContextManagementResponse)
-	require.True(t, ok)
-	assert.Equal(t, 2, cm.MessagesDeleted)
-	assert.Equal(t, 5, cm.ToolUsesCleared)
-}
-
-// TestDoStream_WithContextManagement tests streaming with context management
-func TestDoStream_WithContextManagement(t *testing.T) {
-	// Create mock server that returns SSE stream
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify beta header is present
-		betaHeader := r.Header.Get("anthropic-beta")
-		assert.Equal(t, BetaHeaderContextManagement, betaHeader)
-
-		// Parse request body
-		var reqBody map[string]interface{}
-		err := json.NewDecoder(r.Body).Decode(&reqBody)
-		require.NoError(t, err)
-
-		// Verify context_management is in request
-		_, ok := reqBody["context_management"]
-		require.True(t, ok)
-
-		// Return SSE stream
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-
-		flusher, ok := w.(http.Flusher)
-		require.True(t, ok)
-
-		// Send events
-		events := []string{
-			`event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant"}}
-
-`,
-			`event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
-
-`,
-			`event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
-
-`,
-			`event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50},"context_management":{"messages_deleted":2,"tool_uses_cleared":5}}
-
-`,
-			`event: message_stop
-data: {"type":"message_stop"}
-
-`,
-		}
-
-		for _, event := range events {
-			w.Write([]byte(event))
-			flusher.Flush()
-		}
-	}))
-	defer server.Close()
-
-	// Create provider with test server
-	p := New(Config{
-		APIKey:  "test-key",
-		BaseURL: server.URL,
-	})
-
-	// Create model with context management
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", &ModelOptions{
-		ContextManagement: &ContextManagement{
-			Strategies: []string{StrategyClearToolUses},
-		},
-	})
-	require.NoError(t, err)
-
-	// Stream text
-	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Text: "Hello",
-		},
-		MaxTokens: intPtr(100),
-	})
-	require.NoError(t, err)
-	require.NotNil(t, stream)
-	defer stream.Close()
-
-	// Read chunks
-	var chunks []*provider.StreamChunk
-	for {
-		chunk, err := stream.Next()
-		if err != nil {
-			break
-		}
-		chunks = append(chunks, chunk)
-	}
-
-	// Verify we got text and finish chunks
-	require.True(t, len(chunks) >= 2)
-
-	// Find text chunk
-	var textChunk *provider.StreamChunk
-	for _, chunk := range chunks {
-		if chunk.Type == provider.ChunkTypeText {
-			textChunk = chunk
-			break
-		}
-	}
-	require.NotNil(t, textChunk)
-	assert.Equal(t, "Hello", textChunk.Text)
-
-	// Find finish chunk
-	var finishChunk *provider.StreamChunk
-	for _, chunk := range chunks {
-		if chunk.Type == provider.ChunkTypeFinish {
-			finishChunk = chunk
-			break
-		}
-	}
-	require.NotNil(t, finishChunk)
-	assert.Equal(t, types.FinishReasonStop, finishChunk.FinishReason)
-
-	// Verify context management was extracted
-	require.NotNil(t, finishChunk.ContextManagement)
-	cm, ok := finishChunk.ContextManagement.(*ContextManagementResponse)
-	require.True(t, ok)
-	assert.Equal(t, 2, cm.MessagesDeleted)
-	assert.Equal(t, 5, cm.ToolUsesCleared)
-}
-
-// TestBuildRequestBody_WithContextManagement tests that context management is added to request
-func TestBuildRequestBody_WithContextManagement(t *testing.T) {
-	p := New(Config{
-		APIKey: "test-key",
-	})
-
-	model, err := p.LanguageModelWithOptions("claude-sonnet-4", &ModelOptions{
-		ContextManagement: &ContextManagement{
-			Strategies: []string{StrategyClearToolUses, StrategyClearThinking},
-		},
-	})
-	require.NoError(t, err)
-
-	lm := model.(*LanguageModel)
-
-	body := lm.buildRequestBody(&provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Text: "Hello",
-		},
-		MaxTokens: intPtr(100),
-	}, false)
-
-	// Verify context_management is in request body
-	contextManagement, ok := body["context_management"]
-	require.True(t, ok)
-
-	// Serialize to JSON and verify structure
-	data, err := json.Marshal(contextManagement)
-	require.NoError(t, err)
-
-	var cm ContextManagement
-	err = json.Unmarshal(data, &cm)
-	require.NoError(t, err)
-	assert.Len(t, cm.Strategies, 2)
-	assert.Contains(t, cm.Strategies, StrategyClearToolUses)
-	assert.Contains(t, cm.Strategies, StrategyClearThinking)
-}
-
-// TestBuildRequestBody_WithoutContextManagement tests that context management is not added when not configured
-func TestBuildRequestBody_WithoutContextManagement(t *testing.T) {
-	p := New(Config{
-		APIKey: "test-key",
-	})
-
-	model, err := p.LanguageModel("claude-sonnet-4")
-	require.NoError(t, err)
-
-	lm := model.(*LanguageModel)
-
-	body := lm.buildRequestBody(&provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Text: "Hello",
-		},
-		MaxTokens: intPtr(100),
-	}, false)
-
-	// Verify context_management is NOT in request body
-	_, ok := body["context_management"]
-	assert.False(t, ok)
-}
-
-// TestConvertResponse_ExtractsContextManagement tests that convertResponse extracts context management
-func TestConvertResponse_ExtractsContextManagement(t *testing.T) {
+// TestGetBetaHeaders tests the beta header generation logic
+func TestGetBetaHeaders(t *testing.T) {
 	tests := []struct {
 		name     string
-		response anthropicResponse
-		expected *ContextManagementResponse
+		options  *ModelOptions
+		expected string
 	}{
 		{
-			name: "root level context management",
-			response: anthropicResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Content:    []anthropicContent{{Type: "text", Text: "Hello"}},
-				StopReason: "end_turn",
-				Usage: anthropicUsage{
-					InputTokens:  100,
-					OutputTokens: 50,
-				},
-				ContextManagement: &ContextManagementResponse{
-					MessagesDeleted: 2,
-					ToolUsesCleared: 5,
-				},
-			},
-			expected: &ContextManagementResponse{
-				MessagesDeleted: 2,
-				ToolUsesCleared: 5,
-			},
+			name:     "no context management",
+			options:  nil,
+			expected: "",
 		},
 		{
-			name: "usage level context management (legacy)",
-			response: anthropicResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Content:    []anthropicContent{{Type: "text", Text: "Hello"}},
-				StopReason: "end_turn",
-				Usage: anthropicUsage{
-					InputTokens:  100,
-					OutputTokens: 50,
-					ContextManagement: &ContextManagementResponse{
-						ThinkingBlocksCleared: 3,
+			name: "clear_tool_uses only",
+			options: &ModelOptions{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{
+						NewClearToolUsesEdit(),
 					},
 				},
 			},
-			expected: &ContextManagementResponse{
-				ThinkingBlocksCleared: 3,
-			},
+			expected: BetaHeaderContextManagement,
 		},
 		{
-			name: "root level takes precedence",
-			response: anthropicResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Content:    []anthropicContent{{Type: "text", Text: "Hello"}},
-				StopReason: "end_turn",
-				Usage: anthropicUsage{
-					InputTokens:  100,
-					OutputTokens: 50,
-					ContextManagement: &ContextManagementResponse{
-						MessagesDeleted: 1,
+			name: "clear_thinking only",
+			options: &ModelOptions{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{
+						NewClearThinkingEdit(),
 					},
 				},
-				ContextManagement: &ContextManagementResponse{
-					MessagesDeleted: 2,
-					ToolUsesCleared: 5,
-				},
 			},
-			expected: &ContextManagementResponse{
-				MessagesDeleted: 2,
-				ToolUsesCleared: 5,
-			},
+			expected: BetaHeaderContextManagement,
 		},
 		{
-			name: "no context management",
-			response: anthropicResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Content:    []anthropicContent{{Type: "text", Text: "Hello"}},
-				StopReason: "end_turn",
-				Usage: anthropicUsage{
-					InputTokens:  100,
-					OutputTokens: 50,
+			name: "compact only",
+			options: &ModelOptions{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{
+						NewCompactEdit(),
+					},
 				},
 			},
-			expected: nil,
+			expected: BetaHeaderContextManagement + "," + BetaHeaderCompact,
+		},
+		{
+			name: "all three edit types",
+			options: &ModelOptions{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{
+						NewClearToolUsesEdit(),
+						NewClearThinkingEdit(),
+						NewCompactEdit(),
+					},
+				},
+			},
+			expected: BetaHeaderContextManagement + "," + BetaHeaderCompact,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			model := &LanguageModel{}
-			result := model.convertResponse(tt.response)
+			p := New(Config{
+				APIKey: "test-key",
+			})
 
-			if tt.expected == nil {
-				assert.Nil(t, result.ContextManagement)
+			var model *LanguageModel
+			if tt.options != nil {
+				m, err := p.LanguageModelWithOptions("claude-sonnet-4-5", tt.options)
+				require.NoError(t, err)
+				model = m.(*LanguageModel)
 			} else {
-				require.NotNil(t, result.ContextManagement)
-				cm, ok := result.ContextManagement.(*ContextManagementResponse)
-				require.True(t, ok)
-				assert.Equal(t, tt.expected.MessagesDeleted, cm.MessagesDeleted)
-				assert.Equal(t, tt.expected.MessagesTruncated, cm.MessagesTruncated)
-				assert.Equal(t, tt.expected.ToolUsesCleared, cm.ToolUsesCleared)
-				assert.Equal(t, tt.expected.ThinkingBlocksCleared, cm.ThinkingBlocksCleared)
+				m, err := p.LanguageModel("claude-sonnet-4-5")
+				require.NoError(t, err)
+				model = m.(*LanguageModel)
 			}
+
+			result := model.getBetaHeaders()
+			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestDoGenerate_WithContextManagement tests non-streaming generation with context management
+func TestDoGenerate_WithContextManagement(t *testing.T) {
+	tests := []struct {
+		name          string
+		edits         []ContextManagementEdit
+		expectedBeta  string
+		responseJSON  string
+		validateResult func(*testing.T, *types.GenerateResult)
+	}{
+		{
+			name: "clear_tool_uses edit",
+			edits: []ContextManagementEdit{
+				NewClearToolUsesEdit().WithInputTokensTrigger(10000),
+			},
+			expectedBeta: BetaHeaderContextManagement,
+			responseJSON: `{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [{"type": "text", "text": "Response"}],
+				"model": "claude-sonnet-4-5",
+				"stop_reason": "end_turn",
+				"usage": {
+					"input_tokens": 100,
+					"output_tokens": 50
+				},
+				"context_management": {
+					"applied_edits": [{
+						"type": "clear_tool_uses_20250919",
+						"cleared_tool_uses": 5,
+						"cleared_input_tokens": 1500
+					}]
+				}
+			}`,
+			validateResult: func(t *testing.T, result *types.GenerateResult) {
+				require.NotNil(t, result.ContextManagement)
+				cmr, ok := result.ContextManagement.(*ContextManagementResponse)
+				require.True(t, ok)
+				require.Len(t, cmr.AppliedEdits, 1)
+
+				edit, ok := cmr.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+				require.True(t, ok)
+				assert.Equal(t, 5, edit.ClearedToolUses)
+				assert.Equal(t, 1500, edit.ClearedInputTokens)
+			},
+		},
+		{
+			name: "compact edit with pause",
+			edits: []ContextManagementEdit{
+				NewCompactEdit().WithTrigger(50000).WithPauseAfterCompaction(true),
+			},
+			expectedBeta: BetaHeaderContextManagement + "," + BetaHeaderCompact,
+			responseJSON: `{
+				"id": "msg_123",
+				"type": "message",
+				"role": "assistant",
+				"content": [{"type": "text", "text": "Response"}],
+				"model": "claude-sonnet-4-5",
+				"stop_reason": "end_turn",
+				"usage": {
+					"input_tokens": 100,
+					"output_tokens": 50
+				},
+				"context_management": {
+					"applied_edits": [{
+						"type": "compact_20260112"
+					}]
+				}
+			}`,
+			validateResult: func(t *testing.T, result *types.GenerateResult) {
+				require.NotNil(t, result.ContextManagement)
+				cmr, ok := result.ContextManagement.(*ContextManagementResponse)
+				require.True(t, ok)
+				require.Len(t, cmr.AppliedEdits, 1)
+
+				edit, ok := cmr.AppliedEdits[0].(*AppliedCompactEdit)
+				require.True(t, ok)
+				assert.Equal(t, "compact_20260112", edit.Type)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify beta header
+				betaHeader := r.Header.Get("anthropic-beta")
+				assert.Equal(t, tt.expectedBeta, betaHeader)
+
+				// Parse request body
+				var reqBody map[string]interface{}
+				err := json.NewDecoder(r.Body).Decode(&reqBody)
+				require.NoError(t, err)
+
+				// Verify context_management is in request
+				_, ok := reqBody["context_management"]
+				require.True(t, ok)
+
+				// Return mock response
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tt.responseJSON))
+			}))
+			defer server.Close()
+
+			// Create provider with test server
+			p := New(Config{
+				APIKey:  "test-key",
+				BaseURL: server.URL,
+			})
+
+			// Create model with context management
+			model, err := p.LanguageModelWithOptions("claude-sonnet-4-5", &ModelOptions{
+				ContextManagement: &ContextManagement{
+					Edits: tt.edits,
+				},
+			})
+			require.NoError(t, err)
+
+			// Generate text
+			result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+				Prompt: types.Prompt{
+					Text: "Test prompt",
+				},
+				MaxTokens: intPtr(100),
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			tt.validateResult(t, result)
+		})
+	}
+}
+
+// TestUsageIterations tests that usage iterations are properly parsed and summed
+func TestUsageIterations(t *testing.T) {
+	responseJSON := `{
+		"id": "msg_123",
+		"type": "message",
+		"role": "assistant",
+		"content": [{"type": "text", "text": "Response"}],
+		"model": "claude-sonnet-4-5",
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 100,
+			"output_tokens": 50,
+			"iterations": [
+				{
+					"type": "compaction",
+					"input_tokens": 5000,
+					"output_tokens": 100
+				},
+				{
+					"type": "message",
+					"input_tokens": 3000,
+					"output_tokens": 50
+				}
+			]
+		},
+		"context_management": {
+			"applied_edits": [{
+				"type": "compact_20260112"
+			}]
+		}
+	}`
+
+	var response anthropicResponse
+	err := json.Unmarshal([]byte(responseJSON), &response)
+	require.NoError(t, err)
+
+	result := &LanguageModel{}
+	converted := result.convertResponse(response)
+
+	// Verify that usage is summed across iterations
+	require.NotNil(t, converted.Usage.InputTokens)
+	require.NotNil(t, converted.Usage.OutputTokens)
+
+	// Total input: 5000 + 3000 = 8000
+	assert.Equal(t, int64(8000), *converted.Usage.InputTokens)
+	// Total output: 100 + 50 = 150
+	assert.Equal(t, int64(150), *converted.Usage.OutputTokens)
 }
 
 // Helper function

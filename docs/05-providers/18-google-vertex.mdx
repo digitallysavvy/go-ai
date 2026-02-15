@@ -67,6 +67,16 @@ export GOOGLE_CLOUD_PROJECT=your-project-id
 |----------|-----------|-------|----------|
 | textembedding-gecko | 768 | Free | Semantic search |
 
+### Image Generation Models
+
+| Model ID | Aspect Ratios | Price | Best For |
+|----------|--------------|-------|----------|
+| imagen-3.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High quality |
+| imagen-3.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
+| imagen-3.0-capability-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Enhanced capabilities |
+| gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
+| gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+
 ## Provider-Specific Features
 
 ### Enterprise Security
@@ -115,6 +125,88 @@ training := vertex.NewTrainingJob(vertex.TrainingConfig{
 
 job, err := training.Create()
 ```
+
+### Image Generation
+
+Vertex AI provides enterprise-grade image generation with Imagen models:
+
+```go
+// Create Vertex AI provider
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Imagen 3.0 - Text-to-image generation
+imageModel, err := provider.ImageModel("imagen-3.0-generate-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+n := 1
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A futuristic cityscape at night with neon lights and flying cars",
+    N:      &n,
+    Size:   "1920x1080", // Converts to 16:9 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Save the generated image
+os.WriteFile("vertex_imagen.png", result.Image, 0644)
+fmt.Printf("Generated image: %d bytes\n", len(result.Image))
+```
+
+**Gemini Image Generation:**
+
+```go
+// Gemini 2.5 Flash Image - Fast generation
+geminiModel, err := provider.ImageModel("gemini-2.5-flash-image")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  geminiModel,
+    Prompt: "A magical forest with glowing mushrooms and ethereal lighting",
+    Size:   "1024x1024", // Square 1:1 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
+```
+
+**Supported Aspect Ratios:**
+- `1:1` - Square (1024x1024)
+- `4:3` - Standard (1024x768)
+- `3:4` - Portrait (768x1024)
+- `16:9` - Widescreen (1920x1080)
+- `9:16` - Vertical (1080x1920)
+
+**Model Comparison:**
+
+| Model | Speed | Quality | Best For |
+|-------|-------|---------|----------|
+| imagen-3.0-capability-001 | Medium | Very High | Enhanced features |
+| imagen-3.0-generate-001 | Medium | High | Production use |
+| imagen-3.0-fast-generate-001 | Fast | Good | Rapid iteration |
+| gemini-2.5-flash-image | Very Fast | Good | Quick generation |
+| gemini-3-pro-image-preview | Fast | High | Advanced generation |
+
+**Enterprise Features for Image Generation:**
+- VPC network support for secure generation
+- Customer-managed encryption keys (CMEK)
+- Audit logging for compliance
+- Regional data residency
+- Batch image generation for large-scale operations
 
 ## Examples
 
