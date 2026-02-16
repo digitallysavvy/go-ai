@@ -1,0 +1,150 @@
+---
+title: Cloudflare Workers AI Provider
+description: Setup and usage guide for Cloudflare Workers AI edge inference with Go-AI SDK
+---
+
+# Cloudflare Workers AI Provider
+
+Cloudflare Workers AI provides serverless AI inference at the edge with low latency and global distribution. Run models close to users for fast, cost-effective inference.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cloudflare"
+)
+```
+
+### Configuration
+
+```go
+provider := cloudflare.New(cloudflare.Config{
+    APIKey:    os.Getenv("CLOUDFLARE_API_KEY"),
+    AccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
+})
+
+model, err := provider.LanguageModel("@cf/meta/llama-3-8b-instruct")
+```
+
+### Get API Key
+
+1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com)
+2. Create API token
+3. Set environment variables:
+
+```bash
+export CLOUDFLARE_API_KEY=...
+export CLOUDFLARE_ACCOUNT_ID=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Parameters | Best For |
+|----------|-----------|----------|
+| @cf/meta/llama-3-8b-instruct | 8B | General purpose |
+| @cf/mistral/mistral-7b-instruct-v0.1 | 7B | Efficient |
+| @cf/microsoft/phi-2 | 2.7B | Fast |
+
+### Embedding Models
+
+| Model ID | Dimensions | Best For |
+|----------|-----------|----------|
+| @cf/baai/bge-base-en-v1.5 | 768 | Semantic search |
+
+### Image Generation
+
+| Model ID | Quality | Best For |
+|----------|---------|----------|
+| @cf/stabilityai/stable-diffusion-xl-base-1.0 | High | Images |
+
+## Provider-Specific Features
+
+### Edge Deployment
+
+Models run on Cloudflare's global network for low latency:
+
+```go
+// Automatic edge routing
+result, err := ai.GenerateText(model, prompt)
+// Runs on nearest Cloudflare datacenter
+```
+
+### Serverless Pricing
+
+Pay only for what you use with no cold starts:
+
+- Language models: ~$0.011 per 1000 tokens
+- Embeddings: ~$0.005 per 1000 tokens
+- Images: ~$0.007 per image
+
+### Workers Integration
+
+Deploy alongside Cloudflare Workers:
+
+```go
+// In Workers code
+result, err := ai.GenerateText(model, userPrompt)
+// No egress charges
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cloudflare"
+)
+
+func main() {
+    provider := cloudflare.New(cloudflare.Config{
+        APIKey:    os.Getenv("CLOUDFLARE_API_KEY"),
+        AccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
+    })
+
+    model, err := provider.LanguageModel("@cf/meta/llama-3-8b-instruct")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain edge computing")
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+1. **Edge Optimization**
+   - Use for latency-sensitive applications
+   - Deploy close to users
+   - Leverage global distribution
+
+2. **Cost Efficiency**
+   - No infrastructure management
+   - Pay-per-request pricing
+   - No cold starts
+
+3. **Integration**
+   - Works seamlessly with Workers
+   - Combine with R2, D1, KV
+   - Build full-stack edge apps
+
+## Rate Limits
+
+Varies by plan - check dashboard for limits.
+
+## See Also
+
+- [Cloudflare Workers AI Documentation](https://developers.cloudflare.com/workers-ai/)

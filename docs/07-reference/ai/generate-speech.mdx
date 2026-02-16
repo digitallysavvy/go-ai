@@ -1,0 +1,210 @@
+---
+title: GenerateSpeech
+description: API reference for GenerateSpeech function
+---
+
+# GenerateSpeech
+
+Converts text to speech audio using text-to-speech models.
+
+## Signature
+
+```go
+func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error)
+```
+
+## Parameters
+
+### GenerateSpeechOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.SpeechModel | Yes | Speech synthesis model to use |
+| Input | string | Yes | Text to convert to speech |
+| Voice | string | Yes | Voice ID or name |
+| Speed | *float64 | No | Speech speed (0.25 to 4.0) |
+| Format | string | No | Output format (mp3, opus, aac, flac, wav, pcm) |
+| SampleRate | *int | No | Sample rate in Hz |
+| Language | string | No | Language code for synthesis |
+| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+
+## Return Value
+
+### GenerateSpeechResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Audio | []byte | Audio data in binary format |
+| Format | string | Audio format |
+| SampleRate | int | Sample rate in Hz |
+| Duration | float64 | Audio duration in seconds |
+| Response | types.SpeechResponse | Response metadata |
+
+## Examples
+
+### Basic Text-to-Speech
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.SpeechModel("tts-1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateSpeech(context.Background(), ai.GenerateSpeechOptions{
+        Model: model,
+        Input: "Hello! This is a text-to-speech example.",
+        Voice: "alloy",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save audio file
+    err = os.WriteFile("output.mp3", result.Audio, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Audio saved: %.2fs duration\n", result.Duration)
+}
+```
+
+### With Different Voice
+
+```go
+voices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+
+for _, voice := range voices {
+    result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+        Model: model,
+        Input: "Testing different voices",
+        Voice: voice,
+    })
+    if err != nil {
+        log.Printf("Error with voice %s: %v", voice, err)
+        continue
+    }
+
+    filename := fmt.Sprintf("output_%s.mp3", voice)
+    os.WriteFile(filename, result.Audio, 0644)
+}
+```
+
+### With Speed Control
+
+```go
+speed := 1.5 // 1.5x speed
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: model,
+    Input: "This audio will play faster than normal",
+    Voice: "nova",
+    Speed: &speed,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### With Custom Format
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:  model,
+    Input:  "High quality audio output",
+    Voice:  "alloy",
+    Format: "flac",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("output.flac", result.Audio, 0644)
+```
+
+### Long Text Generation
+
+```go
+longText := `
+This is a longer text that will be converted to speech.
+It can include multiple sentences and paragraphs.
+The model will generate continuous audio for the entire text.
+`
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: model,
+    Input: longText,
+    Voice: "echo",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %.2fs of audio\n", result.Duration)
+```
+
+### With ElevenLabs Provider
+
+```go
+elevenlabsProvider := elevenlabs.New(elevenlabs.Config{
+    APIKey: "your-api-key",
+})
+elevenlabsModel, err := elevenlabsProvider.SpeechModel("eleven_monolingual_v1")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: elevenlabsModel,
+    Input: "Natural sounding speech with ElevenLabs",
+    Voice: "21m00Tcm4TlvDq8ikWAM", // Voice ID
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateSpeech(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "input is required"):
+        log.Println("Missing required input text")
+    case strings.Contains(err.Error(), "voice is required"):
+        log.Println("Missing required voice parameter")
+    case strings.Contains(err.Error(), "invalid voice"):
+        log.Println("Voice not supported by model")
+    case strings.Contains(err.Error(), "text too long"):
+        log.Println("Input text exceeds maximum length")
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [Transcribe](./transcribe.mdx) - Speech-to-text conversion
+- [Speech Models Guide](../../03-providers/speech-models.mdx)
+- [Audio Processing Guide](../../06-media/audio.mdx)

@@ -1,0 +1,88 @@
+---
+title: ImageModel Interface
+description: API reference for ImageModel interface
+---
+
+# ImageModel Interface
+
+Interface that all image generation model implementations must satisfy.
+
+## Interface Definition
+
+```go
+type ImageModel interface {
+    // Metadata
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    // Image generation
+    DoGenerate(ctx context.Context, opts *ImageGenerateOptions) (*types.ImageResult, error)
+}
+```
+
+## Methods
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| SpecificationVersion() | - | string | Specification version |
+| Provider() | - | string | Provider name |
+| ModelID() | - | string | Model identifier |
+| DoGenerate() | ctx, *ImageGenerateOptions | *types.ImageResult, error | Generate images |
+
+## ImageGenerateOptions
+
+```go
+type ImageGenerateOptions struct {
+    Prompt  string
+    N       *int
+    Size    string
+    Quality string
+    Style   string
+}
+```
+
+## Examples
+
+### Using an Image Model
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.ImageModel("dall-e-3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+        Prompt: "A serene mountain landscape",
+        Size:   "1024x1024",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save first image
+    if len(result.Images) > 0 {
+        os.WriteFile("output.png", result.Images[0].Data, 0644)
+    }
+}
+```
+
+## See Also
+
+- [GenerateImage](../ai/generate-image.mdx) - High-level image generation
+- [Custom Provider](./custom-provider.mdx) - Implementing custom providers

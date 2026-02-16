@@ -1,0 +1,311 @@
+---
+title: Cerebras Provider
+description: Setup and usage guide for Cerebras ultra-fast wafer-scale inference with Go-AI SDK
+---
+
+# Cerebras Provider
+
+Cerebras provides the world's fastest AI inference using wafer-scale engines. Achieves speeds of 1,800+ tokens/second with Llama models - perfect for latency-critical applications.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Cerebras uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("CEREBRAS_API_KEY"),
+    BaseURL: "https://api.cerebras.ai/v1",
+})
+
+model, err := provider.LanguageModel("llama3.1-70b")
+```
+
+### Get API Key
+
+```bash
+export CEREBRAS_API_KEY=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Parameters | Tokens/Sec | Price | Best For |
+|----------|-----------|-----------|-------|----------|
+| llama3.1-70b | 70B | 1,800+ | $0.60/1M | Ultra-fast inference |
+| llama3.1-8b | 8B | 2,200+ | $0.10/1M | Blazing fast |
+
+## Provider-Specific Features
+
+### Record-Breaking Speed
+
+Cerebras delivers unprecedented inference speed:
+
+```go
+import "time"
+
+start := time.Now()
+result, err := ai.GenerateText(model,
+    "Write a detailed 500-word essay about AI")
+
+elapsed := time.Since(start)
+tokensPerSec := float64(result.Usage.CompletionTokens) / elapsed.Seconds()
+
+fmt.Printf("Generated %d tokens in %v\n", result.Usage.CompletionTokens, elapsed)
+fmt.Printf("Speed: %.0f tokens/second\n", tokensPerSec)
+// Output: Speed: 1800+ tokens/second
+```
+
+### Real-Time Streaming
+
+Ultra-fast streaming for immediate user feedback:
+
+```go
+stream, err := ai.StreamText(model, "Write a story")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+// Tokens arrive at 1,800+ tokens/second
+startTime := time.Now()
+tokenCount := 0
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+    tokenCount++
+}
+
+elapsed := time.Since(startTime)
+fmt.Printf("\n\nSpeed: %.0f tokens/sec\n",
+    float64(tokenCount)/elapsed.Seconds())
+```
+
+### High Throughput
+
+Handle massive concurrent requests:
+
+```go
+// Process 100 requests in parallel
+var wg sync.WaitGroup
+requests := 100
+
+start := time.Now()
+for i := 0; i < requests; i++ {
+    wg.Add(1)
+    go func(idx int) {
+        defer wg.Done()
+        result, err := ai.GenerateText(model,
+            fmt.Sprintf("Query %d", idx))
+        if err != nil {
+            log.Printf("Request %d failed: %v", idx, err)
+        }
+    }(i)
+}
+wg.Wait()
+
+elapsed := time.Since(start)
+fmt.Printf("Processed %d requests in %v\n", requests, elapsed)
+fmt.Printf("Throughput: %.1f requests/sec\n",
+    float64(requests)/elapsed.Seconds())
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("CEREBRAS_API_KEY"),
+        BaseURL: "https://api.cerebras.ai/v1",
+    })
+
+    model, err := provider.LanguageModel("llama3.1-70b")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    start := time.Now()
+    result, err := ai.GenerateText(model,
+        "Explain wafer-scale computing in one paragraph")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    elapsed := time.Since(start)
+    tokensPerSec := float64(result.Usage.CompletionTokens) / elapsed.Seconds()
+
+    fmt.Println(result.Text)
+    fmt.Printf("\nGenerated %d tokens in %v (%.0f tokens/sec)\n",
+        result.Usage.CompletionTokens, elapsed, tokensPerSec)
+}
+```
+
+### Interactive Chat Application
+
+```go
+func interactiveChat(model ai.LanguageModel) {
+    scanner := bufio.NewScanner(os.Stdin)
+    messages := []ai.Message{}
+
+    for {
+        fmt.Print("You: ")
+        scanner.Scan()
+        userInput := scanner.Text()
+
+        if userInput == "exit" {
+            break
+        }
+
+        messages = append(messages, ai.UserMessage(userInput))
+
+        // Ultra-fast response
+        stream, err := ai.StreamText(model, ai.WithMessages(messages...))
+        if err != nil {
+            log.Printf("Error: %v", err)
+            continue
+        }
+
+        fmt.Print("AI: ")
+        var response string
+        for chunk := range stream.TextChannel() {
+            fmt.Print(chunk)
+            response += chunk
+        }
+        fmt.Println()
+
+        messages = append(messages, ai.AssistantMessage(response))
+    }
+}
+```
+
+### High-Volume Processing
+
+```go
+func processHighVolume(prompts []string) {
+    model, _ := provider.LanguageModel("llama3.1-8b") // Fastest model
+
+    results := make(chan string, len(prompts))
+    semaphore := make(chan struct{}, 50) // Limit concurrency
+
+    start := time.Now()
+
+    var wg sync.WaitGroup
+    for i, prompt := range prompts {
+        wg.Add(1)
+        semaphore <- struct{}{} // Acquire
+
+        go func(idx int, p string) {
+            defer wg.Done()
+            defer func() { <-semaphore }() // Release
+
+            result, err := ai.GenerateText(model, p)
+            if err != nil {
+                log.Printf("Failed %d: %v", idx, err)
+                return
+            }
+
+            results <- result.Text
+        }(i, prompt)
+    }
+
+    wg.Wait()
+    close(results)
+
+    elapsed := time.Since(start)
+    fmt.Printf("Processed %d prompts in %v\n", len(prompts), elapsed)
+    fmt.Printf("Average: %.2fs per prompt\n",
+        elapsed.Seconds()/float64(len(prompts)))
+}
+```
+
+## Best Practices
+
+1. **Leverage Speed**
+   - Build real-time interactive applications
+   - Enable instant user feedback
+   - Process high volumes efficiently
+
+2. **Model Selection**
+   - Use llama3.1-70b for best quality
+   - Use llama3.1-8b for maximum speed
+   - Both offer exceptional performance
+
+3. **Architecture**
+   - Wafer-scale engine eliminates GPU bottlenecks
+   - No memory bandwidth constraints
+   - Consistent low latency
+
+4. **Use Cases**
+   - Real-time chat applications
+   - Live content generation
+   - High-volume batch processing
+   - Interactive AI assistants
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+High throughput supported - contact for enterprise limits.
+
+### Pricing
+
+| Model | Input | Output | Best For |
+|-------|-------|--------|----------|
+| Llama 3.1 70B | $0.60/1M | $0.60/1M | Quality + Speed |
+| Llama 3.1 8B | $0.10/1M | $0.10/1M | Maximum Speed |
+
+### Cost-Benefit
+
+```go
+// Despite speed, pricing is competitive
+func calculateCostPerSecond(tokensPerSec float64, pricePerMillion float64) float64 {
+    tokensPerSecond := tokensPerSec
+    costPerToken := pricePerMillion / 1_000_000
+    return tokensPerSecond * costPerToken
+}
+
+// Llama 3.1 70B at 1,800 tokens/sec
+cost := calculateCostPerSecond(1800, 0.60)
+fmt.Printf("Cost per second: $%.6f\n", cost) // Very efficient
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if strings.Contains(err.Error(), "rate_limit") {
+        log.Println("Rate limited - unlikely with Cerebras' high throughput")
+    }
+    log.Fatal(err)
+}
+```
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Cerebras Documentation](https://cerebras.ai/inference)
+- [Groq Provider](09-groq.mdx) - Alternative fast inference

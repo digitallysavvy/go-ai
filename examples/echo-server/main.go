@@ -232,9 +232,9 @@ func handleStream(c echo.Context) error {
 	// Send completion
 	usage := stream.Usage()
 	usageJSON, _ := json.Marshal(map[string]interface{}{
-		"inputTokens":  usage.InputTokens,
-		"outputTokens": usage.OutputTokens,
-		"totalTokens":  usage.TotalTokens,
+		"inputTokens":  usage.GetInputTokens(),
+		"outputTokens": usage.GetOutputTokens(),
+		"totalTokens":  usage.GetTotalTokens(),
 	})
 
 	sendSSE(c.Response(), "done", string(usageJSON))
@@ -278,7 +278,7 @@ func handleTools(c echo.Context) error {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			operation := params["operation"].(string)
 			a := params["a"].(float64)
 			b := params["b"].(float64)
@@ -319,7 +319,7 @@ func handleTools(c echo.Context) error {
 				},
 			},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			timezone := "UTC"
 			if tz, ok := params["timezone"].(string); ok {
 				timezone = tz
@@ -332,9 +332,9 @@ func handleTools(c echo.Context) error {
 
 			now := time.Now().In(loc)
 			return map[string]interface{}{
-				"timezone": timezone,
-				"time":     now.Format(time.RFC3339),
-				"unix":     now.Unix(),
+				"timezone":  timezone,
+				"time":      now.Format(time.RFC3339),
+				"unix":      now.Unix(),
 				"formatted": now.Format("Monday, January 2, 2006 3:04 PM MST"),
 			}, nil
 		},

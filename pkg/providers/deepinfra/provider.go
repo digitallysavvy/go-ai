@@ -1,11 +1,13 @@
 package deepinfra
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // Provider implements the provider.Provider interface for DeepInfra
 // DeepInfra is OpenAI-compatible, so we use the OpenAI implementation
+// with custom fixes for token counting issues
 type Provider struct {
 	*openai.Provider
 }
@@ -40,4 +42,10 @@ func New(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "deepinfra"
+}
+
+// LanguageModel returns a language model with DeepInfra-specific fixes
+// This includes token counting corrections for Gemini/Gemma models
+func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
+	return NewLanguageModel(p.Provider, modelID), nil
 }

@@ -1,0 +1,476 @@
+---
+title: Video Generation
+description: Generate videos using AI models with the Go-AI SDK.
+---
+
+# Video Generation
+
+The Go-AI SDK supports video generation through multiple providers, enabling you to create videos from text descriptions (text-to-video) or animate static images (image-to-video).
+
+## Quick Start
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create provider
+    prov := google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_API_KEY"),
+    })
+
+    // Get video model
+    model, _ := prov.VideoModel("gemini-2.0-flash")
+
+    // Generate video
+    result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+        Model: model,
+        Prompt: ai.VideoPrompt{
+            Text: "A serene sunset over calm ocean waters",
+        },
+        AspectRatio: "16:9",
+        Resolution:  "1920x1080",
+    })
+
+    if err != nil {
+        panic(err)
+    }
+
+    // Save video
+    os.WriteFile("output.mp4", result.Video.Data, 0644)
+}
+```
+
+## Text-to-Video Generation
+
+Generate videos from text descriptions:
+
+```go
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "A cat playing piano in a jazz club",
+    },
+    AspectRatio: "16:9",
+    Resolution:  "1920x1080",
+    Duration:    floatPtr(5.0), // 5 seconds
+})
+```
+
+### Prompt Tips
+
+- Be specific and descriptive
+- Include details about motion, lighting, and atmosphere
+- Mention camera movements if desired
+- Keep prompts clear and concise (under 200 words)
+
+**Good Prompts:**
+- "A serene mountain lake at sunrise with mist rising from the water"
+- "Close-up of raindrops falling on a window with bokeh city lights in background"
+- "Slow pan across a field of sunflowers swaying in the breeze"
+
+**Poor Prompts:**
+- "video" (too vague)
+- "make it cool" (no visual description)
+- Long paragraphs with multiple unrelated scenes
+
+## Image-to-Video Generation
+
+Animate static images:
+
+```go
+imageData, _ := os.ReadFile("input.jpg")
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "Animate with gentle movement and natural motion",
+        Image: &ai.VideoPromptImage{
+            Data:      imageData,
+            MediaType: "image/jpeg",
+        },
+    },
+    Duration: floatPtr(5.0),
+})
+```
+
+### Image-to-Video Tips
+
+- Use high-quality images (at least 1280x720)
+- Match aspect ratio to your image dimensions
+- Keep animation prompts simple
+- Shorter videos (3-5 seconds) generally work better
+
+## Supported Providers
+
+### XAI (Grok)
+
+**Model:** `grok-imagine-video`
+
+```go
+prov := xai.New(xai.Config{
+    APIKey: os.Getenv("XAI_API_KEY"),
+})
+model, _ := prov.VideoModel("grok-imagine-video")
+```
+
+**Features:**
+- Text-to-video generation
+- Image-to-video animation
+- Video editing with text instructions
+- 480p and 720p resolution support
+- Polling-based async generation
+
+**API Key:** Get your key at [x.ai](https://x.ai)
+
+**Supported Operations:**
+- **Text-to-Video**: Generate videos from text descriptions
+- **Image-to-Video**: Animate static images into videos
+- **Video Editing**: Modify existing videos with natural language prompts
+
+### Google Generative AI
+
+**Model:** `gemini-2.0-flash`
+
+```go
+prov := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_API_KEY"),
+})
+model, _ := prov.VideoModel("gemini-2.0-flash")
+```
+
+**Features:**
+- High-quality video generation
+- Text-to-video and image-to-video
+- Polling-based async generation
+- 720p, 1080p, and 4K resolution support
+
+**API Key:** Get your key at [Google AI Studio](https://makersuite.google.com/app/apikey)
+
+### FAL
+
+**Models:** `fal-ai/luma-dream-machine`, `fal-ai/hunyuan-video`
+
+```go
+prov := fal.New(fal.Config{
+    APIKey: os.Getenv("FAL_KEY"),
+})
+model := fal.NewVideoModel(prov, "fal-ai/luma-dream-machine")
+```
+
+**Features:**
+- Fast generation (15-30 seconds)
+- High-quality results
+- Good for prototyping
+- Provider-specific options (motion strength, loop)
+
+**API Key:** Get your key at [fal.ai](https://fal.ai)
+
+### Replicate
+
+**Models:** Various open-source models including Minimax, Stable Video Diffusion
+
+```go
+prov := replicate.New(replicate.Config{
+    APIToken: os.Getenv("REPLICATE_API_TOKEN"),
+})
+model := replicate.NewVideoModel(prov, "minimax/video-01")
+```
+
+**Features:**
+- Wide selection of open-source models
+- Good for experimentation
+- Flexible pricing
+- Model-specific parameters
+
+**API Token:** Get your token at [replicate.com](https://replicate.com)
+
+### Google Vertex AI
+
+<Note type="warning">
+  Google Vertex AI video generation support is planned for a future release. It requires additional Google Cloud authentication infrastructure not yet implemented in the Go SDK.
+</Note>
+
+Vertex AI will support:
+- Batch generation (up to 4 videos per call)
+- GCS output directory
+- Audio generation
+- Enterprise features and SLAs
+
+## API Reference
+
+### GenerateVideo Options
+
+```go
+type GenerateVideoOptions struct {
+    // Model to use for video generation (required)
+    Model provider.VideoModelV3
+
+    // Prompt for video generation (required)
+    Prompt VideoPrompt
+
+    // Number of videos to generate (default: 1)
+    N int
+
+    // Aspect ratio in format "width:height" (e.g., "16:9", "9:16", "1:1")
+    AspectRatio string
+
+    // Resolution in format "widthxheight" (e.g., "1920x1080", "1280x720")
+    Resolution string
+
+    // Duration in seconds
+    Duration *float64
+
+    // Frames per second (24, 30, 60)
+    FPS *int
+
+    // Seed for reproducible generation
+    Seed *int
+
+    // Provider-specific options
+    ProviderOptions map[string]interface{}
+
+    // Maximum retries per call (default: 2)
+    MaxRetries int
+
+    // Additional HTTP headers
+    Headers map[string]string
+}
+```
+
+### VideoPrompt
+
+```go
+type VideoPrompt struct {
+    // Text prompt (required for text-to-video, optional for image-to-video)
+    Text string
+
+    // Image for image-to-video generation (optional)
+    Image *VideoPromptImage
+}
+
+type VideoPromptImage struct {
+    // URL to image (or)
+    URL string
+
+    // Raw image data
+    Data []byte
+
+    // Media type (e.g., "image/png", "image/jpeg")
+    MediaType string
+}
+```
+
+### GenerateVideoResult
+
+```go
+type GenerateVideoResult struct {
+    // Primary generated video (first in Videos array)
+    Video *types.GeneratedFile
+
+    // All generated videos
+    Videos []*types.GeneratedFile
+
+    // Warnings from the generation process
+    Warnings []types.Warning
+
+    // Metadata for each API call
+    Responses []VideoModelResponseMetadata
+
+    // Provider-specific metadata
+    ProviderMetadata map[string]interface{}
+}
+```
+
+## Provider-Specific Options
+
+### XAI
+
+```go
+ProviderOptions: map[string]interface{}{
+    "xai": map[string]interface{}{
+        "pollIntervalMs": 5000,   // Poll every 5 seconds
+        "pollTimeoutMs":  600000,  // 10 minute timeout
+        "resolution":     "720p",  // or "480p"
+    },
+}
+```
+
+### Google
+
+```go
+ProviderOptions: map[string]interface{}{
+    "google": map[string]interface{}{
+        "pollIntervalMs": 3000,  // Poll every 3 seconds
+        "pollTimeoutMs":  600000, // 10 minute timeout
+        "negativePrompt": "blurry, distorted",
+    },
+}
+```
+
+### FAL
+
+```go
+ProviderOptions: map[string]interface{}{
+    "fal": map[string]interface{}{
+        "loop": true,  // Create looping video
+        "motionStrength": 0.8,
+        "negativePrompt": "static, still image",
+    },
+}
+```
+
+### Replicate
+
+```go
+ProviderOptions: map[string]interface{}{
+    "replicate": map[string]interface{}{
+        "guidance_scale": 7.5,
+        "num_inference_steps": 50,
+    },
+}
+```
+
+## Polling and Async Generation
+
+All video providers use async generation with polling:
+
+1. **Submit Request**: Initial API call submits the generation job
+2. **Polling**: SDK automatically polls for completion
+3. **Download**: Video is downloaded when ready
+4. **Return**: Complete video data returned to your code
+
+Default polling configuration:
+- **Interval**: 2 seconds
+- **Timeout**: 5 minutes
+- **Backoff**: None (configurable per provider)
+
+You can customize polling:
+
+```go
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{Text: "A mountain landscape"},
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "pollIntervalMs": 5000,   // Poll every 5 seconds
+            "pollTimeoutMs":  600000,  // 10 minute timeout
+        },
+    },
+})
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateVideo(ctx, opts)
+if err != nil {
+    if videoErr, ok := err.(*providererrors.VideoGenerationError); ok {
+        fmt.Printf("Provider: %s\n", videoErr.Provider)
+        fmt.Printf("Model: %s\n", videoErr.ModelID)
+        fmt.Printf("Message: %s\n", videoErr.Message)
+    }
+    return err
+}
+
+// Check for warnings
+for _, warning := range result.Warnings {
+    fmt.Printf("Warning (%s): %s\n", warning.Type, warning.Message)
+}
+```
+
+Common errors:
+- **Timeout**: Generation took longer than configured timeout
+- **Invalid Prompt**: Prompt violates content policy
+- **Quota Exceeded**: API quota or rate limit reached
+- **Network Error**: Connection issues during polling
+
+## Best Practices
+
+### 1. Choose the Right Provider
+
+- **XAI**: Text-to-video, image animation, video editing support
+- **Google**: Production use, high quality
+- **FAL**: Fast iteration, prototyping
+- **Replicate**: Experimentation, specific models
+
+### 2. Optimize Prompts
+
+- Be specific about motion and camera movement
+- Include lighting and atmosphere details
+- Keep prompts under 200 words
+- Test variations to find what works best
+
+### 3. Handle Long Generation Times
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+defer cancel()
+
+result, err := ai.GenerateVideo(ctx, opts)
+```
+
+### 4. Save Videos Efficiently
+
+```go
+if result.Video != nil {
+    filename := fmt.Sprintf("video_%d.mp4", time.Now().Unix())
+    if err := os.WriteFile(filename, result.Video.Data, 0644); err != nil {
+        return fmt.Errorf("failed to save video: %w", err)
+    }
+}
+```
+
+### 5. Monitor Costs
+
+Video generation can be expensive:
+- Google: ~$0.05-0.15 per video (depending on resolution/duration)
+- FAL: ~$0.03-0.08 per video
+- Replicate: Varies by model
+
+Track usage and set appropriate timeouts.
+
+## Troubleshooting
+
+### Videos Not Generating
+
+1. Check API keys are set correctly
+2. Verify model ID is correct
+3. Check prompt doesn't violate content policy
+4. Ensure sufficient API quota/credits
+
+### Slow Generation
+
+1. Increase timeout if hitting limits
+2. Try shorter videos (3-5 seconds)
+3. Use lower resolution (720p instead of 1080p)
+4. Check provider status pages
+
+### Poor Quality Results
+
+1. Improve prompt specificity
+2. Try different aspect ratios
+3. Adjust resolution settings
+4. Use provider-specific quality options
+
+## Examples
+
+See complete examples in the [examples/video](/examples/video) directory:
+- [Text-to-Video](/examples/video/text-to-video)
+- [Image-to-Video](/examples/video/image-to-video)
+- [Multi-Provider](/examples/video/multi-provider)
+
+## See Also
+
+- [Image Generation](/docs/03-ai-sdk-core/35-image-generation)
+- [Provider Management](/docs/03-ai-sdk-core/45-provider-management)
+- [Error Handling](/docs/03-ai-sdk-core/50-error-handling)

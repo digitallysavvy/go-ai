@@ -152,11 +152,7 @@ func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, err
 		return &types.GenerateResult{
 			Text:         responses[0].GeneratedText,
 			FinishReason: types.FinishReasonStop,
-			Usage: types.Usage{
-				InputTokens:  0, // HF doesn't return token counts
-				OutputTokens: 0,
-				TotalTokens:  0,
-			},
+			Usage:        types.Usage{}, // HF doesn't return token counts
 		}, nil
 	}
 
@@ -166,11 +162,7 @@ func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, err
 		return &types.GenerateResult{
 			Text:         response.GeneratedText,
 			FinishReason: types.FinishReasonStop,
-			Usage: types.Usage{
-				InputTokens:  0,
-				OutputTokens: 0,
-				TotalTokens:  0,
-			},
+			Usage:        types.Usage{},
 		}, nil
 	}
 
@@ -232,10 +224,6 @@ func (s *huggingfaceStream) Next() (*provider.StreamChunk, error) {
 
 func (s *huggingfaceStream) Err() error {
 	return nil
-}
-
-func (s *huggingfaceStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
 }
 
 func (s *huggingfaceStream) Close() error {

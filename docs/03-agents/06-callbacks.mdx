@@ -1,0 +1,683 @@
+---
+title: Agent Callbacks
+description: Monitor and control agent execution with lifecycle callbacks
+---
+
+# Agent Callbacks
+
+Callbacks provide hooks into agent execution, allowing you to monitor progress, log activities, handle errors, and integrate with external systems. The Go-AI SDK supports both legacy callbacks and LangChain-style callbacks for enhanced interoperability.
+
+## Overview
+
+Agent callbacks enable you to:
+
+- **Monitor execution**: Track agent progress and decisions
+- **Log activities**: Record tool calls, actions, and results
+- **Handle errors**: Implement custom error recovery logic
+- **Measure performance**: Track token usage and execution time
+- **Integrate with observability**: Connect to logging and monitoring platforms
+- **Debug agent behavior**: Understand decision-making processes
+
+## Callback Types
+
+### Legacy Callbacks
+
+These callbacks provide basic step-level tracking:
+
+| Callback | Invoked When | Parameters |
+|----------|-------------|------------|
+| `OnStepStart` | Step begins | `stepNum int` |
+| `OnStepFinish` | Step completes | `step types.StepResult` |
+| `OnToolCall` | Tool is called | `toolCall types.ToolCall` |
+| `OnToolResult` | Tool execution completes | `toolResult types.ToolResult` |
+| `OnFinish` | Agent completes | `result *AgentResult` |
+
+### LangChain-Style Callbacks (v6.0.60+)
+
+These callbacks provide fine-grained control and align with LangChain's callback system:
+
+#### Chain Lifecycle
+
+| Callback | Invoked When | Parameters |
+|----------|-------------|------------|
+| `OnChainStart` | Agent begins execution | `input string, messages []types.Message` |
+| `OnChainEnd` | Agent completes successfully | `result *AgentResult` |
+| `OnChainError` | Agent encounters an error | `err error` |
+
+#### Agent Decisions
+
+| Callback | Invoked When | Parameters |
+|----------|-------------|------------|
+| `OnAgentAction` | Agent decides to take an action | `action AgentAction` |
+| `OnAgentFinish` | Agent reaches a final answer | `finish AgentFinish` |
+
+#### Tool Lifecycle
+
+| Callback | Invoked When | Parameters |
+|----------|-------------|------------|
+| `OnToolStart` | Tool execution begins | `toolCall types.ToolCall` |
+| `OnToolEnd` | Tool completes successfully | `toolResult types.ToolResult` |
+| `OnToolError` | Tool execution fails | `toolCall types.ToolCall, err error` |
+
+## Basic Usage
+
+```go
+import (
+    "context"
+    "log"
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    System: "You are a helpful assistant.",
+    Tools: tools,
+
+    // Legacy callbacks
+    OnStepStart: func(stepNum int) {
+        log.Printf("Starting step %d", stepNum)
+    },
+
+    OnStepFinish: func(step types.StepResult) {
+        log.Printf("Step %d finished: %s", step.StepNumber, step.FinishReason)
+    },
+
+    // LangChain-style callbacks
+    OnChainStart: func(input string, messages []types.Message) {
+        log.Printf("Agent starting with input: %s", input)
+    },
+
+    OnChainEnd: func(result *agent.AgentResult) {
+        log.Printf("Agent completed in %d steps", len(result.Steps))
+    },
+
+    OnChainError: func(err error) {
+        log.Printf("Agent error: %v", err)
+    },
+})
+```
+
+## Common Use Cases
+
+### Logging Agent Execution
+
+Track the complete execution flow:
+
+```go
+import (
+    "fmt"
+    "time"
+)
+
+var startTime time.Time
+
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    OnChainStart: func(input string, messages []types.Message) {
+        startTime = time.Now()
+        fmt.Printf("\n=== Agent Started ===\n")
+        fmt.Printf("Input: %s\n", input)
+    },
+
+    OnAgentAction: func(action agent.AgentAction) {
+        fmt.Printf("\n[Step %d] Agent Action\n", action.StepNumber)
+        fmt.Printf("  Tool: %s\n", action.ToolCall.ToolName)
+        if action.Reasoning != "" {
+            fmt.Printf("  Reasoning: %s\n", action.Reasoning)
+        }
+    },
+
+    OnAgentFinish: func(finish agent.AgentFinish) {
+        fmt.Printf("\n[Step %d] Agent Finished\n", finish.StepNumber)
+        fmt.Printf("  Output: %s\n", finish.Output)
+        fmt.Printf("  Reason: %s\n", finish.FinishReason)
+    },
+
+    OnChainEnd: func(result *agent.AgentResult) {
+        duration := time.Since(startTime)
+        fmt.Printf("\n=== Agent Completed ===\n")
+        fmt.Printf("Duration: %s\n", duration)
+        fmt.Printf("Steps: %d\n", len(result.Steps))
+        fmt.Printf("Tool calls: %d\n", len(result.ToolResults))
+        fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
+    },
+}
+```
+
+### Tracking Token Usage and Costs
+
+Monitor API usage for cost tracking:
+
+```go
+type UsageTracker struct {
+    totalTokens      int64
+    totalCost        float64
+    toolCallCount    int
+    costPerToken     float64 // Cost per 1000 tokens
+}
+
+func (t *UsageTracker) addUsage(tokens int64) {
+    t.totalTokens += tokens
+    t.totalCost += float64(tokens) * t.costPerToken / 1000.0
+}
+
+tracker := &UsageTracker{
+    costPerToken: 0.002, // $0.002 per 1K tokens (example rate)
+}
+
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    OnStepFinish: func(step types.StepResult) {
+        if step.Usage.TotalTokens != nil {
+            tracker.addUsage(*step.Usage.TotalTokens)
+        }
+    },
+
+    OnToolEnd: func(toolResult types.ToolResult) {
+        tracker.toolCallCount++
+    },
+
+    OnChainEnd: func(result *agent.AgentResult) {
+        fmt.Printf("\n=== Usage Summary ===\n")
+        fmt.Printf("Total tokens: %d\n", tracker.totalTokens)
+        fmt.Printf("Estimated cost: $%.4f\n", tracker.totalCost)
+        fmt.Printf("Tool calls: %d\n", tracker.toolCallCount)
+        fmt.Printf("Average tokens per step: %d\n",
+            tracker.totalTokens/int64(len(result.Steps)))
+    },
+}
+```
+
+### Error Handling and Recovery
+
+Implement custom error handling:
+
+```go
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    OnChainError: func(err error) {
+        log.Printf("Chain error occurred: %v", err)
+        // Send alert
+        sendAlert("Agent execution failed", err.Error())
+        // Log to external service
+        logToObservability("agent.error", map[string]interface{}{
+            "error": err.Error(),
+            "timestamp": time.Now(),
+        })
+    },
+
+    OnToolError: func(toolCall types.ToolCall, err error) {
+        log.Printf("Tool %s failed: %v", toolCall.ToolName, err)
+        // Track tool failures
+        metrics.IncrementCounter("tool.failures", map[string]string{
+            "tool_name": toolCall.ToolName,
+        })
+
+        // Implement retry logic elsewhere if needed
+        // (Note: callbacks should not modify execution flow directly)
+    },
+}
+```
+
+### Performance Monitoring
+
+Track execution time for each component:
+
+```go
+type PerformanceMonitor struct {
+    toolTimes    map[string]time.Duration
+    toolStarts   map[string]time.Time
+    stepTimes    []time.Duration
+    stepStart    time.Time
+}
+
+func NewPerformanceMonitor() *PerformanceMonitor {
+    return &PerformanceMonitor{
+        toolTimes:  make(map[string]time.Duration),
+        toolStarts: make(map[string]time.Time),
+        stepTimes:  make([]time.Duration, 0),
+    }
+}
+
+monitor := NewPerformanceMonitor()
+
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    OnStepStart: func(stepNum int) {
+        monitor.stepStart = time.Now()
+    },
+
+    OnStepFinish: func(step types.StepResult) {
+        duration := time.Since(monitor.stepStart)
+        monitor.stepTimes = append(monitor.stepTimes, duration)
+    },
+
+    OnToolStart: func(toolCall types.ToolCall) {
+        monitor.toolStarts[toolCall.ID] = time.Now()
+    },
+
+    OnToolEnd: func(toolResult types.ToolResult) {
+        if startTime, ok := monitor.toolStarts[toolResult.ToolCallID]; ok {
+            duration := time.Since(startTime)
+            monitor.toolTimes[toolResult.ToolName] += duration
+            delete(monitor.toolStarts, toolResult.ToolCallID)
+        }
+    },
+
+    OnChainEnd: func(result *agent.AgentResult) {
+        fmt.Printf("\n=== Performance Report ===\n")
+
+        // Step timings
+        var totalStepTime time.Duration
+        for i, duration := range monitor.stepTimes {
+            fmt.Printf("Step %d: %s\n", i+1, duration)
+            totalStepTime += duration
+        }
+        fmt.Printf("Average step time: %s\n",
+            totalStepTime/time.Duration(len(monitor.stepTimes)))
+
+        // Tool timings
+        fmt.Printf("\nTool execution times:\n")
+        for toolName, duration := range monitor.toolTimes {
+            fmt.Printf("  %s: %s\n", toolName, duration)
+        }
+    },
+}
+```
+
+### Integration with Observability Platforms
+
+Connect to external monitoring systems:
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/trace"
+)
+
+tracer := otel.Tracer("agent-execution")
+
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    OnChainStart: func(input string, messages []types.Message) {
+        ctx, span := tracer.Start(context.Background(), "agent.execute")
+        span.SetAttributes(attribute.String("input", input))
+        // Store ctx for later use
+    },
+
+    OnAgentAction: func(action agent.AgentAction) {
+        _, span := tracer.Start(context.Background(), "agent.action")
+        span.SetAttributes(
+            attribute.String("tool", action.ToolCall.ToolName),
+            attribute.Int("step", action.StepNumber),
+        )
+        defer span.End()
+    },
+
+    OnToolStart: func(toolCall types.ToolCall) {
+        _, span := tracer.Start(context.Background(), "tool.execute")
+        span.SetAttributes(attribute.String("tool", toolCall.ToolName))
+        // Store span for completion in OnToolEnd
+    },
+
+    OnChainEnd: func(result *agent.AgentResult) {
+        // Complete the main span
+        // span.SetAttributes(...)
+        // span.End()
+    },
+}
+```
+
+## Data Types
+
+### AgentAction
+
+Represents an action the agent has decided to take:
+
+```go
+type AgentAction struct {
+    ToolCall   types.ToolCall  // The tool being called
+    StepNumber int             // Step when action was decided
+    Reasoning  string          // Agent's reasoning for the action
+}
+```
+
+### AgentFinish
+
+Represents the agent's final decision:
+
+```go
+type AgentFinish struct {
+    Output       string                 // Final output text
+    StepNumber   int                    // Step when agent finished
+    FinishReason types.FinishReason     // Why the agent finished
+    Metadata     map[string]interface{} // Additional metadata
+}
+```
+
+## Best Practices
+
+### 1. Keep Callbacks Fast
+
+Callbacks are invoked during execution. Long-running operations can slow down the agent:
+
+```go
+// ❌ Bad: Slow synchronous operation
+OnToolEnd: func(toolResult types.ToolResult) {
+    saveToDatabaseSync(toolResult) // Blocks execution
+},
+
+// ✅ Good: Async logging
+OnToolEnd: func(toolResult types.ToolResult) {
+    go saveToDatabaseAsync(toolResult) // Non-blocking
+},
+```
+
+### 2. Handle Errors in Callbacks
+
+Panics in callbacks can crash your application:
+
+```go
+OnChainEnd: func(result *agent.AgentResult) {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("Callback panic: %v", r)
+        }
+    }()
+
+    // Your callback code
+},
+```
+
+### 3. Don't Modify Agent State
+
+Callbacks should observe, not modify:
+
+```go
+// ❌ Bad: Trying to modify execution
+OnAgentAction: func(action agent.AgentAction) {
+    // Don't try to cancel or modify the action
+},
+
+// ✅ Good: Just observe and log
+OnAgentAction: func(action agent.AgentAction) {
+    log.Printf("Agent is calling: %s", action.ToolCall.ToolName)
+},
+```
+
+### 4. Use Appropriate Callback Level
+
+Choose between legacy and LangChain-style callbacks based on your needs:
+
+- **Legacy callbacks**: Simple step tracking, basic monitoring
+- **LangChain-style callbacks**: Detailed lifecycle management, LangChain compatibility, fine-grained control
+
+### 5. Thread Safety
+
+If callbacks access shared state, ensure thread safety:
+
+```go
+type SafeCounter struct {
+    mu    sync.Mutex
+    count int
+}
+
+func (c *SafeCounter) Increment() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.count++
+}
+
+counter := &SafeCounter{}
+
+config := agent.AgentConfig{
+    OnToolEnd: func(toolResult types.ToolResult) {
+        counter.Increment() // Thread-safe
+    },
+}
+```
+
+## Combining Callbacks
+
+You can use both legacy and LangChain-style callbacks together:
+
+```go
+config := agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+
+    // Legacy - for backward compatibility
+    OnStepFinish: func(step types.StepResult) {
+        // Your existing logic
+    },
+
+    // LangChain-style - for new features
+    OnChainStart: func(input string, messages []types.Message) {
+        // Enhanced tracking
+    },
+
+    OnAgentAction: func(action agent.AgentAction) {
+        // Fine-grained action monitoring
+    },
+}
+```
+
+## Run Tracking (v6.0.61+)
+
+Run tracking enables you to correlate all callbacks, actions, and events from a single agent execution using unique identifiers. This is particularly useful for observability, debugging, and distributed tracing.
+
+### Run Tracking Fields
+
+Each `AgentAction` and `AgentFinish` includes:
+
+- **`RunID`**: Unique identifier for this agent execution chain
+- **`ParentRunID`**: ID of the parent run (for subagents/nested executions)
+- **`Tags`**: User-defined labels for categorizing runs
+
+### Automatic RunID Generation
+
+Run IDs are automatically generated when an agent starts:
+
+```go
+agent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    OnAgentAction: func(action agent.AgentAction) {
+        // RunID is automatically populated
+        log.Printf("Action in run %s: %s", action.RunID, action.ToolCall.ToolName)
+    },
+})
+
+result, err := agent.Execute(context.Background(), "question")
+// RunID is automatically generated and propagated
+```
+
+### Custom Run IDs and Tags
+
+Provide your own run ID and tags using context helpers:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/agent"
+
+ctx := context.Background()
+
+// Option 1: Add tags only (RunID auto-generated)
+ctx = agent.WithTags(ctx, []string{"production", "user:123", "session:abc"})
+
+// Option 2: Custom RunID
+ctx = agent.WithRunID(ctx, "my-custom-run-id-123")
+ctx = agent.WithTags(ctx, []string{"experiment", "variant:A"})
+
+// Option 3: Nested execution (subagent tracking)
+parentCtx := agent.WithRunID(ctx, "parent-run-456")
+subagentCtx := agent.WithParentRunID(parentCtx, "parent-run-456")
+subagentCtx = agent.WithRunID(subagentCtx, "subagent-run-789")
+
+result, err := agent.Execute(ctx, "question")
+```
+
+### Retrieving Run Tracking Info
+
+Extract run tracking information from context:
+
+```go
+runID := agent.GetRunID(ctx)
+parentRunID := agent.GetParentRunID(ctx)
+tags := agent.GetTags(ctx)
+
+log.Printf("Executing run %s with tags: %v", runID, tags)
+```
+
+### Use Cases for Run Tracking
+
+#### 1. Distributed Tracing
+
+Correlate agent execution with other services:
+
+```go
+import "go.opentelemetry.io/otel/trace"
+
+// Get trace ID from OpenTelemetry
+span := trace.SpanFromContext(ctx)
+traceID := span.SpanContext().TraceID().String()
+
+// Use trace ID as run ID for correlation
+ctx = agent.WithRunID(ctx, traceID)
+ctx = agent.WithTags(ctx, []string{"service:agent", "env:production"})
+
+config := agent.AgentConfig{
+    Model: model,
+    OnAgentAction: func(action agent.AgentAction) {
+        // Log with trace ID for correlation
+        log.Printf("[trace=%s] Agent action: %s",
+            action.RunID, action.ToolCall.ToolName)
+    },
+}
+```
+
+#### 2. Multi-Tenant Observability
+
+Track executions by user or session:
+
+```go
+// Tag runs with user/session info
+ctx = agent.WithTags(ctx, []string{
+    fmt.Sprintf("user:%s", userID),
+    fmt.Sprintf("session:%s", sessionID),
+    "plan:premium",
+})
+
+config := agent.AgentConfig{
+    OnAgentFinish: func(finish agent.AgentFinish) {
+        // Store metrics tagged by user
+        metrics.RecordAgentCompletion(
+            finish.RunID,
+            finish.Tags,
+            len(finish.Metadata),
+        )
+    },
+}
+```
+
+#### 3. A/B Testing and Experiments
+
+Track different agent configurations:
+
+```go
+experimentID := "exp-123-variant-A"
+ctx = agent.WithRunID(ctx, experimentID)
+ctx = agent.WithTags(ctx, []string{
+    "experiment:prompt-variations",
+    "variant:A",
+    "temperature:0.7",
+})
+
+config := agent.AgentConfig{
+    OnChainEnd: func(result *agent.AgentResult) {
+        // Log results for experiment analysis
+        experimentTracker.LogResult(experimentID, result)
+    },
+}
+```
+
+#### 4. Subagent Hierarchies
+
+Track parent-child relationships in delegations:
+
+```go
+func executeWithSubagent(parentCtx context.Context) {
+    parentRunID := agent.GetRunID(parentCtx)
+
+    // Create subagent context with parent tracking
+    subagentCtx := agent.WithParentRunID(context.Background(), parentRunID)
+    subagentCtx = agent.WithTags(subagentCtx, []string{"type:subagent", "role:researcher"})
+
+    subagent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        OnChainStart: func(input string, messages []types.Message) {
+            runID := agent.GetRunID(subagentCtx)
+            log.Printf("Subagent %s starting (parent: %s)", runID, parentRunID)
+        },
+    })
+
+    result, err := subagent.Execute(subagentCtx, "research question")
+}
+```
+
+#### 5. Performance Analysis
+
+Group and analyze runs by tags:
+
+```go
+ctx = agent.WithTags(ctx, []string{
+    "tool:search",
+    "complexity:high",
+    "priority:p0",
+})
+
+config := agent.AgentConfig{
+    OnChainEnd: func(result *agent.AgentResult) {
+        // Store metrics for later analysis
+        analytics.RecordExecution(analytics.Execution{
+            RunID:      agent.GetRunID(ctx),
+            Tags:       agent.GetTags(ctx),
+            Duration:   time.Since(startTime),
+            TokensUsed: result.Usage.GetTotalTokens(),
+            StepCount:  len(result.Steps),
+        })
+    },
+}
+
+// Later: Query executions by tags
+highComplexityRuns := analytics.FindByTag("complexity:high")
+```
+
+## Examples
+
+See complete examples in `examples/agents/callbacks/`:
+
+- **onstepfinish**: Basic step tracking with OnStepFinish
+- **early-stopping**: Token limit monitoring with callbacks
+- **langchain-style**: Comprehensive example of all LangChain-style callbacks (includes run tracking demo)
+
+## Next Steps
+
+- Explore [Agent Workflows](/docs/agents/workflows) for complex agent patterns
+- Learn about [Loop Control](/docs/agents/loop-control) for execution management
+- See [Agent Configuration](/docs/agents/configuring-call-options) for more options
+
+---
+
+*Introduced in v6.0.60: LangChain-style callbacks (OnChainStart, OnChainEnd, OnChainError, OnAgentAction, OnAgentFinish, OnToolStart, OnToolEnd, OnToolError)*
+
+*Introduced in v6.0.61: Run tracking with RunID, ParentRunID, and Tags fields in AgentAction and AgentFinish*

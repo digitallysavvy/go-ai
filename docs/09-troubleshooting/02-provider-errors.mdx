@@ -1,0 +1,776 @@
+---
+title: Provider Errors
+description: Troubleshooting provider-specific issues in Go AI SDK
+---
+
+# Provider Errors
+
+This guide covers common errors specific to different AI providers and how to resolve them.
+
+## OpenAI Provider Errors
+
+### Error: "Insufficient Quota"
+
+**Symptoms:**
+```
+Error: You exceeded your current quota, please check your plan and billing details
+Status Code: 429
+```
+
+**Cause:**
+You've exceeded your OpenAI usage quota or haven't set up billing.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func generateWithQuotaFallback(ctx context.Context, prompt string) (string, error) {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // Try primary model
+    model, _ := provider.LanguageModel("gpt-4")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+
+    if err != nil {
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) && providerErr.StatusCode == 429 {
+            log.Println("Quota exceeded, trying alternative provider or model...")
+
+            // Option 1: Use a cheaper model
+            model, _ = provider.LanguageModel("gpt-4o-mini")
+            result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+                Model:  model,
+                Prompt: prompt,
+            })
+            if err != nil {
+                return "", fmt.Errorf("fallback failed: %w", err)
+            }
+            return result.Text, nil
+        }
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+    text, err := generateWithQuotaFallback(ctx, "Explain quantum computing")
+    if err != nil {
+        log.Fatalf("Failed: %v", err)
+    }
+    fmt.Println(text)
+}
+```
+
+**Prevention:**
+1. Monitor your OpenAI usage dashboard
+2. Set up billing alerts
+3. Implement usage tracking in your application
+4. Use cheaper models for non-critical tasks
+
+### Error: "Model Permission Denied"
+
+**Symptoms:**
+```
+Error: The model 'gpt-4' does not exist or you do not have access to it
+Status Code: 404
+```
+
+**Cause:**
+Trying to access a model not available in your OpenAI account tier.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func getAvailableModel(provider *openai.Provider, preferredModels []string) (interface{}, error) {
+    ctx := context.Background()
+
+    // Try models in order of preference
+    for _, modelName := range preferredModels {
+        model, err := provider.LanguageModel(modelName)
+        if err != nil {
+            log.Printf("Model %s not available: %v", modelName, err)
+            continue
+        }
+
+        // Test if model is actually accessible with a cheap request
+        _, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:      model,
+            Prompt:     "Hi",
+            MaxTokens:  5,
+        })
+        if err == nil {
+            log.Printf("Using model: %s", modelName)
+            return model, nil
+        }
+        log.Printf("Model %s access denied: %v", modelName, err)
+    }
+
+    return nil, fmt.Errorf("no available models found")
+}
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // List models in order of preference
+    preferredModels := []string{
+        "gpt-4",
+        "gpt-4-turbo",
+        "gpt-4o",
+        "gpt-3.5-turbo",
+    }
+
+    model, err := getAvailableModel(provider, preferredModels)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    ctx := context.Background()
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain quantum computing",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Anthropic Provider Errors
+
+### Error: "Invalid Authentication"
+
+**Symptoms:**
+```
+Error: invalid x-api-key
+Status Code: 401
+```
+
+**Cause:**
+Invalid or missing Anthropic API key.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func validateAnthropicKey(key string) error {
+    if key == "" {
+        return fmt.Errorf("API key is empty")
+    }
+
+    // Anthropic keys should start with "sk-ant-"
+    if !strings.HasPrefix(key, "sk-ant-") {
+        return fmt.Errorf("invalid Anthropic API key format (should start with 'sk-ant-')")
+    }
+
+    return nil
+}
+
+func main() {
+    apiKey := os.Getenv("ANTHROPIC_API_KEY")
+
+    // Validate key format before using
+    if err := validateAnthropicKey(apiKey); err != nil {
+        log.Fatalf("API key validation failed: %v", err)
+    }
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: apiKey,
+    })
+
+    model, err := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+
+    ctx := context.Background()
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Error: "Overloaded Error"
+
+**Symptoms:**
+```
+Error: Overloaded
+Status Code: 529
+```
+
+**Cause:**
+Anthropic's servers are temporarily overloaded.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "math"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func generateWithRetry(ctx context.Context, model interface{}, prompt string, maxRetries int) (string, error) {
+    var lastErr error
+
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        if attempt > 0 {
+            // Exponential backoff with jitter
+            backoff := time.Duration(math.Pow(2, float64(attempt-1))) * time.Second
+            jitter := time.Duration(float64(backoff) * 0.1)
+            wait := backoff + jitter
+
+            log.Printf("Attempt %d/%d failed, waiting %v before retry...", attempt, maxRetries, wait)
+
+            select {
+            case <-time.After(wait):
+            case <-ctx.Done():
+                return "", ctx.Err()
+            }
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+
+        if err == nil {
+            return result.Text, nil
+        }
+
+        lastErr = err
+
+        // Check if error is retryable
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) {
+            // Retry on 529 (overloaded) and 5xx errors
+            if providerErr.StatusCode == 529 || (providerErr.StatusCode >= 500 && providerErr.StatusCode < 600) {
+                log.Printf("Retryable error (status %d): %s", providerErr.StatusCode, providerErr.Message)
+                continue
+            }
+            // Don't retry on 4xx errors (except 429)
+            if providerErr.StatusCode >= 400 && providerErr.StatusCode < 500 && providerErr.StatusCode != 429 {
+                return "", fmt.Errorf("non-retryable error: %w", err)
+            }
+        }
+    }
+
+    return "", fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("claude-3-5-sonnet-20241022")
+
+    text, err := generateWithRetry(ctx, model, "Explain quantum computing", 5)
+    if err != nil {
+        log.Fatalf("Failed: %v", err)
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Google (Gemini) Provider Errors
+
+### Error: "API Key Not Valid"
+
+**Symptoms:**
+```
+Error: API key not valid. Please pass a valid API key
+Status Code: 400
+```
+
+**Cause:**
+Invalid Google AI API key or using the wrong type of credentials.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+
+func main() {
+    // Google AI Studio API key (not GCP service account)
+    apiKey := os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+    if apiKey == "" {
+        log.Fatal("GOOGLE_GENERATIVE_AI_API_KEY not set")
+    }
+
+    // For Google AI Studio (free tier)
+    provider := google.New(google.Config{
+        APIKey: apiKey,
+    })
+
+    model, err := provider.LanguageModel("gemini-1.5-pro")
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+
+    ctx := context.Background()
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Error: "Resource Exhausted"
+
+**Symptoms:**
+```
+Error: Resource has been exhausted (e.g. check quota)
+Status Code: 429
+```
+
+**Cause:**
+Exceeded Google AI API quota (RPM or TPM limits).
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+    "golang.org/x/time/rate"
+)
+
+// Rate limiter for Google AI (15 RPM for free tier)
+var googleLimiter = rate.NewLimiter(rate.Limit(15.0/60.0), 1)
+
+func generateWithRateLimit(ctx context.Context, model interface{}, prompt string) (string, error) {
+    // Wait for rate limiter
+    if err := googleLimiter.Wait(ctx); err != nil {
+        return "", fmt.Errorf("rate limiter error: %w", err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+
+    if err != nil {
+        var rateLimitErr *providererrors.RateLimitError
+        if errors.As(err, &rateLimitErr) {
+            // Wait and retry if rate limited
+            if rateLimitErr.RetryAfterSeconds != nil {
+                waitDuration := time.Duration(*rateLimitErr.RetryAfterSeconds) * time.Second
+                log.Printf("Rate limited, waiting %v...", waitDuration)
+
+                select {
+                case <-time.After(waitDuration):
+                    return generateWithRateLimit(ctx, model, prompt)
+                case <-ctx.Done():
+                    return "", ctx.Err()
+                }
+            }
+        }
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gemini-1.5-flash")
+
+    text, err := generateWithRateLimit(ctx, model, "Explain quantum computing")
+    if err != nil {
+        log.Fatalf("Failed: %v", err)
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Azure OpenAI Provider Errors
+
+### Error: "Deployment Not Found"
+
+**Symptoms:**
+```
+Error: The API deployment for this resource does not exist
+Status Code: 404
+```
+
+**Cause:**
+Using incorrect deployment name or endpoint URL.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/azure"
+)
+
+func main() {
+    // Azure OpenAI requires specific configuration
+    endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")     // e.g., https://your-resource.openai.azure.com
+    apiKey := os.Getenv("AZURE_OPENAI_API_KEY")
+    deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT") // e.g., "gpt-4-deployment"
+
+    if endpoint == "" || apiKey == "" || deployment == "" {
+        log.Fatal("Missing Azure OpenAI configuration (endpoint, key, or deployment)")
+    }
+
+    provider := azure.New(azure.Config{
+        Endpoint:   endpoint,
+        APIKey:     apiKey,
+        Deployment: deployment,
+    })
+
+    // Use the deployment name, not the model name
+    model, err := provider.LanguageModel(deployment)
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+
+    ctx := context.Background()
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## AWS Bedrock Provider Errors
+
+### Error: "Access Denied"
+
+**Symptoms:**
+```
+Error: User is not authorized to perform: bedrock:InvokeModel
+Status Code: 403
+```
+
+**Cause:**
+IAM credentials don't have permission to access Bedrock.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+)
+
+func main() {
+    // Load AWS credentials from environment or credentials file
+    ctx := context.Background()
+    cfg, err := config.LoadDefaultConfig(ctx,
+        config.WithRegion("us-east-1"),
+    )
+    if err != nil {
+        log.Fatalf("Failed to load AWS config: %v", err)
+    }
+
+    provider := bedrock.New(bedrock.Config{
+        AWSConfig: cfg,
+    })
+
+    // Use full model ARN or ID
+    model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+**Required IAM Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+## Network and Connection Errors
+
+### Error: "Connection Timeout"
+
+**Symptoms:**
+```
+Error: context deadline exceeded
+Error: dial tcp: i/o timeout
+```
+
+**Cause:**
+Network connectivity issues or firewall blocking API requests.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Create HTTP client with custom timeout
+    httpClient := &http.Client{
+        Timeout: 2 * time.Minute,
+        Transport: &http.Transport{
+            MaxIdleConns:        100,
+            MaxIdleConnsPerHost: 10,
+            IdleConnTimeout:     90 * time.Second,
+        },
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey:     os.Getenv("OPENAI_API_KEY"),
+        HTTPClient: httpClient,
+    })
+
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Use context with longer timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+    defer cancel()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a long essay",
+    })
+    if err != nil {
+        log.Fatalf("Failed: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Implement Provider Fallback
+
+```go
+providers := []struct {
+    name string
+    provider interface{}
+    model string
+}{
+    {"openai", openaiProvider, "gpt-4o-mini"},
+    {"anthropic", anthropicProvider, "claude-3-5-haiku-20241022"},
+    {"google", googleProvider, "gemini-1.5-flash"},
+}
+
+for _, p := range providers {
+    result, err := tryGenerate(p.provider, p.model, prompt)
+    if err == nil {
+        return result
+    }
+    log.Printf("Provider %s failed: %v", p.name, err)
+}
+```
+
+### 2. Validate Configuration at Startup
+
+```go
+func validateConfig() error {
+    required := map[string]string{
+        "OPENAI_API_KEY": os.Getenv("OPENAI_API_KEY"),
+    }
+
+    for key, value := range required {
+        if value == "" {
+            return fmt.Errorf("missing required env var: %s", key)
+        }
+    }
+    return nil
+}
+```
+
+### 3. Log Provider Errors with Context
+
+```go
+if err != nil {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        log.Printf("Provider %s error (status %d): %s [code: %s]",
+            providerErr.Provider,
+            providerErr.StatusCode,
+            providerErr.Message,
+            providerErr.ErrorCode,
+        )
+    }
+}
+```
+
+### 4. Monitor Provider Health
+
+```go
+type ProviderHealth struct {
+    Name         string
+    Healthy      bool
+    LastCheck    time.Time
+    ErrorCount   int
+}
+
+func checkProviderHealth(provider interface{}, model string) ProviderHealth {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     model,
+        Prompt:    "test",
+        MaxTokens: 5,
+    })
+
+    return ProviderHealth{
+        Healthy:   err == nil,
+        LastCheck: time.Now(),
+    }
+}
+```
+
+## See Also
+
+- [Rate Limits](./03-rate-limits.mdx)
+- [Common Errors](./01-common-errors.mdx)
+- [Error Handling Guide](../03-ai-sdk-core/50-error-handling.mdx)
+- [Provider Documentation](../05-providers/index.mdx)

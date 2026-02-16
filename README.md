@@ -69,19 +69,32 @@ for chunk := range stream.TextChannel {
 ### Generating Structured Data
 
 ```go
+import "github.com/digitallysavvy/go-ai/pkg/schema"
+
 type Recipe struct {
     Name        string   `json:"name"`
     Ingredients []string `json:"ingredients"`
     Steps       []string `json:"steps"`
 }
 
+recipeSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name":        map[string]interface{}{"type": "string"},
+        "ingredients": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+        "steps":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+    },
+    "required": []string{"name", "ingredients", "steps"},
+})
+
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
     Prompt: "Generate a lasagna recipe.",
-    Output: &Recipe{},
+    Schema: recipeSchema,
 })
 
-recipe := result.Object
+var recipe Recipe
+json.Unmarshal([]byte(result.Object), &recipe)
 fmt.Printf("Recipe: %s\n", recipe.Name)
 ```
 
@@ -90,19 +103,22 @@ fmt.Printf("Recipe: %s\n", recipe.Name)
 Build autonomous agents with multi-step reasoning:
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/agents"
+import (
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
 
-agent := agents.New(agents.Config{
+myAgent := agent.New(agent.Config{
     Model:        model,
     Instructions: "You are a helpful research assistant.",
-    Tools: map[string]ai.Tool{
-        "search":     searchTool,
-        "calculator": calculatorTool,
+    Tools: []types.Tool{
+        searchTool,
+        calculatorTool,
     },
     MaxSteps: 10,
 })
 
-result, _ := agent.Execute(ctx, "What is the population of Tokyo?")
+result, _ := myAgent.Execute(ctx, "What is the population of Tokyo?")
 fmt.Println(result.Text)
 ```
 
@@ -111,7 +127,10 @@ fmt.Println(result.Text)
 Extend AI capabilities with custom tools:
 
 ```go
-weatherTool := ai.Tool{
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+weatherTool := types.Tool{
+    Name:        "get_weather",
     Description: "Get current weather for a location",
     Parameters: map[string]interface{}{
         "type": "object",
@@ -123,7 +142,7 @@ weatherTool := ai.Tool{
         },
         "required": []string{"location"},
     },
-    Execute: func(params map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         location := params["location"].(string)
         return map[string]interface{}{
             "temperature": 72,
@@ -135,7 +154,7 @@ weatherTool := ai.Tool{
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in San Francisco?",
-    Tools:  map[string]ai.Tool{"getWeather": weatherTool},
+    Tools:  []types.Tool{weatherTool},
 })
 ```
 
@@ -187,6 +206,37 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 })
 ```
 
+### Memory Optimization
+
+Reduce memory consumption by 50-80% for image-heavy or large-context workloads using retention settings:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+// Enable memory optimization
+retention := &types.RetentionSettings{
+    RequestBody:  types.BoolPtr(false), // Don't retain request
+    ResponseBody: types.BoolPtr(false), // Don't retain response
+}
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:                 model,
+    Prompt:                "Analyze this image...",
+    ExperimentalRetention: retention,
+})
+
+// Result still has usage, finish reason, text, etc.
+// But raw request/response bodies are excluded to save memory
+```
+
+Perfect for:
+- 🖼️ Image processing workloads
+- 📄 Large document analysis
+- 🔒 Privacy-sensitive applications
+- ⚡ Long-running services
+
+See [examples/features/retention](./examples/features/retention) for detailed usage.
+
 ## Supported Providers
 
 The Go AI SDK supports 26+ providers:
@@ -227,6 +277,7 @@ And many more...
 - ✅ **Registry** - Resolve models by string ID (e.g., `"openai:gpt-4"`)
 - ✅ **Context Support** - Native Go context cancellation and timeouts
 - ✅ **Streaming** - Real-time responses with automatic backpressure
+- ✅ **Memory Optimization** - Retention settings for 50-80% memory reduction
 
 ## Why Go for AI?
 

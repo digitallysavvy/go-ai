@@ -164,7 +164,7 @@ func (s *MCPServer) handleToolCall(req MCPRequest) MCPResponse {
 		arguments = make(map[string]interface{})
 	}
 
-	result, err := tool.Execute(context.Background(), arguments)
+	result, err := tool.Execute(context.Background(), arguments, types.ToolExecutionOptions{})
 	if err != nil {
 		return s.errorResponse(req.ID, -32603, "Execution error", err.Error())
 	}
@@ -227,9 +227,9 @@ func (s *MCPServer) handleGenerate(req MCPRequest) MCPResponse {
 		Result: map[string]interface{}{
 			"text": result.Text,
 			"usage": map[string]interface{}{
-				"inputTokens":  result.Usage.InputTokens,
-				"outputTokens": result.Usage.OutputTokens,
-				"totalTokens":  result.Usage.TotalTokens,
+				"inputTokens":  result.Usage.GetInputTokens(),
+				"outputTokens": result.Usage.GetOutputTokens(),
+				"totalTokens":  result.Usage.GetTotalTokens(),
 			},
 		},
 	}
@@ -268,7 +268,7 @@ func main() {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return fmt.Sprintf("Current time: %s", os.Getenv("TZ")), nil
 		},
 	})
@@ -288,7 +288,7 @@ func main() {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			op := params["operation"].(string)
 			a := params["a"].(float64)
 			b := params["b"].(float64)

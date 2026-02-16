@@ -210,6 +210,6 @@ You have access to a large dataset and should answer questions about it accurate
 
 		fmt.Printf("Query %d: %s\n", i+1, query)
 		fmt.Printf("Answer: %s\n", result.Text[:150]+"...")
-		fmt.Printf("Tokens: %d\n\n", result.Usage.TotalTokens)
+		fmt.Printf("Tokens: %d\n\n", result.Usage.GetTotalTokens())
 	}
 }

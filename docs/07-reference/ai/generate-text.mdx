@@ -1,0 +1,219 @@
+---
+title: GenerateText
+description: API reference for GenerateText function
+---
+
+# GenerateText
+
+Generates text using a language model with support for tool calling, streaming, and multi-step conversations.
+
+## Signature
+
+```go
+func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextResult, error)
+```
+
+## Parameters
+
+### GenerateTextOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model to use for generation |
+| Prompt | string | No | Simple string prompt (alternative to Messages) |
+| Messages | []types.Message | No | List of conversation messages |
+| System | string | No | System instructions |
+| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
+| MaxTokens | *int | No | Maximum tokens to generate |
+| TopP | *float64 | No | Nucleus sampling parameter |
+| TopK | *int | No | Top-K sampling parameter |
+| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
+| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
+| StopSequences | []string | No | Sequences that stop generation |
+| Seed | *int | No | Random seed for reproducibility |
+| Tools | []types.Tool | No | Tools available for the model to call |
+| ToolChoice | types.ToolChoice | No | How the model should choose tools |
+| MaxSteps | *int | No | Maximum tool calling steps (default: 10) |
+| Timeout | *TimeoutConfig | No | Timeout configuration |
+| Output | interface{} | No | Output specification (v6.0+) |
+| ResponseFormat | *provider.ResponseFormat | No | Response format (deprecated: use Output) |
+| ExperimentalContext | interface{} | No | User-defined context |
+| ExperimentalRetention | *types.RetentionSettings | No | Data retention settings |
+| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+| PrepareStep | func | No | Called before each step |
+| OnStepFinish | func | No | Called after each step completes |
+| OnFinish | func | No | Called when generation completes |
+
+## Return Value
+
+### GenerateTextResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Text | string | Generated text content |
+| ToolCalls | []types.ToolCall | Tool calls made during generation |
+| ToolResults | []types.ToolResult | Results from executed tools |
+| Steps | []types.StepResult | Steps taken during generation |
+| FinishReason | types.FinishReason | Why generation finished |
+| Usage | types.Usage | Token usage information |
+| ContextManagement | interface{} | Context management info (Anthropic) |
+| Warnings | []types.Warning | Provider warnings |
+| RawRequest | interface{} | Raw request for debugging |
+| RawResponse | interface{} | Raw response for debugging |
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Create provider and model
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Generate text
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a haiku about Go programming",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### With Generation Parameters
+
+```go
+temperature := 0.7
+maxTokens := 500
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      "Explain quantum computing",
+    Temperature: &temperature,
+    MaxTokens:   &maxTokens,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+### With Multi-turn Conversation
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What is the capital of France?"},
+            },
+        },
+        {
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "The capital of France is Paris."},
+            },
+        },
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What is its population?"},
+            },
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+### With Tool Calling
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{
+                "type":        "string",
+                "description": "City name",
+            },
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        location := input["location"].(string)
+        return fmt.Sprintf("Weather in %s: Sunny, 72°F", location), nil
+    },
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather like in San Francisco?",
+    Tools:  []types.Tool{weatherTool},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+fmt.Printf("Tool calls: %d\n", len(result.ToolCalls))
+```
+
+## Error Handling
+
+Common errors and how to handle them:
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    switch {
+    case errors.Is(err, context.DeadlineExceeded):
+        log.Println("Request timed out")
+    case errors.Is(err, context.Canceled):
+        log.Println("Request was canceled")
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "generation failed"):
+        log.Println("Generation error:", err)
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [StreamText](./stream-text.mdx) - Streaming text generation
+- [GenerateObject](./generate-object.mdx) - Structured object generation
+- [Tool Definition](./tool.mdx) - Defining custom tools
+- [Language Models Guide](../../03-providers/language-models.mdx)

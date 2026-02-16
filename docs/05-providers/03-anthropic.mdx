@@ -1,0 +1,638 @@
+---
+title: Anthropic Provider
+description: Setup and usage guide for Anthropic Claude models (Sonnet, Opus, Haiku) with Go-AI SDK
+---
+
+# Anthropic Provider
+
+Anthropic provides the Claude family of models, known for their helpfulness, honesty, and harmlessness. Claude excels at analysis, coding, creative writing, and extended conversations with industry-leading context windows.
+
+## Setup
+
+### Installation
+
+The Anthropic provider is included in the Go-AI SDK:
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+```
+
+### Configuration
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+})
+
+model, err := provider.LanguageModel("claude-sonnet-4.5")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [console.anthropic.com](https://console.anthropic.com)
+2. Navigate to API Keys section
+3. Create new API key
+4. Set environment variable:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+## Available Models
+
+### Claude 4.5 Series (Latest)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| claude-opus-4.5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
+| claude-sonnet-4.5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
+| claude-haiku-4.5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
+
+### Claude 4 Series
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| claude-opus-4 | 200K | $15.00/1M | $75.00/1M | Complex analysis |
+| claude-sonnet-4 | 200K | $3.00/1M | $15.00/1M | General purpose |
+| claude-haiku-4 | 200K | $0.25/1M | $1.25/1M | High-volume tasks |
+
+### Claude 3.5 Series (Previous Generation)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| claude-3-5-sonnet-20241022 | 200K | $3.00/1M | $15.00/1M | Latest 3.5 with tool use |
+| claude-3-5-haiku-20241022 | 200K | $0.80/1M | $4.00/1M | Fast responses |
+
+### Claude 3 Series (Legacy)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| claude-3-opus-20240229 | 200K | $15.00/1M | $75.00/1M | Legacy flagship |
+| claude-3-sonnet-20240229 | 200K | $3.00/1M | $15.00/1M | Legacy balanced |
+| claude-3-haiku-20240307 | 200K | $0.25/1M | $1.25/1M | Legacy fast |
+
+## Provider-Specific Features
+
+### Extended Context (200K tokens)
+
+Claude models support up to 200K token context windows:
+
+```go
+// Process entire codebases or documents
+largeDocument := readLargeFile("document.txt") // up to 200K tokens
+
+result, err := ai.GenerateText(model,
+    fmt.Sprintf("Analyze this document and provide insights:\n\n%s", largeDocument))
+```
+
+### Vision Capabilities
+
+Claude 4.5 and 3.5 models support image understanding:
+
+```go
+import "encoding/base64"
+
+// Read and encode image
+imageData, err := os.ReadFile("chart.png")
+if err != nil {
+    log.Fatal(err)
+}
+encodedImage := base64.StdEncoding.EncodeToString(imageData)
+
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Analyze this chart",
+            ai.WithImageData(encodedImage, "image/png"),
+        ),
+    ),
+)
+```
+
+### Tool Use (Function Calling)
+
+Claude excels at tool use with precise parameter extraction:
+
+```go
+searchTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name:        "search_database",
+        Description: "Search the customer database",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{
+                    "type":        "string",
+                    "description": "Search query",
+                },
+                "filters": map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "status": map[string]interface{}{
+                            "type": "string",
+                            "enum": []string{"active", "inactive"},
+                        },
+                        "created_after": map[string]string{
+                            "type": "string",
+                        },
+                    },
+                },
+            },
+            "required": []string{"query"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "Find all active customers who signed up in 2024",
+    ai.WithTools(searchTool),
+)
+
+for _, call := range result.ToolCalls {
+    fmt.Printf("Tool: %s\nArgs: %s\n", call.Function.Name, call.Function.Arguments)
+}
+```
+
+### Prompt Caching
+
+Reduce costs by caching frequently used prompt segments:
+
+```go
+// Cache system prompt and context
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.SystemMessage("You are an expert Go programmer..."), // Will be cached
+        ai.UserMessage("Review this code: "+largeCodebase),    // Will be cached
+        ai.UserMessage("How can I improve error handling?"),   // New query
+    ),
+    ai.WithCaching(true),
+)
+
+// Subsequent requests with same cached content cost significantly less
+```
+
+Pricing with caching:
+- Cache write: $3.75/1M tokens (1.25x normal)
+- Cache read: $0.30/1M tokens (0.1x normal)
+- Cached content valid for 5 minutes
+
+### Thinking (Extended Reasoning)
+
+Claude 4.5 supports extended thinking for complex problems:
+
+```go
+result, err := ai.GenerateText(model,
+    "Solve this complex optimization problem...",
+    ai.WithThinking(true), // Enable extended reasoning
+)
+
+// Response includes thinking process
+if result.Thinking != "" {
+    fmt.Println("Claude's reasoning:", result.Thinking)
+}
+fmt.Println("Final answer:", result.Text)
+```
+
+### Context Management (Beta)
+
+Automatically manage conversation history to prevent context window overflows. Claude can intelligently clear old tool calls, thinking blocks, or compact entire conversations:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+
+// Create model with context management
+model, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
+    ContextManagement: &anthropic.ContextManagement{
+        Edits: []anthropic.ContextManagementEdit{
+            // Clear old tool calls after 10,000 input tokens
+            anthropic.NewClearToolUsesEdit().
+                WithInputTokensTrigger(10000).
+                WithKeepToolUses(3),
+
+            // Clear thinking blocks, keeping last 2 turns
+            anthropic.NewClearThinkingEdit().
+                WithKeepRecentTurns(2),
+
+            // Compact conversation at 50,000 tokens
+            anthropic.NewCompactEdit().
+                WithTrigger(50000),
+        },
+    },
+})
+
+// Use in long conversations - context automatically managed
+result, err := ai.GenerateText(model, longConversation...)
+
+// Check if context management was applied
+if result.ContextManagement != nil {
+    cmr := result.ContextManagement.(*anthropic.ContextManagementResponse)
+    for _, edit := range cmr.AppliedEdits {
+        switch e := edit.(type) {
+        case *anthropic.AppliedClearToolUsesEdit:
+            fmt.Printf("Cleared %d tool uses, freed %d tokens\n",
+                e.ClearedToolUses, e.ClearedInputTokens)
+        case *anthropic.AppliedClearThinkingEdit:
+            fmt.Printf("Cleared %d thinking turns, freed %d tokens\n",
+                e.ClearedThinkingTurns, e.ClearedInputTokens)
+        case *anthropic.AppliedCompactEdit:
+            fmt.Println("Conversation compacted")
+        }
+    }
+}
+```
+
+**Available Edit Types:**
+
+1. **ClearToolUses** - Removes old tool call details
+   - Configure trigger thresholds (token count or tool use count)
+   - Keep recent tool uses
+   - Exclude specific tools
+   - Control minimum tokens to clear
+
+2. **ClearThinking** - Removes extended thinking blocks
+   - Keep all thinking or specify number of recent turns
+   - Preserves final conclusions
+
+3. **Compact** - Summarizes entire conversation
+   - Most aggressive space-saving
+   - Optional pause after compaction
+   - Custom compaction instructions
+
+**Beta Headers Required:**
+- `context-management-2025-06-27` for clear_tool_uses and clear_thinking
+- `compact-2026-01-12` for compact edits
+(Headers are automatically added by the SDK)
+
+### Streaming
+
+Stream responses for real-time output:
+
+```go
+stream, err := ai.StreamText(model, "Write a detailed essay about AI safety")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+
+if stream.Error() != nil {
+    log.Fatal(stream.Error())
+}
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    provider := anthropic.New(anthropic.Config{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("claude-sonnet-4.5")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain the Go concurrency model with examples")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("\nTokens - Input: %d, Output: %d\n",
+        result.Usage.PromptTokens,
+        result.Usage.CompletionTokens)
+}
+```
+
+### Multi-Turn Conversation
+
+```go
+messages := []ai.Message{
+    ai.SystemMessage("You are a helpful code review assistant"),
+    ai.UserMessage("Review this function:\n\n" + code),
+}
+
+result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Review:", result.Text)
+
+// Continue conversation
+messages = append(messages,
+    ai.AssistantMessage(result.Text),
+    ai.UserMessage("Can you suggest specific improvements?"),
+)
+
+result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+```
+
+### Document Analysis with Vision
+
+```go
+// Analyze a PDF page rendered as image
+imageData, err := os.ReadFile("invoice.png")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage(
+            "Extract all line items from this invoice with prices",
+            ai.WithImageData(
+                base64.StdEncoding.EncodeToString(imageData),
+                "image/png",
+            ),
+        ),
+    ),
+    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
+)
+
+fmt.Println("Extracted data:", result.Text)
+```
+
+### Code Generation with Tool Use
+
+```go
+fileReadTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name:        "read_file",
+        Description: "Read contents of a file",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "path": map[string]string{
+                    "type":        "string",
+                    "description": "File path",
+                },
+            },
+            "required": []string{"path"},
+        },
+    },
+}
+
+fileWriteTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name:        "write_file",
+        Description: "Write content to a file",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "path": map[string]string{"type": "string"},
+                "content": map[string]string{"type": "string"},
+            },
+            "required": []string{"path", "content"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "Read main.go, add error handling, and save the improved version",
+    ai.WithTools(fileReadTool, fileWriteTool),
+)
+
+// Process tool calls
+for _, call := range result.ToolCalls {
+    switch call.Function.Name {
+    case "read_file":
+        // Execute file read
+    case "write_file":
+        // Execute file write
+    }
+}
+```
+
+### Large Document Processing with Caching
+
+```go
+// Load large codebase
+codebase := loadCodebase("./src") // ~100K tokens
+
+messages := []ai.Message{
+    ai.SystemMessage("You are an expert code reviewer"),
+    ai.UserMessage("Here is the codebase:\n\n" + codebase), // Cached
+}
+
+// First query - caches codebase
+result, err := ai.GenerateText(model,
+    ai.WithMessages(append(messages,
+        ai.UserMessage("List all exported functions"),
+    )...),
+    ai.WithCaching(true),
+)
+
+// Second query - uses cached codebase (90% cost reduction)
+result, err = ai.GenerateText(model,
+    ai.WithMessages(append(messages,
+        ai.UserMessage("Find potential security issues"),
+    )...),
+    ai.WithCaching(true),
+)
+```
+
+## Advanced Configuration
+
+### Custom HTTP Client
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    HTTPClient: &http.Client{
+        Timeout: time.Minute * 5,
+        Transport: &http.Transport{
+            MaxIdleConns:        100,
+            MaxIdleConnsPerHost: 10,
+            IdleConnTimeout:     90 * time.Second,
+        },
+    },
+})
+```
+
+### Custom Base URL
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+    BaseURL: "https://your-proxy.com",
+})
+```
+
+### Beta Features
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    BetaHeaders: []string{
+        "prompt-caching-2024-07-31",
+        "extended-thinking-2024-12-01",
+    },
+})
+```
+
+## Error Handling
+
+### Common Errors
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if anthropicErr, ok := err.(*anthropic.Error); ok {
+        switch anthropicErr.Type {
+        case "invalid_request_error":
+            log.Printf("Invalid request: %s", anthropicErr.Message)
+        case "authentication_error":
+            log.Fatal("Invalid API key")
+        case "permission_error":
+            log.Fatal("Permission denied")
+        case "not_found_error":
+            log.Fatal("Model not found")
+        case "rate_limit_error":
+            retryAfter := anthropicErr.RetryAfter
+            log.Printf("Rate limited, retry after %d seconds", retryAfter)
+            time.Sleep(time.Duration(retryAfter) * time.Second)
+        case "overloaded_error":
+            log.Println("Service overloaded, retrying...")
+            time.Sleep(time.Second * 10)
+        default:
+            log.Printf("Anthropic error: %s", anthropicErr.Message)
+        }
+    }
+    return nil, err
+}
+```
+
+### Retry with Exponential Backoff
+
+```go
+func generateWithRetry(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+    maxRetries := 5
+    baseDelay := time.Second
+
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        result, err := ai.GenerateText(model, prompt)
+        if err == nil {
+            return result, nil
+        }
+
+        if anthropicErr, ok := err.(*anthropic.Error); ok {
+            if anthropicErr.Type == "rate_limit_error" || anthropicErr.Type == "overloaded_error" {
+                delay := baseDelay * time.Duration(math.Pow(2, float64(attempt)))
+                log.Printf("Attempt %d failed, waiting %v", attempt+1, delay)
+                time.Sleep(delay)
+                continue
+            }
+        }
+
+        return nil, err
+    }
+
+    return nil, fmt.Errorf("max retries exceeded")
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use `claude-sonnet-4.5` for best balance of quality and speed
+   - Use `claude-opus-4.5` for most complex tasks requiring deep analysis
+   - Use `claude-haiku-4.5` for high-volume, latency-sensitive applications
+
+2. **Prompt Engineering**
+   - Be specific and detailed in instructions
+   - Use XML tags for clear structure: `<document>`, `<context>`, `<instruction>`
+   - Provide examples when possible
+   - Place most important information at the start or end
+
+3. **Cost Optimization**
+   - Enable prompt caching for repeated context (large documents, system prompts)
+   - Use Haiku for simple tasks
+   - Monitor token usage with `result.Usage`
+   - Cache responses on your side for identical queries
+
+4. **Context Management**
+   - Take advantage of 200K context window
+   - Include full context rather than summarizing
+   - Use structured formats (JSON, XML) for large data
+
+5. **Tool Use**
+   - Provide clear, detailed tool descriptions
+   - Use precise parameter schemas
+   - Handle tool results in follow-up messages
+   - Chain multiple tool calls for complex workflows
+
+## Rate Limits & Pricing
+
+### Rate Limits (Standard Tier)
+
+| Model | RPM | TPM | RPD |
+|-------|-----|-----|-----|
+| Claude Opus 4.5 | 50 | 40,000 | 1,000 |
+| Claude Sonnet 4.5 | 50 | 40,000 | 1,000 |
+| Claude Haiku 4.5 | 50 | 50,000 | 1,000 |
+
+RPM = Requests per minute, TPM = Tokens per minute (input), RPD = Requests per day
+
+Higher tiers available with increased limits.
+
+### Token Counting
+
+```go
+// Estimate tokens (approximate: 1 token ≈ 4 characters)
+func estimateTokens(text string) int {
+    return len(text) / 4
+}
+
+// Calculate cost
+func calculateCost(usage ai.Usage, model string) float64 {
+    rates := map[string][2]float64{
+        "claude-opus-4.5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
+        "claude-sonnet-4.5": {3.00 / 1_000_000, 15.00 / 1_000_000},
+        "claude-haiku-4.5":  {0.80 / 1_000_000, 4.00 / 1_000_000},
+    }
+
+    rate := rates[model]
+    inputCost := float64(usage.GetInputTokens()) * rate[0]
+    outputCost := float64(usage.GetOutputTokens()) * rate[1]
+
+    return inputCost + outputCost
+}
+```
+
+### Batch API (Coming Soon)
+
+Process large volumes at 50% discount with 24-hour turnaround.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Core Concepts: Language Models](../02-core-concepts/language-models.mdx)
+- [Anthropic API Documentation](https://docs.anthropic.com/claude/reference)
+- [Prompt Engineering Guide](https://docs.anthropic.com/claude/docs/prompt-engineering)

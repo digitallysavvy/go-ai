@@ -267,12 +267,12 @@ Provide a detailed analysis.`
 
 	fmt.Println("\n=== What Affects Latency? ===")
 	factors := map[string]string{
-		"Prompt length":     "Longer prompts take longer to process",
-		"Response length":   "More tokens → more time",
-		"Model size":        "Larger models have higher latency",
-		"Network latency":   "Distance to API servers matters",
-		"API load":          "Peak times may have higher latency",
-		"Rate limiting":     "Throttling adds wait time",
+		"Prompt length":   "Longer prompts take longer to process",
+		"Response length": "More tokens → more time",
+		"Model size":      "Larger models have higher latency",
+		"Network latency": "Distance to API servers matters",
+		"API load":        "Peak times may have higher latency",
+		"Rate limiting":   "Throttling adds wait time",
 	}
 
 	for factor, description := range factors {

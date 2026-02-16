@@ -70,5 +70,5 @@ func main() {
 	}
 
 	fmt.Printf("\nResponse: %s\n", result.Text)
-	fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("Tokens: %d\n", result.Usage.GetTotalTokens())
 }

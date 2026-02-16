@@ -1,0 +1,173 @@
+---
+title: xAI Provider
+description: Setup and usage guide for xAI Grok models with Go-AI SDK
+---
+
+# xAI Provider
+
+xAI provides Grok models with real-time knowledge through X (Twitter) integration. Known for witty personality, current events awareness, and strong reasoning capabilities.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // xAI uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("XAI_API_KEY"),
+    BaseURL: "https://api.x.ai/v1",
+})
+
+model, err := provider.LanguageModel("grok-2-latest")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [x.ai](https://x.ai)
+2. Request API access
+3. Set environment variable:
+
+```bash
+export XAI_API_KEY=xai-...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| grok-2-latest | 131K | $2.00/1M | $10.00/1M | Latest capabilities |
+| grok-2-1212 | 131K | $2.00/1M | $10.00/1M | Stable version |
+| grok-2-vision-1212 | 32K | $2.00/1M | $10.00/1M | Image understanding |
+| grok-beta | 131K | $5.00/1M | $15.00/1M | Beta features |
+
+## Provider-Specific Features
+
+### Real-Time X Integration
+
+Access current events and trending topics:
+
+```go
+result, err := ai.GenerateText(model,
+    "What are the trending topics on X today?",
+    ai.WithWebSearch(true), // Enable real-time X data
+)
+```
+
+### Vision Capabilities
+
+```go
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Describe this meme",
+            ai.WithImageURL("https://example.com/meme.jpg"),
+        ),
+    ),
+)
+```
+
+### Tool Use
+
+```go
+searchTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name: "search_x",
+        Description: "Search X posts",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]string{"type": "string"},
+            },
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "Find recent AI discussions",
+    ai.WithTools(searchTool),
+)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("XAI_API_KEY"),
+        BaseURL: "https://api.x.ai/v1",
+    })
+
+    model, err := provider.LanguageModel("grok-2-latest")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "What's happening in AI today?")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Current Events Analysis
+
+```go
+result, err := ai.GenerateText(model,
+    "Analyze today's tech news and give me key insights",
+    ai.WithWebSearch(true),
+)
+```
+
+## Best Practices
+
+1. **Leverage Real-Time Data**
+   - Use for current events queries
+   - Enable web search for latest information
+   - Great for social media analysis
+
+2. **Personality**
+   - Grok has witty, informal tone
+   - Good for creative, conversational tasks
+   - May include humor in responses
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+| Model | RPM | Tokens/Min |
+|-------|-----|------------|
+| Grok-2 | 60 | 60,000 |
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [xAI Documentation](https://docs.x.ai)

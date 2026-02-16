@@ -33,10 +33,13 @@ func (m *mockLanguageModel) DoGenerate(ctx context.Context, opts *GenerateOption
 	m.mu.Lock()
 	m.generateCalls = append(m.generateCalls, opts)
 	m.mu.Unlock()
+	inputTokens := int64(10)
+	outputTokens := int64(5)
+	totalTokens := int64(15)
 	return &types.GenerateResult{
 		Text:         "mock response",
 		FinishReason: types.FinishReasonStop,
-		Usage:        types.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		Usage:        types.Usage{InputTokens: &inputTokens, OutputTokens: &outputTokens, TotalTokens: &totalTokens},
 	}, nil
 }
 

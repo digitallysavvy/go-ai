@@ -1,0 +1,711 @@
+---
+title: Tool Calling Errors
+description: Debugging tool execution and schema issues in Go AI SDK
+---
+
+# Tool Calling Errors
+
+This guide covers common errors when using tools with language models and how to resolve them.
+
+## Tool Definition Errors
+
+### Error: "Invalid Tool Schema"
+
+**Symptoms:**
+```
+Error: tool schema validation failed
+Error: invalid parameter type in tool definition
+```
+
+**Cause:**
+Tool parameters schema doesn't match expected JSON schema format.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Define input struct with proper JSON tags
+type WeatherInput struct {
+    Location string `json:"location" jsonschema:"required,description=City name"`
+    Unit     string `json:"unit" jsonschema:"enum=celsius,enum=fahrenheit,description=Temperature unit"`
+}
+
+// BAD: Manually creating schema (error-prone)
+func badToolDefinition() types.Tool {
+    return types.Tool{
+        Name:        "get_weather",
+        Description: "Get weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type": "string",
+                    // Missing "description" and other fields
+                },
+            },
+            // Missing "required" array
+        },
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            return "Sunny", nil
+        },
+    }
+}
+
+// GOOD: Using jsonschema to generate schema
+func goodToolDefinition() types.Tool {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&WeatherInput{})
+
+    return types.Tool{
+        Name:        "get_weather",
+        Description: "Get the current weather for a location",
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params WeatherInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, fmt.Errorf("invalid input: %w", err)
+            }
+
+            // Simulate weather lookup
+            return map[string]interface{}{
+                "location":    params.Location,
+                "temperature": 72,
+                "unit":        params.Unit,
+                "condition":   "sunny",
+            }, nil
+        },
+    }
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    weatherTool := goodToolDefinition()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "What's the weather in San Francisco?",
+        Tools:  []types.Tool{weatherTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Tool Execution Errors
+
+### Error: "Tool Execution Failed"
+
+**Symptoms:**
+```
+Error: tool execution failed: panic in tool function
+Error: tool returned invalid type
+```
+
+**Cause:**
+Runtime error in tool execution function or invalid return value.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+type CalculatorInput struct {
+    Operation string  `json:"operation" jsonschema:"required,enum=add,enum=subtract,enum=multiply,enum=divide"`
+    A         float64 `json:"a" jsonschema:"required"`
+    B         float64 `json:"b" jsonschema:"required"`
+}
+
+// BAD: No error handling in tool
+func unsafeCalculatorTool() types.Tool {
+    reflector := jsonschema.Reflector{
+        DoNotReference: true,
+    }
+    schema := reflector.Reflect(&CalculatorInput{})
+
+    return types.Tool{
+        Name:        "calculator",
+        Description: "Perform basic arithmetic",
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params CalculatorInput
+            json.Unmarshal(input, &params) // Ignoring error!
+
+            // No validation - can panic on divide by zero!
+            var result float64
+            switch params.Operation {
+            case "divide":
+                result = params.A / params.B // Panic if B is 0!
+            }
+
+            return result, nil
+        },
+    }
+}
+
+// GOOD: Proper error handling and validation
+func safeCalculatorTool() types.Tool {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&CalculatorInput{})
+
+    return types.Tool{
+        Name:        "calculator",
+        Description: "Perform basic arithmetic operations",
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            // Validate input JSON
+            var params CalculatorInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, fmt.Errorf("invalid input JSON: %w", err)
+            }
+
+            // Validate operation
+            validOps := map[string]bool{
+                "add": true, "subtract": true, "multiply": true, "divide": true,
+            }
+            if !validOps[params.Operation] {
+                return nil, fmt.Errorf("invalid operation: %s", params.Operation)
+            }
+
+            // Perform calculation with error handling
+            var result float64
+            var err error
+
+            switch params.Operation {
+            case "add":
+                result = params.A + params.B
+            case "subtract":
+                result = params.A - params.B
+            case "multiply":
+                result = params.A * params.B
+            case "divide":
+                if params.B == 0 {
+                    return nil, fmt.Errorf("division by zero")
+                }
+                result = params.A / params.B
+            }
+
+            // Return structured result
+            return map[string]interface{}{
+                "operation": params.Operation,
+                "result":    result,
+                "inputs":    map[string]float64{"a": params.A, "b": params.B},
+            }, err
+        },
+    }
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    calcTool := safeCalculatorTool()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "What is 144 divided by 12?",
+        Tools:  []types.Tool{calcTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Tool Choice Issues
+
+### Error: "Tool Not Called When Expected"
+
+**Symptoms:**
+- Model doesn't call the tool
+- Model hallucinates answers instead of using tool
+
+**Cause:**
+Poor tool description or model doesn't understand when to use the tool.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+type TimeInput struct {
+    Timezone string `json:"timezone" jsonschema:"required,description=IANA timezone name (e.g. America/New_York)"`
+}
+
+// BAD: Vague description
+func vagueTimeTool() types.Tool {
+    reflector := jsonschema.Reflector{DoNotReference: true}
+    schema := reflector.Reflect(&TimeInput{})
+
+    return types.Tool{
+        Name:        "time",
+        Description: "Gets time", // Too vague!
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params TimeInput
+            json.Unmarshal(input, &params)
+            return time.Now().Format(time.RFC3339), nil
+        },
+    }
+}
+
+// GOOD: Clear, specific description
+func clearTimeTool() types.Tool {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&TimeInput{})
+
+    return types.Tool{
+        Name: "get_current_time",
+        Description: `Get the current time for a specific timezone.
+Use this tool when the user asks for the current time, date, or what time it is in a specific location.
+Always use this tool instead of guessing the current time.`,
+        Parameters: schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params TimeInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, err
+            }
+
+            loc, err := time.LoadLocation(params.Timezone)
+            if err != nil {
+                return nil, fmt.Errorf("invalid timezone: %w", err)
+            }
+
+            now := time.Now().In(loc)
+            return map[string]interface{}{
+                "timezone":  params.Timezone,
+                "time":      now.Format(time.RFC3339),
+                "formatted": now.Format("Monday, January 2, 2006 at 3:04 PM MST"),
+            }, nil
+        },
+    }
+}
+
+// Force tool usage with ToolChoice
+func forceToolUsage() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    timeTool := clearTimeTool()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "What time is it in Tokyo?",
+        Tools:  []types.Tool{timeTool},
+        // Force the model to use the tool
+        ToolChoice: types.ToolChoiceRequired,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+
+func main() {
+    forceToolUsage()
+}
+```
+
+## Async Tool Execution Errors
+
+### Error: "Tool Execution Timeout"
+
+**Symptoms:**
+- Tool execution takes too long
+- Application hangs waiting for tool
+
+**Cause:**
+Tool performs slow operations (API calls, database queries) without timeout.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+type SearchInput struct {
+    Query string `json:"query" jsonschema:"required"`
+}
+
+// BAD: No timeout on external calls
+func slowSearchTool() types.Tool {
+    reflector := jsonschema.Reflector{DoNotReference: true}
+    schema := reflector.Reflect(&SearchInput{})
+
+    return types.Tool{
+        Name:        "web_search",
+        Description: "Search the web",
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params SearchInput
+            json.Unmarshal(input, &params)
+
+            // BAD: No timeout, can hang forever
+            resp, err := http.Get("https://api.example.com/search?q=" + params.Query)
+            if err != nil {
+                return nil, err
+            }
+            defer resp.Body.Close()
+
+            return "results", nil
+        },
+    }
+}
+
+// GOOD: Timeout on external calls
+func timeoutSearchTool() types.Tool {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&SearchInput{})
+
+    return types.Tool{
+        Name:        "web_search",
+        Description: "Search the web for current information",
+        Parameters:  schema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params SearchInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, err
+            }
+
+            // Create context with timeout for external call
+            ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+            defer cancel()
+
+            // Create request with context
+            req, err := http.NewRequestWithContext(ctx, "GET",
+                "https://api.example.com/search?q="+params.Query, nil)
+            if err != nil {
+                return nil, err
+            }
+
+            client := &http.Client{
+                Timeout: 10 * time.Second,
+            }
+
+            resp, err := client.Do(req)
+            if err != nil {
+                if ctx.Err() == context.DeadlineExceeded {
+                    return nil, fmt.Errorf("search timeout after 10s")
+                }
+                return nil, fmt.Errorf("search failed: %w", err)
+            }
+            defer resp.Body.Close()
+
+            // Process response...
+            return map[string]interface{}{
+                "query":   params.Query,
+                "results": []string{"result1", "result2"},
+            }, nil
+        },
+    }
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    searchTool := timeoutSearchTool()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Search for the latest news about AI",
+        Tools:  []types.Tool{searchTool},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Multiple Tool Calls
+
+### Error: "Tool Execution Order Issues"
+
+**Symptoms:**
+- Tools called in wrong order
+- Dependencies between tools not handled
+
+**Cause:**
+Not managing tool call dependencies properly.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Tool execution coordinator
+type ToolCoordinator struct {
+    mu      sync.Mutex
+    results map[string]interface{}
+}
+
+func NewToolCoordinator() *ToolCoordinator {
+    return &ToolCoordinator{
+        results: make(map[string]interface{}),
+    }
+}
+
+func (tc *ToolCoordinator) StoreResult(toolName string, result interface{}) {
+    tc.mu.Lock()
+    defer tc.mu.Unlock()
+    tc.results[toolName] = result
+}
+
+func (tc *ToolCoordinator) GetResult(toolName string) (interface{}, bool) {
+    tc.mu.Lock()
+    defer tc.mu.Unlock()
+    result, ok := tc.results[toolName]
+    return result, ok
+}
+
+type GetUserInput struct {
+    UserID string `json:"user_id" jsonschema:"required"`
+}
+
+type GetOrdersInput struct {
+    UserID string `json:"user_id" jsonschema:"required"`
+}
+
+func createToolsWithDependencies(coordinator *ToolCoordinator) []types.Tool {
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+
+    // Tool 1: Get user info
+    userSchema := reflector.Reflect(&GetUserInput{})
+    getUserTool := types.Tool{
+        Name:        "get_user",
+        Description: "Get user information by user ID",
+        Parameters:  userSchema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params GetUserInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, err
+            }
+
+            result := map[string]interface{}{
+                "user_id": params.UserID,
+                "name":    "John Doe",
+                "email":   "john@example.com",
+            }
+
+            // Store result for dependent tools
+            coordinator.StoreResult("get_user", result)
+
+            return result, nil
+        },
+    }
+
+    // Tool 2: Get orders (depends on user info)
+    ordersSchema := reflector.Reflect(&GetOrdersInput{})
+    getOrdersTool := types.Tool{
+        Name:        "get_orders",
+        Description: "Get orders for a user",
+        Parameters:  ordersSchema,
+        Execute: func(input json.RawMessage) (interface{}, error) {
+            var params GetOrdersInput
+            if err := json.Unmarshal(input, &params); err != nil {
+                return nil, err
+            }
+
+            // Check if user info is available from previous tool call
+            userInfo, ok := coordinator.GetResult("get_user")
+            if ok {
+                log.Printf("Using cached user info: %v", userInfo)
+            }
+
+            return map[string]interface{}{
+                "user_id": params.UserID,
+                "orders": []map[string]interface{}{
+                    {"order_id": "123", "total": 99.99},
+                    {"order_id": "456", "total": 149.99},
+                },
+            }, nil
+        },
+    }
+
+    return []types.Tool{getUserTool, getOrdersTool}
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    coordinator := NewToolCoordinator()
+    tools := createToolsWithDependencies(coordinator)
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Get all orders for user ID user-123",
+        Tools:  tools,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Use JSON Schema Generation
+
+```go
+reflector := jsonschema.Reflector{
+    AllowAdditionalProperties: false,
+    DoNotReference:            true,
+}
+schema := reflector.Reflect(&YourStruct{})
+```
+
+### 2. Validate Tool Inputs
+
+```go
+Execute: func(input json.RawMessage) (interface{}, error) {
+    var params InputType
+    if err := json.Unmarshal(input, &params); err != nil {
+        return nil, fmt.Errorf("invalid input: %w", err)
+    }
+    // Validate params...
+    return result, nil
+}
+```
+
+### 3. Write Clear Tool Descriptions
+
+```go
+Description: "Get current weather for a location. Use this tool when the user asks about weather, temperature, or climate conditions. Required parameter: location (city name)."
+```
+
+### 4. Handle Tool Errors Gracefully
+
+```go
+Execute: func(input json.RawMessage) (interface{}, error) {
+    result, err := performOperation()
+    if err != nil {
+        return nil, fmt.Errorf("operation failed: %w", err)
+    }
+    return result, nil
+}
+```
+
+### 5. Add Timeouts to External Calls
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+```
+
+## See Also
+
+- [Tool Calling Guide](../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
+- [Schema Validation](./07-schema-validation.mdx)
+- [Common Errors](./01-common-errors.mdx)
+- [Tools Reference](../07-reference/types/tools.mdx)

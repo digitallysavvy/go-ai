@@ -1,0 +1,824 @@
+# Troubleshooting: [Issue Category]
+
+<!--
+  INSTRUCTIONS:
+  1. Replace [Issue Category] with category name (e.g., "Connection Issues", "Authentication Errors")
+  2. List common problems in this category
+  3. Provide clear symptoms for each issue
+  4. Give step-by-step solutions
+  5. Include code examples for fixes
+  6. Link to relevant documentation
+  7. Add debugging tips
+-->
+
+Brief description of the category of issues covered in this troubleshooting guide.
+
+## Quick Diagnosis
+
+Use this flowchart to quickly identify your issue:
+
+1. **Symptom:** [Common symptom 1]
+   - **Likely cause:** [Cause]
+   - **Jump to:** [Link to section](#issue-name-1)
+
+2. **Symptom:** [Common symptom 2]
+   - **Likely cause:** [Cause]
+   - **Jump to:** [Link to section](#issue-name-2)
+
+3. **Symptom:** [Common symptom 3]
+   - **Likely cause:** [Cause]
+   - **Jump to:** [Link to section](#issue-name-3)
+
+## Issue 1: [Issue Name]
+
+### Symptoms
+
+You may encounter this issue if you observe:
+
+- Symptom 1 (e.g., error message, behavior)
+- Symptom 2
+- Symptom 3
+
+### Error Messages
+
+```
+Error: specific error message you might see
+```
+
+or
+
+```
+Another possible error message format
+```
+
+### Causes
+
+This issue typically occurs when:
+
+1. **Cause 1:** Detailed explanation of what causes this
+2. **Cause 2:** Another possible cause
+3. **Cause 3:** Additional cause
+
+### Solution
+
+#### Step 1: [First solution step]
+
+Detailed explanation of what to do.
+
+```go
+// Code example showing the fix
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Fixed implementation
+    client := gai.NewClient(
+        "your-api-key",
+        gai.WithCorrectOption(),
+    )
+}
+```
+
+#### Step 2: [Second solution step]
+
+Additional steps to resolve the issue.
+
+```go
+// Additional fix code
+```
+
+#### Step 3: [Verification step]
+
+How to verify the issue is resolved.
+
+```go
+// Verification code
+response, err := client.Generate(context.Background(), request)
+if err != nil {
+    log.Printf("Still failing: %v", err)
+} else {
+    log.Println("Issue resolved!")
+}
+```
+
+### Prevention
+
+To avoid this issue in the future:
+
+1. **Best practice 1:** Explanation
+2. **Best practice 2:** Explanation
+3. **Best practice 3:** Explanation
+
+```go
+// Example of preventive code
+```
+
+### Related Issues
+
+- [Issue 2](#issue-2-issue-name): Similar issue with different cause
+- [Issue 3](#issue-3-issue-name): Related problem
+
+---
+
+## Issue 2: [Issue Name]
+
+### Symptoms
+
+Observable behaviors:
+
+- Symptom 1
+- Symptom 2
+
+### Error Messages
+
+```
+Expected error message format
+```
+
+### Causes
+
+Why this happens:
+
+1. **Root cause:** Explanation
+2. **Contributing factor:** Explanation
+
+### Solution
+
+#### Quick Fix
+
+For a fast solution:
+
+```go
+// Quick fix code
+client := gai.NewClient(
+    apiKey,
+    gai.WithQuickFixOption(),
+)
+```
+
+#### Complete Fix
+
+For a permanent solution:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Complete solution implementation
+    client := gai.NewClient(
+        apiKey,
+        gai.WithOption1(value1),
+        gai.WithOption2(value2),
+    )
+
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    response, err := client.Generate(ctx, request)
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    fmt.Println(response.Content)
+}
+```
+
+### Debugging
+
+To diagnose this issue:
+
+```go
+// Enable debug logging
+import "log"
+
+log.SetFlags(log.LstdFlags | log.Lshortfile)
+log.Printf("Debug info: %+v\n", request)
+```
+
+### Prevention
+
+Preventive measures:
+
+- Measure 1
+- Measure 2
+
+---
+
+## Issue 3: [Issue Name]
+
+### Symptoms
+
+What you'll see:
+
+- Symptom 1
+- Symptom 2
+- Symptom 3
+
+### Error Messages
+
+```
+Error message you might encounter
+```
+
+### Causes
+
+Common causes:
+
+1. **Cause 1:** Description
+2. **Cause 2:** Description
+
+### Solution
+
+#### Option 1: [Solution approach 1]
+
+First approach to fix:
+
+```go
+// Solution code
+```
+
+**Pros:**
+- Advantage 1
+- Advantage 2
+
+**Cons:**
+- Limitation 1
+- Limitation 2
+
+#### Option 2: [Solution approach 2]
+
+Alternative approach:
+
+```go
+// Alternative solution code
+```
+
+**Pros:**
+- Advantage 1
+- Advantage 2
+
+**Cons:**
+- Limitation 1
+
+#### Recommended Approach
+
+We recommend Option 1 because [explanation].
+
+```go
+// Recommended implementation
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Recommended solution
+}
+```
+
+### Verification
+
+Confirm the fix worked:
+
+```bash
+# Commands to verify
+go test ./...
+```
+
+```go
+// Verification code
+```
+
+### Prevention
+
+Best practices to avoid this:
+
+1. **Practice 1**
+2. **Practice 2**
+
+---
+
+## Issue 4: [Issue Name]
+
+### Symptoms
+
+- Symptom 1
+- Symptom 2
+
+### Causes
+
+Root causes:
+
+1. Cause 1
+2. Cause 2
+
+### Solution
+
+Step-by-step fix:
+
+```go
+// Solution code
+```
+
+### Prevention
+
+How to avoid:
+
+- Prevention step 1
+- Prevention step 2
+
+---
+
+## Debugging Techniques
+
+### Enable Verbose Logging
+
+```go
+import (
+    "log"
+    "os"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Set up detailed logging
+    log.SetOutput(os.Stdout)
+    log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+    // Create client with debug mode
+    client := gai.NewClient(
+        apiKey,
+        gai.WithDebug(true),
+    )
+
+    // Your code here
+}
+```
+
+### Inspect Request/Response
+
+```go
+import (
+    "encoding/json"
+    "log"
+)
+
+// Log request details
+requestJSON, _ := json.MarshalIndent(request, "", "  ")
+log.Printf("Request:\n%s\n", requestJSON)
+
+// Make API call
+response, err := client.Generate(ctx, request)
+
+// Log response details
+responseJSON, _ := json.MarshalIndent(response, "", "  ")
+log.Printf("Response:\n%s\n", responseJSON)
+
+// Log error details
+if err != nil {
+    log.Printf("Error type: %T\n", err)
+    log.Printf("Error value: %v\n", err)
+    log.Printf("Error details: %+v\n", err)
+}
+```
+
+### Network Debugging
+
+```go
+import (
+    "net/http"
+    "net/http/httputil"
+)
+
+// Create custom HTTP client with logging
+httpClient := &http.Client{
+    Transport: &loggingTransport{
+        Transport: http.DefaultTransport,
+    },
+}
+
+type loggingTransport struct {
+    Transport http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    // Log request
+    reqDump, _ := httputil.DumpRequest(req, true)
+    log.Printf("REQUEST:\n%s\n", reqDump)
+
+    // Make request
+    resp, err := t.Transport.RoundTrip(req)
+
+    // Log response
+    if resp != nil {
+        respDump, _ := httputil.DumpResponse(resp, true)
+        log.Printf("RESPONSE:\n%s\n", respDump)
+    }
+
+    return resp, err
+}
+
+// Use custom client
+client := gai.NewClient(
+    apiKey,
+    gai.WithHTTPClient(httpClient),
+)
+```
+
+### Context Debugging
+
+```go
+import (
+    "context"
+    "time"
+)
+
+// Create context with debugging
+ctx := context.Background()
+
+// Add timeout
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+
+// Monitor context cancellation
+go func() {
+    <-ctx.Done()
+    log.Printf("Context cancelled: %v\n", ctx.Err())
+}()
+
+// Make request
+response, err := client.Generate(ctx, request)
+```
+
+## Common Error Patterns
+
+### Error Pattern 1: Timeout Errors
+
+**Recognition:**
+
+```
+context deadline exceeded
+```
+
+**Solution:**
+
+```go
+// Increase timeout
+ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+defer cancel()
+```
+
+### Error Pattern 2: Authentication Errors
+
+**Recognition:**
+
+```
+401 Unauthorized
+invalid API key
+```
+
+**Solution:**
+
+```go
+// Verify API key
+apiKey := os.Getenv("PROVIDER_API_KEY")
+if apiKey == "" {
+    log.Fatal("API key not set")
+}
+
+// Check key format
+if !strings.HasPrefix(apiKey, "sk-") {
+    log.Fatal("Invalid API key format")
+}
+```
+
+### Error Pattern 3: Rate Limit Errors
+
+**Recognition:**
+
+```
+429 Too Many Requests
+rate limit exceeded
+```
+
+**Solution:**
+
+```go
+import (
+    "errors"
+    "time"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func generateWithRetry(client *gai.Client, request *gai.Request) (*gai.Response, error) {
+    maxRetries := 3
+    backoff := time.Second
+
+    for i := 0; i < maxRetries; i++ {
+        response, err := client.Generate(context.Background(), request)
+        if err == nil {
+            return response, nil
+        }
+
+        if errors.Is(err, gai.ErrRateLimited) {
+            log.Printf("Rate limited, waiting %v\n", backoff)
+            time.Sleep(backoff)
+            backoff *= 2
+            continue
+        }
+
+        return nil, err
+    }
+
+    return nil, fmt.Errorf("max retries exceeded")
+}
+```
+
+### Error Pattern 4: Invalid Input Errors
+
+**Recognition:**
+
+```
+400 Bad Request
+invalid request format
+```
+
+**Solution:**
+
+```go
+// Validate input before sending
+func validateRequest(request *gai.Request) error {
+    if request.Model == "" {
+        return fmt.Errorf("model is required")
+    }
+    if len(request.Messages) == 0 {
+        return fmt.Errorf("messages are required")
+    }
+    for i, msg := range request.Messages {
+        if msg.Role == "" {
+            return fmt.Errorf("message %d: role is required", i)
+        }
+        if msg.Content == "" {
+            return fmt.Errorf("message %d: content is required", i)
+        }
+    }
+    return nil
+}
+
+// Use validation
+if err := validateRequest(request); err != nil {
+    log.Fatalf("Invalid request: %v", err)
+}
+```
+
+## Performance Issues
+
+### Issue: Slow Response Times
+
+**Symptoms:**
+- Requests take longer than expected
+- Timeouts occurring frequently
+
+**Solutions:**
+
+1. **Use streaming for long responses:**
+
+```go
+stream, err := client.GenerateStream(ctx, request)
+if err != nil {
+    log.Fatalf("Error: %v", err)
+}
+defer stream.Close()
+
+for {
+    chunk, err := stream.Recv()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatalf("Stream error: %v", err)
+    }
+    fmt.Print(chunk.Content)
+}
+```
+
+2. **Reduce token limits:**
+
+```go
+request.Options = &gai.RequestOptions{
+    MaxTokens: 500, // Reduce for faster responses
+}
+```
+
+3. **Use faster models:**
+
+```go
+request.Model = "claude-3-haiku-20240307" // Faster model
+```
+
+### Issue: High Memory Usage
+
+**Symptoms:**
+- Application memory grows over time
+- Out of memory errors
+
+**Solutions:**
+
+1. **Close streams properly:**
+
+```go
+stream, err := client.GenerateStream(ctx, request)
+if err != nil {
+    return err
+}
+defer stream.Close() // Always close streams
+```
+
+2. **Limit response sizes:**
+
+```go
+request.Options = &gai.RequestOptions{
+    MaxTokens: 1000, // Prevent extremely long responses
+}
+```
+
+3. **Process responses incrementally:**
+
+```go
+// Don't accumulate full response in memory
+for {
+    chunk, err := stream.Recv()
+    if err == io.EOF {
+        break
+    }
+    // Process chunk immediately
+    processChunk(chunk)
+    // Don't append to large buffer
+}
+```
+
+## Environment-Specific Issues
+
+### Development Environment
+
+Common issues in development:
+
+1. **API key not loaded:**
+
+```bash
+# Set in shell
+export ANTHROPIC_API_KEY="your-key"
+
+# Or use .env file (with godotenv)
+echo "ANTHROPIC_API_KEY=your-key" > .env
+```
+
+2. **Certificate errors:**
+
+```go
+// For development only - not for production
+import (
+    "crypto/tls"
+    "net/http"
+)
+
+httpClient := &http.Client{
+    Transport: &http.Transport{
+        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+    },
+}
+
+client := gai.NewClient(
+    apiKey,
+    gai.WithHTTPClient(httpClient),
+)
+```
+
+### Production Environment
+
+Common production issues:
+
+1. **Secrets management:**
+
+```go
+// Use secret manager, not environment variables
+import "cloud.google.com/go/secretmanager/apiv1"
+
+// Fetch secret from manager
+apiKey, err := getSecretFromManager("api-key-name")
+if err != nil {
+    log.Fatalf("Failed to get API key: %v", err)
+}
+```
+
+2. **Rate limiting:**
+
+```go
+import "golang.org/x/time/rate"
+
+// Global rate limiter
+var limiter = rate.NewLimiter(rate.Limit(10), 1)
+
+// Use before requests
+if err := limiter.Wait(ctx); err != nil {
+    return fmt.Errorf("rate limiter: %w", err)
+}
+```
+
+## Getting Help
+
+If you're still experiencing issues:
+
+1. **Check the documentation:**
+   - [Getting Started Guide](../01-getting-started/quick-start.mdx)
+   - [API Reference](../07-reference/api/client.mdx)
+   - [Provider Documentation](../03-providers/anthropic.mdx)
+
+2. **Search existing issues:**
+   - [GitHub Issues](https://github.com/teilomillet/go-ai/issues)
+   - [Community Forum](https://community.example.com)
+
+3. **Create a minimal reproduction:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+)
+
+func main() {
+    // Minimal code that reproduces the issue
+    client := gai.NewClient("test-key")
+
+    request := &gai.Request{
+        Model: "test-model",
+        Messages: []gai.Message{
+            {Role: "user", Content: "test"},
+        },
+    }
+
+    _, err := client.Generate(context.Background(), request)
+    log.Printf("Error: %v\n", err)
+}
+```
+
+4. **Gather debugging information:**
+
+```bash
+# Go version
+go version
+
+# Module versions
+go list -m all | grep go-ai
+
+# Operating system
+uname -a
+
+# Environment variables (sanitize sensitive data)
+env | grep -i api
+```
+
+5. **File an issue:**
+   - Include Go version and OS
+   - Provide minimal reproduction
+   - Include error messages
+   - Describe expected vs actual behavior
+
+## Related Documentation
+
+- [Error Handling Guide](../04-guides/error-handling.mdx)
+- [Configuration Guide](../02-core-concepts/client-configuration.mdx)
+- [API Reference](../07-reference/api/client.mdx)
+- [Best Practices](../04-guides/best-practices.mdx)
+
+## Additional Resources
+
+- [Provider Status Page](https://status.anthropic.com)
+- [API Documentation](https://docs.anthropic.com)
+- [Community Examples](https://github.com/teilomillet/go-ai/tree/main/examples)

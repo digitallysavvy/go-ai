@@ -1,0 +1,300 @@
+---
+title: LMNT Provider
+description: Setup and usage guide for LMNT text-to-speech synthesis with Go-AI SDK
+---
+
+# LMNT Provider
+
+LMNT offers high-quality voice synthesis with voice selection and speed control. Perfect for generating natural-sounding speech from text with fine-grained control.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/lmnt"
+)
+```
+
+### Configuration
+
+```go
+provider := lmnt.New(lmnt.Config{
+    APIKey: os.Getenv("LMNT_API_KEY"),
+})
+
+model, err := provider.SpeechModel("default")
+```
+
+### Get API Key
+
+1. Sign up at [lmnt.com](https://www.lmnt.com/)
+2. Get your API key from the dashboard
+
+```bash
+export LMNT_API_KEY=your-api-key
+```
+
+## Available Models
+
+### Speech Synthesis Models
+
+| Model ID | Quality | Best For |
+|----------|---------|----------|
+| default | Excellent | General purpose speech synthesis |
+
+## Basic Usage
+
+### Simple Speech Synthesis
+
+```go
+// Generate speech
+result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+    Text:  "Hello from the Go AI SDK!",
+    Voice: "aurora",
+})
+
+// Save audio
+if err := os.WriteFile("output.mp3", result.Audio, 0644); err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Generated %d bytes of audio\n", len(result.Audio))
+fmt.Printf("Character count: %d\n", result.Usage.CharacterCount)
+```
+
+## Provider-Specific Features
+
+### Voice Selection
+
+LMNT provides multiple high-quality voices:
+
+```go
+// Use the "aurora" voice
+result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+    Text:  "This is the Aurora voice.",
+    Voice: "aurora",
+})
+
+// Other available voices - check LMNT documentation for full list
+voices := []string{"aurora", "lily", "harper", "sage"}
+```
+
+**Common voices:**
+- `aurora` - Clear, professional voice
+- `lily` - Warm, friendly voice
+- `harper` - Energetic, youthful voice
+- `sage` - Calm, authoritative voice
+
+Check the [LMNT documentation](https://docs.lmnt.com/) for the complete list of available voices.
+
+### Speed Control
+
+Control speech playback speed:
+
+```go
+// Normal speed (1.0)
+speed := 1.0
+result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+    Text:  "This is normal speed speech.",
+    Voice: "aurora",
+    Speed: &speed,
+})
+
+// 50% faster
+speed = 1.5
+result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+    Text:  "This is faster speech.",
+    Voice: "aurora",
+    Speed: &speed,
+})
+
+// 25% slower
+speed = 0.75
+result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+    Text:  "This is slower speech.",
+    Voice: "aurora",
+    Speed: &speed,
+})
+```
+
+**Speed range:**
+- Minimum: `0.5` (50% slower)
+- Normal: `1.0` (default)
+- Maximum: `2.0` (100% faster)
+
+**Use cases:**
+- Audiobooks: Adjust to listener preference
+- Accessibility: Slower speech for comprehension
+- Time-sensitive content: Faster playback for efficiency
+
+### Output Format
+
+LMNT returns audio in MP3 format by default:
+
+```go
+result, err := model.DoGenerate(ctx, opts)
+
+// Audio is in MP3 format
+fmt.Println("MIME type:", result.MimeType) // "audio/mpeg"
+
+// Save directly to file
+os.WriteFile("speech.mp3", result.Audio, 0644)
+```
+
+## Usage Metadata
+
+Access speech generation usage information:
+
+```go
+result, err := model.DoGenerate(ctx, opts)
+
+// Number of characters processed
+fmt.Printf("Characters: %d\n", result.Usage.CharacterCount)
+
+// Audio size in bytes
+fmt.Printf("Audio size: %d bytes\n", len(result.Audio))
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/lmnt"
+)
+
+func main() {
+    // Create provider
+    p := lmnt.New(lmnt.Config{
+        APIKey: os.Getenv("LMNT_API_KEY"),
+    })
+
+    // Get speech model
+    model, err := p.SpeechModel("default")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Generate speech with custom speed
+    speed := 1.2 // 20% faster
+    result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+        Text:  "Welcome to the Go AI SDK. This library makes it easy to integrate AI-powered speech synthesis into your applications.",
+        Voice: "aurora",
+        Speed: &speed,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save audio
+    outputFile := "welcome.mp3"
+    if err := os.WriteFile(outputFile, result.Audio, 0644); err != nil {
+        log.Fatal(err)
+    }
+
+    // Print results
+    fmt.Printf("Audio saved to: %s\n", outputFile)
+    fmt.Printf("Audio size: %d bytes\n", len(result.Audio))
+    fmt.Printf("MIME type: %s\n", result.MimeType)
+    fmt.Printf("Characters processed: %d\n", result.Usage.CharacterCount)
+    fmt.Printf("Speed: %.1fx\n", speed)
+}
+```
+
+## Advanced Usage
+
+### Batch Generation
+
+Generate multiple speech files efficiently:
+
+```go
+texts := []string{
+    "Chapter 1: Introduction",
+    "Chapter 2: Getting Started",
+    "Chapter 3: Advanced Features",
+}
+
+for i, text := range texts {
+    result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+        Text:  text,
+        Voice: "aurora",
+    })
+    if err != nil {
+        log.Printf("Failed to generate chapter %d: %v", i+1, err)
+        continue
+    }
+
+    filename := fmt.Sprintf("chapter_%d.mp3", i+1)
+    os.WriteFile(filename, result.Audio, 0644)
+    fmt.Printf("Generated: %s\n", filename)
+}
+```
+
+### Context-Aware Generation
+
+Use context for cancellation and timeouts:
+
+```go
+// With timeout
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := model.DoGenerate(ctx, &provider.SpeechGenerateOptions{
+    Text:  "This request will timeout after 30 seconds.",
+    Voice: "aurora",
+})
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        log.Println("Request timed out")
+    }
+    return
+}
+```
+
+## Error Handling
+
+```go
+result, err := model.DoGenerate(ctx, opts)
+if err != nil {
+    log.Printf("Speech generation failed: %v", err)
+    return
+}
+```
+
+Common errors:
+- Invalid API key: Check `LMNT_API_KEY` environment variable
+- Invalid voice: Verify voice name is correct
+- Text too long: LMNT has character limits per request
+- Rate limiting: Consider implementing retry logic
+
+## Best Practices
+
+1. **Voice Selection**: Choose appropriate voices for your use case
+2. **Speed Control**: Test different speeds for optimal user experience
+3. **Error Handling**: Always check errors and handle API failures
+4. **Resource Management**: Store generated audio to avoid regeneration
+5. **Context Usage**: Use context for timeouts and cancellation
+
+## Performance Tips
+
+- Cache generated speech for repeated text
+- Use appropriate speed settings to reduce file size
+- Consider batch generation for multiple texts
+- Implement retry logic for transient failures
+
+## Documentation
+
+For more information about the LMNT API:
+- [LMNT Documentation](https://docs.lmnt.com/)
+- [API Reference](https://docs.lmnt.com/api-reference)
+- [Voice Library](https://docs.lmnt.com/voices)

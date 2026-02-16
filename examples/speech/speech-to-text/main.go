@@ -22,21 +22,21 @@ type STTProvider interface {
 
 // STTOptions configuration for speech recognition
 type STTOptions struct {
-	Model            string   // Model to use (whisper-1)
-	Language         string   // Language code (e.g., "en", "es")
-	Prompt           string   // Optional context/prompt
-	ResponseFormat   string   // json, text, srt, vtt, verbose_json
-	Temperature      float64  // Sampling temperature (0-1)
+	Model                  string   // Model to use (whisper-1)
+	Language               string   // Language code (e.g., "en", "es")
+	Prompt                 string   // Optional context/prompt
+	ResponseFormat         string   // json, text, srt, vtt, verbose_json
+	Temperature            float64  // Sampling temperature (0-1)
 	TimestampGranularities []string // word or segment level timestamps
 }
 
 // TranscriptionResult contains the transcribed text and metadata
 type TranscriptionResult struct {
-	Text     string              `json:"text"`
-	Language string              `json:"language,omitempty"`
-	Duration float64             `json:"duration,omitempty"`
-	Words    []WordTimestamp     `json:"words,omitempty"`
-	Segments []SegmentTimestamp  `json:"segments,omitempty"`
+	Text     string             `json:"text"`
+	Language string             `json:"language,omitempty"`
+	Duration float64            `json:"duration,omitempty"`
+	Words    []WordTimestamp    `json:"words,omitempty"`
+	Segments []SegmentTimestamp `json:"segments,omitempty"`
 }
 
 // WordTimestamp represents word-level timing
@@ -48,10 +48,10 @@ type WordTimestamp struct {
 
 // SegmentTimestamp represents segment-level timing
 type SegmentTimestamp struct {
-	ID     int     `json:"id"`
-	Text   string  `json:"text"`
-	Start  float64 `json:"start"`
-	End    float64 `json:"end"`
+	ID    int     `json:"id"`
+	Text  string  `json:"text"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
 }
 
 // OpenAISTT implements STTProvider for OpenAI Whisper

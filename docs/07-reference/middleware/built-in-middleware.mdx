@@ -1,0 +1,147 @@
+---
+title: Built-in Middleware
+description: Catalog of built-in middleware for Go-AI SDK
+---
+
+# Built-in Middleware
+
+Pre-built middleware functions available in the Go-AI SDK.
+
+## DefaultSettingsMiddleware
+
+Applies default settings to generation requests.
+
+```go
+func DefaultSettingsMiddleware(defaults *provider.GenerateOptions) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+temperature := 0.7
+maxTokens := 500
+
+middleware := middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+    Temperature: &temperature,
+    MaxTokens:   &maxTokens,
+})
+
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{middleware}, nil, nil)
+```
+
+## LoggingMiddleware
+
+Logs generation requests and responses.
+
+```go
+func LoggingMiddleware() *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+loggingMw := middleware.LoggingMiddleware()
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{loggingMw}, nil, nil)
+```
+
+## RetryMiddleware
+
+Automatically retries failed requests.
+
+```go
+func RetryMiddleware(maxRetries int, backoff time.Duration) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+retryMw := middleware.RetryMiddleware(3, time.Second)
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{retryMw}, nil, nil)
+```
+
+## CachingMiddleware
+
+Caches generation results based on prompts.
+
+```go
+func CachingMiddleware(ttl time.Duration) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+cacheMw := middleware.CachingMiddleware(5 * time.Minute)
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{cacheMw}, nil, nil)
+```
+
+## RateLimitMiddleware
+
+Enforces rate limits on API calls.
+
+```go
+func RateLimitMiddleware(requestsPerSecond float64) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+rateLimitMw := middleware.RateLimitMiddleware(10.0) // 10 requests per second
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{rateLimitMw}, nil, nil)
+```
+
+## TokenBudgetMiddleware
+
+Enforces token usage budgets.
+
+```go
+func TokenBudgetMiddleware(maxTokens int) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+budgetMw := middleware.TokenBudgetMiddleware(10000)
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{budgetMw}, nil, nil)
+```
+
+## MetricsMiddleware
+
+Collects metrics on model usage.
+
+```go
+func MetricsMiddleware(collector MetricsCollector) *LanguageModelMiddleware
+```
+
+### Example
+
+```go
+collector := NewPrometheusCollector()
+metricsMw := middleware.MetricsMiddleware(collector)
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{metricsMw}, nil, nil)
+```
+
+## Combining Middleware
+
+```go
+temperature := 0.7
+
+wrapped := middleware.WrapLanguageModel(
+    baseModel,
+    []*middleware.LanguageModelMiddleware{
+        middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+            Temperature: &temperature,
+        }),
+        middleware.LoggingMiddleware(),
+        middleware.RetryMiddleware(3, time.Second),
+        middleware.RateLimitMiddleware(10.0),
+        middleware.CachingMiddleware(5 * time.Minute),
+    },
+    nil,
+    nil,
+)
+```
+
+## See Also
+
+- [Middleware Interface](./middleware-interface.mdx) - Create custom middleware
+- [WrapLanguageModel](./wrap-language-model.mdx) - Apply middleware to models

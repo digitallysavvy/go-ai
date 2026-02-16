@@ -1,0 +1,993 @@
+---
+title: Development Tools & Debugging
+description: Learn how to debug, profile, and test your Go-AI SDK applications.
+---
+
+# Development Tools & Debugging
+
+The Go-AI SDK provides several tools and techniques for debugging, observability, and testing your AI applications. This guide covers logging, request inspection, performance profiling, and testing utilities.
+
+## Debug Mode
+
+### Enabling Debug Logging
+
+Enable debug mode to see detailed HTTP requests and responses:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Enable debug mode
+    provider := openai.New(openai.Config{
+        APIKey:    os.Getenv("OPENAI_API_KEY"),
+        DebugMode: true, // Logs all HTTP requests and responses
+    })
+
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello, world!",
+    })
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    log.Printf("Result: %s", result.Text)
+}
+```
+
+**Output:**
+```
+DEBUG: POST https://api.openai.com/v1/chat/completions
+DEBUG: Request Headers: {Authorization: Bearer sk-..., Content-Type: application/json}
+DEBUG: Request Body: {"model":"gpt-4","messages":[{"role":"user","content":"Hello, world!"}]}
+DEBUG: Response Status: 200 OK
+DEBUG: Response Body: {"id":"chatcmpl-...","object":"chat.completion",...}
+Result: Hello! How can I assist you today?
+```
+
+### Provider-Specific Debug Options
+
+Different providers support different debug configurations:
+
+```go
+// Anthropic debug mode
+anthropicProvider := anthropic.New(anthropic.Config{
+    APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+    DebugMode: true,
+})
+
+// Google debug mode
+googleProvider := google.New(google.Config{
+    APIKey:    os.Getenv("GOOGLE_API_KEY"),
+    DebugMode: true,
+})
+
+// Bedrock debug mode (includes AWS request signing details)
+bedrockProvider := bedrock.New(bedrock.Config{
+    Region:    "us-east-1",
+    DebugMode: true,
+})
+```
+
+## Request & Response Inspection
+
+### Logging Request Details
+
+Inspect full request configuration before sending:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    temperature := 0.7
+    maxTokens := 500
+
+    options := ai.GenerateTextOptions{
+        Model:       model,
+        Prompt:      "Explain quantum computing",
+        Temperature: &temperature,
+        MaxTokens:   &maxTokens,
+        System:      "You are a physics professor.",
+    }
+
+    // Log request configuration
+    fmt.Println("=== Request Configuration ===")
+    fmt.Printf("Model: %T\n", options.Model)
+    fmt.Printf("Temperature: %.2f\n", *options.Temperature)
+    fmt.Printf("MaxTokens: %d\n", *options.MaxTokens)
+    fmt.Printf("System: %s\n", options.System)
+    fmt.Printf("Prompt: %s\n", options.Prompt)
+    fmt.Println()
+
+    result, err := ai.GenerateText(ctx, options)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Log response details
+    fmt.Println("=== Response Details ===")
+    fmt.Printf("Text: %s\n", result.Text)
+    fmt.Printf("Finish Reason: %s\n", result.FinishReason)
+    fmt.Printf("Model: %s\n", result.ModelID)
+    fmt.Println()
+
+    // Log usage statistics
+    fmt.Println("=== Usage Statistics ===")
+    fmt.Printf("Prompt Tokens: %d\n", result.Usage.PromptTokens)
+    fmt.Printf("Completion Tokens: %d\n", result.Usage.CompletionTokens)
+    fmt.Printf("Total Tokens: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Intercepting HTTP Requests
+
+Use a custom HTTP client to intercept and log requests:
+
+```go
+package main
+
+import (
+    "bytes"
+    "context"
+    "io"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// LoggingTransport wraps http.RoundTripper to log requests
+type LoggingTransport struct {
+    Transport http.RoundTripper
+}
+
+func (t *LoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    // Log request
+    log.Printf("Request: %s %s", req.Method, req.URL)
+    log.Printf("Headers: %v", req.Header)
+
+    // Read and log body
+    if req.Body != nil {
+        body, _ := io.ReadAll(req.Body)
+        log.Printf("Body: %s", string(body))
+        req.Body = io.NopCloser(bytes.NewBuffer(body))
+    }
+
+    // Execute request
+    resp, err := t.Transport.RoundTrip(req)
+    if err != nil {
+        return nil, err
+    }
+
+    // Log response
+    log.Printf("Response Status: %s", resp.Status)
+    log.Printf("Response Headers: %v", resp.Header)
+
+    return resp, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Create custom HTTP client with logging
+    httpClient := &http.Client{
+        Transport: &LoggingTransport{
+            Transport: http.DefaultTransport,
+        },
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey:     os.Getenv("OPENAI_API_KEY"),
+        HTTPClient: httpClient,
+    })
+
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    log.Printf("Result: %s", result.Text)
+}
+```
+
+## Token Usage Monitoring
+
+### Tracking Token Consumption
+
+Monitor token usage to optimize costs:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type TokenTracker struct {
+    TotalPromptTokens     int
+    TotalCompletionTokens int
+    TotalCost             float64
+}
+
+func (t *TokenTracker) Track(result *ai.GenerateTextResult) {
+    t.TotalPromptTokens += result.Usage.PromptTokens
+    t.TotalCompletionTokens += result.Usage.CompletionTokens
+
+    // GPT-4 pricing (example)
+    promptCost := float64(result.Usage.PromptTokens) * 0.03 / 1000
+    completionCost := float64(result.Usage.CompletionTokens) * 0.06 / 1000
+    t.TotalCost += promptCost + completionCost
+}
+
+func (t *TokenTracker) Report() {
+    fmt.Println("=== Token Usage Report ===")
+    fmt.Printf("Total Prompt Tokens: %d\n", t.TotalPromptTokens)
+    fmt.Printf("Total Completion Tokens: %d\n", t.TotalCompletionTokens)
+    fmt.Printf("Total Tokens: %d\n", t.TotalPromptTokens+t.TotalCompletionTokens)
+    fmt.Printf("Estimated Cost: $%.4f\n", t.TotalCost)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    tracker := &TokenTracker{}
+
+    // Make multiple requests
+    prompts := []string{
+        "What is Go?",
+        "Explain concurrency in Go",
+        "What are goroutines?",
+    }
+
+    for _, prompt := range prompts {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        tracker.Track(result)
+        fmt.Printf("Prompt: %s\n", prompt)
+        fmt.Printf("Response: %s\n", result.Text)
+        fmt.Printf("Tokens: %d\n\n", result.Usage.TotalTokens)
+    }
+
+    tracker.Report()
+}
+```
+
+### Setting Token Budgets
+
+Enforce token limits to prevent runaway costs:
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type BudgetedAI struct {
+    Provider     *openai.Provider
+    TokenBudget  int
+    TokensUsed   int
+}
+
+func (b *BudgetedAI) GenerateText(ctx context.Context, opts ai.GenerateTextOptions) (*ai.GenerateTextResult, error) {
+    if b.TokensUsed >= b.TokenBudget {
+        return nil, errors.New("token budget exceeded")
+    }
+
+    result, err := ai.GenerateText(ctx, opts)
+    if err != nil {
+        return nil, err
+    }
+
+    b.TokensUsed += result.Usage.TotalTokens
+
+    fmt.Printf("Tokens used: %d/%d (%.1f%%)\n",
+        b.TokensUsed, b.TokenBudget,
+        float64(b.TokensUsed)/float64(b.TokenBudget)*100)
+
+    return result, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    budgetedAI := &BudgetedAI{
+        Provider:    provider,
+        TokenBudget: 1000, // Maximum 1000 tokens
+    }
+
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := budgetedAI.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a short story",
+    })
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Performance Profiling
+
+### Using Go's pprof
+
+Profile CPU and memory usage:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "runtime/pprof"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Start CPU profiling
+    cpuFile, err := os.Create("cpu.prof")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer cpuFile.Close()
+
+    pprof.StartCPUProfile(cpuFile)
+    defer pprof.StopCPUProfile()
+
+    // Your AI operations
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    for i := 0; i < 10; i++ {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: "Hello!",
+        })
+
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        log.Printf("Iteration %d: %s", i, result.Text)
+    }
+
+    // Write heap profile
+    heapFile, err := os.Create("heap.prof")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer heapFile.Close()
+
+    pprof.WriteHeapProfile(heapFile)
+}
+```
+
+Analyze profiles:
+```bash
+# View CPU profile
+go tool pprof cpu.prof
+
+# View memory profile
+go tool pprof heap.prof
+
+# Generate visualization
+go tool pprof -http=:8080 cpu.prof
+```
+
+### Measuring Request Latency
+
+Track operation duration:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type LatencyTracker struct {
+    Latencies []time.Duration
+}
+
+func (t *LatencyTracker) Track(duration time.Duration) {
+    t.Latencies = append(t.Latencies, duration)
+}
+
+func (t *LatencyTracker) Report() {
+    if len(t.Latencies) == 0 {
+        return
+    }
+
+    var total time.Duration
+    min := t.Latencies[0]
+    max := t.Latencies[0]
+
+    for _, d := range t.Latencies {
+        total += d
+        if d < min {
+            min = d
+        }
+        if d > max {
+            max = d
+        }
+    }
+
+    avg := total / time.Duration(len(t.Latencies))
+
+    fmt.Println("=== Latency Report ===")
+    fmt.Printf("Requests: %d\n", len(t.Latencies))
+    fmt.Printf("Min: %v\n", min)
+    fmt.Printf("Max: %v\n", max)
+    fmt.Printf("Avg: %v\n", avg)
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    tracker := &LatencyTracker{}
+
+    for i := 0; i < 5; i++ {
+        start := time.Now()
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: "Hello!",
+        })
+
+        duration := time.Since(start)
+        tracker.Track(duration)
+
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        fmt.Printf("Request %d: %v - %s\n", i+1, duration, result.Text)
+    }
+
+    tracker.Report()
+}
+```
+
+## Testing Utilities
+
+### Mocking AI Responses
+
+Create mock providers for testing:
+
+```go
+package main
+
+import (
+    "context"
+    "testing"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// MockLanguageModel implements the LanguageModel interface
+type MockLanguageModel struct {
+    Response string
+    Error    error
+}
+
+func (m *MockLanguageModel) DoGenerate(ctx context.Context, messages []types.Message, options map[string]interface{}) (*types.GenerateResult, error) {
+    if m.Error != nil {
+        return nil, m.Error
+    }
+
+    return &types.GenerateResult{
+        Text:         m.Response,
+        FinishReason: "stop",
+        Usage: types.Usage{
+            PromptTokens:     10,
+            CompletionTokens: 20,
+            TotalTokens:      30,
+        },
+    }, nil
+}
+
+func (m *MockLanguageModel) DoStream(ctx context.Context, messages []types.Message, options map[string]interface{}) (types.StreamReader, error) {
+    return nil, nil // Implement if needed
+}
+
+// Example test
+func TestGenerateText(t *testing.T) {
+    ctx := context.Background()
+
+    mock := &MockLanguageModel{
+        Response: "This is a mocked response",
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  mock,
+        Prompt: "Test prompt",
+    })
+
+    if err != nil {
+        t.Fatalf("Expected no error, got %v", err)
+    }
+
+    if result.Text != "This is a mocked response" {
+        t.Errorf("Expected 'This is a mocked response', got '%s'", result.Text)
+    }
+
+    if result.Usage.TotalTokens != 30 {
+        t.Errorf("Expected 30 total tokens, got %d", result.Usage.TotalTokens)
+    }
+}
+```
+
+### Integration Testing
+
+Test with real providers in controlled environments:
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+    "testing"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func TestOpenAIIntegration(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        t.Skip("OPENAI_API_KEY not set")
+    }
+
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: apiKey,
+    })
+    model, err := provider.LanguageModel("gpt-3.5-turbo")
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Say 'test'",
+    })
+
+    if err != nil {
+        t.Fatalf("GenerateText failed: %v", err)
+    }
+
+    if result.Text == "" {
+        t.Error("Expected non-empty response")
+    }
+
+    if result.Usage.TotalTokens == 0 {
+        t.Error("Expected non-zero token usage")
+    }
+}
+```
+
+Run integration tests:
+```bash
+# Run all tests including integration tests
+go test ./...
+
+# Skip integration tests (faster)
+go test -short ./...
+
+# Run with verbose output
+go test -v ./...
+```
+
+### Snapshot Testing
+
+Test output consistency:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "os"
+    "path/filepath"
+    "testing"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func TestGenerateTextSnapshot(t *testing.T) {
+    ctx := context.Background()
+
+    mock := &MockLanguageModel{
+        Response: "Consistent response for snapshot",
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  mock,
+        Prompt: "Test prompt",
+    })
+
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    // Create snapshot
+    snapshotPath := filepath.Join("testdata", "snapshots", "generate_text.json")
+
+    data, _ := json.MarshalIndent(result, "", "  ")
+
+    // Check if snapshot exists
+    if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
+        // Create snapshot
+        os.MkdirAll(filepath.Dir(snapshotPath), 0755)
+        os.WriteFile(snapshotPath, data, 0644)
+        t.Log("Created new snapshot")
+        return
+    }
+
+    // Compare with snapshot
+    expected, _ := os.ReadFile(snapshotPath)
+
+    if string(data) != string(expected) {
+        t.Errorf("Snapshot mismatch.\nExpected:\n%s\n\nGot:\n%s", expected, data)
+    }
+}
+```
+
+## Observability
+
+### Structured Logging
+
+Use structured logging for better observability:
+
+```go
+package main
+
+import (
+    "context"
+    "log/slog"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Set up structured logger
+    logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+        Level: slog.LevelDebug,
+    }))
+
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    logger.Info("Starting AI request",
+        "model", "gpt-4",
+        "prompt", "Hello!",
+    )
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+
+    if err != nil {
+        logger.Error("AI request failed",
+            "error", err,
+        )
+        return
+    }
+
+    logger.Info("AI request completed",
+        "model", result.ModelID,
+        "finish_reason", result.FinishReason,
+        "prompt_tokens", result.Usage.PromptTokens,
+        "completion_tokens", result.Usage.CompletionTokens,
+        "total_tokens", result.Usage.TotalTokens,
+    )
+}
+```
+
+### Tracing with OpenTelemetry
+
+Add distributed tracing:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/trace"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func generateWithTracing(ctx context.Context, model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+    tracer := otel.Tracer("go-ai-app")
+    ctx, span := tracer.Start(ctx, "ai.GenerateText")
+    defer span.End()
+
+    span.SetAttributes(
+        attribute.String("ai.model", "gpt-4"),
+        attribute.String("ai.prompt", prompt),
+    )
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+
+    if err != nil {
+        span.RecordError(err)
+        return nil, err
+    }
+
+    span.SetAttributes(
+        attribute.Int("ai.tokens.prompt", result.Usage.PromptTokens),
+        attribute.Int("ai.tokens.completion", result.Usage.CompletionTokens),
+        attribute.Int("ai.tokens.total", result.Usage.TotalTokens),
+        attribute.String("ai.finish_reason", result.FinishReason),
+    )
+
+    return result, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := generateWithTracing(ctx, model, "Hello!")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    log.Printf("Result: %s", result.Text)
+}
+```
+
+## Debugging Common Issues
+
+### Rate Limiting
+
+Debug rate limit errors:
+
+```go
+if err != nil {
+    if strings.Contains(err.Error(), "rate_limit") {
+        log.Printf("Rate limit hit: %v", err)
+        log.Printf("Retry after delay...")
+        time.Sleep(60 * time.Second)
+        // Retry logic
+    }
+}
+```
+
+### Context Cancellation
+
+Debug timeout issues:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        log.Println("Request timed out after 30 seconds")
+    } else {
+        log.Printf("Request failed: %v", err)
+    }
+}
+```
+
+### Tool Execution Errors
+
+Debug tool calling issues:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  tools,
+    Prompt: "Use the weather tool",
+    OnStepFinish: func(step ai.Step) {
+        log.Printf("Step %d:", step.StepIndex)
+        for _, call := range step.ToolCalls {
+            log.Printf("  Tool: %s", call.Name)
+            log.Printf("  Args: %+v", call.Arguments)
+            if call.Error != nil {
+                log.Printf("  Error: %v", call.Error)
+            } else {
+                log.Printf("  Result: %+v", call.Result)
+            }
+        }
+    },
+})
+```
+
+## Best Practices
+
+### 1. Use Debug Mode in Development
+
+```go
+// ✅ Good: Debug mode in development
+provider := openai.New(openai.Config{
+    APIKey:    os.Getenv("OPENAI_API_KEY"),
+    DebugMode: os.Getenv("ENV") == "development",
+})
+```
+
+### 2. Monitor Token Usage
+
+```go
+// ✅ Good: Track and log token usage
+if result.Usage.TotalTokens > 10000 {
+    log.Printf("WARNING: High token usage: %d", result.Usage.TotalTokens)
+}
+```
+
+### 3. Use Structured Logging
+
+```go
+// ✅ Good: Structured logging
+logger.Info("AI request",
+    "model", "gpt-4",
+    "tokens", result.Usage.TotalTokens,
+    "duration", duration,
+)
+```
+
+### 4. Test with Mocks
+
+```go
+// ✅ Good: Use mocks for unit tests
+mock := &MockLanguageModel{Response: "test"}
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: mock,
+})
+```
+
+### 5. Profile Production Issues
+
+```go
+// ✅ Good: Enable profiling in production
+import _ "net/http/pprof"
+go func() {
+    log.Println(http.ListenAndServe("localhost:6060", nil))
+}()
+```
+
+## Tools Summary
+
+| Tool | Purpose | Use Case |
+|------|---------|----------|
+| Debug Mode | Log HTTP requests/responses | Development debugging |
+| Token Tracking | Monitor API costs | Cost optimization |
+| pprof | CPU/memory profiling | Performance tuning |
+| Latency Tracking | Measure request duration | Performance monitoring |
+| Mock Providers | Unit testing | Test automation |
+| Structured Logging | Observability | Production monitoring |
+| OpenTelemetry | Distributed tracing | Microservices debugging |
+
+## See Also
+
+- [Error Handling](./50-error-handling.mdx)
+- [Prompt Engineering](./20-prompt-engineering.mdx)
+- [Advanced: Rate Limiting](../06-advanced/06-rate-limiting.mdx)
+- [Advanced: Performance Optimization](../06-advanced/08-model-as-router.mdx)

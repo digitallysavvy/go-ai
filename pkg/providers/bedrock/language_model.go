@@ -18,13 +18,19 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+	options  *ModelOptions
 }
 
 // NewLanguageModel creates a new AWS Bedrock language model
-func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
+func NewLanguageModel(provider *Provider, modelID string, options ...*ModelOptions) *LanguageModel {
+	var opts *ModelOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	return &LanguageModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  opts,
 	}
 }
 
@@ -193,6 +199,18 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 		reqBody["top_p"] = *opts.TopP
 	}
 
+	// Add thinking configuration if configured
+	if m.options != nil && m.options.Thinking != nil {
+		thinkingConfig := map[string]interface{}{
+			"type": string(m.options.Thinking.Type),
+		}
+		// Only add budget_tokens for "enabled" type
+		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
+			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
+		}
+		reqBody["thinking"] = thinkingConfig
+	}
+
 	return reqBody, nil
 }
 
@@ -227,18 +245,79 @@ func (m *LanguageModel) buildGenericRequest(opts *provider.GenerateOptions) (map
 	return reqBody, nil
 }
 
+// bedrockUsage represents Bedrock usage information with detailed token tracking
+type bedrockUsage struct {
+	InputTokens           int `json:"input_tokens"`
+	OutputTokens          int `json:"output_tokens"`
+	TotalTokens           int `json:"total_tokens,omitempty"`
+	CacheReadInputTokens  int `json:"cache_read_input_tokens,omitempty"`  // v6.0
+	CacheWriteInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
+}
+
+// convertBedrockUsage converts Bedrock usage to detailed Usage struct
+// Implements v6.0 detailed token tracking with cache support
+// Bedrock supports BOTH cache read and cache write tokens
+func convertBedrockUsage(usage bedrockUsage) types.Usage {
+	inputTokens := int64(usage.InputTokens)
+	outputTokens := int64(usage.OutputTokens)
+	cacheReadTokens := int64(usage.CacheReadInputTokens)
+	cacheWriteTokens := int64(usage.CacheWriteInputTokens)
+
+	// Calculate totals
+	totalInputTokens := inputTokens
+	totalTokens := totalInputTokens + outputTokens
+
+	result := types.Usage{
+		InputTokens:  &totalInputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Set input token details (Bedrock provides BOTH cache read and write)
+	if cacheReadTokens > 0 || cacheWriteTokens > 0 {
+		noCacheTokens := inputTokens - cacheReadTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cacheReadTokens,
+			CacheWriteTokens: &cacheWriteTokens,
+		}
+	}
+
+	// Bedrock doesn't provide reasoning tokens breakdown yet
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &outputTokens,
+		ReasoningTokens: nil,
+	}
+
+	// Store raw usage
+	result.Raw = map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+	}
+
+	if usage.TotalTokens > 0 {
+		result.Raw["total_tokens"] = usage.TotalTokens
+	}
+	if usage.CacheReadInputTokens > 0 {
+		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+	if usage.CacheWriteInputTokens > 0 {
+		result.Raw["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+	}
+
+	return result
+}
+
 func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, error) {
 	// Try Claude response format
+	// Updated in v6.0 to support detailed usage tracking
 	var claudeResp struct {
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		StopReason string       `json:"stop_reason"`
+		Usage      bedrockUsage `json:"usage"`
 	}
 
 	if err := json.Unmarshal(body, &claudeResp); err == nil && len(claudeResp.Content) > 0 {
@@ -257,11 +336,8 @@ func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, err
 		return &types.GenerateResult{
 			Text:         text,
 			FinishReason: finishReason,
-			Usage: types.Usage{
-				InputTokens:  claudeResp.Usage.InputTokens,
-				OutputTokens: claudeResp.Usage.OutputTokens,
-				TotalTokens:  claudeResp.Usage.InputTokens + claudeResp.Usage.OutputTokens,
-			},
+			Usage:        convertBedrockUsage(claudeResp.Usage),
+			RawResponse:  claudeResp,
 		}, nil
 	}
 
@@ -277,14 +353,12 @@ func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, err
 			text = genericResp.Generation
 		}
 
+		// Generic format doesn't provide usage information
 		return &types.GenerateResult{
 			Text:         text,
 			FinishReason: types.FinishReasonStop,
-			Usage: types.Usage{
-				InputTokens:  0,
-				OutputTokens: 0,
-				TotalTokens:  0,
-			},
+			Usage:        types.Usage{}, // Empty usage
+			RawResponse:  genericResp,
 		}, nil
 	}
 
@@ -331,10 +405,6 @@ func (s *bedrockStream) Next() (*provider.StreamChunk, error) {
 
 func (s *bedrockStream) Err() error {
 	return nil
-}
-
-func (s *bedrockStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
 }
 
 func (s *bedrockStream) Close() error {

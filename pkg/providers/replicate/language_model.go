@@ -200,11 +200,7 @@ func (m *LanguageModel) convertResponse(prediction replicatePrediction) *types.G
 	return &types.GenerateResult{
 		Text:         text,
 		FinishReason: types.FinishReasonStop,
-		Usage: types.Usage{
-			InputTokens:  0,
-			OutputTokens: 0,
-			TotalTokens:  0,
-		},
+		Usage:        types.Usage{}, // Replicate doesn't provide token counts
 	}
 }
 
@@ -256,10 +252,6 @@ func (s *replicateStream) Next() (*provider.StreamChunk, error) {
 
 func (s *replicateStream) Err() error {
 	return nil
-}
-
-func (s *replicateStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
 }
 
 func (s *replicateStream) Close() error {

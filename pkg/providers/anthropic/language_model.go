@@ -20,13 +20,15 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+	options  *ModelOptions
 }
 
 // NewLanguageModel creates a new Anthropic language model
-func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
+func NewLanguageModel(provider *Provider, modelID string, options *ModelOptions) *LanguageModel {
 	return &LanguageModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  options,
 	}
 }
 
@@ -72,7 +74,34 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
-	// Make API request
+	// Add beta headers if context management is enabled
+	betaHeaders := m.getBetaHeaders()
+	if len(betaHeaders) > 0 {
+		// Need to make request with custom headers
+		httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
+			Method: http.MethodPost,
+			Path:   "/v1/messages",
+			Body:   reqBody,
+			Headers: map[string]string{
+				"anthropic-beta": betaHeaders,
+			},
+		})
+		if err != nil {
+			return nil, m.handleError(err)
+		}
+		defer httpResp.Body.Close()
+
+		// Parse response
+		var response anthropicResponse
+		if err := json.NewDecoder(httpResp.Body).Decode(&response); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		// Convert response to GenerateResult
+		return m.convertResponse(response), nil
+	}
+
+	// Make API request without beta header
 	var response anthropicResponse
 	err := m.provider.client.PostJSON(ctx, "/v1/messages", reqBody, &response)
 	if err != nil {
@@ -88,14 +117,23 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Build request body with streaming enabled
 	reqBody := m.buildRequestBody(opts, true)
 
+	// Prepare headers
+	headers := map[string]string{
+		"Accept": "text/event-stream",
+	}
+
+	// Add beta headers if context management is enabled
+	betaHeaders := m.getBetaHeaders()
+	if len(betaHeaders) > 0 {
+		headers["anthropic-beta"] = betaHeaders
+	}
+
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/messages",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/messages",
+		Body:    reqBody,
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -147,23 +185,42 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 
 	// Add tools if present
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToAnthropicFormat(opts.Tools)
+		body["tools"] = ToAnthropicFormatWithCache(opts.Tools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToAnthropic(opts.ToolChoice)
 		}
+	}
+
+	// Add thinking configuration if configured (beta feature)
+	if m.options != nil && m.options.Thinking != nil {
+		thinkingConfig := map[string]interface{}{
+			"type": string(m.options.Thinking.Type),
+		}
+		// Only add budget_tokens for "enabled" type
+		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
+			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
+		}
+		body["thinking"] = thinkingConfig
+	}
+
+	// Add speed configuration if set (fast mode for Opus 4.6)
+	if m.options != nil && m.options.Speed != "" {
+		body["speed"] = string(m.options.Speed)
+	}
+
+	// Add context management if configured (beta feature)
+	if m.options != nil && m.options.ContextManagement != nil {
+		body["context_management"] = m.options.ContextManagement
 	}
 
 	return body
 }
 
 // convertResponse converts an Anthropic response to GenerateResult
+// Updated in v6.0 to support detailed usage tracking and context management
 func (m *LanguageModel) convertResponse(response anthropicResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage: types.Usage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
-			TotalTokens:  response.Usage.InputTokens + response.Usage.OutputTokens,
-		},
+		Usage:       convertAnthropicUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -203,6 +260,125 @@ func (m *LanguageModel) convertResponse(response anthropicResponse) *types.Gener
 		result.FinishReason = types.FinishReasonOther
 	}
 
+	// Extract context management (check root level first, then usage block)
+	if response.ContextManagement != nil {
+		result.ContextManagement = response.ContextManagement
+	} else if response.Usage.ContextManagement != nil {
+		// Fallback to legacy location in usage block
+		result.ContextManagement = response.Usage.ContextManagement
+	}
+
+	return result
+}
+
+// convertAnthropicUsage converts Anthropic usage to detailed Usage struct
+// Implements v6.0 detailed token tracking with prompt caching and compaction support
+func convertAnthropicUsage(usage anthropicUsage) types.Usage {
+	var inputTokens, outputTokens int64
+
+	// When iterations is present (compaction occurred), sum across all iterations
+	// to get the true total tokens consumed/billed. The top-level input_tokens
+	// and output_tokens exclude compaction iteration usage.
+	if len(usage.Iterations) > 0 {
+		for _, iter := range usage.Iterations {
+			inputTokens += int64(iter.InputTokens)
+			outputTokens += int64(iter.OutputTokens)
+		}
+	} else {
+		inputTokens = int64(usage.InputTokens)
+		outputTokens = int64(usage.OutputTokens)
+	}
+
+	cacheCreationTokens := int64(usage.CacheCreationInputTokens)
+	cacheReadTokens := int64(usage.CacheReadInputTokens)
+
+	// Calculate total input tokens (includes all cache-related tokens)
+	totalInputTokens := inputTokens + cacheCreationTokens + cacheReadTokens
+	totalTokens := totalInputTokens + outputTokens
+
+	result := types.Usage{
+		InputTokens:  &totalInputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Set input token details
+	// Anthropic provides: input_tokens (regular), cache_creation_input_tokens (write), cache_read_input_tokens (read)
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &inputTokens,
+		CacheReadTokens:  &cacheReadTokens,
+		CacheWriteTokens: &cacheCreationTokens,
+	}
+
+	// Anthropic doesn't provide reasoning tokens breakdown yet
+	// So we just set the total output tokens as text tokens
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &outputTokens,
+		ReasoningTokens: nil,
+	}
+
+	// Store raw usage for provider-specific details
+	result.Raw = map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+	}
+
+	if usage.CacheCreationInputTokens > 0 {
+		result.Raw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.CacheReadInputTokens > 0 {
+		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+	if len(usage.Iterations) > 0 {
+		result.Raw["iterations"] = usage.Iterations
+	}
+
+	return result
+}
+
+// getBetaHeaders returns the comma-separated beta headers needed for context management
+func (m *LanguageModel) getBetaHeaders() string {
+	if m.options == nil {
+		return ""
+	}
+
+	var headers []string
+
+	// Check context management for beta headers
+	if m.options.ContextManagement != nil {
+		hasCompact := false
+
+		// Check which edit types are present
+		for _, edit := range m.options.ContextManagement.Edits {
+			if _, ok := edit.(*CompactEdit); ok {
+				hasCompact = true
+			}
+		}
+
+		// Always add context-management header if edits are present
+		if len(m.options.ContextManagement.Edits) > 0 {
+			headers = append(headers, BetaHeaderContextManagement)
+		}
+
+		// Add compact header if compact edits are present
+		if hasCompact {
+			headers = append(headers, BetaHeaderCompact)
+		}
+	}
+
+	// Add fast mode header if fast mode is enabled
+	if m.options.Speed == SpeedFast {
+		headers = append(headers, BetaHeaderFastMode)
+	}
+
+	// Join with comma as per Anthropic API spec
+	result := ""
+	for i, h := range headers {
+		if i > 0 {
+			result += ","
+		}
+		result += h
+	}
 	return result
 }
 
@@ -212,27 +388,51 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // anthropicResponse represents the Anthropic API response
+// Updated in v6.0 to support prompt caching and context management
 type anthropicResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Content    []anthropicContent `json:"content"`
-	Model      string `json:"model"`
-	StopReason string `json:"stop_reason"`
-	StopSequence string `json:"stop_sequence,omitempty"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	Role         string             `json:"role"`
+	Content      []anthropicContent `json:"content"`
+	Model        string             `json:"model"`
+	StopReason   string             `json:"stop_reason"`
+	StopSequence string             `json:"stop_sequence,omitempty"`
+	Usage        anthropicUsage     `json:"usage"`
+	// Root-level context management (new location - takes precedence)
+	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
+}
+
+// anthropicUsage represents Anthropic usage information with cache tracking and context management
+type anthropicUsage struct {
+	InputTokens              int                         `json:"input_tokens"`
+	OutputTokens             int                         `json:"output_tokens"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"` // v6.0
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens,omitempty"`     // v6.0
+	// Legacy location for context management (fallback)
+	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
+	// Iterations breakdown when compaction is used
+	Iterations []UsageIteration `json:"iterations,omitempty"`
+}
+
+// UsageIteration represents a single iteration in the usage breakdown
+// When compaction occurs, the API returns an iterations array showing
+// usage for each sampling iteration (compaction + message).
+type UsageIteration struct {
+	Type         string `json:"type"`          // "compaction" or "message"
+	InputTokens  int    `json:"input_tokens"`  // Input tokens for this iteration
+	OutputTokens int    `json:"output_tokens"` // Output tokens for this iteration
 }
 
 // anthropicContent represents content in an Anthropic response
 type anthropicContent struct {
-	Type string                 `json:"type"` // "text" or "tool_use"
-	Text string                 `json:"text,omitempty"`
-	ID   string                 `json:"id,omitempty"`
-	Name string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
+	Type      string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking"
+	Text      string                 `json:"text,omitempty"`
+	ID        string                 `json:"id,omitempty"`
+	Name      string                 `json:"name,omitempty"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
+	Signature string                 `json:"signature,omitempty"` // For "thinking" type
+	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
 }
 
 // anthropicStream implements provider.TextStream for Anthropic streaming
@@ -301,14 +501,20 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 
 	case "message_delta":
-		// Parse message delta for finish reason
+		// Parse message delta for finish reason and context management
 		var delta struct {
 			Delta struct {
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage struct {
 				OutputTokens int `json:"output_tokens"`
+				// Legacy location for context management
+				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
+				// Iterations breakdown for compaction
+				Iterations []UsageIteration `json:"iterations,omitempty"`
 			} `json:"usage"`
+			// Root-level context management (new location - takes precedence)
+			ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 			return nil, fmt.Errorf("failed to parse message delta: %w", err)
@@ -327,10 +533,19 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				finishReason = types.FinishReasonOther
 			}
 
-			return &provider.StreamChunk{
+			chunk := &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
-			}, nil
+			}
+
+			// Extract context management (check root level first, then usage block)
+			if delta.ContextManagement != nil {
+				chunk.ContextManagement = delta.ContextManagement
+			} else if delta.Usage.ContextManagement != nil {
+				chunk.ContextManagement = delta.Usage.ContextManagement
+			}
+
+			return chunk, nil
 		}
 
 	case "message_stop":

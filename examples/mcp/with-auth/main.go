@@ -20,8 +20,8 @@ import (
 
 // MCPAuthServer implements MCP with authentication
 type MCPAuthServer struct {
-	provider provider.Provider
-	apiKey   string
+	provider  provider.Provider
+	apiKey    string
 	jwtSecret []byte
 	apiKeys   map[string]string // API key -> user mapping
 }
@@ -45,9 +45,9 @@ func main() {
 		apiKey:    apiKey,
 		jwtSecret: []byte(os.Getenv("JWT_SECRET")),
 		apiKeys: map[string]string{
-			"key_test123":     "user1",
-			"key_demo456":     "user2",
-			"key_production":  "prod_user",
+			"key_test123":    "user1",
+			"key_demo456":    "user2",
+			"key_production": "prod_user",
 		},
 	}
 
@@ -266,15 +266,15 @@ func (s *MCPAuthServer) handleTools(w http.ResponseWriter, r *http.Request) {
 			"name":        "get_user_info",
 			"description": "Get information about the authenticated user",
 			"parameters": map[string]interface{}{
-				"type": "object",
+				"type":       "object",
 				"properties": map[string]interface{}{},
 			},
 		},
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"tools":    tools,
-		"user":     username,
+		"tools":         tools,
+		"user":          username,
 		"authenticated": true,
 	})
 }
@@ -315,7 +315,7 @@ func (s *MCPAuthServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				},
 				"required": []string{"name"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				name := params["name"].(string)
 				return fmt.Sprintf("Hello, %s!", name), nil
 			},
@@ -327,10 +327,10 @@ func (s *MCPAuthServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				"type":       "object",
 				"properties": map[string]interface{}{},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				return map[string]string{
-					"username": username,
-					"auth_method": "jwt",
+					"username":     username,
+					"auth_method":  "jwt",
 					"access_level": "standard",
 				}, nil
 			},

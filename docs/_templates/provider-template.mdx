@@ -1,0 +1,710 @@
+# [Provider Name]
+
+<!--
+  INSTRUCTIONS:
+  1. Replace [Provider Name] with the actual provider (e.g., "Anthropic", "OpenAI")
+  2. Provide provider overview and key features
+  3. Document all provider-specific options
+  4. Include authentication setup
+  5. Show model examples with actual model names
+  6. Document provider-specific features
+  7. Include troubleshooting section
+  8. Add pricing/rate limit information if relevant
+-->
+
+Brief description of the provider and what makes it unique in the AI landscape.
+
+## Overview
+
+Detailed introduction covering:
+- What the provider offers (models, capabilities)
+- Key strengths and use cases
+- Integration with Go-AI SDK
+- Prerequisites for using this provider
+
+## Installation
+
+```bash
+go get github.com/teilomillet/go-ai
+```
+
+The [Provider Name] provider is included in the main Go-AI SDK package.
+
+## Quick Start
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+    "github.com/teilomillet/go-ai/providers/[provider-package]"
+)
+
+func main() {
+    // Create client with [Provider Name]
+    client := gai.NewClient(
+        "your-api-key",
+        gai.WithProvider([provider-package].NewProvider()),
+    )
+
+    // Generate a response
+    response, err := client.Generate(context.Background(), &gai.Request{
+        Model: "[default-model-name]",
+        Messages: []gai.Message{
+            {Role: "user", Content: "Hello, world!"},
+        },
+    })
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    fmt.Println(response.Content)
+}
+```
+
+## Authentication
+
+### API Key Setup
+
+1. **Obtain API key**: Visit [Provider Console URL](https://provider.com/console) and create an API key
+
+2. **Configure in code**:
+
+```go
+client := gai.NewClient(
+    "your-api-key",
+    gai.WithProvider([provider-package].NewProvider()),
+)
+```
+
+3. **Using environment variables** (recommended):
+
+```bash
+export [PROVIDER]_API_KEY="your-api-key"
+```
+
+```go
+import "os"
+
+apiKey := os.Getenv("[PROVIDER]_API_KEY")
+client := gai.NewClient(
+    apiKey,
+    gai.WithProvider([provider-package].NewProvider()),
+)
+```
+
+### Authentication Best Practices
+
+- Store API keys in environment variables or secure vaults
+- Never commit API keys to version control
+- Rotate keys periodically
+- Use separate keys for development and production
+
+## Available Models
+
+### Model Overview
+
+| Model | Description | Context Window | Best For |
+|-------|-------------|----------------|----------|
+| model-name-1 | Description | 100K tokens | General use |
+| model-name-2 | Description | 200K tokens | Long documents |
+| model-name-3 | Description | 50K tokens | Fast responses |
+
+### Model Selection
+
+```go
+// Use the latest flagship model
+request := &gai.Request{
+    Model: "[flagship-model-name]",
+    Messages: []gai.Message{
+        {Role: "user", Content: "Your prompt"},
+    },
+}
+
+// Use a faster, cost-effective model
+request := &gai.Request{
+    Model: "[fast-model-name]",
+    Messages: []gai.Message{
+        {Role: "user", Content: "Your prompt"},
+    },
+}
+```
+
+### Model Recommendations
+
+- **General purpose**: Use `[flagship-model]` for best quality
+- **Cost optimization**: Use `[economy-model]` for simpler tasks
+- **Speed priority**: Use `[fast-model]` for quick responses
+- **Long context**: Use `[long-context-model]` for large documents
+
+## Configuration Options
+
+### Provider Options
+
+```go
+provider := [provider-package].NewProvider(
+    [provider-package].WithOption1(value1),
+    [provider-package].WithOption2(value2),
+)
+
+client := gai.NewClient(apiKey, gai.WithProvider(provider))
+```
+
+### Available Options
+
+#### WithBaseURL
+
+```go
+[provider-package].WithBaseURL(url string)
+```
+
+Override the default API endpoint.
+
+**Use case:** Enterprise deployments, custom proxies
+
+**Example:**
+
+```go
+provider := [provider-package].NewProvider(
+    [provider-package].WithBaseURL("https://custom-endpoint.com/v1"),
+)
+```
+
+#### WithTimeout
+
+```go
+[provider-package].WithTimeout(duration time.Duration)
+```
+
+Set custom timeout for API requests.
+
+**Default:** 30 seconds
+
+**Example:**
+
+```go
+provider := [provider-package].NewProvider(
+    [provider-package].WithTimeout(60 * time.Second),
+)
+```
+
+#### WithRetryConfig
+
+```go
+[provider-package].WithRetryConfig(maxRetries int, backoff time.Duration)
+```
+
+Configure retry behavior for failed requests.
+
+**Example:**
+
+```go
+provider := [provider-package].NewProvider(
+    [provider-package].WithRetryConfig(3, 2*time.Second),
+)
+```
+
+## Request Options
+
+### Temperature
+
+Controls randomness in responses.
+
+**Range:** 0.0 to 1.0 (provider-specific ranges may vary)
+
+**Example:**
+
+```go
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: messages,
+    Options: &gai.RequestOptions{
+        Temperature: 0.7, // Balanced creativity
+    },
+}
+```
+
+**Guidelines:**
+- `0.0-0.3`: Deterministic, focused responses
+- `0.4-0.7`: Balanced (recommended for most uses)
+- `0.8-1.0`: Creative, varied responses
+
+### MaxTokens
+
+Limits the length of generated responses.
+
+**Example:**
+
+```go
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: messages,
+    Options: &gai.RequestOptions{
+        MaxTokens: 1000, // Limit to ~750 words
+    },
+}
+```
+
+### TopP
+
+Nucleus sampling parameter.
+
+**Range:** 0.0 to 1.0
+
+**Example:**
+
+```go
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: messages,
+    Options: &gai.RequestOptions{
+        TopP: 0.9, // Consider top 90% probability mass
+    },
+}
+```
+
+### Provider-Specific Options
+
+Document any provider-specific options:
+
+```go
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: messages,
+    Options: &gai.RequestOptions{
+        ProviderSpecificOption: value,
+    },
+}
+```
+
+## Features
+
+### Streaming Responses
+
+Stream responses token-by-token for real-time output.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/teilomillet/go-ai"
+    "github.com/teilomillet/go-ai/providers/[provider-package]"
+)
+
+func main() {
+    client := gai.NewClient(
+        apiKey,
+        gai.WithProvider([provider-package].NewProvider()),
+    )
+
+    request := &gai.Request{
+        Model: "[model-name]",
+        Messages: []gai.Message{
+            {Role: "user", Content: "Tell me a story"},
+        },
+    }
+
+    stream, err := client.GenerateStream(context.Background(), request)
+    if err != nil {
+        log.Fatalf("Stream error: %v", err)
+    }
+    defer stream.Close()
+
+    for {
+        chunk, err := stream.Recv()
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            log.Fatalf("Receive error: %v", err)
+        }
+
+        fmt.Print(chunk.Content)
+    }
+}
+```
+
+### System Messages
+
+Configure model behavior with system messages.
+
+```go
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: []gai.Message{
+        {
+            Role:    "system",
+            Content: "You are a helpful coding assistant specializing in Go.",
+        },
+        {
+            Role:    "user",
+            Content: "How do I handle errors in Go?",
+        },
+    },
+}
+```
+
+### Multi-turn Conversations
+
+Maintain conversation context across multiple exchanges.
+
+```go
+messages := []gai.Message{
+    {Role: "user", Content: "What is Go?"},
+    {Role: "assistant", Content: "Go is a programming language..."},
+    {Role: "user", Content: "What are its main features?"},
+}
+
+request := &gai.Request{
+    Model:    "[model-name]",
+    Messages: messages,
+}
+```
+
+### [Provider-Specific Feature 1]
+
+Description of unique provider feature.
+
+```go
+// Example code demonstrating the feature
+```
+
+### [Provider-Specific Feature 2]
+
+Description of another unique feature.
+
+```go
+// Example code
+```
+
+## Advanced Usage
+
+### Custom Prompting Strategies
+
+Provider-specific prompting best practices:
+
+```go
+// Effective prompting for [Provider Name]
+request := &gai.Request{
+    Model: "[model-name]",
+    Messages: []gai.Message{
+        {
+            Role: "system",
+            Content: "You are an expert in [domain]. " +
+                    "Provide detailed, accurate answers with examples.",
+        },
+        {
+            Role: "user",
+            Content: "Question with clear context and requirements",
+        },
+    },
+}
+```
+
+### Function Calling / Tool Use
+
+If supported by the provider:
+
+```go
+// Define available functions
+tools := []gai.Tool{
+    {
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]string{
+                    "type":        "string",
+                    "description": "City name",
+                },
+            },
+        },
+    },
+}
+
+request := &gai.Request{
+    Model:    "[model-name]",
+    Messages: messages,
+    Tools:    tools,
+}
+```
+
+### Embeddings
+
+If the provider supports embeddings:
+
+```go
+embedding, err := client.CreateEmbedding(context.Background(), &gai.EmbeddingRequest{
+    Model: "[embedding-model]",
+    Input: "Text to embed",
+})
+```
+
+## Error Handling
+
+### Common Errors
+
+#### Authentication Errors
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    if errors.Is(err, [provider-package].ErrInvalidAPIKey) {
+        log.Println("Invalid API key - check your credentials")
+        // Update API key
+    }
+}
+```
+
+#### Rate Limiting
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    if errors.Is(err, [provider-package].ErrRateLimited) {
+        log.Println("Rate limited - implementing backoff")
+        time.Sleep(5 * time.Second)
+        // Retry request
+    }
+}
+```
+
+#### Model Not Found
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    if errors.Is(err, [provider-package].ErrModelNotFound) {
+        log.Printf("Model %s not available\n", request.Model)
+        // Try alternative model
+    }
+}
+```
+
+#### Context Length Exceeded
+
+```go
+response, err := client.Generate(ctx, request)
+if err != nil {
+    if errors.Is(err, [provider-package].ErrContextTooLarge) {
+        log.Println("Input exceeds context window")
+        // Reduce input size or use model with larger context
+    }
+}
+```
+
+### Error Handling Best Practices
+
+```go
+func generateWithRetry(client *gai.Client, request *gai.Request) (*gai.Response, error) {
+    maxRetries := 3
+    backoff := time.Second
+
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        response, err := client.Generate(context.Background(), request)
+        if err == nil {
+            return response, nil
+        }
+
+        // Check if error is retryable
+        if errors.Is(err, [provider-package].ErrRateLimited) {
+            time.Sleep(backoff)
+            backoff *= 2
+            continue
+        }
+
+        // Non-retryable error
+        return nil, err
+    }
+
+    return nil, fmt.Errorf("max retries exceeded")
+}
+```
+
+## Rate Limits and Quotas
+
+Document provider-specific rate limits:
+
+| Tier | Requests/min | Tokens/min | Daily Limit |
+|------|--------------|------------|-------------|
+| Free | 60 | 10,000 | 100,000 |
+| Pro | 600 | 100,000 | 1,000,000 |
+| Enterprise | Custom | Custom | Custom |
+
+### Managing Rate Limits
+
+```go
+import "golang.org/x/time/rate"
+
+// Create rate limiter
+limiter := rate.NewLimiter(rate.Limit(10), 1) // 10 requests per second
+
+// Use before each request
+if err := limiter.Wait(context.Background()); err != nil {
+    log.Printf("Rate limiter error: %v", err)
+}
+
+response, err := client.Generate(ctx, request)
+```
+
+## Pricing
+
+Link to provider pricing page and provide general guidance:
+
+- [Provider Pricing Page](https://provider.com/pricing)
+- Costs based on token usage (input + output)
+- Different models have different pricing tiers
+- Monitor usage through provider console
+
+## Best Practices
+
+1. **Choose the right model**: Match model capabilities to your use case
+2. **Optimize prompts**: Clear, specific prompts reduce token usage
+3. **Implement rate limiting**: Respect API limits to avoid throttling
+4. **Handle errors gracefully**: Implement retry logic with exponential backoff
+5. **Monitor usage**: Track API calls and token consumption
+6. **Cache responses**: Store frequently requested responses when appropriate
+7. **Use streaming**: For long responses, stream for better UX
+8. **Secure API keys**: Never expose keys in client-side code
+
+## Troubleshooting
+
+### Issue: Slow Response Times
+
+**Symptoms:** Requests take longer than expected
+
+**Solutions:**
+- Use a faster model variant
+- Reduce MaxTokens to limit generation length
+- Check network connectivity
+- Increase timeout values
+
+### Issue: High Costs
+
+**Symptoms:** Unexpected API charges
+
+**Solutions:**
+- Monitor token usage per request
+- Use cheaper models for simpler tasks
+- Implement caching for repeated queries
+- Set MaxTokens limits
+- Use streaming to stop generation early if needed
+
+### Issue: Poor Response Quality
+
+**Symptoms:** Model outputs are not meeting expectations
+
+**Solutions:**
+- Improve prompt clarity and specificity
+- Add examples in your prompt (few-shot learning)
+- Adjust Temperature setting
+- Try a more capable model
+- Use system messages to set behavior
+
+### Issue: Timeout Errors
+
+**Symptoms:** Requests fail with timeout errors
+
+**Solutions:**
+- Increase timeout duration
+- Reduce input length
+- Use streaming for long generations
+- Check API status page
+
+## Complete Example
+
+Real-world example demonstrating best practices:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/teilomillet/go-ai"
+    "github.com/teilomillet/go-ai/providers/[provider-package]"
+)
+
+func main() {
+    // Get API key from environment
+    apiKey := os.Getenv("[PROVIDER]_API_KEY")
+    if apiKey == "" {
+        log.Fatal("API key not set")
+    }
+
+    // Configure provider with options
+    provider := [provider-package].NewProvider(
+        [provider-package].WithTimeout(60 * time.Second),
+        [provider-package].WithRetryConfig(3, 2*time.Second),
+    )
+
+    // Create client
+    client := gai.NewClient(apiKey, gai.WithProvider(provider))
+
+    // Create request with best practices
+    request := &gai.Request{
+        Model: "[recommended-model]",
+        Messages: []gai.Message{
+            {
+                Role:    "system",
+                Content: "You are a helpful assistant.",
+            },
+            {
+                Role:    "user",
+                Content: "Explain error handling in Go with examples.",
+            },
+        },
+        Options: &gai.RequestOptions{
+            Temperature: 0.7,
+            MaxTokens:   2000,
+        },
+    }
+
+    // Generate with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    response, err := client.Generate(ctx, request)
+    if err != nil {
+        log.Fatalf("Generation failed: %v", err)
+    }
+
+    // Process response
+    fmt.Printf("Response:\n%s\n", response.Content)
+    fmt.Printf("\nTokens used: %d\n", response.Usage.TotalTokens)
+}
+```
+
+## Related Documentation
+
+- [Getting Started Guide](../01-getting-started/installation.mdx)
+- [Client Configuration](../02-core-concepts/client-configuration.mdx)
+- [Streaming Responses](../04-guides/streaming-responses.mdx)
+- [Error Handling](../04-guides/error-handling.mdx)
+- [API Reference: Client](../07-reference/api/client.mdx)
+
+## Additional Resources
+
+- [Provider Official Documentation](https://provider.com/docs)
+- [Provider API Reference](https://provider.com/api-reference)
+- [Provider Community Forum](https://community.provider.com)
+- [Provider Status Page](https://status.provider.com)
+
+## Version History
+
+> **Added in:** v1.0.0
+
+> **Updated in v1.2.0:** Added support for new models and features

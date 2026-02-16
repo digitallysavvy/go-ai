@@ -1,0 +1,420 @@
+---
+title: Token Usage Differentiation Migration Guide
+description: Guide for migrating to the new text/image token differentiation in Usage types
+---
+
+# Token Usage Differentiation Migration Guide
+
+This guide helps you migrate to the new token usage structure that differentiates between text and image input tokens for multimodal models.
+
+## Overview
+
+The Go-AI SDK now provides detailed token usage tracking with separate counts for text and image input tokens. This allows for accurate cost tracking in multimodal applications where text and image tokens have different pricing.
+
+## What Changed
+
+### InputTokenDetails Structure
+
+The `InputTokenDetails` type now includes two new optional fields:
+
+```go
+type InputTokenDetails struct {
+    NoCacheTokens    *int64 // Tokens not served from cache
+    CacheReadTokens  *int64 // Tokens read from cache
+    CacheWriteTokens *int64 // Tokens written to cache
+
+    // New fields for multimodal token tracking
+    TextTokens   *int64 // Text input tokens (NEW)
+    ImageTokens  *int64 // Image input tokens (NEW)
+}
+```
+
+### Provider Support
+
+Different providers report these fields differently:
+
+- **OpenAI/XAI**: Parse from `prompt_tokens_details.text_tokens` and `image_tokens`
+- **Google**: Calculate from `promptTokensDetails` array with modality types
+- **Anthropic**: Not available (fields remain `nil`)
+- **Azure, DeepSeek, Together, Fireworks, Perplexity**: OpenAI-compatible parsing
+
+## Migration Steps
+
+### Step 1: Update Your Code
+
+**Before (old approach):**
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    return err
+}
+
+// Simple cost calculation (assumes all input tokens have same cost)
+inputCost := float64(result.Usage.GetInputTokens()) * inputTokenRate
+outputCost := float64(result.Usage.GetOutputTokens()) * outputTokenRate
+totalCost := inputCost + outputCost
+```
+
+**After (new approach with multimodal support):**
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    return err
+}
+
+// Calculate cost based on token type
+var inputCost float64
+if result.Usage.InputDetails != nil &&
+   result.Usage.InputDetails.TextTokens != nil &&
+   result.Usage.InputDetails.ImageTokens != nil {
+    // Accurate multimodal cost tracking
+    inputCost = float64(*result.Usage.InputDetails.TextTokens) * textInputRate +
+                float64(*result.Usage.InputDetails.ImageTokens) * imageInputRate
+} else {
+    // Fallback for providers without detailed breakdown
+    inputCost = float64(result.Usage.GetInputTokens()) * defaultInputRate
+}
+
+outputCost := float64(result.Usage.GetOutputTokens()) * outputTokenRate
+totalCost := inputCost + outputCost
+```
+
+### Step 2: Backward Compatibility
+
+The migration is fully backward compatible. Existing code will continue to work:
+
+```go
+// This still works - no changes required
+usage := result.Usage
+fmt.Printf("Total input tokens: %d\n", usage.GetInputTokens())
+fmt.Printf("Total output tokens: %d\n", usage.GetOutputTokens())
+```
+
+The new fields are optional (pointers), so:
+- Old code that doesn't use them continues to work
+- New code can check for `nil` before using detailed fields
+- `GetInputTokens()` returns the total (text + image) regardless
+
+### Step 3: Gradual Adoption
+
+You can adopt the new fields gradually:
+
+```go
+func calculateCost(usage types.Usage) float64 {
+    var inputCost float64
+
+    // Try to use detailed breakdown if available
+    if usage.InputDetails != nil {
+        if usage.InputDetails.TextTokens != nil && usage.InputDetails.ImageTokens != nil {
+            // Use accurate multimodal pricing
+            inputCost = float64(*usage.InputDetails.TextTokens) * 0.0000025 +
+                        float64(*usage.InputDetails.ImageTokens) * 0.0000075
+        } else {
+            // Fallback to average rate
+            inputCost = float64(usage.GetInputTokens()) * 0.000005
+        }
+    } else {
+        // Fallback if InputDetails is nil
+        inputCost = float64(usage.GetInputTokens()) * 0.000005
+    }
+
+    outputCost := float64(usage.GetOutputTokens()) * 0.00001
+    return inputCost + outputCost
+}
+```
+
+## Real-World Examples
+
+### Example 1: Multimodal Cost Tracking
+
+Track costs accurately for vision models:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/openai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+const (
+    textInputCost  = 0.0000025  // $2.50 per 1M tokens (GPT-4o)
+    imageInputCost = 0.0000075  // ~$7.50 per 1M tokens (varies by image size)
+    outputCost     = 0.0000100  // $10.00 per 1M tokens
+)
+
+func ptr(s string) *string { return &s }
+
+func main() {
+    ctx := context.Background()
+    provider := openai.NewProvider("your-api-key")
+    model := provider.LanguageModel("gpt-4o")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.MessageContent{
+                    {Type: types.ContentTypeText, Text: ptr("What's in this image?")},
+                    {Type: types.ContentTypeImage, Image: ptr("https://example.com/image.jpg")},
+                },
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Calculate accurate cost
+    var cost float64
+    if result.Usage.InputDetails != nil &&
+       result.Usage.InputDetails.TextTokens != nil &&
+       result.Usage.InputDetails.ImageTokens != nil {
+
+        textTokens := *result.Usage.InputDetails.TextTokens
+        imageTokens := *result.Usage.InputDetails.ImageTokens
+
+        fmt.Printf("Text input tokens: %d\n", textTokens)
+        fmt.Printf("Image input tokens: %d\n", imageTokens)
+
+        cost = float64(textTokens)*textInputCost +
+               float64(imageTokens)*imageInputCost +
+               float64(result.Usage.GetOutputTokens())*outputCost
+    } else {
+        // Fallback
+        fmt.Println("Provider doesn't support detailed token breakdown")
+        cost = float64(result.Usage.GetInputTokens())*textInputCost +
+               float64(result.Usage.GetOutputTokens())*outputCost
+    }
+
+    fmt.Printf("Estimated cost: $%.6f\n", cost)
+}
+```
+
+### Example 2: Budget Enforcement with Multimodal
+
+```go
+type TokenBudget struct {
+    MaxTextTokens  int64
+    MaxImageTokens int64
+    UsedTextTokens  int64
+    UsedImageTokens int64
+}
+
+func (b *TokenBudget) CanAfford(usage types.Usage) bool {
+    if usage.InputDetails == nil ||
+       usage.InputDetails.TextTokens == nil ||
+       usage.InputDetails.ImageTokens == nil {
+        // If detailed breakdown not available, use conservative estimate
+        estimatedText := usage.GetInputTokens() / 2
+        estimatedImage := usage.GetInputTokens() / 2
+        return (b.UsedTextTokens+estimatedText <= b.MaxTextTokens) &&
+               (b.UsedImageTokens+estimatedImage <= b.MaxImageTokens)
+    }
+
+    textTokens := *usage.InputDetails.TextTokens
+    imageTokens := *usage.InputDetails.ImageTokens
+
+    return (b.UsedTextTokens+textTokens <= b.MaxTextTokens) &&
+           (b.UsedImageTokens+imageTokens <= b.MaxImageTokens)
+}
+
+func (b *TokenBudget) Spend(usage types.Usage) {
+    if usage.InputDetails != nil &&
+       usage.InputDetails.TextTokens != nil &&
+       usage.InputDetails.ImageTokens != nil {
+        b.UsedTextTokens += *usage.InputDetails.TextTokens
+        b.UsedImageTokens += *usage.InputDetails.ImageTokens
+    }
+}
+```
+
+### Example 3: Analytics and Reporting
+
+```go
+type UsageStats struct {
+    TotalCalls      int
+    TotalTextTokens int64
+    TotalImageTokens int64
+    TotalOutputTokens int64
+    MultimodalCalls int
+}
+
+func (s *UsageStats) Record(usage types.Usage) {
+    s.TotalCalls++
+    s.TotalOutputTokens += usage.GetOutputTokens()
+
+    if usage.InputDetails != nil &&
+       usage.InputDetails.TextTokens != nil &&
+       usage.InputDetails.ImageTokens != nil {
+        s.TotalTextTokens += *usage.InputDetails.TextTokens
+        s.TotalImageTokens += *usage.InputDetails.ImageTokens
+
+        if *usage.InputDetails.ImageTokens > 0 {
+            s.MultimodalCalls++
+        }
+    } else {
+        // No detailed breakdown available
+        s.TotalTextTokens += usage.GetInputTokens()
+    }
+}
+
+func (s *UsageStats) Report() {
+    fmt.Printf("=== Usage Statistics ===\n")
+    fmt.Printf("Total API calls: %d\n", s.TotalCalls)
+    fmt.Printf("Multimodal calls: %d (%.1f%%)\n",
+        s.MultimodalCalls,
+        float64(s.MultimodalCalls)/float64(s.TotalCalls)*100)
+    fmt.Printf("\nToken Usage:\n")
+    fmt.Printf("  Text input: %d\n", s.TotalTextTokens)
+    fmt.Printf("  Image input: %d\n", s.TotalImageTokens)
+    fmt.Printf("  Output: %d\n", s.TotalOutputTokens)
+    fmt.Printf("  Total: %d\n",
+        s.TotalTextTokens+s.TotalImageTokens+s.TotalOutputTokens)
+}
+```
+
+## Best Practices
+
+### 1. Always Check for Nil
+
+New fields are optional pointers, so always check before dereferencing:
+
+```go
+// Good
+if usage.InputDetails != nil && usage.InputDetails.TextTokens != nil {
+    textTokens := *usage.InputDetails.TextTokens
+    // use textTokens
+}
+
+// Bad - can panic!
+textTokens := *usage.InputDetails.TextTokens
+```
+
+### 2. Provide Fallbacks
+
+Different providers support different features. Always provide fallback logic:
+
+```go
+func getTextTokens(usage types.Usage) int64 {
+    if usage.InputDetails != nil && usage.InputDetails.TextTokens != nil {
+        return *usage.InputDetails.TextTokens
+    }
+    // Fallback: assume all input tokens are text
+    return usage.GetInputTokens()
+}
+```
+
+### 3. Use Helper Methods
+
+The SDK provides helper methods that handle nil checks:
+
+```go
+// These never panic, return 0 if nil
+inputTokens := usage.GetInputTokens()
+outputTokens := usage.GetOutputTokens()
+totalTokens := usage.GetTotalTokens()
+```
+
+### 4. Document Provider Limitations
+
+If your application relies on detailed token breakdown, document which providers support it:
+
+```go
+// CalculateCost computes the cost of an API call.
+// Note: Accurate multimodal pricing requires providers that support
+// text/image token differentiation (OpenAI, XAI, Google, Azure, etc.)
+// Other providers will use average pricing.
+func CalculateCost(usage types.Usage) float64 {
+    // implementation
+}
+```
+
+## Testing Your Migration
+
+Test with different providers to ensure your code handles various support levels:
+
+```go
+func TestMultimodalCostCalculation(t *testing.T) {
+    tests := []struct {
+        name  string
+        usage types.Usage
+        want  float64
+    }{
+        {
+            name: "with detailed breakdown",
+            usage: types.Usage{
+                InputTokens:  ptr(int64(1500)),
+                OutputTokens: ptr(int64(500)),
+                InputDetails: &types.InputTokenDetails{
+                    TextTokens:  ptr(int64(100)),
+                    ImageTokens: ptr(int64(1400)),
+                },
+            },
+            want: 0.0156, // accurate cost
+        },
+        {
+            name: "without detailed breakdown",
+            usage: types.Usage{
+                InputTokens:  ptr(int64(1500)),
+                OutputTokens: ptr(int64(500)),
+            },
+            want: 0.0125, // fallback average cost
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got := calculateCost(tt.usage)
+            if math.Abs(got-tt.want) > 0.0001 {
+                t.Errorf("calculateCost() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func ptr[T any](v T) *T { return &v }
+```
+
+## FAQs
+
+### Q: Do I need to update my existing code?
+
+**A:** No, the migration is fully backward compatible. Existing code will continue to work unchanged. The new fields are optional enhancements for better cost tracking.
+
+### Q: Which providers support text/image token differentiation?
+
+**A:** OpenAI, XAI, Google, Azure, DeepSeek, Together, Fireworks, and Perplexity support it. Anthropic and some others don't provide this breakdown, so the new fields will be `nil`.
+
+### Q: How do I handle providers that don't support this?
+
+**A:** Check if the fields are `nil` and provide fallback logic. Use average pricing or treat all input tokens as text tokens.
+
+### Q: Will this affect my billing?
+
+**A:** No. This change only affects how the SDK reports token usage. Your actual API costs with providers remain the same.
+
+### Q: Can I migrate gradually?
+
+**A:** Yes! You can adopt the new fields in new code while keeping existing code unchanged. They can coexist.
+
+## Additional Resources
+
+- [Usage Types Reference](../07-reference/types/usage.mdx)
+- [Multimodal Examples](../05-providers/openai.mdx#multimodal-examples)
+- [Cost Tracking Guide](../06-advanced/cost-tracking.mdx)
+
+## Support
+
+If you encounter issues during migration:
+1. Check provider support table in the [Usage Types Reference](../07-reference/types/usage.mdx)
+2. Review examples in this guide
+3. Open an issue on [GitHub](https://github.com/digitallysavvy/go-ai/issues)

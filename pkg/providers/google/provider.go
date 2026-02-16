@@ -75,8 +75,12 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	// Google doesn't provide image generation through this API
-	return nil, fmt.Errorf("Google does not support image generation through this API")
+	// Validate model ID
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewImageModel(p, modelID), nil
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -95,6 +99,16 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Google doesn't provide reranking models
 	return nil, fmt.Errorf("Google does not support reranking")
+}
+
+// VideoModel returns a video generation model by ID
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	// Validate model ID
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewVideoModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests

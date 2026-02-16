@@ -1,0 +1,181 @@
+---
+title: Mistral AI Provider
+description: Setup and usage guide for Mistral AI models with Go-AI SDK
+---
+
+# Mistral AI Provider
+
+Mistral AI provides powerful open-source and proprietary language models with strong reasoning capabilities, function calling, and competitive pricing. Known for efficient architectures and European data sovereignty.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/mistral"
+)
+```
+
+### Configuration
+
+```go
+provider := mistral.New(mistral.Config{
+    APIKey: os.Getenv("MISTRAL_API_KEY"),
+})
+
+model, err := provider.LanguageModel("mistral-large-latest")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [console.mistral.ai](https://console.mistral.ai)
+2. Create API key
+3. Set environment variable:
+
+```bash
+export MISTRAL_API_KEY=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
+| mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
+| pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
+| codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
+| mistral-nemo | 128K | $0.30/1M | $0.30/1M | Open-source |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| mistral-embed | 1024 | $0.10/1M | Semantic search |
+
+## Provider-Specific Features
+
+### Function Calling
+
+Mistral supports parallel function calling:
+
+```go
+tools := []ai.Tool{
+    {
+        Type: "function",
+        Function: ai.FunctionDefinition{
+            Name: "get_weather",
+            Description: "Get weather for location",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "location": map[string]string{"type": "string"},
+                },
+                "required": []string{"location"},
+            },
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "What's the weather in Paris and London?",
+    ai.WithTools(tools...),
+)
+
+// Processes both calls in parallel
+```
+
+### JSON Mode
+
+Structured output generation:
+
+```go
+result, err := ai.GenerateText(model, "Extract: John, 30, engineer",
+    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
+)
+```
+
+### Code Generation
+
+Codestral is optimized for code:
+
+```go
+codeModel, err := provider.LanguageModel("codestral-latest")
+
+result, err := ai.GenerateText(codeModel,
+    "Write a binary search function in Go",
+)
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/mistral"
+)
+
+func main() {
+    provider := mistral.New(mistral.Config{
+        APIKey: os.Getenv("MISTRAL_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("mistral-large-latest")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "Explain Mistral AI advantages")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use mistral-large for complex reasoning
+   - Use mistral-small for fast, cost-effective tasks
+   - Use pixtral for vision tasks
+   - Use codestral for code generation
+
+2. **Cost Optimization**
+   - Use smaller models for simple tasks
+   - Implement caching
+   - Monitor token usage
+
+3. **Function Calling**
+   - Define clear tool descriptions
+   - Handle parallel calls efficiently
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+| Tier | RPM | Tokens/Min |
+|------|-----|------------|
+| Free | 10 | 10K |
+| Premium | 1000 | 1M |
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Mistral AI Documentation](https://docs.mistral.ai)

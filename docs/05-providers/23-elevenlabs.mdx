@@ -1,0 +1,313 @@
+---
+title: ElevenLabs Provider
+description: Setup and usage guide for ElevenLabs speech synthesis with Go-AI SDK
+---
+
+# ElevenLabs Provider
+
+ElevenLabs provides industry-leading text-to-speech with incredibly natural voices, voice cloning, and multilingual support. Perfect for audiobooks, podcasts, and voice assistants.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/elevenlabs"
+)
+```
+
+### Configuration
+
+```go
+provider := elevenlabs.New(elevenlabs.Config{
+    APIKey: os.Getenv("ELEVENLABS_API_KEY"),
+})
+
+model, err := provider.SpeechModel("eleven_multilingual_v2")
+```
+
+### Get API Key
+
+```bash
+export ELEVENLABS_API_KEY=...
+```
+
+## Available Models
+
+### Text-to-Speech Models
+
+| Model ID | Languages | Quality | Best For |
+|----------|-----------|---------|----------|
+| eleven_multilingual_v2 | 30+ | Excellent | Multilingual |
+| eleven_monolingual_v1 | English | Excellent | English only |
+| eleven_turbo_v2 | 30+ | Very Good | Fast synthesis |
+
+### Voices
+
+ElevenLabs provides both premade and custom voices:
+
+- **Premade Voices**: Professional voice actors
+- **Cloned Voices**: Create custom voices
+- **Generated Voices**: AI-generated voices
+
+## Provider-Specific Features
+
+### Natural Speech Synthesis
+
+```go
+result, err := ai.GenerateSpeech(model,
+    "Welcome to the Go-AI SDK. This text sounds incredibly natural.",
+    ai.WithVoice("Rachel"), // Premade voice
+    ai.WithSpeechStability(0.5), // 0-1 (lower = more expressive)
+    ai.WithSpeechSimilarity(0.75), // 0-1 (higher = more accurate)
+)
+
+os.WriteFile("welcome.mp3", result.Audio, 0644)
+```
+
+### Voice Cloning
+
+Create custom voices from audio samples:
+
+```go
+voiceCloner := elevenlabs.NewVoiceCloner(provider)
+
+// Upload voice samples
+samples := []string{"sample1.mp3", "sample2.mp3", "sample3.mp3"}
+voiceID, err := voiceCloner.CreateVoice("My Custom Voice", samples)
+
+// Use cloned voice
+result, err := ai.GenerateSpeech(model, "Hello from my cloned voice!",
+    ai.WithVoice(voiceID),
+)
+```
+
+### Streaming Audio
+
+Stream audio for real-time playback:
+
+```go
+stream, err := ai.StreamSpeech(model,
+    "This is a long text that will be streamed as audio chunks...",
+    ai.WithVoice("Adam"),
+)
+defer stream.Close()
+
+for chunk := range stream.AudioChannel() {
+    // Play audio chunk immediately
+    playAudioChunk(chunk)
+}
+```
+
+### Multilingual Support
+
+Generate speech in 30+ languages:
+
+```go
+// Spanish
+result, err := ai.GenerateSpeech(model,
+    "Hola, bienvenido a Go-AI SDK",
+    ai.WithVoice("Diego"), // Spanish voice
+)
+
+// French
+result, err = ai.GenerateSpeech(model,
+    "Bonjour, bienvenue dans Go-AI SDK",
+    ai.WithVoice("Charlotte"), // French voice
+)
+```
+
+### Voice Settings
+
+Fine-tune voice characteristics:
+
+```go
+result, err := ai.GenerateSpeech(model, text,
+    ai.WithVoice("Rachel"),
+    ai.WithSpeechStability(0.3), // More expressive
+    ai.WithSpeechSimilarity(0.8), // More accurate to voice
+    ai.WithSpeechStyle(0.5), // Style exaggeration
+    ai.WithSpeakerBoost(true), // Enhance clarity
+)
+```
+
+## Examples
+
+### Basic Text-to-Speech
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/elevenlabs"
+)
+
+func main() {
+    provider := elevenlabs.New(elevenlabs.Config{
+        APIKey: os.Getenv("ELEVENLABS_API_KEY"),
+    })
+
+    model, err := provider.SpeechModel("eleven_multilingual_v2")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    text := "The Go-AI SDK makes it easy to integrate AI into your applications."
+
+    result, err := ai.GenerateSpeech(model, text,
+        ai.WithVoice("Rachel"),
+        ai.WithSpeechFormat("mp3"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    err = os.WriteFile("output.mp3", result.Audio, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Audio saved to output.mp3")
+}
+```
+
+### Audiobook Generation
+
+```go
+func generateAudiobook(chapters []string, outputDir string) error {
+    model, _ := provider.SpeechModel("eleven_multilingual_v2")
+
+    for i, chapter := range chapters {
+        result, err := ai.GenerateSpeech(model, chapter,
+            ai.WithVoice("Michael"), // Good for narration
+            ai.WithSpeechStability(0.6),
+            ai.WithSpeechSimilarity(0.8),
+        )
+        if err != nil {
+            return err
+        }
+
+        filename := filepath.Join(outputDir, fmt.Sprintf("chapter_%d.mp3", i+1))
+        os.WriteFile(filename, result.Audio, 0644)
+    }
+
+    return nil
+}
+```
+
+### Real-Time Streaming
+
+```go
+func streamTTSToSpeaker(text string) error {
+    model, _ := provider.SpeechModel("eleven_turbo_v2") // Fast model
+
+    stream, err := ai.StreamSpeech(model, text,
+        ai.WithVoice("Adam"),
+    )
+    if err != nil {
+        return err
+    }
+    defer stream.Close()
+
+    player := newAudioPlayer()
+    defer player.Close()
+
+    for chunk := range stream.AudioChannel() {
+        if err := player.Play(chunk); err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+```
+
+### Voice Library Management
+
+```go
+// List available voices
+voices, err := provider.ListVoices()
+for _, voice := range voices {
+    fmt.Printf("%s: %s (%s)\n", voice.ID, voice.Name, voice.Language)
+}
+
+// Get voice details
+voice, err := provider.GetVoice("voice-id")
+fmt.Printf("Name: %s\nCategory: %s\nLanguage: %s\n",
+    voice.Name, voice.Category, voice.Language)
+
+// Delete custom voice
+err = provider.DeleteVoice("custom-voice-id")
+```
+
+## Best Practices
+
+1. **Voice Selection**
+   - Test multiple voices for your use case
+   - Use professional voices for production
+   - Consider accent and language match
+
+2. **Quality Tuning**
+   - Adjust stability (0.3-0.7 typical)
+   - Higher similarity for accuracy
+   - Use speaker boost for clarity
+
+3. **Performance**
+   - Use turbo model for real-time apps
+   - Stream for long texts
+   - Cache generated audio
+
+4. **Cost Management**
+   - Monitor character usage
+   - Cache repeated phrases
+   - Use appropriate model for task
+
+## Rate Limits & Pricing
+
+### Pricing
+
+| Tier | Characters/Month | Price |
+|------|-----------------|-------|
+| Free | 10,000 | Free |
+| Starter | 30,000 | $5/mo |
+| Creator | 100,000 | $22/mo |
+| Pro | 500,000 | $99/mo |
+
+Additional characters: $0.30 per 1,000
+
+### Rate Limits
+
+Varies by tier - check dashboard.
+
+## Error Handling
+
+```go
+result, err := ai.GenerateSpeech(model, text, ai.WithVoice("Rachel"))
+if err != nil {
+    if elevenErr, ok := err.(*elevenlabs.Error); ok {
+        switch elevenErr.Code {
+        case "quota_exceeded":
+            log.Fatal("Character quota exceeded")
+        case "voice_not_found":
+            log.Fatal("Voice not found")
+        case "invalid_api_key":
+            log.Fatal("Invalid API key")
+        default:
+            log.Printf("ElevenLabs error: %s", elevenErr.Message)
+        }
+    }
+}
+```
+
+## See Also
+
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [ElevenLabs Documentation](https://elevenlabs.io/docs)
+- [Voice Library](https://elevenlabs.io/voice-library)

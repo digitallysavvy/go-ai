@@ -80,7 +80,7 @@ func analyzePDF(ctx context.Context, model provider.LanguageModel) {
 
 	fmt.Println("PDF Analysis:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }
 
 func extractPDFInfo(ctx context.Context, model provider.LanguageModel) {

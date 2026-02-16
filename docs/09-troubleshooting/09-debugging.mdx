@@ -1,0 +1,629 @@
+---
+title: Debugging Guide
+description: Comprehensive debugging techniques for Go AI SDK
+---
+
+# Debugging Guide
+
+This guide covers debugging techniques and tools for troubleshooting Go AI applications.
+
+## Enable Debug Logging
+
+### SDK Debug Mode
+
+```go
+package main
+
+import (
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func main() {
+    // Enable debug logging
+    log.SetOutput(os.Stdout)
+    log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+    // Set SDK log level
+    ai.SetLogLevel(ai.LogLevelDebug)
+
+    // Your code here...
+}
+```
+
+### Request/Response Logging
+
+```go
+package main
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// Custom HTTP transport with logging
+type LoggingTransport struct {
+    Transport http.RoundTripper
+}
+
+func (t *LoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    // Log request
+    log.Printf("=== REQUEST ===")
+    log.Printf("%s %s", req.Method, req.URL)
+    log.Printf("Headers: %v", req.Header)
+
+    if req.Body != nil {
+        bodyBytes, _ := io.ReadAll(req.Body)
+        req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        log.Printf("Body: %s", string(bodyBytes))
+    }
+
+    // Execute request
+    resp, err := t.Transport.RoundTrip(req)
+    if err != nil {
+        log.Printf("Request error: %v", err)
+        return nil, err
+    }
+
+    // Log response
+    log.Printf("=== RESPONSE ===")
+    log.Printf("Status: %d %s", resp.StatusCode, resp.Status)
+    log.Printf("Headers: %v", resp.Header)
+
+    if resp.Body != nil {
+        bodyBytes, _ := io.ReadAll(resp.Body)
+        resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        log.Printf("Body: %s", string(bodyBytes))
+    }
+
+    return resp, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Create HTTP client with logging transport
+    httpClient := &http.Client{
+        Transport: &LoggingTransport{
+            Transport: http.DefaultTransport,
+        },
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey:     os.Getenv("OPENAI_API_KEY"),
+        HTTPClient: httpClient,
+    })
+
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Debugging Goroutines
+
+### Detect Goroutine Leaks
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "runtime"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func printGoroutineCount(label string) {
+    count := runtime.NumGoroutine()
+    log.Printf("[%s] Active goroutines: %d", label, count)
+}
+
+func detectLeaks() {
+    printGoroutineCount("Start")
+
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    // Start streaming
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a short story",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    printGoroutineCount("After stream start")
+
+    // IMPORTANT: Consume the stream completely
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+
+    printGoroutineCount("After stream complete")
+
+    // Wait for cleanup
+    time.Sleep(100 * time.Millisecond)
+
+    printGoroutineCount("After cleanup wait")
+
+    // Force garbage collection
+    runtime.GC()
+    time.Sleep(100 * time.Millisecond)
+
+    printGoroutineCount("After GC")
+}
+
+func main() {
+    detectLeaks()
+}
+```
+
+### Stack Traces for Debugging
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/signal"
+    "runtime"
+    "syscall"
+)
+
+func dumpStackTraces() {
+    buf := make([]byte, 1024*1024)
+    stackSize := runtime.Stack(buf, true)
+    fmt.Printf("=== Stack Traces ===\n%s\n", buf[:stackSize])
+}
+
+func setupDebugHandlers() {
+    // Dump stack traces on SIGUSR1
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, syscall.SIGUSR1)
+
+    go func() {
+        for range sigCh {
+            dumpStackTraces()
+        }
+    }()
+}
+
+func main() {
+    setupDebugHandlers()
+
+    // Your application code...
+    select {}
+}
+```
+
+## Debugging with pprof
+
+### CPU and Memory Profiling
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    _ "net/http/pprof"
+    "os"
+    "runtime"
+    "runtime/pprof"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func startProfiling() {
+    // Start pprof HTTP server
+    go func() {
+        log.Println("Starting pprof server on :6060")
+        log.Println(http.ListenAndServe("localhost:6060", nil))
+    }()
+
+    // Or profile to files
+    cpuFile, _ := os.Create("cpu.prof")
+    pprof.StartCPUProfile(cpuFile)
+    defer pprof.StopCPUProfile()
+
+    memFile, _ := os.Create("mem.prof")
+    defer func() {
+        runtime.GC()
+        pprof.WriteHeapProfile(memFile)
+        memFile.Close()
+    }()
+}
+
+func main() {
+    startProfiling()
+
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    // Run your code to profile
+    for i := 0; i < 10; i++ {
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: fmt.Sprintf("Request %d", i),
+        })
+        fmt.Println(result.Text)
+    }
+
+    // View profiles:
+    // go tool pprof cpu.prof
+    // go tool pprof mem.prof
+    // Or visit http://localhost:6060/debug/pprof/
+}
+```
+
+## Debugging Streams
+
+### Stream Debug Wrapper
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func debugStream(ctx context.Context, model interface{}, prompt string) error {
+    log.Printf("Starting stream for prompt: %s", prompt)
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return fmt.Errorf("stream creation failed: %w", err)
+    }
+
+    startTime := time.Now()
+    chunkCount := 0
+    totalBytes := 0
+    var firstChunkTime time.Duration
+
+    log.Println("Waiting for chunks...")
+
+    for chunk := range stream.FullChannel {
+        if chunkCount == 0 {
+            firstChunkTime = time.Since(startTime)
+            log.Printf("Time to first chunk: %v", firstChunkTime)
+        }
+
+        chunkCount++
+
+        switch chunk.Type {
+        case provider.ChunkTypeText:
+            totalBytes += len(chunk.Text)
+            log.Printf("Chunk %d: %d bytes (type: text)", chunkCount, len(chunk.Text))
+            fmt.Print(chunk.Text)
+
+        case provider.ChunkTypeToolCall:
+            log.Printf("Chunk %d: tool call %s (id: %s)",
+                chunkCount, chunk.ToolCall.ToolName, chunk.ToolCall.ToolCallID)
+
+        case provider.ChunkTypeError:
+            log.Printf("Chunk %d: ERROR - %v", chunkCount, chunk.Error)
+
+        case provider.ChunkTypeFinish:
+            log.Printf("Chunk %d: FINISH - reason: %s", chunkCount, chunk.FinishReason)
+        }
+    }
+
+    if err := stream.Err(); err != nil {
+        log.Printf("Stream error: %v", err)
+        return err
+    }
+
+    totalTime := time.Since(startTime)
+    bytesPerSecond := float64(totalBytes) / totalTime.Seconds()
+
+    log.Printf("\n=== Stream Statistics ===")
+    log.Printf("Total chunks: %d", chunkCount)
+    log.Printf("Total bytes: %d", totalBytes)
+    log.Printf("Time to first chunk: %v", firstChunkTime)
+    log.Printf("Total time: %v", totalTime)
+    log.Printf("Throughput: %.2f bytes/sec", bytesPerSecond)
+
+    return nil
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    if err := debugStream(ctx, model, "Write a short story about a robot"); err != nil {
+        log.Fatalf("Debug stream failed: %v", err)
+    }
+}
+```
+
+## Error Tracking
+
+### Structured Error Logging
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type ErrorLog struct {
+    Timestamp    time.Time              `json:"timestamp"`
+    ErrorType    string                 `json:"error_type"`
+    Message      string                 `json:"message"`
+    Provider     string                 `json:"provider,omitempty"`
+    StatusCode   int                    `json:"status_code,omitempty"`
+    ErrorCode    string                 `json:"error_code,omitempty"`
+    Operation    string                 `json:"operation"`
+    Prompt       string                 `json:"prompt,omitempty"`
+    StackTrace   string                 `json:"stack_trace,omitempty"`
+    Additional   map[string]interface{} `json:"additional,omitempty"`
+}
+
+func logError(err error, operation string, prompt string) {
+    errorLog := ErrorLog{
+        Timestamp: time.Now(),
+        Message:   err.Error(),
+        Operation: operation,
+        Prompt:    prompt,
+        Additional: make(map[string]interface{}),
+    }
+
+    // Check for specific error types
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        errorLog.ErrorType = "provider_error"
+        errorLog.Provider = providerErr.Provider
+        errorLog.StatusCode = providerErr.StatusCode
+        errorLog.ErrorCode = providerErr.ErrorCode
+    }
+
+    var rateLimitErr *providererrors.RateLimitError
+    if errors.As(err, &rateLimitErr) {
+        errorLog.ErrorType = "rate_limit_error"
+        errorLog.Provider = rateLimitErr.Provider
+        errorLog.StatusCode = rateLimitErr.StatusCode
+        if rateLimitErr.RetryAfterSeconds != nil {
+            errorLog.Additional["retry_after_seconds"] = *rateLimitErr.RetryAfterSeconds
+        }
+    }
+
+    var validationErr *providererrors.ValidationError
+    if errors.As(err, &validationErr) {
+        errorLog.ErrorType = "validation_error"
+        errorLog.Additional["field"] = validationErr.Field
+    }
+
+    // Log as JSON
+    jsonLog, _ := json.MarshalIndent(errorLog, "", "  ")
+    log.Printf("ERROR LOG:\n%s", string(jsonLog))
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: "invalid-key", // Will cause auth error
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    prompt := "Hello, world!"
+    _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+
+    if err != nil {
+        logError(err, "generate_text", prompt)
+    }
+}
+```
+
+## Testing and Debugging
+
+### Mock Provider for Testing
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "testing"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+)
+
+// MockLanguageModel for testing
+type MockLanguageModel struct {
+    Response      string
+    ShouldError   bool
+    ErrorToReturn error
+}
+
+func (m *MockLanguageModel) Generate(ctx context.Context, messages []types.Message, options *provider.GenerateOptions) (*provider.GenerateResult, error) {
+    if m.ShouldError {
+        return nil, m.ErrorToReturn
+    }
+
+    return &provider.GenerateResult{
+        Text: m.Response,
+        Usage: types.Usage{
+            PromptTokens:     10,
+            CompletionTokens: 20,
+            TotalTokens:      30,
+        },
+        FinishReason: "stop",
+    }, nil
+}
+
+func (m *MockLanguageModel) Stream(ctx context.Context, messages []types.Message, options *provider.GenerateOptions) (*provider.StreamResult, error) {
+    // Mock streaming implementation
+    textChan := make(chan string)
+    fullChan := make(chan provider.StreamChunk)
+
+    go func() {
+        defer close(textChan)
+        defer close(fullChan)
+
+        if m.ShouldError {
+            return
+        }
+
+        // Send mock chunks
+        for _, char := range m.Response {
+            chunk := string(char)
+            textChan <- chunk
+            fullChan <- provider.StreamChunk{
+                Type: provider.ChunkTypeText,
+                Text: chunk,
+            }
+        }
+    }()
+
+    return &provider.StreamResult{
+        TextChannel: textChan,
+        FullChannel: fullChan,
+    }, nil
+}
+
+func TestGeneration(t *testing.T) {
+    mock := &MockLanguageModel{
+        Response: "Test response",
+    }
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  mock,
+        Prompt: "Test prompt",
+    })
+
+    if err != nil {
+        t.Fatalf("Expected no error, got: %v", err)
+    }
+
+    if result.Text != "Test response" {
+        t.Fatalf("Expected 'Test response', got: %s", result.Text)
+    }
+}
+
+func TestGenerationError(t *testing.T) {
+    mock := &MockLanguageModel{
+        ShouldError:   true,
+        ErrorToReturn: fmt.Errorf("mock error"),
+    }
+
+    _, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  mock,
+        Prompt: "Test prompt",
+    })
+
+    if err == nil {
+        t.Fatal("Expected error, got nil")
+    }
+}
+```
+
+## Best Practices
+
+### 1. Use Structured Logging
+
+```go
+log.Printf("[%s] %s: %v", level, operation, details)
+```
+
+### 2. Log Request Context
+
+```go
+log.Printf("Request: model=%s, prompt_length=%d, max_tokens=%d",
+    modelName, len(prompt), maxTokens)
+```
+
+### 3. Monitor Goroutines
+
+```go
+log.Printf("Active goroutines: %d", runtime.NumGoroutine())
+```
+
+### 4. Profile Performance
+
+```go
+import _ "net/http/pprof"
+go func() {
+    log.Println(http.ListenAndServe("localhost:6060", nil))
+}()
+```
+
+### 5. Test with Mocks
+
+```go
+mock := &MockLanguageModel{Response: "test"}
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: mock})
+```
+
+## See Also
+
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)
+- [Testing](../03-ai-sdk-core/55-testing.mdx)
+- [Common Errors](./01-common-errors.mdx)
+- [Performance](./08-performance.mdx)

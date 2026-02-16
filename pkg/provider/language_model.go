@@ -2,10 +2,9 @@ package provider
 
 import (
 	"context"
-	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // LanguageModel represents a language model (V3 specification)
@@ -69,27 +68,83 @@ type GenerateOptions struct {
 
 	// Maximum number of automatic tool call steps
 	MaxSteps *int
+
+	// Provider-specific options
+	// These are passed directly to the provider and can contain any provider-specific settings
+	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}
+	ProviderOptions map[string]interface{}
+
+	// Telemetry configuration for observability
+	// Providers can use this to instrument their API calls with OpenTelemetry spans
+	Telemetry *telemetry.Settings
 }
 
 // ResponseFormat specifies the format of the response
+// Updated in v6.0 to support name and description for provider guidance
 type ResponseFormat struct {
-	// Type of response format ("text", "json_object", "json_schema")
+	// Type of response format ("text", "json", "json_object", "json_schema")
 	Type string
 
-	// Schema for JSON response (when Type is "json_schema")
-	Schema schema.Schema
+	// Schema for JSON response (when Type is "json" or "json_schema")
+	// Can be a map[string]interface{} (JSON Schema) or schema.Schema
+	Schema interface{}
+
+	// Name is an optional name for the output
+	// Used by some providers (e.g., OpenAI, Anthropic) for additional LLM guidance
+	Name string
+
+	// Description is an optional description of the expected output
+	// Used by some providers for additional LLM guidance
+	Description string
 }
 
-// TextStream represents a streaming text response
+// TextStream represents a streaming text response.
+//
+// TextStream uses a Next()-based pattern for consuming stream chunks.
+// This provides better type safety and is more idiomatic Go compared to
+// the io.Reader interface.
+//
+// Example usage:
+//
+//	stream, err := model.DoStream(ctx, options)
+//	if err != nil {
+//	    return err
+//	}
+//	defer stream.Close()
+//
+//	for {
+//	    chunk, err := stream.Next()
+//	    if err != nil {
+//	        if err.Error() == "EOF" {
+//	            break
+//	        }
+//	        return err
+//	    }
+//
+//	    switch chunk.Type {
+//	    case provider.ChunkTypeText:
+//	        fmt.Print(chunk.Text)
+//	    case provider.ChunkTypeError:
+//	        return fmt.Errorf("stream error: %v", chunk)
+//	    }
+//	}
+//
+// Note: The legacy io.Reader pattern (stream.Read()) is not supported.
+// Use the Next() method shown above.
 type TextStream interface {
-	io.ReadCloser
-
-	// Next returns the next chunk in the stream
-	// Returns io.EOF when the stream is complete
+	// Next returns the next chunk in the stream.
+	// Returns io.EOF when the stream is complete.
+	// Consumers should call Next() in a loop until io.EOF is returned.
 	Next() (*StreamChunk, error)
 
-	// Err returns any error that occurred during streaming
+	// Err returns any error that occurred during streaming.
+	// Returns nil if the stream completed successfully or if the error was io.EOF.
 	Err() error
+
+	// Close closes the underlying stream and releases resources.
+	// It's safe to call Close multiple times.
+	// Calling Close will cause future Next() calls to return io.EOF.
+	Close() error
 }
 
 // StreamChunk represents a single chunk in a text stream
@@ -100,6 +155,9 @@ type StreamChunk struct {
 	// Text content (when Type is ChunkTypeText)
 	Text string
 
+	// Reasoning content (when Type is ChunkTypeReasoning)
+	Reasoning string
+
 	// Tool call (when Type is ChunkTypeToolCall)
 	ToolCall *types.ToolCall
 
@@ -108,6 +166,16 @@ type StreamChunk struct {
 
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
+
+	// Context management information (Anthropic-specific)
+	// Contains statistics about automatic conversation history cleanup
+	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata
+	ContextManagement interface{}
+
+	// AbortReason provides context when a stream is aborted
+	// This can be due to timeouts, user cancellation, or errors
+	// Useful for debugging and understanding stream termination
+	AbortReason string
 }
 
 // ChunkType represents the type of stream chunk
@@ -116,6 +184,9 @@ type ChunkType string
 const (
 	// ChunkTypeText indicates a text content chunk
 	ChunkTypeText ChunkType = "text"
+
+	// ChunkTypeReasoning indicates a reasoning/thinking content chunk
+	ChunkTypeReasoning ChunkType = "reasoning"
 
 	// ChunkTypeToolCall indicates a tool call chunk
 	ChunkTypeToolCall ChunkType = "tool-call"
@@ -163,7 +234,7 @@ type ImageModel interface {
 
 // ImageGenerateOptions contains options for image generation
 type ImageGenerateOptions struct {
-	// Text prompt for image generation
+	// Text prompt for image generation (optional for some operations like upscaling)
 	Prompt string
 
 	// Number of images to generate
@@ -172,11 +243,47 @@ type ImageGenerateOptions struct {
 	// Size of the image (e.g., "1024x1024")
 	Size string
 
+	// Aspect ratio (e.g., "16:9", "1:1")
+	AspectRatio string
+
+	// Seed for reproducible generation
+	Seed *int
+
 	// Quality setting
 	Quality string
 
 	// Style setting
 	Style string
+
+	// Files for image editing or variation generation
+	Files []ImageFile
+
+	// Mask for inpainting operations
+	Mask *ImageFile
+
+	// Provider-specific options
+	ProviderOptions map[string]interface{}
+
+	// AbortSignal for cancellation
+	AbortSignal context.Context
+
+	// Additional HTTP headers
+	Headers map[string]string
+}
+
+// ImageFile represents an image file for editing or variations
+type ImageFile struct {
+	// Type is "file" or "url"
+	Type string
+
+	// URL for type="url"
+	URL string
+
+	// Data for type="file" (base64 or binary)
+	Data []byte
+
+	// MediaType for type="file" (e.g., "image/png")
+	MediaType string
 }
 
 // SpeechModel represents a speech synthesis model

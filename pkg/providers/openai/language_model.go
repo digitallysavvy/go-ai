@@ -165,17 +165,25 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
+	// Extract OpenAI-specific provider options
+	if opts.ProviderOptions != nil {
+		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+			// Add prompt cache retention if present
+			// Supports "in_memory" (default) and "24h" (for gpt-5.1 series)
+			if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok {
+				body["prompt_cache_retention"] = promptCacheRetention
+			}
+		}
+	}
+
 	return body
 }
 
 // convertResponse converts an OpenAI response to GenerateResult
+// Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response openAIResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:       convertOpenAIUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -210,6 +218,84 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 	return result
 }
 
+// convertOpenAIUsage converts OpenAI usage to detailed Usage struct
+// Implements the v6.0 detailed token tracking with cache and reasoning tokens
+func convertOpenAIUsage(usage openAIUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Calculate cached tokens (cache read)
+	var cachedTokens int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	}
+
+	// Extract text and image tokens
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
+
+	// Calculate reasoning tokens
+	var reasoningTokens int64
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	}
+
+	// Set input token details
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+		noCacheTokens := promptTokens - cachedTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:   &noCacheTokens,
+			CacheReadTokens: &cachedTokens,
+			// OpenAI doesn't report cache write tokens separately
+			CacheWriteTokens: nil,
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
+		}
+	}
+
+	// Set output token details
+	if reasoningTokens > 0 {
+		textTokens := completionTokens - reasoningTokens
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &textTokens,
+			ReasoningTokens: &reasoningTokens,
+		}
+	}
+
+	// Store raw usage for provider-specific details
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+
+	if usage.PromptTokensDetails != nil {
+		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
+
+	return result
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	// Try to parse as OpenAI error response
@@ -217,21 +303,39 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // openAIResponse represents the OpenAI API response
+// Updated in v6.0 to support detailed token usage
 type openAIResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Index        int    `json:"index"`
+		Index        int           `json:"index"`
 		Message      openAIMessage `json:"message"`
-		FinishReason string `json:"finish_reason"`
+		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage openAIUsage `json:"usage"`
+}
+
+// openAIUsage represents OpenAI usage information with detailed token tracking
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// Detailed token breakdown (v6.0)
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+
+	CompletionTokensDetails *struct {
+		ReasoningTokens             *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens    *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens    *int `json:"rejected_prediction_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 // openAIMessage represents an OpenAI message

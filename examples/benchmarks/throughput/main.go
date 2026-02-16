@@ -16,14 +16,14 @@ import (
 
 // ThroughputBenchmark measures requests per second
 type ThroughputBenchmark struct {
-	model           provider.LanguageModel
-	concurrency     int
-	duration        time.Duration
-	requestCount    atomic.Int64
-	successCount    atomic.Int64
-	errorCount      atomic.Int64
-	totalTokens     atomic.Int64
-	totalDuration   atomic.Int64
+	model         provider.LanguageModel
+	concurrency   int
+	duration      time.Duration
+	requestCount  atomic.Int64
+	successCount  atomic.Int64
+	errorCount    atomic.Int64
+	totalTokens   atomic.Int64
+	totalDuration atomic.Int64
 }
 
 func NewThroughputBenchmark(model provider.LanguageModel, concurrency int, duration time.Duration) *ThroughputBenchmark {
@@ -62,12 +62,12 @@ func (tb *ThroughputBenchmark) Run(ctx context.Context) *BenchmarkResults {
 	elapsed := time.Since(startTime)
 
 	return &BenchmarkResults{
-		TotalRequests:    tb.requestCount.Load(),
+		TotalRequests:      tb.requestCount.Load(),
 		SuccessfulRequests: tb.successCount.Load(),
-		FailedRequests:   tb.errorCount.Load(),
-		TotalTokens:      tb.totalTokens.Load(),
-		Duration:         elapsed,
-		Concurrency:      tb.concurrency,
+		FailedRequests:     tb.errorCount.Load(),
+		TotalTokens:        tb.totalTokens.Load(),
+		Duration:           elapsed,
+		Concurrency:        tb.concurrency,
 	}
 }
 
@@ -106,7 +106,7 @@ func (tb *ThroughputBenchmark) worker(ctx context.Context, workerID int) {
 				tb.errorCount.Add(1)
 			} else {
 				tb.successCount.Add(1)
-				tb.totalTokens.Add(int64(result.Usage.TotalTokens))
+				tb.totalTokens.Add(result.Usage.GetTotalTokens())
 			}
 		}
 	}

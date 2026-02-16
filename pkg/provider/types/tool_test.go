@@ -76,7 +76,7 @@ func TestTool_Execute(t *testing.T) {
 		Name:        "test_tool",
 		Description: "A test tool",
 		Parameters:  map[string]interface{}{"type": "object"},
-		Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, input map[string]interface{}, opts ToolExecutionOptions) (interface{}, error) {
 			executed = true
 			return "result", nil
 		},
@@ -89,7 +89,7 @@ func TestTool_Execute(t *testing.T) {
 		t.Errorf("expected description 'A test tool', got %s", tool.Description)
 	}
 
-	result, err := tool.Execute(context.Background(), map[string]interface{}{})
+	result, err := tool.Execute(context.Background(), map[string]interface{}{}, ToolExecutionOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

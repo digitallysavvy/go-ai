@@ -1,0 +1,84 @@
+---
+title: Fireworks AI Provider
+description: Setup and usage guide for Fireworks AI fast inference with Go-AI SDK
+---
+
+# Fireworks AI Provider
+
+Fireworks AI provides blazing-fast inference for open-source models with optimized serving infrastructure. Excellent for production deployments requiring speed and reliability.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("FIREWORKS_API_KEY"),
+    BaseURL: "https://api.fireworks.ai/inference/v1",
+})
+
+model, err := provider.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
+```
+
+### Get API Key
+
+```bash
+export FIREWORKS_API_KEY=fw_...
+```
+
+## Available Models
+
+| Model ID | Context | Price | Best For |
+|----------|---------|-------|----------|
+| accounts/fireworks/models/llama-v3p1-70b-instruct | 128K | $0.90/1M | High quality |
+| accounts/fireworks/models/llama-v3p1-8b-instruct | 128K | $0.20/1M | Fast |
+| accounts/fireworks/models/mixtral-8x7b-instruct | 32K | $0.50/1M | Balanced |
+
+## Examples
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("FIREWORKS_API_KEY"),
+        BaseURL: "https://api.fireworks.ai/inference/v1",
+    })
+
+    model, err := provider.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain Fireworks AI")
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+1. Use for production workloads requiring speed
+2. Excellent for serving open-source models
+3. Great latency and throughput
+
+## See Also
+
+- [Fireworks AI Documentation](https://docs.fireworks.ai)

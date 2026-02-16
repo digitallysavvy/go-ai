@@ -51,10 +51,13 @@ func (m *MockLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gener
 	if m.DoGenerateFunc != nil {
 		return m.DoGenerateFunc(ctx, opts)
 	}
+	inputTokens := int64(10)
+	outputTokens := int64(5)
+	totalTokens := int64(15)
 	return &types.GenerateResult{
 		Text:         "mock response",
 		FinishReason: types.FinishReasonStop,
-		Usage:        types.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		Usage:        types.Usage{InputTokens: &inputTokens, OutputTokens: &outputTokens, TotalTokens: &totalTokens},
 	}, nil
 }
 

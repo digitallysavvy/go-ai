@@ -1,0 +1,204 @@
+---
+title: Perplexity Provider
+description: Setup and usage guide for Perplexity search-augmented AI with Go-AI SDK
+---
+
+# Perplexity Provider
+
+Perplexity provides AI models with real-time web search integration, delivering up-to-date answers with citations. Perfect for research, current events, and fact-based queries.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Perplexity uses OpenAI-compatible API
+)
+```
+
+### Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  os.Getenv("PERPLEXITY_API_KEY"),
+    BaseURL: "https://api.perplexity.ai",
+})
+
+model, err := provider.LanguageModel("llama-3.1-sonar-large-128k-online")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [perplexity.ai](https://www.perplexity.ai)
+2. Get API key from settings
+3. Set environment variable:
+
+```bash
+export PERPLEXITY_API_KEY=pplx-...
+```
+
+## Available Models
+
+### Sonar Models (Online - with search)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| llama-3.1-sonar-large-128k-online | 128K | $1.00/1M | $1.00/1M | Current events, research |
+| llama-3.1-sonar-small-128k-online | 128K | $0.20/1M | $0.20/1M | Fast, cost-effective |
+
+### Sonar Models (Offline - no search)
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| llama-3.1-sonar-large-128k-chat | 128K | $1.00/1M | $1.00/1M | General chat |
+| llama-3.1-sonar-small-128k-chat | 128K | $0.20/1M | $0.20/1M | Simple tasks |
+
+## Provider-Specific Features
+
+### Web Search Integration
+
+Automatic web search with citations:
+
+```go
+result, err := ai.GenerateText(model,
+    "What are the latest developments in quantum computing?",
+)
+
+// Response includes web citations
+for _, citation := range result.Citations {
+    fmt.Printf("[%d] %s\n", citation.Index, citation.URL)
+}
+```
+
+### Return Citations
+
+Get structured citation data:
+
+```go
+result, err := ai.GenerateText(model, prompt,
+    ai.WithReturnCitations(true),
+)
+
+for _, citation := range result.Citations {
+    fmt.Printf("Title: %s\nURL: %s\nSnippet: %s\n\n",
+        citation.Title, citation.URL, citation.Snippet)
+}
+```
+
+### Return Images
+
+Include relevant images in responses:
+
+```go
+result, err := ai.GenerateText(model, "Show me Mars rovers",
+    ai.WithReturnImages(true),
+)
+
+for _, image := range result.Images {
+    fmt.Printf("Image: %s\n", image.URL)
+}
+```
+
+## Examples
+
+### Basic Search-Augmented Query
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  os.Getenv("PERPLEXITY_API_KEY"),
+        BaseURL: "https://api.perplexity.ai",
+    })
+
+    model, err := provider.LanguageModel("llama-3.1-sonar-large-128k-online")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model,
+        "What are today's top technology news?",
+        ai.WithReturnCitations(true),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Println("\nSources:")
+    for i, citation := range result.Citations {
+        fmt.Printf("%d. %s\n", i+1, citation.URL)
+    }
+}
+```
+
+### Research Assistant
+
+```go
+func researchTopic(model ai.LanguageModel, topic string) {
+    result, err := ai.GenerateText(model,
+        fmt.Sprintf("Research and summarize: %s", topic),
+        ai.WithReturnCitations(true),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Summary:\n%s\n\n", result.Text)
+    fmt.Println("References:")
+    for _, citation := range result.Citations {
+        fmt.Printf("- %s (%s)\n", citation.Title, citation.URL)
+    }
+}
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use online models for current information
+   - Use chat models for general conversation
+   - Use large for complex research
+   - Use small for simple queries
+
+2. **Citations**
+   - Always include citations for transparency
+   - Verify critical information from sources
+   - Use citations for academic/research work
+
+3. **Search Optimization**
+   - Be specific in queries
+   - Include relevant context
+   - Frame questions clearly
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+| Model | RPM | Tokens/Min |
+|-------|-----|------------|
+| Sonar Large | 50 | 100K |
+| Sonar Small | 100 | 200K |
+
+### Search Requests
+
+Online models include 5 search requests per query.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Perplexity API Documentation](https://docs.perplexity.ai)

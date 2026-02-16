@@ -1,0 +1,84 @@
+---
+title: Troubleshooting
+description: Solutions for common issues in the Go AI SDK
+collapsed: true
+---
+
+# Troubleshooting
+
+This section provides solutions for common problems you may encounter when using the Go AI SDK. From provider errors to streaming issues, you'll find practical solutions with working code examples.
+
+## Common Issues
+
+The most frequent issues developers face when building AI applications with Go:
+
+- **[Common Errors](./01-common-errors.mdx)** - Solutions for the most frequent SDK errors
+- **[Provider Errors](./02-provider-errors.mdx)** - Troubleshooting provider-specific issues
+- **[Rate Limits](./03-rate-limits.mdx)** - Handling rate limiting and quota exhaustion
+- **[Context Cancellation](./04-context-cancellation.mdx)** - Debugging context timeout and cancellation issues
+- **[Streaming Issues](./05-streaming-issues.mdx)** - Solving problems with streaming responses
+- **[Tool Calling Errors](./06-tool-calling-errors.mdx)** - Debugging tool execution and schema issues
+- **[Schema Validation](./07-schema-validation.mdx)** - Fixing JSON schema validation errors
+- **[Performance](./08-performance.mdx)** - Optimizing slow operations and memory usage
+- **[Debugging](./09-debugging.mdx)** - Comprehensive debugging techniques
+
+## Quick Diagnostic Guide
+
+### Error Messages
+
+If you see specific error messages:
+
+- `context deadline exceeded` → See [Context Cancellation](./04-context-cancellation.mdx)
+- `rate limit exceeded` → See [Rate Limits](./03-rate-limits.mdx)
+- `invalid API key` → See [Provider Errors](./02-provider-errors.mdx)
+- `schema validation failed` → See [Schema Validation](./07-schema-validation.mdx)
+- `tool execution failed` → See [Tool Calling Errors](./06-tool-calling-errors.mdx)
+
+### Behavior Issues
+
+If you're experiencing specific behaviors:
+
+- Stream stops unexpectedly → See [Streaming Issues](./05-streaming-issues.mdx)
+- Application hangs → See [Context Cancellation](./04-context-cancellation.mdx) and [Debugging](./09-debugging.mdx)
+- Slow responses → See [Performance](./08-performance.mdx)
+- Memory leaks → See [Performance](./08-performance.mdx) and [Common Errors](./01-common-errors.mdx)
+
+## Getting Help
+
+If you can't find a solution in this troubleshooting guide:
+
+1. **Check the logs** - Enable debug logging to see detailed error information
+2. **Review the documentation** - Check the [API Reference](../07-reference/index.mdx) for correct usage
+3. **Search GitHub Issues** - Your issue may already be reported or solved
+4. **Create a minimal reproduction** - Isolate the problem in a small example
+5. **Report the issue** - Open a GitHub issue with your reproduction case
+
+## Debug Mode
+
+Enable debug logging to see detailed information about SDK operations:
+
+```go
+import (
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func main() {
+    // Enable debug logging
+    ai.SetLogLevel(ai.LogLevelDebug)
+
+    // Or use standard log configuration
+    log.SetOutput(os.Stdout)
+    log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+    // Your code here...
+}
+```
+
+## Next Steps
+
+- Start with [Common Errors](./01-common-errors.mdx) for the most frequent issues
+- Review [Debugging](./09-debugging.mdx) for comprehensive debugging techniques
+- Check [Error Handling](../03-ai-sdk-core/50-error-handling.mdx) for proper error handling patterns

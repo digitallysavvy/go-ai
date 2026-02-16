@@ -85,7 +85,7 @@ func main() {
 				"b":         map[string]interface{}{"type": "number"},
 			},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			op := params["operation"].(string)
 			a := params["a"].(float64)
 			b := params["b"].(float64)

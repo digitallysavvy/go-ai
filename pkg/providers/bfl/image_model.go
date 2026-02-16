@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -95,7 +94,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	// Parse size if provided
 	if opts.Size != "" {
 		var width, height int
-		fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
+		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
 		if width > 0 && height > 0 {
 			reqBody["width"] = width
 			reqBody["height"] = height
@@ -162,26 +161,9 @@ func (m *ImageModel) convertResponse(ctx context.Context, result bflResult) (*ty
 }
 
 func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to download image: status %d", resp.StatusCode)
-	}
-
-	return io.ReadAll(resp.Body)
+	opts := fileutil.DefaultDownloadOptions()
+	opts.Timeout = 30 * time.Second
+	return fileutil.Download(ctx, url, opts)
 }
 
 type bflCreateResponse struct {

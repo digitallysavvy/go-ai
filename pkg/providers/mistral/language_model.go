@@ -146,18 +146,15 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertMistralUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
@@ -171,6 +168,83 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+}
+
+// convertMistralUsage converts Mistral usage to detailed Usage struct
+// Implements v6.0 detailed token tracking with optional detailed fields
+func convertMistralUsage(usage mistralUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Parse detailed token information if available
+	var cachedTokens int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	}
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
+	var reasoningTokens int64
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	}
+
+	// Set input details
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+		noCacheTokens := promptTokens - cachedTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: nil,
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
+		}
+	} else {
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &promptTokens,
+			CacheReadTokens:  nil,
+			CacheWriteTokens: nil,
+		}
+	}
+
+	// Set output details
+	if reasoningTokens > 0 {
+		textOutputTokens := completionTokens - reasoningTokens
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &textOutputTokens,
+			ReasoningTokens: &reasoningTokens,
+		}
+	} else {
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &completionTokens,
+			ReasoningTokens: nil,
+		}
+	}
+
+	// Store raw usage
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+
+	return result
 }
 
 func convertFinishReason(reason string) types.FinishReason {
@@ -209,11 +283,28 @@ type mistralResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage mistralUsage `json:"usage"`
+}
+
+// mistralUsage represents Mistral usage information
+type mistralUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// Detailed token breakdown (OpenAI-compatible, if supported)
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+
+	CompletionTokensDetails *struct {
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 type mistralStreamChunk struct {
@@ -278,7 +369,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			tc := choice.Delta.ToolCalls[0]
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,

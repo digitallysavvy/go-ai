@@ -1,0 +1,247 @@
+---
+title: StreamObject
+description: API reference for StreamObject function
+---
+
+# StreamObject
+
+Performs streaming structured object generation where partial JSON objects are parsed and validated as they arrive.
+
+## Signature
+
+```go
+func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjectResult, error)
+```
+
+## Parameters
+
+### StreamObjectOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model to use (must support structured output) |
+| Prompt | string | No | Simple string prompt (alternative to Messages) |
+| Messages | []types.Message | No | List of conversation messages |
+| System | string | No | System instructions |
+| Schema | schema.Schema | Yes | Schema for output validation |
+| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
+| MaxTokens | *int | No | Maximum tokens to generate |
+| TopP | *float64 | No | Nucleus sampling parameter |
+| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
+| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
+| Seed | *int | No | Random seed for reproducibility |
+| OnChunk | func(interface{}) | No | Called for each partial object |
+| OnFinish | func | No | Called when generation completes |
+| ExperimentalContext | interface{} | No | User-defined context |
+
+## Return Value
+
+### GenerateObjectResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Object | interface{} | Final generated object |
+| Text | string | Raw JSON text |
+| FinishReason | types.FinishReason | Why generation finished |
+| Usage | types.Usage | Token usage information |
+| Warnings | []types.Warning | Provider warnings |
+
+## Examples
+
+### Basic Streaming Object
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Define schema
+    storySchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "title":      map[string]interface{}{"type": "string"},
+            "characters": map[string]interface{}{
+                "type":  "array",
+                "items": map[string]interface{}{"type": "string"},
+            },
+            "plot": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"title", "characters", "plot"},
+    })
+
+    // Stream object with partial updates
+    result, err := ai.StreamObject(context.Background(), ai.StreamObjectOptions{
+        Model:  model,
+        Prompt: "Create a story about space exploration",
+        Schema: storySchema,
+        OnChunk: func(partial interface{}) {
+            fmt.Printf("Partial object: %+v\n", partial)
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("\nFinal object: %+v\n", result.Object)
+    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+}
+```
+
+### Streaming with Progress Updates
+
+```go
+type Article struct {
+    Title    string   `json:"title"`
+    Sections []string `json:"sections"`
+    Summary  string   `json:"summary"`
+}
+
+articleSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "title":    map[string]interface{}{"type": "string"},
+        "sections": map[string]interface{}{
+            "type":  "array",
+            "items": map[string]interface{}{"type": "string"},
+        },
+        "summary": map[string]interface{}{"type": "string"},
+    },
+    "required": []string{"title", "sections", "summary"},
+})
+
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+    Model:  model,
+    Prompt: "Write an article about renewable energy",
+    Schema: articleSchema,
+    OnChunk: func(partial interface{}) {
+        // Cast to map for inspection
+        if obj, ok := partial.(map[string]interface{}); ok {
+            if title, ok := obj["title"].(string); ok {
+                fmt.Printf("Title: %s\n", title)
+            }
+            if sections, ok := obj["sections"].([]interface{}); ok {
+                fmt.Printf("Sections so far: %d\n", len(sections))
+            }
+        }
+    },
+    OnFinish: func(ctx context.Context, result *ai.GenerateObjectResult, userCtx interface{}) {
+        fmt.Println("Generation complete!")
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Streaming Array of Objects
+
+```go
+type Task struct {
+    ID          int    `json:"id"`
+    Description string `json:"description"`
+    Priority    string `json:"priority"`
+}
+
+taskSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "id":          map[string]interface{}{"type": "integer"},
+        "description": map[string]interface{}{"type": "string"},
+        "priority":    map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}},
+    },
+    "required": []string{"id", "description", "priority"},
+})
+
+completedTasks := 0
+
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+    Model:  model,
+    Prompt: "Generate 10 project tasks",
+    Schema: taskSchema,
+    OnChunk: func(partial interface{}) {
+        // Count completed fields to show progress
+        if obj, ok := partial.(map[string]interface{}); ok {
+            if _, hasID := obj["id"]; hasID {
+                if _, hasDesc := obj["description"]; hasDesc {
+                    if _, hasPrio := obj["priority"]; hasPrio {
+                        completedTasks++
+                        fmt.Printf("✓ Task %d complete\n", completedTasks)
+                    }
+                }
+            }
+        }
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### With Fallback to Non-Streaming
+
+```go
+// StreamObject automatically falls back to non-streaming
+// if the model doesn't support streaming structured output
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+    Model:  model,
+    Prompt: "Generate product information",
+    Schema: productSchema,
+    OnChunk: func(partial interface{}) {
+        // This may not be called if fallback occurs
+        fmt.Printf("Chunk: %+v\n", partial)
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Final result is always available
+fmt.Printf("Final: %+v\n", result.Object)
+```
+
+## Error Handling
+
+```go
+result, err := ai.StreamObject(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "schema is required"):
+        log.Println("Schema is required for streaming objects")
+    case strings.Contains(err.Error(), "stream error"):
+        log.Println("Streaming failed:", err)
+    case strings.Contains(err.Error(), "validation failed"):
+        log.Println("Object validation error:", err)
+    case strings.Contains(err.Error(), "failed to parse"):
+        log.Println("JSON parsing error:", err)
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [GenerateObject](./generate-object.mdx) - Non-streaming object generation
+- [StreamText](./stream-text.mdx) - Streaming text generation
+- [JSON Schema](../schema/json-schema.mdx) - Schema definition
+- [Structured Output Guide](../../04-generation/structured-output.mdx)

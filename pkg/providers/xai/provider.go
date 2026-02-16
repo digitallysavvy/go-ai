@@ -64,7 +64,10 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("xAI does not support image generation")
+	if modelID == "" {
+		modelID = "grok-image-1"
+	}
+	return NewImageModel(p, modelID), nil
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -80,6 +83,14 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	return nil, fmt.Errorf("xAI does not support reranking")
+}
+
+// VideoModel returns a video generation model by ID
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	if modelID == "" {
+		modelID = "grok-imagine-video"
+	}
+	return NewVideoModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests

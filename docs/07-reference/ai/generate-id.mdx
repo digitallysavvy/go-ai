@@ -1,0 +1,70 @@
+---
+title: GenerateID
+description: API reference for GenerateID function
+---
+
+# GenerateID
+
+Generates a unique identifier string. Useful for creating tool call IDs or request IDs.
+
+## Signature
+
+```go
+func GenerateID() string
+```
+
+## Return Value
+
+Returns a unique string identifier (typically a UUID or nanoid).
+
+## Examples
+
+### Generate Request ID
+
+```go
+package main
+
+import (
+    "fmt"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+)
+
+func main() {
+    requestID := ai.GenerateID()
+    fmt.Printf("Request ID: %s\n", requestID)
+}
+```
+
+### Custom Tool Call ID
+
+```go
+toolCall := types.ToolCall{
+    ID:       ai.GenerateID(),
+    ToolName: "my_tool",
+    Arguments: map[string]interface{}{
+        "param": "value",
+    },
+}
+```
+
+### Session Tracking
+
+```go
+type Session struct {
+    ID        string
+    CreatedAt time.Time
+}
+
+session := Session{
+    ID:        ai.GenerateID(),
+    CreatedAt: time.Now(),
+}
+
+fmt.Printf("Session: %s\n", session.ID)
+```
+
+## See Also
+
+- [Tool](./tool.mdx) - Tool definition
+- [GenerateText](./generate-text.mdx) - Text generation

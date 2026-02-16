@@ -1,0 +1,304 @@
+---
+title: Google Vertex AI Provider
+description: Setup and usage guide for Google Vertex AI enterprise platform with Go-AI SDK
+---
+
+# Google Vertex AI Provider
+
+Google Vertex AI provides enterprise-grade AI platform with Gemini models, custom model training, and MLOps capabilities. Offers enhanced security, compliance, and integration with Google Cloud.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+)
+```
+
+### Configuration
+
+```go
+provider := vertex.New(vertex.Config{
+    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
+    Location:  "us-central1",
+})
+
+model, err := provider.LanguageModel("gemini-2.0-flash")
+```
+
+### Authentication
+
+1. Install Google Cloud SDK
+2. Authenticate:
+
+```bash
+gcloud auth application-default login
+```
+
+3. Set project:
+
+```bash
+export GOOGLE_CLOUD_PROJECT=your-project-id
+```
+
+## Available Models
+
+### Gemini Models
+
+| Model ID | Context | Price | Best For |
+|----------|---------|-------|----------|
+| gemini-2.0-flash | 1M | $0.075/1M (≤128K) | Fast, multimodal |
+| gemini-1.5-pro | 2M | $1.25/1M (≤128K) | Complex tasks |
+| gemini-1.5-flash | 1M | $0.075/1M (≤128K) | General purpose |
+
+### PaLM Models (Legacy)
+
+| Model ID | Context | Price | Best For |
+|----------|---------|-------|----------|
+| text-bison | 8K | $0.50/1M | Text generation |
+| chat-bison | 8K | $0.50/1M | Chat |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| textembedding-gecko | 768 | Free | Semantic search |
+
+### Image Generation Models
+
+| Model ID | Aspect Ratios | Price | Best For |
+|----------|--------------|-------|----------|
+| imagen-3.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High quality |
+| imagen-3.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
+| imagen-3.0-capability-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Enhanced capabilities |
+| gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
+| gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+
+## Provider-Specific Features
+
+### Enterprise Security
+
+```go
+provider := vertex.New(vertex.Config{
+    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
+    Location:  "us-central1",
+    VPCNetwork: "projects/my-project/global/networks/my-vpc",
+})
+```
+
+### Model Garden
+
+Access hundreds of models from Model Garden:
+
+```go
+// Deploy from Model Garden
+model, err := provider.LanguageModel("publishers/google/models/gemini-2.0-flash")
+```
+
+### Batch Prediction
+
+Process large datasets efficiently:
+
+```go
+batch := vertex.NewBatchPrediction(vertex.BatchConfig{
+    InputURI:  "gs://bucket/input.jsonl",
+    OutputURI: "gs://bucket/output/",
+    Model:     "gemini-2.0-flash",
+})
+
+job, err := batch.Create()
+```
+
+### Custom Training
+
+Fine-tune models on your data:
+
+```go
+training := vertex.NewTrainingJob(vertex.TrainingConfig{
+    DisplayName:    "my-fine-tune",
+    BaseModel:      "gemini-2.0-flash",
+    TrainingDataURI: "gs://bucket/training-data/",
+})
+
+job, err := training.Create()
+```
+
+### Image Generation
+
+Vertex AI provides enterprise-grade image generation with Imagen models:
+
+```go
+// Create Vertex AI provider
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Imagen 3.0 - Text-to-image generation
+imageModel, err := provider.ImageModel("imagen-3.0-generate-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+n := 1
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A futuristic cityscape at night with neon lights and flying cars",
+    N:      &n,
+    Size:   "1920x1080", // Converts to 16:9 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Save the generated image
+os.WriteFile("vertex_imagen.png", result.Image, 0644)
+fmt.Printf("Generated image: %d bytes\n", len(result.Image))
+```
+
+**Gemini Image Generation:**
+
+```go
+// Gemini 2.5 Flash Image - Fast generation
+geminiModel, err := provider.ImageModel("gemini-2.5-flash-image")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  geminiModel,
+    Prompt: "A magical forest with glowing mushrooms and ethereal lighting",
+    Size:   "1024x1024", // Square 1:1 aspect ratio
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
+```
+
+**Supported Aspect Ratios:**
+- `1:1` - Square (1024x1024)
+- `4:3` - Standard (1024x768)
+- `3:4` - Portrait (768x1024)
+- `16:9` - Widescreen (1920x1080)
+- `9:16` - Vertical (1080x1920)
+
+**Model Comparison:**
+
+| Model | Speed | Quality | Best For |
+|-------|-------|---------|----------|
+| imagen-3.0-capability-001 | Medium | Very High | Enhanced features |
+| imagen-3.0-generate-001 | Medium | High | Production use |
+| imagen-3.0-fast-generate-001 | Fast | Good | Rapid iteration |
+| gemini-2.5-flash-image | Very Fast | Good | Quick generation |
+| gemini-3-pro-image-preview | Fast | High | Advanced generation |
+
+**Enterprise Features for Image Generation:**
+- VPC network support for secure generation
+- Customer-managed encryption keys (CMEK)
+- Audit logging for compliance
+- Regional data residency
+- Batch image generation for large-scale operations
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+)
+
+func main() {
+    provider := vertex.New(vertex.Config{
+        ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
+        Location:  "us-central1",
+    })
+
+    model, err := provider.LanguageModel("gemini-2.0-flash")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain Vertex AI")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Multi-Region Deployment
+
+```go
+// Deploy across regions for high availability
+usProvider := vertex.New(vertex.Config{
+    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
+    Location:  "us-central1",
+})
+
+euProvider := vertex.New(vertex.Config{
+    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
+    Location:  "europe-west4",
+})
+
+// Try primary region first
+result, err := generateWithFallback(usProvider, euProvider, prompt)
+```
+
+## Best Practices
+
+1. **Enterprise Features**
+   - Use VPC Service Controls
+   - Enable audit logging
+   - Configure IAM policies
+   - Use customer-managed encryption keys
+
+2. **Cost Management**
+   - Monitor usage in Cloud Console
+   - Set up budget alerts
+   - Use committed use discounts
+   - Optimize batch operations
+
+3. **Performance**
+   - Choose regions close to users
+   - Use batch prediction for large datasets
+   - Cache predictions when appropriate
+
+4. **Compliance**
+   - Leverage Google Cloud compliance certifications
+   - Configure data residency requirements
+   - Enable audit logs for governance
+
+## Rate Limits
+
+Varies by model and quota:
+
+| Model | Default QPM | Max QPM |
+|-------|------------|---------|
+| Gemini 2.0 Flash | 60 | 1000+ |
+| Gemini 1.5 Pro | 60 | 1000+ |
+
+Request quota increases through Cloud Console.
+
+## See Also
+
+- [Google Provider](04-google.mdx) - Google AI Studio
+- [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
+- [Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)

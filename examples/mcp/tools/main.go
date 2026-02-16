@@ -171,8 +171,8 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"operation": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"add", "subtract", "multiply", "divide"},
+						"type":        "string",
+						"enum":        []string{"add", "subtract", "multiply", "divide"},
 						"description": "The operation to perform",
 					},
 					"a": map[string]interface{}{
@@ -186,7 +186,7 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				},
 				"required": []string{"operation", "a", "b"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				op := params["operation"].(string)
 				a := params["a"].(float64)
 				b := params["b"].(float64)
@@ -228,7 +228,7 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 					},
 				},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				format := "iso"
 				if f, ok := params["format"].(string); ok {
 					format = f
@@ -259,19 +259,19 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 						"description": "Temperature value",
 					},
 					"from_unit": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"celsius", "fahrenheit"},
+						"type":        "string",
+						"enum":        []string{"celsius", "fahrenheit"},
 						"description": "Source unit",
 					},
 					"to_unit": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"celsius", "fahrenheit"},
+						"type":        "string",
+						"enum":        []string{"celsius", "fahrenheit"},
 						"description": "Target unit",
 					},
 				},
 				"required": []string{"value", "from_unit", "to_unit"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				value := params["value"].(float64)
 				from := params["from_unit"].(string)
 				to := params["to_unit"].(string)
@@ -306,16 +306,16 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				},
 				"required": []string{"text"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				text := params["text"].(string)
 
 				return map[string]interface{}{
-					"length":     len(text),
-					"words":      len(splitWords(text)),
-					"lines":      len(splitLines(text)),
-					"uppercase":  countUppercase(text),
-					"lowercase":  countLowercase(text),
-					"digits":     countDigits(text),
+					"length":    len(text),
+					"words":     len(splitWords(text)),
+					"lines":     len(splitLines(text)),
+					"uppercase": countUppercase(text),
+					"lowercase": countLowercase(text),
+					"digits":    countDigits(text),
 				}, nil
 			},
 		},
@@ -328,8 +328,8 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"type": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"number", "string"},
+						"type":        "string",
+						"enum":        []string{"number", "string"},
 						"description": "Type of random value",
 					},
 					"min": map[string]interface{}{
@@ -350,7 +350,7 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				},
 				"required": []string{"type"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				randType := params["type"].(string)
 
 				if randType == "number" {
@@ -385,7 +385,7 @@ func (s *MCPToolsServer) getToolDefinitions() []types.Tool {
 				},
 				"required": []string{"number"},
 			},
-			Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				num := params["number"].(float64)
 				if num < 0 {
 					return nil, fmt.Errorf("cannot calculate square root of negative number")

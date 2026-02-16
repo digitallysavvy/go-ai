@@ -1,0 +1,219 @@
+---
+title: Cohere Provider
+description: Setup and usage guide for Cohere Command and Embed models with Go-AI SDK
+---
+
+# Cohere Provider
+
+Cohere specializes in enterprise-grade language models optimized for production use cases including RAG, search, classification, and embeddings. Known for reliable performance and strong multilingual support.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+)
+```
+
+### Configuration
+
+```go
+provider := cohere.New(cohere.Config{
+    APIKey: os.Getenv("COHERE_API_KEY"),
+})
+
+model, err := provider.LanguageModel("command-r-plus")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [cohere.com](https://cohere.com)
+2. Get API key from dashboard
+3. Set environment variable:
+
+```bash
+export COHERE_API_KEY=...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Context | Input Price | Output Price | Best For |
+|----------|---------|-------------|--------------|----------|
+| command-r-plus | 128K | $3.00/1M | $15.00/1M | RAG, search, agents |
+| command-r | 128K | $0.50/1M | $1.50/1M | Cost-effective tasks |
+| command | 4K | $1.00/1M | $2.00/1M | Legacy |
+| command-light | 4K | $0.30/1M | $0.60/1M | Fast responses |
+
+### Embedding Models
+
+| Model ID | Dimensions | Price | Best For |
+|----------|-----------|-------|----------|
+| embed-english-v3.0 | 1024 | $0.10/1M | English semantic search |
+| embed-multilingual-v3.0 | 1024 | $0.10/1M | Multilingual search |
+| embed-english-light-v3.0 | 384 | $0.10/1M | Fast embeddings |
+
+## Provider-Specific Features
+
+### RAG Optimization
+
+Cohere models are optimized for retrieval-augmented generation:
+
+```go
+documents := []ai.Document{
+    {Content: "Go was created at Google in 2007", Metadata: map[string]string{"source": "wiki"}},
+    {Content: "Go is known for concurrency support", Metadata: map[string]string{"source": "docs"}},
+}
+
+result, err := ai.GenerateText(model,
+    "Who created Go?",
+    ai.WithDocuments(documents...),
+)
+
+// Response includes citations
+for _, citation := range result.Citations {
+    fmt.Printf("Source: %s\n", citation.DocumentID)
+}
+```
+
+### Tool Use
+
+```go
+searchTool := ai.Tool{
+    Type: "function",
+    Function: ai.FunctionDefinition{
+        Name: "search_products",
+        Description: "Search product database",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]string{"type": "string"},
+            },
+            "required": []string{"query"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(model,
+    "Find laptop under $1000",
+    ai.WithTools(searchTool),
+)
+```
+
+### Reranking
+
+Improve search results with reranking:
+
+```go
+reranker := cohere.NewReranker(cohere.RerankerConfig{
+    Model: "rerank-english-v3.0",
+})
+
+results := reranker.Rerank("machine learning", []string{
+    "ML is a subset of AI",
+    "Weather forecast for today",
+    "Neural networks learn patterns",
+})
+
+for i, result := range results {
+    fmt.Printf("%d. Score: %.2f - %s\n", i+1, result.Score, result.Text)
+}
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+)
+
+func main() {
+    provider := cohere.New(cohere.Config{
+        APIKey: os.Getenv("COHERE_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("command-r-plus")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain vector databases")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Embeddings for Semantic Search
+
+```go
+embeddingModel, err := provider.EmbeddingModel("embed-english-v3.0")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Embed documents
+docs := []string{
+    "Go is a statically typed language",
+    "Python is dynamically typed",
+    "JavaScript runs in browsers",
+}
+
+docEmbeddings, err := ai.Embed(embeddingModel, docs...)
+
+// Embed query
+query := "Tell me about Go programming"
+queryEmbedding, err := ai.Embed(embeddingModel, query)
+
+// Find most similar
+bestMatch := findMostSimilar(queryEmbedding[0], docEmbeddings)
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Use Command R+ for RAG and multi-step reasoning
+   - Use Command R for cost-effective production workloads
+   - Use embed-v3.0 for semantic search
+
+2. **RAG Implementation**
+   - Provide relevant documents in context
+   - Use citations for transparency
+   - Implement reranking for better results
+
+3. **Embeddings**
+   - Use input_type parameter (search_document, search_query, classification)
+   - Batch embed operations
+   - Cache embeddings for repeated documents
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+| Tier | RPM | Tokens/Min |
+|------|-----|------------|
+| Trial | 100 | 40K |
+| Production | 10K | 10M |
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Cohere API Documentation](https://docs.cohere.com)

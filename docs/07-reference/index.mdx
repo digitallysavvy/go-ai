@@ -1,0 +1,83 @@
+---
+title: API Reference
+description: Complete API reference for the Go-AI SDK
+---
+
+# API Reference
+
+Complete reference documentation for all Go-AI SDK APIs, types, and interfaces.
+
+## Core AI Functions
+
+High-level functions for working with AI models:
+
+- [GenerateText](./ai/generate-text.mdx) - Generate text completions
+- [StreamText](./ai/stream-text.mdx) - Stream text completions in real-time
+- [GenerateObject](./ai/generate-object.mdx) - Generate structured data
+- [StreamObject](./ai/stream-object.mdx) - Stream structured data
+- [Embed](./ai/embed.mdx) - Generate embeddings for text
+- [EmbedMany](./ai/embed-many.mdx) - Generate embeddings for multiple texts
+- [Rerank](./ai/rerank.mdx) - Rerank documents by relevance
+- [GenerateImage](./ai/generate-image.mdx) - Generate images from text
+- [Transcribe](./ai/transcribe.mdx) - Transcribe audio to text
+- [GenerateSpeech](./ai/generate-speech.mdx) - Generate speech from text
+- [Agent](./ai/agent.mdx) - Create autonomous AI agents
+- [ToolLoopAgent](./ai/tool-loop-agent.mdx) - Create tool-using agents
+
+## Tool & Helper APIs
+
+Functions for working with tools and utilities:
+
+- [Tool](./ai/tool.mdx) - Define tools for AI models
+- [DynamicTool](./ai/dynamic-tool.mdx) - Create tools dynamically
+- [CosineSimilarity](./ai/cosine-similarity.mdx) - Calculate similarity between vectors
+- [StepCountIs](./ai/step-count-is.mdx) - Check agent step count
+- [HasToolCall](./ai/has-tool-call.mdx) - Check if result has tool calls
+- [GenerateID](./ai/generate-id.mdx) - Generate unique IDs
+
+## Type Definitions
+
+Core types used throughout the SDK:
+
+- [Messages](./types/messages.mdx) - Message types and structures
+- [Tools](./types/tools.mdx) - Tool definition types
+- [Usage](./types/usage.mdx) - Token usage tracking types
+- [Errors](./types/errors.mdx) - Error types and handling
+
+## Provider Interfaces
+
+Interfaces for implementing custom providers:
+
+- [LanguageModel](./providers/language-model.mdx) - Language model interface
+- [EmbeddingModel](./providers/embedding-model.mdx) - Embedding model interface
+- [ImageModel](./providers/image-model.mdx) - Image generation interface
+- [SpeechModel](./providers/speech-model.mdx) - Speech synthesis interface
+- [TranscriptionModel](./providers/transcription-model.mdx) - Audio transcription interface
+- [CustomProvider](./providers/custom-provider.mdx) - Create custom providers
+
+## Middleware
+
+Middleware system for modifying model behavior:
+
+- [WrapLanguageModel](./middleware/wrap-language-model.mdx) - Wrap models with middleware
+- [MiddlewareInterface](./middleware/middleware-interface.mdx) - Middleware interface specification
+- [BuiltInMiddleware](./middleware/built-in-middleware.mdx) - Built-in middleware functions
+
+## Schema & Registry
+
+Schema validation and provider registry:
+
+- [JSONSchema](./schema/json-schema.mdx) - JSON schema definitions
+- [ProviderRegistry](./registry/provider-registry.mdx) - Provider registration system
+
+## Error Types
+
+Comprehensive error reference:
+
+- [Error Types Overview](./errors/index.mdx) - All error types and handling
+
+## See Also
+
+- [Getting Started Guide](../02-getting-started/index.mdx)
+- [AI SDK Core](../03-ai-sdk-core/01-overview.mdx)
+- [Provider Documentation](../05-providers/index.mdx)

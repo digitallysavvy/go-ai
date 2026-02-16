@@ -51,7 +51,7 @@ func main() {
             },
             "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             location := input["location"].(string)
             temperature := 72 + rand.Intn(21) - 10
             return map[string]interface{}{
@@ -138,7 +138,7 @@ func createRoutes() []types.Tool {
                 },
                 "required": []string{"username"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 username := input["username"].(string)
                 return map[string]interface{}{
                     "username": username,
@@ -165,7 +165,7 @@ func createRoutes() []types.Tool {
                 },
                 "required": []string{"query"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 query := input["query"].(string)
                 limit := 10
                 if l, ok := input["limit"].(float64); ok {
@@ -186,7 +186,7 @@ func createRoutes() []types.Tool {
                 "type":       "object",
                 "properties": map[string]interface{}{},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return map[string]interface{}{
                     "loginUrl": "/login",
                     "message":  "Please log in to continue",
@@ -293,7 +293,7 @@ func main() {
             },
             "required": []string{"artist"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             artist := input["artist"].(string)
             works, err := searchArtworks(ctx, artist)
             if err != nil {
@@ -379,7 +379,7 @@ func main() {
                 },
                 "required": []string{"date"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return map[string]interface{}{
                     "available": []string{"5:00 PM", "6:00 PM", "7:00 PM"},
                 }, nil
@@ -401,7 +401,7 @@ func main() {
                 },
                 "required": []string{"friends", "date"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return map[string]interface{}{
                     "mutuallyAvailable": []string{"6:00 PM", "7:00 PM"},
                 }, nil
@@ -422,7 +422,7 @@ func main() {
                 },
                 "required": []string{"category"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return map[string]interface{}{
                     "places": []map[string]interface{}{
                         {"name": "The Rooftop Bar", "address": "123 Main St"},
@@ -456,7 +456,7 @@ func main() {
                 },
                 "required": []string{"title", "date", "time", "location", "attendees"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return map[string]interface{}{
                     "eventId": "evt_123",
                     "status":  "created",
@@ -693,7 +693,7 @@ types.Tool{
 ### 2. Validate Parameters
 
 ```go
-Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
     amount, ok := input["amount"].(float64)
     if !ok || amount <= 0 {
         return nil, fmt.Errorf("invalid amount")

@@ -66,7 +66,7 @@ func main() {
             },
             "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             location := input["location"].(string)
             // In a real application, you would call a weather API here
             return map[string]interface{}{
@@ -252,7 +252,7 @@ func main() {
             },
             "required": []string{"operation", "a", "b"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             op := input["operation"].(string)
             a := input["a"].(float64)
             b := input["b"].(float64)
@@ -294,7 +294,7 @@ func main() {
             },
             "required": []string{"query"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             query := input["query"].(string)
             // In a real application, call a search API
             return map[string]interface{}{
@@ -350,7 +350,7 @@ weatherTool := types.Tool{
     Name:        "get_weather",
     Description: "Get current weather for a location",
     Parameters:  weatherSchema,
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         location, ok := input["location"].(string)
         if !ok {
             return nil, fmt.Errorf("location must be a string")
@@ -385,7 +385,7 @@ Tools respect context cancellation:
 weatherTool := types.Tool{
     Name:       "get_weather",
     Parameters: weatherSchema,
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // Check if context is cancelled
         select {
         case <-ctx.Done():
@@ -434,7 +434,7 @@ func GetWeatherTool(apiKey string) types.Tool {
             },
             "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Implementation
             return nil, nil
         },

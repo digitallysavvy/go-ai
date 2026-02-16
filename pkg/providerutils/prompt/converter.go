@@ -50,9 +50,26 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 				case types.ToolResultContent:
 					// OpenAI doesn't have a separate tool result content type
 					// Represent as text
+					var resultText string
+					if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
+						// Extract text from content blocks
+						var textParts []string
+						for _, block := range p.Output.Content {
+							if textBlock, ok := block.(types.TextContentBlock); ok {
+								textParts = append(textParts, textBlock.Text)
+							}
+						}
+						if len(textParts) > 0 {
+							resultText = fmt.Sprintf("Tool %s result: %s", p.ToolName, textParts[0])
+						} else {
+							resultText = fmt.Sprintf("Tool %s result: [complex output]", p.ToolName)
+						}
+					} else {
+						resultText = fmt.Sprintf("Tool %s result: %v", p.ToolName, p.Result)
+					}
 					contentParts = append(contentParts, map[string]interface{}{
 						"type": "text",
-						"text": fmt.Sprintf("Tool %s result: %v", p.ToolName, p.Result),
+						"text": resultText,
 					})
 				}
 			}
@@ -112,12 +129,70 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 						},
 					})
 				case types.ToolResultContent:
-					contentParts = append(contentParts, map[string]interface{}{
-						"type":         "tool_result",
-						"tool_use_id":  p.ToolCallID,
-						"content":      fmt.Sprintf("%v", p.Result),
-						"is_error":     p.Error != "",
-					})
+					// Check if using new Output style with content blocks
+					if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
+						// Build content array from blocks
+						contentArray := []map[string]interface{}{}
+
+						for _, block := range p.Output.Content {
+							switch b := block.(type) {
+							case types.TextContentBlock:
+								contentArray = append(contentArray, map[string]interface{}{
+									"type": "text",
+									"text": b.Text,
+								})
+
+							case types.ImageContentBlock:
+								imageData := base64.StdEncoding.EncodeToString(b.Data)
+								contentArray = append(contentArray, map[string]interface{}{
+									"type": "image",
+									"source": map[string]interface{}{
+										"type":       "base64",
+										"media_type": b.MediaType,
+										"data":       imageData,
+									},
+								})
+
+							case types.FileContentBlock:
+								fileData := base64.StdEncoding.EncodeToString(b.Data)
+								contentArray = append(contentArray, map[string]interface{}{
+									"type": "document",
+									"source": map[string]interface{}{
+										"type":       "base64",
+										"media_type": b.MediaType,
+										"data":       fileData,
+									},
+								})
+
+							case types.CustomContentBlock:
+								// Check for Anthropic-specific content (e.g., tool-reference)
+								if anthropicOpts, ok := b.ProviderOptions["anthropic"].(map[string]interface{}); ok {
+									if anthropicOpts["type"] == "tool-reference" {
+										contentArray = append(contentArray, map[string]interface{}{
+											"type":      "tool_reference",
+											"tool_name": anthropicOpts["toolName"],
+										})
+									}
+								}
+								// Other providers' custom content is silently ignored for Anthropic
+							}
+						}
+
+						contentParts = append(contentParts, map[string]interface{}{
+							"type":        "tool_result",
+							"tool_use_id": p.ToolCallID,
+							"content":     contentArray,
+							"is_error":    p.Error != "",
+						})
+					} else {
+						// Fall back to old style (backward compatible)
+						contentParts = append(contentParts, map[string]interface{}{
+							"type":        "tool_result",
+							"tool_use_id": p.ToolCallID,
+							"content":     fmt.Sprintf("%v", p.Result),
+							"is_error":    p.Error != "",
+						})
+					}
 				}
 			}
 			anthropicMsg["content"] = contentParts

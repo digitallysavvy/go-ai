@@ -115,7 +115,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if opts.StopSequences != nil && len(opts.StopSequences) > 0 {
+	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {
@@ -146,11 +146,8 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertGroqUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -166,6 +163,86 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 			}
 		}
 	}
+	return result
+}
+
+func convertGroqUsage(usage groqUsage) types.Usage {
+	promptTokens := int64(usage.PromptTokens)
+	completionTokens := int64(usage.CompletionTokens)
+	totalTokens := int64(usage.TotalTokens)
+	result := types.Usage{
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
+		TotalTokens:  &totalTokens,
+	}
+
+	// Parse detailed token information if available
+	var cachedTokens int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	}
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
+	var reasoningTokens int64
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	}
+
+	// Set input details (always set, even if just with basic values)
+	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+		noCacheTokens := promptTokens - cachedTokens
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: nil,
+			TextTokens:       textTokens,
+			ImageTokens:      imageTokens,
+		}
+	} else {
+		result.InputDetails = &types.InputTokenDetails{
+			NoCacheTokens:    &promptTokens,
+			CacheReadTokens:  nil,
+			CacheWriteTokens: nil,
+		}
+	}
+
+	// Set output details
+	if reasoningTokens > 0 {
+		textOutputTokens := completionTokens - reasoningTokens
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &textOutputTokens,
+			ReasoningTokens: &reasoningTokens,
+		}
+	} else {
+		result.OutputDetails = &types.OutputTokenDetails{
+			TextTokens:      &completionTokens,
+			ReasoningTokens: nil,
+		}
+	}
+
+	// Store raw usage
+	result.Raw = map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+	if usage.PromptTokensDetails != nil {
+		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
+
 	return result
 }
 
@@ -207,11 +284,27 @@ type groqResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage groqUsage `json:"usage"`
+}
+
+type groqUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// Detailed token breakdown (OpenAI-compatible)
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+
+	CompletionTokensDetails *struct {
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 type groqStreamChunk struct {

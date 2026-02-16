@@ -7,6 +7,9 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // EmbedOptions contains options for embedding generation
@@ -16,6 +19,9 @@ type EmbedOptions struct {
 
 	// Input text to embed
 	Input string
+
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
 }
 
 // EmbedResult contains the result of an embedding operation
@@ -37,16 +43,64 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		return nil, fmt.Errorf("input is required")
 	}
 
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.embed span
+		spanName := "ai.embed"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		defer span.End()
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.embed"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+
+		// Record input if enabled
+		if opts.ExperimentalTelemetry.RecordInputs {
+			span.SetAttributes(attribute.String("ai.value", opts.Input))
+		}
+	}
+
 	// Call the model
 	result, err := opts.Model.DoEmbed(ctx, opts.Input)
 	if err != nil {
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	return &EmbedResult{
+	embedResult := &EmbedResult{
 		Embedding: result.Embedding,
 		Usage:     result.Usage,
-	}, nil
+	}
+
+	// Record telemetry output attributes
+	if span != nil {
+		// Record usage information
+		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
+	}
+
+	return embedResult, nil
 }
 
 // EmbedManyOptions contains options for batch embedding generation
@@ -56,6 +110,9 @@ type EmbedManyOptions struct {
 
 	// Input texts to embed
 	Inputs []string
+
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
 }
 
 // EmbedManyResult contains the result of a batch embedding operation
@@ -77,16 +134,60 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		return nil, fmt.Errorf("at least one input is required")
 	}
 
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.embedMany span
+		spanName := "ai.embedMany"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		defer span.End()
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.embedMany"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+			attribute.Int("ai.values.count", len(opts.Inputs)),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+	}
+
 	// Call the model
 	result, err := opts.Model.DoEmbedMany(ctx, opts.Inputs)
 	if err != nil {
 		return nil, fmt.Errorf("batch embedding failed: %w", err)
 	}
 
-	return &EmbedManyResult{
+	embedResult := &EmbedManyResult{
 		Embeddings: result.Embeddings,
 		Usage:      result.Usage,
-	}, nil
+	}
+
+	// Record telemetry output attributes
+	if span != nil {
+		// Record usage information
+		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
+	}
+
+	return embedResult, nil
 }
 
 // CosineSimilarity calculates the cosine similarity between two embeddings

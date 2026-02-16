@@ -1,0 +1,57 @@
+---
+title: HasToolCall
+description: API reference for HasToolCall helper
+---
+
+# HasToolCall
+
+Helper function to check if a step result contains a specific tool call. Useful in OnStepFinish callbacks.
+
+## Signature
+
+```go
+func HasToolCall(step types.StepResult, toolName string) bool
+```
+
+## Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| step | types.StepResult | Step result to check |
+| toolName | string | Name of the tool to look for |
+
+## Examples
+
+### Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Search for information",
+    Tools:  []types.Tool{searchTool, calculatorTool},
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
+        if ai.HasToolCall(step, "search") {
+            fmt.Println("Search tool was called in this step")
+        }
+    },
+})
+```
+
+### Multiple Tool Checks
+
+```go
+OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
+    if ai.HasToolCall(step, "database_query") {
+        fmt.Println("Database queried")
+    }
+    if ai.HasToolCall(step, "send_email") {
+        fmt.Println("Email sent")
+    }
+}
+```
+
+## See Also
+
+- [GenerateText](./generate-text.mdx) - Text generation with tools
+- [StepCountIs](./step-count-is.mdx) - Check step number
+- [Tool](./tool.mdx) - Tool definition

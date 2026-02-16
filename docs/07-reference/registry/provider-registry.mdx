@@ -1,0 +1,250 @@
+---
+title: Provider Registry
+description: API reference for provider registry
+---
+
+# Provider Registry
+
+The provider registry allows you to register and access AI providers globally.
+
+## Registry Interface
+
+```go
+// Register a provider globally
+func Register(name string, provider provider.Provider)
+
+// Get a registered provider
+func Get(name string) (provider.Provider, error)
+
+// List all registered providers
+func List() []string
+
+// Check if a provider is registered
+func Has(name string) bool
+```
+
+## Examples
+
+### Registering Providers
+
+```go
+package main
+
+import (
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/registry"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    // Register OpenAI
+    registry.Register("openai", openai.New(openai.Config{
+        APIKey: "openai-key",
+    }))
+
+    // Register Anthropic
+    registry.Register("anthropic", anthropic.New(anthropic.Config{
+        APIKey: "anthropic-key",
+    }))
+}
+```
+
+### Getting Providers
+
+```go
+// Get a provider by name
+provider, err := registry.Get("openai")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Get a model
+model, err := provider.LanguageModel("gpt-4")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Listing Providers
+
+```go
+providers := registry.List()
+fmt.Println("Available providers:")
+for _, name := range providers {
+    fmt.Printf("  - %s\n", name)
+}
+```
+
+### Checking Provider Existence
+
+```go
+if registry.Has("openai") {
+    fmt.Println("OpenAI is registered")
+}
+```
+
+### Using with Configuration
+
+```go
+type Config struct {
+    ProviderName string
+    ModelID      string
+}
+
+func getModel(cfg Config) (provider.LanguageModel, error) {
+    provider, err := registry.Get(cfg.ProviderName)
+    if err != nil {
+        return nil, fmt.Errorf("provider not found: %w", err)
+    }
+
+    model, err := provider.LanguageModel(cfg.ModelID)
+    if err != nil {
+        return nil, fmt.Errorf("model not found: %w", err)
+    }
+
+    return model, nil
+}
+
+// Usage
+config := Config{
+    ProviderName: "openai",
+    ModelID:      "gpt-4",
+}
+
+model, err := getModel(config)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Dynamic Provider Selection
+
+```go
+func generateWithProvider(providerName, modelID, prompt string) (string, error) {
+    // Get provider from registry
+    provider, err := registry.Get(providerName)
+    if err != nil {
+        return "", fmt.Errorf("provider %s not found: %w", providerName, err)
+    }
+
+    // Get model
+    model, err := provider.LanguageModel(modelID)
+    if err != nil {
+        return "", fmt.Errorf("model %s not found: %w", modelID, err)
+    }
+
+    // Generate
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+// Usage
+text, err := generateWithProvider("openai", "gpt-4", "Hello!")
+```
+
+### Multi-Provider Setup
+
+```go
+func setupProviders(config map[string]string) error {
+    providers := map[string]provider.Provider{
+        "openai": openai.New(openai.Config{
+            APIKey: config["openai_key"],
+        }),
+        "anthropic": anthropic.New(anthropic.Config{
+            APIKey: config["anthropic_key"],
+        }),
+        "google": google.New(google.Config{
+            APIKey: config["google_key"],
+        }),
+    }
+
+    for name, p := range providers {
+        registry.Register(name, p)
+    }
+
+    return nil
+}
+
+// Usage
+config := map[string]string{
+    "openai_key":    os.Getenv("OPENAI_API_KEY"),
+    "anthropic_key": os.Getenv("ANTHROPIC_API_KEY"),
+    "google_key":    os.Getenv("GOOGLE_API_KEY"),
+}
+
+if err := setupProviders(config); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Provider Fallback
+
+```go
+func generateWithFallback(modelConfigs []struct{ Provider, Model string }, prompt string) (string, error) {
+    var lastErr error
+
+    for _, cfg := range modelConfigs {
+        provider, err := registry.Get(cfg.Provider)
+        if err != nil {
+            lastErr = err
+            continue
+        }
+
+        model, err := provider.LanguageModel(cfg.Model)
+        if err != nil {
+            lastErr = err
+            continue
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+        if err != nil {
+            lastErr = err
+            continue
+        }
+
+        return result.Text, nil
+    }
+
+    return "", fmt.Errorf("all providers failed: %w", lastErr)
+}
+
+// Usage with fallback chain
+configs := []struct{ Provider, Model string }{
+    {"openai", "gpt-4"},
+    {"anthropic", "claude-3-opus"},
+    {"google", "gemini-pro"},
+}
+
+text, err := generateWithFallback(configs, "Hello!")
+```
+
+## Error Handling
+
+```go
+provider, err := registry.Get("unknown")
+if err != nil {
+    if strings.Contains(err.Error(), "not found") {
+        log.Println("Provider is not registered")
+    } else {
+        log.Fatal("Registry error:", err)
+    }
+}
+```
+
+## See Also
+
+- [Custom Provider](../providers/custom-provider.mdx) - Implementing custom providers
+- [LanguageModel Interface](../providers/language-model.mdx) - Language model interface
+- [Provider Guide](../../03-providers/overview.mdx) - Provider overview

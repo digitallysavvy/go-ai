@@ -91,7 +91,7 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		case "retry":
 			// Parse retry as integer (milliseconds)
 			var retry int
-			fmt.Sscanf(value, "%d", &retry)
+			_, _ = fmt.Sscanf(value, "%d", &retry)
 			event.Retry = retry
 		}
 	}

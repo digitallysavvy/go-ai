@@ -1,0 +1,652 @@
+---
+title: Common Errors
+description: Solutions for the most frequent errors in Go AI SDK
+---
+
+# Common Errors
+
+This guide covers the most common errors you'll encounter when using the Go AI SDK and how to fix them.
+
+## API Key Issues
+
+### Error: "Invalid API Key"
+
+**Symptoms:**
+```
+Error: provider error (401): Invalid API key provided
+Error: authentication failed
+```
+
+**Cause:**
+The API key is missing, incorrect, or not properly loaded from environment variables.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Check if API key is set
+    apiKey := os.Getenv("OPENAI_API_KEY")
+    if apiKey == "" {
+        log.Fatal("OPENAI_API_KEY environment variable not set")
+    }
+
+    // Verify key is not empty or whitespace
+    if len(apiKey) < 20 {
+        log.Fatal("OPENAI_API_KEY appears to be invalid (too short)")
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey: apiKey,
+    })
+
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+
+    ctx := context.Background()
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+**Best Practices:**
+- Use environment variables for API keys (never hardcode)
+- Use `.env` files with `godotenv` for local development
+- Validate API keys on application startup
+- Use separate keys for development and production
+
+### Error: "Model Not Found"
+
+**Symptoms:**
+```
+Error: model "gpt-5" not found
+Error: invalid model specified
+```
+
+**Cause:**
+Trying to use a model that doesn't exist or isn't available in your account.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // Use valid model names
+    validModels := []string{
+        "gpt-4",
+        "gpt-4-turbo",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-3.5-turbo",
+    }
+
+    // Try to create model with error handling
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Printf("Failed to create gpt-4 model: %v", err)
+        log.Println("Falling back to gpt-4o-mini...")
+
+        model, err = provider.LanguageModel("gpt-4o-mini")
+        if err != nil {
+            log.Fatalf("Failed to create fallback model: %v", err)
+        }
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Nil Pointer Errors
+
+### Error: "nil pointer dereference"
+
+**Symptoms:**
+```
+panic: runtime error: invalid memory address or nil pointer dereference
+```
+
+**Cause:**
+Not checking for errors before using returned values, or accessing fields on nil structs.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // ALWAYS check errors before using the returned value
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatalf("Failed to create model: %v", err)
+    }
+    // Now it's safe to use model
+
+    // Check result is not nil before accessing fields
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate text: %v", err)
+    }
+
+    // Safe to access result.Text now
+    if result != nil {
+        fmt.Println(result.Text)
+    }
+}
+```
+
+## Channel and Streaming Errors
+
+### Error: "Channel Already Closed"
+
+**Symptoms:**
+```
+panic: send on closed channel
+panic: close of closed channel
+```
+
+**Cause:**
+Trying to read from a stream channel multiple times or not properly handling channel closure.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a short story",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read from channel until it closes
+    // The range loop automatically handles channel closure
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+    // Channel is now closed - DO NOT try to read again
+
+    // Check for errors after stream completes
+    if err := stream.Err(); err != nil {
+        log.Printf("Stream error: %v", err)
+    }
+
+    // DO NOT try to read from TextChannel again - it's closed
+}
+```
+
+### Error: "Goroutine Leak / Stream Not Consumed"
+
+**Symptoms:**
+- Application hangs indefinitely
+- Memory usage grows over time
+- Goroutines never terminate
+
+**Cause:**
+Not consuming all values from a stream channel, causing the goroutine to block.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func processStream(ctx context.Context, model interface{}, prompt string) error {
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return err
+    }
+
+    // ALWAYS consume the entire stream, even if you don't need all the data
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+
+        // If you need to exit early, the context will cancel the stream
+        select {
+        case <-ctx.Done():
+            // Stream will be automatically cleaned up
+            return ctx.Err()
+        default:
+            // Continue processing
+        }
+    }
+
+    return stream.Err()
+}
+
+func main() {
+    // Use context with timeout to prevent infinite hangs
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    if err := processStream(ctx, model, "Write a story"); err != nil {
+        log.Printf("Error: %v", err)
+    }
+}
+```
+
+## Import Errors
+
+### Error: "Package Not Found"
+
+**Symptoms:**
+```
+cannot find package "github.com/digitallysavvy/go-ai/pkg/ai"
+```
+
+**Cause:**
+Module not downloaded or `go.mod` not properly initialized.
+
+**Solution:**
+
+```bash
+# Initialize module (if not already done)
+go mod init your-project-name
+
+# Install the Go AI SDK
+go get github.com/digitallysavvy/go-ai
+
+# Tidy up dependencies
+go mod tidy
+
+# Verify installation
+go list -m github.com/digitallysavvy/go-ai
+```
+
+### Error: "Ambiguous Import"
+
+**Symptoms:**
+```
+ambiguous import: found package in multiple locations
+```
+
+**Cause:**
+Conflicting package names or vendored dependencies.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    // Use full import paths with aliases if needed
+    goai "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+
+    // If you have naming conflicts, use aliases
+    aitools "github.com/digitallysavvy/go-ai/pkg/types"
+)
+
+func main() {
+    // Use aliases in your code
+    result, err := goai.GenerateText(ctx, goai.GenerateTextOptions{
+        // ...
+    })
+}
+```
+
+## Type Errors
+
+### Error: "Type Mismatch"
+
+**Symptoms:**
+```
+cannot use X (type string) as type interface in argument
+cannot convert X to type Y
+```
+
+**Cause:**
+Passing wrong types to SDK functions.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // CORRECT: Pass messages as proper types.Message slice
+    messages := []types.Message{
+        {
+            Role:    types.RoleUser,
+            Content: "Hello!",
+        },
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        Messages: messages, // Not strings
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## JSON Schema Errors
+
+### Error: "Schema Validation Failed"
+
+**Symptoms:**
+```
+Error: schema validation failed: invalid type for field X
+Error: generated object does not match schema
+```
+
+**Cause:**
+JSON schema doesn't match your Go struct, or schema is invalid.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/invopop/jsonschema"
+)
+
+// Define struct with proper JSON tags
+type Recipe struct {
+    Name        string   `json:"name" jsonschema:"required,description=Name of the recipe"`
+    Ingredients []string `json:"ingredients" jsonschema:"required,minItems=1,description=List of ingredients"`
+    Steps       []string `json:"steps" jsonschema:"required,minItems=1,description=Cooking steps"`
+    PrepTime    int      `json:"prepTime" jsonschema:"minimum=0,description=Preparation time in minutes"`
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Generate schema from struct
+    reflector := jsonschema.Reflector{
+        AllowAdditionalProperties: false,
+        DoNotReference:            true,
+    }
+    schema := reflector.Reflect(&Recipe{})
+
+    // Validate schema is correct
+    schemaBytes, err := json.MarshalIndent(schema, "", "  ")
+    if err != nil {
+        log.Fatalf("Invalid schema: %v", err)
+    }
+    log.Printf("Using schema:\n%s", schemaBytes)
+
+    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: schema,
+        Prompt: "Generate a lasagna recipe",
+    })
+    if err != nil {
+        log.Fatalf("Failed to generate object: %v", err)
+    }
+
+    var recipe Recipe
+    if err := json.Unmarshal(result.Object, &recipe); err != nil {
+        log.Fatalf("Failed to unmarshal result: %v", err)
+    }
+
+    fmt.Printf("Recipe: %s\n", recipe.Name)
+}
+```
+
+## Context Errors
+
+### Error: "Context Deadline Exceeded"
+
+**Symptoms:**
+```
+Error: context deadline exceeded
+Request timed out
+```
+
+**Cause:**
+Operation took longer than the context timeout allows.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Increase timeout for long operations
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+    defer cancel()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a detailed 5000-word essay on quantum computing",
+    })
+    if err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            log.Println("Operation timed out - increase the timeout or use streaming")
+
+            // Alternative: Use streaming for long responses
+            stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+                Model:  model,
+                Prompt: "Write a detailed 5000-word essay on quantum computing",
+            })
+            if err != nil {
+                log.Fatal(err)
+            }
+
+            for chunk := range stream.TextChannel {
+                fmt.Print(chunk)
+            }
+
+            if err := stream.Err(); err != nil {
+                log.Fatal(err)
+            }
+            return
+        }
+        log.Fatalf("Error: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Always Check Errors
+
+```go
+// Bad
+result, _ := ai.GenerateText(ctx, options)
+
+// Good
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    return fmt.Errorf("generation failed: %w", err)
+}
+```
+
+### 2. Use Context Timeouts
+
+```go
+// Always use context with timeout for production
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+```
+
+### 3. Consume Streams Completely
+
+```go
+// Always read all values from stream channels
+for chunk := range stream.TextChannel {
+    // Process chunk
+}
+// Check error after stream closes
+if err := stream.Err(); err != nil {
+    log.Printf("Stream error: %v", err)
+}
+```
+
+### 4. Validate Configuration
+
+```go
+// Check configuration at startup
+if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey == "" {
+    log.Fatal("Missing OPENAI_API_KEY")
+}
+```
+
+### 5. Use Proper Types
+
+```go
+// Use SDK types, not raw strings
+messages := []types.Message{
+    {Role: types.RoleUser, Content: "Hello"},
+}
+```
+
+## See Also
+
+- [Provider Errors](./02-provider-errors.mdx)
+- [Context Cancellation](./04-context-cancellation.mdx)
+- [Streaming Issues](./05-streaming-issues.mdx)
+- [Error Handling Guide](../03-ai-sdk-core/50-error-handling.mdx)

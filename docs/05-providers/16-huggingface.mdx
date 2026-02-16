@@ -1,0 +1,136 @@
+---
+title: HuggingFace Provider
+description: Setup and usage guide for HuggingFace Inference API with Go-AI SDK
+---
+
+# HuggingFace Provider
+
+HuggingFace provides access to thousands of open-source models through the Inference API. Perfect for exploring models, prototyping, and accessing the latest research models.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
+)
+```
+
+### Configuration
+
+```go
+provider := huggingface.New(huggingface.Config{
+    APIKey: os.Getenv("HF_API_KEY"),
+})
+
+model, err := provider.LanguageModel("meta-llama/Meta-Llama-3-70B-Instruct")
+```
+
+### Get API Key
+
+1. Sign up at [huggingface.co](https://huggingface.co)
+2. Create token in settings
+3. Set environment variable:
+
+```bash
+export HF_API_KEY=hf_...
+```
+
+## Available Models
+
+### Language Models
+
+| Model ID | Parameters | Best For |
+|----------|-----------|----------|
+| meta-llama/Meta-Llama-3-70B-Instruct | 70B | General purpose |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 47B | Balanced |
+| google/gemma-2-9b-it | 9B | Fast |
+| microsoft/Phi-3-medium-128k-instruct | 14B | Long context |
+
+### Embedding Models
+
+| Model ID | Dimensions | Best For |
+|----------|-----------|----------|
+| sentence-transformers/all-MiniLM-L6-v2 | 384 | Fast embeddings |
+| BAAI/bge-large-en-v1.5 | 1024 | High quality |
+
+### Image Generation
+
+| Model ID | Quality | Best For |
+|----------|---------|----------|
+| stabilityai/stable-diffusion-xl-base-1.0 | High | General images |
+| black-forest-labs/FLUX.1-dev | Excellent | High quality |
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
+)
+
+func main() {
+    provider := huggingface.New(huggingface.Config{
+        APIKey: os.Getenv("HF_API_KEY"),
+    })
+
+    model, err := provider.LanguageModel("meta-llama/Meta-Llama-3-70B-Instruct")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain transformers")
+    fmt.Println(result.Text)
+}
+```
+
+### Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("sentence-transformers/all-MiniLM-L6-v2")
+
+texts := []string{
+    "HuggingFace hosts AI models",
+    "Open source machine learning",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+```
+
+## Best Practices
+
+1. **Model Selection**
+   - Browse HuggingFace Hub for models
+   - Check model cards for capabilities
+   - Test multiple models easily
+
+2. **Free Tier**
+   - Rate limited on free tier
+   - Use for experimentation
+   - Upgrade for production
+
+3. **Inference Endpoints**
+   - Deploy dedicated endpoints for production
+   - Better performance and availability
+   - Custom resource allocation
+
+## Rate Limits
+
+Free tier: Rate limited
+Pro: Higher limits
+Inference Endpoints: Dedicated resources
+
+## See Also
+
+- [HuggingFace Documentation](https://huggingface.co/docs)
+- [Model Hub](https://huggingface.co/models)

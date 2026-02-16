@@ -1,0 +1,620 @@
+---
+title: Provider System Overview
+description: Complete guide to the Go-AI SDK provider architecture and capabilities
+---
+
+# Provider System Overview
+
+The Go-AI SDK provides a unified interface for working with 28+ AI providers, from OpenAI and Anthropic to open-source platforms and specialized services.
+
+## Architecture
+
+### Unified Interface
+
+All providers implement a consistent interface, allowing you to switch providers without changing your code:
+
+```go
+// Works with any provider
+provider := openai.New(openai.Config{APIKey: key})
+// OR
+provider := anthropic.New(anthropic.Config{APIKey: key})
+// OR
+provider := google.New(google.Config{APIKey: key})
+
+// Same API for all providers
+model, err := provider.LanguageModel("model-id")
+result, err := ai.GenerateText(model, prompt)
+```
+
+### Provider Interface
+
+Every provider implements the `Provider` interface:
+
+```go
+type Provider interface {
+    LanguageModel(modelID string) (LanguageModel, error)
+    EmbeddingModel(modelID string) (EmbeddingModel, error)
+    ImageModel(modelID string) (ImageModel, error)
+    SpeechModel(modelID string) (SpeechModel, error)
+    TranscriptionModel(modelID string) (TranscriptionModel, error)
+}
+```
+
+## Provider Types
+
+### 1. Language Model Providers
+
+Providers offering text generation and chat capabilities:
+
+**Tier 1 (Frontier Models)**
+- OpenAI - GPT-4o, GPT-5, o1, o3
+- Anthropic - Claude Opus 4.5, Sonnet 4.5
+- Google - Gemini 2.0 Flash, Pro
+
+**Tier 2 (High Performance)**
+- Mistral AI - Large 2, Pixtral
+- Cohere - Command R+
+- xAI - Grok-2
+- DeepSeek - DeepSeek-V3
+
+**Tier 3 (Fast Inference)**
+- Groq - Ultra-fast LPU inference
+- Cerebras - Wafer-scale inference
+- Fireworks AI - Optimized serving
+
+**Tier 4 (Open Source Hosting)**
+- Together AI
+- Replicate
+- HuggingFace
+- DeepInfra
+
+**Tier 5 (Local Deployment)**
+- Ollama - Run models locally
+- Baseten - Self-hosted deployment
+
+**Enterprise Platforms**
+- Azure OpenAI
+- AWS Bedrock
+- Google Vertex AI
+- Cloudflare Workers AI
+
+### 2. Embedding Providers
+
+Specialized in vector embeddings:
+
+- OpenAI - text-embedding-3-large
+- Cohere - embed-english-v3.0
+- Google - textembedding-gecko
+- Mistral - mistral-embed
+- Voyage AI (via OpenAI-compatible API)
+
+### 3. Image Generation Providers
+
+Text-to-image and image-to-image:
+
+- Stability AI - Stable Diffusion XL, SD3
+- Black Forest Labs - FLUX.1 Pro, Dev, Schnell
+- FAL - Fast image/video generation
+- Replicate - Various image models
+- Together AI - Stable Diffusion hosting
+
+### 4. Speech Synthesis Providers
+
+Text-to-speech capabilities:
+
+- ElevenLabs - High-quality voice synthesis
+- OpenAI - TTS HD models
+- Google - Text-to-Speech API
+
+### 5. Transcription Providers
+
+Speech-to-text capabilities:
+
+- Deepgram - Real-time transcription
+- AssemblyAI - Audio intelligence
+- OpenAI - Whisper models
+- Google - Speech-to-Text API
+
+## Configuration Patterns
+
+### Basic Configuration
+
+```go
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+```
+
+### Advanced Configuration
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    BaseURL: "https://custom-proxy.com",
+    HTTPClient: &http.Client{
+        Timeout: time.Second * 60,
+    },
+    MaxRetries: 3,
+    DefaultHeaders: map[string]string{
+        "X-Custom-Header": "value",
+    },
+})
+```
+
+### Regional Configuration
+
+```go
+// Azure OpenAI with regional endpoint
+provider := azure.New(azure.Config{
+    APIKey: os.Getenv("AZURE_API_KEY"),
+    Endpoint: "https://my-resource.openai.azure.com",
+    APIVersion: "2024-02-15-preview",
+})
+
+// AWS Bedrock with region
+provider := bedrock.New(bedrock.Config{
+    Region: "us-west-2",
+    AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
+    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+})
+```
+
+### OpenAI-Compatible Providers
+
+Many providers offer OpenAI-compatible APIs:
+
+```go
+// Together AI
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("TOGETHER_API_KEY"),
+    BaseURL: "https://api.together.xyz/v1",
+})
+
+// Groq
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("GROQ_API_KEY"),
+    BaseURL: "https://api.groq.com/openai/v1",
+})
+
+// Ollama (local)
+provider := openai.New(openai.Config{
+    APIKey: "ollama", // Not used but required
+    BaseURL: "http://localhost:11434/v1",
+})
+```
+
+## Model Selection
+
+### By Use Case
+
+**General Purpose Chat**
+```go
+// Best: GPT-4o, Claude Opus 4.5, Gemini 2.0 Flash
+model, _ := provider.LanguageModel("gpt-4o")
+```
+
+**Code Generation**
+```go
+// Best: GPT-4o, Claude Sonnet 4.5, DeepSeek-V3
+model, _ := provider.LanguageModel("claude-sonnet-4.5")
+```
+
+**Reasoning Tasks**
+```go
+// Best: o1, o3, Claude Opus 4.5, DeepSeek-R1
+model, _ := provider.LanguageModel("o1")
+```
+
+**Fast Responses**
+```go
+// Best: Groq, Cerebras, Gemini 2.0 Flash
+model, _ := provider.LanguageModel("llama-3.3-70b-versatile")
+```
+
+**Cost-Effective**
+```go
+// Best: Gemini Flash, Claude Haiku, GPT-4o-mini
+model, _ := provider.LanguageModel("gemini-2.0-flash")
+```
+
+**Long Context**
+```go
+// Best: Gemini Pro (1M+), Claude Opus (200K)
+model, _ := provider.LanguageModel("gemini-2.0-pro")
+```
+
+### By Capability
+
+**Tool Calling**
+- OpenAI GPT-4o
+- Anthropic Claude 4.5
+- Google Gemini 2.0
+- Mistral Large 2
+- Cohere Command R+
+
+**Structured Output**
+- OpenAI (native JSON mode)
+- Anthropic (guided generation)
+- Google Gemini
+- Mistral
+
+**Vision**
+- OpenAI GPT-4o
+- Anthropic Claude 4.5
+- Google Gemini 2.0 Flash
+- Mistral Pixtral
+
+**Streaming**
+- All major providers support streaming
+- Groq and Cerebras offer fastest streaming
+
+## Provider Capabilities Matrix
+
+### Language Models
+
+| Provider | Streaming | Tools | Vision | JSON Mode | Reasoning |
+|----------|-----------|-------|--------|-----------|-----------|
+| OpenAI | Yes | Yes | Yes | Yes | Yes (o1/o3) |
+| Anthropic | Yes | Yes | Yes | Yes | Yes |
+| Google | Yes | Yes | Yes | Yes | Yes |
+| Mistral | Yes | Yes | Yes | Yes | No |
+| Cohere | Yes | Yes | No | Yes | No |
+| Groq | Yes | Yes | Yes | Yes | No |
+| DeepSeek | Yes | Yes | No | Yes | Yes (R1) |
+| xAI | Yes | Yes | Yes | Yes | No |
+
+### Image Generation
+
+| Provider | Models | Speed | Quality | Upscaling |
+|----------|--------|-------|---------|-----------|
+| Stability AI | SDXL, SD3 | Fast | High | Yes |
+| Black Forest Labs | FLUX.1 | Medium | Excellent | Yes |
+| FAL | Multiple | Very Fast | High | Yes |
+| Replicate | Various | Variable | Variable | Yes |
+
+### Speech & Audio
+
+| Provider | TTS | STT | Real-time | Languages |
+|----------|-----|-----|-----------|-----------|
+| ElevenLabs | Yes | No | Yes | 30+ |
+| Deepgram | No | Yes | Yes | 40+ |
+| AssemblyAI | No | Yes | No | 100+ |
+| OpenAI | Yes | Yes | No | 50+ |
+
+## Error Handling
+
+### Common Error Types
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/ai"
+
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    switch {
+    case errors.Is(err, ai.ErrInvalidAPIKey):
+        log.Fatal("Invalid API key")
+    case errors.Is(err, ai.ErrRateLimitExceeded):
+        // Implement backoff
+        time.Sleep(time.Second * 5)
+    case errors.Is(err, ai.ErrModelNotFound):
+        log.Fatal("Model not available")
+    case errors.Is(err, ai.ErrContextLengthExceeded):
+        // Reduce prompt size
+    case errors.Is(err, ai.ErrContentFiltered):
+        log.Println("Content filtered by provider")
+    default:
+        log.Printf("Provider error: %v", err)
+    }
+}
+```
+
+### Provider-Specific Errors
+
+```go
+// OpenAI
+if openaiErr, ok := err.(*openai.Error); ok {
+    log.Printf("OpenAI error code: %s", openaiErr.Code)
+}
+
+// Anthropic
+if anthropicErr, ok := err.(*anthropic.Error); ok {
+    log.Printf("Anthropic error type: %s", anthropicErr.Type)
+}
+```
+
+### Retry Logic
+
+```go
+func generateWithRetry(model ai.LanguageModel, prompt string, maxRetries int) (*ai.GenerateTextResult, error) {
+    var result *ai.GenerateTextResult
+    var err error
+
+    for i := 0; i < maxRetries; i++ {
+        result, err = ai.GenerateText(model, prompt)
+        if err == nil {
+            return result, nil
+        }
+
+        if errors.Is(err, ai.ErrRateLimitExceeded) {
+            backoff := time.Duration(math.Pow(2, float64(i))) * time.Second
+            time.Sleep(backoff)
+            continue
+        }
+
+        return nil, err // Non-retryable error
+    }
+
+    return nil, fmt.Errorf("max retries exceeded: %w", err)
+}
+```
+
+## Multi-Provider Strategies
+
+### Provider Fallback
+
+```go
+type MultiProvider struct {
+    providers []ai.Provider
+}
+
+func (m *MultiProvider) GenerateText(prompt string) (*ai.GenerateTextResult, error) {
+    var lastErr error
+
+    for _, provider := range m.providers {
+        model, err := provider.LanguageModel("default-model")
+        if err != nil {
+            lastErr = err
+            continue
+        }
+
+        result, err := ai.GenerateText(model, prompt)
+        if err == nil {
+            return result, nil
+        }
+
+        lastErr = err
+        log.Printf("Provider failed: %v, trying next", err)
+    }
+
+    return nil, fmt.Errorf("all providers failed: %w", lastErr)
+}
+```
+
+### Load Balancing
+
+```go
+type LoadBalancer struct {
+    providers []ai.Provider
+    current   int
+    mu        sync.Mutex
+}
+
+func (lb *LoadBalancer) NextProvider() ai.Provider {
+    lb.mu.Lock()
+    defer lb.mu.Unlock()
+
+    provider := lb.providers[lb.current]
+    lb.current = (lb.current + 1) % len(lb.providers)
+    return provider
+}
+```
+
+### Cost Optimization
+
+```go
+type CostOptimizer struct {
+    cheapProvider ai.Provider
+    premiumProvider ai.Provider
+}
+
+func (co *CostOptimizer) GenerateText(prompt string, priority string) (*ai.GenerateTextResult, error) {
+    var provider ai.Provider
+
+    if priority == "high" {
+        provider = co.premiumProvider
+    } else {
+        provider = co.cheapProvider
+    }
+
+    model, err := provider.LanguageModel("default-model")
+    if err != nil {
+        return nil, err
+    }
+
+    return ai.GenerateText(model, prompt)
+}
+```
+
+## Performance Optimization
+
+### Connection Pooling
+
+```go
+provider := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    HTTPClient: &http.Client{
+        Transport: &http.Transport{
+            MaxIdleConns:        100,
+            MaxIdleConnsPerHost: 10,
+            IdleConnTimeout:     90 * time.Second,
+        },
+        Timeout: 60 * time.Second,
+    },
+})
+```
+
+### Request Batching
+
+```go
+// For embedding providers
+type BatchEmbedder struct {
+    model ai.EmbeddingModel
+    batchSize int
+}
+
+func (be *BatchEmbedder) EmbedBatch(texts []string) ([][]float64, error) {
+    var allEmbeddings [][]float64
+
+    for i := 0; i < len(texts); i += be.batchSize {
+        end := min(i+be.batchSize, len(texts))
+        batch := texts[i:end]
+
+        embeddings, err := ai.Embed(be.model, batch...)
+        if err != nil {
+            return nil, err
+        }
+
+        allEmbeddings = append(allEmbeddings, embeddings...)
+    }
+
+    return allEmbeddings, nil
+}
+```
+
+### Caching
+
+```go
+type CachedProvider struct {
+    provider ai.Provider
+    cache    map[string]*ai.GenerateTextResult
+    mu       sync.RWMutex
+}
+
+func (cp *CachedProvider) GenerateText(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+    cacheKey := hash(prompt)
+
+    cp.mu.RLock()
+    if result, ok := cp.cache[cacheKey]; ok {
+        cp.mu.RUnlock()
+        return result, nil
+    }
+    cp.mu.RUnlock()
+
+    result, err := ai.GenerateText(model, prompt)
+    if err != nil {
+        return nil, err
+    }
+
+    cp.mu.Lock()
+    cp.cache[cacheKey] = result
+    cp.mu.Unlock()
+
+    return result, nil
+}
+```
+
+## Monitoring & Observability
+
+### Token Usage Tracking
+
+```go
+type UsageTracker struct {
+    totalTokens map[string]int
+    mu          sync.Mutex
+}
+
+func (ut *UsageTracker) TrackGeneration(provider string, result *ai.GenerateTextResult) {
+    ut.mu.Lock()
+    defer ut.mu.Unlock()
+
+    ut.totalTokens[provider] += result.Usage.TotalTokens
+}
+
+func (ut *UsageTracker) GetUsage(provider string) int {
+    ut.mu.Lock()
+    defer ut.mu.Unlock()
+    return ut.totalTokens[provider]
+}
+```
+
+### Request Logging
+
+```go
+type LoggingProvider struct {
+    provider ai.Provider
+    logger   *log.Logger
+}
+
+func (lp *LoggingProvider) GenerateText(model ai.LanguageModel, prompt string, opts ...ai.GenerateOption) (*ai.GenerateTextResult, error) {
+    start := time.Now()
+
+    result, err := ai.GenerateText(model, prompt, opts...)
+
+    duration := time.Since(start)
+    lp.logger.Printf(
+        "provider=%s duration=%v tokens=%d error=%v",
+        "openai",
+        duration,
+        result.Usage.TotalTokens,
+        err,
+    )
+
+    return result, err
+}
+```
+
+## Best Practices
+
+### 1. Configuration Management
+
+```go
+// Use a config struct
+type AIConfig struct {
+    OpenAIKey     string
+    AnthropicKey  string
+    DefaultModel  string
+    MaxRetries    int
+    Timeout       time.Duration
+}
+
+func NewAIClient(cfg AIConfig) *AIClient {
+    return &AIClient{
+        openai:    openai.New(openai.Config{APIKey: cfg.OpenAIKey}),
+        anthropic: anthropic.New(anthropic.Config{APIKey: cfg.AnthropicKey}),
+        config:    cfg,
+    }
+}
+```
+
+### 2. Error Handling
+
+Always handle provider-specific errors gracefully with fallbacks and retries.
+
+### 3. Resource Management
+
+```go
+// Clean up resources
+defer func() {
+    if stream != nil {
+        stream.Close()
+    }
+}()
+```
+
+### 4. Security
+
+- Never log API keys
+- Use environment variables for credentials
+- Implement rate limiting on client side
+- Validate user inputs before sending to providers
+
+### 5. Testing
+
+```go
+// Use mock providers for testing
+type MockProvider struct {
+    responses []*ai.GenerateTextResult
+    index     int
+}
+
+func (m *MockProvider) LanguageModel(id string) (ai.LanguageModel, error) {
+    return &MockLanguageModel{provider: m}, nil
+}
+```
+
+## See Also
+
+- [Provider Index](index.mdx) - Complete provider list
+- [OpenAI Provider](02-openai.mdx) - OpenAI setup guide
+- [Anthropic Provider](03-anthropic.mdx) - Anthropic setup guide
+- [API Reference](../07-reference/ai/generate-text.mdx) - Complete API documentation

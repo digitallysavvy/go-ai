@@ -1,0 +1,92 @@
+---
+title: TranscriptionModel Interface
+description: API reference for TranscriptionModel interface
+---
+
+# TranscriptionModel Interface
+
+Interface that all speech-to-text transcription model implementations must satisfy.
+
+## Interface Definition
+
+```go
+type TranscriptionModel interface {
+    // Metadata
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    // Transcription
+    DoTranscribe(ctx context.Context, opts *TranscriptionOptions) (*types.TranscriptionResult, error)
+}
+```
+
+## Methods
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| SpecificationVersion() | - | string | Specification version |
+| Provider() | - | string | Provider name |
+| ModelID() | - | string | Model identifier |
+| DoTranscribe() | ctx, *TranscriptionOptions | *types.TranscriptionResult, error | Transcribe audio to text |
+
+## TranscriptionOptions
+
+```go
+type TranscriptionOptions struct {
+    Audio      []byte
+    MimeType   string
+    Language   string
+    Timestamps bool
+}
+```
+
+## Examples
+
+### Using a Transcription Model
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.TranscriptionModel("whisper-1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    audioData, err := os.ReadFile("audio.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+        Audio:    audioData,
+        MimeType: "audio/mpeg",
+        Language: "en",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Transcription:", result.Text)
+}
+```
+
+## See Also
+
+- [Transcribe](../ai/transcribe.mdx) - High-level transcription function
+- [SpeechModel](./speech-model.mdx) - Text-to-speech interface
+- [Custom Provider](./custom-provider.mdx) - Implementing custom providers

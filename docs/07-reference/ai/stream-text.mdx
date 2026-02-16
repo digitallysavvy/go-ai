@@ -1,0 +1,244 @@
+---
+title: StreamText
+description: API reference for StreamText function
+---
+
+# StreamText
+
+Performs streaming text generation where tokens are returned incrementally as they are generated.
+
+## Signature
+
+```go
+func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult, error)
+```
+
+## Parameters
+
+### StreamTextOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.LanguageModel | Yes | Language model to use for generation |
+| Prompt | string | No | Simple string prompt (alternative to Messages) |
+| Messages | []types.Message | No | List of conversation messages |
+| System | string | No | System instructions |
+| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
+| MaxTokens | *int | No | Maximum tokens to generate |
+| TopP | *float64 | No | Nucleus sampling parameter |
+| TopK | *int | No | Top-K sampling parameter |
+| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
+| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
+| StopSequences | []string | No | Sequences that stop generation |
+| Seed | *int | No | Random seed for reproducibility |
+| Tools | []types.Tool | No | Tools available for the model to call |
+| ToolChoice | types.ToolChoice | No | How the model should choose tools |
+| ResponseFormat | *provider.ResponseFormat | No | Response format specification |
+| Timeout | *TimeoutConfig | No | Timeout configuration |
+| ExperimentalRetention | *types.RetentionSettings | No | Data retention settings |
+| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+| OnChunk | func(provider.StreamChunk) | No | Called for each chunk |
+| OnFinish | func(*StreamTextResult) | No | Called when stream completes |
+
+## Return Value
+
+### StreamTextResult
+
+The result provides methods to consume the stream:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| Stream() | provider.TextStream | Underlying text stream |
+| Text() | string | Accumulated text so far |
+| FinishReason() | types.FinishReason | Finish reason (after stream ends) |
+| Usage() | types.Usage | Usage info (after stream ends) |
+| ContextManagement() | interface{} | Context management info |
+| Err() | error | Error that occurred during streaming |
+| Close() | error | Close the stream |
+| ReadAll() | (string, error) | Read all chunks and return complete text |
+| Chunks() | <-chan provider.StreamChunk | Channel of chunks |
+
+## Examples
+
+### Basic Streaming
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Start streaming
+    result, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a story about a robot",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer result.Close()
+
+    // Read chunks manually
+    for {
+        chunk, err := result.Stream().Next()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        if chunk.Type == provider.ChunkTypeText {
+            fmt.Print(chunk.Text)
+        }
+    }
+
+    fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
+}
+```
+
+### Using Callbacks
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Explain machine learning",
+    OnChunk: func(chunk provider.StreamChunk) {
+        if chunk.Type == provider.ChunkTypeText {
+            fmt.Print(chunk.Text)
+        }
+    },
+    OnFinish: func(result *ai.StreamTextResult) {
+        fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().TotalTokens)
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Using ReadAll
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a poem about nature",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+// Read all at once
+text, err := result.ReadAll()
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(text)
+fmt.Printf("Tokens: %d\n", result.Usage().TotalTokens)
+```
+
+### Using Channel-based Consumption
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Describe quantum physics",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+// Consume chunks from channel
+for chunk := range result.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+
+fmt.Printf("\n\nFinish reason: %s\n", result.FinishReason())
+```
+
+### With Per-Chunk Timeout
+
+```go
+timeout := &ai.TimeoutConfig{
+    PerChunk: 5 * time.Second,
+}
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:   model,
+    Prompt:  "Write a long essay",
+    Timeout: timeout,
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+text, err := result.ReadAll()
+if err != nil {
+    if strings.Contains(err.Error(), "chunk timeout") {
+        log.Println("Stream timed out waiting for chunk")
+    } else {
+        log.Fatal(err)
+    }
+}
+```
+
+## Error Handling
+
+```go
+result, err := ai.StreamText(ctx, opts)
+if err != nil {
+    log.Fatal("Failed to start stream:", err)
+}
+defer result.Close()
+
+for {
+    chunk, err := result.Stream().Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        if strings.Contains(err.Error(), "chunk timeout") {
+            log.Println("Chunk timeout, continuing...")
+            continue
+        }
+        log.Fatal("Stream error:", err)
+    }
+
+    // Process chunk
+    fmt.Print(chunk.Text)
+}
+
+// Check for errors during streaming
+if result.Err() != nil {
+    log.Println("Error during streaming:", result.Err())
+}
+```
+
+## See Also
+
+- [GenerateText](./generate-text.mdx) - Non-streaming text generation
+- [StreamObject](./stream-object.mdx) - Streaming structured output
+- [Streaming Guide](../../04-generation/streaming.mdx)

@@ -51,7 +51,7 @@ func main() {
             },
             "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             location := input["location"].(string)
             return map[string]interface{}{
                 "location":    location,
@@ -94,7 +94,7 @@ weatherTool := types.Tool{
         "required": []string{"location"},
     },
     Strict: true, // Enable strict validation for this tool
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // ...
         return nil, nil
     },
@@ -143,7 +143,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
                 },
                 "required": []string{"location"},
             },
-            Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 location := input["location"].(string)
                 return map[string]interface{}{
                     "location":    location,
@@ -313,7 +313,7 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         location := input["location"].(string)
 
         // Create HTTP request with context for cancellation
@@ -369,7 +369,7 @@ calculatorTool := types.Tool{
         },
         "required": []string{"operation", "a", "b"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         op := input["operation"].(string)
         a := input["a"].(float64)
         b := input["b"].(float64)
@@ -406,7 +406,7 @@ searchTool := types.Tool{
         },
         "required": []string{"query"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         query := input["query"].(string)
         // Call search API
         return map[string]interface{}{
@@ -452,7 +452,7 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // Validate input
         location, ok := input["location"].(string)
         if !ok || location == "" {
@@ -531,7 +531,7 @@ dataProcessingTool := types.Tool{
         },
         "required": []string{"dataset_id"},
     },
-    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         datasetID := input["dataset_id"].(string)
 
         // Simulate long-running processing with progress updates
@@ -589,7 +589,7 @@ func NewWeatherTool(apiKey string) types.Tool {
             },
             "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Implementation using apiKey
             return nil, nil
         },
@@ -603,7 +603,7 @@ func NewCalculatorTool() types.Tool {
         Parameters: map[string]interface{}{
             // ...
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Implementation
             return nil, nil
         },

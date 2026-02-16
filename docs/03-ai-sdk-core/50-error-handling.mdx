@@ -181,7 +181,7 @@ The `OnFinish` callback is only called when the operation completes normally. It
 stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Write a story...",
-    OnFinish: func(result *ai.StreamTextResult) {
+    OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
         // Called only on normal completion, NOT on cancellation
         fmt.Printf("Completed after %d steps\n", len(result.Steps))
         fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
@@ -618,7 +618,7 @@ Remember that `OnFinish` is only called on successful completion:
 stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
     Model: model,
     Prompt: "...",
-    OnFinish: func(result *ai.StreamTextResult) {
+    OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
         // Only called on success
         saveToDatabase(result)
     },

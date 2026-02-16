@@ -1,0 +1,390 @@
+---
+title: Alibaba Cloud Provider
+description: Setup and usage guide for Alibaba Cloud Qwen and Wan models with Go-AI SDK
+---
+
+# Alibaba Cloud Provider
+
+Alibaba Cloud provides powerful Qwen language models with strong Chinese language capabilities and Wan video generation models. Known for cost-effective prompt caching, reasoning capabilities, and innovative video generation features.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
+)
+```
+
+### Configuration
+
+```go
+provider := alibaba.New(alibaba.Config{
+    APIKey: os.Getenv("ALIBABA_API_KEY"),
+})
+
+// Chat model
+model, err := provider.LanguageModel("qwen-plus")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Video model
+videoModel, err := provider.VideoModel("wan2.6-t2v")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Get API Key
+
+1. Sign up at [Alibaba Cloud DashScope](https://dashscope.console.aliyun.com/)
+2. Navigate to API Keys section
+3. Create a new API key
+4. Set environment variable:
+
+```bash
+export ALIBABA_API_KEY=sk-...
+```
+
+## Available Models
+
+### Qwen Language Models
+
+| Model ID | Context | Best For |
+|----------|---------|----------|
+| qwen-plus | 32K | Balanced performance and cost |
+| qwen-turbo | 8K | Fast responses, economical |
+| qwen-max | 32K | Most capable, highest quality |
+| qwen-qwq-32b-preview | 32K | Complex reasoning with thinking |
+| qwen-vl-max | 32K | Vision + language understanding |
+
+### Wan Video Models
+
+| Model ID | Type | Duration | Best For |
+|----------|------|----------|----------|
+| wan2.5-t2v | Text-to-video | 5-6s | Preview quality (720p) |
+| wan2.6-t2v | Text-to-video | 5-6s | High quality generation |
+| wan2.6-i2v | Image-to-video | 5-6s | Animate static images |
+| wan2.6-i2v-flash | Image-to-video | 5-6s | Faster generation |
+| wan2.6-r2v | Reference-to-video | 5-6s | Style transfer from reference |
+| wan2.6-r2v-flash | Reference-to-video | 5-6s | Faster style transfer |
+
+## Provider-Specific Features
+
+### Thinking/Reasoning
+
+Enable reasoning for complex problems with token tracking:
+
+```go
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Text: "Solve this logic puzzle: ...",
+    },
+    ProviderOptions: map[string]interface{}{
+        "alibaba": map[string]interface{}{
+            "enable_thinking":  true,
+            "thinking_budget": 1000, // Max reasoning tokens
+        },
+    },
+})
+
+// Access reasoning tokens
+if result.Usage.OutputDetails != nil && result.Usage.OutputDetails.ReasoningTokens != nil {
+    fmt.Printf("Reasoning tokens used: %d\n", *result.Usage.OutputDetails.ReasoningTokens)
+}
+```
+
+### Prompt Caching
+
+Automatic caching for repeated content with cost savings:
+
+```go
+// System prompts are automatically cached
+prompt := types.Prompt{
+    System: "You are an expert software architect...", // Cached
+    Text:   "Design a microservices system",
+}
+
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: prompt,
+})
+
+// Check cache usage
+if result.Usage.InputDetails != nil {
+    if result.Usage.InputDetails.CacheReadTokens != nil {
+        fmt.Printf("Cache hit: %d tokens saved!\n", *result.Usage.InputDetails.CacheReadTokens)
+    }
+    if result.Usage.InputDetails.CacheWriteTokens != nil {
+        fmt.Printf("Cached: %d tokens for future use\n", *result.Usage.InputDetails.CacheWriteTokens)
+    }
+}
+```
+
+### Vision Capabilities
+
+Image understanding with Qwen VL models:
+
+```go
+prompt := types.Prompt{
+    Messages: []types.Message{
+        {
+            Role: "user",
+            Content: []types.ContentPart{
+                {
+                    Type: "image",
+                    Image: &types.ImagePart{
+                        Type: "url",
+                        URL:  "https://example.com/photo.jpg",
+                    },
+                },
+                {
+                    Type: "text",
+                    Text: "What's in this image?",
+                },
+            },
+        },
+    },
+}
+
+visionModel, _ := provider.LanguageModel("qwen-vl-max")
+result, err := visionModel.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: prompt,
+})
+```
+
+### Tool Calling
+
+Function calling with single or parallel execution:
+
+```go
+tools := []types.Tool{
+    {
+        Name:        "get_weather",
+        Description: "Get current weather for a location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]interface{}{
+                    "type":        "string",
+                    "description": "City name",
+                },
+            },
+            "required": []string{"location"},
+        },
+    },
+}
+
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "What's the weather in Paris?"},
+    Tools:  tools,
+    ProviderOptions: map[string]interface{}{
+        "alibaba": map[string]interface{}{
+            "parallel_tool_calls": true, // Enable parallel execution
+        },
+    },
+})
+
+// Handle tool calls
+if len(result.ToolCalls) > 0 {
+    // Execute tools and send results back
+}
+```
+
+### Video Generation
+
+#### Text-to-Video
+
+```go
+videoModel, _ := provider.VideoModel("wan2.6-t2v")
+duration := 5.0
+
+result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "A golden retriever playing in a park, sunny day",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+})
+
+if len(result.Videos) > 0 {
+    fmt.Printf("Video URL: %s\n", result.Videos[0].URL)
+}
+```
+
+#### Image-to-Video
+
+Animate static images:
+
+```go
+videoModel, _ := provider.VideoModel("wan2.6-i2v-flash")
+duration := 6.0
+
+result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "Add gentle camera movement and natural motion",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+    Image: &provider.VideoModelV3File{
+        Type: "url",
+        URL:  "https://example.com/landscape.jpg",
+    },
+})
+```
+
+#### Reference-to-Video (Style Transfer)
+
+Apply style from reference image to new content:
+
+```go
+videoModel, _ := provider.VideoModel("wan2.6-r2v")
+duration := 5.0
+
+result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "A cat walking through a garden",
+    AspectRatio: "16:9",
+    Duration:    &duration,
+    Image: &provider.VideoModelV3File{
+        Type: "url",
+        URL:  "https://example.com/anime-style.jpg", // Reference style
+    },
+})
+```
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
+)
+
+func main() {
+    cfg, err := alibaba.NewConfig(os.Getenv("ALIBABA_API_KEY"))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    prov := alibaba.New(cfg)
+    model, _ := prov.LanguageModel("qwen-plus")
+
+    result, err := model.DoGenerate(context.Background(),
+        &provider.GenerateOptions{
+            Prompt: types.Prompt{
+                Text: "Write a haiku about artificial intelligence.",
+            },
+        })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Reasoning with Thinking
+
+```go
+model, _ := provider.LanguageModel("qwen-qwq-32b-preview")
+
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Text: `Solve this logic puzzle:
+Three friends - Alice, Bob, and Carol - each have different pets.
+- Alice doesn't have a dog
+- Bob is allergic to cats
+- Carol lives in an apartment that doesn't allow fish
+Who has which pet?`,
+    },
+    ProviderOptions: map[string]interface{}{
+        "alibaba": map[string]interface{}{
+            "enable_thinking":  true,
+            "thinking_budget": 1000,
+        },
+    },
+})
+```
+
+### Video Generation
+
+```go
+videoModel, _ := provider.VideoModel("wan2.6-t2v")
+duration := 5.0
+
+result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:      "A person dancing in the rain",
+    AspectRatio: "9:16", // Vertical for mobile
+    Duration:    &duration,
+})
+```
+
+## Best Practices
+
+1. **Use Prompt Caching**
+   - Cache long system prompts for cost savings
+   - Second request with same system prompt uses cached tokens
+   - Significant cost reduction for repeated queries
+
+2. **Choose the Right Model**
+   - `qwen-turbo`: Simple tasks, fast responses
+   - `qwen-plus`: Balanced for most use cases
+   - `qwen-max`: Complex reasoning, highest quality
+   - `qwen-qwq-32b-preview`: Logic puzzles, math problems
+
+3. **Video Generation**
+   - Text-to-video takes 1-2 minutes
+   - Use flash variants when speed > quality
+   - Aspect ratios: 16:9 (landscape), 9:16 (portrait), 1:1 (square)
+   - Reference-to-video for consistent visual style
+
+4. **Thinking Budget**
+   - Set limits to control costs
+   - Monitor reasoning token usage
+   - Higher budgets for complex problems
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Check [Alibaba Cloud DashScope documentation](https://help.aliyun.com/zh/dashscope/) for current limits.
+
+### Cost Optimization
+
+- Enable prompt caching for repeated content
+- Use `qwen-turbo` for simple tasks
+- Set thinking budget limits for reasoning models
+- Use flash video variants when appropriate
+
+## API Endpoints
+
+- **Chat API**: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (OpenAI-compatible)
+- **Video API**: `https://dashscope-intl.aliyuncs.com` (DashScope native)
+
+## Complete Examples
+
+See the [Alibaba provider examples](https://github.com/digitallysavvy/go-ai/tree/main/examples/providers/alibaba) directory for 8 complete examples:
+
+1. Basic chat
+2. Thinking/reasoning
+3. Prompt caching
+4. Text-to-video
+5. Image-to-video
+6. Vision chat
+7. Tool calling
+8. Reference-to-video
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [API Reference: GenerateVideo](../07-reference/ai/generate-video.mdx)
+- [Alibaba Cloud DashScope Documentation](https://help.aliyun.com/zh/dashscope/)
+- [Qwen Models](https://qwen.readthedocs.io/)

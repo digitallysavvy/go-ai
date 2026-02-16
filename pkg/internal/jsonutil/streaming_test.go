@@ -11,7 +11,7 @@ func TestStreamingParser_Basic(t *testing.T) {
 
 	// Append partial JSON
 	p.Append(`{"name": "J`)
-	result, ok := p.TryParse()
+	_, ok := p.TryParse()
 	if !ok {
 		// Might not parse yet, that's okay
 		t.Log("partial JSON not parseable yet")
@@ -19,7 +19,7 @@ func TestStreamingParser_Basic(t *testing.T) {
 
 	// Complete the JSON
 	p.Append(`ohn", "age": 30}`)
-	result, ok = p.TryParse()
+	result, ok := p.TryParse()
 
 	if !ok {
 		t.Error("expected successful parse")

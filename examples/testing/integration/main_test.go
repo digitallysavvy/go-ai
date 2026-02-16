@@ -39,12 +39,12 @@ func TestIntegrationGenerate(t *testing.T) {
 		t.Error("Expected non-empty response")
 	}
 
-	if result.Usage.TotalTokens == 0 {
+	if result.Usage.GetTotalTokens() == 0 {
 		t.Error("Expected non-zero token usage")
 	}
 
 	t.Logf("Response: %s", result.Text)
-	t.Logf("Tokens: %d", result.Usage.TotalTokens)
+	t.Logf("Tokens: %d", result.Usage.GetTotalTokens())
 }
 
 func TestIntegrationWithTools(t *testing.T) {
@@ -94,7 +94,7 @@ func mockCalculatorTool() types.Tool {
 			},
 			"required": []string{"operation", "a", "b"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return "8", nil // Mock result
 		},
 	}

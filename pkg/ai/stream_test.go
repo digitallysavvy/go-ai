@@ -266,7 +266,8 @@ func TestStreamText_FinishReason(t *testing.T) {
 func TestStreamText_UsageTracking(t *testing.T) {
 	t.Parallel()
 
-	expectedUsage := types.Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
+	input, output, total := int64(10), int64(20), int64(30)
+	expectedUsage := types.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total}
 
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
@@ -501,6 +502,8 @@ func TestStreamText_NoCallbacks(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if chunk.Type == provider.ChunkTypeText {
+			// Expected text chunk in test
+
 			// Just process the chunk
 		}
 	}

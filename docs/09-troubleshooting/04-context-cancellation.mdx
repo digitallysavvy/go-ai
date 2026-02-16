@@ -1,0 +1,660 @@
+---
+title: Context Cancellation
+description: Debugging context timeout and cancellation issues in Go AI SDK
+---
+
+# Context Cancellation
+
+This guide covers common issues with Go contexts in the AI SDK, including timeouts, cancellations, and proper context handling.
+
+## Understanding Go Contexts
+
+Go's `context.Context` is used for:
+- **Cancellation**: Stop operations that are no longer needed
+- **Timeouts**: Enforce maximum duration for operations
+- **Deadlines**: Set absolute time limits
+- **Values**: Pass request-scoped data (use sparingly)
+
+## Common Context Errors
+
+### Error: "Context Deadline Exceeded"
+
+**Symptoms:**
+```
+Error: context deadline exceeded
+Operation timed out after 30s
+```
+
+**Cause:**
+Operation took longer than the context timeout allows.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // PROBLEM: Timeout too short for long operations
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Write a comprehensive 5000-word essay on quantum physics",
+    })
+    if err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            log.Println("Operation timed out - need longer timeout or streaming")
+
+            // SOLUTION 1: Increase timeout
+            ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Minute)
+            defer cancel2()
+
+            result, err = ai.GenerateText(ctx2, ai.GenerateTextOptions{
+                Model:  model,
+                Prompt: "Write a comprehensive 5000-word essay on quantum physics",
+            })
+            if err != nil {
+                log.Printf("Still failed with longer timeout: %v", err)
+
+                // SOLUTION 2: Use streaming instead
+                ctx3 := context.Background()
+                stream, err := ai.StreamText(ctx3, ai.StreamTextOptions{
+                    Model:  model,
+                    Prompt: "Write a comprehensive 5000-word essay on quantum physics",
+                })
+                if err != nil {
+                    log.Fatal(err)
+                }
+
+                for chunk := range stream.TextChannel {
+                    fmt.Print(chunk)
+                }
+
+                if err := stream.Err(); err != nil {
+                    log.Fatal(err)
+                }
+                return
+            }
+        } else {
+            log.Fatal(err)
+        }
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Error: "Context Canceled"
+
+**Symptoms:**
+```
+Error: context canceled
+Stream terminated early
+```
+
+**Cause:**
+Context was explicitly canceled before operation completed.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Create cancellable context for graceful shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    // Handle OS signals for graceful shutdown
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+    go func() {
+        <-sigCh
+        log.Println("Received interrupt signal, canceling operations...")
+        cancel()
+    }()
+
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a long story about space exploration",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for chunk := range stream.TextChannel {
+        fmt.Print(chunk)
+    }
+
+    // Check if canceled or completed normally
+    if err := stream.Err(); err != nil {
+        if ctx.Err() == context.Canceled {
+            log.Println("\nOperation was canceled by user")
+            // Perform cleanup
+            savePartialResults()
+        } else {
+            log.Printf("\nStream error: %v", err)
+        }
+    } else {
+        log.Println("\nOperation completed successfully")
+    }
+}
+
+func savePartialResults() {
+    // Save any partial results before exiting
+    log.Println("Saving partial results...")
+}
+```
+
+## Context Propagation
+
+### Error: Missing Context Propagation
+
+**Symptoms:**
+- Child operations don't cancel when parent is canceled
+- Timeouts not enforced in nested calls
+
+**Cause:**
+Not passing context through the call chain.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// BAD: Creating new context instead of propagating
+func processPromptBad(prompt string) (string, error) {
+    // This ignores any parent cancellation or timeout!
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+    return result.Text, nil
+}
+
+// GOOD: Propagating context through call chain
+func processPromptGood(ctx context.Context, prompt string) (string, error) {
+    // Use the provided context so parent cancellation/timeout applies
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+    return result.Text, nil
+}
+
+func main() {
+    // Parent context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    // CORRECT: Pass context to children
+    text, err := processPromptGood(ctx, "Explain quantum computing")
+    if err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            log.Println("Entire operation timed out")
+        } else {
+            log.Printf("Error: %v", err)
+        }
+        return
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Streaming Context Issues
+
+### Error: Stream Doesn't Respect Context
+
+**Symptoms:**
+- Stream continues after context canceled
+- Goroutine leak when stream not fully consumed
+
+**Cause:**
+Not checking context in stream processing loop.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func streamWithTimeout(ctx context.Context, model interface{}, prompt string) error {
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return err
+    }
+
+    // Process stream with context checking
+    for {
+        select {
+        case <-ctx.Done():
+            // Context canceled or timed out
+            log.Println("Context done, stopping stream processing")
+            return ctx.Err()
+
+        case chunk, ok := <-stream.TextChannel:
+            if !ok {
+                // Channel closed, stream finished
+                return stream.Err()
+            }
+            fmt.Print(chunk)
+        }
+    }
+}
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Set timeout for entire stream
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+
+    if err := streamWithTimeout(ctx, model, "Write a very long story"); err != nil {
+        if ctx.Err() == context.DeadlineExceeded {
+            log.Println("\nStream timed out after 15 seconds")
+        } else if ctx.Err() == context.Canceled {
+            log.Println("\nStream was canceled")
+        } else {
+            log.Printf("\nStream error: %v", err)
+        }
+    }
+}
+```
+
+## Context in Goroutines
+
+### Error: Context Not Passed to Goroutines
+
+**Symptoms:**
+- Goroutines don't stop when parent context canceled
+- Memory leaks from orphaned goroutines
+
+**Cause:**
+Not passing context to goroutines or creating new contexts.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func processPrompts(ctx context.Context, model interface{}, prompts []string) []string {
+    results := make([]string, len(prompts))
+    var wg sync.WaitGroup
+
+    for i, prompt := range prompts {
+        wg.Add(1)
+
+        // CORRECT: Pass context to goroutine
+        go func(index int, p string) {
+            defer wg.Done()
+
+            // Check if context already canceled before starting work
+            select {
+            case <-ctx.Done():
+                log.Printf("Goroutine %d: context canceled before starting", index)
+                return
+            default:
+            }
+
+            result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                Model:  model,
+                Prompt: p,
+            })
+            if err != nil {
+                if ctx.Err() != nil {
+                    log.Printf("Goroutine %d: canceled during execution", index)
+                } else {
+                    log.Printf("Goroutine %d: error: %v", index, err)
+                }
+                return
+            }
+
+            results[index] = result.Text
+            log.Printf("Goroutine %d: completed", index)
+        }(i, prompt)
+    }
+
+    // Wait for all goroutines with timeout awareness
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
+
+    select {
+    case <-done:
+        log.Println("All goroutines completed")
+    case <-ctx.Done():
+        log.Println("Context canceled, waiting for goroutines to cleanup...")
+        <-done // Still wait for goroutines to finish cleanup
+    }
+
+    return results
+}
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    prompts := []string{
+        "Explain AI",
+        "Explain ML",
+        "Explain DL",
+        "Explain NLP",
+        "Explain CV",
+    }
+
+    results := processPrompts(ctx, model, prompts)
+
+    for i, result := range results {
+        if result != "" {
+            fmt.Printf("\n=== Result %d ===\n%s\n", i, result)
+        }
+    }
+}
+```
+
+## Context Value Issues
+
+### Error: Misusing Context Values
+
+**Symptoms:**
+- Type assertions panic
+- Values not found in context
+
+**Cause:**
+Incorrect use of context.WithValue.
+
+**Solution:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// Define custom type for context keys (prevents collisions)
+type contextKey string
+
+const (
+    userIDKey    contextKey = "userID"
+    requestIDKey contextKey = "requestID"
+)
+
+// Helper functions to set/get values safely
+func WithUserID(ctx context.Context, userID string) context.Context {
+    return context.WithValue(ctx, userIDKey, userID)
+}
+
+func GetUserID(ctx context.Context) (string, bool) {
+    userID, ok := ctx.Value(userIDKey).(string)
+    return userID, ok
+}
+
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+    return context.WithValue(ctx, requestIDKey, requestID)
+}
+
+func GetRequestID(ctx context.Context) (string, bool) {
+    requestID, ok := ctx.Value(requestIDKey).(string)
+    return requestID, ok
+}
+
+func processWithContext(ctx context.Context, prompt string) (string, error) {
+    // Safely extract context values
+    userID, hasUser := GetUserID(ctx)
+    requestID, hasRequest := GetRequestID(ctx)
+
+    if hasUser {
+        log.Printf("Processing request for user: %s", userID)
+    }
+    if hasRequest {
+        log.Printf("Request ID: %s", requestID)
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Add request metadata to context
+    ctx = WithUserID(ctx, "user-123")
+    ctx = WithRequestID(ctx, "req-456")
+
+    text, err := processWithContext(ctx, "Explain quantum computing")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(text)
+}
+```
+
+## Best Practices
+
+### 1. Always Pass Context as First Parameter
+
+```go
+// Good
+func processPrompt(ctx context.Context, prompt string) (string, error)
+
+// Bad
+func processPrompt(prompt string) (string, error)
+```
+
+### 2. Never Store Context in Struct
+
+```go
+// Bad - don't store context
+type Processor struct {
+    ctx context.Context // NEVER do this
+}
+
+// Good - pass context to methods
+type Processor struct {
+    // other fields
+}
+
+func (p *Processor) Process(ctx context.Context) error {
+    // use ctx parameter
+}
+```
+
+### 3. Use Appropriate Timeouts
+
+```go
+// Short operations
+ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+defer cancel()
+
+// Long operations
+ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+defer cancel()
+
+// Streaming - no timeout or very long timeout
+ctx := context.Background()
+// or
+ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+defer cancel()
+```
+
+### 4. Always Defer cancel()
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel() // Always defer, even if context times out naturally
+```
+
+### 5. Check Context Error After Operations
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        // Handle timeout
+    } else if ctx.Err() == context.Canceled {
+        // Handle cancellation
+    } else {
+        // Handle other errors
+    }
+}
+```
+
+### 6. Don't Ignore Context in OnFinish
+
+```go
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model: model,
+    Prompt: "...",
+    OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
+        // OnFinish receives the same context - check it!
+        if ctx.Err() != nil {
+            log.Println("Context was canceled, skipping post-processing")
+            return
+        }
+        // Process result...
+    },
+})
+```
+
+### 7. Use Context for Graceful Shutdown
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+
+// Handle shutdown signals
+sigCh := make(chan os.Signal, 1)
+signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+go func() {
+    <-sigCh
+    log.Println("Shutting down...")
+    cancel()
+}()
+
+// All operations use this context
+processRequests(ctx)
+```
+
+## See Also
+
+- [Common Errors](./01-common-errors.mdx)
+- [Streaming Issues](./05-streaming-issues.mdx)
+- [Performance Optimization](./08-performance.mdx)
+- [Error Handling Guide](../03-ai-sdk-core/50-error-handling.mdx)

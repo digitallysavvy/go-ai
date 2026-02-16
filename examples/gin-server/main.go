@@ -39,16 +39,16 @@ type StreamRequest struct {
 }
 
 type AgentRequest struct {
-	Query      string   `json:"query" binding:"required"`
-	MaxSteps   *int     `json:"maxSteps"`
-	System     string   `json:"system"`
+	Query    string `json:"query" binding:"required"`
+	MaxSteps *int   `json:"maxSteps"`
+	System   string `json:"system"`
 }
 
 type AgentResponse struct {
-	Result      string             `json:"result"`
-	Steps       []types.StepResult `json:"steps"`
-	ToolCalls   []types.ToolCall   `json:"toolCalls"`
-	Usage       types.Usage        `json:"usage"`
+	Result    string             `json:"result"`
+	Steps     []types.StepResult `json:"steps"`
+	ToolCalls []types.ToolCall   `json:"toolCalls"`
+	Usage     types.Usage        `json:"usage"`
 }
 
 func main() {
@@ -217,7 +217,7 @@ func handleStream(c *gin.Context) {
 
 	// Send completion
 	usage := stream.Usage()
-	sendSSE(c.Writer, "done", fmt.Sprintf(`{"totalTokens":%d}`, usage.TotalTokens))
+	sendSSE(c.Writer, "done", fmt.Sprintf(`{"totalTokens":%d}`, usage.GetTotalTokens()))
 	c.Writer.Flush()
 }
 
@@ -249,7 +249,7 @@ func handleAgent(c *gin.Context) {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			location := params["location"].(string)
 			unit := "fahrenheit"
 			if u, ok := params["unit"].(string); ok {
@@ -284,7 +284,7 @@ func handleAgent(c *gin.Context) {
 			},
 			"required": []string{"query"},
 		},
-		Execute: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			query := params["query"].(string)
 			// Simulate search results
 			return map[string]interface{}{

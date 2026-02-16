@@ -1,0 +1,185 @@
+---
+title: LanguageModel Interface
+description: API reference for LanguageModel interface
+---
+
+# LanguageModel Interface
+
+Interface that all language model implementations must satisfy.
+
+## Interface Definition
+
+```go
+type LanguageModel interface {
+    // Metadata methods
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    // Capability methods
+    SupportsTools() bool
+    SupportsStructuredOutput() bool
+    SupportsImageInput() bool
+
+    // Generation methods
+    DoGenerate(ctx context.Context, opts *GenerateOptions) (*types.GenerateResult, error)
+    DoStream(ctx context.Context, opts *GenerateOptions) (TextStream, error)
+}
+```
+
+## Methods
+
+### Metadata Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| SpecificationVersion() | string | Returns "v3" for V3 models |
+| Provider() | string | Provider name (e.g., "openai", "anthropic") |
+| ModelID() | string | Model ID (e.g., "gpt-4", "claude-3-opus") |
+
+### Capability Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| SupportsTools() | bool | Whether model supports tool calling |
+| SupportsStructuredOutput() | bool | Whether model supports structured output (JSON mode) |
+| SupportsImageInput() | bool | Whether model accepts image inputs |
+
+### Generation Methods
+
+| Method | Parameters | Returns | Description |
+|--------|------------|---------|-------------|
+| DoGenerate() | ctx, *GenerateOptions | *types.GenerateResult, error | Non-streaming generation |
+| DoStream() | ctx, *GenerateOptions | TextStream, error | Streaming generation |
+
+## GenerateOptions
+
+```go
+type GenerateOptions struct {
+    Prompt           types.Prompt
+    Temperature      *float64
+    MaxTokens        *int
+    TopP             *float64
+    TopK             *int
+    FrequencyPenalty *float64
+    PresencePenalty  *float64
+    StopSequences    []string
+    Tools            []types.Tool
+    ToolChoice       types.ToolChoice
+    ResponseFormat   *ResponseFormat
+    Seed             *int
+    Headers          map[string]string
+    MaxSteps         *int
+    ProviderOptions  map[string]interface{}
+}
+```
+
+## Examples
+
+### Using a Language Model
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    // Get a language model
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Check capabilities
+    fmt.Printf("Model: %s\n", model.ModelID())
+    fmt.Printf("Provider: %s\n", model.Provider())
+    fmt.Printf("Supports tools: %v\n", model.SupportsTools())
+    fmt.Printf("Supports structured output: %v\n", model.SupportsStructuredOutput())
+    fmt.Printf("Supports image input: %v\n", model.SupportsImageInput())
+
+    // Generate text
+    result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+        Prompt: types.Prompt{
+            Messages: []types.Message{
+                {
+                    Role: types.RoleUser,
+                    Content: []types.ContentPart{
+                        types.TextContent{Text: "Hello!"},
+                    },
+                },
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Check Model Capabilities
+
+```go
+func checkModelCapabilities(model provider.LanguageModel) {
+    fmt.Printf("Model: %s (%s)\n", model.ModelID(), model.Provider())
+
+    if model.SupportsTools() {
+        fmt.Println("✓ Tool calling supported")
+    }
+
+    if model.SupportsStructuredOutput() {
+        fmt.Println("✓ Structured output supported")
+    }
+
+    if model.SupportsImageInput() {
+        fmt.Println("✓ Image input supported")
+    }
+}
+```
+
+### Streaming Generation
+
+```go
+result, err := model.DoStream(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Messages: messages,
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for {
+    chunk, err := result.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+```
+
+## See Also
+
+- [EmbeddingModel](./embedding-model.mdx) - Embedding model interface
+- [ImageModel](./image-model.mdx) - Image generation interface
+- [Custom Provider](./custom-provider.mdx) - Implementing custom providers
+- [GenerateText](../ai/generate-text.mdx) - High-level text generation

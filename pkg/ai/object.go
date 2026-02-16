@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ObjectOutputMode defines the output mode for structured generation
@@ -54,8 +59,14 @@ type GenerateObjectOptions struct {
 	PresencePenalty  *float64
 	Seed             *int
 
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
+
 	// Callbacks
-	OnFinish func(result *GenerateObjectResult)
+	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
+
+	// ExperimentalContext allows passing custom context through generation lifecycle
+	ExperimentalContext interface{}
 }
 
 // GenerateObjectResult contains the result of object generation
@@ -91,6 +102,47 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.generateObject span
+		spanName := "ai.generateObject"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		defer span.End()
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.generateObject"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+			attribute.String("ai.settings.output", string(opts.OutputMode)),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+
+		// Record prompt if enabled
+		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
+		}
+	}
+
 	// Set default output mode
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
@@ -118,18 +170,44 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 
 	// Handle different modes
+	var result *GenerateObjectResult
+	var err error
 	switch opts.OutputMode {
 	case ObjectModeObject:
-		return generateObjectMode(ctx, opts)
+		result, err = generateObjectMode(ctx, opts)
 	case ObjectModeArray:
-		return generateArrayMode(ctx, opts)
+		result, err = generateArrayMode(ctx, opts)
 	case ObjectModeEnum:
-		return generateEnumMode(ctx, opts)
+		result, err = generateEnumMode(ctx, opts)
 	case ObjectModeNoSchema:
-		return generateNoSchemaMode(ctx, opts)
+		result, err = generateNoSchemaMode(ctx, opts)
 	default:
 		return nil, fmt.Errorf("unsupported output mode: %s", opts.OutputMode)
 	}
+
+	// Record telemetry output attributes
+	if span != nil && result != nil {
+		// Record output if enabled
+		if opts.ExperimentalTelemetry.RecordOutputs {
+			span.SetAttributes(attribute.String("ai.response.text", result.Text))
+		}
+
+		// Record finish reason
+		span.SetAttributes(attribute.String("ai.response.finishReason", string(result.FinishReason)))
+
+		// Record usage information
+		if result.Usage.InputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.promptTokens", *result.Usage.InputTokens))
+		}
+		if result.Usage.OutputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.completionTokens", *result.Usage.OutputTokens))
+		}
+		if result.Usage.TotalTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *result.Usage.TotalTokens))
+		}
+	}
+
+	return result, err
 }
 
 // generateObjectMode handles standard object generation
@@ -148,6 +226,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions) (*Gener
 			Type:   "json_schema",
 			Schema: opts.Schema,
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -173,7 +252,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions) (*Gener
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -195,6 +274,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions) (*Genera
 			Type:   "json_schema",
 			Schema: opts.Schema,
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -223,7 +303,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions) (*Genera
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -248,6 +328,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions) (*Generat
 		ResponseFormat: &provider.ResponseFormat{
 			Type: "json_object",
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -280,7 +361,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions) (*Generat
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -301,6 +382,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions) (*Gen
 		ResponseFormat: &provider.ResponseFormat{
 			Type: "json_object",
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -322,7 +404,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions) (*Gen
 	}
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
 	return result, nil
@@ -369,9 +451,15 @@ type StreamObjectOptions struct {
 	PresencePenalty  *float64
 	Seed             *int
 
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
+
 	// Callbacks
 	OnChunk  func(partialObject interface{})
-	OnFinish func(result *GenerateObjectResult)
+	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
+
+	// ExperimentalContext allows passing custom context through generation lifecycle
+	ExperimentalContext interface{}
 }
 
 // StreamObject performs streaming object generation
@@ -385,22 +473,157 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, fmt.Errorf("schema is required")
 	}
 
-	// For now, fall back to non-streaming generation
-	// TODO: Implement proper streaming object parsing
-	genOpts := GenerateObjectOptions{
-		Model:            opts.Model,
-		Prompt:           opts.Prompt,
-		Messages:         opts.Messages,
-		System:           opts.System,
-		Schema:           opts.Schema,
+	// Build prompt
+	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+
+	// Create streaming generation options
+	genOpts := &provider.GenerateOptions{
+		Prompt:           prompt,
 		Temperature:      opts.Temperature,
 		MaxTokens:        opts.MaxTokens,
 		TopP:             opts.TopP,
 		FrequencyPenalty: opts.FrequencyPenalty,
 		PresencePenalty:  opts.PresencePenalty,
 		Seed:             opts.Seed,
-		OnFinish:         opts.OnFinish,
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json_schema",
+			Schema: opts.Schema,
+		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
-	return GenerateObject(ctx, genOpts)
+	// Try to start streaming
+	// If streaming is not supported or fails, fall back to non-streaming
+	stream, err := opts.Model.DoStream(ctx, genOpts)
+	if err != nil || stream == nil {
+		// Fallback to non-streaming generation
+		result, err := opts.Model.DoGenerate(ctx, genOpts)
+		if err != nil {
+			return nil, fmt.Errorf("generation failed: %w", err)
+		}
+
+		// Parse final JSON
+		var finalObject interface{}
+		if err := json.Unmarshal([]byte(result.Text), &finalObject); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON: %w", err)
+		}
+
+		// Validate
+		if err := opts.Schema.Validator().Validate(finalObject); err != nil {
+			return nil, fmt.Errorf("validation failed: %w", err)
+		}
+
+		finalResult := &GenerateObjectResult{
+			Object:       finalObject,
+			Text:         result.Text,
+			FinishReason: result.FinishReason,
+			Usage:        result.Usage,
+			Warnings:     result.Warnings,
+		}
+
+		if opts.OnFinish != nil {
+			opts.OnFinish(ctx, finalResult, opts.ExperimentalContext)
+		}
+
+		return finalResult, nil
+	}
+	defer stream.Close()
+
+	// Accumulate text and track partial objects
+	var accumulatedText string
+	var lastObject interface{}
+	var usage types.Usage
+	var finishReason types.FinishReason
+
+	// Process stream chunks
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			if err.Error() == "EOF" || err.Error() == "io: read/write on closed pipe" {
+				break
+			}
+			return nil, fmt.Errorf("stream error: %w", err)
+		}
+
+		// Handle different chunk types
+		switch chunk.Type {
+		case provider.ChunkTypeText:
+			// Accumulate text
+			accumulatedText += chunk.Text
+
+			// Try to parse partial JSON
+			parseResult := parsePartialJSON(accumulatedText)
+
+			// If we successfully parsed something and it's different from last
+			if parseResult.Value != nil && !deepEqual(parseResult.Value, lastObject) {
+				// Validate against schema
+				if err := opts.Schema.Validator().Validate(parseResult.Value); err == nil {
+					// Valid partial object - emit it
+					lastObject = parseResult.Value
+
+					// Call OnChunk callback if provided
+					if opts.OnChunk != nil {
+						opts.OnChunk(lastObject)
+					}
+				}
+			}
+
+		case provider.ChunkTypeUsage:
+			if chunk.Usage != nil {
+				usage = usage.Add(*chunk.Usage)
+			}
+
+		case provider.ChunkTypeFinish:
+			finishReason = chunk.FinishReason
+			if chunk.Usage != nil {
+				usage = usage.Add(*chunk.Usage)
+			}
+		}
+	}
+
+	// Parse final JSON
+	var finalObject interface{}
+	if accumulatedText != "" {
+		if err := json.Unmarshal([]byte(accumulatedText), &finalObject); err != nil {
+			return nil, fmt.Errorf("failed to parse final JSON: %w", err)
+		}
+
+		// Validate final object
+		if err := opts.Schema.Validator().Validate(finalObject); err != nil {
+			return nil, fmt.Errorf("final object validation failed: %w", err)
+		}
+	}
+
+	// Build result
+	result := &GenerateObjectResult{
+		Object:       finalObject,
+		Text:         accumulatedText,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}
+
+	// Call OnFinish if provided
+	if opts.OnFinish != nil {
+		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+	}
+
+	return result, nil
+}
+
+// parsePartialJSON wraps the jsonparser.ParsePartialJSON function
+func parsePartialJSON(text string) jsonparser.ParseResult {
+	return jsonparser.ParsePartialJSON(text)
+}
+
+// deepEqual performs a deep equality check on two JSON values
+// This is used to prevent emitting duplicate partial objects during streaming
+func deepEqual(a, b interface{}) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	return reflect.DeepEqual(a, b)
 }

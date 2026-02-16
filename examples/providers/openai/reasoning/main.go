@@ -57,16 +57,16 @@ to the first train? Show all your work and reasoning.`,
 	fmt.Println("Solution:")
 	fmt.Println(result.Text)
 	fmt.Printf("\nToken usage:\n")
-	fmt.Printf("  Input tokens: %d\n", result.Usage.InputTokens)
-	fmt.Printf("  Output tokens: %d\n", result.Usage.OutputTokens)
+	fmt.Printf("  Input tokens: %d\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Output tokens: %d\n", result.Usage.GetOutputTokens())
 
 	// o1 models track reasoning tokens separately
-	if result.Usage.TotalTokens > result.Usage.InputTokens+result.Usage.OutputTokens {
-		reasoningTokens := result.Usage.TotalTokens - result.Usage.InputTokens - result.Usage.OutputTokens
+	if result.Usage.GetTotalTokens() > result.Usage.GetInputTokens()+result.Usage.GetOutputTokens() {
+		reasoningTokens := result.Usage.GetTotalTokens() - result.Usage.GetInputTokens() - result.Usage.GetOutputTokens()
 		fmt.Printf("  Reasoning tokens: %d\n", reasoningTokens)
 	}
 
-	fmt.Printf("  Total tokens: %d\n", result.Usage.TotalTokens)
+	fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
 	fmt.Printf("\nFinish reason: %s\n", result.FinishReason)
 }
 
@@ -110,7 +110,7 @@ Who owns the fish?`,
 
 	fmt.Println("Solution:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d total\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d total\n", result.Usage.GetTotalTokens())
 }
 
 func optimizeCode(ctx context.Context, p *openai.Provider) {
@@ -159,5 +159,5 @@ Provide:
 
 	fmt.Println("Analysis and Optimization:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nToken usage: %d total\n", result.Usage.TotalTokens)
+	fmt.Printf("\nToken usage: %d total\n", result.Usage.GetTotalTokens())
 }

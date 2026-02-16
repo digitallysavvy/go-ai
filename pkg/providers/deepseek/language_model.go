@@ -115,7 +115,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if opts.StopSequences != nil && len(opts.StopSequences) > 0 {
+	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
 	if len(opts.Tools) > 0 {
@@ -143,18 +143,15 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) *types.Genera
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: convertFinishReason(choice.FinishReason),
-		Usage: types.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		},
+		Usage:        convertDeepseekUsage(response.Usage),
+		RawResponse:  response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
@@ -168,6 +165,47 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) *types.Genera
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
+}
+
+func convertDeepseekUsage(usage deepseekUsage) types.Usage {
+	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
+	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
+	var cached int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		cached = int64(*usage.PromptTokensDetails.CachedTokens)
+	}
+	var textTokens *int64
+	var imageTokens *int64
+	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.TextTokens != nil {
+			textVal := int64(*usage.PromptTokensDetails.TextTokens)
+			textTokens = &textVal
+		}
+		if usage.PromptTokensDetails.ImageTokens != nil {
+			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
+			imageTokens = &imageVal
+		}
+	}
+	var reasoning int64
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	}
+	if cached > 0 || textTokens != nil || imageTokens != nil {
+		noCache := p - cached
+		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	}
+	if reasoning > 0 {
+		text := c - reasoning
+		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
+	}
+	result.Raw = map[string]interface{}{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens}
+	if usage.PromptTokensDetails != nil {
+		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
+	return result
 }
 
 func convertFinishReason(reason string) types.FinishReason {
@@ -204,11 +242,24 @@ type deepseekResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage deepseekUsage `json:"usage"`
+}
+
+type deepseekUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+		AudioTokens  *int `json:"audio_tokens,omitempty"`
+		TextTokens   *int `json:"text_tokens,omitempty"`
+		ImageTokens  *int `json:"image_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 type deepseekStreamChunk struct {

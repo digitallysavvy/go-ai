@@ -74,7 +74,17 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
-	return NewLanguageModel(p, modelID), nil
+	return NewLanguageModel(p, modelID, nil), nil
+}
+
+// LanguageModelWithOptions returns a language model with custom options
+func (p *Provider) LanguageModelWithOptions(modelID string, options *ModelOptions) (provider.LanguageModel, error) {
+	// Validate model ID
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewLanguageModel(p, modelID, options), nil
 }
 
 // EmbeddingModel returns an embedding model by ID

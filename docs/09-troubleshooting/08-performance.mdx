@@ -1,0 +1,547 @@
+---
+title: Performance Optimization
+description: Optimizing slow operations and memory usage in Go AI SDK
+---
+
+# Performance Optimization
+
+This guide covers performance issues and optimization techniques for Go AI applications.
+
+## Slow Response Times
+
+### Issue: High Latency
+
+**Symptoms:**
+- Responses take several seconds
+- Users experience delays
+
+**Causes & Solutions:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// 1. Use Faster Models
+func useFasterModels() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+
+    // SLOW: GPT-4 (high quality, slower)
+    slowModel, _ := provider.LanguageModel("gpt-4")
+
+    // FAST: GPT-4o-mini (good quality, much faster)
+    fastModel, _ := provider.LanguageModel("gpt-4o-mini")
+
+    start := time.Now()
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  fastModel,
+        Prompt: "Explain quantum computing in one sentence",
+    })
+    fmt.Printf("Fast model took: %v\n", time.Since(start))
+    fmt.Println(result.Text)
+}
+
+// 2. Use Streaming for Perceived Performance
+func useStreaming() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Streaming gives immediate feedback
+    start := time.Now()
+    stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: "Write a detailed explanation of quantum computing",
+    })
+
+    firstChunkTime := time.Duration(0)
+    chunkCount := 0
+
+    for chunk := range stream.TextChannel {
+        if chunkCount == 0 {
+            firstChunkTime = time.Since(start)
+            fmt.Printf("Time to first chunk: %v\n", firstChunkTime)
+        }
+        fmt.Print(chunk)
+        chunkCount++
+    }
+
+    fmt.Printf("\nTotal chunks: %d, Total time: %v\n", chunkCount, time.Since(start))
+}
+
+// 3. Limit Token Output
+func limitTokens() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    start := time.Now()
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     model,
+        Prompt:    "Explain quantum computing",
+        MaxTokens: 100, // Limit response length
+    })
+    fmt.Printf("Limited response took: %v\n", time.Since(start))
+    fmt.Println(result.Text)
+}
+
+func main() {
+    fmt.Println("=== Fast Models ===")
+    useFasterModels()
+
+    fmt.Println("\n=== Streaming ===")
+    useStreaming()
+
+    fmt.Println("\n=== Limited Tokens ===")
+    limitTokens()
+}
+```
+
+## Memory Issues
+
+### Issue: High Memory Usage
+
+**Symptoms:**
+- Application memory grows over time
+- Out of memory errors
+- Slow performance due to GC pressure
+
+**Solutions:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "runtime"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// BAD: Accumulating all results in memory
+func memoryHeavy(ctx context.Context, model interface{}, prompts []string) []string {
+    results := make([]string, 0, len(prompts))
+
+    for _, prompt := range prompts {
+        result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+        // Accumulates all results in memory
+        results = append(results, result.Text)
+    }
+
+    return results
+}
+
+// GOOD: Process and discard results immediately
+func memoryEfficient(ctx context.Context, model interface{}, prompts []string) {
+    for i, prompt := range prompts {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
+        if err != nil {
+            log.Printf("Error on prompt %d: %v", i, err)
+            continue
+        }
+
+        // Process immediately (e.g., write to file, send to client)
+        processResult(result.Text)
+
+        // Result can be garbage collected after processing
+
+        // Optional: Force GC periodically
+        if i%10 == 0 {
+            runtime.GC()
+        }
+    }
+}
+
+func processResult(text string) {
+    // Process the result (save to DB, file, etc.)
+    fmt.Printf("Processed: %s...\n", text[:min(50, len(text))])
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// Monitor memory usage
+func monitorMemory() {
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+
+    fmt.Printf("Alloc = %v MiB", m.Alloc/1024/1024)
+    fmt.Printf("\tTotalAlloc = %v MiB", m.TotalAlloc/1024/1024)
+    fmt.Printf("\tSys = %v MiB", m.Sys/1024/1024)
+    fmt.Printf("\tNumGC = %v\n", m.NumGC)
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    prompts := []string{
+        "Explain AI",
+        "Explain ML",
+        "Explain DL",
+    }
+
+    fmt.Println("Before processing:")
+    monitorMemory()
+
+    memoryEfficient(ctx, model, prompts)
+
+    fmt.Println("\nAfter processing:")
+    monitorMemory()
+}
+```
+
+## Caching for Performance
+
+### Implement Response Caching
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// CachedGenerator caches AI responses
+type CachedGenerator struct {
+    model     interface{}
+    cache     map[string]*CacheEntry
+    mu        sync.RWMutex
+    ttl       time.Duration
+    hitCount  int
+    missCount int
+}
+
+type CacheEntry struct {
+    Response  string
+    Timestamp time.Time
+}
+
+func NewCachedGenerator(model interface{}, ttl time.Duration) *CachedGenerator {
+    return &CachedGenerator{
+        model: model,
+        cache: make(map[string]*CacheEntry),
+        ttl:   ttl,
+    }
+}
+
+func (cg *CachedGenerator) generateCacheKey(prompt string, opts ...string) string {
+    data := prompt
+    for _, opt := range opts {
+        data += "|" + opt
+    }
+
+    hash := sha256.Sum256([]byte(data))
+    return hex.EncodeToString(hash[:])
+}
+
+func (cg *CachedGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+    key := cg.generateCacheKey(prompt)
+
+    // Check cache
+    cg.mu.RLock()
+    if entry, ok := cg.cache[key]; ok {
+        if time.Since(entry.Timestamp) < cg.ttl {
+            cg.hitCount++
+            cg.mu.RUnlock()
+            log.Printf("Cache HIT for prompt: %s...", prompt[:min(30, len(prompt))])
+            return entry.Response, nil
+        }
+    }
+    cg.mu.RUnlock()
+
+    // Cache miss
+    cg.mu.Lock()
+    cg.missCount++
+    cg.mu.Unlock()
+
+    log.Printf("Cache MISS for prompt: %s...", prompt[:min(30, len(prompt))])
+
+    // Generate response
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  cg.model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    // Store in cache
+    cg.mu.Lock()
+    cg.cache[key] = &CacheEntry{
+        Response:  result.Text,
+        Timestamp: time.Now(),
+    }
+    cg.mu.Unlock()
+
+    return result.Text, nil
+}
+
+func (cg *CachedGenerator) GetStats() (hits, misses int, hitRate float64) {
+    cg.mu.RLock()
+    defer cg.mu.RUnlock()
+
+    total := cg.hitCount + cg.missCount
+    hitRate = 0
+    if total > 0 {
+        hitRate = float64(cg.hitCount) / float64(total) * 100
+    }
+
+    return cg.hitCount, cg.missCount, hitRate
+}
+
+func (cg *CachedGenerator) ClearExpired() {
+    cg.mu.Lock()
+    defer cg.mu.Unlock()
+
+    now := time.Now()
+    for key, entry := range cg.cache {
+        if now.Sub(entry.Timestamp) > cg.ttl {
+            delete(cg.cache, key)
+        }
+    }
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    // Create cached generator with 5 minute TTL
+    generator := NewCachedGenerator(model, 5*time.Minute)
+
+    // Start cache cleanup goroutine
+    go func() {
+        ticker := time.NewTicker(1 * time.Minute)
+        defer ticker.Stop()
+        for range ticker.C {
+            generator.ClearExpired()
+        }
+    }()
+
+    prompts := []string{
+        "What is AI?",
+        "Explain machine learning",
+        "What is AI?", // Duplicate - should hit cache
+        "What is AI?", // Duplicate - should hit cache
+        "Explain deep learning",
+    }
+
+    for i, prompt := range prompts {
+        start := time.Now()
+        response, err := generator.Generate(ctx, prompt)
+        elapsed := time.Since(start)
+
+        if err != nil {
+            log.Printf("Error: %v", err)
+            continue
+        }
+
+        fmt.Printf("\n[%d] Prompt: %s\n", i+1, prompt)
+        fmt.Printf("Response: %s...\n", response[:min(100, len(response))])
+        fmt.Printf("Time: %v\n", elapsed)
+    }
+
+    hits, misses, hitRate := generator.GetStats()
+    fmt.Printf("\n=== Cache Statistics ===\n")
+    fmt.Printf("Hits: %d\n", hits)
+    fmt.Printf("Misses: %d\n", misses)
+    fmt.Printf("Hit Rate: %.1f%%\n", hitRate)
+}
+```
+
+## Concurrent Processing
+
+### Optimize with Goroutines
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// Process prompts concurrently
+func processConcurrently(ctx context.Context, model interface{}, prompts []string, maxConcurrent int) []string {
+    results := make([]string, len(prompts))
+    var wg sync.WaitGroup
+
+    // Semaphore to limit concurrency
+    sem := make(chan struct{}, maxConcurrent)
+
+    for i, prompt := range prompts {
+        wg.Add(1)
+
+        go func(index int, p string) {
+            defer wg.Done()
+
+            // Acquire semaphore
+            sem <- struct{}{}
+            defer func() { <-sem }()
+
+            result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+                Model:  model,
+                Prompt: p,
+            })
+            if err != nil {
+                log.Printf("Error on prompt %d: %v", index, err)
+                return
+            }
+
+            results[index] = result.Text
+        }(i, prompt)
+    }
+
+    wg.Wait()
+    return results
+}
+
+func benchmark(name string, fn func()) {
+    start := time.Now()
+    fn()
+    fmt.Printf("%s took: %v\n", name, time.Since(start))
+}
+
+func main() {
+    ctx := context.Background()
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4o-mini")
+
+    prompts := []string{
+        "Explain AI in one sentence",
+        "Explain ML in one sentence",
+        "Explain DL in one sentence",
+        "Explain NLP in one sentence",
+        "Explain CV in one sentence",
+    }
+
+    // Sequential processing
+    benchmark("Sequential", func() {
+        for _, prompt := range prompts {
+            ai.GenerateText(ctx, ai.GenerateTextOptions{
+                Model:  model,
+                Prompt: prompt,
+            })
+        }
+    })
+
+    // Concurrent processing
+    benchmark("Concurrent (3 workers)", func() {
+        processConcurrently(ctx, model, prompts, 3)
+    })
+}
+```
+
+## Best Practices
+
+### 1. Use Appropriate Models
+
+```go
+// Fast, cheap for simple tasks
+model, _ := provider.LanguageModel("gpt-4o-mini")
+
+// Powerful for complex tasks
+model, _ := provider.LanguageModel("gpt-4")
+```
+
+### 2. Stream Long Responses
+
+```go
+// Better UX with streaming
+stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model: model,
+    Prompt: prompt,
+})
+```
+
+### 3. Implement Caching
+
+```go
+// Cache frequent queries
+generator := NewCachedGenerator(model, 5*time.Minute)
+```
+
+### 4. Limit Concurrent Requests
+
+```go
+// Don't overwhelm the API
+maxConcurrent := 5
+sem := make(chan struct{}, maxConcurrent)
+```
+
+### 5. Monitor Performance
+
+```go
+start := time.Now()
+// ... operation ...
+log.Printf("Operation took: %v", time.Since(start))
+```
+
+## See Also
+
+- [Caching](../06-advanced/04-caching.mdx)
+- [Rate Limiting](../06-advanced/06-rate-limiting.mdx)
+- [Streaming](../02-foundations/05-streaming.mdx)

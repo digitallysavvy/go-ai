@@ -1,0 +1,751 @@
+---
+title: Prompt Engineering
+description: Learn how to develop effective prompts for LLMs with the Go-AI SDK.
+---
+
+# Prompt Engineering
+
+Prompt engineering is the practice of designing and refining prompts to get the best results from Large Language Models (LLMs). This guide covers fundamental concepts, advanced techniques, and Go-specific patterns for working with the Go-AI SDK.
+
+## What is a Large Language Model (LLM)?
+
+A Large Language Model is a prediction engine that takes a sequence of words as input and predicts the most likely sequence to follow. It assigns probabilities to potential next sequences and selects one, continuing until a stopping criterion is met.
+
+These models are trained on massive text corpuses, making them better suited to some use cases than others. For example, a model trained on GitHub data understands source code patterns particularly well. However, generated sequences, while often plausible, can sometimes be random and not grounded in reality.
+
+## Quick Start: Build a Slogan Generator
+
+### Start with an Instruction
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Create a slogan for an organic coffee shop.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+    // Output: "Naturally Brewed, Ethically Sourced"
+}
+```
+
+### Include Examples (Few-Shot Learning)
+
+```go
+prompt := `Create three slogans for a business with unique features.
+
+Business: Bookstore with cats
+Slogans: "Purr-fect Pages", "Books and Whiskers", "Novels and Nuzzles"
+
+Business: Gym with rock climbing
+Slogans: "Peak Performance", "Reach New Heights", "Climb Your Way Fit"
+
+Business: Coffee shop with live music
+Slogans:`
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+// Output: "Sip, Savor, and Swing", "Beans and Beats", "Melody in Every Cup"
+```
+
+### Adjust Temperature
+
+Temperature controls output randomness (0 = deterministic, 1 = creative):
+
+```go
+// Deterministic output (same result every time)
+temperature := 0.0
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Temperature: &temperature,
+    Prompt:      "Create a slogan for a coffee shop.",
+})
+
+// Creative, varied output (different each time)
+temperature := 0.8
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Temperature: &temperature,
+    Prompt:      "Create a slogan for a coffee shop.",
+})
+```
+
+**Temperature Guide:**
+- **0.0-0.3**: Focused, deterministic, factual (good for tool calls, data extraction)
+- **0.4-0.7**: Balanced creativity and consistency (good for general tasks)
+- **0.8-1.0**: Creative, varied, exploratory (good for brainstorming, creative writing)
+
+## Advanced Prompting Techniques
+
+### System Prompts
+
+Define the model's behavior and personality:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    System: `You are a professional marketing copywriter with 10 years of experience.
+You specialize in creating memorable, punchy slogans.
+Always think about:
+- Brand voice and personality
+- Target audience
+- Emotional impact
+- Memorability`,
+    Prompt: "Create three slogans for an eco-friendly coffee shop.",
+})
+```
+
+### Chain-of-Thought Prompting
+
+Encourage step-by-step reasoning:
+
+```go
+prompt := `Create a slogan for a sustainable fashion brand. Think through this step by step:
+
+1. First, identify the key values of sustainable fashion
+2. Consider the target audience and their motivations
+3. Think about what makes this brand unique
+4. Combine these elements into a memorable slogan
+5. Present your final slogan
+
+Let's begin:`
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+```
+
+### Iterative Refinement
+
+Use multiple calls to refine output:
+
+```go
+// Step 1: Generate initial slogans
+result1, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Create 5 slogans for a tech startup making AI productivity tools.",
+})
+
+// Step 2: Refine the best ones
+refinePrompt := fmt.Sprintf(`Here are some slogans:
+
+%s
+
+Pick the best 2 and refine them to be:
+- More punchy and memorable
+- Focused on user benefits
+- Under 6 words each`, result1.Text)
+
+result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: refinePrompt,
+})
+```
+
+## Prompts for Tools
+
+When using tools, getting good results becomes more challenging as tool complexity increases.
+
+### Tips for Effective Tool Prompts
+
+1. **Use Strong Models**: Use models proficient at tool calling (GPT-4, GPT-5, Claude Sonnet)
+2. **Limit Tool Count**: Keep tools to 5 or less for best results
+3. **Simplify Schemas**: Avoid deeply nested or overly complex schemas
+4. **Use Semantic Names**: Choose descriptive names for tools and parameters
+5. **Add Descriptions**: Use field tags to provide context
+6. **Show Examples**: Include example tool calls in your prompt
+7. **Explain Tool Outputs**: Document what each tool returns
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Define tool with clear descriptions
+    weatherTool := ai.Tool{
+        Name: "get_weather",
+        Description: "Get current weather for a location. Returns temperature in Celsius, conditions (e.g. sunny, rainy), and humidity percentage.",
+        Parameters: types.JSONSchema{
+            Type: "object",
+            Properties: map[string]types.JSONSchema{
+                "location": {
+                    Type:        "string",
+                    Description: "City name (e.g., 'New York' or 'London, UK')",
+                },
+                "units": {
+                    Type:        "string",
+                    Enum:        []string{"celsius", "fahrenheit"},
+                    Description: "Temperature units (defaults to celsius)",
+                },
+            },
+            Required: []string{"location"},
+        },
+        Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+            // Implementation
+            return map[string]interface{}{
+                "temperature": 22,
+                "conditions":  "sunny",
+                "humidity":    65,
+            }, nil
+        },
+    }
+
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Use temperature 0 for deterministic tool calls
+    temperature := 0.0
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:       model,
+        Temperature: &temperature,
+        Tools:       []ai.Tool{weatherTool},
+        Prompt:      "What's the weather in Brooklyn, New York?",
+    })
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Tool Prompt with Examples
+
+```go
+prompt := `You have access to weather and flight tools. Here are examples of how to use them:
+
+Example 1:
+User: "What's the weather in Paris?"
+Action: Call get_weather({"location": "Paris, France"})
+
+Example 2:
+User: "Find flights from NYC to LAX"
+Action: Call search_flights({"from": "JFK", "to": "LAX"})
+
+Now answer: What's the weather like in Tokyo and are there flights from San Francisco?`
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  tools,
+    Prompt: prompt,
+})
+```
+
+## Go-Specific Schema Patterns
+
+### Using Struct Tags
+
+When working with structured outputs in Go, leverage struct tags:
+
+```go
+type MarketingCampaign struct {
+    Slogan      string   `json:"slogan" description:"Catchy slogan under 10 words"`
+    Tagline     string   `json:"tagline" description:"Supporting tagline explaining the value"`
+    Target      string   `json:"target" description:"Target audience (e.g., 'young professionals')"`
+    Channels    []string `json:"channels" description:"Marketing channels (e.g., 'social', 'email')"`
+    Budget      int      `json:"budget" description:"Estimated monthly budget in USD"`
+    Tone        string   `json:"tone" description:"Brand tone (e.g., 'professional', 'playful')"`
+}
+
+// Convert struct to JSON schema
+schema := types.StructToJSONSchema(MarketingCampaign{})
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: schema,
+    Prompt: "Create a marketing campaign for an eco-friendly water bottle company.",
+})
+```
+
+### JSON Schema Considerations
+
+When defining schemas for tool parameters or structured output:
+
+```go
+// ✅ Good: Simple, clear schema
+schema := types.JSONSchema{
+    Type: "object",
+    Properties: map[string]types.JSONSchema{
+        "name": {
+            Type:        "string",
+            Description: "Person's full name",
+        },
+        "age": {
+            Type:        "number",
+            Description: "Age in years",
+        },
+        "email": {
+            Type:        "string",
+            Description: "Email address",
+            Pattern:     "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+        },
+    },
+    Required: []string{"name", "age"},
+}
+
+// ❌ Avoid: Overly complex nested schemas
+schema := types.JSONSchema{
+    Type: "object",
+    Properties: map[string]types.JSONSchema{
+        "person": {
+            Type: "object",
+            Properties: map[string]types.JSONSchema{
+                "name": {
+                    Type: "object",
+                    Properties: map[string]types.JSONSchema{
+                        "first": {Type: "string"},
+                        "middle": {Type: "string"},
+                        "last": {Type: "string"},
+                        // ... too deep
+                    },
+                },
+            },
+        },
+    },
+}
+```
+
+### Optional vs Required Parameters
+
+Be explicit about required fields:
+
+```go
+// Clear required fields
+schema := types.JSONSchema{
+    Type: "object",
+    Properties: map[string]types.JSONSchema{
+        "command": {
+            Type:        "string",
+            Description: "Shell command to execute",
+        },
+        "workdir": {
+            Type:        "string",
+            Description: "Working directory (optional, defaults to current dir)",
+        },
+        "timeout": {
+            Type:        "number",
+            Description: "Timeout in seconds (optional, defaults to 30)",
+        },
+    },
+    Required: []string{"command"}, // Only command is required
+}
+```
+
+## Structured Output Prompting
+
+Guide the model to return structured information:
+
+```go
+prompt := `Create marketing slogans for a vegan restaurant. Return your response in this exact format:
+
+PRIMARY SLOGAN: [main slogan]
+TAGLINE: [supporting tagline]
+SOCIAL MEDIA: [shorter version for social media]
+EMOTIONAL APPEAL: [one-word emotion]
+
+Example:
+PRIMARY SLOGAN: "Plant Power, Every Hour"
+TAGLINE: "Deliciously sustainable dining"
+SOCIAL MEDIA: "🌱 Power Up Plant-Based"
+EMOTIONAL APPEAL: Energetic`
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+```
+
+For guaranteed structured output, use `GenerateObject`:
+
+```go
+type SloganSet struct {
+    Primary    string `json:"primary" description:"Main slogan under 8 words"`
+    Tagline    string `json:"tagline" description:"Supporting tagline"`
+    Social     string `json:"social" description:"Social media version with emoji"`
+    Emotion    string `json:"emotion" description:"Single word describing emotion"`
+}
+
+schema := types.StructToJSONSchema(SloganSet{})
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: schema,
+    Prompt: "Create marketing slogans for a vegan restaurant.",
+})
+
+// result.Object is guaranteed to match SloganSet structure
+slogans := result.Object.(SloganSet)
+fmt.Printf("Primary: %s\n", slogans.Primary)
+```
+
+## Debugging Techniques
+
+### Inspect HTTP Requests
+
+Enable debug mode to see full API requests:
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:    os.Getenv("OPENAI_API_KEY"),
+    DebugMode: true, // Logs full HTTP requests and responses
+})
+```
+
+### Check Token Usage
+
+Monitor token consumption:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Input tokens: %d\n", result.Usage.PromptTokens)
+fmt.Printf("Output tokens: %d\n", result.Usage.CompletionTokens)
+fmt.Printf("Total tokens: %d\n", result.Usage.TotalTokens)
+
+// Check for unexpectedly high usage
+if result.Usage.TotalTokens > 10000 {
+    log.Printf("WARNING: High token usage detected")
+}
+```
+
+### Inspect Tool Calls
+
+Debug tool execution:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  tools,
+    Prompt: "What's the weather in New York?",
+    OnStepFinish: func(step ai.Step) {
+        // Called after each step
+        fmt.Printf("Step %d:\n", step.StepIndex)
+        for _, call := range step.ToolCalls {
+            fmt.Printf("  Tool: %s\n", call.Name)
+            fmt.Printf("  Args: %v\n", call.Arguments)
+            if call.Result != nil {
+                fmt.Printf("  Result: %v\n", call.Result)
+            }
+        }
+    },
+})
+```
+
+### Log Provider Warnings
+
+Some providers return warnings about your prompts:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check for warnings
+if len(result.Warnings) > 0 {
+    for _, warning := range result.Warnings {
+        log.Printf("Warning: %s", warning)
+    }
+}
+```
+
+### Test with Different Models
+
+Compare results across models:
+
+```go
+models := []string{"gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"}
+
+for _, modelID := range models {
+    model, _ := provider.LanguageModel(modelID)
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Printf("Model %s failed: %v", modelID, err)
+        continue
+    }
+    fmt.Printf("\n%s:\n%s\n", modelID, result.Text)
+}
+```
+
+## Best Practices
+
+### 1. Be Specific
+
+```go
+// ❌ Bad: Vague
+"Write about coffee"
+
+// ✅ Good: Specific
+"Write a 3-sentence product description for organic Ethiopian coffee beans
+emphasizing fruity notes and sustainability"
+```
+
+### 2. Use Examples (Few-Shot Learning)
+
+```go
+// Show the pattern you want
+prompt := `Convert casual text to professional:
+
+Casual: "Hey, wanna meet up?"
+Professional: "Would you be available for a meeting?"
+
+Casual: "Got your email, thx!"
+Professional: "Thank you for your email."
+
+Casual: "Can't make it tomorrow"
+Professional:`
+```
+
+### 3. Set Constraints
+
+```go
+prompt := `Create a slogan for a coffee shop.
+
+Requirements:
+- Maximum 5 words
+- Include the word "brew"
+- Sound energetic
+- Avoid cliches`
+```
+
+### 4. Use System Prompts for Consistent Behavior
+
+```go
+system := `You are a professional copywriter. For every slogan:
+- Keep it under 6 words
+- Make it memorable
+- Avoid cliches
+- Explain your rationale`
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: system,
+    Prompt: "Create a slogan for an artisan bakery",
+})
+```
+
+### 5. Test Different Temperatures
+
+```go
+prompts := []float64{0.0, 0.5, 1.0}
+
+for _, temp := range prompts {
+    temperature := temp
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:       model,
+        Temperature: &temperature,
+        Prompt:      prompt,
+    })
+    fmt.Printf("Temperature %.1f: %s\n", temp, result.Text)
+}
+```
+
+### 6. Use Temperature 0 for Tool Calls
+
+```go
+// ✅ Good: Deterministic tool calls
+temperature := 0.0
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Temperature: &temperature,
+    Tools:       tools,
+    Prompt:      "Get the weather in Tokyo",
+})
+
+// ❌ Avoid: High temperature with tools
+temperature := 0.8 // Can cause inconsistent tool usage
+```
+
+### 7. Handle Context Limits
+
+```go
+// Check if prompt fits in context
+maxTokens := 128000 // GPT-4 context limit
+promptTokens := len(prompt) / 4 // Rough estimate (1 token ≈ 4 chars)
+
+if promptTokens > maxTokens-2000 {
+    log.Printf("Warning: Prompt may exceed context limit")
+    // Truncate or summarize prompt
+}
+```
+
+## Common Pitfalls
+
+### 1. Ambiguous Instructions
+
+```go
+// ❌ Bad
+"Make it better"
+
+// ✅ Good
+"Rewrite this slogan to be more energetic and under 5 words"
+```
+
+### 2. Conflicting Instructions
+
+```go
+// ❌ Bad: Contradictory
+"Be creative and unique, but follow these 10 exact examples"
+
+// ✅ Good: Clear expectations
+"Use these examples as style inspiration, but create original slogans"
+```
+
+### 3. Assuming Context
+
+```go
+// ❌ Bad: No context
+"What should I do?"
+
+// ✅ Good: Full context
+"I'm creating a marketing campaign for a vegan restaurant targeting
+young professionals. What social media platforms should I focus on?"
+```
+
+### 4. Ignoring Token Limits
+
+```go
+// ❌ Bad: No MaxTokens limit
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a comprehensive guide to Go programming",
+    // Could generate 10,000+ tokens
+})
+
+// ✅ Good: Set reasonable limits
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    MaxTokens: 500, // Limit output length
+    Prompt:    "Write a brief introduction to Go programming",
+})
+```
+
+### 5. Not Handling Errors
+
+```go
+// ✅ Good: Handle provider-specific errors
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
+
+if err != nil {
+    // Check for specific error types
+    if strings.Contains(err.Error(), "rate_limit") {
+        log.Println("Rate limit hit, retrying after delay...")
+        time.Sleep(60 * time.Second)
+        // Retry logic
+    } else if strings.Contains(err.Error(), "context_length") {
+        log.Println("Prompt too long, truncating...")
+        // Truncate and retry
+    } else {
+        log.Fatal(err)
+    }
+}
+```
+
+## Provider-Specific Considerations
+
+### OpenAI
+
+```go
+// GPT-4 is better at complex tasks
+model, _ := provider.LanguageModel("gpt-4")
+
+// GPT-3.5-turbo is faster and cheaper
+model, _ := provider.LanguageModel("gpt-3.5-turbo")
+
+// o1 models use extended thinking
+model, _ := provider.LanguageModel("o1")
+// Note: o1 models have different parameters (no temperature, system prompts, etc.)
+```
+
+### Anthropic
+
+```go
+// Claude excels at long-form content and analysis
+model, _ := provider.LanguageModel("claude-sonnet-4-5")
+
+// Use system prompts effectively
+system := `You are Claude, an AI assistant created by Anthropic.`
+```
+
+### Google
+
+```go
+// Gemini models support multimodal input
+model, _ := provider.LanguageModel("gemini-2.0-flash")
+
+// Long context windows (up to 1M tokens)
+model, _ := provider.LanguageModel("gemini-pro-1.5")
+```
+
+## Resources
+
+- [Anthropic Prompt Engineering Guide](https://docs.anthropic.com/claude/docs/prompt-engineering)
+- [OpenAI Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
+- [Prompt Engineering Guide](https://www.promptingguide.ai/)
+- [Google Gemini Prompting Guide](https://ai.google.dev/docs/prompt_best_practices)
+
+## See Also
+
+- [Generating Text](./05-generating-text.mdx)
+- [Tools](../02-foundations/04-tools.mdx)
+- [Generating Structured Data](./15-generating-structured-data.mdx)
+- [Advanced: Caching](../06-advanced/04-caching.mdx)
+- [Advanced: Rate Limiting](../06-advanced/06-rate-limiting.mdx)

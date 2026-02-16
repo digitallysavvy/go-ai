@@ -11,13 +11,19 @@ import (
 type EmbeddingModel struct {
 	provider *Provider
 	modelID  string
+	options  EmbeddingOptions
 }
 
 // NewEmbeddingModel creates a new Cohere embedding model
-func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
+func NewEmbeddingModel(provider *Provider, modelID string, options ...EmbeddingOptions) *EmbeddingModel {
+	opts := DefaultEmbeddingOptions()
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	return &EmbeddingModel{
 		provider: provider,
 		modelID:  modelID,
+		options:  opts,
 	}
 }
 
@@ -61,11 +67,33 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string) (*types.Embe
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string) (*types.EmbeddingsResult, error) {
-	reqBody := map[string]interface{}{
-		"texts":      inputs,
-		"model":      m.modelID,
-		"input_type": "search_document",
+	// Validate options
+	if err := m.options.Validate(); err != nil {
+		return nil, err
 	}
+
+	reqBody := map[string]interface{}{
+		"texts": inputs,
+		"model": m.modelID,
+	}
+
+	// Add input type if specified
+	if m.options.InputType != "" {
+		reqBody["input_type"] = string(m.options.InputType)
+	} else {
+		reqBody["input_type"] = "search_document"
+	}
+
+	// Add truncate mode if specified
+	if m.options.Truncate != "" {
+		reqBody["truncate"] = string(m.options.Truncate)
+	}
+
+	// Add output dimension if specified
+	if m.options.OutputDimension != nil {
+		reqBody["output_dimension"] = int(*m.options.OutputDimension)
+	}
+
 	var response cohereEmbedResponse
 	err := m.provider.client.PostJSON(ctx, "/v1/embed", reqBody, &response)
 	if err != nil {

@@ -101,12 +101,34 @@ func (m *LanguageModel) convertResponse(response cohereResponse) *types.Generate
 	return &types.GenerateResult{
 		Text:         response.Text,
 		FinishReason: types.FinishReasonStop,
-		Usage: types.Usage{
-			InputTokens:  response.Meta.Tokens.InputTokens,
-			OutputTokens: response.Meta.Tokens.OutputTokens,
-			TotalTokens:  response.Meta.Tokens.InputTokens + response.Meta.Tokens.OutputTokens,
-		},
+		Usage:        convertCohereUsage(response.Meta.Tokens),
+		RawResponse:  response,
 	}
+}
+
+func convertCohereUsage(tokens cohereTokens) types.Usage {
+	inputTokens := int64(tokens.InputTokens)
+	outputTokens := int64(tokens.OutputTokens)
+	totalTokens := inputTokens + outputTokens
+	result := types.Usage{
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
+	}
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &inputTokens,
+		CacheReadTokens:  nil,
+		CacheWriteTokens: nil,
+	}
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &outputTokens,
+		ReasoningTokens: nil,
+	}
+	result.Raw = map[string]interface{}{
+		"input_tokens":  tokens.InputTokens,
+		"output_tokens": tokens.OutputTokens,
+	}
+	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
@@ -116,11 +138,13 @@ func (m *LanguageModel) handleError(err error) error {
 type cohereResponse struct {
 	Text string `json:"text"`
 	Meta struct {
-		Tokens struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"tokens"`
+		Tokens cohereTokens `json:"tokens"`
 	} `json:"meta"`
+}
+
+type cohereTokens struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type cohereStream struct {

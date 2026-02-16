@@ -1,0 +1,172 @@
+---
+title: CosineSimilarity
+description: API reference for CosineSimilarity function
+---
+
+# CosineSimilarity
+
+Calculates the cosine similarity between two embedding vectors. Returns a value between -1 (opposite) and 1 (identical).
+
+## Signature
+
+```go
+func CosineSimilarity(a, b []float64) (float64, error)
+```
+
+## Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | []float64 | First embedding vector |
+| b | []float64 | Second embedding vector |
+
+## Return Value
+
+Returns a float64 between -1 and 1:
+- 1.0: Vectors are identical
+- 0.0: Vectors are orthogonal (no similarity)
+- -1.0: Vectors are opposite
+
+## Examples
+
+### Basic Similarity Calculation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey: "your-api-key",
+    })
+    model, _ := provider.EmbeddingModel("text-embedding-3-small")
+
+    // Embed two texts
+    result1, _ := ai.Embed(context.Background(), ai.EmbedOptions{
+        Model: model,
+        Input: "machine learning",
+    })
+
+    result2, _ := ai.Embed(context.Background(), ai.EmbedOptions{
+        Model: model,
+        Input: "artificial intelligence",
+    })
+
+    // Calculate similarity
+    similarity, err := ai.CosineSimilarity(result1.Embedding, result2.Embedding)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Similarity: %.4f\n", similarity)
+}
+```
+
+### Semantic Search
+
+```go
+// Query embedding
+queryResult, _ := ai.Embed(ctx, ai.EmbedOptions{
+    Model: model,
+    Input: "neural networks",
+})
+
+// Document embeddings
+documents := []string{
+    "Deep learning uses neural networks",
+    "The weather is sunny today",
+    "Artificial neural networks are computational models",
+}
+
+// Find most similar
+var bestMatch string
+var bestScore float64
+
+for _, doc := range documents {
+    docResult, _ := ai.Embed(ctx, ai.EmbedOptions{
+        Model: model,
+        Input: doc,
+    })
+
+    similarity, _ := ai.CosineSimilarity(queryResult.Embedding, docResult.Embedding)
+
+    if similarity > bestScore {
+        bestScore = similarity
+        bestMatch = doc
+    }
+}
+
+fmt.Printf("Best match (%.4f): %s\n", bestScore, bestMatch)
+```
+
+### Similarity Threshold
+
+```go
+similarity, err := ai.CosineSimilarity(embedding1, embedding2)
+if err != nil {
+    log.Fatal(err)
+}
+
+switch {
+case similarity > 0.9:
+    fmt.Println("Highly similar")
+case similarity > 0.7:
+    fmt.Println("Moderately similar")
+case similarity > 0.5:
+    fmt.Println("Somewhat similar")
+default:
+    fmt.Println("Not similar")
+}
+```
+
+### Pairwise Similarity Matrix
+
+```go
+embeddings := [][]float64{
+    embedding1,
+    embedding2,
+    embedding3,
+}
+
+fmt.Println("Similarity Matrix:")
+for i := 0; i < len(embeddings); i++ {
+    for j := 0; j < len(embeddings); j++ {
+        sim, _ := ai.CosineSimilarity(embeddings[i], embeddings[j])
+        fmt.Printf("%.3f ", sim)
+    }
+    fmt.Println()
+}
+```
+
+## Error Handling
+
+```go
+similarity, err := ai.CosineSimilarity(a, b)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "dimensions must match"):
+        log.Printf("Dimension mismatch: %d != %d", len(a), len(b))
+    case strings.Contains(err.Error(), "zero vector"):
+        log.Println("Cannot compute similarity for zero vector")
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+```
+
+## See Also
+
+- [Embed](./embed.mdx) - Generate embeddings
+- [EmbedMany](./embed-many.mdx) - Batch embeddings
+- [EuclideanDistance](./euclidean-distance.mdx) - Alternative distance metric
+- [DotProduct](./dot-product.mdx) - Dot product similarity
+- [RAG Guide](../../05-retrieval/rag.mdx)

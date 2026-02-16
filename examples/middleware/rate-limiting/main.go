@@ -82,11 +82,11 @@ func (tbl *TokenBucketLimiter) Stats() RateLimitStats {
 
 // SlidingWindowLimiter tracks requests in a sliding time window
 type SlidingWindowLimiter struct {
-	mu            sync.Mutex
-	requests      []time.Time
-	maxRequests   int
-	window        time.Duration
-	stats         RateLimitStats
+	mu          sync.Mutex
+	requests    []time.Time
+	maxRequests int
+	window      time.Duration
+	stats       RateLimitStats
 }
 
 func NewSlidingWindowLimiter(maxRequests int, window time.Duration) *SlidingWindowLimiter {
@@ -160,16 +160,16 @@ func (swl *SlidingWindowLimiter) Stats() RateLimitStats {
 
 // ConcurrentLimiter limits concurrent requests
 type ConcurrentLimiter struct {
-	mu          sync.Mutex
-	semaphore   chan struct{}
+	mu            sync.Mutex
+	semaphore     chan struct{}
 	maxConcurrent int
-	stats       RateLimitStats
-	active      int
+	stats         RateLimitStats
+	active        int
 }
 
 func NewConcurrentLimiter(maxConcurrent int) *ConcurrentLimiter {
 	return &ConcurrentLimiter{
-		semaphore:   make(chan struct{}, maxConcurrent),
+		semaphore:     make(chan struct{}, maxConcurrent),
 		maxConcurrent: maxConcurrent,
 	}
 }
@@ -387,8 +387,8 @@ func main() {
 	fmt.Println("   " + string(make([]byte, 60, 60)))
 
 	combinedLimiter := NewCombinedLimiter(
-		NewTokenBucketLimiter(1.0, 2),  // 1 req/sec, burst 2
-		NewConcurrentLimiter(2),         // max 2 concurrent
+		NewTokenBucketLimiter(1.0, 2), // 1 req/sec, burst 2
+		NewConcurrentLimiter(2),       // max 2 concurrent
 	)
 
 	fmt.Println("\n   Sending 3 concurrent bursts:")

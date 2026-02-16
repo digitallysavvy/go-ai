@@ -1,0 +1,295 @@
+---
+title: Rerank
+description: API reference for Rerank function
+---
+
+# Rerank
+
+Reranks documents according to their relevance to a query using a specialized reranking model.
+
+## Signature
+
+```go
+func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error)
+```
+
+## Parameters
+
+### RerankOptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| Model | provider.RerankingModel | Yes | Reranking model to use |
+| Documents | interface{} | Yes | Documents to rerank ([]string, []map[string]interface{}, or []interface{}) |
+| Query | string | Yes | Query to rerank documents against |
+| TopN | *int | No | Number of top documents to return (nil returns all) |
+| OnFinish | func(*RerankResult) | No | Called when reranking finishes |
+
+## Return Value
+
+### RerankResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| OriginalDocuments | interface{} | Original documents in original order |
+| Ranking | []RerankItem | Indices and scores in relevance order |
+| RerankedDocuments | interface{} | Documents sorted by relevance |
+| Response | types.RerankResponse | Response metadata |
+| ProviderMetadata | interface{} | Provider-specific metadata |
+
+### RerankItem
+
+| Field | Type | Description |
+|-------|------|-------------|
+| OriginalIndex | int | Index in original document list |
+| Score | float64 | Relevance score (higher is more relevant) |
+| Document | interface{} | The actual document |
+
+## Examples
+
+### Basic Reranking
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+)
+
+func main() {
+    provider := cohere.New(cohere.Config{
+        APIKey: "your-api-key",
+    })
+    model, err := provider.RerankingModel("rerank-english-v3.0")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    documents := []string{
+        "The capital of France is Paris",
+        "Python is a programming language",
+        "Paris is known for the Eiffel Tower",
+        "Machine learning is a subset of AI",
+    }
+
+    result, err := ai.Rerank(context.Background(), ai.RerankOptions{
+        Model:     model,
+        Documents: documents,
+        Query:     "What is the capital of France?",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Reranked documents:")
+    for i, item := range result.Ranking {
+        fmt.Printf("%d. %s (score: %.4f)\n",
+            i+1, item.Document.(string), item.Score)
+    }
+}
+```
+
+### Top-N Results
+
+```go
+topN := 3
+
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     model,
+    Documents: documents,
+    Query:     "machine learning algorithms",
+    TopN:      &topN,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Top %d results:\n", topN)
+for i, item := range result.Ranking {
+    fmt.Printf("%d. %s (score: %.4f)\n",
+        i+1, item.Document.(string), item.Score)
+}
+```
+
+### Reranking Search Results
+
+```go
+// Initial search results from vector database
+searchResults := []string{
+    "Neural networks are computational models",
+    "Deep learning uses multiple layers",
+    "The weather forecast for tomorrow",
+    "Convolutional neural networks for images",
+    "Recurrent neural networks for sequences",
+    "Today's news headlines",
+}
+
+// Rerank by relevance to query
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     model,
+    Documents: searchResults,
+    Query:     "neural network architectures",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use reranked results
+for _, item := range result.Ranking {
+    if item.Score > 0.5 { // Threshold for relevance
+        fmt.Printf("Relevant: %s (score: %.4f)\n",
+            item.Document.(string), item.Score)
+    }
+}
+```
+
+### Reranking Structured Documents
+
+```go
+type Document struct {
+    ID      string
+    Title   string
+    Content string
+}
+
+documents := []map[string]interface{}{
+    {
+        "id":      "doc1",
+        "title":   "Introduction to AI",
+        "content": "Artificial intelligence is...",
+    },
+    {
+        "id":      "doc2",
+        "title":   "Machine Learning Basics",
+        "content": "Machine learning is a method...",
+    },
+    {
+        "id":      "doc3",
+        "title":   "Cooking Recipes",
+        "content": "How to make pasta...",
+    },
+}
+
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     model,
+    Documents: documents,
+    Query:     "artificial intelligence",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, item := range result.Ranking {
+    doc := item.Document.(map[string]interface{})
+    fmt.Printf("%d. %s (score: %.4f)\n",
+        i+1, doc["title"], item.Score)
+}
+```
+
+### Two-Stage Retrieval
+
+```go
+// Stage 1: Fast vector search for candidates
+queryEmbed, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "machine learning frameworks",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+candidates := vectorDB.Search(queryEmbed.Embedding, topK=100)
+
+// Stage 2: Precise reranking
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     rerankModel,
+    Documents: candidates,
+    Query:     "machine learning frameworks",
+    TopN:      &topN, // Final top 10
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use highly relevant results
+for _, item := range result.Ranking {
+    fmt.Printf("Score: %.4f - %s\n", item.Score, item.Document)
+}
+```
+
+### With Callback
+
+```go
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     model,
+    Documents: documents,
+    Query:     query,
+    OnFinish: func(result *ai.RerankResult) {
+        fmt.Printf("Reranking complete! Processed %d documents\n",
+            len(result.Ranking))
+
+        // Log top result
+        if len(result.Ranking) > 0 {
+            top := result.Ranking[0]
+            fmt.Printf("Top result score: %.4f\n", top.Score)
+        }
+    },
+})
+```
+
+### Empty Documents Handling
+
+```go
+// Rerank handles empty document list gracefully
+result, err := ai.Rerank(ctx, ai.RerankOptions{
+    Model:     model,
+    Documents: []string{},
+    Query:     "test query",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Returns empty result (no error)
+fmt.Printf("Documents: %d\n", len(result.Ranking)) // 0
+```
+
+## Error Handling
+
+```go
+result, err := ai.Rerank(ctx, opts)
+if err != nil {
+    switch {
+    case strings.Contains(err.Error(), "model is required"):
+        log.Println("Missing required model parameter")
+    case strings.Contains(err.Error(), "documents are required"):
+        log.Println("Missing required documents")
+    case strings.Contains(err.Error(), "query is required"):
+        log.Println("Missing required query")
+    case strings.Contains(err.Error(), "must be []string"):
+        log.Println("Invalid document type")
+    case strings.Contains(err.Error(), "reranking failed"):
+        log.Println("Reranking error:", err)
+    default:
+        log.Println("Unknown error:", err)
+    }
+    return
+}
+
+// Validate results
+if len(result.Ranking) == 0 {
+    log.Println("No results returned")
+}
+```
+
+## See Also
+
+- [Embed](./embed.mdx) - Generate embeddings
+- [EmbedMany](./embed-many.mdx) - Batch embeddings
+- [Reranking Models Guide](../../03-providers/reranking-models.mdx)
+- [RAG Guide](../../05-retrieval/rag.mdx)

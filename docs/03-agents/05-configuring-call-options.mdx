@@ -209,7 +209,7 @@ func newNewsAgent(userLocation Location) *agent.ToolLoopAgent {
             },
             "required": []string{"query"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             query := input["query"].(string)
             // Use location in search
             results := fmt.Sprintf("Searching for '%s' in %s, %s, %s",
@@ -451,7 +451,7 @@ func readDatabaseTool() types.Tool {
             },
             "required": []string{"query"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             return map[string]interface{}{"data": "..."}, nil
         },
     }
@@ -470,7 +470,7 @@ func writeDatabaseTool() types.Tool {
             },
             "required": []string{"data"},
         },
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             return map[string]interface{}{"success": true}, nil
         },
     }
@@ -847,7 +847,7 @@ Capture runtime context in tool closures:
 func newAgentWithUserTools(userID string) *agent.ToolLoopAgent {
     tool := types.Tool{
         Name: "getUserData",
-        Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // userID is captured from outer scope
             return fetchUserData(ctx, userID)
         },

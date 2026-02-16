@@ -9,9 +9,9 @@ import (
 // Note: Placeholder example for Azure OpenAI Service integration
 
 type AzureProvider struct {
-	Endpoint    string
-	APIKey      string
-	Deployment  string
+	Endpoint   string
+	APIKey     string
+	Deployment string
 }
 
 func NewAzureProvider(endpoint, apiKey, deployment string) *AzureProvider {

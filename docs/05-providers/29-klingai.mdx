@@ -1,0 +1,355 @@
+---
+title: KlingAI Provider
+description: Setup and usage guide for KlingAI video generation with Go-AI SDK
+---
+
+# KlingAI Provider
+
+KlingAI specializes in high-quality video generation with advanced features including text-to-video, image-to-video, start/end frame control, and motion control. Known for competitive pricing and professional-grade video output.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/klingai"
+)
+```
+
+### Configuration
+
+```go
+provider, err := klingai.New(klingai.Config{
+    AccessKey: os.Getenv("KLINGAI_ACCESS_KEY"),
+    SecretKey: os.Getenv("KLINGAI_SECRET_KEY"),
+})
+
+model, err := provider.VideoModel("kling-v2.6-t2v")
+```
+
+### Get API Keys
+
+1. Sign up at [klingai.com](https://klingai.com)
+2. Navigate to API settings
+3. Generate access key and secret key
+4. Set environment variables:
+
+```bash
+export KLINGAI_ACCESS_KEY=your-access-key
+export KLINGAI_SECRET_KEY=your-secret-key
+```
+
+## Available Models
+
+### Text-to-Video Models
+
+| Model ID | Quality | Speed | Duration | Best For |
+|----------|---------|-------|----------|----------|
+| kling-v2.6-t2v | Excellent | Medium | 5-10s | Latest quality |
+| kling-v2.5-turbo-t2v | Good | Fast | 5-10s | Speed optimized |
+| kling-v2.1-master-t2v | High | Medium | 5-10s | Stable version |
+| kling-v1.6-t2v | Good | Fast | 5s | Legacy support |
+
+### Image-to-Video Models
+
+| Model ID | Quality | Speed | Features | Best For |
+|----------|---------|-------|----------|----------|
+| kling-v2.6-i2v | Excellent | Medium | Start/end control | Professional work |
+| kling-v2.5-turbo-i2v | Good | Fast | Basic animation | Quick animations |
+| kling-v2.1-master-i2v | High | Medium | Advanced control | Production quality |
+
+### Motion Control Models
+
+| Model ID | Quality | Speed | Max Reference | Best For |
+|----------|---------|-------|---------------|----------|
+| kling-v2.6-motion-control | High | Slow | 30s (pro) / 10s (std) | Motion transfer |
+
+## Provider-Specific Features
+
+### Text-to-Video Generation
+
+Create videos from text descriptions:
+
+```go
+model, _ := provider.VideoModel("kling-v2.6-t2v")
+
+duration := 10.0
+result, err := ai.GenerateVideo(model,
+    "A sunrise over mountains in 4K",
+    ai.WithDuration(&duration),
+    ai.WithAspectRatio("16:9"),
+    ai.WithProviderOptions(map[string]interface{}{
+        "klingai": map[string]interface{}{
+            "mode": "pro",
+            "negativePrompt": "low quality, blurry",
+        },
+    }),
+)
+```
+
+### Image-to-Video Animation
+
+Animate static images with camera control:
+
+```go
+model, _ := provider.VideoModel("kling-v2.6-i2v")
+
+result, err := ai.GenerateVideo(model,
+    ai.VideoPrompt{
+        Image: imageData,
+        Text: "The cat slowly turns its head and blinks",
+    },
+    ai.WithDuration(&duration),
+    ai.WithProviderOptions(map[string]interface{}{
+        "klingai": map[string]interface{}{
+            "mode": "pro",
+            "cameraControl": map[string]interface{}{
+                "type": "forward_up",
+                "config": map[string]interface{}{
+                    "horizontal": 0.5,
+                    "vertical": 0.3,
+                    "zoom": 0.2,
+                },
+            },
+        },
+    }),
+)
+```
+
+### Start/End Frame Control
+
+Precise control over video start and end states:
+
+```go
+model, _ := provider.VideoModel("kling-v2.6-i2v")
+
+result, err := ai.GenerateVideo(model,
+    ai.VideoPrompt{
+        Image: startImage,
+        Text: "Transform cat into dog with smooth transition",
+    },
+    ai.WithProviderOptions(map[string]interface{}{
+        "klingai": map[string]interface{}{
+            "mode": "pro", // Required for start/end control
+            "imageTail": endImageURL,
+            "sound": "on",
+        },
+    }),
+)
+```
+
+### Motion Control
+
+Transfer motion from reference videos to your characters:
+
+```go
+model, _ := provider.VideoModel("kling-v2.6-motion-control")
+
+result, err := ai.GenerateVideo(model,
+    ai.VideoPrompt{
+        Image: characterImage,
+        Text: "Character performs smooth dance move",
+    },
+    ai.WithProviderOptions(map[string]interface{}{
+        "klingai": map[string]interface{}{
+            "videoUrl": "https://example.com/reference-motion.mp4",
+            "characterOrientation": "video", // "image" or "video"
+            "mode": "pro",
+            "keepOriginalSound": "yes",
+            "pollTimeoutMs": 600000, // 10 minutes for pro mode
+        },
+    }),
+)
+```
+
+## Provider Options
+
+Configure generation with `ProviderOptions.klingai`:
+
+### Common Options
+
+| Option | Type | Description | Modes |
+|--------|------|-------------|-------|
+| `mode` | string | `"std"` or `"pro"` quality mode | All |
+| `pollIntervalMs` | int | Polling interval (default: 5000ms) | All |
+| `pollTimeoutMs` | int | Max wait time (default: 600000ms) | All |
+
+### Text-to-Video & Image-to-Video Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `negativePrompt` | string | What to avoid (max 2500 chars) |
+| `sound` | string | `"on"` or `"off"` (V2.6+ pro only) |
+| `cfgScale` | float64 | Prompt adherence 0.0-1.0 (V1.x only) |
+
+### Camera Control
+
+```go
+"cameraControl": map[string]interface{}{
+    "type": "forward_up", // simple, down_back, right_turn_forward, left_turn_forward
+    "config": map[string]interface{}{
+        "horizontal": 0.5, // -1.0 to 1.0
+        "vertical": 0.3,   // -1.0 to 1.0
+        "zoom": 0.2,       // -1.0 to 1.0
+    },
+}
+```
+
+### Image-to-Video Specific
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `imageTail` | string | End frame image URL or base64 |
+| `staticMask` | string | Static brush mask image |
+| `dynamicMasks` | array | Dynamic brush configurations |
+
+### Motion Control Specific
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `videoUrl` | string | Reference video URL (required) |
+| `characterOrientation` | string | `"image"` or `"video"` (required) |
+| `keepOriginalSound` | string | `"yes"` or `"no"` |
+| `watermarkEnabled` | bool | Enable watermark |
+
+## Examples
+
+### Basic Text-to-Video
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/klingai"
+)
+
+func main() {
+    prov, err := klingai.New(klingai.Config{})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    model, err := prov.VideoModel("kling-v2.6-t2v")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    duration := 5.0
+    result, err := model.DoGenerate(context.Background(),
+        &provider.VideoModelV3CallOptions{
+            Prompt: "A sunrise over mountains",
+            Duration: &duration,
+            AspectRatio: "16:9",
+        })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Video URL: %s\n", result.Videos[0].URL)
+}
+```
+
+See `examples/providers/klingai/` for more complete examples including:
+- Image-to-video with camera control
+- Start/end frame control
+- Motion control (standard and pro)
+
+## Polling Behavior
+
+KlingAI video generation is asynchronous with automatic polling:
+
+- **Default interval:** 5 seconds
+- **Default timeout:** 10 minutes
+- **Configurable** via provider options
+
+```go
+ProviderOptions: map[string]interface{}{
+    "klingai": map[string]interface{}{
+        "pollIntervalMs": 3000,  // Poll every 3 seconds
+        "pollTimeoutMs": 300000, // 5 minute timeout
+    },
+}
+```
+
+## Error Handling
+
+Common error scenarios:
+
+```go
+result, err := model.DoGenerate(ctx, opts)
+if err != nil {
+    if klingErr, ok := err.(*klingai.Error); ok {
+        switch klingErr.Code {
+        case 401:
+            log.Println("Authentication failed")
+        case 504:
+            log.Println("Generation timeout")
+        default:
+            log.Printf("KlingAI error %d: %s", klingErr.Code, klingErr.Message)
+        }
+    }
+    return err
+}
+```
+
+## Best Practices
+
+1. **Use Pro Mode for Quality**
+   - Better visual quality
+   - Required for start/end frame control
+   - Supports audio generation (V2.6+)
+
+2. **Optimize Polling**
+   - Use longer intervals for pro mode
+   - Set appropriate timeouts (5-10 minutes)
+   - Handle timeout errors gracefully
+
+3. **Motion Control Tips**
+   - Use clear, well-lit reference videos
+   - Match character orientation correctly
+   - Pro mode supports longer references (up to 30s)
+
+4. **Prompting**
+   - Be specific and detailed
+   - Use negative prompts to avoid unwanted elements
+   - Test different camera controls for best results
+
+## Limitations
+
+- **Resolution:** Not configurable (determined by model/image)
+- **FPS:** Not configurable
+- **Seed:** Not supported for deterministic generation
+- **Max videos per call:** 1
+- **Max duration:** 10 seconds (standard), varies by model
+
+Attempting unsupported options will generate warnings but not fail.
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+- **Token Generation:** 100 requests/minute
+- **Video Generation:** 10 concurrent tasks per account
+- **Polling:** No explicit limit (use backoff)
+
+### Pricing
+
+Contact KlingAI for current pricing information. Pricing varies by:
+- Model version (V1, V2, V2.5, V2.6)
+- Quality mode (standard vs pro)
+- Video duration (5s vs 10s)
+
+## See Also
+
+- [API Reference: GenerateVideo](../07-reference/ai/generate-video.mdx)
+- [Examples: KlingAI](../../examples/providers/klingai/)
+- [KlingAI API Documentation](https://app.klingai.com/global/dev/document-api)
+- [KlingAI Model Capabilities](https://app.klingai.com/global/dev/document-api/apiReference/model/skillsMap)

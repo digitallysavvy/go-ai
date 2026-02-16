@@ -1,0 +1,265 @@
+---
+title: Ollama Provider
+description: Setup and usage guide for Ollama local model deployment with Go-AI SDK
+---
+
+# Ollama Provider
+
+Ollama enables running large language models locally on your machine. Perfect for development, privacy-sensitive applications, and offline usage.
+
+## Setup
+
+### Installation
+
+1. Install Ollama from [ollama.com](https://ollama.com)
+2. Pull a model:
+
+```bash
+ollama pull llama3.1
+```
+
+### Configuration
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+provider := openai.New(openai.Config{
+    APIKey:  "ollama", // Not used but required
+    BaseURL: "http://localhost:11434/v1",
+})
+
+model, err := provider.LanguageModel("llama3.1")
+```
+
+## Available Models
+
+### Popular Models
+
+| Model | Parameters | Size | Best For |
+|-------|-----------|------|----------|
+| llama3.1 | 70B/8B | 40GB/4.7GB | General purpose |
+| llama3.2 | 3B/1B | 2GB/1.3GB | Fast, efficient |
+| mistral | 7B | 4.1GB | Balanced |
+| phi3 | 3.8B | 2.3GB | Small, capable |
+| qwen2.5 | 72B/7B | 43GB/4.7GB | Multilingual |
+| codellama | 34B/13B/7B | 19GB/7.4GB/3.8GB | Code generation |
+
+### Specialized Models
+
+| Model | Size | Best For |
+|-------|------|----------|
+| nomic-embed-text | 137M | Embeddings |
+| llava | 7B | Vision |
+| stable-code | 3B | Code completion |
+
+## Examples
+
+### Basic Text Generation
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    provider := openai.New(openai.Config{
+        APIKey:  "ollama",
+        BaseURL: "http://localhost:11434/v1",
+    })
+
+    model, err := provider.LanguageModel("llama3.1")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(model, "Explain Ollama")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+### Streaming
+
+```go
+stream, err := ai.StreamText(model, "Write a story")
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for chunk := range stream.TextChannel() {
+    fmt.Print(chunk)
+}
+```
+
+### Vision with LLaVA
+
+```go
+model, err := provider.LanguageModel("llava")
+
+imageData, _ := os.ReadFile("image.jpg")
+encodedImage := base64.StdEncoding.EncodeToString(imageData)
+
+result, err := ai.GenerateText(model,
+    ai.WithMessages(
+        ai.UserMessage("Describe this image",
+            ai.WithImageData(encodedImage, "image/jpeg"),
+        ),
+    ),
+)
+```
+
+### Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("nomic-embed-text")
+
+texts := []string{
+    "Ollama runs models locally",
+    "Local inference is private",
+}
+
+embeddings, err := ai.Embed(embeddingModel, texts...)
+```
+
+## Best Practices
+
+1. **Hardware Requirements**
+   - 8GB RAM minimum for 7B models
+   - 16GB RAM for 13B models
+   - 32GB+ RAM for 70B models
+   - GPU recommended for better performance
+
+2. **Model Selection**
+   - Start with smaller models (7B)
+   - Use quantized versions for less RAM
+   - Test different models for your use case
+
+3. **Performance**
+   - Use GPU acceleration when available
+   - Adjust context window based on needs
+   - Monitor system resources
+
+4. **Development**
+   - Perfect for development and testing
+   - No API costs
+   - Complete privacy
+   - Works offline
+
+## Managing Models
+
+### Pull Models
+
+```bash
+# Pull latest version
+ollama pull llama3.1
+
+# Pull specific version
+ollama pull llama3.1:70b
+
+# Pull with tag
+ollama pull llama3.1:8b-instruct-q4_0
+```
+
+### List Models
+
+```bash
+ollama list
+```
+
+### Remove Models
+
+```bash
+ollama rm llama3.1
+```
+
+### Create Custom Model
+
+Create Modelfile:
+
+```
+FROM llama3.1
+PARAMETER temperature 0.8
+SYSTEM You are a helpful coding assistant
+```
+
+Build model:
+
+```bash
+ollama create my-coding-assistant -f Modelfile
+```
+
+## Configuration Options
+
+### GPU Configuration
+
+```go
+// Ollama automatically uses GPU if available
+// Configure via OLLAMA_NUM_GPU environment variable
+```
+
+### Context Window
+
+```go
+result, err := ai.GenerateText(model, prompt,
+    ai.WithMaxTokens(4096), // Adjust based on model
+)
+```
+
+### Remote Ollama
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:  "ollama",
+    BaseURL: "http://remote-server:11434/v1",
+})
+```
+
+## Error Handling
+
+```go
+result, err := ai.GenerateText(model, prompt)
+if err != nil {
+    if strings.Contains(err.Error(), "connection refused") {
+        log.Fatal("Ollama server not running - run: ollama serve")
+    }
+    if strings.Contains(err.Error(), "model not found") {
+        log.Fatal("Model not found - run: ollama pull llama3.1")
+    }
+    log.Fatal(err)
+}
+```
+
+## Performance Tips
+
+1. **Use Quantized Models**
+   - q4_0: 4-bit quantization (smallest)
+   - q5_0: 5-bit quantization (balanced)
+   - q8_0: 8-bit quantization (high quality)
+
+2. **Optimize Context**
+   - Reduce context window for faster inference
+   - Clear conversation history periodically
+
+3. **GPU Acceleration**
+   - Ensure CUDA/ROCm installed
+   - Monitor GPU memory usage
+   - Adjust num_gpu parameter
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Ollama Documentation](https://ollama.com/docs)
+- [Ollama Model Library](https://ollama.com/library)
