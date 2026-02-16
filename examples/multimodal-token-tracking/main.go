@@ -7,8 +7,9 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
-	"github.com/digitallysavvy/go-ai/pkg/openai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // Pricing constants (example rates for GPT-4o)
@@ -25,8 +26,11 @@ func main() {
 	}
 
 	ctx := context.Background()
-	provider := openai.NewProvider(apiKey)
-	model := provider.LanguageModel("gpt-4o")
+	prov := openai.New(openai.Config{APIKey: apiKey})
+	model, err := prov.LanguageModel("gpt-4o")
+	if err != nil {
+		log.Fatalf("Failed to get model: %v", err)
+	}
 
 	fmt.Println("=== Multimodal Token Tracking Example ===\n")
 
@@ -48,11 +52,10 @@ func main() {
 		Messages: []types.Message{
 			{
 				Role: types.RoleUser,
-				Content: []types.MessageContent{
-					{Type: types.ContentTypeText, Text: ptr("What's in this image?")},
-					{
-						Type:  types.ContentTypeImage,
-						Image: ptr("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg"),
+				Content: []types.ContentPart{
+					types.TextContent{Text: "What's in this image?"},
+					types.ImageContent{
+						URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg",
 					},
 				},
 			},
@@ -117,7 +120,7 @@ func calculateCost(usage types.Usage) float64 {
 	return inputCost + outputCostTotal
 }
 
-func runBatchProcessing(ctx context.Context, model types.LanguageModel) {
+func runBatchProcessing(ctx context.Context, model provider.LanguageModel) {
 	tasks := []string{
 		"Summarize: AI is transforming industries",
 		"Explain quantum computing in simple terms",
