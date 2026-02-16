@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-chi/cors v1.2.2
 	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/google/uuid v1.6.0
