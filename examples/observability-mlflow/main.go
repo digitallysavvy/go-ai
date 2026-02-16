@@ -82,10 +82,9 @@ func main() {
 	// Example 1: Simple text generation with telemetry
 	fmt.Println("=== Example 1: Simple Text Generation ===")
 	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "Explain what MLflow is in one sentence.",
-		// TODO: Add telemetry settings when GenerateTextOptions supports it
-		// For now, telemetry is configured at the provider level
+		Model:                 model,
+		Prompt:                "Explain what MLflow is in one sentence.",
+		ExperimentalTelemetry: telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)
@@ -102,10 +101,11 @@ func main() {
 	temp := 0.7
 	maxTokens := 150
 	result2, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:       model,
-		Prompt:      "Write a haiku about observability in AI systems.",
-		Temperature: &temp,
-		MaxTokens:   &maxTokens,
+		Model:                 model,
+		Prompt:                "Write a haiku about observability in AI systems.",
+		Temperature:           &temp,
+		MaxTokens:             &maxTokens,
+		ExperimentalTelemetry: telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)
@@ -125,10 +125,4 @@ func main() {
 
 	fmt.Println("\n✅ Complete! View your traces at:", trackingURI)
 	fmt.Println("   Navigate to: Experiments > go-ai-sdk-demo > Traces")
-
-	// Note: The telemetry integration is configured via the tracer
-	// This example demonstrates the MLflow setup. Full integration
-	// with GenerateTextOptions would require telemetry middleware
-	// or direct integration in the AI SDK core functions.
-	_ = telemetrySettings // Used for demonstration purposes
 }

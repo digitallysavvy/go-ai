@@ -7,6 +7,9 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // StreamTextOptions contains options for streaming text generation
@@ -48,6 +51,9 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
+
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
 	OnFinish func(result *StreamTextResult)
@@ -76,6 +82,10 @@ type StreamTextResult struct {
 
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
+
+	// Telemetry span (closed when stream completes)
+	telemetrySpan trace.Span
+	telemetryOpts *TelemetrySettings
 }
 
 // StreamText performs streaming text generation
@@ -83,6 +93,46 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
+	}
+
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.streamText span
+		spanName := "ai.streamText"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		// Note: span.End() is deferred in processStream when stream completes
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.streamText"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+
+		// Record prompt if enabled
+		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
+		}
 	}
 
 	// Apply total timeout if configured
@@ -110,18 +160,24 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		ToolChoice:       opts.ToolChoice,
 		ResponseFormat:   opts.ResponseFormat,
 		ProviderOptions:  opts.ProviderOptions,
+		Telemetry:        opts.ExperimentalTelemetry,
 	}
 
 	// Start streaming
 	stream, err := opts.Model.DoStream(ctx, genOpts)
 	if err != nil {
+		if span != nil {
+			span.End()
+		}
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
 
 	// Create result
 	result := &StreamTextResult{
-		stream:  stream,
-		timeout: opts.Timeout,
+		stream:        stream,
+		timeout:       opts.Timeout,
+		telemetrySpan: span,
+		telemetryOpts: opts.ExperimentalTelemetry,
 	}
 
 	// Start goroutine to process chunks and call callbacks
@@ -165,6 +221,31 @@ func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onF
 		if onChunk != nil {
 			onChunk(*chunk)
 		}
+	}
+
+	// Record telemetry output attributes if span exists
+	if r.telemetrySpan != nil {
+		// Record output if enabled
+		if r.telemetryOpts != nil && r.telemetryOpts.RecordOutputs {
+			r.telemetrySpan.SetAttributes(attribute.String("ai.response.text", r.text))
+		}
+
+		// Record finish reason
+		r.telemetrySpan.SetAttributes(attribute.String("ai.response.finishReason", string(r.finishReason)))
+
+		// Record usage information
+		if r.usage.InputTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.promptTokens", *r.usage.InputTokens))
+		}
+		if r.usage.OutputTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.completionTokens", *r.usage.OutputTokens))
+		}
+		if r.usage.TotalTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.totalTokens", *r.usage.TotalTokens))
+		}
+
+		// End the telemetry span
+		r.telemetrySpan.End()
 	}
 
 	// Call finish callback
@@ -236,6 +317,31 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Usage != nil {
 			r.usage = *chunk.Usage
 		}
+	}
+
+	// Record telemetry output attributes if span exists
+	if r.telemetrySpan != nil {
+		// Record output if enabled
+		if r.telemetryOpts != nil && r.telemetryOpts.RecordOutputs {
+			r.telemetrySpan.SetAttributes(attribute.String("ai.response.text", r.text))
+		}
+
+		// Record finish reason
+		r.telemetrySpan.SetAttributes(attribute.String("ai.response.finishReason", string(r.finishReason)))
+
+		// Record usage information
+		if r.usage.InputTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.promptTokens", *r.usage.InputTokens))
+		}
+		if r.usage.OutputTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.completionTokens", *r.usage.OutputTokens))
+		}
+		if r.usage.TotalTokens != nil {
+			r.telemetrySpan.SetAttributes(attribute.Int64("ai.usage.totalTokens", *r.usage.TotalTokens))
+		}
+
+		// End the telemetry span
+		r.telemetrySpan.End()
 	}
 
 	return r.text, nil

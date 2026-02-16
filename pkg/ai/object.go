@@ -10,6 +10,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ObjectOutputMode defines the output mode for structured generation
@@ -56,6 +59,9 @@ type GenerateObjectOptions struct {
 	PresencePenalty  *float64
 	Seed             *int
 
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
+
 	// Callbacks
 	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
 
@@ -96,6 +102,47 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.generateObject span
+		spanName := "ai.generateObject"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		defer span.End()
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.generateObject"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+			attribute.String("ai.settings.output", string(opts.OutputMode)),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+
+		// Record prompt if enabled
+		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
+		}
+	}
+
 	// Set default output mode
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
@@ -123,18 +170,44 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 
 	// Handle different modes
+	var result *GenerateObjectResult
+	var err error
 	switch opts.OutputMode {
 	case ObjectModeObject:
-		return generateObjectMode(ctx, opts)
+		result, err = generateObjectMode(ctx, opts)
 	case ObjectModeArray:
-		return generateArrayMode(ctx, opts)
+		result, err = generateArrayMode(ctx, opts)
 	case ObjectModeEnum:
-		return generateEnumMode(ctx, opts)
+		result, err = generateEnumMode(ctx, opts)
 	case ObjectModeNoSchema:
-		return generateNoSchemaMode(ctx, opts)
+		result, err = generateNoSchemaMode(ctx, opts)
 	default:
 		return nil, fmt.Errorf("unsupported output mode: %s", opts.OutputMode)
 	}
+
+	// Record telemetry output attributes
+	if span != nil && result != nil {
+		// Record output if enabled
+		if opts.ExperimentalTelemetry.RecordOutputs {
+			span.SetAttributes(attribute.String("ai.response.text", result.Text))
+		}
+
+		// Record finish reason
+		span.SetAttributes(attribute.String("ai.response.finishReason", string(result.FinishReason)))
+
+		// Record usage information
+		if result.Usage.InputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.promptTokens", *result.Usage.InputTokens))
+		}
+		if result.Usage.OutputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.completionTokens", *result.Usage.OutputTokens))
+		}
+		if result.Usage.TotalTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *result.Usage.TotalTokens))
+		}
+	}
+
+	return result, err
 }
 
 // generateObjectMode handles standard object generation
@@ -153,6 +226,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions) (*Gener
 			Type:   "json_schema",
 			Schema: opts.Schema,
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -200,6 +274,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions) (*Genera
 			Type:   "json_schema",
 			Schema: opts.Schema,
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -253,6 +328,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions) (*Generat
 		ResponseFormat: &provider.ResponseFormat{
 			Type: "json_object",
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -306,6 +382,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions) (*Gen
 		ResponseFormat: &provider.ResponseFormat{
 			Type: "json_object",
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
@@ -374,6 +451,9 @@ type StreamObjectOptions struct {
 	PresencePenalty  *float64
 	Seed             *int
 
+	// Telemetry configuration for observability
+	ExperimentalTelemetry *TelemetrySettings
+
 	// Callbacks
 	OnChunk  func(partialObject interface{})
 	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
@@ -409,6 +489,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Type:   "json_schema",
 			Schema: opts.Schema,
 		},
+		Telemetry: opts.ExperimentalTelemetry,
 	}
 
 	// Try to start streaming

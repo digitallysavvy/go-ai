@@ -6,6 +6,9 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // GenerateTextOptions contains options for text generation
@@ -100,6 +103,29 @@ type GenerateTextOptions struct {
 	ProviderOptions map[string]interface{}
 
 	// ========================================================================
+	// Telemetry (v6.0 - Observability)
+	// ========================================================================
+
+	// ExperimentalTelemetry enables OpenTelemetry tracing for this operation
+	// When set, automatically records spans with prompts, responses, token usage, and latencies
+	//
+	// Example:
+	//   import "github.com/digitallysavvy/go-ai/pkg/telemetry"
+	//
+	//   result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+	//       Model: model,
+	//       Prompt: "Hello",
+	//       ExperimentalTelemetry: &telemetry.Settings{
+	//           IsEnabled: true,
+	//           RecordInputs: true,
+	//           RecordOutputs: true,
+	//       },
+	//   })
+	//
+	// For MLflow integration, see pkg/observability/mlflow
+	ExperimentalTelemetry *TelemetrySettings
+
+	// ========================================================================
 	// Callbacks (Updated signatures in v6.0)
 	// ========================================================================
 
@@ -116,6 +142,10 @@ type GenerateTextOptions struct {
 	// Receives the user context if ExperimentalContext is set
 	OnFinish func(ctx context.Context, result *GenerateTextResult, userContext interface{})
 }
+
+// TelemetrySettings configures OpenTelemetry tracing for AI operations
+// This is re-exported from pkg/telemetry for convenience
+type TelemetrySettings = telemetry.Settings
 
 // PrepareStepOptions contains options that can be modified before each step
 type PrepareStepOptions struct {
@@ -171,6 +201,46 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// Create telemetry span if enabled
+	var span trace.Span
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
+
+		// Create top-level ai.generateText span
+		spanName := "ai.generateText"
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
+		}
+
+		ctx, span = tracer.Start(ctx, spanName)
+		defer span.End()
+
+		// Add base telemetry attributes
+		span.SetAttributes(
+			attribute.String("ai.operationId", "ai.generateText"),
+			attribute.String("ai.model.provider", opts.Model.Provider()),
+			attribute.String("ai.model.id", opts.Model.ModelID()),
+		)
+
+		// Add function ID if present
+		if opts.ExperimentalTelemetry.FunctionID != "" {
+			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
+		}
+
+		// Add custom metadata
+		for key, value := range opts.ExperimentalTelemetry.Metadata {
+			span.SetAttributes(attribute.KeyValue{
+				Key:   attribute.Key("ai.telemetry.metadata." + key),
+				Value: value,
+			})
+		}
+
+		// Record prompt if enabled
+		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
+		}
+	}
+
 	// Apply total timeout if configured
 	var cancel context.CancelFunc
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
@@ -223,6 +293,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			ToolChoice:       opts.ToolChoice,
 			ResponseFormat:   opts.ResponseFormat,
 			ProviderOptions:  opts.ProviderOptions,
+			Telemetry:        opts.ExperimentalTelemetry,
 		}
 
 		// Call the model with step context
@@ -308,6 +379,28 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		// Check if we should continue
 		if genResult.FinishReason != types.FinishReasonToolCalls {
 			break
+		}
+	}
+
+	// Record telemetry output attributes
+	if span != nil {
+		// Record output if enabled
+		if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.RecordOutputs {
+			span.SetAttributes(attribute.String("ai.response.text", result.Text))
+		}
+
+		// Record finish reason
+		span.SetAttributes(attribute.String("ai.response.finishReason", string(result.FinishReason)))
+
+		// Record usage information
+		if result.Usage.InputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.promptTokens", *result.Usage.InputTokens))
+		}
+		if result.Usage.OutputTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.completionTokens", *result.Usage.OutputTokens))
+		}
+		if result.Usage.TotalTokens != nil {
+			span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *result.Usage.TotalTokens))
 		}
 	}
 
@@ -472,3 +565,4 @@ func buildPrompt(promptText string, messages []types.Message, system string) typ
 
 	return types.Prompt{}
 }
+

@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // LanguageModel represents a language model (V3 specification)
@@ -73,6 +74,10 @@ type GenerateOptions struct {
 	// These are passed directly to the provider and can contain any provider-specific settings
 	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}
 	ProviderOptions map[string]interface{}
+
+	// Telemetry configuration for observability
+	// Providers can use this to instrument their API calls with OpenTelemetry spans
+	Telemetry *telemetry.Settings
 }
 
 // ResponseFormat specifies the format of the response
