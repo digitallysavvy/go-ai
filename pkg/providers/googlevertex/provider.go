@@ -82,9 +82,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
-	// For now, return not implemented
-	// This would need to be implemented similar to google provider
-	return nil, fmt.Errorf("language models not yet implemented for Google Vertex AI")
+	return NewLanguageModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID

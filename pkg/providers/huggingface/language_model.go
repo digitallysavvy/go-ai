@@ -226,10 +226,6 @@ func (s *huggingfaceStream) Err() error {
 	return nil
 }
 
-func (s *huggingfaceStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
-}
-
 func (s *huggingfaceStream) Close() error {
 	s.done = true
 	return nil

@@ -407,10 +407,6 @@ func (s *bedrockStream) Err() error {
 	return nil
 }
 
-func (s *bedrockStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
-}
-
 func (s *bedrockStream) Close() error {
 	s.done = true
 	return nil

@@ -254,10 +254,6 @@ func (s *replicateStream) Err() error {
 	return nil
 }
 
-func (s *replicateStream) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("not implemented")
-}
-
 func (s *replicateStream) Close() error {
 	s.done = true
 	return nil

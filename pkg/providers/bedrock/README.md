@@ -295,6 +295,8 @@ if err := stream.Err(); err != nil {
 }
 ```
 
+**Note:** The `io.Reader` pattern (e.g., `stream.Read(buf)`) is not supported. Use the `Next()` method or `TextStream()` channel pattern shown above. See the [Streaming Guide](../../../docs/guides/STREAMING.md) for more details.
+
 ## Embeddings
 
 ```go

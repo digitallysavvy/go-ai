@@ -1,9 +1,12 @@
 # Google Vertex AI Provider
 
-This package provides access to Google Vertex AI models, including **Imagen** and **Gemini** image generation capabilities.
+This package provides access to Google Vertex AI models, including **Gemini language models**, **Imagen**, and **Gemini** image generation capabilities.
 
 ## Features
 
+- ✅ **Gemini Language Models**: `gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.5-flash-8b`, `gemini-2.0-flash-exp`
+- ✅ **Text Generation**: Chat, streaming, function calling, JSON mode
+- ✅ **Multi-modal Inputs**: Text, images, files (including Google Cloud Storage URLs)
 - ✅ **Imagen 3.0 Models**: `imagen-3.0-generate-001`, `imagen-3.0-fast-generate-001`
 - ✅ **Gemini Image Models**: `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`
 - ✅ **Text-to-Image Generation**: Create images from text prompts
@@ -46,6 +49,14 @@ export GOOGLE_VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token)
 
 ## Supported Models
 
+### Gemini Language Models
+- `gemini-1.5-pro` - Most capable model for complex tasks
+- `gemini-1.5-flash` - Fast and efficient for most use cases
+- `gemini-1.5-flash-8b` - Lightweight model for high-volume tasks
+- `gemini-2.0-flash-exp` - Experimental next-generation model
+- `gemini-pro` - Legacy model (deprecated, use gemini-1.5-pro)
+- `gemini-pro-vision` - Legacy vision model (deprecated, use gemini-1.5-pro)
+
 ### Imagen Models (Vertex AI)
 - `imagen-3.0-generate-001` - High quality image generation
 - `imagen-3.0-fast-generate-001` - Faster generation
@@ -56,6 +67,188 @@ export GOOGLE_VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token)
 - `gemini-3-pro-image-preview` - Advanced Gemini generation
 
 ## Usage
+
+### Language Models (Chat)
+
+#### Basic Text Generation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
+)
+
+func main() {
+    // Create Vertex AI provider
+    prov, err := googlevertex.New(googlevertex.Config{
+        Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+        Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
+        AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Create language model
+    model, _ := prov.LanguageModel(googlevertex.ModelGemini15Flash)
+
+    // Generate text
+    result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+        Prompt: types.Prompt{
+            Text: "Explain quantum computing in simple terms",
+        },
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println(result.Text)
+    fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
+}
+```
+
+#### Streaming Text Generation
+
+```go
+// Create language model
+model, _ := prov.LanguageModel(googlevertex.ModelGemini15Pro)
+
+// Stream text
+stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.ContentPart{
+                    types.TextContent{Text: "Write a story about AI"},
+                },
+            },
+        },
+    },
+})
+if err != nil {
+    panic(err)
+}
+defer stream.Close()
+
+// Process chunks using the Next() method
+for {
+    chunk, err := stream.Next()
+    if err != nil {
+        if err.Error() == "EOF" {
+            break
+        }
+        panic(err)
+    }
+
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+```
+
+**Note:** The `io.Reader` pattern (e.g., `stream.Read(buf)`) is not supported. Use the `Next()` method shown above. See the [Streaming Guide](../../../docs/guides/STREAMING.md) for more details.
+
+#### Google Cloud Storage URLs
+
+Vertex AI supports Google Cloud Storage (`gs://`) URLs for file inputs:
+
+```go
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.ContentPart{
+                    types.FileContent{
+                        Type:     "url",
+                        URL:      "gs://my-bucket/document.pdf",
+                        MimeType: "application/pdf",
+                    },
+                    types.TextContent{Text: "Summarize this document"},
+                },
+            },
+        },
+    },
+})
+```
+
+#### Function Calling
+
+```go
+// Define tools
+tools := []types.Tool{
+    {
+        Type: "function",
+        Function: types.ToolFunction{
+            Name:        "get_weather",
+            Description: "Get the weather for a location",
+            Parameters: map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "location": map[string]interface{}{
+                        "type":        "string",
+                        "description": "The city and state",
+                    },
+                },
+                "required": []string{"location"},
+            },
+        },
+    },
+}
+
+// Generate with tools
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.ContentPart{
+                    types.TextContent{Text: "What's the weather in San Francisco?"},
+                },
+            },
+        },
+    },
+    Tools: tools,
+})
+
+// Check for tool calls
+for _, toolCall := range result.ToolCalls {
+    fmt.Printf("Tool: %s, Args: %v\n", toolCall.ToolName, toolCall.Arguments)
+}
+```
+
+#### JSON Mode
+
+```go
+jsonType := "json_object"
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.ContentPart{
+                    types.TextContent{Text: "Generate a person object with name and age"},
+                },
+            },
+        },
+    },
+    ResponseFormat: &provider.ResponseFormat{
+        Type: jsonType,
+    },
+})
+
+// result.Text contains valid JSON
+```
+
+### Image Generation
 
 ### Basic Text-to-Image (Imagen)
 
@@ -231,7 +424,11 @@ type ImageUsage struct {
 
 ## Examples
 
-See the [examples/image-generation](../../../examples/image-generation) directory:
+See the [examples/providers/googlevertex](../../../examples/providers/googlevertex) directory:
+
+- `01-basic-chat.go` - Basic text generation with Gemini
+
+See also [examples/image-generation](../../../examples/image-generation):
 
 - `vertex_imagen.go` - Vertex AI Imagen generation
 - `vertex_gemini.go` - Vertex AI Gemini generation

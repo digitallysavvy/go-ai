@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -99,16 +98,53 @@ type ResponseFormat struct {
 	Description string
 }
 
-// TextStream represents a streaming text response
+// TextStream represents a streaming text response.
+//
+// TextStream uses a Next()-based pattern for consuming stream chunks.
+// This provides better type safety and is more idiomatic Go compared to
+// the io.Reader interface.
+//
+// Example usage:
+//
+//	stream, err := model.DoStream(ctx, options)
+//	if err != nil {
+//	    return err
+//	}
+//	defer stream.Close()
+//
+//	for {
+//	    chunk, err := stream.Next()
+//	    if err != nil {
+//	        if err.Error() == "EOF" {
+//	            break
+//	        }
+//	        return err
+//	    }
+//
+//	    switch chunk.Type {
+//	    case provider.ChunkTypeText:
+//	        fmt.Print(chunk.Text)
+//	    case provider.ChunkTypeError:
+//	        return fmt.Errorf("stream error: %v", chunk)
+//	    }
+//	}
+//
+// Note: The legacy io.Reader pattern (stream.Read()) is not supported.
+// Use the Next() method shown above.
 type TextStream interface {
-	io.ReadCloser
-
-	// Next returns the next chunk in the stream
-	// Returns io.EOF when the stream is complete
+	// Next returns the next chunk in the stream.
+	// Returns io.EOF when the stream is complete.
+	// Consumers should call Next() in a loop until io.EOF is returned.
 	Next() (*StreamChunk, error)
 
-	// Err returns any error that occurred during streaming
+	// Err returns any error that occurred during streaming.
+	// Returns nil if the stream completed successfully or if the error was io.EOF.
 	Err() error
+
+	// Close closes the underlying stream and releases resources.
+	// It's safe to call Close multiple times.
+	// Calling Close will cause future Next() calls to return io.EOF.
+	Close() error
 }
 
 // StreamChunk represents a single chunk in a text stream
