@@ -69,6 +69,40 @@ model, _ := provider.LanguageModel("qwen-plus")
 result, err := model.Generate(ctx, "Write a haiku about Go programming")
 ```
 
+### Streaming Text Generation
+
+Stream responses token-by-token for real-time output:
+
+```go
+model, _ := provider.LanguageModel("qwen-plus")
+stream, err := model.DoStream(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Tell me a story"},
+})
+defer stream.Close()
+
+for {
+    chunk, err := stream.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    switch chunk.Type {
+    case provider.ChunkTypeText:
+        fmt.Print(chunk.Text)
+    case provider.ChunkTypeReasoning:
+        fmt.Printf("[Thinking: %s]", chunk.Reasoning)
+    case provider.ChunkTypeFinish:
+        fmt.Printf("\nFinished: %s\n", chunk.FinishReason)
+        if chunk.Usage != nil {
+            fmt.Printf("Tokens: %d\n", chunk.Usage.GetTotalTokens())
+        }
+    }
+}
+```
+
 ### Vision (Image Understanding)
 
 ```go

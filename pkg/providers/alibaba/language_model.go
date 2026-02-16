@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -72,9 +74,31 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	// TODO: Implement proper SSE streaming in ALI-T07
-	// For now, return error indicating streaming not yet implemented
-	return nil, fmt.Errorf("streaming not yet implemented for Alibaba provider")
+	// Build request body with streaming enabled
+	reqBody := m.buildRequestBody(opts, true)
+
+	// Make streaming API request
+	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
+		Method: "POST",
+		Path:   "/chat/completions",
+		Body:   reqBody,
+		Headers: map[string]string{
+			"Accept": "text/event-stream",
+		},
+	})
+	if err != nil {
+		return nil, m.handleError(err)
+	}
+
+	// Check for HTTP errors
+	if httpResp.StatusCode != 200 {
+		body, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		return nil, fmt.Errorf("API returned status %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	// Create stream wrapper
+	return newAlibabaStream(httpResp.Body), nil
 }
 
 // buildRequestBody builds the API request body

@@ -66,6 +66,26 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
    ```
    Demonstrates: Reference-to-video with `wan2.6-r2v`, style transfer, flash variant
 
+9. **09-image-to-video-file.go** - Image-to-video with file input
+   ```bash
+   go run 09-image-to-video-file.go
+   ```
+   Demonstrates: Loading images from files for video generation
+
+### Streaming
+
+10. **10-stream-text.go** - Real-time text streaming
+    ```bash
+    go run 10-stream-text.go
+    ```
+    Demonstrates: Streaming text generation with token-by-token output
+
+11. **11-stream-thinking.go** - Streaming with thinking mode
+    ```bash
+    go run 11-stream-thinking.go
+    ```
+    Demonstrates: Streaming with visible reasoning process, thinking tokens
+
 ## Supported Models
 
 ### Qwen Chat Models
@@ -86,7 +106,9 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
 ## Features Demonstrated
 
 ✅ Basic text generation
+✅ Streaming text generation (real-time)
 ✅ Thinking/reasoning with token tracking
+✅ Streaming with thinking mode
 ✅ Prompt caching for cost savings
 ✅ Text-to-video generation
 ✅ Image-to-video animation
