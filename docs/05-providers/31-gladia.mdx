@@ -1,0 +1,253 @@
+---
+title: Gladia Provider
+description: Setup and usage guide for Gladia speech-to-text transcription with Go-AI SDK
+---
+
+# Gladia Provider
+
+Gladia provides advanced speech recognition with async processing and multi-language support. Perfect for high-quality audio transcription with word-level timestamps.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/gladia"
+)
+```
+
+### Configuration
+
+```go
+provider := gladia.New(gladia.Config{
+    APIKey: os.Getenv("GLADIA_API_KEY"),
+})
+
+model, err := provider.TranscriptionModel("whisper-v3")
+```
+
+### Get API Key
+
+1. Sign up at [gladia.io](https://www.gladia.io/)
+2. Get your API key from the dashboard
+
+```bash
+export GLADIA_API_KEY=your-api-key
+```
+
+## Available Models
+
+### Transcription Models
+
+| Model ID | Base | Best For |
+|----------|------|----------|
+| whisper-v3 | OpenAI Whisper v3 | High accuracy transcription |
+
+## Basic Usage
+
+### Simple Transcription
+
+```go
+// Read audio file
+audioData, err := os.ReadFile("audio.mp3")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Transcribe
+result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+    Audio:    audioData,
+    MimeType: "audio/mpeg",
+    Language: "en",
+})
+
+fmt.Println("Text:", result.Text)
+fmt.Printf("Duration: %.2f seconds\n", result.Usage.DurationSeconds)
+```
+
+## Provider-Specific Features
+
+### Word-Level Timestamps
+
+Get precise timing for each word or phrase:
+
+```go
+result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+    Audio:      audioData,
+    MimeType:   "audio/mpeg",
+    Language:   "en",
+    Timestamps: true, // Enable timestamps
+})
+
+// Access timestamps
+for _, ts := range result.Timestamps {
+    fmt.Printf("[%.2f-%.2f] %s\n", ts.Start, ts.End, ts.Text)
+}
+```
+
+**Use cases:**
+- Video subtitle generation
+- Audio navigation
+- Meeting transcription with time references
+- Content indexing and search
+
+### Multi-Language Support
+
+Gladia supports automatic language detection or explicit language codes:
+
+```go
+// Explicit language
+result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+    Audio:    audioData,
+    MimeType: "audio/mpeg",
+    Language: "fr", // French
+})
+
+// Auto-detect (leave Language empty)
+result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+    Audio:    audioData,
+    MimeType: "audio/mpeg",
+})
+```
+
+**Supported languages:**
+- English (en)
+- French (fr)
+- Spanish (es)
+- German (de)
+- Italian (it)
+- Portuguese (pt)
+- And 100+ more languages
+
+### Supported Audio Formats
+
+Gladia accepts various audio formats:
+
+```go
+// MP3
+result, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    mp3Data,
+    MimeType: "audio/mpeg",
+})
+
+// WAV
+result, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    wavData,
+    MimeType: "audio/wav",
+})
+
+// M4A
+result, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    m4aData,
+    MimeType: "audio/m4a",
+})
+
+// FLAC
+result, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    flacData,
+    MimeType: "audio/flac",
+})
+
+// OGG
+result, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    oggData,
+    MimeType: "audio/ogg",
+})
+```
+
+## Usage Metadata
+
+Access transcription usage information:
+
+```go
+result, err := model.DoTranscribe(ctx, opts)
+
+// Duration of audio processed
+fmt.Printf("Duration: %.2f seconds\n", result.Usage.DurationSeconds)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/gladia"
+)
+
+func main() {
+    // Create provider
+    p := gladia.New(gladia.Config{
+        APIKey: os.Getenv("GLADIA_API_KEY"),
+    })
+
+    // Get transcription model
+    model, err := p.TranscriptionModel("whisper-v3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Read audio file
+    audioData, err := os.ReadFile("meeting.mp3")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Transcribe with timestamps
+    result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+        Audio:      audioData,
+        MimeType:   "audio/mpeg",
+        Language:   "en",
+        Timestamps: true,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Print results
+    fmt.Println("Transcription:", result.Text)
+    fmt.Printf("Duration: %.2f seconds\n", result.Usage.DurationSeconds)
+
+    // Print timestamps
+    for i, ts := range result.Timestamps {
+        fmt.Printf("[%d] [%.2fs-%.2fs] %s\n", i+1, ts.Start, ts.End, ts.Text)
+    }
+}
+```
+
+## Error Handling
+
+```go
+result, err := model.DoTranscribe(ctx, opts)
+if err != nil {
+    log.Printf("Transcription failed: %v", err)
+    return
+}
+```
+
+Common errors:
+- Invalid API key: Check `GLADIA_API_KEY` environment variable
+- Unsupported format: Verify `MimeType` matches audio file format
+- File too large: Gladia has file size limits for uploads
+
+## Best Practices
+
+1. **Audio Quality**: Higher quality audio produces better transcriptions
+2. **Language Specification**: Specify language when known for better accuracy
+3. **Timestamps**: Enable only when needed to reduce processing time
+4. **Error Handling**: Always check errors and handle API failures gracefully
+
+## Documentation
+
+For more information about the Gladia API:
+- [Gladia Documentation](https://docs.gladia.io/)
+- [API Reference](https://docs.gladia.io/reference)
+- [Supported Languages](https://docs.gladia.io/languages)
