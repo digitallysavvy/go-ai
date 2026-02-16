@@ -274,11 +274,6 @@ func (s *extractReasoningStream) flushBuffer() *provider.StreamChunk {
 	return s.createChunk(s.buffer)
 }
 
-// Read implements io.Reader
-func (s *extractReasoningStream) Read(p []byte) (n int, err error) {
-	return s.underlying.Read(p)
-}
-
 // Close closes the underlying stream
 func (s *extractReasoningStream) Close() error {
 	return s.underlying.Close()

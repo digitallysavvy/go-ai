@@ -198,11 +198,6 @@ func (w *streamingExtractJSONWrapper) Next() (*provider.StreamChunk, error) {
 	}
 }
 
-// Read implements io.Reader
-func (w *streamingExtractJSONWrapper) Read(p []byte) (n int, err error) {
-	return w.stream.Read(p)
-}
-
 // Close closes the underlying stream
 func (w *streamingExtractJSONWrapper) Close() error {
 	return w.stream.Close()
