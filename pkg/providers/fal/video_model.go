@@ -104,6 +104,8 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) ma
 		if opts.Image.Type == "url" {
 			body["image_url"] = opts.Image.URL
 		} else if opts.Image.Type == "file" {
+			// TODO: implement file upload for FAL
+
 			// For FAL, we'd need to upload the image first or use base64
 			// For now, we'll skip this - it would require additional API call
 		}

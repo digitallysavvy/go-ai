@@ -35,7 +35,7 @@ func (m *TranscriptionModel) ModelID() string {
 }
 
 // gladiaTranscriptionRequest represents the Gladia API request
-type gladiaTranscriptionRequest struct {
+type _gladiaTranscriptionRequest struct {
 	Audio    string `json:"audio"`
 	Language string `json:"language,omitempty"`
 }

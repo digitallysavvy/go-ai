@@ -17,7 +17,7 @@ func TestDownload_Success(t *testing.T) {
 	content := []byte("test content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -45,7 +45,7 @@ func TestDownload_ContentLengthExceedsLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test"))
+		_, _ = w.Write([]byte("test"))
 	}))
 	defer server.Close()
 
@@ -73,7 +73,7 @@ func TestDownload_BodyExceedsLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		// Don't set Content-Length to test streaming detection
-		w.Write([]byte(largeContent))
+		_, _ = w.Write([]byte(largeContent))
 	}))
 	defer server.Close()
 

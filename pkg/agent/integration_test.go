@@ -301,7 +301,7 @@ func TestToolLoopAgent_SkillRemoval(t *testing.T) {
 		},
 	}
 
-	agent.AddSkill(skill)
+	_ = agent.AddSkill(skill)
 
 	// Verify skill exists
 	if !agent.config.Skills.Has("test_skill") {
@@ -341,7 +341,7 @@ func TestToolLoopAgent_SubagentRemoval(t *testing.T) {
 	}
 	subagent := NewToolLoopAgent(subConfig)
 
-	agent.AddSubagent("test_subagent", subagent)
+	_ = agent.AddSubagent("test_subagent", subagent)
 
 	// Verify subagent exists
 	if !agent.config.Subagents.Has("test_subagent") {

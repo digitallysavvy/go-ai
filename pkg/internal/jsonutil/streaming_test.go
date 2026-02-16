@@ -11,7 +11,6 @@ func TestStreamingParser_Basic(t *testing.T) {
 
 	// Append partial JSON
 	p.Append(`{"name": "J`)
-	result, ok := p.TryParse()
 	if !ok {
 		// Might not parse yet, that's okay
 		t.Log("partial JSON not parseable yet")

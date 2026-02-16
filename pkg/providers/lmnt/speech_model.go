@@ -42,7 +42,7 @@ type lmntSpeechRequest struct {
 }
 
 // lmntSpeechResponse represents the LMNT API response
-type lmntSpeechResponse struct {
+type _lmntSpeechResponse struct {
 	Audio    []byte `json:"audio"`
 	Duration float64 `json:"duration"`
 }

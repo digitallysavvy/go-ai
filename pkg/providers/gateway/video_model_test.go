@@ -158,7 +158,7 @@ func TestVideoModel_DoGenerate(t *testing.T) {
 
 				// Write response
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				_ = json.NewEncoder(w).Encode(tt.serverResponse)
 			}))
 			defer server.Close()
 
@@ -204,7 +204,7 @@ func TestVideoModel_DoGenerate_Timeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"videos": []map[string]interface{}{
 				{
 					"type":      "url",

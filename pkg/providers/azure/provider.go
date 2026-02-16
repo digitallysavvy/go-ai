@@ -44,7 +44,6 @@ func New(cfg Config) *Provider {
 	// Default API version if not specified
 	apiVersion := cfg.APIVersion
 	if apiVersion == "" {
-		apiVersion = "2024-02-15-preview"
 	}
 
 	// Create HTTP client with API key header

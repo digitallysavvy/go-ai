@@ -52,9 +52,7 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 			}
 
 			// Add tool calls as separate items
-			for _, toolCall := range toolCalls {
-				input = append(input, toolCall)
-			}
+		input = append(input, toolCalls...)
 
 		case types.RoleTool:
 			// Convert tool results

@@ -44,7 +44,7 @@ func TestPromptCacheRetention(t *testing.T) {
 			var capturedRequest map[string]interface{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Capture the request body
-				json.NewDecoder(r.Body).Decode(&capturedRequest)
+				_ = json.NewDecoder(r.Body).Decode(&capturedRequest)
 
 				// Return mock response
 				response := openAIResponse{
@@ -73,7 +73,7 @@ func TestPromptCacheRetention(t *testing.T) {
 					},
 				}
 
-				json.NewEncoder(w).Encode(response)
+				_ = json.NewEncoder(w).Encode(response)
 			}))
 			defer server.Close()
 
@@ -139,7 +139,7 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request has prompt_cache_retention
 		var reqBody map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 		if retention, ok := reqBody["prompt_cache_retention"]; !ok || retention != "24h" {
 			t.Errorf("expected prompt_cache_retention=24h in request")
@@ -218,7 +218,7 @@ func TestPromptCacheRetentionModels(t *testing.T) {
 		t.Run(tt.modelID, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var reqBody map[string]interface{}
-				json.NewDecoder(r.Body).Decode(&reqBody)
+				_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 				// Return success response
 				response := openAIResponse{

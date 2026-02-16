@@ -94,7 +94,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	// Parse size if provided
 	if opts.Size != "" {
 		var width, height int
-		fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
+		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
 		if width > 0 && height > 0 {
 			reqBody["width"] = width
 			reqBody["height"] = height

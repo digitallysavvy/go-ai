@@ -144,7 +144,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.PresencePenalty != nil {
 		body["presence_penalty"] = *opts.PresencePenalty
 	}
-	if opts.StopSequences != nil && len(opts.StopSequences) > 0 {
+	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {

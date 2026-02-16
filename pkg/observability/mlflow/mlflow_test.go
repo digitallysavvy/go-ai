@@ -121,7 +121,7 @@ func TestTracker_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer tracker.Shutdown(context.Background())
+	defer func() { _ = tracker.Shutdown(context.Background()) }()
 
 	// Verify defaults were applied
 	if tracker.config.ServiceName != "go-ai-sdk" {
@@ -142,7 +142,7 @@ func TestTracker_Tracer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer tracker.Shutdown(context.Background())
+	defer func() { _ = tracker.Shutdown(context.Background()) }()
 
 	tracer := tracker.Tracer()
 	if tracer == nil {
@@ -194,7 +194,7 @@ func TestTracker_ForceFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer tracker.Shutdown(context.Background())
+	defer func() { _ = tracker.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

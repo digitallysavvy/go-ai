@@ -154,7 +154,7 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
@@ -369,7 +369,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			tc := choice.Delta.ToolCalls[0]
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,

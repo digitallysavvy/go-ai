@@ -93,7 +93,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	// Add optional parameters
 	if opts.Language != "" {
-		writer.WriteField("language", opts.Language)
+		_ = writer.WriteField("language", opts.Language)
 	}
 
 	// Set response format
@@ -101,7 +101,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if opts.Timestamps {
 		responseFormat = "verbose_json"
 	}
-	writer.WriteField("response_format", responseFormat)
+	_ = writer.WriteField("response_format", responseFormat)
 
 	if err := writer.Close(); err != nil {
 		return nil, "", fmt.Errorf("failed to close multipart writer: %w", err)

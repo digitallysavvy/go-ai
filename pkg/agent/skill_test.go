@@ -70,7 +70,7 @@ func TestSkillRegistry_Get(t *testing.T) {
 		},
 	}
 
-	registry.Register(skill)
+	_ = registry.Register(skill)
 
 	// Test getting existing skill
 	retrieved, exists := registry.Get("test-skill")
@@ -99,7 +99,7 @@ func TestSkillRegistry_Has(t *testing.T) {
 		},
 	}
 
-	registry.Register(skill)
+	_ = registry.Register(skill)
 
 	if !registry.Has("test-skill") {
 		t.Fatal("expected skill to exist")
@@ -121,7 +121,7 @@ func TestSkillRegistry_Unregister(t *testing.T) {
 		},
 	}
 
-	registry.Register(skill)
+	_ = registry.Register(skill)
 
 	if !registry.Has("test-skill") {
 		t.Fatal("expected skill to exist")
