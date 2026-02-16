@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -39,6 +41,17 @@ func (m *VideoModel) Provider() string {
 // ModelID returns the model ID
 func (m *VideoModel) ModelID() string {
 	return m.modelID
+}
+
+// detectMode determines the model mode from model ID
+func (m *VideoModel) detectMode() string {
+	if strings.Contains(m.modelID, "-i2v") {
+		return "i2v"
+	}
+	if strings.Contains(m.modelID, "-r2v") {
+		return "r2v"
+	}
+	return "t2v"
 }
 
 // MaxVideosPerCall returns nil (Alibaba generates one video per call)
@@ -94,27 +107,31 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) ma
 	input := body["input"].(map[string]interface{})
 	params := body["parameters"].(map[string]interface{})
 
-	// Determine model type and build appropriate request
-	switch m.modelID {
-	case "wan2.5-t2v", "wan2.6-t2v":
+	// Determine model mode
+	mode := m.detectMode()
+
+	// Build input based on mode
+	switch mode {
+	case "t2v":
 		// Text-to-video: just needs text prompt
 		input["text"] = opts.Prompt
 
-	case "wan2.6-i2v", "wan2.6-i2v-flash":
+	case "i2v":
 		// Image-to-video: needs image and optional text
 		if opts.Image != nil {
 			if opts.Image.Type == "url" {
-				input["image_url"] = opts.Image.URL
+				input["img_url"] = opts.Image.URL
 			} else if opts.Image.Type == "file" {
-				// For file type, we'd need to upload first or use base64
-				// For now, skip - would require additional API call
+				// Convert file data to base64
+				base64Data := imageutil.EncodeToBase64(opts.Image.Data)
+				input["img_url"] = base64Data
 			}
 		}
 		if opts.Prompt != "" {
 			input["text"] = opts.Prompt
 		}
 
-	case "wan2.6-r2v", "wan2.6-r2v-flash":
+	case "r2v":
 		// Reference-to-video: needs reference image and text prompt
 		if opts.Image != nil {
 			if opts.Image.Type == "url" {
