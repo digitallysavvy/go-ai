@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -30,8 +33,10 @@ func main() {
 	endImageURL := "https://raw.githubusercontent.com/vercel/ai/refs/heads/main/examples/ai-functions/data/comic-dog.png"
 
 	fmt.Println("Generating video with start and end frame control...")
-	fmt.Printf("Start frame: %s\n", startImageURL)
-	fmt.Printf("End frame: %s\n", endImageURL)
+	fmt.Printf("Start frame: %s
+", startImageURL)
+	fmt.Printf("End frame: %s
+", endImageURL)
 
 	response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 		Prompt: "The cat walks across the scene and transforms into a dog by the end, in a playful and cartoonish style.",
@@ -54,32 +59,42 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("\nVideo generated successfully!")
-	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
-	fmt.Printf("Media Type: %s\n", response.Videos[0].MediaType)
+	fmt.Println("
+Video generated successfully!")
+	fmt.Printf("Video URL: %s
+", response.Videos[0].URL)
+	fmt.Printf("Media Type: %s
+", response.Videos[0].MediaType)
 
 	// Display metadata including watermark URL if available
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
-		fmt.Printf("\nKlingAI Metadata:\n")
+		fmt.Printf("
+KlingAI Metadata:
+")
 		if taskID, ok := metadata["taskId"].(string); ok {
-			fmt.Printf("  Task ID: %s\n", taskID)
+			fmt.Printf("  Task ID: %s
+", taskID)
 		}
 
 		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
 			if watermarkURL, ok := videos[0]["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("  Watermark Video URL: %s\n", watermarkURL)
+				fmt.Printf("  Watermark Video URL: %s
+", watermarkURL)
 			}
 			if dur, ok := videos[0]["duration"].(string); ok && dur != "" {
-				fmt.Printf("  Duration: %s seconds\n", dur)
+				fmt.Printf("  Duration: %s seconds
+", dur)
 			}
 		}
 	}
 
 	// Display warnings if any
 	if len(response.Warnings) > 0 {
-		fmt.Println("\nWarnings:")
+		fmt.Println("
+Warnings:")
 		for _, warning := range response.Warnings {
-			fmt.Printf("  - %s\n", warning.Message)
+			fmt.Printf("  - %s
+", warning.Message)
 		}
 	}
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 
@@ -32,7 +31,7 @@ func main() {
 	}
 
 	// Stream text
-	stream, err := ai.StreamText(ctx, ai.StreamOptions{
+	stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
 		Model:  model,
 		Prompt: "Invent a new holiday and describe its traditions.",
 	})
@@ -45,15 +44,7 @@ func main() {
 	fmt.Println()
 
 	// Read stream chunks
-	for {
-		chunk, err := stream.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Fatalf("Stream error: %v", err)
-		}
-
+	for chunk := range stream.Chunks() {
 		switch chunk.Type {
 		case provider.ChunkTypeText:
 			fmt.Print(chunk.Text)

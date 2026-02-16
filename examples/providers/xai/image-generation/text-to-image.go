@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -52,10 +55,14 @@ func main() {
 	}
 
 	// Print results
-	fmt.Println("\n✅ Image generated successfully!")
-	fmt.Printf("Image size: %d bytes\n", len(result.Image))
-	fmt.Printf("MIME type: %s\n", result.MimeType)
-	fmt.Printf("Images generated: %d\n", result.Usage.ImageCount)
+	fmt.Println("
+✅ Image generated successfully!")
+	fmt.Printf("Image size: %d bytes
+", len(result.Image))
+	fmt.Printf("MIME type: %s
+", result.MimeType)
+	fmt.Printf("Images generated: %d
+", result.Usage.ImageCount)
 
 	// Save image to file
 	outputFile := "generated-image.png"
@@ -63,13 +70,17 @@ func main() {
 		log.Fatalf("Failed to save image: %v", err)
 	}
 
-	fmt.Printf("\n💾 Image saved to: %s\n", outputFile)
+	fmt.Printf("
+💾 Image saved to: %s
+", outputFile)
 
 	// Print warnings
 	if len(result.Warnings) > 0 {
-		fmt.Println("\nWarnings:")
+		fmt.Println("
+Warnings:")
 		for _, warning := range result.Warnings {
-			fmt.Printf("  - %s: %s\n", warning.Type, warning.Message)
+			fmt.Printf("  - %s: %s
+", warning.Type, warning.Message)
 		}
 	}
 }

@@ -69,7 +69,7 @@ func main() {
 		log.Fatalf("Failed to get model: %v", err)
 	}
 
-	fmt.Println("=== Retention Settings Memory Benchmark ===\n")
+	fmt.Println("=== Retention Settings Memory Benchmark ===")
 
 	// Create a large prompt to simulate memory-intensive scenario
 	largePrompt := createLargePrompt()

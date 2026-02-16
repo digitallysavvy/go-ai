@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -33,22 +36,31 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Tool Calling with Local LLM ===\n")
+	fmt.Println("=== Tool Calling with Local LLM ===
+")
 
 	// Example 1: Simple tool call
 	fmt.Println("Example 1: Weather Tool")
 	weatherExample(ctx, model, provider)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 2: Math tool
-	fmt.Println("\n\nExample 2: Calculator Tool")
+	fmt.Println("
+
+Example 2: Calculator Tool")
 	calculatorExample(ctx, model, provider)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 3: Multiple tools
-	fmt.Println("\n\nExample 3: Multiple Tools")
+	fmt.Println("
+
+Example 3: Multiple Tools")
 	multipleToolsExample(ctx, model, provider)
 }
 
@@ -102,13 +114,18 @@ func weatherExample(ctx context.Context, model provider.LanguageModel, p *openre
 		return
 	}
 
-	fmt.Printf("Question: What's the weather like in San Francisco right now?\n")
-	fmt.Printf("Answer: %s\n", result.Text)
+	fmt.Printf("Question: What's the weather like in San Francisco right now?
+")
+	fmt.Printf("Answer: %s
+", result.Text)
 
 	if len(result.ToolCalls) > 0 {
-		fmt.Printf("\nTool calls made: %d\n", len(result.ToolCalls))
+		fmt.Printf("
+Tool calls made: %d
+", len(result.ToolCalls))
 		for i, tc := range result.ToolCalls {
-			fmt.Printf("  %d. %s with args: %v\n", i+1, tc.ToolName, tc.Arguments)
+			fmt.Printf("  %d. %s with args: %v
+", i+1, tc.ToolName, tc.Arguments)
 		}
 	}
 }
@@ -161,11 +178,15 @@ func calculatorExample(ctx context.Context, model provider.LanguageModel, p *ope
 		return
 	}
 
-	fmt.Printf("Question: What is 15 multiplied by 23?\n")
-	fmt.Printf("Answer: %s\n", result.Text)
+	fmt.Printf("Question: What is 15 multiplied by 23?
+")
+	fmt.Printf("Answer: %s
+", result.Text)
 
 	if len(result.Steps) > 1 {
-		fmt.Printf("\nSteps taken: %d\n", len(result.Steps))
+		fmt.Printf("
+Steps taken: %d
+", len(result.Steps))
 	}
 }
 
@@ -208,13 +229,18 @@ func multipleToolsExample(ctx context.Context, model provider.LanguageModel, p *
 		return
 	}
 
-	fmt.Printf("Question: What's the current date and time?\n")
-	fmt.Printf("Answer: %s\n", result.Text)
+	fmt.Printf("Question: What's the current date and time?
+")
+	fmt.Printf("Answer: %s
+", result.Text)
 
 	if len(result.ToolCalls) > 0 {
-		fmt.Printf("\nTools used:\n")
+		fmt.Printf("
+Tools used:
+")
 		for _, tc := range result.ToolCalls {
-			fmt.Printf("  - %s\n", tc.ToolName)
+			fmt.Printf("  - %s
+", tc.ToolName)
 		}
 	}
 }

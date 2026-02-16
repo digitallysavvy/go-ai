@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -19,8 +21,11 @@ func main() {
 	}
 
 	// Create provider and model
-	provider := anthropic.New(apiKey)
-	model := provider.LanguageModel("claude-3-5-sonnet-20241022")
+	p := anthropic.New(anthropic.Config{APIKey: apiKey})
+	model, err := p.LanguageModel("claude-3-5-sonnet-20241022")
+	if err != nil {
+		log.Fatalf("Failed to create model: %v", err)
+	}
 
 	// Example 1: Single Provider-Executed Tool
 	fmt.Println("=== Example 1: Provider-Executed Tool (tool-search-bm25) ===")
@@ -36,7 +41,7 @@ func main() {
 }
 
 // runToolSearchExample demonstrates a provider-executed tool
-func runToolSearchExample(model ai.LanguageModel) {
+func runToolSearchExample(model provider.LanguageModel) {
 	// Define Anthropic's tool-search-bm25 tool
 	toolSearch := types.Tool{
 		Name:        "tool-search-bm25",
@@ -82,7 +87,7 @@ func runToolSearchExample(model ai.LanguageModel) {
 }
 
 // runMixedToolsExample demonstrates using both local and provider-executed tools
-func runMixedToolsExample(model ai.LanguageModel) {
+func runMixedToolsExample(model provider.LanguageModel) {
 	// Local tool: Get weather (simulated)
 	weatherTool := types.Tool{
 		Name:        "get_weather",
@@ -159,7 +164,7 @@ func runMixedToolsExample(model ai.LanguageModel) {
 }
 
 // runErrorHandlingExample demonstrates error handling for provider-executed tools
-func runErrorHandlingExample(model ai.LanguageModel) {
+func runErrorHandlingExample(model provider.LanguageModel) {
 	// Define a tool that might error
 	webFetch := types.Tool{
 		Name:        "web-fetch",

@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -49,7 +52,8 @@ func main() {
 	for {
 		// Get user input
 		fmt.Print("You: ")
-		userInput, err := reader.ReadString('\n')
+		userInput, err := reader.ReadString('
+')
 		if err != nil {
 			log.Printf("Error reading input: %v", err)
 			break
@@ -90,7 +94,10 @@ func main() {
 		}
 
 		// Print assistant response
-		fmt.Printf("\nAssistant: %s\n\n", result.Text)
+		fmt.Printf("
+Assistant: %s
+
+", result.Text)
 
 		// Add assistant message to conversation
 		conversation = append(conversation, types.Message{
@@ -101,10 +108,15 @@ func main() {
 		})
 
 		// Print token usage
-		fmt.Printf("(Tokens: %d)\n", result.Usage.GetTotalTokens())
+		fmt.Printf("(Tokens: %d)
+", result.Usage.GetTotalTokens())
 	}
 
 	// Print conversation summary
-	fmt.Printf("\n\n=== Conversation Summary ===\n")
-	fmt.Printf("Total turns: %d\n", len(conversation)/2)
+	fmt.Printf("
+
+=== Conversation Summary ===
+")
+	fmt.Printf("Total turns: %d
+", len(conversation)/2)
 }

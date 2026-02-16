@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
@@ -43,21 +45,19 @@ func main() {
 	runFileOperationsExample(model, codeExecTool)
 }
 
-func runDataAnalysisExample(model ai.LanguageModel, tool ai.Tool) {
+func runDataAnalysisExample(model provider.LanguageModel, tool types.Tool) {
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("Create a simple bar chart showing sales data: Q1=100, Q2=150, Q3=120, Q4=180. Use matplotlib and save it as sales.png"),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Create a simple bar chart showing sales data: Q1=100, Q2=150, Q3=120, Q4=180. Use matplotlib and save it as sales.png"},
 				},
 			},
 		},
-		Tools: map[string]ai.Tool{
-			"codeExecution": tool,
-		},
+		Tools: []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
@@ -70,21 +70,19 @@ func runDataAnalysisExample(model ai.LanguageModel, tool ai.Tool) {
 	printToolCalls(result.ToolCalls)
 }
 
-func runBashExample(model ai.LanguageModel, tool ai.Tool) {
+func runBashExample(model provider.LanguageModel, tool types.Tool) {
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("Use bash commands to list the current directory contents and show disk usage"),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Use bash commands to list the current directory contents and show disk usage"},
 				},
 			},
 		},
-		Tools: map[string]ai.Tool{
-			"codeExecution": tool,
-		},
+		Tools: []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
@@ -97,21 +95,19 @@ func runBashExample(model ai.LanguageModel, tool ai.Tool) {
 	printToolCalls(result.ToolCalls)
 }
 
-func runFileOperationsExample(model ai.LanguageModel, tool ai.Tool) {
+func runFileOperationsExample(model provider.LanguageModel, tool types.Tool) {
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("Create a file called 'config.json' with sample configuration data, then read it back to verify"),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Create a file called 'config.json' with sample configuration data, then read it back to verify"},
 				},
 			},
 		},
-		Tools: map[string]ai.Tool{
-			"codeExecution": tool,
-		},
+		Tools: []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
@@ -124,7 +120,7 @@ func runFileOperationsExample(model ai.LanguageModel, tool ai.Tool) {
 	printToolCalls(result.ToolCalls)
 }
 
-func printToolCalls(toolCalls []ai.ToolCall) {
+func printToolCalls(toolCalls []types.ToolCall) {
 	if len(toolCalls) > 0 {
 		fmt.Println("\nTool Calls:")
 		for i, toolCall := range toolCalls {

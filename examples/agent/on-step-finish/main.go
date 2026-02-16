@@ -47,7 +47,7 @@ func main() {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			location := args["location"].(string)
 			// Simulate weather API call
 			return map[string]interface{}{

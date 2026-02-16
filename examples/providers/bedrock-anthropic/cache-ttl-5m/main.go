@@ -40,7 +40,7 @@ func main() {
 
 	// First request - creates cache
 	fmt.Println("=== First request (creating cache with 5m TTL) ===")
-	result1, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result1, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		System: largeContext,
 		Prompt: "What is the main topic of this document?",
@@ -66,7 +66,7 @@ func main() {
 
 	// Second request - uses cache (within 5 minutes)
 	fmt.Println("=== Second request (using cache) ===")
-	result2, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		System: largeContext,
 		Prompt: "Summarize this document in one sentence.",

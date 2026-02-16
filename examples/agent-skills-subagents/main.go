@@ -155,7 +155,7 @@ func main() {
 	The performance is outstanding and the developer experience is fantastic.
 	`
 
-	fmt.Println("=== Document Processing Pipeline ===\n")
+	fmt.Println("=== Document Processing Pipeline ===")
 	fmt.Println("Original Text:")
 	fmt.Println(sampleText)
 	fmt.Println()

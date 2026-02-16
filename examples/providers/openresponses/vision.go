@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -37,28 +40,41 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Image Understanding with Local Vision Model ===\n")
+	fmt.Println("=== Image Understanding with Local Vision Model ===
+")
 
 	// Example 1: Analyze image from URL
 	fmt.Println("Example 1: Analyze Image from URL")
 	analyzeImageFromURL(ctx, model)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 2: Analyze local image file
-	fmt.Println("\n\nExample 2: Analyze Local Image")
+	fmt.Println("
+
+Example 2: Analyze Local Image")
 	analyzeLocalImage(ctx, model)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 3: Compare multiple images
-	fmt.Println("\n\nExample 3: Compare Multiple Images")
+	fmt.Println("
+
+Example 3: Compare Multiple Images")
 	compareImages(ctx, model)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 4: OCR - Extract text from image
-	fmt.Println("\n\nExample 4: Extract Text (OCR)")
+	fmt.Println("
+
+Example 4: Extract Text (OCR)")
 	extractTextFromImage(ctx, model)
 }
 
@@ -90,7 +106,8 @@ func analyzeImageFromURL(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Image URL:", imageURL)
-	fmt.Println("\nDescription:")
+	fmt.Println("
+Description:")
 	fmt.Println(result.Text)
 }
 
@@ -131,10 +148,13 @@ func analyzeLocalImage(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Local file: example.jpg")
-	fmt.Println("\nAnalysis:")
+	fmt.Println("
+Analysis:")
 	fmt.Println(result.Text)
 
-	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
+	fmt.Printf("
+Token usage: %d
+", result.Usage.GetTotalTokens())
 }
 
 func compareImages(ctx context.Context, model provider.LanguageModel) {
@@ -169,7 +189,8 @@ func compareImages(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Comparing two landscape images...")
-	fmt.Println("\nComparison:")
+	fmt.Println("
+Comparison:")
 	fmt.Println(result.Text)
 }
 
@@ -215,7 +236,10 @@ func extractTextFromImage(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Extracting text from image...")
-	fmt.Println("\nExtracted Text:")
+	fmt.Println("
+Extracted Text:")
 	fmt.Println(result.Text)
-	fmt.Printf("\nFinish reason: %s\n", result.FinishReason)
+	fmt.Printf("
+Finish reason: %s
+", result.FinishReason)
 }

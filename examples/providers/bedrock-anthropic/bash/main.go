@@ -51,7 +51,7 @@ func main() {
 			},
 			"required": []string{"command"},
 		},
-		Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			command := args["command"].(string)
 
 			// Mock execution
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	// Generate text with bash tool
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "List all files in the current directory using bash",
 		Tools:  []types.Tool{bashTool},

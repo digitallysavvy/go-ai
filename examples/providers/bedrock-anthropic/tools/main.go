@@ -50,7 +50,7 @@ func main() {
 			},
 			"required": []string{"location"},
 		},
-		Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			// Mock implementation
 			location := args["location"].(string)
 			unit := "fahrenheit"
@@ -67,7 +67,7 @@ func main() {
 	}
 
 	// Generate text with tool calling
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "What's the weather like in San Francisco?",
 		Tools:  []types.Tool{getWeatherTool},

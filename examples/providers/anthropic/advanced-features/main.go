@@ -22,7 +22,7 @@ func main() {
 		APIKey: apiKey,
 	})
 
-	fmt.Println("=== Anthropic Advanced Features Demo ===\n")
+	fmt.Println("=== Anthropic Advanced Features Demo ===")
 
 	// Demo 1: Fast Mode
 	demoFastMode(provider)
@@ -40,7 +40,7 @@ func main() {
 // demoFastMode demonstrates fast mode for rapid responses
 func demoFastMode(provider *anthropic.Provider) {
 	fmt.Println("--- Demo 1: Fast Mode ---")
-	fmt.Println("Fast mode provides 2.5x faster output speeds (Opus 4.6 only)\n")
+	fmt.Println("Fast mode provides 2.5x faster output speeds (Opus 4.6 only)")
 
 	// Create model with fast mode
 	options := &anthropic.ModelOptions{
@@ -54,8 +54,10 @@ func demoFastMode(provider *anthropic.Provider) {
 	}
 
 	// Generate text
-	result, err := ai.GenerateText(context.Background(), model,
-		"What is the capital of France? Answer in one word.")
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "What is the capital of France? Answer in one word.",
+	})
 	if err != nil {
 		log.Printf("Error: %v\n\n", err)
 		return
@@ -69,7 +71,7 @@ func demoFastMode(provider *anthropic.Provider) {
 // demoAdaptiveThinking demonstrates adaptive thinking for complex reasoning
 func demoAdaptiveThinking(provider *anthropic.Provider) {
 	fmt.Println("--- Demo 2: Adaptive Thinking ---")
-	fmt.Println("Adaptive thinking shows Claude's reasoning process\n")
+	fmt.Println("Adaptive thinking shows Claude's reasoning process")
 
 	// Create model with adaptive thinking
 	options := &anthropic.ModelOptions{
@@ -89,7 +91,7 @@ func demoAdaptiveThinking(provider *anthropic.Provider) {
 You can flip the switches as many times as you want, but you can only
 enter the room once. How can you determine which switch controls which bulb?`
 
-	result, err := ai.GenerateText(context.Background(), model, prompt)
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: model, Prompt: prompt})
 	if err != nil {
 		log.Printf("Error: %v\n\n", err)
 		return
@@ -120,7 +122,7 @@ enter the room once. How can you determine which switch controls which bulb?`
 // demoExtendedThinking demonstrates extended thinking with budget
 func demoExtendedThinking(provider *anthropic.Provider) {
 	fmt.Println("--- Demo 3: Extended Thinking with Budget ---")
-	fmt.Println("For models before Opus 4.6, specify a thinking budget\n")
+	fmt.Println("For models before Opus 4.6, specify a thinking budget")
 
 	// Create model with extended thinking and budget
 	budget := 3000
@@ -141,7 +143,7 @@ func demoExtendedThinking(provider *anthropic.Provider) {
 	prompt := `Calculate the compound interest on $10,000 invested for 5 years
 at 6% annual interest, compounded quarterly. Show your work.`
 
-	result, err := ai.GenerateText(context.Background(), model, prompt)
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: model, Prompt: prompt})
 	if err != nil {
 		log.Printf("Error: %v\n\n", err)
 		return
@@ -156,7 +158,7 @@ at 6% annual interest, compounded quarterly. Show your work.`
 // demoCombinedFeatures demonstrates using fast mode and thinking together
 func demoCombinedFeatures(provider *anthropic.Provider) {
 	fmt.Println("--- Demo 4: Combined Features ---")
-	fmt.Println("Fast mode + adaptive thinking for rapid, reasoned responses\n")
+	fmt.Println("Fast mode + adaptive thinking for rapid, reasoned responses")
 
 	// Create model with both fast mode and adaptive thinking
 	options := &anthropic.ModelOptions{
@@ -180,7 +182,7 @@ C) A mix of both
 
 Consider risk tolerance, time horizon, and diversification. Give a brief recommendation.`
 
-	result, err := ai.GenerateText(context.Background(), model, prompt)
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: model, Prompt: prompt})
 	if err != nil {
 		log.Printf("Error: %v\n\n", err)
 		return

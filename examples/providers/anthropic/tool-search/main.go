@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
@@ -37,7 +38,7 @@ func main() {
 	runRegexExample(model)
 }
 
-func runBM25Example(model ai.LanguageModel) {
+func runBM25Example(model provider.LanguageModel) {
 	// Create tool search with BM25 (natural language)
 	toolSearchBM25 := tools.ToolSearchBm2520251119()
 
@@ -45,7 +46,7 @@ func runBM25Example(model ai.LanguageModel) {
 	deferredTools := createLargeToolCatalog()
 
 	// Combine tool search with deferred tools
-	allTools := map[string]ai.Tool{
+	allTools := map[string]types.Tool{
 		"toolSearch": toolSearchBM25,
 	}
 
@@ -54,18 +55,24 @@ func runBM25Example(model ai.LanguageModel) {
 		allTools[name] = tool
 	}
 
+	// Convert map to slice
+	toolSlice := make([]types.Tool, 0, len(allTools))
+	for _, tool := range allTools {
+		toolSlice = append(toolSlice, tool)
+	}
+
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("I need to get weather information for San Francisco. Can you help me find and use the right tool?"),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "I need to get weather information for San Francisco. Can you help me find and use the right tool?"},
 				},
 			},
 		},
-		Tools:    allTools,
+		Tools:    toolSlice,
 		MaxSteps: intPtr(10),
 	})
 
@@ -78,7 +85,7 @@ func runBM25Example(model ai.LanguageModel) {
 	printToolCalls(result.ToolCalls)
 }
 
-func runRegexExample(model ai.LanguageModel) {
+func runRegexExample(model provider.LanguageModel) {
 	// Create tool search with Regex
 	toolSearchRegex := tools.ToolSearchRegex20251119()
 
@@ -86,7 +93,7 @@ func runRegexExample(model ai.LanguageModel) {
 	deferredTools := createLargeToolCatalog()
 
 	// Combine tool search with deferred tools
-	allTools := map[string]ai.Tool{
+	allTools := map[string]types.Tool{
 		"toolSearch": toolSearchRegex,
 	}
 
@@ -95,18 +102,24 @@ func runRegexExample(model ai.LanguageModel) {
 		allTools[name] = tool
 	}
 
+	// Convert map to slice
+	toolSlice2 := make([]types.Tool, 0, len(allTools))
+	for _, tool := range allTools {
+		toolSlice2 = append(toolSlice2, tool)
+	}
+
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("Find all database-related tools and show me what's available"),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Find all database-related tools and show me what's available"},
 				},
 			},
 		},
-		Tools:    allTools,
+		Tools:    toolSlice2,
 		MaxSteps: intPtr(10),
 	})
 
@@ -119,11 +132,11 @@ func runRegexExample(model ai.LanguageModel) {
 	printToolCalls(result.ToolCalls)
 }
 
-func createLargeToolCatalog() map[string]ai.Tool {
+func createLargeToolCatalog() map[string]types.Tool {
 	// Create a large catalog of mock tools to demonstrate tool search
 	// In a real application, these would be actual tools with implementations
 
-	tools := map[string]ai.Tool{
+	tools := map[string]types.Tool{
 		// Weather tools
 		"get_weather_forecast": createMockTool("get_weather_forecast", "Get weather forecast for a location"),
 		"get_current_weather": createMockTool("get_current_weather", "Get current weather conditions"),
@@ -161,7 +174,7 @@ func createLargeToolCatalog() map[string]ai.Tool {
 	return tools
 }
 
-func createMockTool(name, description string) ai.Tool {
+func createMockTool(name, description string) types.Tool {
 	// Create a mock tool with deferred loading enabled
 	// In a real application, these would have actual implementations
 	return types.Tool{
@@ -188,7 +201,7 @@ func createMockTool(name, description string) ai.Tool {
 	}
 }
 
-func printToolCalls(toolCalls []ai.ToolCall) {
+func printToolCalls(toolCalls []types.ToolCall) {
 	if len(toolCalls) > 0 {
 		fmt.Println("\nTool Calls:")
 		for i, toolCall := range toolCalls {

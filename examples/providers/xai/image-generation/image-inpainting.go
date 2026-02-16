@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -43,8 +46,10 @@ func main() {
 
 	// Perform inpainting
 	fmt.Println("Performing image inpainting...")
-	fmt.Printf("Source Image: %s\n", imageURL)
-	fmt.Printf("Mask Image: %s\n", maskURL)
+	fmt.Printf("Source Image: %s
+", imageURL)
+	fmt.Printf("Mask Image: %s
+", maskURL)
 	fmt.Println("Prompt: Add a beautiful rainbow in the masked area")
 
 	result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
@@ -66,9 +71,12 @@ func main() {
 	}
 
 	// Print results
-	fmt.Println("\n✅ Image inpainting completed successfully!")
-	fmt.Printf("Image size: %d bytes\n", len(result.Image))
-	fmt.Printf("MIME type: %s\n", result.MimeType)
+	fmt.Println("
+✅ Image inpainting completed successfully!")
+	fmt.Printf("Image size: %d bytes
+", len(result.Image))
+	fmt.Printf("MIME type: %s
+", result.MimeType)
 
 	// Save inpainted image
 	outputFile := "inpainted-image.png"
@@ -76,9 +84,12 @@ func main() {
 		log.Fatalf("Failed to save image: %v", err)
 	}
 
-	fmt.Printf("\n💾 Inpainted image saved to: %s\n", outputFile)
+	fmt.Printf("
+💾 Inpainted image saved to: %s
+", outputFile)
 
-	fmt.Println("\n💡 Mask creation tips:")
+	fmt.Println("
+💡 Mask creation tips:")
 	fmt.Println("  - White pixels (255,255,255) indicate areas to modify")
 	fmt.Println("  - Black pixels (0,0,0) indicate areas to preserve")
 	fmt.Println("  - Mask should be same dimensions as source image")

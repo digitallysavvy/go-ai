@@ -8,7 +8,7 @@ import (
 
 // Example demonstrating the enhanced ValidationError with context
 func main() {
-	fmt.Println("=== Enhanced ValidationError Examples ===\n")
+	fmt.Println("=== Enhanced ValidationError Examples ===")
 
 	// Example 1: Validation error with full context (field path, entity name, and ID)
 	fmt.Println("Example 1: Full context with field path and entity information")

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
@@ -41,17 +42,15 @@ func main() {
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model: model,
-		Messages: []ai.Message{
+		Messages: []types.Message{
 			{
-				Role: ai.RoleUser,
-				Content: ai.MessageContent{
-					Text: stringPtr("Take a screenshot and describe what you see on the screen."),
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Take a screenshot and describe what you see on the screen."},
 				},
 			},
 		},
-		Tools: map[string]ai.Tool{
-			"computer": computerTool,
-		},
+		Tools: []types.Tool{computerTool},
 		MaxSteps: intPtr(5),
 	})
 

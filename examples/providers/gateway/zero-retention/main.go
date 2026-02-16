@@ -50,7 +50,8 @@ func main() {
 	fmt.Println("Example 1: Processing sensitive data")
 	fmt.Println("---------------------------------------")
 
-	result1, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 		Prompt: "Explain the importance of data privacy in healthcare applications.",
 		MaxTokens: ptr(150),
 	})
@@ -75,7 +76,8 @@ func main() {
 	for i, prompt := range prompts {
 		fmt.Printf("\nRequest %d: %s\n", i+1, prompt)
 
-		result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+		result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 			Prompt:    prompt,
 			MaxTokens: ptr(100),
 		})
@@ -92,7 +94,8 @@ func main() {
 	fmt.Println("Example 3: Streaming with zero data retention")
 	fmt.Println("=======================================================")
 
-	stream, err := ai.StreamText(context.Background(), model, ai.StreamTextOptions{
+	stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+		Model: model,
 		Prompt: "List 3 key principles of privacy-by-design.",
 	})
 	if err != nil {
@@ -100,8 +103,8 @@ func main() {
 	}
 
 	fmt.Println("\nStreaming response:")
-	for chunk := range stream.TextStream {
-		fmt.Print(chunk)
+	for chunk := range stream.Chunks() {
+		fmt.Print(chunk.Text)
 	}
 	fmt.Println()
 

@@ -33,7 +33,7 @@ func main() {
 	}
 
 	// Generate text
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "What is quantum computing? Explain in simple terms.",
 	})

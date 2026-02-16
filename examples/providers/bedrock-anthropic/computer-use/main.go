@@ -45,7 +45,7 @@ func main() {
 			},
 			"required": []string{"action"},
 		},
-		Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			// Mock implementation
 			action := args["action"].(string)
 			return map[string]interface{}{
@@ -68,7 +68,7 @@ func main() {
 			},
 			"required": []string{"command"},
 		},
-		Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			// Mock implementation
 			return map[string]interface{}{
 				"output": "Command executed successfully",
@@ -80,7 +80,7 @@ func main() {
 	// The provider will automatically:
 	// 1. Upgrade tool versions (computer_20241022 -> computer_20250124)
 	// 2. Add anthropic_beta headers for computer use
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "Take a screenshot of the current screen",
 		Tools:  []types.Tool{computerTool, bashTool},

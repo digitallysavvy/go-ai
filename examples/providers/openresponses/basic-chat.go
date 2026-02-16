@@ -33,7 +33,7 @@ func main() {
 	ctx := context.Background()
 
 	fmt.Println("=== Basic Text Generation with Local LLM ===")
-	fmt.Println("Asking: Explain Go interfaces in simple terms\n")
+	fmt.Println("Asking: Explain Go interfaces in simple terms")
 
 	// Generate text
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -58,7 +58,7 @@ func main() {
 	// Example 2: Using with system message
 	fmt.Println("\n\n=== With System Message ===")
 	fmt.Println("System: You are a helpful coding assistant")
-	fmt.Println("User: How do I handle errors in Go?\n")
+	fmt.Println("User: How do I handle errors in Go?")
 
 	result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
@@ -75,7 +75,7 @@ func main() {
 
 	// Example 3: With generation parameters
 	fmt.Println("\n\n=== With Custom Parameters ===")
-	fmt.Println("Generating a creative response with higher temperature...\n")
+	fmt.Println("Generating a creative response with higher temperature...")
 
 	temperature := 0.8
 	maxTokens := 100

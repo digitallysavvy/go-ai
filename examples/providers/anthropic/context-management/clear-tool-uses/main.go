@@ -92,7 +92,7 @@ func main() {
 		},
 	}
 
-	result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:    model,
 		Messages: messages,
 		Tools:    []types.Tool{weatherTool},
@@ -107,8 +107,8 @@ func main() {
 	fmt.Println()
 
 	// Access context management statistics
-	if result.ContextManagement() != nil {
-		cmr, ok := result.ContextManagement().(*anthropic.ContextManagementResponse)
+	if result.ContextManagement != nil {
+		cmr, ok := result.ContextManagement.(*anthropic.ContextManagementResponse)
 		if ok && len(cmr.AppliedEdits) > 0 {
 			fmt.Println("Context Management Applied:")
 			for _, edit := range cmr.AppliedEdits {
@@ -127,15 +127,8 @@ func main() {
 	}
 
 	// Show token usage
-	usage := result.Usage()
-	if usage.TotalTokens != nil {
-		fmt.Printf("\nToken usage: %d total\n", *usage.TotalTokens)
-		if usage.InputTokens != nil {
-			fmt.Printf("  Input: %d tokens\n", *usage.InputTokens)
-		}
-		if usage.OutputTokens != nil {
-			fmt.Printf("  Output: %d tokens\n", *usage.OutputTokens)
-		}
-		fmt.Println("\n(Context management helps reduce token usage in long conversations)")
-	}
+	fmt.Printf("\nToken usage: %d total\n", result.Usage.GetTotalTokens())
+	fmt.Printf("  Input: %d tokens\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Output: %d tokens\n", result.Usage.GetOutputTokens())
+	fmt.Println("\n(Context management helps reduce token usage in long conversations)")
 }

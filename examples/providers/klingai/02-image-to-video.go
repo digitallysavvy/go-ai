@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -49,17 +52,21 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("\nVideo generated successfully!")
-	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
+	fmt.Println("
+Video generated successfully!")
+	fmt.Printf("Video URL: %s
+", response.Videos[0].URL)
 
 	// Display metadata including watermark URL if available
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
 		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
 			if watermarkURL, ok := videos[0]["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("Watermark Video URL: %s\n", watermarkURL)
+				fmt.Printf("Watermark Video URL: %s
+", watermarkURL)
 			}
 			if duration, ok := videos[0]["duration"].(string); ok && duration != "" {
-				fmt.Printf("Duration: %s seconds\n", duration)
+				fmt.Printf("Duration: %s seconds
+", duration)
 			}
 		}
 	}

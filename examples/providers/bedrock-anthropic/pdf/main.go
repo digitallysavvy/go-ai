@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -37,26 +36,22 @@ func main() {
 		log.Fatalf("Failed to read PDF: %v", err)
 	}
 
-	// Encode to base64
-	pdfBase64 := base64.StdEncoding.EncodeToString(pdfData)
-
-	// Create prompt with PDF
-	prompt := types.Prompt{
+	// Generate text with PDF input
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model: model,
 		Messages: []types.Message{
 			{
 				Role: types.RoleUser,
 				Content: []types.ContentPart{
-					types.NewFilePart(pdfBase64, "application/pdf"),
-					types.NewTextPart("Summarize this PDF document. What are the main points?"),
+					types.FileContent{
+						Data:     pdfData,
+						MimeType: "application/pdf",
+						Filename: "document.pdf",
+					},
+					types.TextContent{Text: "Summarize this PDF document. What are the main points?"},
 				},
 			},
 		},
-	}
-
-	// Generate text with PDF input
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
-		Model:  model,
-		Prompt: prompt,
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

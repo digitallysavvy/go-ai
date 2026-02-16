@@ -55,13 +55,12 @@ func main() {
 	fmt.Printf("  Number of videos: %d\n", len(result.Videos))
 	if len(result.Videos) > 0 {
 		video := result.Videos[0]
-		fmt.Printf("  Video type: %s\n", video.Type)
 		fmt.Printf("  Media type: %s\n", video.MediaType)
 		if video.URL != "" {
 			fmt.Printf("  URL: %s\n", video.URL)
 		}
-		if video.Base64 != "" {
-			fmt.Printf("  Base64 length: %d characters\n", len(video.Base64))
+		if len(video.Data) > 0 {
+			fmt.Printf("  Data length: %d bytes\n", len(video.Data))
 		}
 	}
 
@@ -70,8 +69,8 @@ func main() {
 		fmt.Println("\n⚠️  Warnings:")
 		for _, warning := range result.Warnings {
 			fmt.Printf("  - [%s] %s", warning.Type, warning.Message)
-			if warning.Feature != "" {
-				fmt.Printf(" (feature: %s)", warning.Feature)
+			if warning.Type != "" {
+				fmt.Printf(" (feature: %s)", warning.Type)
 			}
 			fmt.Println()
 		}
@@ -119,7 +118,7 @@ func main() {
 		fmt.Printf("\n✓ Batch videos generated successfully!\n")
 		fmt.Printf("  Number of videos: %d\n", len(result3.Videos))
 		for i, video := range result3.Videos {
-			fmt.Printf("  Video %d: %s (%s)\n", i+1, video.Type, video.MediaType)
+			fmt.Printf("  Video %d: %s (%s)\n", i+1, video.MediaType, video.MediaType)
 		}
 	}
 

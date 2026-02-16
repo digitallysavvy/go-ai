@@ -126,11 +126,7 @@ func main() {
 	}
 
 	fmt.Print("Streaming response: ")
-	for {
-		chunk, err := stream.Read()
-		if err != nil {
-			break
-		}
+	for chunk := range stream.Chunks() {
 		fmt.Print(chunk.Text)
 	}
 	fmt.Println()

@@ -41,7 +41,8 @@ func main() {
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel1()
 
-	_, err = ai.GenerateText(ctx1, textModel, ai.GenerateTextOptions{
+	_, err = ai.GenerateText(ctx1, ai.GenerateTextOptions{
+		Model: textModel,
 		Prompt: "Write a detailed essay about the history of artificial intelligence.",
 		MaxTokens: ptr(1000),
 	})
@@ -65,7 +66,8 @@ func main() {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
 
-	result, err := ai.GenerateText(ctx2, textModel, ai.GenerateTextOptions{
+	result, err := ai.GenerateText(ctx2, ai.GenerateTextOptions{
+		Model: textModel,
 		Prompt: "Explain what the AI Gateway is in one sentence.",
 		MaxTokens: ptr(100),
 	})
@@ -148,7 +150,7 @@ func main() {
 		fmt.Println("\n✓ Video generated successfully!")
 		fmt.Printf("  Number of videos: %d\n", len(result4.Videos))
 		if len(result4.Videos) > 0 {
-			fmt.Printf("  Video type: %s\n", result4.Videos[0].Type)
+			fmt.Printf("  Video type: %s\n", result4.Videos[0].MediaType)
 			fmt.Printf("  Media type: %s\n", result4.Videos[0].MediaType)
 		}
 	}

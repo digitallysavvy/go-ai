@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -31,27 +34,37 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Streaming Text Generation with Local LLM ===\n")
+	fmt.Println("=== Streaming Text Generation with Local LLM ===
+")
 
 	// Example 1: Basic streaming
 	fmt.Println("Example 1: Basic Streaming")
 	basicStreamingExample(ctx, model)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 2: Streaming with token count
-	fmt.Println("\n\nExample 2: Streaming with Token Tracking")
+	fmt.Println("
+
+Example 2: Streaming with Token Tracking")
 	streamingWithTokensExample(ctx, model)
 
-	fmt.Println("\n\n" + strings.Repeat("=", 50))
+	fmt.Println("
+
+" + strings.Repeat("=", 50))
 
 	// Example 3: Streaming a longer response
-	fmt.Println("\n\nExample 3: Streaming Longer Content")
+	fmt.Println("
+
+Example 3: Streaming Longer Content")
 	streamingLongContentExample(ctx, model)
 }
 
 func basicStreamingExample(ctx context.Context, model provider.LanguageModel) {
-	fmt.Println("Prompt: Explain what Go channels are in one sentence\n")
+	fmt.Println("Prompt: Explain what Go channels are in one sentence
+")
 	fmt.Print("Response: ")
 
 	stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -72,17 +85,22 @@ func basicStreamingExample(ctx context.Context, model provider.LanguageModel) {
 
 	// Check for errors
 	if err := stream.Err(); err != nil {
-		log.Printf("\nStream error: %v", err)
+		log.Printf("
+Stream error: %v", err)
 		return
 	}
 
 	fmt.Println()
-	fmt.Printf("\nFinish reason: %s\n", stream.FinishReason())
+	fmt.Printf("
+Finish reason: %s
+", stream.FinishReason())
 }
 
 func streamingWithTokensExample(ctx context.Context, model provider.LanguageModel) {
-	fmt.Println("Prompt: Write a haiku about Go programming\n")
-	fmt.Print("Response:\n")
+	fmt.Println("Prompt: Write a haiku about Go programming
+")
+	fmt.Print("Response:
+")
 
 	startTime := time.Now()
 
@@ -111,7 +129,8 @@ func streamingWithTokensExample(ctx context.Context, model provider.LanguageMode
 
 	// Check for errors
 	if err := stream.Err(); err != nil {
-		log.Printf("\nStream error: %v", err)
+		log.Printf("
+Stream error: %v", err)
 		return
 	}
 
@@ -119,19 +138,25 @@ func streamingWithTokensExample(ctx context.Context, model provider.LanguageMode
 
 	// Print streaming stats
 	usage := stream.Usage()
-	fmt.Println("\nStreaming Stats:")
-	fmt.Printf("  Chunks received: %d\n", chunkCount)
-	fmt.Printf("  Duration: %v\n", duration)
-	fmt.Printf("  Total tokens: %d\n", usage.GetTotalTokens())
+	fmt.Println("
+Streaming Stats:")
+	fmt.Printf("  Chunks received: %d
+", chunkCount)
+	fmt.Printf("  Duration: %v
+", duration)
+	fmt.Printf("  Total tokens: %d
+", usage.GetTotalTokens())
 	outputTokens := usage.GetOutputTokens()
 	if outputTokens > 0 {
 		tokensPerSecond := float64(outputTokens) / duration.Seconds()
-		fmt.Printf("  Tokens/second: %.2f\n", tokensPerSecond)
+		fmt.Printf("  Tokens/second: %.2f
+", tokensPerSecond)
 	}
 }
 
 func streamingLongContentExample(ctx context.Context, model provider.LanguageModel) {
-	fmt.Println("Prompt: Write a short story about a robot learning to code\n")
+	fmt.Println("Prompt: Write a short story about a robot learning to code
+")
 	fmt.Println("Response:")
 	fmt.Println(strings.Repeat("-", 50))
 
@@ -157,13 +182,17 @@ func streamingLongContentExample(ctx context.Context, model provider.LanguageMod
 
 		case provider.ChunkTypeToolCall:
 			// Handle tool calls if model decides to use them
-			fmt.Printf("\n[Tool call: %s]\n", chunk.ToolCall.ToolName)
+			fmt.Printf("
+[Tool call: %s]
+", chunk.ToolCall.ToolName)
 		}
 	}
 
 	// Check for errors
 	if err := stream.Err(); err != nil {
-		log.Printf("\n\nStream error: %v", err)
+		log.Printf("
+
+Stream error: %v", err)
 		return
 	}
 
@@ -172,9 +201,14 @@ func streamingLongContentExample(ctx context.Context, model provider.LanguageMod
 
 	// Print final stats
 	usage := stream.Usage()
-	fmt.Println("\nFinal Stats:")
-	fmt.Printf("  Characters generated: %d\n", len(fullText))
-	fmt.Printf("  Input tokens: %d\n", usage.GetInputTokens())
-	fmt.Printf("  Output tokens: %d\n", usage.GetOutputTokens())
-	fmt.Printf("  Finish reason: %s\n", stream.FinishReason())
+	fmt.Println("
+Final Stats:")
+	fmt.Printf("  Characters generated: %d
+", len(fullText))
+	fmt.Printf("  Input tokens: %d
+", usage.GetInputTokens())
+	fmt.Printf("  Output tokens: %d
+", usage.GetOutputTokens())
+	fmt.Printf("  Finish reason: %s
+", stream.FinishReason())
 }

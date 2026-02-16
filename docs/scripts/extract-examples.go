@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -41,8 +44,8 @@ type TestResult struct {
 
 var (
 	// Matches code blocks: ```go ... ```
-	codeBlockStartRegex = regexp.MustCompile("^```(\\w+)\\s*$")
-	codeBlockEndRegex   = regexp.MustCompile("^```\\s*$")
+	codeBlockStartRegex = regexp.MustCompile("^```(\w+)\s*$")
+	codeBlockEndRegex   = regexp.MustCompile("^```\s*$")
 )
 
 func main() {
@@ -57,7 +60,8 @@ func main() {
 
 	// Validate docs path
 	if _, err := os.Stat(*docsPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s\n", *docsPath)
+		fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s
+", *docsPath)
 		os.Exit(1)
 	}
 
@@ -70,29 +74,39 @@ func main() {
 
 	fmt.Println("🔍 Code Example Extraction Report")
 	fmt.Println("=================================")
-	fmt.Printf("Documentation root: %s\n", *docsPath)
+	fmt.Printf("Documentation root: %s
+", *docsPath)
 	if !*testOnly {
-		fmt.Printf("Output directory:   %s\n", *outputDir)
+		fmt.Printf("Output directory:   %s
+", *outputDir)
 	}
 	fmt.Println()
 
 	// Step 1: Extract code examples from all documentation
 	if err := extractor.extractExamples(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error extracting examples: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error extracting examples: %v
+", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d code examples\n", len(extractor.examples))
-	fmt.Printf("  - %d complete Go examples\n", extractor.countCompleteGoExamples())
-	fmt.Printf("  - %d partial/snippet examples\n\n", len(extractor.examples)-extractor.countCompleteGoExamples())
+	fmt.Printf("Found %d code examples
+", len(extractor.examples))
+	fmt.Printf("  - %d complete Go examples
+", extractor.countCompleteGoExamples())
+	fmt.Printf("  - %d partial/snippet examples
+
+", len(extractor.examples)-extractor.countCompleteGoExamples())
 
 	// Step 2: Write examples to files (unless test-only mode)
 	if !*testOnly {
 		if err := extractor.writeExamples(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing examples: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error writing examples: %v
+", err)
 			os.Exit(1)
 		}
-		fmt.Printf("✅ Extracted examples to: %s\n\n", *outputDir)
+		fmt.Printf("✅ Extracted examples to: %s
+
+", *outputDir)
 	}
 
 	// Step 3: Test/compile examples
@@ -179,7 +193,8 @@ func (e *ExampleExtractor) extractExamplesFromFile(relPath, fullPath string) err
 				codeLines = []string{}
 
 				if e.verbose {
-					fmt.Printf("  Found %s code block in %s (line %d)\n", language, relPath, lineNumber)
+					fmt.Printf("  Found %s code block in %s (line %d)
+", language, relPath, lineNumber)
 				}
 			}
 			continue
@@ -187,7 +202,8 @@ func (e *ExampleExtractor) extractExamplesFromFile(relPath, fullPath string) err
 
 		// Check for code block end
 		if codeBlockEndRegex.MatchString(line) {
-			currentBlock.Code = strings.Join(codeLines, "\n")
+			currentBlock.Code = strings.Join(codeLines, "
+")
 			currentBlock.IsComplete = e.isCompleteGoExample(currentBlock.Code)
 			e.examples = append(e.examples, *currentBlock)
 			currentBlock = nil
@@ -246,7 +262,8 @@ func (e *ExampleExtractor) writeExamples() error {
 		}
 
 		if e.verbose {
-			fmt.Printf("  Wrote: %s\n", filename)
+			fmt.Printf("  Wrote: %s
+", filename)
 		}
 	}
 
@@ -264,7 +281,8 @@ func (e *ExampleExtractor) testExamples() {
 		// Only test complete examples
 		if !example.IsComplete {
 			if e.verbose {
-				fmt.Printf("⊘ Skipping incomplete example from %s (line %d)\n",
+				fmt.Printf("⊘ Skipping incomplete example from %s (line %d)
+",
 					example.SourceFile, example.LineNumber)
 			}
 			continue
@@ -304,16 +322,21 @@ func (e *ExampleExtractor) testExample(example CodeExample) TestResult {
 	if err != nil {
 		result.Error = fmt.Sprintf("Compilation failed: %v", err)
 		result.Output = string(output)
-		fmt.Printf("❌ FAIL: %s (line %d)\n", example.SourceFile, example.LineNumber)
+		fmt.Printf("❌ FAIL: %s (line %d)
+", example.SourceFile, example.LineNumber)
 		if e.verbose {
-			fmt.Printf("   Error: %s\n", result.Error)
+			fmt.Printf("   Error: %s
+", result.Error)
 			if len(output) > 0 {
-				fmt.Printf("   Output:\n%s\n", indentLines(string(output), "      "))
+				fmt.Printf("   Output:
+%s
+", indentLines(string(output), "      "))
 			}
 		}
 	} else {
 		result.Passed = true
-		fmt.Printf("✅ PASS: %s (line %d)\n", example.SourceFile, example.LineNumber)
+		fmt.Printf("✅ PASS: %s (line %d)
+", example.SourceFile, example.LineNumber)
 	}
 
 	return result
@@ -321,7 +344,8 @@ func (e *ExampleExtractor) testExample(example CodeExample) TestResult {
 
 // printTestResults prints a summary of test results
 func (e *ExampleExtractor) printTestResults() {
-	fmt.Println("\n📊 Test Summary")
+	fmt.Println("
+📊 Test Summary")
 	fmt.Println("---------------")
 
 	passedCount := 0
@@ -337,28 +361,39 @@ func (e *ExampleExtractor) printTestResults() {
 	totalTested := len(e.results)
 	totalExamples := len(e.examples)
 
-	fmt.Printf("Total examples found:    %d\n", totalExamples)
-	fmt.Printf("Examples tested:         %d\n", totalTested)
-	fmt.Printf("Passed:                  %d\n", passedCount)
-	fmt.Printf("Failed:                  %d\n\n", failedCount)
+	fmt.Printf("Total examples found:    %d
+", totalExamples)
+	fmt.Printf("Examples tested:         %d
+", totalTested)
+	fmt.Printf("Passed:                  %d
+", passedCount)
+	fmt.Printf("Failed:                  %d
+
+", failedCount)
 
 	if failedCount > 0 {
 		fmt.Println("❌ Failed Examples:")
 		fmt.Println("-------------------")
 		for _, result := range e.results {
 			if !result.Passed {
-				fmt.Printf("\n📄 %s (line %d, block %d)\n",
+				fmt.Printf("
+📄 %s (line %d, block %d)
+",
 					result.Example.SourceFile,
 					result.Example.LineNumber,
 					result.Example.BlockNumber)
-				fmt.Printf("   Error: %s\n", result.Error)
+				fmt.Printf("   Error: %s
+", result.Error)
 				if len(result.Output) > 0 && e.verbose {
-					fmt.Printf("   Compiler output:\n%s\n", indentLines(result.Output, "      "))
+					fmt.Printf("   Compiler output:
+%s
+", indentLines(result.Output, "      "))
 				}
 			}
 		}
 
-		fmt.Println("\n💡 Common Issues:")
+		fmt.Println("
+💡 Common Issues:")
 		fmt.Println("  • Missing imports (add required packages)")
 		fmt.Println("  • Placeholder values (replace 'your-api-key' with actual values)")
 		fmt.Println("  • Pseudo-code (examples meant for illustration only)")
@@ -370,17 +405,21 @@ func (e *ExampleExtractor) printTestResults() {
 	// Provide guidance on untested examples
 	untestedCount := totalExamples - totalTested
 	if untestedCount > 0 {
-		fmt.Printf("\nℹ️  %d examples were not tested (incomplete snippets or non-Go code)\n", untestedCount)
+		fmt.Printf("
+ℹ️  %d examples were not tested (incomplete snippets or non-Go code)
+", untestedCount)
 	}
 }
 
 // indentLines adds indentation to each line of a string
 func indentLines(s, indent string) string {
-	lines := strings.Split(s, "\n")
+	lines := strings.Split(s, "
+")
 	for i, line := range lines {
 		if line != "" {
 			lines[i] = indent + line
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "
+")
 }

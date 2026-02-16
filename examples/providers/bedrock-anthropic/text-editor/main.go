@@ -59,7 +59,7 @@ func main() {
 			},
 			"required": []string{"command", "path"},
 		},
-		Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			command := args["command"].(string)
 			path := args["path"].(string)
 
@@ -81,7 +81,7 @@ func main() {
 	}
 
 	// Generate text with text editor tool
-	result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "Replace the word 'hello' with 'goodbye' in the file test.txt",
 		Tools:  []types.Tool{textEditorTool},

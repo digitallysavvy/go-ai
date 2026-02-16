@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	bedrockAnthropic "github.com/digitallysavvy/go-ai/pkg/providers/bedrock/anthropic"
 )
 
@@ -36,7 +37,7 @@ func main() {
 	}
 
 	// Define tools that will be cached
-	weatherTool := ai.Tool{
+	weatherTool := types.Tool{
 		Name:        "get_weather",
 		Description: "Get the current weather for a location",
 		Parameters: map[string]interface{}{
@@ -55,7 +56,7 @@ func main() {
 		},
 	}
 
-	calculatorTool := ai.Tool{
+	calculatorTool := types.Tool{
 		Name:        "calculator",
 		Description: "Perform basic arithmetic operations",
 		Parameters: map[string]interface{}{
@@ -80,11 +81,11 @@ func main() {
 
 	// First request - creates cache for tools
 	fmt.Println("=== First request (creating cache for tools with 1h TTL) ===")
-	result1, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result1, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		System: "You are a helpful assistant with access to weather and calculator tools.",
 		Prompt: "What's the weather like in San Francisco?",
-		Tools:  []ai.Tool{weatherTool, calculatorTool},
+		Tools:  []types.Tool{weatherTool, calculatorTool},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)
@@ -110,11 +111,11 @@ func main() {
 
 	// Second request - uses cached tools
 	fmt.Println("=== Second request (using cached tools) ===")
-	result2, err := ai.GenerateText(ctx, ai.GenerateOptions{
+	result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		System: "You are a helpful assistant with access to weather and calculator tools.",
 		Prompt: "Calculate 42 plus 17",
-		Tools:  []ai.Tool{weatherTool, calculatorTool},
+		Tools:  []types.Tool{weatherTool, calculatorTool},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

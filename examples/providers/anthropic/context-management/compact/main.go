@@ -116,8 +116,8 @@ func main() {
 	fmt.Printf("  Output: %d tokens\n", result.Usage.GetOutputTokens())
 
 	// Check if iterations data is available (indicates compaction occurred)
-	if rawUsage, ok := result.Usage.Raw.(map[string]interface{}); ok {
-		if iterations, ok := rawUsage["iterations"].([]interface{}); ok && len(iterations) > 0 {
+	if result.Usage.Raw != nil {
+		if iterations, ok := result.Usage.Raw["iterations"].([]interface{}); ok && len(iterations) > 0 {
 			fmt.Println("\n  Iterations breakdown:")
 			for i, iter := range iterations {
 				if iterMap, ok := iter.(map[string]interface{}); ok {

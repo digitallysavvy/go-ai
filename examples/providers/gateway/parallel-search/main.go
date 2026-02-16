@@ -38,7 +38,8 @@ func main() {
 		MaxResults: 5,
 	})
 
-	result1, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 		Prompt: "Search for information about quantum computing breakthroughs in 2024.",
 		Tools: []types.Tool{
 			basicSearch.ToTool(),
@@ -74,7 +75,8 @@ func main() {
 		},
 	})
 
-	result2, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+	result2, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 		Prompt: "What are the latest developments in renewable energy?",
 		Tools: []types.Tool{
 			filteredSearch.ToTool(),
@@ -104,7 +106,8 @@ func main() {
 		},
 	})
 
-	result3, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+	result3, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 		Prompt: "Find recent news about AI safety regulations.",
 		Tools: []types.Tool{
 			agenticSearch.ToTool(),
@@ -126,7 +129,8 @@ func main() {
 		MaxResults: 5,
 	})
 
-	stream, err := ai.StreamText(context.Background(), model, ai.StreamTextOptions{
+	stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+		Model: model,
 		Prompt: "Search for and summarize the top 3 climate change solutions being implemented globally.",
 		Tools: []types.Tool{
 			searchTool.ToTool(),
@@ -137,8 +141,8 @@ func main() {
 	}
 
 	fmt.Println("\nStreaming response:")
-	for chunk := range stream.TextStream {
-		fmt.Print(chunk)
+	for chunk := range stream.Chunks() {
+		fmt.Print(chunk.Text)
 	}
 	fmt.Println()
 

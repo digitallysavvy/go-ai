@@ -59,7 +59,8 @@ func main() {
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Generate text
-	result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model: model,
 		Prompt: "Explain what the AI Gateway is in one paragraph.",
 		MaxTokens: ptr(200),
 	})
@@ -71,28 +72,28 @@ func main() {
 	fmt.Println(result.Text)
 
 	// Display usage information
-	if result.Usage != nil {
-		fmt.Printf("\nUsage:\n")
-		fmt.Printf("  Prompt tokens: %d\n", result.Usage.GetInputTokens())
-		fmt.Printf("  Completion tokens: %d\n", result.Usage.GetOutputTokens())
-		fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
-	}
+	fmt.Printf("\nUsage:\n")
+	fmt.Printf("  Prompt tokens: %d\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Completion tokens: %d\n", result.Usage.GetOutputTokens())
+	fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("Streaming text with gateway provider...")
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Stream text
-	stream, err := ai.StreamText(context.Background(), model, ai.StreamTextOptions{
+	stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+		Model:  model,
 		Prompt: "Count from 1 to 5, one number per line.",
 	})
 	if err != nil {
 		log.Fatalf("Failed to stream text: %v", err)
 	}
+	defer stream.Close()
 
 	fmt.Println("\nStreamed response:")
-	for chunk := range stream.TextStream {
-		fmt.Print(chunk)
+	for chunk := range stream.Chunks() {
+		fmt.Print(chunk.Text)
 	}
 	fmt.Println()
 

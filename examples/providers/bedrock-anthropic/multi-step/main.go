@@ -46,7 +46,7 @@ func main() {
 				},
 				"required": []string{"query"},
 			},
-			Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				query := args["query"].(string)
 				return map[string]interface{}{
 					"results": []string{
@@ -69,7 +69,7 @@ func main() {
 				},
 				"required": []string{"expression"},
 			},
-			Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+			Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 				// Mock calculation
 				return map[string]interface{}{
 					"result": 42,
@@ -78,93 +78,51 @@ func main() {
 		},
 	}
 
-	// Initial user message
-	messages := []types.Message{
-		{
-			Role: types.RoleUser,
-			Content: []types.ContentPart{
-				types.NewTextPart("What's the population of Tokyo, and what's that number divided by 1000?"),
+	// Use GenerateText with MaxSteps for automatic multi-turn tool calling
+	// This is the recommended approach - the SDK handles the tool loop automatically
+	maxSteps := 5
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model: model,
+		Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "What's the population of Tokyo, and what's that number divided by 1000?"},
+				},
 			},
 		},
+		Tools:    tools,
+		MaxSteps: &maxSteps,
+	})
+	if err != nil {
+		log.Fatalf("Failed to generate text: %v", err)
 	}
 
-	// Multi-step agent loop
-	maxSteps := 5
-	for step := 0; step < maxSteps; step++ {
-		fmt.Printf("\n=== Step %d ===\n", step+1)
+	// Display final result
+	fmt.Printf("\nFinal response: %s\n", result.Text)
+	fmt.Printf("Total steps: %d\n", len(result.Steps))
+	fmt.Printf("Total token usage: %d\n", result.Usage.GetTotalTokens())
 
-		// Generate response
-		result, err := ai.GenerateText(ctx, ai.GenerateOptions{
-			Model: model,
-			Prompt: types.Prompt{
-				Messages: messages,
-			},
-			Tools: tools,
-		})
-		if err != nil {
-			log.Fatalf("Failed to generate text: %v", err)
+	// Display step-by-step details
+	fmt.Println("\n=== Step Details ===")
+	for i, step := range result.Steps {
+		fmt.Printf("\nStep %d:\n", i+1)
+		if step.Text != "" {
+			fmt.Printf("  Text: %s\n", step.Text)
 		}
-
-		// Add assistant response to messages
-		assistantContent := []types.ContentPart{}
-		if result.Text != "" {
-			fmt.Printf("Assistant: %s\n", result.Text)
-			assistantContent = append(assistantContent, types.NewTextPart(result.Text))
-		}
-
-		// Check if there are tool calls
-		if len(result.ToolCalls) == 0 {
-			fmt.Println("\nTask completed!")
-			fmt.Printf("Total token usage: %d\n", result.Usage.GetTotalTokens())
-			break
-		}
-
-		// Execute tool calls
-		fmt.Printf("\nTool calls: %d\n", len(result.ToolCalls))
-		for _, tc := range result.ToolCalls {
-			fmt.Printf("- %s\n", tc.ToolName)
-			argsJSON, _ := json.MarshalIndent(tc.Arguments, "  ", "  ")
-			fmt.Printf("  Args: %s\n", string(argsJSON))
-
-			// Add tool call to assistant content
-			assistantContent = append(assistantContent, types.NewToolCallPart(tc.ID, tc.ToolName, tc.Arguments))
-
-			// Execute tool
-			var toolResult interface{}
-			var toolErr error
-			for _, tool := range tools {
-				if tool.Name == tc.ToolName {
-					toolResult, toolErr = tool.Execute(ctx, tc.Arguments)
-					break
-				}
+		if len(step.ToolCalls) > 0 {
+			fmt.Printf("  Tool Calls: %d\n", len(step.ToolCalls))
+			for _, tc := range step.ToolCalls {
+				fmt.Printf("    - %s\n", tc.ToolName)
+				argsJSON, _ := json.MarshalIndent(tc.Arguments, "      ", "  ")
+				fmt.Printf("      Args: %s\n", string(argsJSON))
 			}
-
-			// Add tool result to messages
-			if toolErr != nil {
-				messages = append(messages, types.Message{
-					Role: types.RoleAssistant,
-					Content: assistantContent,
-				})
-				messages = append(messages, types.Message{
-					Role: types.RoleTool,
-					Content: []types.ContentPart{
-						types.NewToolResultPart(tc.ID, nil, toolErr.Error()),
-					},
-				})
-			} else {
-				resultJSON, _ := json.MarshalIndent(toolResult, "  ", "  ")
-				fmt.Printf("  Result: %s\n", string(resultJSON))
-
-				messages = append(messages, types.Message{
-					Role: types.RoleAssistant,
-					Content: assistantContent,
-				})
-				messages = append(messages, types.Message{
-					Role: types.RoleTool,
-					Content: []types.ContentPart{
-						types.NewToolResultPart(tc.ID, toolResult, ""),
-					},
-				})
+		}
+		if len(step.ToolResults) > 0 {
+			fmt.Printf("  Tool Results: %d\n", len(step.ToolResults))
+			for _, tr := range step.ToolResults {
+				resultJSON, _ := json.MarshalIndent(tr.Result, "      ", "  ")
+				fmt.Printf("    - %s: %s\n", tr.ToolName, string(resultJSON))
 			}
 		}
 	}
