@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,11 +145,14 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 		},
 	}
 
+	var mu sync.Mutex
 	chunkCallbackCount := 0
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "Hello",
 		OnChunk: func(chunk provider.StreamChunk) {
+			mu.Lock()
+			defer mu.Unlock()
 			chunkCallbackCount++
 		},
 	})
@@ -160,6 +164,8 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 	// Wait for stream processing
 	time.Sleep(100 * time.Millisecond)
 
+	mu.Lock()
+	defer mu.Unlock()
 	if chunkCallbackCount != 3 { // 2 text chunks + 1 finish chunk
 		t.Errorf("expected 3 chunk callbacks, got %d", chunkCallbackCount)
 	}
@@ -177,6 +183,7 @@ func TestStreamText_OnFinishCallback(t *testing.T) {
 		},
 	}
 
+	var mu sync.Mutex
 	finishCalled := false
 	var capturedResult *StreamTextResult
 
@@ -184,6 +191,8 @@ func TestStreamText_OnFinishCallback(t *testing.T) {
 		Model:  model,
 		Prompt: "Hello",
 		OnFinish: func(result *StreamTextResult) {
+			mu.Lock()
+			defer mu.Unlock()
 			finishCalled = true
 			capturedResult = result
 		},
@@ -196,6 +205,8 @@ func TestStreamText_OnFinishCallback(t *testing.T) {
 	// Wait for stream processing
 	time.Sleep(100 * time.Millisecond)
 
+	mu.Lock()
+	defer mu.Unlock()
 	if !finishCalled {
 		t.Error("expected OnFinish callback to be called")
 	}

@@ -16,6 +16,11 @@ func TestCacheTTL5Minutes(t *testing.T) {
 		t.Skip("Skipping integration test")
 	}
 
+	// Skip if AWS credentials not available
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		t.Skip("Skipping integration test: AWS credentials not configured")
+	}
+
 	ctx := context.Background()
 
 	// Create provider with 5-minute cache
@@ -86,6 +91,11 @@ func TestCacheTTL1Hour(t *testing.T) {
 		t.Skip("Skipping integration test")
 	}
 
+	// Skip if AWS credentials not available
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		t.Skip("Skipping integration test: AWS credentials not configured")
+	}
+
 	ctx := context.Background()
 
 	// Create provider with 1-hour cache
@@ -135,6 +145,11 @@ func TestCacheTTL1Hour(t *testing.T) {
 func TestCacheWithTools(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
+	}
+
+	// Skip if AWS credentials not available
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		t.Skip("Skipping integration test: AWS credentials not configured")
 	}
 
 	ctx := context.Background()
@@ -200,6 +215,11 @@ func TestCacheWithTools(t *testing.T) {
 func TestBackwardCompatibility(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
+	}
+
+	// Skip if AWS credentials not available
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		t.Skip("Skipping integration test: AWS credentials not configured")
 	}
 
 	ctx := context.Background()
