@@ -14,20 +14,22 @@ DeepInfra provides serverless GPU inference for open-source models with excellen
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // DeepInfra uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("DEEPINFRA_API_KEY"),
-    BaseURL: "https://api.deepinfra.com/v1/openai",
+provider := deepinfra.New(deepinfra.Config{
+    APIKey: os.Getenv("DEEPINFRA_API_KEY"),
 })
 
 model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct")
 ```
+
+> **Note:** The DeepInfra provider automatically fixes token counting issues for Gemini/Gemma models.
+> See [Token Counting Fix](#token-counting-fix) section for details.
 
 ### Get API Key
 
@@ -65,6 +67,58 @@ export DEEPINFRA_API_KEY=...
 | meta-llama/Llama-3.2-90B-Vision-Instruct | Vision | $0.50/1M | Image understanding |
 
 ## Provider-Specific Features
+
+### Token Counting Fix
+
+The Go-AI SDK automatically corrects token counting issues for Gemini and Gemma models on DeepInfra.
+
+**The Issue:**
+DeepInfra's API has a bug where `reasoning_tokens` are not included in `completion_tokens` for Gemini/Gemma models with thinking capabilities. This violates the OpenAI-compatible spec and can result in negative token counts.
+
+**Example of Incorrect API Response:**
+```json
+{
+  "completion_tokens": 84,    // Text-only tokens
+  "completion_tokens_details": {
+    "reasoning_tokens": 1081  // Not included in completion_tokens!
+  }
+}
+```
+
+This would incorrectly calculate: `text_tokens = 84 - 1081 = -997` ❌
+
+**The Fix:**
+The Go-AI SDK automatically detects and corrects this:
+```go
+// When reasoning_tokens > completion_tokens, automatically add them
+// corrected_completion_tokens = 84 + 1081 = 1165 ✅
+```
+
+**Affected Models:**
+- `google/gemini-2.0-flash-thinking-exp-1219`
+- `google/gemini-2.0-flash-thinking-exp:free`
+- `google/gemma-2-9b-it`
+- Other Gemini/Gemma variants with reasoning support
+
+**Usage:**
+```go
+provider := deepinfra.New(deepinfra.Config{
+    APIKey: os.Getenv("DEEPINFRA_API_KEY"),
+})
+
+model, err := provider.LanguageModel("google/gemini-2.0-flash-thinking-exp-1219")
+
+result, err := ai.GenerateText(model, "Explain quantum computing")
+
+// Token usage is automatically corrected
+if result.Usage.OutputDetails != nil {
+    textTokens := result.Usage.OutputDetails.TextTokens         // Correct text tokens
+    reasoningTokens := result.Usage.OutputDetails.ReasoningTokens // Correct reasoning tokens
+    totalOutput := result.Usage.OutputTokens                    // Correct total (text + reasoning)
+}
+```
+
+No configuration needed - the fix is automatic and transparent. See `examples/deepinfra-token-fix` for a complete example.
 
 ### Serverless Infrastructure
 

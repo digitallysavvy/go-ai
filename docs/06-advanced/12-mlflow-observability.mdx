@@ -1,0 +1,454 @@
+---
+title: MLflow Observability
+description: Track, visualize, and debug AI SDK operations with MLflow Tracing
+---
+
+# MLflow Observability
+
+MLflow Tracing provides automatic observability for applications built with the Go-AI SDK via OpenTelemetry. When enabled, MLflow records prompts, responses, token usage, latencies, and exceptions for comprehensive experiment tracking and debugging.
+
+## What is MLflow?
+
+[MLflow](https://mlflow.org/) is an open-source platform for managing the ML lifecycle, including experimentation, reproducibility, deployment, and a central model registry. MLflow Tracing enables tracking of LLM applications with detailed observability.
+
+## What Gets Tracked
+
+When MLflow observability is enabled, the following information is automatically captured:
+
+- **Prompts and Messages**: Input text and conversation history
+- **Generated Responses**: Complete model outputs
+- **Token Usage**: Input, output, and total tokens (with cache details when available)
+- **Latencies**: Request duration and call hierarchy
+- **Exceptions**: Errors and stack traces
+- **Metadata**: Model IDs, parameters, and custom tags
+
+## Quick Start
+
+### Prerequisites
+
+1. **Start MLflow Tracking Server:**
+
+```bash
+mlflow server --backend-store-uri sqlite:///mlruns.db --port 5000
+```
+
+For production, use a proper database backend. See [MLflow Setup Guide](https://mlflow.org/docs/latest/genai/getting-started/connect-environment/).
+
+2. **Install Go-AI SDK:**
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
+
+### Basic Setup
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/observability/mlflow"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/telemetry"
+)
+
+func main() {
+    // Create MLflow tracker
+    tracker, err := mlflow.New(mlflow.Config{
+        TrackingURI:    "http://localhost:5000",
+        ExperimentName: "my-ai-app",
+        ServiceName:    "openai-service",
+        Insecure:       true, // For local development
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer tracker.Shutdown(context.Background())
+
+    // Create provider and model
+    provider := openai.New(openai.Config{
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+    })
+    model, _ := provider.LanguageModel("gpt-4")
+
+    // Configure telemetry with MLflow tracer
+    telemetrySettings := &telemetry.Settings{
+        IsEnabled:     true,
+        RecordInputs:  true,
+        RecordOutputs: true,
+        FunctionID:    "text-generation",
+        Tracer:        tracker.Tracer(),
+    }
+
+    // Generate text with telemetry
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain machine learning in simple terms",
+        // Note: Telemetry integration point
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    log.Printf("Response: %s\n", result.Text)
+
+    // Flush traces to MLflow
+    tracker.ForceFlush(context.Background())
+
+    log.Println("✅ Traces sent to MLflow at http://localhost:5000")
+}
+```
+
+### View Traces
+
+1. Open MLflow UI: `http://localhost:5000`
+2. Navigate to: **Experiments** > **my-ai-app** > **Traces**
+3. Click on individual traces to see detailed information
+
+## Configuration Options
+
+### MLflow Config
+
+```go
+type Config struct {
+    // TrackingURI is the MLflow tracking server endpoint (required)
+    // Examples: "http://localhost:5000", "https://mlflow.example.com"
+    TrackingURI string
+
+    // ExperimentName is the MLflow experiment to log to (optional)
+    // Default: "default"
+    ExperimentName string
+
+    // ExperimentID is the MLflow experiment ID (optional)
+    // Takes precedence over ExperimentName if both are provided
+    ExperimentID string
+
+    // ServiceName for OpenTelemetry (optional)
+    // Default: "go-ai-sdk"
+    ServiceName string
+
+    // Insecure controls HTTP vs HTTPS (optional)
+    // Set to true for local development
+    // Default: false (uses HTTPS)
+    Insecure bool
+
+    // Headers for additional authentication (optional)
+    // Example: map[string]string{"Authorization": "Bearer token"}
+    Headers map[string]string
+}
+```
+
+### Examples
+
+**Local Development:**
+```go
+tracker, err := mlflow.New(mlflow.Config{
+    TrackingURI:    "http://localhost:5000",
+    ExperimentName: "dev-experiment",
+    Insecure:       true,
+})
+```
+
+**Production with HTTPS:**
+```go
+tracker, err := mlflow.New(mlflow.Config{
+    TrackingURI:    "https://mlflow.company.com",
+    ExperimentID:   "12345",
+    ServiceName:    "production-ai-service",
+    Headers: map[string]string{
+        "Authorization": "Bearer " + os.Getenv("MLFLOW_TOKEN"),
+    },
+})
+```
+
+**Multiple Experiments:**
+```go
+// Experiment 1: Development
+devTracker, _ := mlflow.New(mlflow.Config{
+    TrackingURI:    "http://localhost:5000",
+    ExperimentName: "development",
+})
+
+// Experiment 2: Production
+prodTracker, _ := mlflow.New(mlflow.Config{
+    TrackingURI:    "https://mlflow.company.com",
+    ExperimentName: "production",
+})
+```
+
+## Telemetry Settings
+
+Configure what gets tracked:
+
+```go
+telemetrySettings := &telemetry.Settings{
+    // Enable/disable telemetry
+    IsEnabled: true,
+
+    // Control what gets recorded
+    RecordInputs:  true,  // Record prompts and messages
+    RecordOutputs: true,  // Record generated responses
+
+    // Function identifier for grouping traces
+    FunctionID: "chatbot-generation",
+
+    // Custom metadata
+    Metadata: map[string]attribute.Value{
+        attribute.String("user_id", "user-123"),
+        attribute.String("session_id", "session-456"),
+        attribute.String("environment", "production"),
+    },
+
+    // MLflow tracer
+    Tracer: tracker.Tracer(),
+}
+```
+
+### Privacy and Security
+
+Control sensitive data recording:
+
+```go
+// Disable input/output recording for sensitive data
+telemetrySettings := &telemetry.Settings{
+    IsEnabled:     true,
+    RecordInputs:  false, // Don't log user prompts
+    RecordOutputs: false, // Don't log responses
+    Tracer:        tracker.Tracer(),
+}
+// Token usage and latency still tracked
+```
+
+## Advanced Usage
+
+### Streaming with MLflow
+
+```go
+stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long article about AI",
+    // Telemetry automatically tracks streaming
+})
+
+for {
+    chunk, err := stream.Read()
+    if err != nil {
+        break
+    }
+    fmt.Print(chunk.Text)
+}
+
+// Final token usage is tracked when stream completes
+```
+
+### Multi-Step Tool Calling
+
+MLflow automatically tracks tool calling loops:
+
+```go
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in San Francisco?",
+    Tools: []types.Tool{
+        weatherTool,
+    },
+    // Each tool call step is tracked as a span
+})
+
+// MLflow shows:
+// - Initial prompt
+// - Model requests tool call
+// - Tool execution
+// - Final response with tool result
+```
+
+### Custom Spans
+
+Add custom tracing for your application logic:
+
+```go
+import "go.opentelemetry.io/otel/trace"
+
+func processWithTracing(ctx context.Context, tracker *mlflow.Tracker) {
+    tracer := tracker.Tracer()
+    ctx, span := tracer.Start(ctx, "custom-processing")
+    defer span.End()
+
+    // Your processing logic
+    result, err := ai.GenerateText(ctx, options)
+
+    // Add custom attributes
+    span.SetAttributes(
+        attribute.String("result_type", "summary"),
+        attribute.Int64("result_length", int64(len(result.Text))),
+    )
+}
+```
+
+## Best Practices
+
+### 1. Experiment Organization
+
+```go
+// Group related runs by experiment
+experiments := map[string]string{
+    "development":   "dev-experiment",
+    "staging":       "staging-experiment",
+    "production":    "prod-experiment",
+    "feature-test":  "feature-xyz-experiment",
+}
+
+env := os.Getenv("ENVIRONMENT")
+tracker, _ := mlflow.New(mlflow.Config{
+    TrackingURI:    mlflowURI,
+    ExperimentName: experiments[env],
+})
+```
+
+### 2. Metadata for Context
+
+```go
+telemetrySettings.Metadata = map[string]attribute.Value{
+    attribute.String("user_id", userID),
+    attribute.String("model_version", "gpt-4-1106-preview"),
+    attribute.String("feature_flag", featureFlag),
+    attribute.String("ab_test_group", testGroup),
+}
+```
+
+### 3. Graceful Shutdown
+
+```go
+func main() {
+    tracker, _ := mlflow.New(config)
+
+    // Ensure traces are flushed on shutdown
+    defer func() {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+
+        if err := tracker.ForceFlush(ctx); err != nil {
+            log.Printf("Error flushing traces: %v", err)
+        }
+        if err := tracker.Shutdown(ctx); err != nil {
+            log.Printf("Error shutting down tracker: %v", err)
+        }
+    }()
+
+    // Your application logic
+}
+```
+
+### 4. Error Tracking
+
+```go
+result, err := ai.GenerateText(ctx, options)
+if err != nil {
+    // Errors are automatically captured in traces
+    log.Printf("Generation failed: %v", err)
+    return
+}
+```
+
+## Troubleshooting
+
+### Traces Not Appearing
+
+1. **Check MLflow server is running:**
+```bash
+curl http://localhost:5000/api/2.0/mlflow/experiments/list
+```
+
+2. **Verify experiment exists:**
+```bash
+mlflow experiments list
+```
+
+3. **Check for flush errors:**
+```go
+if err := tracker.ForceFlush(ctx); err != nil {
+    log.Printf("Flush error: %v", err)
+}
+```
+
+4. **Enable debug logging:**
+```go
+import "go.opentelemetry.io/otel"
+import "go.opentelemetry.io/otel/sdk/trace"
+
+// Add this before creating tracker
+otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+    log.Printf("OTEL error: %v", err)
+}))
+```
+
+### Connection Issues
+
+```go
+// Ensure correct URL format
+tracker, err := mlflow.New(mlflow.Config{
+    TrackingURI: "http://localhost:5000", // Include http://
+    Insecure:    true,                     // For local HTTP
+})
+if err != nil {
+    log.Fatalf("Failed to create tracker: %v", err)
+}
+```
+
+### Network Timeouts
+
+```go
+// Create context with timeout
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+// Use context for operations
+result, err := ai.GenerateText(ctx, options)
+```
+
+## Comparison with TypeScript SDK
+
+The Go implementation provides the same MLflow integration as the TypeScript AI SDK:
+
+**TypeScript:**
+```typescript
+import { init } from 'mlflow-tracing';
+import { generateText } from 'ai';
+
+init(); // Auto-configures from environment
+
+const result = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'Hello',
+  experimental_telemetry: { isEnabled: true },
+});
+```
+
+**Go:**
+```go
+import "github.com/digitallysavvy/go-ai/pkg/observability/mlflow"
+
+tracker, _ := mlflow.New(mlflow.Config{
+    TrackingURI:    os.Getenv("MLFLOW_TRACKING_URI"),
+    ExperimentName: "my-app",
+})
+defer tracker.Shutdown(context.Background())
+
+result, _ := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+    // Telemetry configured via tracer
+})
+```
+
+## See Also
+
+- [MLflow Official Documentation](https://mlflow.org/docs/latest/)
+- [MLflow Tracing Guide](https://mlflow.org/docs/latest/genai/tracing)
+- [OpenTelemetry Go SDK](https://opentelemetry.io/docs/instrumentation/go/)
+- [Telemetry Package Reference](../07-reference/telemetry/)
+- [Example: observability-mlflow](../../examples/observability-mlflow/)
