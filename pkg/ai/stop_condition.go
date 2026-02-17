@@ -32,6 +32,22 @@ func StepCountIs(n int) StopCondition {
 	}
 }
 
+// HasToolCall returns a StopCondition that stops when a specific tool is called.
+func HasToolCall(toolName string) StopCondition {
+	return func(state StopConditionState) string {
+		if len(state.Steps) == 0 {
+			return ""
+		}
+		lastStep := state.Steps[len(state.Steps)-1]
+		for _, toolCall := range lastStep.ToolCalls {
+			if toolCall.ToolName == toolName {
+				return fmt.Sprintf("tool '%s' was called", toolName)
+			}
+		}
+		return ""
+	}
+}
+
 // EvaluateStopConditions checks all conditions and returns the first
 // non-empty reason, or empty string if none triggered.
 func EvaluateStopConditions(conditions []StopCondition, state StopConditionState) string {

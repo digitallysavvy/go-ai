@@ -26,15 +26,19 @@ type ToolLoopAgent struct {
 
 // NewToolLoopAgent creates a new ToolLoopAgent with the given configuration
 func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
-	// Resolve stop conditions: StopWhen > MaxSteps > default
+	// Resolve stop conditions (Vercel AI SDK v5 approach):
+	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
+	// All termination flows through stop conditions.
 	if len(config.StopWhen) > 0 {
 		// StopWhen takes precedence; override MaxSteps to safety ceiling
 		config.MaxSteps = 1000
-	} else if config.MaxSteps == 0 {
-		config.StopWhen = []ai.StopCondition{ai.StepCountIs(10)}
+	} else if config.MaxSteps > 0 {
+		config.StopWhen = []ai.StopCondition{ai.StepCountIs(config.MaxSteps)}
+		config.MaxSteps = 1000
+	} else {
+		config.StopWhen = []ai.StopCondition{ai.StepCountIs(1)}
 		config.MaxSteps = 1000
 	}
-	// else: only MaxSteps set, legacy behavior
 
 	// Initialize skills registry if not provided
 	if config.Skills == nil {

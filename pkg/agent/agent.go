@@ -141,7 +141,7 @@ type AgentConfig struct {
 
 	// StopWhen defines conditions that terminate the agent's tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
-	// If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition{ai.StepCountIs(10)}.
+	// If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition{ai.StepCountIs(1)}.
 	StopWhen []ai.StopCondition
 
 	// Temperature for generation

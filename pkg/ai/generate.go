@@ -44,7 +44,7 @@ type GenerateTextOptions struct {
 	// StopWhen defines conditions that terminate the tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
 	// Evaluated after each step that produces tool results.
-	// Default: []StopCondition{StepCountIs(10)}.
+	// Default: []StopCondition{StepCountIs(1)}.
 	StopWhen []StopCondition
 
 	// ========================================================================
@@ -276,7 +276,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		if opts.MaxSteps != nil {
 			stopConditions = []StopCondition{StepCountIs(*opts.MaxSteps)}
 		} else {
-			stopConditions = []StopCondition{StepCountIs(10)}
+			stopConditions = []StopCondition{StepCountIs(1)}
 		}
 	}
 	maxSteps := 1000 // safety ceiling only
