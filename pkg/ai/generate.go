@@ -268,10 +268,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		Steps: []types.StepResult{},
 	}
 
-	// Set default max steps
+	// Resolve stop conditions: StopWhen > MaxSteps > default
+	stopConditions := opts.StopWhen
 	maxSteps := 10
-	if opts.MaxSteps != nil {
+	if len(stopConditions) > 0 {
+		maxSteps = 1000 // safety ceiling; conditions control termination
+	} else if opts.MaxSteps != nil {
 		maxSteps = *opts.MaxSteps
+	} else {
+		stopConditions = []StopCondition{StepCountIs(10)}
+		maxSteps = 1000
 	}
 
 	// Current messages for conversation history
@@ -391,6 +397,22 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		// Check if we should continue
 		if genResult.FinishReason != types.FinishReasonToolCalls {
 			break
+		}
+
+		// Evaluate stop conditions after steps with tool results
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    result.Steps,
+				Messages: currentMessages,
+				Usage:    result.Usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				result.StopReason = reason
+				lastStep := result.Steps[len(result.Steps)-1]
+				result.Text = lastStep.Text
+				result.FinishReason = lastStep.FinishReason
+				break
+			}
 		}
 	}
 

@@ -642,3 +642,206 @@ func TestBuildPrompt_EmptyPrompt(t *testing.T) {
 		t.Errorf("expected 0 messages, got %d", len(prompt.Messages))
 	}
 }
+
+// --- StopWhen tests ---
+
+func TestGenerateText_StopWhen_StepCountIs(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Loop",
+		Tools:    tools,
+		StopWhen: []StopCondition{StepCountIs(3)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Steps) != 3 {
+		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason == "" {
+		t.Error("expected StopReason to be set")
+	}
+	if result.StopReason != "maximum number of steps (3) reached" {
+		t.Errorf("unexpected StopReason: %s", result.StopReason)
+	}
+}
+
+func TestGenerateText_StopWhen_CustomCondition(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	tools := []types.Tool{
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			input := int64(100 * callCount)
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				Usage:        types.Usage{InputTokens: &input},
+			}, nil
+		},
+	}
+
+	// Stop when accumulated input tokens reach 300+
+	tokenLimit := func(state StopConditionState) string {
+		if state.Usage.GetInputTokens() >= 300 {
+			return "token_limit_reached"
+		}
+		return ""
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Loop",
+		Tools:    tools,
+		StopWhen: []StopCondition{tokenLimit},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StopReason != "token_limit_reached" {
+		t.Errorf("expected token_limit_reached, got %q", result.StopReason)
+	}
+	// Usage per step: 100, 200, 300... (100*callCount)
+	// Accumulated after step 2: 100+200=300, which triggers >= 300
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps to reach 300 tokens, got %d", len(result.Steps))
+	}
+}
+
+func TestGenerateText_StopWhen_OverridesMaxSteps(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	maxSteps := 2
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Loop",
+		Tools:    tools,
+		MaxSteps: &maxSteps,
+		StopWhen: []StopCondition{StepCountIs(5)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// StopWhen should take precedence: 5 steps, not 2
+	if len(result.Steps) != 5 {
+		t.Errorf("expected 5 steps (StopWhen wins over MaxSteps=2), got %d", len(result.Steps))
+	}
+}
+
+func TestGenerateText_StopWhen_NaturalStopFirst(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	tools := []types.Tool{
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			if callCount < 3 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				}, nil
+			}
+			// Natural stop at step 3
+			return &types.GenerateResult{
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Loop",
+		Tools:    tools,
+		StopWhen: []StopCondition{StepCountIs(10)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StopReason != "" {
+		t.Errorf("expected empty StopReason for natural stop, got %q", result.StopReason)
+	}
+	if result.Text != "Done" {
+		t.Errorf("expected 'Done', got %q", result.Text)
+	}
+	if len(result.Steps) != 3 {
+		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	}
+}
+
+func TestGenerateText_DefaultStopWhen(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	// Neither MaxSteps nor StopWhen set -- should default to 10
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Loop",
+		Tools:  tools,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Steps) != 10 {
+		t.Errorf("expected 10 steps (default), got %d", len(result.Steps))
+	}
+}
