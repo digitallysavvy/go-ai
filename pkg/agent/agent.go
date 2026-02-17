@@ -136,7 +136,6 @@ type AgentConfig struct {
 	Subagents *SubagentRegistry
 
 	// Maximum number of steps (iterations) the agent can take.
-	// Deprecated: Use StopWhen with ai.StepCountIs(n) instead.
 	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
 	MaxSteps int
 

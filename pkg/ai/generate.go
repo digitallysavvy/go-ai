@@ -37,7 +37,6 @@ type GenerateTextOptions struct {
 	ToolChoice types.ToolChoice
 
 	// Maximum number of tool calling steps (default: 10).
-	// Deprecated: Use StopWhen with StepCountIs(n) instead.
 	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
 	MaxSteps *int
 

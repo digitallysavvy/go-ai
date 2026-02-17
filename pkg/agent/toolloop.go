@@ -565,7 +565,6 @@ func (a *ToolLoopAgent) RemoveTool(toolName string) {
 }
 
 // SetMaxSteps updates the maximum number of steps.
-// Deprecated: Use SetStopConditions with ai.StepCountIs(n) instead.
 func (a *ToolLoopAgent) SetMaxSteps(maxSteps int) {
 	a.config.MaxSteps = maxSteps
 }
