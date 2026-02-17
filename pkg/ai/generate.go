@@ -36,8 +36,16 @@ type GenerateTextOptions struct {
 	Tools []types.Tool
 	ToolChoice types.ToolChoice
 
-	// Maximum number of tool calling steps (default: 10)
+	// Maximum number of tool calling steps (default: 10).
+	// Deprecated: Use StopWhen with StepCountIs(n) instead.
+	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
 	MaxSteps *int
+
+	// StopWhen defines conditions that terminate the tool-calling loop.
+	// Conditions are evaluated OR -- first non-empty string stops the loop.
+	// Evaluated after each step that produces tool results.
+	// If neither StopWhen nor MaxSteps is set, defaults to []StopCondition{StepCountIs(10)}.
+	StopWhen []StopCondition
 
 	// ========================================================================
 	// Timeout Configuration (v6.0.41 - NEW)
@@ -178,6 +186,10 @@ type GenerateTextResult struct {
 
 	// Reason why generation finished
 	FinishReason types.FinishReason
+
+	// StopReason is the reason string from the StopCondition that stopped the loop.
+	// Empty if the loop ended naturally (model stopped calling tools).
+	StopReason string
 
 	// Token usage information
 	Usage types.Usage
