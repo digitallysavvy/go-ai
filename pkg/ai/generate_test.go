@@ -462,6 +462,10 @@ func TestGenerateText_MaxStepsLimit(t *testing.T) {
 	if len(result.Steps) != maxSteps {
 		t.Errorf("expected %d steps (max), got %d", maxSteps, len(result.Steps))
 	}
+	// MaxSteps is sugar for StopWhen{StepCountIs(N)}, so StopReason should be set
+	if result.StopReason != "maximum number of steps (3) reached" {
+		t.Errorf("expected StopReason for MaxSteps, got %q", result.StopReason)
+	}
 }
 
 func TestGenerateText_OnStepFinishCallback(t *testing.T) {

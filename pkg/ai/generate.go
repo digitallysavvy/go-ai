@@ -36,14 +36,15 @@ type GenerateTextOptions struct {
 	Tools []types.Tool
 	ToolChoice types.ToolChoice
 
-	// Maximum number of tool calling steps (default: 10).
-	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
+	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
+	// Deprecated: use StopWhen with StepCountIs instead.
+	// If StopWhen is set, MaxSteps is ignored.
 	MaxSteps *int
 
 	// StopWhen defines conditions that terminate the tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
 	// Evaluated after each step that produces tool results.
-	// If neither StopWhen nor MaxSteps is set, defaults to []StopCondition{StepCountIs(10)}.
+	// Default: []StopCondition{StepCountIs(10)}.
 	StopWhen []StopCondition
 
 	// ========================================================================
@@ -267,17 +268,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		Steps: []types.StepResult{},
 	}
 
-	// Resolve stop conditions: StopWhen > MaxSteps > default
+	// Resolve stop conditions (Vercel AI SDK v5 approach):
+	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
+	// All termination flows through stop conditions.
 	stopConditions := opts.StopWhen
-	maxSteps := 10
-	if len(stopConditions) > 0 {
-		maxSteps = 1000 // safety ceiling; conditions control termination
-	} else if opts.MaxSteps != nil {
-		maxSteps = *opts.MaxSteps
-	} else {
-		stopConditions = []StopCondition{StepCountIs(10)}
-		maxSteps = 1000
+	if len(stopConditions) == 0 {
+		if opts.MaxSteps != nil {
+			stopConditions = []StopCondition{StepCountIs(*opts.MaxSteps)}
+		} else {
+			stopConditions = []StopCondition{StepCountIs(10)}
+		}
 	}
+	maxSteps := 1000 // safety ceiling only
 
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
