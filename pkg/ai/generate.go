@@ -18,9 +18,9 @@ type GenerateTextOptions struct {
 	Model provider.LanguageModel
 
 	// Prompt can be a simple string or a list of messages
-	Prompt string
+	Prompt   string
 	Messages []types.Message
-	System string
+	System   string
 
 	// Generation parameters
 	Temperature      *float64
@@ -33,7 +33,7 @@ type GenerateTextOptions struct {
 	Seed             *int
 
 	// Tools available for the model to call
-	Tools []types.Tool
+	Tools      []types.Tool
 	ToolChoice types.ToolChoice
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
@@ -395,11 +395,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			opts.OnStepFinish(ctx, stepResult, opts.ExperimentalContext)
 		}
 
-		// Check if we should continue
-		if genResult.FinishReason != types.FinishReasonToolCalls {
-			break
-		}
-
 		// Evaluate stop conditions after steps with tool results
 		if len(stopConditions) > 0 {
 			state := StopConditionState{
@@ -414,6 +409,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 				result.FinishReason = lastStep.FinishReason
 				break
 			}
+		}
+
+		// Check if we should continue
+		if genResult.FinishReason != types.FinishReasonToolCalls {
+			break
 		}
 	}
 
@@ -600,4 +600,3 @@ func buildPrompt(promptText string, messages []types.Message, system string) typ
 
 	return types.Prompt{}
 }
-

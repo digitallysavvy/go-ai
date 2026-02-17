@@ -336,7 +336,9 @@ func TestGenerateText_ToolNotFound(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "existing_tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return nil, nil }},
+		{Name: "existing_tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return nil, nil
+		}},
 	}
 
 	callCount := 0
@@ -434,7 +436,9 @@ func TestGenerateText_MaxStepsLimit(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -562,7 +566,9 @@ func TestGenerateText_UsageTracking(t *testing.T) {
 	}
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
@@ -656,7 +662,9 @@ func TestGenerateText_StopWhen_StepCountIs(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -695,7 +703,9 @@ func TestGenerateText_StopWhen_CustomCondition(t *testing.T) {
 
 	callCount := 0
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -743,7 +753,9 @@ func TestGenerateText_StopWhen_OverridesMaxSteps(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -778,8 +790,12 @@ func TestGenerateText_StopWhen_HasToolCall(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "search", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "result", nil }},
-		{Name: "finish", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "done", nil }},
+		{Name: "search", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		}},
+		{Name: "finish", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}},
 	}
 
 	callCount := 0
@@ -824,7 +840,9 @@ func TestGenerateText_StopWhen_NaturalStopFirst(t *testing.T) {
 
 	callCount := 0
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -870,7 +888,9 @@ func TestGenerateText_DefaultStopWhen(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }},
+		{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}},
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -895,5 +915,69 @@ func TestGenerateText_DefaultStopWhen(t *testing.T) {
 	}
 	if len(result.Steps) != 1 {
 		t.Errorf("expected 1 step (default), got %d", len(result.Steps))
+	}
+}
+
+func TestGenerateText_StopWhen_ToolCallAndStepCount(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{
+		{Name: "search", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		}},
+		{Name: "complete", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			// Call "complete" on step 4, "search" on all other steps
+			toolName := "search"
+			if callCount == 4 {
+				toolName = "complete"
+			}
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_" + string(rune('0'+callCount)), ToolName: toolName, Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	// Stop only when "complete" has been called AND there are exactly 6 steps.
+	// This verifies that calling "complete" at step 4 alone doesn't trigger the stop,
+	// nor does reaching step 5 without the required count — both must be true.
+	completeAtSixSteps := func(state StopConditionState) string {
+		if len(state.Steps) != 6 {
+			return ""
+		}
+		for _, step := range state.Steps {
+			for _, tc := range step.ToolCalls {
+				if tc.ToolName == "complete" {
+					return "complete called and 6 steps reached"
+				}
+			}
+		}
+		return ""
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Do work",
+		Tools:    tools,
+		StopWhen: []StopCondition{completeAtSixSteps},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Steps) != 6 {
+		t.Errorf("expected 6 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason != "complete called and 6 steps reached" {
+		t.Errorf("expected custom stop reason, got %q", result.StopReason)
 	}
 }
