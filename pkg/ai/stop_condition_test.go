@@ -78,3 +78,61 @@ func TestEvaluateStopConditions_SkipsNonTriggered(t *testing.T) {
 	reason := EvaluateStopConditions(conditions, state)
 	assert.Equal(t, "triggered", reason)
 }
+
+func TestHasToolCall_MatchesToolName(t *testing.T) {
+	cond := HasToolCall("finish_task")
+	state := StopConditionState{
+		Steps: []types.StepResult{
+			{
+				ToolCalls: []types.ToolCall{
+					{ToolName: "search"},
+				},
+			},
+			{
+				ToolCalls: []types.ToolCall{
+					{ToolName: "finish_task"},
+				},
+			},
+		},
+	}
+	reason := cond(state)
+	assert.NotEmpty(t, reason, "should stop when target tool is in last step")
+}
+
+func TestHasToolCall_NoMatch(t *testing.T) {
+	cond := HasToolCall("finish_task")
+	state := StopConditionState{
+		Steps: []types.StepResult{
+			{
+				ToolCalls: []types.ToolCall{
+					{ToolName: "search"},
+					{ToolName: "calculate"},
+				},
+			},
+		},
+	}
+	assert.Empty(t, cond(state), "should continue when target tool not called")
+}
+
+func TestHasToolCall_EmptySteps(t *testing.T) {
+	cond := HasToolCall("finish_task")
+	state := StopConditionState{
+		Steps: []types.StepResult{},
+	}
+	assert.Empty(t, cond(state), "should continue with empty steps")
+}
+
+func TestHasToolCall_ReasonFormat(t *testing.T) {
+	cond := HasToolCall("my_tool")
+	state := StopConditionState{
+		Steps: []types.StepResult{
+			{
+				ToolCalls: []types.ToolCall{
+					{ToolName: "my_tool"},
+				},
+			},
+		},
+	}
+	reason := cond(state)
+	assert.Equal(t, "tool 'my_tool' was called", reason)
+}

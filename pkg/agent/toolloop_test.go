@@ -147,8 +147,9 @@ func TestOnStepFinish_MultiStep(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnStepFinish: func(step types.StepResult) {
 			steps = append(steps, step)
 		},
@@ -226,8 +227,9 @@ func TestOnStepFinish_ErrorHandling(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnStepFinish: func(step types.StepResult) {
 			stepCount++
 			// Note: In Go, OnStepFinish doesn't return error in current implementation
@@ -769,13 +771,13 @@ func TestOnAgentFinish_MaxSteps(t *testing.T) {
 		t.Error("OnAgentFinish was not called when max steps reached")
 	}
 
-	if capturedFinish.FinishReason != types.FinishReasonLength {
-		t.Errorf("Expected finish reason 'length', got '%s'", capturedFinish.FinishReason)
+	if capturedFinish.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("Expected finish reason 'tool-calls', got '%s'", capturedFinish.FinishReason)
 	}
 
-	// Check that max_steps_hit metadata is set
-	if maxStepsHit, ok := capturedFinish.Metadata["max_steps_hit"].(bool); !ok || !maxStepsHit {
-		t.Error("Expected max_steps_hit metadata to be true")
+	// MaxSteps is now converted to StopWhen{StepCountIs(N)}, so stop_reason should be set
+	if stopReason, ok := capturedFinish.Metadata["stop_reason"].(string); !ok || stopReason == "" {
+		t.Error("Expected stop_reason metadata to be set")
 	}
 }
 
@@ -1351,8 +1353,9 @@ func TestRunTracking_PropagationAcrossSteps(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnAgentAction: func(action AgentAction) {
 			capturedRunIDs = append(capturedRunIDs, action.RunID)
 		},
@@ -1514,6 +1517,60 @@ func TestToolLoopAgent_StopWhen_OnAgentFinishMetadata(t *testing.T) {
 	}
 }
 
+func TestToolLoopAgent_StopWhen_HasToolCall(t *testing.T) {
+	searchTool := types.Tool{
+		Name:        "search",
+		Description: "Search",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "search result", nil
+		},
+	}
+	finishTool := types.Tool{
+		Name:        "finish",
+		Description: "Finish",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		},
+	}
+
+	responses := []types.GenerateResult{
+		{
+			Text:         "Searching",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "search", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		},
+		{
+			Text:         "Finishing",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "2", ToolName: "finish", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		},
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{searchTool, finishTool},
+		StopWhen: []ai.StopCondition{ai.HasToolCall("finish")},
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason != "tool 'finish' was called" {
+		t.Errorf("expected HasToolCall stop reason, got %q", result.StopReason)
+	}
+}
+
 func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 	testTool := types.Tool{
 		Name:        "test_tool",
@@ -1537,7 +1594,7 @@ func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 
 	mock := &mockLanguageModel{responses: responses}
 
-	// Neither MaxSteps nor StopWhen set: should default to 10
+	// Neither MaxSteps nor StopWhen set: should default to 1
 	agent := NewToolLoopAgent(AgentConfig{
 		Model: mock,
 		Tools: []types.Tool{testTool},
@@ -1548,7 +1605,7 @@ func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if len(result.Steps) != 10 {
-		t.Errorf("expected 10 steps (default), got %d", len(result.Steps))
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step (default), got %d", len(result.Steps))
 	}
 }

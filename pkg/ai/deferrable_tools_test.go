@@ -52,9 +52,10 @@ func TestDeferrableTools_ProviderExecutedTool(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "Search for test",
-		Tools:  []types.Tool{searchTool},
+		Model:    model,
+		Prompt:   "Search for test",
+		Tools:    []types.Tool{searchTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
 	})
 
 	if err != nil {
@@ -115,9 +116,10 @@ func TestDeferrableTools_LocalTool(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "What's the weather?",
-		Tools:  []types.Tool{localTool},
+		Model:    model,
+		Prompt:   "What's the weather?",
+		Tools:    []types.Tool{localTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
 	})
 
 	if err != nil {
@@ -375,9 +377,10 @@ func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "Get weather and search",
-		Tools:  []types.Tool{localTool, providerTool},
+		Model:    model,
+		Prompt:   "Get weather and search",
+		Tools:    []types.Tool{localTool, providerTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
 	})
 
 	if err != nil {
