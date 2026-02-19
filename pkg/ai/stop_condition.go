@@ -48,11 +48,19 @@ func HasToolCall(toolName string) StopCondition {
 	}
 }
 
-// EvaluateStopConditions checks all conditions and returns the first
-// non-empty reason, or empty string if none triggered.
+// EvaluateStopConditions runs every condition, then returns the first non-empty
+// reason, or empty string if none triggered.
+//
+// All conditions are always evaluated before checking results. This matches the
+// TypeScript SDK's Promise.all behavior and ensures side-effectful conditions
+// (e.g. recording metrics) always run regardless of their position in the slice.
 func EvaluateStopConditions(conditions []StopCondition, state StopConditionState) string {
-	for _, cond := range conditions {
-		if reason := cond(state); reason != "" {
+	reasons := make([]string, len(conditions))
+	for i, cond := range conditions {
+		reasons[i] = cond(state)
+	}
+	for _, reason := range reasons {
+		if reason != "" {
 			return reason
 		}
 	}
