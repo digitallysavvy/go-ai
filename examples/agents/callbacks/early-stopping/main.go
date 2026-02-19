@@ -7,16 +7,18 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
-	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-// This example demonstrates how to use the OnStepFinish callback
-// to implement custom logic for monitoring and early stopping.
+// This example demonstrates how to use the OnStepFinish callback to implement
+// custom monitoring logic — tracking token usage, sending alerts, and logging
+// step-level metrics.
 //
-// Note: In the current Go implementation, OnStepFinish doesn't return
-// an error to stop execution. This example shows the pattern that could
-// be used for monitoring and validation.
+// For declarative stop conditions (stopping after N steps, when a specific tool
+// is called, or when a token budget is exceeded), see the dedicated example at
+// examples/agents/callbacks/stop-when/main.go.
 
 func main() {
 	ctx := context.Background()
@@ -68,7 +70,7 @@ func main() {
 		Tools: []types.Tool{
 			expensiveTool,
 		},
-		MaxSteps: 10,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
 		OnStepFinish: func(step types.StepResult) {
 			// Track cumulative token usage
 			stepTokens := step.Usage.GetTotalTokens()

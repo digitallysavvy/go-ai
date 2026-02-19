@@ -55,8 +55,6 @@ func main() {
 }
 
 func searchAndAnswer(ctx context.Context, model provider.LanguageModel, query string, tools []types.Tool) {
-	maxSteps := 8
-
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: query,
@@ -68,7 +66,7 @@ When answering questions:
 4. Cite your sources
 5. Fact-check important claims`,
 		Tools:    tools,
-		MaxSteps: &maxSteps,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(8)},
 		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {

@@ -18,9 +18,9 @@ type GenerateTextOptions struct {
 	Model provider.LanguageModel
 
 	// Prompt can be a simple string or a list of messages
-	Prompt string
+	Prompt   string
 	Messages []types.Message
-	System string
+	System   string
 
 	// Generation parameters
 	Temperature      *float64
@@ -33,11 +33,19 @@ type GenerateTextOptions struct {
 	Seed             *int
 
 	// Tools available for the model to call
-	Tools []types.Tool
+	Tools      []types.Tool
 	ToolChoice types.ToolChoice
 
-	// Maximum number of tool calling steps (default: 10)
+	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
+	// Deprecated: use StopWhen with StepCountIs instead.
+	// If StopWhen is set, MaxSteps is ignored.
 	MaxSteps *int
+
+	// StopWhen defines conditions that terminate the tool-calling loop.
+	// Conditions are evaluated OR -- first non-empty string stops the loop.
+	// Evaluated after each step that produces tool results.
+	// Default: []StopCondition{StepCountIs(1)}.
+	StopWhen []StopCondition
 
 	// ========================================================================
 	// Timeout Configuration (v6.0.41 - NEW)
@@ -179,6 +187,10 @@ type GenerateTextResult struct {
 	// Reason why generation finished
 	FinishReason types.FinishReason
 
+	// StopReason is the reason string from the StopCondition that stopped the loop.
+	// Empty if the loop ended naturally (model stopped calling tools).
+	StopReason string
+
 	// Token usage information
 	Usage types.Usage
 
@@ -256,11 +268,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		Steps: []types.StepResult{},
 	}
 
-	// Set default max steps
-	maxSteps := 10
-	if opts.MaxSteps != nil {
-		maxSteps = *opts.MaxSteps
+	// Resolve stop conditions (Vercel AI SDK v5 approach):
+	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
+	// All termination flows through stop conditions.
+	stopConditions := opts.StopWhen
+	if len(stopConditions) == 0 {
+		if opts.MaxSteps != nil {
+			stopConditions = []StopCondition{StepCountIs(*opts.MaxSteps)}
+		} else {
+			stopConditions = []StopCondition{StepCountIs(1)}
+		}
 	}
+	maxSteps := 1000 // safety ceiling only
 
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
@@ -374,6 +393,22 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		// Call step finish callback (v6.0: with user context)
 		if opts.OnStepFinish != nil {
 			opts.OnStepFinish(ctx, stepResult, opts.ExperimentalContext)
+		}
+
+		// Evaluate stop conditions after steps with tool results
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    result.Steps,
+				Messages: currentMessages,
+				Usage:    result.Usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				result.StopReason = reason
+				lastStep := result.Steps[len(result.Steps)-1]
+				result.Text = lastStep.Text
+				result.FinishReason = lastStep.FinishReason
+				break
+			}
 		}
 
 		// Check if we should continue
@@ -565,4 +600,3 @@ func buildPrompt(promptText string, messages []types.Message, system string) typ
 
 	return types.Prompt{}
 }
-

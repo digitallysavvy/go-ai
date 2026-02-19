@@ -1,163 +1,244 @@
 ---
 title: Loop Control
-description: Control agent execution with built-in loop management and custom control patterns
+description: Control agent execution with stop conditions, PrepareCall, and manual loop patterns
 ---
 
 # Loop Control
 
-You can control agent execution flow through the `MaxSteps` configuration and custom loop implementations. The loop continues until:
+The Go AI SDK provides several ways to control how long an agent's tool-calling loop runs.
+The recommended approach is `StopWhen` — a declarative list of stop conditions evaluated after
+each step that contains tool results. For lower-level control, `PrepareCall` lets you modify
+each generation call dynamically. Manual loops using `ai.GenerateText` directly give you full
+control for advanced use cases.
 
-- A finish reason other than `FinishReasonToolCalls` is returned, or
-- A tool execution fails, or
-- A tool call needs approval (if `ToolApprovalRequired` is true), or
-- The step limit (`MaxSteps`) is reached
-
-The Go AI SDK provides loop control through the `MaxSteps` parameter for basic stopping conditions and manual loop patterns for advanced control.
+---
 
 ## Stop Conditions
 
-The `MaxSteps` parameter controls the maximum number of steps an agent can execute. By default, agents stop after 10 steps.
+`StopWhen` accepts a slice of `StopCondition` functions. After every step that produces tool
+results, the SDK evaluates the conditions and stops the loop as soon as one returns a non-empty
+reason string. The reason is available as `result.StopReason`.
 
-### Basic Stop Condition
+### StepCountIs
 
-Use `MaxSteps` to limit agent execution:
+The most common condition: stop after *n* steps.
 
 ```go
-package main
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Analyze this dataset and create a summary report",
+    Tools:  tools,
+    StopWhen: []ai.StopCondition{
+        ai.StepCountIs(5),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
 
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
+fmt.Println(result.Text)
+fmt.Printf("Stopped because: %s\n", result.StopReason)
+// → "Stopped because: maximum number of steps (5) reached"
+```
 
-    "github.com/digitallysavvy/go-ai/pkg/agent"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
+`StepCountIs(n)` uses `>=` — it stops as soon as the step count meets or exceeds *n*, so it
+will never skip the threshold if your loop runs faster than expected.
 
-func main() {
-    ctx := context.Background()
+### HasToolCall
 
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("gpt-4")
+Stop when the model calls a specific tool — useful for semantic completion signals where the
+model is expected to invoke a "finish" or "submit" tool when it's done.
 
-    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
-        Model: model,
-        Tools: []types.Tool{
-            // your tools
-        },
-        MaxSteps: 20, // Stop after 20 steps maximum (default is 10)
-    })
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Research the topic and call the finish tool when done",
+    Tools: []types.Tool{
+        researchTool,
+        finishTool, // model calls this to signal completion
+    },
+    StopWhen: []ai.StopCondition{
+        ai.HasToolCall("finish"),
+        ai.StepCountIs(10), // safety ceiling
+    },
+})
+```
 
-    result, err := myAgent.Execute(ctx, "Analyze this dataset and create a summary report")
-    if err != nil {
-        log.Fatal(err)
+### Combining Conditions
+
+Conditions are evaluated OR — the loop stops on the **first match**. Place conditions you care
+about most, or that have side effects, **before** safety ceilings like `StepCountIs`.
+
+```go
+StopWhen: []ai.StopCondition{
+    ai.HasToolCall("submit"),  // semantic completion
+    ai.StepCountIs(20),        // hard limit
+},
+```
+
+### Custom Closure
+
+Any function with signature `func(ai.StopConditionState) string` qualifies as a `StopCondition`.
+Return a non-empty string to stop, or an empty string to continue.
+
+```go
+// Token-budget guard — placed BEFORE StepCountIs so it always runs.
+// Because evaluation is eager (all conditions run before the first match is
+// returned), this condition fires even if StepCountIs would also match.
+tokenBudget := func(state ai.StopConditionState) string {
+    if state.Usage.TotalTokens != nil && *state.Usage.TotalTokens > 5000 {
+        return fmt.Sprintf("token budget exceeded (%d tokens)", *state.Usage.TotalTokens)
     }
+    return ""
+}
 
-    fmt.Println(result.Text)
-    fmt.Printf("Steps taken: %d\n", len(result.Steps))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Perform a deep analysis",
+    Tools:  tools,
+    StopWhen: []ai.StopCondition{
+        tokenBudget,          // side-effectful or priority condition first
+        ai.StepCountIs(10),   // safety ceiling last
+    },
+})
+```
+
+`StopConditionState` gives you full context:
+
+```go
+type StopConditionState struct {
+    // Steps completed so far; the step that just finished is the last element.
+    Steps []types.StepResult
+
+    // Full message history including the latest tool-result messages.
+    Messages []types.Message
+
+    // Accumulated token usage across all steps.
+    Usage types.Usage
 }
 ```
 
-### Detecting MaxSteps Limit
+### Condition Evaluation Order and Side Effects
 
-Check if the agent stopped due to reaching the step limit:
+> **Important:** All conditions are always evaluated before the first match is returned.
+> This matches the TypeScript SDK's `Promise.all` behavior and ensures side-effectful
+> conditions (e.g. recording metrics, sending alerts) always execute regardless of their
+> position in the slice.
+
+Place conditions you want to guarantee run **before** conditions that might pre-empt them,
+and rely on the evaluation guarantee rather than ordering for correctness.
+
+### StopReason
+
+`result.StopReason` (on `GenerateTextResult`) and `agentResult.StopReason` (on `AgentResult`)
+contain the reason string returned by whichever condition fired. Empty if the loop ended
+naturally (no tool calls) or no `StopWhen` was set.
 
 ```go
-package main
+result, err := myAgent.Execute(ctx, "Complete the task")
+if err != nil {
+    log.Fatal(err)
+}
 
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
+switch {
+case result.StopReason != "":
+    fmt.Printf("Stopped by condition: %s\n", result.StopReason)
+case result.FinishReason == types.FinishReasonStop:
+    fmt.Println("Agent finished naturally")
+}
+```
 
-    "github.com/digitallysavvy/go-ai/pkg/agent"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
+### Defaults
 
-func main() {
-    ctx := context.Background()
+| Scenario | Behavior |
+|----------|----------|
+| Neither `StopWhen` nor `MaxSteps` set | Defaults to `StepCountIs(1)` — single tool-calling round |
+| `MaxSteps` set, `StopWhen` not set | Converts to `StopWhen{StepCountIs(MaxSteps)}` |
+| Both set | `StopWhen` takes precedence; `MaxSteps` is ignored |
 
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("gpt-4")
+### MaxSteps (Deprecated)
 
-    myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
-        Model:    model,
-        Tools:    []types.Tool{ /* your tools */ },
-        MaxSteps: 10,
-    })
+`MaxSteps` is shorthand for `StopWhen: []ai.StopCondition{ai.StepCountIs(n)}`. It is still
+supported for backwards compatibility but **new code should use `StopWhen` directly**.
 
-    result, err := myAgent.Execute(ctx, "Complex task requiring many steps")
-    if err != nil {
-        log.Fatal(err)
-    }
+```go
+// Deprecated — works but prefer StopWhen
+maxSteps := 5
+ai.GenerateTextOptions{MaxSteps: &maxSteps}
 
-    // Check if we hit the limit
-    if result.FinishReason == types.FinishReasonLength {
-        fmt.Println("Agent stopped due to reaching MaxSteps limit")
+// Preferred
+ai.GenerateTextOptions{StopWhen: []ai.StopCondition{ai.StepCountIs(5)}}
+```
 
-        // Check for warnings
-        for _, warning := range result.Warnings {
-            if warning.Type == "max_steps_reached" {
-                fmt.Printf("Warning: %s\n", warning.Message)
-            }
+---
+
+## PrepareCall
+
+`PrepareCall` is called immediately before each generation step. Use it to adjust the system
+prompt, modify available tools, or change model parameters based on how many steps have already
+run or how many tokens have been consumed.
+
+```go
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+    StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
+    PrepareCall: func(ctx context.Context, config agent.PrepareCallConfig) agent.PrepareCallConfig {
+        // Switch to a more concise prompt after the first few steps
+        if config.StepNumber > 3 {
+            config.System = "Be concise. Finalize your answer."
         }
-    }
 
-    fmt.Printf("Completed in %d steps\n", len(result.Steps))
-}
+        // Restrict available tools in later steps
+        if config.StepNumber > 7 {
+            config.Tools = finalizeTools
+        }
+
+        return config
+    },
+})
 ```
 
-## Manual Loop Control
+`PrepareCallConfig` exposes:
 
-For advanced control over agent execution, implement custom loops using `ai.GenerateText`. This provides complete control over stopping conditions, context management, and dynamic behavior.
+| Field | Type | Description |
+|-------|------|-------------|
+| `StepNumber` | `int` | Zero-based index of the upcoming step |
+| `System` | `string` | System prompt for this call |
+| `Messages` | `[]types.Message` | Conversation history so far |
+| `Tools` | `[]types.Tool` | Tool set for this call |
+| `Temperature` | `*float64` | Sampling temperature override |
+| `MaxTokens` | `*int` | Token limit override |
+| `AccumulatedUsage` | `types.Usage` | Total tokens used so far |
+| `CustomData` | `interface{}` | Pass-through state between invocations |
 
-### Basic Manual Loop
+---
 
-Implement your own agent loop with custom stopping conditions:
+## Manual Loop
+
+For cases where you need complete control outside the agent abstraction — dynamic model
+selection, custom context trimming, interleaved human input — you can implement the loop
+yourself using `ai.GenerateText`.
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
 func manualAgentLoop(ctx context.Context, prompt string, tools []types.Tool) (string, error) {
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
     model, _ := provider.LanguageModel("gpt-4")
 
-    // Initialize message history
     messages := []types.Message{
         {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: prompt},
-            },
+            Role:    types.RoleUser,
+            Content: []types.ContentPart{types.TextContent{Text: prompt}},
         },
     }
 
-    maxSteps := 10
-    for step := 0; step < maxSteps; step++ {
-        fmt.Printf("Step %d...\n", step+1)
+    for step := 0; step < 10; step++ {
+        select {
+        case <-ctx.Done():
+            return "", ctx.Err()
+        default:
+        }
 
-        // Generate response
         result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             Model:    model,
             Messages: messages,
@@ -167,756 +248,65 @@ func manualAgentLoop(ctx context.Context, prompt string, tools []types.Tool) (st
             return "", fmt.Errorf("step %d failed: %w", step, err)
         }
 
-        // Add assistant response to history
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // If no tool calls, we're done
+        // Natural completion — no tool calls
         if len(result.ToolCalls) == 0 {
             return result.Text, nil
         }
 
-        // Execute tools and add results to history
+        // Append assistant turn
+        messages = append(messages, types.Message{
+            Role:    types.RoleAssistant,
+            Content: []types.ContentPart{types.TextContent{Text: result.Text}},
+        })
+
+        // Execute tools and append results
         for _, toolCall := range result.ToolCalls {
-            // Find and execute tool
             var toolResult interface{}
             var toolErr error
-
             for _, tool := range tools {
                 if tool.Name == toolCall.ToolName {
-                    toolResult, toolErr = tool.Execute(ctx, toolCall.Arguments)
+                    toolResult, toolErr = tool.Execute(ctx, toolCall.Arguments, types.ToolExecutionOptions{})
                     break
                 }
             }
-
-            // Add tool result to messages
-            toolMsg := types.Message{
+            resultContent := map[string]interface{}{"result": toolResult}
+            if toolErr != nil {
+                resultContent = map[string]interface{}{"error": toolErr.Error()}
+            }
+            messages = append(messages, types.Message{
                 Role: types.RoleTool,
                 Content: []types.ContentPart{
                     types.ToolResultContent{
                         ToolCallID: toolCall.ID,
                         ToolName:   toolCall.ToolName,
-                        Result:     toolResult,
+                        Result:     resultContent,
                     },
                 },
-            }
-            if toolErr != nil {
-                toolMsg.Content[0].(types.ToolResultContent).Result = map[string]interface{}{
-                    "error": toolErr.Error(),
-                }
-            }
-            messages = append(messages, toolMsg)
+            })
         }
     }
 
     return "", fmt.Errorf("reached maximum steps without completion")
 }
-
-func main() {
-    ctx := context.Background()
-
-    tools := []types.Tool{
-        // Define your tools here
-    }
-
-    result, err := manualAgentLoop(ctx, "Analyze this data", tools)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println("Final result:", result)
-}
 ```
 
-### Custom Stop Conditions
+### When to Use a Manual Loop
 
-Implement complex stopping conditions:
+Use a manual loop when you need:
 
-```go
-package main
+- **Dynamic model selection** — swap models between steps based on complexity
+- **Context trimming** — prune the message history to stay within token limits
+- **Tool phase control** — expose different tool sets in different phases
+- **Interleaved human input** — pause for approval between steps
 
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-    "strings"
+For standard tool-calling agents, `StopWhen` + `PrepareCall` cover most needs without the
+boilerplate.
 
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
-)
+---
 
-type StepInfo struct {
-    StepNumber int
-    Text       string
-    ToolCalls  []types.ToolCall
-    Usage      types.Usage
-}
+## See Also
 
-func agentWithCustomStops(ctx context.Context, prompt string) (string, error) {
-    provider := anthropic.New(anthropic.Config{
-        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("claude-sonnet-4-5")
-
-    messages := []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: prompt},
-            },
-        },
-    }
-
-    var steps []StepInfo
-    totalUsage := types.Usage{}
-    maxSteps := 20
-    maxCost := 0.50 // $0.50 maximum
-
-    for step := 0; step < maxSteps; step++ {
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:    model,
-            Messages: messages,
-            Tools:    []types.Tool{ /* your tools */ },
-        })
-        if err != nil {
-            return "", err
-        }
-
-        // Track step information
-        stepInfo := StepInfo{
-            StepNumber: step,
-            Text:       result.Text,
-            ToolCalls:  result.ToolCalls,
-            Usage:      result.Usage,
-        }
-        steps = append(steps, stepInfo)
-        totalUsage = totalUsage.Add(result.Usage)
-
-        // Stop condition 1: Check for answer marker
-        if strings.Contains(result.Text, "ANSWER:") {
-            fmt.Println("Stop: Found answer marker")
-            return result.Text, nil
-        }
-
-        // Stop condition 2: Check cost limit
-        costEstimate := (float64(totalUsage.PromptTokens)*0.01 + float64(totalUsage.CompletionTokens)*0.03) / 1000
-        if costEstimate > maxCost {
-            fmt.Printf("Stop: Cost limit exceeded (%.2f > %.2f)\n", costEstimate, maxCost)
-            return result.Text, nil
-        }
-
-        // Stop condition 3: Check for specific tool being called
-        for _, toolCall := range result.ToolCalls {
-            if toolCall.ToolName == "finalReport" {
-                fmt.Println("Stop: Final report tool called")
-                // Execute the final tool and return
-                // ... tool execution code ...
-                return result.Text, nil
-            }
-        }
-
-        // No tool calls means completion
-        if len(result.ToolCalls) == 0 {
-            return result.Text, nil
-        }
-
-        // Add response to messages and execute tools
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // Execute tools and add results
-        for _, toolCall := range result.ToolCalls {
-            // Execute tool...
-            toolMsg := types.Message{
-                Role: types.RoleTool,
-                Content: []types.ContentPart{
-                    types.ToolResultContent{
-                        ToolCallID: toolCall.ID,
-                        ToolName:   toolCall.ToolName,
-                        Result:     map[string]interface{}{"result": "..."},
-                    },
-                },
-            }
-            messages = append(messages, toolMsg)
-        }
-    }
-
-    return "", fmt.Errorf("reached maximum steps")
-}
-
-func main() {
-    ctx := context.Background()
-
-    result, err := agentWithCustomStops(
-        ctx,
-        "Research the topic and respond with 'ANSWER: [your findings]'",
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result)
-}
-```
-
-### Dynamic Model Selection
-
-Switch models based on step requirements:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func agentWithDynamicModel(ctx context.Context, prompt string) (string, error) {
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
-
-    messages := []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: prompt},
-            },
-        },
-    }
-
-    maxSteps := 10
-    for step := 0; step < maxSteps; step++ {
-        // Select model based on step and message count
-        var model provider.LanguageModel
-        var err error
-
-        if step > 2 && len(messages) > 10 {
-            // Use stronger model for complex reasoning
-            fmt.Printf("Step %d: Using GPT-4 for complex reasoning\n", step)
-            model, err = provider.LanguageModel("gpt-4")
-        } else {
-            // Use faster, cheaper model for initial steps
-            fmt.Printf("Step %d: Using GPT-4o-mini\n", step)
-            model, err = provider.LanguageModel("gpt-4o-mini")
-        }
-        if err != nil {
-            return "", err
-        }
-
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:    model,
-            Messages: messages,
-            Tools:    []types.Tool{ /* your tools */ },
-        })
-        if err != nil {
-            return "", err
-        }
-
-        // Update messages
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // Check for completion
-        if len(result.ToolCalls) == 0 {
-            return result.Text, nil
-        }
-
-        // Execute tools and continue...
-        for _, toolCall := range result.ToolCalls {
-            // Execute tool and add result to messages
-            toolMsg := types.Message{
-                Role: types.RoleTool,
-                Content: []types.ContentPart{
-                    types.ToolResultContent{
-                        ToolCallID: toolCall.ID,
-                        ToolName:   toolCall.ToolName,
-                        Result:     map[string]interface{}{}, // tool result
-                    },
-                },
-            }
-            messages = append(messages, toolMsg)
-        }
-    }
-
-    return "", fmt.Errorf("reached maximum steps")
-}
-
-func main() {
-    ctx := context.Background()
-
-    result, err := agentWithDynamicModel(ctx, "Complex multi-step analysis task")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result)
-}
-```
-
-### Context Management
-
-Manage growing conversation history in long-running loops:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func agentWithContextManagement(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("gpt-4")
-
-    // Initialize with system message
-    messages := []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: userPrompt},
-            },
-        },
-    }
-
-    maxSteps := 20
-    maxMessages := 20 // Keep conversation history manageable
-
-    for step := 0; step < maxSteps; step++ {
-        // Manage context size
-        if len(messages) > maxMessages {
-            fmt.Printf("Step %d: Trimming context (had %d messages)\n", step, len(messages))
-
-            // Keep first message (usually contains important context)
-            // and last N messages
-            keepLast := 10
-            messages = append(
-                []types.Message{messages[0]},
-                messages[len(messages)-keepLast:]...,
-            )
-
-            fmt.Printf("  Kept %d messages\n", len(messages))
-        }
-
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:    model,
-            System:   systemPrompt,
-            Messages: messages,
-            Tools:    []types.Tool{ /* your tools */ },
-        })
-        if err != nil {
-            return "", err
-        }
-
-        // Add response
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // Check for completion
-        if len(result.ToolCalls) == 0 {
-            return result.Text, nil
-        }
-
-        // Execute tools
-        for _, toolCall := range result.ToolCalls {
-            toolMsg := types.Message{
-                Role: types.RoleTool,
-                Content: []types.ContentPart{
-                    types.ToolResultContent{
-                        ToolCallID: toolCall.ID,
-                        ToolName:   toolCall.ToolName,
-                        Result:     map[string]interface{}{}, // tool result
-                    },
-                },
-            }
-            messages = append(messages, toolMsg)
-        }
-    }
-
-    return "", fmt.Errorf("reached maximum steps")
-}
-
-func main() {
-    ctx := context.Background()
-
-    result, err := agentWithContextManagement(
-        ctx,
-        "You are a helpful research assistant.",
-        "Research this topic thoroughly",
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result)
-}
-```
-
-### Dynamic Tool Selection
-
-Control which tools are available at each step:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func agentWithPhases(ctx context.Context, prompt string) (string, error) {
-    provider := openai.New(openai.Config{
-        APIKey: os.Getenv("OPENAI_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("gpt-4")
-
-    // Define all tools
-    searchTool := types.Tool{
-        Name:        "search",
-        Description: "Search for information",
-        // ... tool definition
-    }
-
-    analyzeTool := types.Tool{
-        Name:        "analyze",
-        Description: "Analyze data",
-        // ... tool definition
-    }
-
-    summarizeTool := types.Tool{
-        Name:        "summarize",
-        Description: "Create a summary",
-        // ... tool definition
-    }
-
-    messages := []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: prompt},
-            },
-        },
-    }
-
-    maxSteps := 10
-    for step := 0; step < maxSteps; step++ {
-        // Phase 1: Search (steps 0-2)
-        var availableTools []types.Tool
-        if step <= 2 {
-            fmt.Printf("Step %d: Search phase\n", step)
-            availableTools = []types.Tool{searchTool}
-        } else if step <= 5 {
-            // Phase 2: Analysis (steps 3-5)
-            fmt.Printf("Step %d: Analysis phase\n", step)
-            availableTools = []types.Tool{analyzeTool}
-        } else {
-            // Phase 3: Summary (step 6+)
-            fmt.Printf("Step %d: Summary phase\n", step)
-            availableTools = []types.Tool{summarizeTool}
-        }
-
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:    model,
-            Messages: messages,
-            Tools:    availableTools,
-        })
-        if err != nil {
-            return "", err
-        }
-
-        // Add response
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // Check for completion
-        if len(result.ToolCalls) == 0 {
-            return result.Text, nil
-        }
-
-        // Execute tools
-        for _, toolCall := range result.ToolCalls {
-            // Find and execute the tool
-            var toolResult interface{}
-            for _, tool := range availableTools {
-                if tool.Name == toolCall.ToolName {
-                    toolResult, _ = tool.Execute(ctx, toolCall.Arguments)
-                    break
-                }
-            }
-
-            toolMsg := types.Message{
-                Role: types.RoleTool,
-                Content: []types.ContentPart{
-                    types.ToolResultContent{
-                        ToolCallID: toolCall.ID,
-                        ToolName:   toolCall.ToolName,
-                        Result:     toolResult,
-                    },
-                },
-            }
-            messages = append(messages, toolMsg)
-        }
-    }
-
-    return "", fmt.Errorf("reached maximum steps")
-}
-
-func main() {
-    ctx := context.Background()
-
-    result, err := agentWithPhases(ctx, "Research quantum computing and provide a summary")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result)
-}
-```
-
-### Message Transformation
-
-Transform messages before sending them to the model:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
-)
-
-func summarizeContent(content string) string {
-    if len(content) > 1000 {
-        return content[:1000] + "... [truncated for brevity]"
-    }
-    return content
-}
-
-func agentWithMessageTransform(ctx context.Context, prompt string) (string, error) {
-    provider := anthropic.New(anthropic.Config{
-        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-    })
-    model, _ := provider.LanguageModel("claude-sonnet-4-5")
-
-    messages := []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: prompt},
-            },
-        },
-    }
-
-    maxSteps := 10
-    for step := 0; step < maxSteps; step++ {
-        // Transform messages before sending
-        processedMessages := make([]types.Message, len(messages))
-        for i, msg := range messages {
-            processedMessages[i] = msg
-
-            // Summarize large tool results to reduce token usage
-            if msg.Role == types.RoleTool {
-                for j, content := range msg.Content {
-                    if toolContent, ok := content.(types.ToolResultContent); ok {
-                        if result, ok := toolContent.Result.(string); ok && len(result) > 1000 {
-                            fmt.Printf("Step %d: Summarizing tool result (was %d chars)\n", step, len(result))
-                            toolContent.Result = summarizeContent(result)
-                            processedMessages[i].Content[j] = toolContent
-                        }
-                    }
-                }
-            }
-        }
-
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:    model,
-            Messages: processedMessages,
-            Tools:    []types.Tool{ /* your tools */ },
-        })
-        if err != nil {
-            return "", err
-        }
-
-        // Add response to original (non-transformed) messages
-        assistantMsg := types.Message{
-            Role: types.RoleAssistant,
-            Content: []types.ContentPart{
-                types.TextContent{Text: result.Text},
-            },
-        }
-        messages = append(messages, assistantMsg)
-
-        // Check for completion
-        if len(result.ToolCalls) == 0 {
-            return result.Text, nil
-        }
-
-        // Execute tools
-        for _, toolCall := range result.ToolCalls {
-            toolMsg := types.Message{
-                Role: types.RoleTool,
-                Content: []types.ContentPart{
-                    types.ToolResultContent{
-                        ToolCallID: toolCall.ID,
-                        ToolName:   toolCall.ToolName,
-                        Result:     map[string]interface{}{}, // tool result
-                    },
-                },
-            }
-            messages = append(messages, toolMsg)
-        }
-    }
-
-    return "", fmt.Errorf("reached maximum steps")
-}
-
-func main() {
-    ctx := context.Background()
-
-    result, err := agentWithMessageTransform(ctx, "Process this data")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result)
-}
-```
-
-## Best Practices
-
-### 1. Start with MaxSteps
-
-Use the built-in `MaxSteps` for simple cases:
-
-```go
-// Good - Simple and clear
-agent.AgentConfig{
-    MaxSteps: 15, // Clear limit
-}
-```
-
-### 2. Use Manual Loops for Complex Control
-
-Implement manual loops when you need:
-
-- Custom stop conditions
-- Dynamic model selection
-- Context management
-- Tool phase control
-
-```go
-// Good - Full control when needed
-func customAgentLoop(ctx context.Context, prompt string) (string, error) {
-    // Your custom logic here
-}
-```
-
-### 3. Monitor Resource Usage
-
-Track token usage and costs:
-
-```go
-totalUsage := types.Usage{}
-for step := 0; step < maxSteps; step++ {
-    result, _ := ai.GenerateText(ctx, options)
-    totalUsage = totalUsage.Add(result.Usage)
-
-    costEstimate := calculateCost(totalUsage)
-    if costEstimate > maxCost {
-        break
-    }
-}
-```
-
-### 4. Handle Context Cancellation
-
-Always respect context cancellation:
-
-```go
-for step := 0; step < maxSteps; step++ {
-    select {
-    case <-ctx.Done():
-        return "", ctx.Err()
-    default:
-        // Continue execution
-    }
-
-    result, err := ai.GenerateText(ctx, options)
-    // ...
-}
-```
-
-### 5. Manage Message History
-
-Trim context in long-running loops:
-
-```go
-if len(messages) > maxMessages {
-    // Keep important messages and recent history
-    messages = append(
-        []types.Message{messages[0]}, // System/initial
-        messages[len(messages)-10:]..., // Recent
-    )
-}
-```
-
-## Next Steps
-
-- See [configuring call options](./05-configuring-call-options.mdx) for fine-tuning agent behavior
-- Explore [workflow patterns](./03-workflows.mdx) for structured agent designs
-- Learn about [error handling](../03-ai-sdk-core/50-error-handling.mdx) for robust agents
+- [Stop-When Example](../../examples/agents/callbacks/stop-when/main.go) — focused example showing all three stop patterns
+- [Configuring Call Options](./05-configuring-call-options.mdx) — temperature, max tokens, and other options
+- [Workflow Patterns](./03-workflows.mdx) — structured agent designs
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx) — robust error handling

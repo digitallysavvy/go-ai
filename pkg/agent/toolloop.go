@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/google/uuid"
@@ -25,9 +26,18 @@ type ToolLoopAgent struct {
 
 // NewToolLoopAgent creates a new ToolLoopAgent with the given configuration
 func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
-	// Set defaults if not provided
-	if config.MaxSteps == 0 {
-		config.MaxSteps = 10
+	// Resolve stop conditions (Vercel AI SDK v5 approach):
+	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
+	// All termination flows through stop conditions.
+	if len(config.StopWhen) > 0 {
+		// StopWhen takes precedence; override MaxSteps to safety ceiling
+		config.MaxSteps = 1000
+	} else if config.MaxSteps > 0 {
+		config.StopWhen = []ai.StopCondition{ai.StepCountIs(config.MaxSteps)}
+		config.MaxSteps = 1000
+	} else {
+		config.StopWhen = []ai.StopCondition{ai.StepCountIs(1)}
+		config.MaxSteps = 1000
 	}
 
 	// Initialize skills registry if not provided
@@ -223,6 +233,43 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 				a.config.OnAgentFinish(finish)
 			}
 			break
+		}
+
+		// Evaluate stop conditions
+		if len(a.config.StopWhen) > 0 {
+			state := ai.StopConditionState{
+				Steps:    result.Steps,
+				Messages: currentMessages,
+				Usage:    result.Usage,
+			}
+			if reason := ai.EvaluateStopConditions(a.config.StopWhen, state); reason != "" {
+				result.StopReason = reason
+				result.Text = stepResult.Text
+				result.FinishReason = stepResult.FinishReason
+
+				// Call OnAgentFinish callback
+				if a.config.OnAgentFinish != nil {
+					runID, _ := ctx.Value(runIDKey).(string)
+					parentRunID, _ := ctx.Value(parentRunIDKey).(string)
+					tags, _ := ctx.Value(tagsKey).([]string)
+
+					finish := AgentFinish{
+						Output:       stepResult.Text,
+						StepNumber:   stepNum,
+						FinishReason: stepResult.FinishReason,
+						Metadata: map[string]interface{}{
+							"total_steps": stepNum,
+							"usage":       result.Usage,
+							"stop_reason": reason,
+						},
+						RunID:       runID,
+						ParentRunID: parentRunID,
+						Tags:        tags,
+					}
+					a.config.OnAgentFinish(finish)
+				}
+				break
+			}
 		}
 
 		// Check if we've hit max steps
@@ -521,9 +568,14 @@ func (a *ToolLoopAgent) RemoveTool(toolName string) {
 	}
 }
 
-// SetMaxSteps updates the maximum number of steps
+// SetMaxSteps updates the maximum number of steps.
 func (a *ToolLoopAgent) SetMaxSteps(maxSteps int) {
 	a.config.MaxSteps = maxSteps
+}
+
+// SetStopConditions replaces the agent's stop conditions.
+func (a *ToolLoopAgent) SetStopConditions(conditions []ai.StopCondition) {
+	a.config.StopWhen = conditions
 }
 
 // ========================================================================

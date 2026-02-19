@@ -58,7 +58,6 @@ func main() {
 }
 
 func solveProblem(ctx context.Context, model provider.LanguageModel, problem string, tools []types.Tool) {
-	maxSteps := 10
 	stepNum := 0
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -68,7 +67,7 @@ func solveProblem(ctx context.Context, model provider.LanguageModel, problem str
 Solve the problem step by step, using the tools as needed.
 Show your work and explain your reasoning.`,
 		Tools:    tools,
-		MaxSteps: &maxSteps,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
 		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepNum++
 			fmt.Printf("  Step %d:\n", stepNum)
