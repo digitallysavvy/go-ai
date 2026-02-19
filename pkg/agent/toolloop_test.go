@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -146,8 +147,9 @@ func TestOnStepFinish_MultiStep(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnStepFinish: func(step types.StepResult) {
 			steps = append(steps, step)
 		},
@@ -225,8 +227,9 @@ func TestOnStepFinish_ErrorHandling(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnStepFinish: func(step types.StepResult) {
 			stepCount++
 			// Note: In Go, OnStepFinish doesn't return error in current implementation
@@ -768,13 +771,13 @@ func TestOnAgentFinish_MaxSteps(t *testing.T) {
 		t.Error("OnAgentFinish was not called when max steps reached")
 	}
 
-	if capturedFinish.FinishReason != types.FinishReasonLength {
-		t.Errorf("Expected finish reason 'length', got '%s'", capturedFinish.FinishReason)
+	if capturedFinish.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("Expected finish reason 'tool-calls', got '%s'", capturedFinish.FinishReason)
 	}
 
-	// Check that max_steps_hit metadata is set
-	if maxStepsHit, ok := capturedFinish.Metadata["max_steps_hit"].(bool); !ok || !maxStepsHit {
-		t.Error("Expected max_steps_hit metadata to be true")
+	// MaxSteps is now converted to StopWhen{StepCountIs(N)}, so stop_reason should be set
+	if stopReason, ok := capturedFinish.Metadata["stop_reason"].(string); !ok || stopReason == "" {
+		t.Error("Expected stop_reason metadata to be set")
 	}
 }
 
@@ -1350,8 +1353,9 @@ func TestRunTracking_PropagationAcrossSteps(t *testing.T) {
 	}
 
 	agent := NewToolLoopAgent(AgentConfig{
-		Model: mock,
-		Tools: []types.Tool{testTool},
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 5,
 		OnAgentAction: func(action AgentAction) {
 			capturedRunIDs = append(capturedRunIDs, action.RunID)
 		},
@@ -1374,5 +1378,234 @@ func TestRunTracking_PropagationAcrossSteps(t *testing.T) {
 		if runID != firstRunID {
 			t.Errorf("RunID at index %d = %q, expected all to be %q", i, runID, firstRunID)
 		}
+	}
+}
+
+// --- StopWhen tests ---
+
+func TestToolLoopAgent_StopWhen_StepCountIs(t *testing.T) {
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	// 5 responses all requesting tool calls
+	responses := make([]types.GenerateResult, 5)
+	for i := range responses {
+		responses[i] = types.GenerateResult{
+			Text:         fmt.Sprintf("Step %d", i+1),
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: fmt.Sprintf("%d", i+1), ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		}
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(3)},
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result.Steps) != 3 {
+		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason == "" {
+		t.Error("expected StopReason to be set")
+	}
+	if result.StopReason != "maximum number of steps (3) reached" {
+		t.Errorf("unexpected StopReason: %s", result.StopReason)
+	}
+}
+
+func TestToolLoopAgent_StopWhen_OverridesMaxSteps(t *testing.T) {
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	responses := make([]types.GenerateResult, 10)
+	for i := range responses {
+		responses[i] = types.GenerateResult{
+			Text:         fmt.Sprintf("Step %d", i+1),
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: fmt.Sprintf("%d", i+1), ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		}
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		MaxSteps: 2,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// StopWhen should take precedence: 5 steps, not 2
+	if len(result.Steps) != 5 {
+		t.Errorf("expected 5 steps (StopWhen wins over MaxSteps=2), got %d", len(result.Steps))
+	}
+}
+
+func TestToolLoopAgent_StopWhen_OnAgentFinishMetadata(t *testing.T) {
+	called := false
+	var capturedFinish AgentFinish
+
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	responses := make([]types.GenerateResult, 5)
+	for i := range responses {
+		responses[i] = types.GenerateResult{
+			Text:         fmt.Sprintf("Step %d", i+1),
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: fmt.Sprintf("%d", i+1), ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		}
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{testTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(3)},
+		OnAgentFinish: func(finish AgentFinish) {
+			called = true
+			capturedFinish = finish
+		},
+	})
+
+	_, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !called {
+		t.Error("OnAgentFinish was not called when stop condition triggered")
+	}
+
+	if stopReason, ok := capturedFinish.Metadata["stop_reason"].(string); !ok || stopReason == "" {
+		t.Error("Expected stop_reason metadata to be set")
+	}
+}
+
+func TestToolLoopAgent_StopWhen_HasToolCall(t *testing.T) {
+	searchTool := types.Tool{
+		Name:        "search",
+		Description: "Search",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "search result", nil
+		},
+	}
+	finishTool := types.Tool{
+		Name:        "finish",
+		Description: "Finish",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		},
+	}
+
+	responses := []types.GenerateResult{
+		{
+			Text:         "Searching",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "search", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		},
+		{
+			Text:         "Finishing",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "2", ToolName: "finish", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		},
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    mock,
+		Tools:    []types.Tool{searchTool, finishTool},
+		StopWhen: []ai.StopCondition{ai.HasToolCall("finish")},
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason != "tool 'finish' was called" {
+		t.Errorf("expected HasToolCall stop reason, got %q", result.StopReason)
+	}
+}
+
+func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
+	testTool := types.Tool{
+		Name:        "test_tool",
+		Description: "Test",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		},
+	}
+
+	// 15 responses all requesting tool calls
+	responses := make([]types.GenerateResult, 15)
+	for i := range responses {
+		responses[i] = types.GenerateResult{
+			Text:         fmt.Sprintf("Step %d", i+1),
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: fmt.Sprintf("%d", i+1), ToolName: "test_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(10)},
+		}
+	}
+
+	mock := &mockLanguageModel{responses: responses}
+
+	// Neither MaxSteps nor StopWhen set: should default to 1
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step (default), got %d", len(result.Steps))
 	}
 }

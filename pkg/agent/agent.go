@@ -34,6 +34,10 @@ type AgentResult struct {
 	// Final finish reason
 	FinishReason types.FinishReason
 
+	// StopReason is the reason string from the StopCondition that stopped the loop.
+	// Empty if the agent ended naturally or was not using custom stop conditions.
+	StopReason string
+
 	// Total usage across all steps
 	Usage types.Usage
 
@@ -131,8 +135,14 @@ type AgentConfig struct {
 	// The main agent can delegate tasks to subagents for specialized processing
 	Subagents *SubagentRegistry
 
-	// Maximum number of steps (iterations) the agent can take
+	// Maximum number of steps (iterations) the agent can take.
+	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
 	MaxSteps int
+
+	// StopWhen defines conditions that terminate the agent's tool-calling loop.
+	// Conditions are evaluated OR -- first non-empty string stops the loop.
+	// If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition{ai.StepCountIs(1)}.
+	StopWhen []ai.StopCondition
 
 	// Temperature for generation
 	Temperature *float64
