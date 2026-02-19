@@ -67,7 +67,6 @@ func runStreamingAgent(ctx context.Context, model provider.LanguageModel, query 
 		createCodeAnalyzerTool(),
 	}
 
-	maxSteps := 6
 	stepCount := 0
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -76,7 +75,7 @@ func runStreamingAgent(ctx context.Context, model provider.LanguageModel, query 
 		System: `You are a thorough research assistant. Break down complex queries into steps.
 Use available tools to gather information. Think step by step and explain your process.`,
 		Tools:    tools,
-		MaxSteps: &maxSteps,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(6)},
 		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepCount++
 			fmt.Printf("\n[Step %d]\n", stepCount)
