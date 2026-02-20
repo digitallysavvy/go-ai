@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -352,6 +353,258 @@ func TestProviderOptionsNil(t *testing.T) {
 	// Should not have prompt_cache_retention
 	if _, ok := body["prompt_cache_retention"]; ok {
 		t.Errorf("expected no prompt_cache_retention when ProviderOptions is nil")
+	}
+}
+
+// TestDoGenerateFinishReasonMapping tests that OpenAI finish reasons are correctly
+// mapped to normalized types.FinishReason values in non-streaming responses.
+// OpenAI uses underscores (e.g. "tool_calls") but the SDK uses hyphens ("tool-calls").
+func TestDoGenerateFinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		name               string
+		openAIFinishReason string
+		expectedReason     types.FinishReason
+	}{
+		{
+			name:               "stop maps to stop",
+			openAIFinishReason: "stop",
+			expectedReason:     types.FinishReasonStop,
+		},
+		{
+			name:               "length maps to length",
+			openAIFinishReason: "length",
+			expectedReason:     types.FinishReasonLength,
+		},
+		{
+			name:               "tool_calls maps to tool-calls",
+			openAIFinishReason: "tool_calls",
+			expectedReason:     types.FinishReasonToolCalls,
+		},
+		{
+			name:               "content_filter maps to content-filter",
+			openAIFinishReason: "content_filter",
+			expectedReason:     types.FinishReasonContentFilter,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				response := openAIResponse{
+					ID:    "test-id",
+					Model: "gpt-4",
+					Choices: []struct {
+						Index        int           `json:"index"`
+						Message      openAIMessage `json:"message"`
+						FinishReason string        `json:"finish_reason"`
+					}{
+						{
+							Index: 0,
+							Message: openAIMessage{
+								Role:    "assistant",
+								Content: "Test response",
+							},
+							FinishReason: tt.openAIFinishReason,
+						},
+					},
+					Usage: openAIUsage{
+						PromptTokens:     10,
+						CompletionTokens: 5,
+						TotalTokens:      15,
+					},
+				}
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+
+			p := New(Config{
+				APIKey:  "test-key",
+				BaseURL: server.URL,
+			})
+			model := NewLanguageModel(p, "gpt-4")
+
+			result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+				Prompt: types.Prompt{
+					Messages: []types.Message{
+						{
+							Role:    types.RoleUser,
+							Content: []types.ContentPart{types.TextContent{Text: "Hello"}},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("DoGenerate failed: %v", err)
+			}
+
+			if result.FinishReason != tt.expectedReason {
+				t.Errorf("FinishReason = %q, want %q", result.FinishReason, tt.expectedReason)
+			}
+		})
+	}
+}
+
+// TestDoGenerateToolCallsFinishReason verifies that a response with tool calls
+// returns FinishReasonToolCalls ("tool-calls"), not the raw OpenAI "tool_calls".
+func TestDoGenerateToolCallsFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := openAIResponse{
+			ID:    "test-id",
+			Model: "gpt-4",
+			Choices: []struct {
+				Index        int           `json:"index"`
+				Message      openAIMessage `json:"message"`
+				FinishReason string        `json:"finish_reason"`
+			}{
+				{
+					Index: 0,
+					Message: openAIMessage{
+						Role: "assistant",
+						ToolCalls: []openAIToolCall{
+							{
+								ID:   "call_123",
+								Type: "function",
+								Function: struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								}{
+									Name:      "get_weather",
+									Arguments: `{"location":"San Francisco"}`,
+								},
+							},
+						},
+					},
+					FinishReason: "tool_calls",
+				},
+			},
+			Usage: openAIUsage{
+				PromptTokens:     15,
+				CompletionTokens: 10,
+				TotalTokens:      25,
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+	})
+	model := NewLanguageModel(p, "gpt-4")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role:    types.RoleUser,
+					Content: []types.ContentPart{types.TextContent{Text: "What is the weather?"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("FinishReason = %q, want %q", result.FinishReason, types.FinishReasonToolCalls)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ToolName != "get_weather" {
+		t.Errorf("ToolName = %q, want %q", result.ToolCalls[0].ToolName, "get_weather")
+	}
+}
+
+// TestDoStreamFinishReasonMapping tests that OpenAI finish reasons are correctly
+// mapped to normalized types.FinishReason values in streaming responses.
+func TestDoStreamFinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		name               string
+		openAIFinishReason string
+		expectedReason     types.FinishReason
+	}{
+		{
+			name:               "stop maps to stop",
+			openAIFinishReason: "stop",
+			expectedReason:     types.FinishReasonStop,
+		},
+		{
+			name:               "length maps to length",
+			openAIFinishReason: "length",
+			expectedReason:     types.FinishReasonLength,
+		},
+		{
+			name:               "tool_calls maps to tool-calls",
+			openAIFinishReason: "tool_calls",
+			expectedReason:     types.FinishReasonToolCalls,
+		},
+		{
+			name:               "content_filter maps to content-filter",
+			openAIFinishReason: "content_filter",
+			expectedReason:     types.FinishReasonContentFilter,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+
+				// Send a text chunk first
+				w.Write([]byte(`data: {"choices":[{"delta":{"content":"Hi"}}]}` + "\n\n"))
+				// Send finish chunk with the OpenAI finish reason
+				w.Write([]byte(fmt.Sprintf(`data: {"choices":[{"delta":{},"finish_reason":"%s"}]}`, tt.openAIFinishReason) + "\n\n"))
+				// Send done
+				w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer server.Close()
+
+			p := New(Config{
+				APIKey:  "test-key",
+				BaseURL: server.URL,
+			})
+			model := NewLanguageModel(p, "gpt-4")
+
+			stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+				Prompt: types.Prompt{
+					Messages: []types.Message{
+						{
+							Role:    types.RoleUser,
+							Content: []types.ContentPart{types.TextContent{Text: "Hello"}},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("DoStream failed: %v", err)
+			}
+			defer stream.Close()
+
+			// Read text chunk
+			chunk, err := stream.Next()
+			if err != nil {
+				t.Fatalf("stream.Next (text) failed: %v", err)
+			}
+			if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hi" {
+				t.Errorf("expected text chunk 'Hi', got type=%q text=%q", chunk.Type, chunk.Text)
+			}
+
+			// Read finish chunk
+			chunk, err = stream.Next()
+			if err != nil {
+				t.Fatalf("stream.Next (finish) failed: %v", err)
+			}
+			if chunk.Type != provider.ChunkTypeFinish {
+				t.Fatalf("expected finish chunk, got type=%q", chunk.Type)
+			}
+			if chunk.FinishReason != tt.expectedReason {
+				t.Errorf("FinishReason = %q, want %q", chunk.FinishReason, tt.expectedReason)
+			}
+		})
 	}
 }
 

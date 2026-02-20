@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -60,9 +60,9 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool {
 	// Only vision models support images (gpt-4-vision, gpt-4-turbo, etc.)
 	return m.modelID == "gpt-4-vision-preview" ||
-		   m.modelID == "gpt-4-turbo" ||
-		   m.modelID == "gpt-4o" ||
-		   m.modelID == "gpt-4o-mini"
+		m.modelID == "gpt-4-turbo" ||
+		m.modelID == "gpt-4o" ||
+		m.modelID == "gpt-4o-mini"
 }
 
 // DoGenerate performs non-streaming text generation
@@ -212,7 +212,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		}
 
 		// Extract finish reason
-		result.FinishReason = types.FinishReason(choice.FinishReason)
+		result.FinishReason = convertFinishReason(choice.FinishReason)
 	}
 
 	return result
@@ -332,17 +332,17 @@ type openAIUsage struct {
 	} `json:"prompt_tokens_details,omitempty"`
 
 	CompletionTokensDetails *struct {
-		ReasoningTokens             *int `json:"reasoning_tokens,omitempty"`
-		AcceptedPredictionTokens    *int `json:"accepted_prediction_tokens,omitempty"`
-		RejectedPredictionTokens    *int `json:"rejected_prediction_tokens,omitempty"`
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 }
 
 // openAIMessage represents an OpenAI message
 type openAIMessage struct {
-	Role      string            `json:"role"`
-	Content   string            `json:"content"`
-	ToolCalls []openAIToolCall  `json:"tool_calls,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // openAIToolCall represents an OpenAI tool call
@@ -403,8 +403,8 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 	var chunkData struct {
 		Choices []struct {
 			Delta struct {
-				Content   string            `json:"content"`
-				ToolCalls []openAIToolCall  `json:"tool_calls,omitempty"`
+				Content   string           `json:"content"`
+				ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -435,7 +435,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		if choice.FinishReason != nil {
 			return &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
-				FinishReason: types.FinishReason(*choice.FinishReason),
+				FinishReason: convertFinishReason(*choice.FinishReason),
 			}, nil
 		}
 	}
@@ -450,4 +450,20 @@ func (s *openAIStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// convertFinishReason converts OpenAI finish reasons to our types
+func convertFinishReason(reason string) types.FinishReason {
+	switch reason {
+	case "stop":
+		return types.FinishReasonStop
+	case "length":
+		return types.FinishReasonLength
+	case "tool_calls", "function_call":
+		return types.FinishReasonToolCalls
+	case "content_filter":
+		return types.FinishReasonContentFilter
+	default:
+		return types.FinishReasonOther
+	}
 }
