@@ -98,6 +98,14 @@ Text-to-image and image-to-image:
 - Replicate - Various image models
 - Together AI - Stable Diffusion hosting
 
+### 3a. Video Generation Providers
+
+Text-to-video and image-to-video:
+
+- KlingAI - Kling v2.6 text-to-video and image-to-video
+- Alibaba - Wan video generation
+- ByteDance - Seedance text-to-video and image-to-video (Volcengine Ark)
+
 ### 4. Speech Synthesis Providers
 
 Text-to-speech capabilities:
@@ -271,6 +279,14 @@ model, _ := provider.LanguageModel("gemini-2.0-pro")
 | Black Forest Labs | FLUX.1 | Medium | Excellent | Yes |
 | FAL | Multiple | Very Fast | High | Yes |
 | Replicate | Various | Variable | Variable | Yes |
+
+### Video Generation
+
+| Provider | Models | Text-to-Video | Image-to-Video | Async Polling |
+|----------|--------|---------------|----------------|---------------|
+| KlingAI | Kling v2.6 | Yes | Yes | Yes |
+| Alibaba | Wan | Yes | Yes | Yes |
+| ByteDance | Seedance 1.x | Yes | Yes | Yes |
 
 ### Speech & Audio
 
