@@ -174,6 +174,95 @@ result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptio
 })
 ```
 
+## Video Generation via SSE
+
+The gateway video endpoint uses Server-Sent Events (SSE) with heartbeat keep-alives to prevent
+connection timeouts during long-running video generation (typically 30–120 seconds).
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+)
+
+func main() {
+    provider, err := gateway.New(gateway.Config{
+        APIKey: "your-api-key",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    model, err := provider.VideoModel("google/veo-3.0-generate-preview")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Allow up to 3 minutes for video generation
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+    defer cancel()
+
+    result, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+        Prompt:      "A calm ocean wave at sunset",
+        N:           1,
+        AspectRatio: "16:9",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for _, video := range result.Videos {
+        fmt.Printf("Video URL: %s\n", video.URL)
+    }
+}
+```
+
+**SSE event handling:**
+- `heartbeat` events are keep-alive signals — discarded automatically, keep connection open.
+- `progress` events (optional) indicate generation progress — discarded, no errors raised.
+- `result` events contain the completed video data — returned as `VideoModelV3Response`.
+- `error` events signal a failure — returned as an error to the caller.
+
+Context cancellation is handled mid-stream: cancelling the context stops SSE reading immediately.
+
+> **Note:** For video generations that may exceed 60 seconds, provide a custom `HTTPClient`
+> with a longer or zero timeout via `Config.HTTPClient`.
+
+## Project ID for Observability
+
+When a project ID is configured, it is forwarded as the `ai-o11y-project-id` header on all
+gateway requests. This enables observability and billing attribution per project.
+
+### Setting via Config struct
+
+```go
+projectID := "my-project-123"
+provider, err := gateway.New(gateway.Config{
+    APIKey:    "your-api-key",
+    ProjectID: &projectID,
+})
+```
+
+### Setting via functional option
+
+```go
+provider, err := gateway.New(
+    gateway.Config{APIKey: "your-api-key"},
+    gateway.WithProjectID("my-project-123"),
+)
+```
+
+### Setting via environment variable
+
+The `VERCEL_PROJECT_ID` environment variable is read automatically and forwarded as
+the `ai-o11y-project-id` header alongside other Vercel observability headers.
+
 ## Configuration Options
 
 ### Provider Config
@@ -184,6 +273,7 @@ result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptio
 - `MetadataCacheRefreshMillis` (int64): Metadata cache refresh interval in milliseconds (default: 300000)
 - `HTTPClient` (*http.Client): Custom HTTP client
 - `ZeroDataRetention` (bool): Enable zero data retention mode
+- `ProjectID` (*string): Project identifier forwarded as `ai-o11y-project-id` for observability (or set `VERCEL_PROJECT_ID` env var)
 
 ### Parallel Search Config
 
@@ -209,6 +299,7 @@ result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptio
 - `VERCEL_DEPLOYMENT_ID`: Vercel deployment ID (for observability)
 - `VERCEL_ENV`: Vercel environment (for observability)
 - `VERCEL_REGION`: Vercel region (for observability)
+- `VERCEL_PROJECT_ID`: Vercel project ID forwarded as `ai-o11y-project-id` (for observability)
 
 ## Model IDs
 
