@@ -1,0 +1,280 @@
+---
+title: Callback Events
+description: Structured lifecycle events for observability in GenerateText, StreamText, and ToolLoopAgent
+---
+
+# Callback Events
+
+The Go-AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
+
+All callbacks are **optional** and **panic-safe** — a panicking callback never aborts generation.
+
+## Event Types
+
+### OnStartEvent
+
+Fired once at the beginning of a `GenerateText` or `StreamText` call, before any LLM request is made.
+
+```go
+type OnStartEvent struct {
+    ModelProvider string
+    ModelID       string
+    Prompt        string
+    System        string
+    Messages      []types.Message
+    Tools         []types.Tool
+    // Telemetry
+    FunctionID string
+    Metadata   map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| ModelProvider | Provider name (e.g., `"openai"`, `"anthropic"`) |
+| ModelID | Model identifier (e.g., `"gpt-4o"`) |
+| Prompt | The user prompt string |
+| System | The system prompt string |
+| Messages | Initial conversation messages |
+| Tools | Tools available for the call |
+| FunctionID | Telemetry function identifier |
+| Metadata | Telemetry metadata key-value pairs |
+
+---
+
+### OnStepStartEvent
+
+Fired at the beginning of each generation step (each LLM call in a multi-step tool loop).
+
+```go
+type OnStepStartEvent struct {
+    StepNumber int
+    Messages   []types.Message
+    Tools      []types.Tool
+    FunctionID string
+    Metadata   map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| StepNumber | 1-based step counter |
+| Messages | Messages sent to the LLM for this step |
+| Tools | Tools available for this step |
+
+---
+
+### OnToolCallStartEvent
+
+Fired before each individual tool is executed.
+
+```go
+type OnToolCallStartEvent struct {
+    ToolCallID string
+    ToolName   string
+    Args       map[string]any
+    StepNumber int
+    FunctionID string
+    Metadata   map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| ToolCallID | Unique identifier for this tool call |
+| ToolName | Name of the tool being called |
+| Args | Arguments passed to the tool |
+| StepNumber | Step in which this tool call occurs |
+
+---
+
+### OnToolCallFinishEvent
+
+Fired after each tool completes (success or failure). This is a discriminated union: either `Result` or `Error` is non-nil.
+
+```go
+type OnToolCallFinishEvent struct {
+    ToolCallID string
+    ToolName   string
+    Args       map[string]any
+    Result     any    // non-nil on success
+    Error      error  // non-nil on failure
+    StepNumber int
+    FunctionID string
+    Metadata   map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| Result | Tool output on success (`nil` on failure) |
+| Error | Execution error on failure (`nil` on success) |
+
+---
+
+### OnStepFinishEvent
+
+Fired after each generation step completes, including after all tools for that step have been executed.
+
+```go
+type OnStepFinishEvent struct {
+    StepNumber   int
+    Text         string
+    ToolCalls    []types.ToolCall
+    ToolResults  []types.ToolResult
+    FinishReason types.FinishReason
+    Usage        types.Usage
+    FunctionID   string
+    Metadata     map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| Text | LLM text output for this step |
+| ToolCalls | Tool calls made during this step |
+| ToolResults | Results from tool executions in this step |
+| FinishReason | Why the LLM stopped (e.g., `ToolCalls`, `Stop`) |
+| Usage | Token usage for this step |
+
+---
+
+### OnFinishEvent
+
+Fired once when generation completes (after all steps).
+
+```go
+type OnFinishEvent struct {
+    Text         string
+    ToolResults  []types.ToolResult
+    FinishReason types.FinishReason
+    Steps        []types.StepResult
+    TotalUsage   types.Usage
+    FunctionID   string
+    Metadata     map[string]any
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| Text | Final generated text |
+| ToolResults | All tool results across all steps |
+| FinishReason | Final finish reason |
+| Steps | All steps taken during generation |
+| TotalUsage | Aggregated token usage across all steps |
+
+---
+
+## Notify Utility
+
+The SDK exposes the `Notify` function used internally for safe event dispatch:
+
+```go
+// Listener is a function that receives a typed event.
+type Listener[E any] func(ctx context.Context, event E)
+
+// Notify safely dispatches event to each listener.
+// Panics in any listener are recovered and do not propagate.
+func Notify[E any](ctx context.Context, event E, listeners ...Listener[E])
+```
+
+`Notify` is useful for fan-out scenarios where you want to dispatch the same event to multiple independent listeners.
+
+---
+
+## Usage
+
+### With GenerateText
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What is 2+2?",
+    Tools:  []types.Tool{calculatorTool},
+    OnStart: func(ctx context.Context, e ai.OnStartEvent) {
+        log.Printf("[start] model=%s/%s prompt=%q", e.ModelProvider, e.ModelID, e.Prompt)
+    },
+    OnStepStart: func(ctx context.Context, e ai.OnStepStartEvent) {
+        log.Printf("[step %d start] messages=%d", e.StepNumber, len(e.Messages))
+    },
+    OnToolCallStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
+        log.Printf("[tool start] %s args=%v", e.ToolName, e.Args)
+    },
+    OnToolCallFinish: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
+        if e.Error != nil {
+            log.Printf("[tool error] %s: %v", e.ToolName, e.Error)
+        } else {
+            log.Printf("[tool finish] %s result=%v", e.ToolName, e.Result)
+        }
+    },
+    OnStepFinishEvent: func(ctx context.Context, e ai.OnStepFinishEvent) {
+        log.Printf("[step %d finish] finish_reason=%s tokens=%d",
+            e.StepNumber, e.FinishReason, safeTokens(e.Usage.TotalTokens))
+    },
+    OnFinishEvent: func(ctx context.Context, e ai.OnFinishEvent) {
+        log.Printf("[finish] steps=%d total_tokens=%d text=%q",
+            len(e.Steps), safeTokens(e.TotalUsage.TotalTokens), e.Text)
+    },
+})
+```
+
+### With AgentConfig (ToolLoopAgent)
+
+Callbacks on `AgentConfig` fire for every call to `Execute`. They are merged with any per-call callbacks:
+
+```go
+agent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:    model,
+    Tools:    tools,
+    MaxSteps: 10,
+    OnStart: func(ctx context.Context, e ai.OnStartEvent) {
+        log.Printf("Agent starting: model=%s", e.ModelID)
+    },
+    OnToolCallStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
+        log.Printf("Tool call: %s", e.ToolName)
+    },
+    OnToolCallFinish: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
+        if e.Error != nil {
+            log.Printf("Tool failed: %s — %v", e.ToolName, e.Error)
+        }
+    },
+    OnFinishEvent: func(ctx context.Context, e ai.OnFinishEvent) {
+        log.Printf("Agent done: %d steps", len(e.Steps))
+    },
+})
+```
+
+---
+
+## Event Ordering
+
+For a single `GenerateText` call with one tool call, the event order is:
+
+```
+OnStart
+└── Step 1
+    ├── OnStepStart
+    ├── OnToolCallStart (for each tool call)
+    ├── OnToolCallFinish (for each tool call)
+    └── OnStepFinish
+└── Step 2
+    ├── OnStepStart
+    └── OnStepFinish
+OnFinish
+```
+
+---
+
+## Callback Merging in Agents
+
+When using `ToolLoopAgent`, callbacks set in `AgentConfig` are merged with any per-call callbacks. Both fire in order: **settings-level first, then call-level**.
+
+This is useful for attaching persistent observability (logging, metrics) at the agent level while allowing per-request overrides.
+
+---
+
+## See Also
+
+- [GenerateText](/07-reference/ai/generate-text) — Full reference for `GenerateText`
+- [StreamText](/07-reference/ai/stream-text) — Full reference for `StreamText`
+- [ToolLoopAgent](/07-reference/ai/tool-loop-agent) — Full reference for `ToolLoopAgent`

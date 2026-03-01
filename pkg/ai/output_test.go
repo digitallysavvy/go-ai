@@ -778,3 +778,260 @@ func TestStreamText_NoOutput_NoResponseFormat(t *testing.T) {
 		t.Error("expected nil PartialOutput when no Output spec provided")
 	}
 }
+
+// =============================================================================
+// TS SDK gap fixes: finishReason guard, Output() final result, deduplication
+// =============================================================================
+
+// TestGenerateText_FinishReasonLength_NilOutput verifies that GenerateText does
+// NOT call parseCompleteOutput (and leaves result.Output nil) when the model
+// finishes with reason "length" (truncated response). Parsing truncated JSON
+// would always fail; the TS SDK guards with if (finishReason === 'stop').
+func TestGenerateText_FinishReasonLength_NilOutput(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Name string `json:"name"`
+	}
+
+	// The model returns truncated JSON and finishes with "length".
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"truncat`, // incomplete JSON
+				FinishReason: types.FinishReasonLength,
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Generate an object",
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+	})
+	// Should succeed (no error), but Output must be nil because parseCompleteOutput
+	// is skipped for non-stop finish reasons.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != nil {
+		t.Errorf("expected nil Output for length finish reason, got %v", result.Output)
+	}
+}
+
+// TestStreamText_Output_FinalResult verifies that StreamTextResult.Output()
+// returns the fully-parsed typed value after the stream completes (matching the
+// TS SDK's .output Promise that resolves via parseCompleteOutput at stream end).
+func TestStreamText_Output_FinalResult(t *testing.T) {
+	t.Parallel()
+
+	type Color struct {
+		Name string `json:"name"`
+		Hex  string `json:"hex"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"name":"red","hex":"#ff0000"}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Name a color",
+		Output: ObjectOutput[Color](ObjectOutputOptions{
+			Schema: SchemaFor[Color](),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	// Output() should be set to the final parsed value after stream ends.
+	out := result.Output()
+	if out == nil {
+		t.Fatal("expected Output() to be non-nil after stream completes")
+	}
+	color, ok := out.(Color)
+	if !ok {
+		t.Fatalf("unexpected Output type: %T", out)
+	}
+	if color.Name != "red" {
+		t.Errorf("expected name=red, got %q", color.Name)
+	}
+	if color.Hex != "#ff0000" {
+		t.Errorf("expected hex=#ff0000, got %q", color.Hex)
+	}
+	if result.OutputErr() != nil {
+		t.Errorf("expected nil OutputErr, got %v", result.OutputErr())
+	}
+}
+
+// TestStreamText_Output_NilWhenLengthFinish verifies that Output() is nil when
+// the stream ends with finishReason "length" (truncated response), matching the
+// TS SDK guard: parseCompleteOutput is only called on 'stop' finish reason.
+func TestStreamText_Output_NilWhenLengthFinish(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Val int `json:"val"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"val":4`}, // truncated
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonLength},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Give a number",
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	if result.Output() != nil {
+		t.Errorf("expected nil Output() for length finish reason, got %v", result.Output())
+	}
+}
+
+// TestStreamText_Output_ViaOnFinish verifies that the final Output() value is
+// also accessible inside the OnFinish callback (processStream path).
+func TestStreamText_Output_ViaOnFinish(t *testing.T) {
+	t.Parallel()
+
+	type Point struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"x":3,"y":7}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	done := make(chan *StreamTextResult, 1)
+
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Give a point",
+		Output: ObjectOutput[Point](ObjectOutputOptions{
+			Schema: SchemaFor[Point](),
+		}),
+		OnFinish: func(r *StreamTextResult) {
+			done <- r
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	finalResult := <-done
+
+	out := finalResult.Output()
+	if out == nil {
+		t.Fatal("expected Output() to be set in OnFinish callback")
+	}
+	pt, ok := out.(Point)
+	if !ok {
+		t.Fatalf("unexpected Output type: %T", out)
+	}
+	if pt.X != 3 || pt.Y != 7 {
+		t.Errorf("expected {3,7}, got {%d,%d}", pt.X, pt.Y)
+	}
+}
+
+// TestStreamText_PartialOutput_Deduplication verifies that PartialOutput is only
+// updated when the JSON representation actually changes (matching TS SDK behavior
+// where updates are suppressed when JSON.stringify(partial) equals the last
+// published value).
+//
+// Dedup scenario: chunk 1 streams `{"title":"hello"` (missing closing brace).
+// The JSON repair fills it in, producing Doc{Title:"hello"}.
+// Chunk 2 streams `}`, completing the JSON. parsePartialOutput is called again
+// with the full `{"title":"hello"}` text and returns the same Doc{Title:"hello"}.
+// The JSON marshaling of both parses is identical — so the dedup should suppress
+// the second update. The final Output() must still be the fully-parsed doc.
+func TestStreamText_PartialOutput_Deduplication(t *testing.T) {
+	t.Parallel()
+
+	type Doc struct {
+		Title string `json:"title"`
+	}
+
+	// Chunk 1: incomplete JSON — repaired partial = Doc{Title:"hello"}
+	// Chunk 2: closing brace — full JSON — same parsed partial (dedup suppresses)
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"title":"hello"`},
+		{Type: provider.ChunkTypeText, Text: `}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Write a title",
+		Output: ObjectOutput[Doc](ObjectOutputOptions{
+			Schema: SchemaFor[Doc](),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	// Dedup must not suppress the final Output — parseCompleteOutput always runs.
+	out := result.Output()
+	if out == nil {
+		t.Fatal("expected Output() to be set after stream (dedup must not block parseCompleteOutput)")
+	}
+	doc, ok := out.(Doc)
+	if !ok {
+		t.Fatalf("unexpected Output type: %T", out)
+	}
+	if doc.Title != "hello" {
+		t.Errorf("expected title=hello, got %q", doc.Title)
+	}
+
+	// PartialOutput must also be non-nil (set from first chunk at minimum).
+	if result.PartialOutput() == nil {
+		t.Error("expected PartialOutput() to be non-nil after streaming")
+	}
+}

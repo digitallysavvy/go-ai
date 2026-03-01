@@ -180,6 +180,12 @@ type AgentConfig struct {
 	// Experimental Features (v6.0.41 - NEW)
 	// ========================================================================
 
+	// ExperimentalContext is user-defined context that flows through all
+	// structured callback events (OnStartEvent, OnStepStartEvent, etc.).
+	// It is passed as-is to every event — useful for correlating events with
+	// application-level state (e.g. request IDs, session objects).
+	ExperimentalContext interface{}
+
 	// ExperimentalDownload enables file download support in agents
 	// When enabled, agents can download files from URLs and process them
 	ExperimentalDownload bool
@@ -194,6 +200,31 @@ type AgentConfig struct {
 	OnToolCall   func(toolCall types.ToolCall)
 	OnToolResult func(toolResult types.ToolResult)
 	OnFinish     func(result *AgentResult)
+
+	// ========================================================================
+	// Structured Event Callbacks (v6.1 - P0-3)
+	// These callbacks receive typed event structs and are panic-safe.
+	// They fire in addition to (not instead of) the legacy callbacks above.
+	// They are merged with per-call callbacks via mergeCallbacks.
+	// ========================================================================
+
+	// OnStart is called once when agent execution begins.
+	OnStart func(ctx context.Context, e ai.OnStartEvent)
+
+	// OnStepStart is called at the beginning of each LLM step.
+	OnStepStartEvent func(ctx context.Context, e ai.OnStepStartEvent)
+
+	// OnToolCallStart is called just before each tool's Execute function runs.
+	OnToolCallStart func(ctx context.Context, e ai.OnToolCallStartEvent)
+
+	// OnToolCallFinish is called after each tool's Execute function returns.
+	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
+
+	// OnStepFinishEvent is called at the end of each LLM step.
+	OnStepFinishEvent func(ctx context.Context, e ai.OnStepFinishEvent)
+
+	// OnFinishEvent is called once when agent execution completes.
+	OnFinishEvent func(ctx context.Context, e ai.OnFinishEvent)
 
 	// LangChain/LangGraph-Style Callbacks (v6.0.60+)
 	// These callbacks provide more granular control over agent execution

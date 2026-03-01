@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
@@ -60,6 +61,10 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
+	// ExperimentalContext is user-defined context that flows through callbacks.
+	// It is passed as-is to all structured event callbacks.
+	ExperimentalContext interface{}
+
 	// Telemetry configuration for observability
 	ExperimentalTelemetry *TelemetrySettings
 
@@ -116,10 +121,24 @@ type StreamTextResult struct {
 	// nil when no Output option was provided.
 	outputSpec outputProcessor
 
+	// outputResult holds the final parsed output after streaming completes.
+	// Only populated when finishReason == Stop and an Output spec was provided.
+	// Protected by mu.
+	outputResult any
+
+	// outputErr holds any error that occurred during final output parsing.
+	// Protected by mu.
+	outputErr error
+
 	// partialOutput holds the most recently parsed partial output.
+	// Updated after each text chunk (with deduplication).
 	// Protected by mu because processStream updates it from a goroutine.
 	mu            sync.Mutex
 	partialOutput any
+
+	// lastPartialJSON is the JSON representation of the last published partialOutput.
+	// Used for deduplication — only written from the stream-consuming goroutine.
+	lastPartialJSON string
 
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
@@ -134,9 +153,13 @@ type StreamTextResult struct {
 	cbOnFinishEvent     func(ctx context.Context, e OnFinishEvent)
 	cbFuncID            string
 	cbMeta              map[string]any
+	cbModelProvider     string
+	cbModelID           string
+	cbExperimentalCtx   interface{}
 	// Snapshot of the initial messages and tools for event population
 	cbMessages []types.Message
 	cbTools    []types.Tool
+	cbSystem   string
 }
 
 // StreamText performs streaming text generation
@@ -201,31 +224,37 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// CB-T19: Emit OnStartEvent before streaming begins
 	Notify(ctx, OnStartEvent{
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		System:           opts.System,
-		Prompt:           opts.Prompt,
-		Messages:         opts.Messages,
-		Tools:            opts.Tools,
-		Temperature:      opts.Temperature,
-		MaxTokens:        opts.MaxTokens,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		PresencePenalty:  opts.PresencePenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		FunctionID:       cbFuncID,
-		Metadata:         cbMeta,
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		System:              opts.System,
+		Prompt:              opts.Prompt,
+		Messages:            opts.Messages,
+		Tools:               opts.Tools,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
 	}, opts.OnStart)
 
 	// CB-T20: Emit OnStepStartEvent for step 1 (current stream is single-step)
 	Notify(ctx, OnStepStartEvent{
-		StepNumber: 1,
-		Messages:   prompt.Messages,
-		Tools:      opts.Tools,
-		FunctionID: cbFuncID,
-		Metadata:   cbMeta,
+		StepNumber:          1,
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		System:              opts.System,
+		Messages:            prompt.Messages,
+		Tools:               opts.Tools,
+		PreviousSteps:       nil, // first (and only) step
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
 	}, opts.OnStepStart)
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
@@ -284,8 +313,12 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cbOnFinishEvent:     opts.OnFinishEvent,
 		cbFuncID:            cbFuncID,
 		cbMeta:              cbMeta,
+		cbModelProvider:     opts.Model.Provider(),
+		cbModelID:           opts.Model.ModelID(),
+		cbExperimentalCtx:   opts.ExperimentalContext,
 		cbMessages:          prompt.Messages,
 		cbTools:             opts.Tools,
+		cbSystem:            opts.System,
 	}
 
 	// Start goroutine to process chunks and call callbacks
@@ -313,14 +346,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
 
-			// Update partial output after each text chunk
+			// Update partial output after each text chunk (with deduplication).
+			// Only publishes when the JSON representation of the partial changes,
+			// matching the TypeScript SDK's deduplication behavior.
 			if r.outputSpec != nil {
 				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 					Text: r.text,
 				})
-				r.mu.Lock()
-				r.partialOutput = partial
-				r.mu.Unlock()
+				if partial != nil {
+					if newJSON, err := json.Marshal(partial); err == nil {
+						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+							r.lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
+				}
 			}
 		}
 
@@ -339,6 +381,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if onChunk != nil {
 			onChunk(*chunk)
 		}
+	}
+
+	// Resolve final typed output if spec was provided and stream completed cleanly.
+	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
+	// would produce invalid JSON, matching the TypeScript SDK's behavior.
+	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         r.text,
+			FinishReason: r.finishReason,
+			Usage:        &r.usage,
+		})
+		r.mu.Lock()
+		r.outputResult = parsed
+		r.outputErr = parseErr
+		r.mu.Unlock()
 	}
 
 	// Record telemetry output attributes if span exists
@@ -382,25 +439,30 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Usage:        r.usage,
 	}
 	Notify(ctx, OnStepFinishEvent{
-		StepNumber:   stepResult.StepNumber,
-		Text:         stepResult.Text,
-		ToolCalls:    stepResult.ToolCalls,
-		ToolResults:  stepResult.ToolResults,
-		FinishReason: stepResult.FinishReason,
-		Usage:        stepResult.Usage,
-		FunctionID:   r.cbFuncID,
-		Metadata:     r.cbMeta,
+		StepNumber:          stepResult.StepNumber,
+		ModelProvider:       r.cbModelProvider,
+		ModelID:             r.cbModelID,
+		Text:                stepResult.Text,
+		ToolCalls:           stepResult.ToolCalls,
+		ToolResults:         stepResult.ToolResults,
+		FinishReason:        stepResult.FinishReason,
+		Usage:               stepResult.Usage,
+		ExperimentalContext: r.cbExperimentalCtx,
+		FunctionID:          r.cbFuncID,
+		Metadata:            r.cbMeta,
 	}, r.cbOnStepFinishEvent)
 
 	Notify(ctx, OnFinishEvent{
-		Text:         r.text,
-		ToolCalls:    nil,
-		ToolResults:  nil,
-		FinishReason: r.finishReason,
-		Steps:        []types.StepResult{stepResult},
-		TotalUsage:   r.usage,
-		FunctionID:   r.cbFuncID,
-		Metadata:     r.cbMeta,
+		Text:                r.text,
+		ToolCalls:           nil,
+		ToolResults:         nil,
+		FinishReason:        r.finishReason,
+		Steps:               []types.StepResult{stepResult},
+		TotalUsage:          r.usage,
+		Warnings:            nil, // streaming is single-step; warnings surfaced via OnStepFinishEvent
+		ExperimentalContext: r.cbExperimentalCtx,
+		FunctionID:          r.cbFuncID,
+		Metadata:            r.cbMeta,
 	}, r.cbOnFinishEvent)
 }
 
@@ -428,6 +490,32 @@ func (r *StreamTextResult) Usage() types.Usage {
 // Only available after stream completes
 func (r *StreamTextResult) ContextManagement() interface{} {
 	return r.contextManagement
+}
+
+// Output returns the final parsed typed output after streaming completes.
+// This calls ParseCompleteOutput on the full accumulated text, matching the
+// TypeScript SDK's `.output` property behavior.
+//
+// Returns nil if:
+//   - no Output option was provided to StreamText
+//   - the stream has not yet completed
+//   - finishReason was not Stop (e.g. length limit hit)
+//   - output parsing failed (check OutputErr for details)
+//
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Output() any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outputResult
+}
+
+// OutputErr returns any error that occurred during final output parsing.
+// Only relevant after streaming completes when an Output option was provided.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) OutputErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outputErr
 }
 
 // PartialOutput returns the most recently parsed partial output.
@@ -465,15 +553,21 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
 
-			// Update partial output after each text chunk
+			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
-				readAllCtx := context.Background()
-				partial := r.outputSpec.parsePartialOutput(readAllCtx, ParsePartialOutputOptions{
+				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 					Text: r.text,
 				})
-				r.mu.Lock()
-				r.partialOutput = partial
-				r.mu.Unlock()
+				if partial != nil {
+					if newJSON, err := json.Marshal(partial); err == nil {
+						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+							r.lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
+				}
 			}
 		}
 
@@ -487,6 +581,19 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Usage != nil {
 			r.usage = *chunk.Usage
 		}
+	}
+
+	// Resolve final typed output if spec was provided and stream completed cleanly.
+	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         r.text,
+			FinishReason: r.finishReason,
+			Usage:        &r.usage,
+		})
+		r.mu.Lock()
+		r.outputResult = parsed
+		r.outputErr = parseErr
+		r.mu.Unlock()
 	}
 
 	// Record telemetry output attributes if span exists

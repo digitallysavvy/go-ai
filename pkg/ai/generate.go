@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -10,6 +11,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// now returns the current time in milliseconds since Unix epoch.
+// Used for measuring tool call execution duration.
+func now() int64 {
+	return time.Now().UnixMilli()
+}
 
 // GenerateTextOptions contains options for text generation
 // Updated in v6.0 with Output system and Context flow
@@ -300,22 +307,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 	// CB-T12: Emit OnStartEvent
 	Notify(ctx, OnStartEvent{
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		System:           opts.System,
-		Prompt:           opts.Prompt,
-		Messages:         opts.Messages,
-		Tools:            opts.Tools,
-		Temperature:      opts.Temperature,
-		MaxTokens:        opts.MaxTokens,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		PresencePenalty:  opts.PresencePenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		FunctionID:       cbFuncID,
-		Metadata:         cbMeta,
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		System:              opts.System,
+		Prompt:              opts.Prompt,
+		Messages:            opts.Messages,
+		Tools:               opts.Tools,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
 	}, opts.OnStart)
 
 	// Initialize result
@@ -351,11 +359,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 		// CB-T13: Emit OnStepStartEvent
 		Notify(ctx, OnStepStartEvent{
-			StepNumber: stepNum,
-			Messages:   currentMessages,
-			Tools:      opts.Tools,
-			FunctionID: cbFuncID,
-			Metadata:   cbMeta,
+			StepNumber:          stepNum,
+			ModelProvider:       opts.Model.Provider(),
+			ModelID:             opts.Model.ModelID(),
+			System:              opts.System,
+			Messages:            currentMessages,
+			Tools:               opts.Tools,
+			PreviousSteps:       result.Steps, // steps completed before this one
+			ExperimentalContext: opts.ExperimentalContext,
+			FunctionID:          cbFuncID,
+			Metadata:            cbMeta,
 		}, opts.OnStepStart)
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
@@ -415,11 +428,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		if len(genResult.ToolCalls) > 0 && len(opts.Tools) > 0 {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
-				onStart:    opts.OnToolCallStart,
-				onFinish:   opts.OnToolCallFinish,
-				stepNum:    stepNum,
-				functionID: cbFuncID,
-				metadata:   cbMeta,
+				onStart:             opts.OnToolCallStart,
+				onFinish:            opts.OnToolCallFinish,
+				stepNum:             stepNum,
+				modelProvider:       opts.Model.Provider(),
+				modelID:             opts.Model.ModelID(),
+				messages:            currentMessages,
+				experimentalContext: opts.ExperimentalContext,
+				functionID:          cbFuncID,
+				metadata:            cbMeta,
 			}
 			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, opts.ExperimentalContext, &result.Usage, toolCallbacks)
 			if err != nil {
@@ -470,7 +487,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			result.RawResponse = genResult.RawResponse
 
 			// Parse typed output if an Output spec was provided.
-			if op, ok := opts.Output.(outputProcessor); ok {
+			// Only parse when generation finished cleanly; a 'length' finish means
+			// the response was truncated and would likely produce invalid JSON.
+			if op, ok := opts.Output.(outputProcessor); ok && genResult.FinishReason == types.FinishReasonStop {
 				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
 					Text:         genResult.Text,
 					FinishReason: genResult.FinishReason,
@@ -493,14 +512,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 		// CB-T14: Emit structured OnStepFinishEvent
 		Notify(ctx, OnStepFinishEvent{
-			StepNumber:   stepResult.StepNumber,
-			Text:         stepResult.Text,
-			ToolCalls:    stepResult.ToolCalls,
-			ToolResults:  stepResult.ToolResults,
-			FinishReason: stepResult.FinishReason,
-			Usage:        stepResult.Usage,
-			FunctionID:   cbFuncID,
-			Metadata:     cbMeta,
+			StepNumber:          stepResult.StepNumber,
+			ModelProvider:       opts.Model.Provider(),
+			ModelID:             opts.Model.ModelID(),
+			Text:                stepResult.Text,
+			ToolCalls:           stepResult.ToolCalls,
+			ToolResults:         stepResult.ToolResults,
+			FinishReason:        stepResult.FinishReason,
+			Usage:               stepResult.Usage,
+			Warnings:            stepResult.Warnings,
+			ExperimentalContext: opts.ExperimentalContext,
+			FunctionID:          cbFuncID,
+			Metadata:            cbMeta,
 		}, opts.OnStepFinishEvent)
 
 		// Evaluate stop conditions after steps with tool results
@@ -554,14 +577,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 	// CB-T15: Emit structured OnFinishEvent
 	Notify(ctx, OnFinishEvent{
-		Text:         result.Text,
-		ToolCalls:    result.ToolCalls,
-		ToolResults:  result.ToolResults,
-		FinishReason: result.FinishReason,
-		Steps:        result.Steps,
-		TotalUsage:   result.Usage,
-		FunctionID:   cbFuncID,
-		Metadata:     cbMeta,
+		Text:                result.Text,
+		ToolCalls:           result.ToolCalls,
+		ToolResults:         result.ToolResults,
+		FinishReason:        result.FinishReason,
+		Steps:               result.Steps,
+		TotalUsage:          result.Usage,
+		Warnings:            result.Warnings,
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
 	}, opts.OnFinishEvent)
 
 	// Apply retention settings (v6.0.60)
@@ -581,11 +606,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks
 // and their associated metadata. All fields are optional (nil-safe).
 type toolCallEventCallbacks struct {
-	onStart    func(ctx context.Context, e OnToolCallStartEvent)
-	onFinish   func(ctx context.Context, e OnToolCallFinishEvent)
-	stepNum    int
-	functionID string
-	metadata   map[string]any
+	onStart             func(ctx context.Context, e OnToolCallStartEvent)
+	onFinish            func(ctx context.Context, e OnToolCallFinishEvent)
+	stepNum             int
+	modelProvider       string
+	modelID             string
+	messages            []types.Message
+	experimentalContext interface{}
+	functionID          string
+	metadata            map[string]any
 }
 
 // executeTools executes a list of tool calls
@@ -634,12 +663,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		} else {
 			// CB-T16: Emit OnToolCallStartEvent before execution
 			Notify(ctx, OnToolCallStartEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Args:       call.Arguments,
-				StepNumber: callbacks.stepNum,
-				FunctionID: callbacks.functionID,
-				Metadata:   callbacks.metadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Args:                call.Arguments,
+				StepNumber:          callbacks.stepNum,
+				ModelProvider:       callbacks.modelProvider,
+				ModelID:             callbacks.modelID,
+				Messages:            callbacks.messages,
+				ExperimentalContext: callbacks.experimentalContext,
+				FunctionID:          callbacks.functionID,
+				Metadata:            callbacks.metadata,
 			}, callbacks.onStart)
 
 			// Locally-executed tool: execute now
@@ -650,8 +683,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Metadata:    make(map[string]interface{}),
 			}
 
-			// Execute the tool with new signature
+			startTime := now()
 			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
+			durationMs := now() - startTime
+
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
@@ -662,14 +697,19 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
 			Notify(ctx, OnToolCallFinishEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Args:       call.Arguments,
-				Result:     toolResult,
-				Error:      toolErr,
-				StepNumber: callbacks.stepNum,
-				FunctionID: callbacks.functionID,
-				Metadata:   callbacks.metadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Args:                call.Arguments,
+				Result:              toolResult,
+				Error:               toolErr,
+				DurationMs:          durationMs,
+				StepNumber:          callbacks.stepNum,
+				ModelProvider:       callbacks.modelProvider,
+				ModelID:             callbacks.modelID,
+				Messages:            callbacks.messages,
+				ExperimentalContext: callbacks.experimentalContext,
+				FunctionID:          callbacks.functionID,
+				Metadata:            callbacks.metadata,
 			}, callbacks.onFinish)
 		}
 	}
