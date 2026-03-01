@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -212,7 +213,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		}
 
 		// Extract finish reason
-		result.FinishReason = convertFinishReason(choice.FinishReason)
+		result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
 	}
 
 	return result
@@ -355,18 +356,28 @@ type openAIToolCall struct {
 	} `json:"function"`
 }
 
+// openAIStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
+type openAIStreamAccumToolCall struct {
+	id        string
+	name      string
+	arguments string // concatenated JSON argument fragments
+}
+
 // openAIStream implements provider.TextStream for OpenAI streaming
 type openAIStream struct {
-	reader io.ReadCloser
-	parser *streaming.SSEParser
-	err    error
+	reader        io.ReadCloser
+	parser        *streaming.SSEParser
+	err           error
+	toolCallAccum map[int]*openAIStreamAccumToolCall // keyed by tool call index
+	flushQueue    []*provider.StreamChunk            // fully assembled chunks ready to emit
 }
 
 // newOpenAIStream creates a new OpenAI stream
 func newOpenAIStream(reader io.ReadCloser) *openAIStream {
 	return &openAIStream{
-		reader: reader,
-		parser: streaming.NewSSEParser(reader),
+		reader:        reader,
+		parser:        streaming.NewSSEParser(reader),
+		toolCallAccum: make(map[int]*openAIStreamAccumToolCall),
 	}
 }
 
@@ -382,6 +393,13 @@ func (s *openAIStream) Close() error {
 
 // Next returns the next chunk in the stream
 func (s *openAIStream) Next() (*provider.StreamChunk, error) {
+	// Emit any fully-assembled chunks before reading more SSE events.
+	if len(s.flushQueue) > 0 {
+		chunk := s.flushQueue[0]
+		s.flushQueue = s.flushQueue[1:]
+		return chunk, nil
+	}
+
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -399,12 +417,22 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		return nil, io.EOF
 	}
 
-	// Parse the event data as JSON
+	// Parse the event data as JSON.
+	// Tool call deltas carry an "index" field not present in non-streaming responses,
+	// so we use an inline struct here instead of the shared openAIToolCall type.
 	var chunkData struct {
 		Choices []struct {
 			Delta struct {
-				Content   string           `json:"content"`
-				ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -414,7 +442,6 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
 	}
 
-	// Extract chunk data
 	if len(chunkData.Choices) > 0 {
 		choice := chunkData.Choices[0]
 
@@ -426,17 +453,54 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
-		// Tool call chunk
+		// Tool call delta — accumulate partial arguments by index.
+		// OpenAI sends: first delta has id + name + empty/partial args;
+		// subsequent deltas for the same index carry argument fragments only.
 		if len(choice.Delta.ToolCalls) > 0 {
-			// TODO: Handle streaming tool calls
+			for _, tc := range choice.Delta.ToolCalls {
+				accum, ok := s.toolCallAccum[tc.Index]
+				if !ok {
+					accum = &openAIStreamAccumToolCall{}
+					s.toolCallAccum[tc.Index] = accum
+				}
+				if tc.ID != "" {
+					accum.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					accum.name = tc.Function.Name
+				}
+				accum.arguments += tc.Function.Arguments
+			}
+			// No chunk to emit yet — keep accumulating.
+			return s.Next()
 		}
 
-		// Finish chunk
+		// Finish chunk — flush all accumulated tool calls first.
 		if choice.FinishReason != nil {
-			return &provider.StreamChunk{
+			// Emit one ChunkTypeToolCall per accumulated entry in index order.
+			for i := 0; i < len(s.toolCallAccum); i++ {
+				accum, ok := s.toolCallAccum[i]
+				if !ok {
+					continue
+				}
+				var args map[string]interface{}
+				if accum.arguments != "" {
+					json.Unmarshal([]byte(accum.arguments), &args)
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:        accum.id,
+						ToolName:  accum.name,
+						Arguments: args,
+					},
+				})
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
-				FinishReason: convertFinishReason(*choice.FinishReason),
-			}, nil
+				FinishReason: providerutils.MapOpenAIFinishReason(*choice.FinishReason),
+			})
+			return s.Next()
 		}
 	}
 
@@ -452,18 +516,3 @@ func (s *openAIStream) Err() error {
 	return s.err
 }
 
-// convertFinishReason converts OpenAI finish reasons to our types
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls", "function_call":
-		return types.FinishReasonToolCalls
-	case "content_filter":
-		return types.FinishReasonContentFilter
-	default:
-		return types.FinishReasonOther
-	}
-}

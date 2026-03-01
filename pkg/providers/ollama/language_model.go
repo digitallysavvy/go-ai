@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -142,7 +143,7 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: convertFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        convertOllamaUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -213,18 +214,6 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 	return result
 }
 
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 type ollamaResponse struct {
 	ID      string `json:"id"`
@@ -338,7 +327,7 @@ func (s *ollamaStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 		if choice.FinishReason != "" {
-			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: convertFinishReason(choice.FinishReason)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason)}, nil
 		}
 	}
 	return s.Next()

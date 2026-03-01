@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -222,7 +223,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) *types.GenerateRe
 	choice := resp.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: mapFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        ConvertMoonshotUsage(resp.Usage),
 		RawResponse:  resp,
 	}
@@ -256,21 +257,6 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("moonshot", 0, "", err.Error(), err)
 }
 
-// mapFinishReason maps Moonshot finish reasons to SDK finish reasons
-func mapFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	case "content_filter":
-		return types.FinishReasonContentFilter
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 // moonshotResponse represents the response from Moonshot chat API
 type moonshotResponse struct {
@@ -413,7 +399,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		if choice.FinishReason != nil {
 			chunk := &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
-				FinishReason: mapFinishReason(*choice.FinishReason),
+				FinishReason: providerutils.MapOpenAIFinishReason(*choice.FinishReason),
 			}
 
 			// Add usage if present

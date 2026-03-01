@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -225,7 +226,7 @@ func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) *types.ToolC
 func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
 	return &provider.StreamChunk{
 		Type:         provider.ChunkTypeFinish,
-		FinishReason: mapFinishReason(s.finishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(s.finishReason),
 		Usage:        s.usage,
 	}
 }

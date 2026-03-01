@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -127,7 +128,7 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 	choice := response.Choices[0]
 	return &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: convertFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        convertPerplexityUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -178,16 +179,6 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 	return result
 }
 
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 type perplexityResponse struct {
 	ID      string `json:"id"`
@@ -268,7 +259,7 @@ func (s *perplexityStream) Next() (*provider.StreamChunk, error) {
 			return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content}, nil
 		}
 		if choice.FinishReason != "" {
-			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: convertFinishReason(choice.FinishReason)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason)}, nil
 		}
 	}
 	return s.Next()

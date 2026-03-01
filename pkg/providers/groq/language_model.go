@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -145,7 +146,7 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: convertFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        convertGroqUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -250,18 +251,6 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 }
 
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 type groqResponse struct {
 	ID      string `json:"id"`
@@ -381,7 +370,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 		if choice.FinishReason != "" {
-			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: convertFinishReason(choice.FinishReason)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason)}, nil
 		}
 	}
 	return s.Next()
