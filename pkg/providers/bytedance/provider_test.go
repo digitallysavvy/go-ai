@@ -26,6 +26,7 @@ func TestNewProvider(t *testing.T) {
 
 	t.Run("uses BYTEDANCE_API_KEY env var", func(t *testing.T) {
 		t.Setenv("BYTEDANCE_API_KEY", "env-test-key")
+		t.Setenv("ARK_API_KEY", "")
 
 		prov, err := New(Config{})
 		if err != nil {
@@ -33,6 +34,29 @@ func TestNewProvider(t *testing.T) {
 		}
 		if prov == nil {
 			t.Fatal("expected non-nil provider")
+		}
+	})
+
+	t.Run("uses ARK_API_KEY env var as fallback", func(t *testing.T) {
+		t.Setenv("BYTEDANCE_API_KEY", "")
+		t.Setenv("ARK_API_KEY", "ark-test-key")
+
+		prov, err := New(Config{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if prov == nil {
+			t.Fatal("expected non-nil provider")
+		}
+	})
+
+	t.Run("returns error when neither env var set", func(t *testing.T) {
+		t.Setenv("BYTEDANCE_API_KEY", "")
+		t.Setenv("ARK_API_KEY", "")
+
+		_, err := New(Config{})
+		if err == nil {
+			t.Error("expected error when no API key provided")
 		}
 	})
 

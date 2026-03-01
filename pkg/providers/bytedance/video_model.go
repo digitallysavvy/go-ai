@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -84,7 +85,12 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	// Submit the generation task
-	submitResp, err := m.prov.client.Post(ctx, "/contents/generations/tasks", body)
+	submitResp, err := m.prov.client.Do(ctx, internalhttp.Request{
+		Method:  "POST",
+		Path:    "/contents/generations/tasks",
+		Headers: opts.Headers,
+		Body:    body,
+	})
 	if err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
 	}
@@ -116,7 +122,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	// Poll for completion
-	statusResp, err := m.pollForCompletion(ctx, taskID, pollIntervalMs, pollTimeoutMs)
+	statusResp, finalHeaders, err := m.pollForCompletion(ctx, taskID, opts.Headers, pollIntervalMs, pollTimeoutMs)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +159,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
-			Headers:   map[string]string{},
+			Headers:   finalHeaders,
 		},
 	}, nil
 }
@@ -261,15 +267,22 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 	return body, nil
 }
 
-// pollForCompletion polls the ByteDance task status endpoint until the task succeeds or fails
-func (m *VideoModel) pollForCompletion(ctx context.Context, taskID string, pollIntervalMs, pollTimeoutMs int) (*taskStatusResponse, error) {
+// pollForCompletion polls the ByteDance task status endpoint until the task succeeds or fails.
+// reqHeaders are per-request headers forwarded from the caller (e.g. DoGenerate opts.Headers).
+// Returns the final status response, the HTTP headers from the last response, and any error.
+func (m *VideoModel) pollForCompletion(ctx context.Context, taskID string, reqHeaders map[string]string, pollIntervalMs, pollTimeoutMs int) (*taskStatusResponse, map[string]string, error) {
 	statusPath := fmt.Sprintf("/contents/generations/tasks/%s", taskID)
 
 	var finalResponse *taskStatusResponse
+	var finalHeaders map[string]string
 	var jobFailureErr error
 
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
-		resp, err := m.prov.client.Get(ctx, statusPath)
+		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
+			Method:  "GET",
+			Path:    statusPath,
+			Headers: reqHeaders,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to check status: %w", err)
 		}
@@ -286,6 +299,13 @@ func (m *VideoModel) pollForCompletion(ctx context.Context, taskID string, pollI
 		switch statusResp.Status {
 		case "succeeded":
 			finalResponse = &statusResp
+			// Capture HTTP response headers from the final successful poll
+			finalHeaders = make(map[string]string, len(resp.Headers))
+			for k, vs := range resp.Headers {
+				if len(vs) > 0 {
+					finalHeaders[k] = vs[0]
+				}
+			}
 			return &polling.JobResult{
 				Status:   polling.JobStatusCompleted,
 				Metadata: map[string]interface{}{"response": &statusResp},
@@ -316,21 +336,21 @@ func (m *VideoModel) pollForCompletion(ctx context.Context, taskID string, pollI
 	if err != nil {
 		// Context cancellation takes priority
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("video generation aborted: %w", ctx.Err())
+			return nil, nil, fmt.Errorf("video generation aborted: %w", ctx.Err())
 		}
 		// Job explicitly failed (status = "failed")
 		if jobFailureErr != nil {
-			return nil, jobFailureErr
+			return nil, nil, jobFailureErr
 		}
 		// Otherwise it was a polling timeout
-		return nil, NewTimeoutError(fmt.Sprintf("%dms", pollTimeoutMs))
+		return nil, nil, NewTimeoutError(fmt.Sprintf("%dms", pollTimeoutMs))
 	}
 
 	if finalResponse == nil {
-		return nil, NewVideoGenerationError("failed to extract status response from polling result")
+		return nil, nil, NewVideoGenerationError("failed to extract status response from polling result")
 	}
 
-	return finalResponse, nil
+	return finalResponse, finalHeaders, nil
 }
 
 // parseAPIError parses a ByteDance API error response

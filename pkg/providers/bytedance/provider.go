@@ -19,7 +19,7 @@ type Provider struct {
 // Config contains configuration for the ByteDance provider
 type Config struct {
 	// APIKey is the ByteDance Ark API key.
-	// If empty, will use BYTEDANCE_API_KEY environment variable.
+	// If empty, will use BYTEDANCE_API_KEY or ARK_API_KEY environment variable.
 	APIKey string
 
 	// BaseURL is the base URL for the ByteDance API (optional).
@@ -37,7 +37,10 @@ func New(cfg Config) (*Provider, error) {
 		apiKey = os.Getenv("BYTEDANCE_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY or provide Config.APIKey)")
+		apiKey = os.Getenv("ARK_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
 	}
 
 	baseURL := cfg.BaseURL
