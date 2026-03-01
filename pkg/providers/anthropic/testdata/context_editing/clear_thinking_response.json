@@ -1,0 +1,21 @@
+{
+  "id": "msg_clear_thinking_001",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Here is my analysis of the problem."}],
+  "model": "claude-opus-4-5",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 6000,
+    "output_tokens": 15
+  },
+  "context_management": {
+    "applied_edits": [
+      {
+        "type": "clear_thinking_20251015",
+        "cleared_thinking_turns": 4,
+        "cleared_input_tokens": 9800
+      }
+    ]
+  }
+}

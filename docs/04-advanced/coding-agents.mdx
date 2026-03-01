@@ -1,0 +1,460 @@
+---
+title: Coding Agents
+description: How to build AI agents that generate, review, and iteratively refine code using the Go AI SDK.
+---
+
+# Coding Agents
+
+Coding agents use LLMs to generate, review, test, and refine code through multi-step workflows. Unlike simple code generation prompts, coding agents maintain context across iterations, execute code, and correct errors automatically.
+
+## Core Pattern: Generate → Execute → Refine
+
+The fundamental coding agent loop:
+
+1. **Generate** — The model writes code based on a specification
+2. **Execute** — Run the code in a sandboxed environment
+3. **Observe** — Capture output, errors, and test results
+4. **Refine** — Feed results back to the model for corrections
+5. **Repeat** until tests pass or the step limit is reached
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "os/exec"
+    "strings"
+
+    "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := p.LanguageModel(anthropic.ClaudeSonnet4_5)
+
+    // Build a coding agent with shell execution tools
+    codingAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+        Model: model,
+        System: `You are an expert Go programmer. Your job is to write correct, idiomatic Go code.
+
+Workflow:
+1. Write the requested code
+2. Use the write_file tool to save it
+3. Use the run_go tool to test it
+4. Fix any errors and repeat until the code passes
+5. When the code passes, report the final solution`,
+
+        Tools: []types.Tool{
+            writeFileTool(),
+            runGoTool(),
+        },
+        MaxSteps: 15,
+    })
+
+    result, err := codingAgent.Execute(ctx,
+        "Write a Go function `ReverseWords(s string) string` that reverses the order of words in a sentence. Include a test that verifies it.")
+    if err != nil {
+        log.Fatalf("Agent failed: %v", err)
+    }
+
+    fmt.Println("=== Final Result ===")
+    fmt.Println(result.Text)
+    fmt.Printf("\nCompleted in %d steps\n", len(result.Steps))
+}
+
+// writeFileTool writes content to a file in a temp directory.
+func writeFileTool() types.Tool {
+    return types.Tool{
+        Name:        "write_file",
+        Description: "Write content to a file. Use this to save generated Go code.",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "path":    map[string]interface{}{"type": "string", "description": "File path (relative to /tmp/coding-agent/)"},
+                "content": map[string]interface{}{"type": "string", "description": "File content"},
+            },
+            "required": []string{"path", "content"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            path := "/tmp/coding-agent/" + input["path"].(string)
+            content := input["content"].(string)
+            os.MkdirAll("/tmp/coding-agent", 0755)
+            if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+                return nil, fmt.Errorf("failed to write file: %w", err)
+            }
+            return map[string]interface{}{"status": "ok", "path": path}, nil
+        },
+    }
+}
+
+// runGoTool runs `go test` or `go run` in the temp directory.
+func runGoTool() types.Tool {
+    return types.Tool{
+        Name:        "run_go",
+        Description: "Run `go test ./...` or `go run <file>` in the working directory. Returns stdout, stderr, and exit code.",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "command": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The go command to run: 'test', 'run <file>', or 'build'",
+                },
+            },
+            "required": []string{"command"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            command := input["command"].(string)
+            parts := strings.Fields("go " + command)
+
+            cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+            cmd.Dir = "/tmp/coding-agent"
+
+            out, err := cmd.CombinedOutput()
+            exitCode := 0
+            if err != nil {
+                if exitErr, ok := err.(*exec.ExitError); ok {
+                    exitCode = exitErr.ExitCode()
+                }
+            }
+
+            return map[string]interface{}{
+                "output":    string(out),
+                "exit_code": exitCode,
+                "success":   exitCode == 0,
+            }, nil
+        },
+    }
+}
+```
+
+## Code Review Agent
+
+A review agent examines existing code and suggests improvements without needing to execute anything:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type ReviewResult struct {
+    Issues       []CodeIssue
+    Suggestions  []string
+    OverallScore int // 1-10
+}
+
+type CodeIssue struct {
+    Severity    string // "critical", "warning", "info"
+    Line        int
+    Description string
+    Fix         string
+}
+
+func reviewCode(ctx context.Context, code string) (*ReviewResult, error) {
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := p.LanguageModel("gpt-4o")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        System: `You are an expert Go code reviewer. Analyze code for:
+- Security vulnerabilities (SQL injection, command injection, etc.)
+- Memory leaks and resource management issues
+- Race conditions and concurrency bugs
+- Performance problems
+- Style and idiomatic Go violations
+Return a structured JSON review.`,
+        Messages: []types.Message{
+            {
+                Role: types.RoleUser,
+                Content: []types.ContentPart{
+                    types.TextContent{Text: fmt.Sprintf("Review this Go code:\n```go\n%s\n```", code)},
+                },
+            },
+        },
+        Output: ai.ObjectOutput[ReviewResult](ai.ObjectOutputOptions{
+            Schema:      ai.SchemaFor[ReviewResult](),
+            Name:        "code_review",
+            Description: "Structured code review with issues and suggestions",
+        }),
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    review, ok := result.Output.(ReviewResult)
+    if !ok {
+        return nil, fmt.Errorf("unexpected output type")
+    }
+    return &review, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    code := `
+func processUserInput(db *sql.DB, username string) error {
+    query := "SELECT * FROM users WHERE name = '" + username + "'"
+    rows, err := db.Query(query)
+    if err != nil {
+        return err
+    }
+    defer rows.Close()
+    return nil
+}`
+
+    review, err := reviewCode(ctx, code)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Overall Score: %d/10\n\n", review.OverallScore)
+    for _, issue := range review.Issues {
+        fmt.Printf("[%s] Line %d: %s\n  Fix: %s\n\n",
+            issue.Severity, issue.Line, issue.Description, issue.Fix)
+    }
+}
+```
+
+## Multi-Step Code Refinement
+
+Some tasks require multiple rounds of generation and feedback. Use `GenerateText` directly for fine-grained control:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+// CodeRefinementSession manages a multi-step code refinement workflow.
+type CodeRefinementSession struct {
+    model    ai.LanguageModel
+    history  []types.Message
+    maxRounds int
+}
+
+func NewCodeRefinementSession(model ai.LanguageModel, maxRounds int) *CodeRefinementSession {
+    return &CodeRefinementSession{model: model, maxRounds: maxRounds}
+}
+
+// Generate produces or refines code based on the current conversation state.
+func (s *CodeRefinementSession) Generate(ctx context.Context, input string) (string, error) {
+    s.history = append(s.history, types.Message{
+        Role:    types.RoleUser,
+        Content: []types.ContentPart{types.TextContent{Text: input}},
+    })
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    s.model,
+        System:   "You are an expert Go programmer. Write production-quality, well-documented Go code.",
+        Messages: s.history,
+    })
+    if err != nil {
+        return "", err
+    }
+
+    s.history = append(s.history, types.Message{
+        Role:    types.RoleAssistant,
+        Content: []types.ContentPart{types.TextContent{Text: result.Text}},
+    })
+
+    return result.Text, nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := p.LanguageModel(anthropic.ClaudeSonnet4_5)
+
+    session := NewCodeRefinementSession(model, 3)
+
+    // Round 1: Initial implementation
+    code, err := session.Generate(ctx, "Implement a concurrent worker pool in Go that processes jobs from a channel.")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Round 1 - Initial implementation:")
+    fmt.Println(code)
+
+    // Round 2: Add error handling
+    code, err = session.Generate(ctx, "Add proper error handling so failed jobs don't silently fail. Workers should send errors to an error channel.")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("\nRound 2 - With error handling:")
+    fmt.Println(code)
+
+    // Round 3: Add graceful shutdown
+    code, err = session.Generate(ctx, "Add graceful shutdown so the pool waits for all in-progress jobs to complete before exiting.")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("\nRound 3 - With graceful shutdown:")
+    fmt.Println(code)
+}
+```
+
+## Streaming Code Generation
+
+For interactive code generation (showing code as it's written), use `StreamText`:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := p.LanguageModel("gpt-4o")
+
+    result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model: model,
+        System: "You are an expert Go programmer. Write clean, idiomatic code with inline comments.",
+        Prompt: "Implement a simple HTTP rate limiter middleware for a Go web server using the token bucket algorithm.",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer result.Close()
+
+    fmt.Println("Generating rate limiter implementation...")
+    fmt.Println()
+
+    // Print code tokens as they arrive
+    for chunk := range result.Chunks() {
+        fmt.Print(chunk.Text)
+    }
+    fmt.Println()
+}
+```
+
+## Best Practices
+
+### 1. Sandbox Execution
+
+Always run generated code in an isolated environment:
+
+```go
+// Use Docker for strong isolation
+cmd := exec.CommandContext(ctx,
+    "docker", "run", "--rm",
+    "--memory=256m",       // Memory limit
+    "--cpus=0.5",          // CPU limit
+    "--network=none",      // No network access
+    "--read-only",         // Read-only filesystem
+    "-v", "/tmp/code:/workspace:rw",
+    "golang:1.22",
+    "sh", "-c", "cd /workspace && go test ./...",
+)
+```
+
+### 2. Timeout Control
+
+Always set timeouts on execution:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+result, err := codingAgent.Execute(ctx, specification)
+if err != nil {
+    if ctx.Err() == context.DeadlineExceeded {
+        log.Println("Code generation timed out")
+    }
+}
+```
+
+### 3. Clear Specifications
+
+The quality of generated code directly reflects the quality of the specification:
+
+```go
+// Good — specific, testable requirements
+specification := `
+Implement a Go function with this signature:
+    func ParseDuration(s string) (time.Duration, error)
+
+Requirements:
+- Accept formats: "1h30m", "90m", "1.5h", "5400s"
+- Return an error for invalid formats
+- Include table-driven tests covering valid inputs, edge cases, and invalid inputs
+`
+
+// Bad — vague
+specification := "Write a duration parser"
+```
+
+### 4. Iterative Feedback
+
+Include specific error context when feeding back failures:
+
+```go
+feedbackPrompt := fmt.Sprintf(`The code failed with:
+
+Test output:
+%s
+
+Please fix the failing tests. Focus on:
+1. The exact error messages above
+2. Don't change the function signature
+3. Don't modify the test file`, testOutput)
+```
+
+### 5. Context Window Management
+
+For long coding sessions, manage token usage:
+
+```go
+// Use summarization for long refinement sessions
+if len(session.history) > 20 {
+    summary, _ := session.Generate(ctx,
+        "Summarize the key requirements and design decisions from our discussion so far in 2-3 paragraphs.")
+    // Reset history with just the summary
+    session.history = []types.Message{
+        {Role: types.RoleSystem, Content: []types.ContentPart{
+            types.TextContent{Text: "Previous context: " + summary},
+        }},
+    }
+}
+```
+
+## See Also
+
+- [Building Agents](../03-agents/02-building-agents.mdx) — agent configuration and patterns
+- [Loop Control](../03-agents/04-loop-control.mdx) — StopWhen and MaxSteps
+- [Memory Management](./memory-management.mdx) — managing conversation history
+- [Tools and Tool Calling](../03-ai-sdk-core/15-tools-and-tool-calling.mdx) — building execution tools
+- [Generating Structured Data](../03-ai-sdk-core/10-generating-structured-data.mdx) — typed code review results

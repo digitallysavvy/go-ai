@@ -248,7 +248,7 @@ func TestMCPToolUseResponseParsed(t *testing.T) {
 		},
 	}
 
-	result := model.convertResponse(response)
+	result := model.convertResponse(response, false)
 
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call from mcp_tool_use, got %d", len(result.ToolCalls))
@@ -292,7 +292,7 @@ func TestMCPToolUseAlongsideRegularToolUse(t *testing.T) {
 		Usage:      anthropicUsage{InputTokens: 20, OutputTokens: 10},
 	}
 
-	result := model.convertResponse(response)
+	result := model.convertResponse(response, false)
 	if len(result.ToolCalls) != 2 {
 		t.Fatalf("expected 2 tool calls (regular + mcp), got %d", len(result.ToolCalls))
 	}
@@ -310,7 +310,7 @@ func TestMCPToolUseStreamingEmitsImmediately(t *testing.T) {
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_use\",\"id\":\"mcp-stream-001\",\"name\":\"web_search\",\"input\":{\"query\":\"go programming\"},\"server_name\":\"my-server\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	// Should immediately emit a tool call chunk from content_block_start
 	chunk, err := stream.Next()
@@ -348,7 +348,7 @@ func TestMCPToolResultStreamingNoOp(t *testing.T) {
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	// mcp_tool_result + content_block_stop: both are no-ops, should skip to next event
 	chunk, err := stream.Next()

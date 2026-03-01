@@ -363,7 +363,7 @@ func TestCompactionDeltaNullContent(t *testing.T) {
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	// First chunk: compaction_delta with null content → should be skipped (Next() recurses)
 	// Second chunk: text_delta → should return text
@@ -394,7 +394,7 @@ func TestCompactionDeltaWithContent(t *testing.T) {
 	sseData := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"compaction_delta\",\"content\":\"summary text\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	// Non-null compaction content → emitted as text chunk
 	chunk, err := stream.Next()
@@ -422,7 +422,7 @@ func TestCompactionDeltaEmitsContent(t *testing.T) {
 	sseData := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"compaction_delta\",\"content\":\"summary of prior conversation\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	chunk, err := stream.Next()
 	if err != nil {
@@ -756,7 +756,7 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":7}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	// First real chunk: text
 	chunk1, err := stream.Next()
@@ -817,7 +817,7 @@ func TestStreamingUsageWithNoMessageStart(t *testing.T) {
 		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
-	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)))
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
 	stream.Next() // text chunk
 	finishChunk, err := stream.Next()

@@ -1,0 +1,21 @@
+{
+  "id": "msg_clear_tools_001",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Based on the search results, here is the information you requested."}],
+  "model": "claude-sonnet-4-5",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 8500,
+    "output_tokens": 42
+  },
+  "context_management": {
+    "applied_edits": [
+      {
+        "type": "clear_tool_uses_20250919",
+        "cleared_tool_uses": 12,
+        "cleared_input_tokens": 4200
+      }
+    ]
+  }
+}

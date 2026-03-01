@@ -1,0 +1,31 @@
+{
+  "id": "msg_compact_delta_001",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Summary complete. Continuing from the compacted context."}],
+  "model": "claude-sonnet-4-5",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 2100,
+    "output_tokens": 18,
+    "iterations": [
+      {
+        "type": "compaction",
+        "input_tokens": 95000,
+        "output_tokens": 1200
+      },
+      {
+        "type": "message",
+        "input_tokens": 2100,
+        "output_tokens": 18
+      }
+    ]
+  },
+  "context_management": {
+    "applied_edits": [
+      {
+        "type": "compact_20260112"
+      }
+    ]
+  }
+}

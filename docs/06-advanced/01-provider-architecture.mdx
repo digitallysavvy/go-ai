@@ -1,0 +1,365 @@
+---
+title: Provider Architecture
+description: How the Go AI SDK's provider abstraction layer works, and how to implement your own provider.
+---
+
+# Provider Architecture
+
+The Go AI SDK uses a layered abstraction to decouple your application code from specific AI provider APIs. This guide explains the architecture, the interfaces involved, and how to build a custom provider or apply middleware.
+
+## Overview
+
+```
+Your Application
+      │
+      ▼
+┌─────────────┐
+│  ai package  │  GenerateText, StreamText, GenerateImage, ...
+└──────┬──────┘
+       │  uses
+       ▼
+┌──────────────────┐
+│ provider.Provider │  LanguageModel(), ImageModel(), ...
+└──────┬───────────┘
+       │  implemented by
+       ▼
+┌──────────────────────────────────────────────┐
+│  providers/openai, providers/anthropic, ...   │
+│  (concrete provider implementations)          │
+└──────────────────────────────────────────────┘
+```
+
+The key insight: the `ai` package operates entirely against the `provider` interfaces — it never imports a concrete provider. This makes providers interchangeable and testable.
+
+## The Provider Interface
+
+`provider.Provider` is the entry point for every AI provider:
+
+```go
+type Provider interface {
+    Name() string
+
+    LanguageModel(modelID string) (LanguageModel, error)
+    EmbeddingModel(modelID string) (EmbeddingModel, error)
+    ImageModel(modelID string) (ImageModel, error)
+    SpeechModel(modelID string) (SpeechModel, error)
+    TranscriptionModel(modelID string) (TranscriptionModel, error)
+    RerankingModel(modelID string) (RerankingModel, error)
+}
+```
+
+Each method returns a model interface (or an error if the provider doesn't support that model type). Concrete providers like `openai.Provider` and `anthropic.Provider` implement this interface.
+
+## The LanguageModel Interface
+
+`provider.LanguageModel` is the core interface for text generation:
+
+```go
+type LanguageModel interface {
+    // Metadata
+    SpecificationVersion() string  // e.g., "v3"
+    Provider() string              // e.g., "openai", "anthropic"
+    ModelID() string               // e.g., "gpt-4o", "claude-sonnet-4-5"
+
+    // Capabilities
+    SupportsTools() bool
+    SupportsStructuredOutput() bool
+    SupportsImageInput() bool
+
+    // Generation
+    DoGenerate(ctx context.Context, opts *GenerateOptions) (*types.GenerateResult, error)
+    DoStream(ctx context.Context, opts *GenerateOptions) (TextStream, error)
+}
+```
+
+The `DoGenerate` and `DoStream` methods accept a `GenerateOptions` struct that standardizes all generation parameters across providers. Provider-specific options are passed via `ProviderOptions`.
+
+## The ImageModel Interface
+
+`provider.ImageModel` covers image generation:
+
+```go
+type ImageModel interface {
+    SpecificationVersion() string
+    Provider() string
+    ModelID() string
+
+    DoGenerate(ctx context.Context, opts *ImageGenerateOptions) (*types.ImageResult, error)
+}
+```
+
+## ProviderOptions: Passing Provider-Specific Settings
+
+When you need features unique to one provider (e.g., Anthropic prompt caching, OpenAI reasoning effort, Google image size), use `ProviderOptions`. The key is the provider name returned by `Provider()`:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain quantum computing.",
+    ProviderOptions: map[string]interface{}{
+        "anthropic": map[string]interface{}{
+            "thinking": map[string]interface{}{
+                "type":         "enabled",
+                "budgetTokens": 8000,
+            },
+        },
+    },
+})
+```
+
+```go
+// Google image size control
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A mountain landscape at dawn",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "imageSize": google.ImageSize2K,
+        },
+    },
+})
+```
+
+```go
+// Vertex AI — provider key is "google-vertex"
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  vertexModel,
+    Prompt: "Summarize this document.",
+    ProviderOptions: map[string]interface{}{
+        "google-vertex": map[string]interface{}{
+            "safetySettings": []map[string]interface{}{
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            },
+        },
+    },
+})
+```
+
+The provider's `DoGenerate` method extracts its own key from `ProviderOptions` and ignores others — so the same call can carry options for multiple providers safely.
+
+## Implementing a Custom Provider
+
+To add a new provider, implement the `provider.Provider` and `provider.LanguageModel` interfaces:
+
+```go
+package myprovider
+
+import (
+    "context"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// Provider implements provider.Provider for MyAI
+type Provider struct {
+    apiKey  string
+    baseURL string
+}
+
+// New creates a new MyAI provider
+func New(apiKey string) *Provider {
+    return &Provider{
+        apiKey:  apiKey,
+        baseURL: "https://api.myai.example/v1",
+    }
+}
+
+func (p *Provider) Name() string { return "myai" }
+
+func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
+    if modelID == "" {
+        return nil, fmt.Errorf("model ID required")
+    }
+    return &LanguageModel{provider: p, modelID: modelID}, nil
+}
+
+// Implement remaining Provider methods (can return errors for unsupported types)
+func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
+    return nil, fmt.Errorf("myai does not support embeddings")
+}
+func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
+    return nil, fmt.Errorf("myai does not support image generation")
+}
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+    return nil, fmt.Errorf("myai does not support speech synthesis")
+}
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+    return nil, fmt.Errorf("myai does not support transcription")
+}
+func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
+    return nil, fmt.Errorf("myai does not support reranking")
+}
+
+// LanguageModel wraps a MyAI model
+type LanguageModel struct {
+    provider *Provider
+    modelID  string
+}
+
+func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) Provider() string             { return "myai" }
+func (m *LanguageModel) ModelID() string              { return m.modelID }
+func (m *LanguageModel) SupportsTools() bool            { return true }
+func (m *LanguageModel) SupportsStructuredOutput() bool { return true }
+func (m *LanguageModel) SupportsImageInput() bool       { return false }
+
+// DoGenerate calls the MyAI API for text generation
+func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    // Build request from opts
+    reqBody := buildMyAIRequest(opts)
+
+    // Call your API
+    resp, err := callMyAIAPI(ctx, m.provider.baseURL, m.provider.apiKey, m.modelID, reqBody)
+    if err != nil {
+        return nil, fmt.Errorf("myai generate: %w", err)
+    }
+
+    // Convert response to standard types.GenerateResult
+    return convertMyAIResponse(resp), nil
+}
+
+// DoStream calls the MyAI API for streaming text generation
+func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+    // Similar to DoGenerate but returns a provider.TextStream
+    // See existing providers for streaming patterns
+    return nil, fmt.Errorf("streaming not yet implemented")
+}
+```
+
+Once implemented, your provider works anywhere the SDK accepts a `provider.LanguageModel`:
+
+```go
+myProvider := myprovider.New(os.Getenv("MYAI_API_KEY"))
+model, _ := myProvider.LanguageModel("my-model-v1")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello from my custom provider!",
+})
+```
+
+## Middleware
+
+Language model middleware wraps a model to intercept and modify generation calls — without changing your application code.
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// loggingMiddleware logs every generation request
+var loggingMiddleware = &middleware.LanguageModelMiddleware{
+    WrapGenerate: func(
+        ctx context.Context,
+        opts *provider.GenerateOptions,
+        next middleware.DoGenerateFn,
+    ) (*provider.GenerateResult, error) {
+        log.Printf("generating with prompt: %q", opts.Prompt.Text)
+        result, err := next(ctx, opts)
+        if err == nil {
+            log.Printf("generated %d tokens", result.Usage.GetTotalTokens())
+        }
+        return result, err
+    },
+}
+
+func main() {
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    base, _ := p.LanguageModel("gpt-4o")
+
+    // Wrap the model with middleware
+    wrapped := middleware.WrapLanguageModel(base, []*middleware.LanguageModelMiddleware{loggingMiddleware}, nil, nil)
+
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  wrapped,
+        Prompt: "What is the capital of France?",
+    })
+    fmt.Println(result.Text)
+}
+```
+
+### Middleware Execution Order
+
+When multiple middlewares are applied, they execute from first to last on the way in, and last to first on the way out (like standard middleware chains):
+
+```go
+wrapped := middleware.WrapLanguageModel(
+    base,
+    []*middleware.LanguageModelMiddleware{
+        rateLimitMiddleware, // executes first
+        cachingMiddleware,   // executes second
+        loggingMiddleware,   // executes third
+    },
+    nil, nil,
+)
+// Call order: rateLimitMiddleware → cachingMiddleware → loggingMiddleware → base
+```
+
+The SDK ships several built-in middlewares:
+
+| Middleware | Package | Purpose |
+|-----------|---------|---------|
+| Rate limiting | `middleware` | Throttle requests per second |
+| Caching | `middleware` | Cache identical prompts |
+| Retry | `middleware` | Automatic retries with backoff |
+| Logging | `middleware` | Request/response logging |
+| Telemetry | `middleware` | OpenTelemetry tracing |
+
+See the [Language Model Middleware](../03-ai-sdk-core/40-middleware.mdx) guide for full details on built-in and custom middlewares.
+
+## Testing with Mock Providers
+
+To test code that uses the SDK without hitting real APIs, implement a minimal `provider.LanguageModel` that returns controlled responses:
+
+```go
+type MockLanguageModel struct {
+    responses []string
+    idx       int
+}
+
+func (m *MockLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *MockLanguageModel) Provider() string             { return "mock" }
+func (m *MockLanguageModel) ModelID() string              { return "mock-model" }
+func (m *MockLanguageModel) SupportsTools() bool            { return true }
+func (m *MockLanguageModel) SupportsStructuredOutput() bool { return true }
+func (m *MockLanguageModel) SupportsImageInput() bool       { return false }
+
+func (m *MockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    text := m.responses[m.idx%len(m.responses)]
+    m.idx++
+    return &types.GenerateResult{Text: text}, nil
+}
+
+func (m *MockLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+    return nil, fmt.Errorf("streaming not supported in mock")
+}
+
+// In tests:
+func TestMyFeature(t *testing.T) {
+    model := &MockLanguageModel{
+        responses: []string{"Hello from mock!", "Another response"},
+    }
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Say hello",
+    })
+    require.NoError(t, err)
+    assert.Equal(t, "Hello from mock!", result.Text)
+}
+```
+
+## See Also
+
+- [Language Model Middleware](../03-ai-sdk-core/40-middleware.mdx) — built-in middleware reference
+- [Provider Management](../03-ai-sdk-core/45-provider-management.mdx) — switching between providers at runtime
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx) — provider error types
+- [Providers](../05-providers/index.mdx) — available provider implementations

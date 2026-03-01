@@ -1,5 +1,26 @@
 package anthropic
 
+// StructuredOutputMode controls how JSON structured output is generated.
+// Different Anthropic models support different strategies for producing
+// structured JSON output, and this option lets you explicitly choose
+// which strategy to use.
+type StructuredOutputMode string
+
+const (
+	// StructuredOutputAuto uses outputFormat for models that support it
+	// (claude-*-4-6, claude-*-4-5, claude-opus-4-1), and falls back to
+	// jsonTool for older models. This is the default.
+	StructuredOutputAuto StructuredOutputMode = "auto"
+
+	// StructuredOutputFormat always uses output_config.format.
+	// Only use this when the model is known to support native structured output.
+	StructuredOutputFormat StructuredOutputMode = "outputFormat"
+
+	// StructuredOutputJSONTool always creates a synthetic 'json' tool.
+	// Works on all Claude models regardless of native structured output support.
+	StructuredOutputJSONTool StructuredOutputMode = "jsonTool"
+)
+
 // Effort controls the reasoning effort level for supported models.
 // Higher effort values produce more thorough reasoning at the cost of speed.
 type Effort string
@@ -203,6 +224,17 @@ type ModelOptions struct {
 	//       ContainerID: "container-abc123",
 	//   }
 	ContainerID string `json:"container_id,omitempty"`
+
+	// StructuredOutputMode controls how ResponseFormat is sent to the API.
+	// Default (empty/"auto"): uses output_config.format for models that support it
+	// (claude-*-4-6, claude-*-4-5), falls back to a synthetic json tool for
+	// models that don't (e.g. claude-sonnet-4-20250514, claude-3-7-sonnet).
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       StructuredOutputMode: anthropic.StructuredOutputJSONTool,
+	//   }
+	StructuredOutputMode StructuredOutputMode `json:"structured_output_mode,omitempty"`
 }
 
 // MCPServerConfig configures a remote MCP server for the Anthropic API to connect to.

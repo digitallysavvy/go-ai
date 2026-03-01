@@ -54,6 +54,26 @@ func (m *LanguageModel) SupportsTools() bool {
 	return true
 }
 
+// isJsonToolMode returns true when a given request would use the jsonTool
+// structured output strategy (synthetic 'json' tool) rather than
+// output_config.format. This mirrors the useStructuredOutput computation in
+// buildRequestBody so that DoGenerate/DoStream can pass the flag downstream to
+// convertResponse and the stream handler.
+func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
+	if opts == nil || opts.ResponseFormat == nil || opts.ResponseFormat.Schema == nil {
+		return false
+	}
+	if opts.ResponseFormat.Type != "json" && opts.ResponseFormat.Type != "json_schema" {
+		return false
+	}
+	mode := StructuredOutputAuto
+	if m.options != nil && m.options.StructuredOutputMode != "" {
+		mode = m.options.StructuredOutputMode
+	}
+	return mode == StructuredOutputJSONTool ||
+		(mode == StructuredOutputAuto && !m.SupportsStructuredOutput())
+}
+
 // SupportsStructuredOutput returns whether the model supports structured output
 // via output_config.format. Matches the TS SDK getModelCapabilities() logic:
 // claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
@@ -81,6 +101,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
+	// Determine whether this request uses the synthetic json tool for structured output.
+	// Must be computed from the same options used to build the request body.
+	usesJsonResponseTool := m.isJsonToolMode(opts)
+
 	// Collect beta headers from model options and tool requirements (non-streaming)
 	betaHeaders := m.combineBetaHeaders(opts, false)
 	if len(betaHeaders) > 0 {
@@ -105,7 +129,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		}
 
 		// Convert response to GenerateResult
-		result := m.convertResponse(response)
+		result := m.convertResponse(response, usesJsonResponseTool)
 		if w := m.detectSkillsWarning(opts); w != nil {
 			result.Warnings = append(result.Warnings, *w)
 		}
@@ -120,7 +144,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Convert response to GenerateResult
-	result := m.convertResponse(response)
+	result := m.convertResponse(response, usesJsonResponseTool)
 	if w := m.detectSkillsWarning(opts); w != nil {
 		result.Warnings = append(result.Warnings, *w)
 	}
@@ -154,8 +178,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 
-	// Create stream wrapper
-	return newAnthropicStream(httpResp.Body), nil
+	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
+	// events and route json tool input_json_delta as text chunks.
+	usesJsonResponseTool := m.isJsonToolMode(opts)
+	return newAnthropicStream(httpResp.Body, usesJsonResponseTool), nil
 }
 
 // buildRequestBody builds the Anthropic API request body
@@ -249,17 +275,50 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["context_management"] = m.options.ContextManagement
 	}
 
-	// Build output_config from effort and/or ResponseFormat.
-	// Both can contribute to the same output_config object.
+	// Build output_config and handle structured output mode.
+	// Effort always goes into output_config.effort (when set).
+	// ResponseFormat goes into output_config.format (outputFormat mode) or
+	// injects a synthetic 'json' tool (jsonTool mode), depending on mode and
+	// model capability. Both effort and format can coexist in output_config.
 	outputConfig := map[string]interface{}{}
 	if m.options != nil && m.options.Effort != "" {
 		outputConfig["effort"] = string(m.options.Effort)
 	}
-	if opts.ResponseFormat != nil && (opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
-		if opts.ResponseFormat.Schema != nil {
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
+		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
+
+		// Determine effective mode: explicit option wins; default is auto.
+		mode := StructuredOutputAuto
+		if m.options != nil && m.options.StructuredOutputMode != "" {
+			mode = m.options.StructuredOutputMode
+		}
+
+		useOutputFormat := mode == StructuredOutputFormat ||
+			(mode == StructuredOutputAuto && m.SupportsStructuredOutput())
+
+		if useOutputFormat {
+			// outputFormat mode: use output_config.format (native structured output).
 			outputConfig["format"] = map[string]interface{}{
 				"type":   "json_schema",
 				"schema": opts.ResponseFormat.Schema,
+			}
+		} else {
+			// jsonTool mode: inject a synthetic 'json' tool that forces the model
+			// to respond with a JSON object matching the schema. This works on all
+			// Claude models, including those that don't support output_config.format.
+			jsonTool := map[string]interface{}{
+				"name":         "json",
+				"description":  "Respond with a JSON object.",
+				"input_schema": opts.ResponseFormat.Schema,
+			}
+			existing, _ := body["tools"].([]map[string]interface{})
+			body["tools"] = append(existing, jsonTool)
+			// Use {type:"any"} (required) with disable_parallel_tool_use to match
+			// the TypeScript SDK's prepareTools({toolChoice:{type:'required'},
+			// disableParallelToolUse:true}) behaviour.
+			body["tool_choice"] = map[string]interface{}{
+				"type":                    "any",
+				"disable_parallel_tool_use": true,
 			}
 		}
 	}
@@ -339,34 +398,57 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	return body
 }
 
-// convertResponse converts an Anthropic response to GenerateResult
-// Updated in v6.0 to support detailed usage tracking and context management
-func (m *LanguageModel) convertResponse(response anthropicResponse) *types.GenerateResult {
+// convertResponse converts an Anthropic response to GenerateResult.
+// usesJsonResponseTool must be true when the request was built with the jsonTool
+// structured output strategy (a synthetic 'json' tool was injected). This gates
+// the json-tool-as-text extraction so a real user tool named "json" is never
+// misidentified as the structured output tool.
+func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResponseTool bool) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertAnthropicUsage(response.Usage),
 		RawResponse: response,
 	}
 
-	// Extract text from content blocks
-	var textParts []string
-	for _, content := range response.Content {
-		if content.Type == "text" {
-			textParts = append(textParts, content.Text)
+	// Extract text from content blocks.
+	// When jsonTool mode is active the model responds via a synthetic tool, not
+	// a text block — skip text blocks entirely in that case, matching the TS SDK.
+	if !usesJsonResponseTool {
+		var textParts []string
+		for _, content := range response.Content {
+			if content.Type == "text" {
+				textParts = append(textParts, content.Text)
+			}
+		}
+		if len(textParts) > 0 {
+			result.Text = textParts[0]
 		}
 	}
-	if len(textParts) > 0 {
-		result.Text = textParts[0] // For now, just take first text block
-	}
 
-	// Extract tool calls (regular and MCP)
+	// Track whether the response was actually delivered via the json tool so we
+	// can map the stop reason correctly.
+	isJsonResponseFromTool := false
+
+	// Extract tool calls (regular and MCP).
+	// The synthetic 'json' tool used in jsonTool structured output mode is handled
+	// specially: its input is marshalled to JSON and set as the text result rather
+	// than surfaced as a ToolCall. The usesJsonResponseTool gate prevents a real
+	// user tool named "json" from being misidentified.
 	for _, content := range response.Content {
 		switch content.Type {
 		case "tool_use":
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID:        content.ID,
-				ToolName:  content.Name,
-				Arguments: content.Input,
-			})
+			if usesJsonResponseTool && content.Name == "json" {
+				// jsonTool mode: the model responded via the synthetic json tool.
+				// Extract the tool input as the structured text result.
+				inputJSON, _ := json.Marshal(content.Input)
+				result.Text = string(inputJSON)
+				isJsonResponseFromTool = true
+			} else {
+				result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+					ID:        content.ID,
+					ToolName:  content.Name,
+					Arguments: content.Input,
+				})
+			}
 		case "mcp_tool_use":
 			// MCP tool calls are executed server-side; surface them as ToolCalls
 			// so callers can inspect which MCP tools the model invoked.
@@ -378,14 +460,21 @@ func (m *LanguageModel) convertResponse(response anthropicResponse) *types.Gener
 		}
 	}
 
-	// Map finish reason
+	// Map finish reason.
+	// When the json tool is used the API returns stop_reason="tool_use" but the
+	// caller expects "stop" (the JSON content has been extracted as text, not a
+	// tool call). Matches mapAnthropicStopReason() in the TypeScript SDK.
 	switch response.StopReason {
 	case "end_turn":
 		result.FinishReason = types.FinishReasonStop
 	case "max_tokens":
 		result.FinishReason = types.FinishReasonLength
 	case "tool_use":
-		result.FinishReason = types.FinishReasonToolCalls
+		if isJsonResponseFromTool {
+			result.FinishReason = types.FinishReasonStop
+		} else {
+			result.FinishReason = types.FinishReasonToolCalls
+		}
 	case "stop_sequence":
 		result.FinishReason = types.FinishReasonStop
 	default:
@@ -695,14 +784,23 @@ type anthropicStream struct {
 	// container info parsed from message_start/message_delta events.
 	// Present when the model used or created a container during the request.
 	container *anthropicContainerResponse
+	// usesJsonResponseTool is true when the request was built with the synthetic
+	// 'json' tool (jsonTool structured output mode). Text delta events are
+	// suppressed and json tool input_json_delta events are emitted as text chunks.
+	usesJsonResponseTool bool
+	// isJsonResponseFromTool is set when a tool_use{name:"json"} content block
+	// is opened in jsonTool mode. Used to map stop_reason="tool_use" to "stop".
+	isJsonResponseFromTool bool
 }
 
-// newAnthropicStream creates a new Anthropic stream
-func newAnthropicStream(reader io.ReadCloser) *anthropicStream {
+// newAnthropicStream creates a new Anthropic stream.
+// usesJsonResponseTool must match the value computed in DoStream from isJsonToolMode.
+func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool) *anthropicStream {
 	return &anthropicStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		contentBlocks: make(map[int]*streamContentBlock),
+		reader:               reader,
+		parser:               streaming.NewSSEParser(reader),
+		contentBlocks:        make(map[int]*streamContentBlock),
+		usesJsonResponseTool: usesJsonResponseTool,
 	}
 }
 
@@ -767,6 +865,17 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 		switch start.ContentBlock.Type {
 		case "tool_use":
+			// When jsonTool mode is active and the block is the synthetic json
+			// tool, treat it as a text block: input_json_delta events will be
+			// emitted as ChunkTypeText rather than accumulated for a tool call.
+			if s.usesJsonResponseTool && start.ContentBlock.Name == "json" {
+				s.isJsonResponseFromTool = true
+				s.contentBlocks[start.Index] = &streamContentBlock{
+					blockType: "json-response-tool",
+				}
+				break
+			}
+
 			// Some deferred (programmatic) tool calls carry their full input
 			// directly in content_block_start rather than via input_json_delta.
 			// Serialize it as the initial buffer content so content_block_stop
@@ -894,7 +1003,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.container = msg.Message.Container
 			}
 
-			// Buffer a ChunkTypeToolCall for each pre-populated tool_use block.
+			// Buffer a chunk for each pre-populated tool_use block.
+			// In jsonTool mode the synthetic json tool becomes a text chunk;
+			// all other tool_use blocks become regular tool call chunks.
 			for _, part := range msg.Message.Content {
 				if part.Type != "tool_use" {
 					continue
@@ -903,14 +1014,24 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				if args == nil {
 					args = map[string]interface{}{}
 				}
-				s.pending = append(s.pending, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:        part.ID,
-						ToolName:  part.Name,
-						Arguments: args,
-					},
-				})
+				if s.usesJsonResponseTool && part.Name == "json" {
+					// jsonTool mode: emit the tool input as a text chunk.
+					s.isJsonResponseFromTool = true
+					inputJSON, _ := json.Marshal(args)
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeText,
+						Text: string(inputJSON),
+					})
+				} else {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:        part.ID,
+							ToolName:  part.Name,
+							Arguments: args,
+						},
+					})
+				}
 			}
 		}
 		return s.Next()
@@ -936,6 +1057,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 		switch delta.Delta.Type {
 		case "text_delta":
+			// When jsonTool mode is active the model should not emit plain text —
+			// the response comes via the synthetic json tool. Suppress any text
+			// deltas to match the TypeScript SDK's usesJsonResponseTool guard.
+			if s.usesJsonResponseTool {
+				return s.Next()
+			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				Text: delta.Delta.Text,
@@ -947,20 +1074,30 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if delta.Delta.PartialJSON == "" {
 				return s.Next()
 			}
-			if block := s.contentBlocks[delta.Index]; block != nil {
-				partialJSON := delta.Delta.PartialJSON
-				// For bash_code_execution and text_editor_code_execution the API
-				// streams raw arguments without a type discriminator. On the first
-				// delta, inject {"type":"<providerToolName>", so that the assembled
-				// JSON can be decoded as a CodeExecutionInput union value.
-				if block.firstDelta && (block.providerToolName == "bash_code_execution" ||
-					block.providerToolName == "text_editor_code_execution") &&
-					len(partialJSON) > 0 && partialJSON[0] == '{' {
-					partialJSON = `{"type":"` + block.providerToolName + `",` + partialJSON[1:]
-				}
-				block.firstDelta = false
-				block.inputBuf.WriteString(partialJSON)
+			block := s.contentBlocks[delta.Index]
+			if block == nil {
+				return s.Next()
 			}
+			// When this delta belongs to the synthetic json tool block, emit it
+			// directly as a text chunk rather than accumulating for a tool call.
+			if block.blockType == "json-response-tool" {
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: delta.Delta.PartialJSON,
+				}, nil
+			}
+			partialJSON := delta.Delta.PartialJSON
+			// For bash_code_execution and text_editor_code_execution the API
+			// streams raw arguments without a type discriminator. On the first
+			// delta, inject {"type":"<providerToolName>", so that the assembled
+			// JSON can be decoded as a CodeExecutionInput union value.
+			if block.firstDelta && (block.providerToolName == "bash_code_execution" ||
+				block.providerToolName == "text_editor_code_execution") &&
+				len(partialJSON) > 0 && partialJSON[0] == '{' {
+				partialJSON = `{"type":"` + block.providerToolName + `",` + partialJSON[1:]
+			}
+			block.firstDelta = false
+			block.inputBuf.WriteString(partialJSON)
 			return s.Next()
 
 		case "thinking_delta":
@@ -988,7 +1125,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 	case "content_block_stop":
 		// A content block has been fully delivered. For tool-call blocks, emit the
 		// assembled ChunkTypeToolCall with the complete JSON-parsed arguments.
-		// For all other block types this is a clean no-op.
+		// For json-response-tool blocks (jsonTool mode), no extra chunk is emitted
+		// because the input was already streamed as individual text chunks via
+		// input_json_delta. For all other block types this is a clean no-op.
 		var stop struct {
 			Index int `json:"index"`
 		}
@@ -1020,7 +1159,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				},
 			}, nil
 		}
-		// Non-tool block (text, reasoning, etc.) — no chunk to emit.
+		// json-response-tool, text, reasoning, or unknown — no chunk to emit.
 		return s.Next()
 
 	case "message_delta":
@@ -1058,7 +1197,15 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			case "max_tokens":
 				finishReason = types.FinishReasonLength
 			case "tool_use":
-				finishReason = types.FinishReasonToolCalls
+				// When the json tool is used, the API returns stop_reason="tool_use"
+				// but the caller expects "stop" — the structured JSON has been
+				// extracted as text, not a tool call. Matches mapAnthropicStopReason()
+				// in the TypeScript SDK.
+				if s.isJsonResponseFromTool {
+					finishReason = types.FinishReasonStop
+				} else {
+					finishReason = types.FinishReasonToolCalls
+				}
 			default:
 				finishReason = types.FinishReasonOther
 			}
