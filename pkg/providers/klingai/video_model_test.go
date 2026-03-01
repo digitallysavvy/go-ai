@@ -1,6 +1,7 @@
 package klingai
 
 import (
+	"os"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -35,6 +36,18 @@ func TestDetectMode(t *testing.T) {
 			name:      "versioned t2v model",
 			modelID:   "kling-v2.1-master-t2v",
 			wantMode:  VideoModeT2V,
+			wantError: false,
+		},
+		{
+			name:      "v3.0 text-to-video model",
+			modelID:   KlingV3T2V,
+			wantMode:  VideoModeT2V,
+			wantError: false,
+		},
+		{
+			name:      "v3.0 image-to-video model",
+			modelID:   KlingV3I2V,
+			wantMode:  VideoModeI2V,
 			wantError: false,
 		},
 		{
@@ -106,6 +119,18 @@ func TestGetAPIModelName(t *testing.T) {
 			modelID:      "kling-v2.6-motion-control",
 			mode:         VideoModeMotionControl,
 			wantAPIName:  "kling-v2-6",
+		},
+		{
+			name:        "v3.0 t2v model strips .0 suffix",
+			modelID:     KlingV3T2V,
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v3",
+		},
+		{
+			name:        "v3.0 i2v model strips .0 suffix",
+			modelID:     KlingV3I2V,
+			mode:        VideoModeI2V,
+			wantAPIName: "kling-v3",
 		},
 	}
 
@@ -566,6 +591,383 @@ func TestExtractProviderOptions(t *testing.T) {
 
 		if opts.PollIntervalMs == nil || *opts.PollIntervalMs != 3000 {
 			t.Error("pollIntervalMs not extracted correctly")
+		}
+	})
+}
+
+func TestIsImageToVideo(t *testing.T) {
+	cfg := Config{
+		AccessKey: "test-ak",
+		SecretKey: "test-sk",
+	}
+	prov, _ := New(cfg)
+
+	tests := []struct {
+		name    string
+		modelID string
+		mode    VideoMode
+		want    bool
+	}{
+		{
+			name:    "t2v model returns false",
+			modelID: "kling-v2.6-t2v",
+			mode:    VideoModeT2V,
+			want:    false,
+		},
+		{
+			name:    "i2v model returns true",
+			modelID: "kling-v2.6-i2v",
+			mode:    VideoModeI2V,
+			want:    true,
+		},
+		{
+			name:    "motion-control model returns false",
+			modelID: "kling-v2.6-motion-control",
+			mode:    VideoModeMotionControl,
+			want:    false,
+		},
+		{
+			name:    "v3.0 t2v returns false",
+			modelID: KlingV3T2V,
+			mode:    VideoModeT2V,
+			want:    false,
+		},
+		{
+			name:    "v3.0 i2v returns true",
+			modelID: KlingV3I2V,
+			mode:    VideoModeI2V,
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := &VideoModel{
+				prov:    prov,
+				modelID: tt.modelID,
+				mode:    tt.mode,
+			}
+			if got := model.IsImageToVideo(); got != tt.want {
+				t.Errorf("IsImageToVideo() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelIDConstants(t *testing.T) {
+	// Verify all v3.0 constants have expected string values
+	if KlingV3T2V != "kling-v3.0-t2v" {
+		t.Errorf("KlingV3T2V = %q, want %q", KlingV3T2V, "kling-v3.0-t2v")
+	}
+	if KlingV3I2V != "kling-v3.0-i2v" {
+		t.Errorf("KlingV3I2V = %q, want %q", KlingV3I2V, "kling-v3.0-i2v")
+	}
+
+	// Verify v3.0 constants are accepted by the provider
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("KlingV3T2V accepted as valid model ID", func(t *testing.T) {
+		model, err := prov.VideoModel(KlingV3T2V)
+		if err != nil {
+			t.Errorf("unexpected error for KlingV3T2V: %v", err)
+		}
+		if model == nil {
+			t.Error("expected non-nil model")
+		}
+	})
+
+	t.Run("KlingV3I2V accepted as valid model ID", func(t *testing.T) {
+		model, err := prov.VideoModel(KlingV3I2V)
+		if err != nil {
+			t.Errorf("unexpected error for KlingV3I2V: %v", err)
+		}
+		if model == nil {
+			t.Error("expected non-nil model")
+		}
+	})
+
+	t.Run("KlingV3T2V routes to text2video endpoint", func(t *testing.T) {
+		vm, err := newVideoModel(prov, KlingV3T2V)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := vm.getEndpoint(); got != "/v1/videos/text2video" {
+			t.Errorf("endpoint = %q, want %q", got, "/v1/videos/text2video")
+		}
+	})
+
+	t.Run("KlingV3I2V routes to image2video endpoint", func(t *testing.T) {
+		vm, err := newVideoModel(prov, KlingV3I2V)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := vm.getEndpoint(); got != "/v1/videos/image2video" {
+			t.Errorf("endpoint = %q, want %q", got, "/v1/videos/image2video")
+		}
+	})
+}
+
+func TestV3MultiShotOptions(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("multi-shot intelligence mode in T2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		multiShot := true
+		shotType := "intelligence"
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "A cinematic journey through the seasons",
+		}, &ProviderOptions{
+			MultiShot: &multiShot,
+			ShotType:  &shotType,
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if body["multi_shot"] != true {
+			t.Errorf("multi_shot = %v, want true", body["multi_shot"])
+		}
+		if body["shot_type"] != "intelligence" {
+			t.Errorf("shot_type = %v, want intelligence", body["shot_type"])
+		}
+		if _, ok := body["multi_prompt"]; ok {
+			t.Error("multi_prompt should not be set when ShotType is intelligence")
+		}
+	})
+
+	t.Run("multi-shot customize mode with per-shot prompts in T2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		multiShot := true
+		shotType := "customize"
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "ignored when multiShot is true",
+		}, &ProviderOptions{
+			MultiShot: &multiShot,
+			ShotType:  &shotType,
+			MultiPrompt: []MultiShotPrompt{
+				{Index: 1, Prompt: "A lone wolf at dusk", Duration: "3"},
+				{Index: 2, Prompt: "The wolf howls at the moon", Duration: "2"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if body["multi_shot"] != true {
+			t.Errorf("multi_shot = %v, want true", body["multi_shot"])
+		}
+		if body["shot_type"] != "customize" {
+			t.Errorf("shot_type = %v, want customize", body["shot_type"])
+		}
+
+		shots, ok := body["multi_prompt"].([]MultiShotPrompt)
+		if !ok {
+			t.Fatalf("multi_prompt has wrong type: %T", body["multi_prompt"])
+		}
+		if len(shots) != 2 {
+			t.Errorf("expected 2 shots, got %d", len(shots))
+		}
+		if shots[0].Index != 1 || shots[0].Prompt != "A lone wolf at dusk" || shots[0].Duration != "3" {
+			t.Errorf("shot[0] = %+v, unexpected values", shots[0])
+		}
+	})
+
+	t.Run("multi-shot in I2V with per-shot prompts", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		multiShot := true
+		shotType := "customize"
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/start.png"},
+		}, &ProviderOptions{
+			MultiShot: &multiShot,
+			ShotType:  &shotType,
+			MultiPrompt: []MultiShotPrompt{
+				{Index: 1, Prompt: "First shot", Duration: "5"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if body["multi_shot"] != true {
+			t.Errorf("multi_shot = %v, want true", body["multi_shot"])
+		}
+		if body["shot_type"] != "customize" {
+			t.Errorf("shot_type = %v, want customize", body["shot_type"])
+		}
+		if body["multi_prompt"] == nil {
+			t.Error("multi_prompt should be set")
+		}
+	})
+}
+
+func TestV3VoiceControl(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("voice list in T2V body", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		sound := "on"
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "<<<voice_1>>> says hello world",
+		}, &ProviderOptions{
+			Sound:     &sound,
+			VoiceList: []VoiceRef{{VoiceID: "voice-abc-123"}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		voices, ok := body["voice_list"].([]VoiceRef)
+		if !ok {
+			t.Fatalf("voice_list has wrong type: %T", body["voice_list"])
+		}
+		if len(voices) != 1 || voices[0].VoiceID != "voice-abc-123" {
+			t.Errorf("voice_list = %+v, unexpected values", voices)
+		}
+	})
+
+	t.Run("voice list in I2V body", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		sound := "on"
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "<<<voice_1>>> narrates the scene",
+			Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			Sound:     &sound,
+			VoiceList: []VoiceRef{{VoiceID: "voice-xyz-456"}, {VoiceID: "voice-xyz-789"}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		voices, ok := body["voice_list"].([]VoiceRef)
+		if !ok {
+			t.Fatalf("voice_list has wrong type: %T", body["voice_list"])
+		}
+		if len(voices) != 2 {
+			t.Errorf("expected 2 voices, got %d", len(voices))
+		}
+	})
+
+	t.Run("empty voice list does not set field", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "test",
+		}, &ProviderOptions{})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, ok := body["voice_list"]; ok {
+			t.Error("voice_list should not be set when VoiceList is empty")
+		}
+	})
+}
+
+func TestV3ElementControl(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("element list in I2V body", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "Character performs action",
+			Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			ElementList: []ElementRef{{ElementID: 101}, {ElementID: 202}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		elements, ok := body["element_list"].([]ElementRef)
+		if !ok {
+			t.Fatalf("element_list has wrong type: %T", body["element_list"])
+		}
+		if len(elements) != 2 {
+			t.Errorf("expected 2 elements, got %d", len(elements))
+		}
+		if elements[0].ElementID != 101 || elements[1].ElementID != 202 {
+			t.Errorf("element_list = %+v, unexpected values", elements)
+		}
+	})
+
+	t.Run("element list not set in T2V (T2V has no element support)", func(t *testing.T) {
+		// ElementList is an I2V-only feature; T2V body builder does not include it.
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "test",
+		}, &ProviderOptions{
+			ElementList: []ElementRef{{ElementID: 101}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, ok := body["element_list"]; ok {
+			t.Error("element_list should not be in T2V body")
+		}
+	})
+
+	t.Run("empty element list does not set field", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, ok := body["element_list"]; ok {
+			t.Error("element_list should not be set when ElementList is empty")
+		}
+	})
+}
+
+// TestIntegrationV3Models verifies v3.0 model initialization against the live API.
+// Skipped when KLINGAI_ACCESS_KEY or KLINGAI_SECRET_KEY are not set.
+func TestIntegrationV3Models(t *testing.T) {
+	if os.Getenv("KLINGAI_ACCESS_KEY") == "" || os.Getenv("KLINGAI_SECRET_KEY") == "" {
+		t.Skip("Skipping: KLINGAI_ACCESS_KEY or KLINGAI_SECRET_KEY not configured")
+	}
+
+	prov, err := New(Config{})
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+
+	t.Run("KlingV3T2V model initializes successfully", func(t *testing.T) {
+		model, err := prov.VideoModel(KlingV3T2V)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if model.ModelID() != KlingV3T2V {
+			t.Errorf("ModelID() = %q, want %q", model.ModelID(), KlingV3T2V)
+		}
+	})
+
+	t.Run("KlingV3I2V model initializes successfully", func(t *testing.T) {
+		model, err := prov.VideoModel(KlingV3I2V)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if model.ModelID() != KlingV3I2V {
+			t.Errorf("ModelID() = %q, want %q", model.ModelID(), KlingV3I2V)
+		}
+		if !model.(*VideoModel).IsImageToVideo() {
+			t.Error("IsImageToVideo() should return true for KlingV3I2V")
 		}
 	})
 }

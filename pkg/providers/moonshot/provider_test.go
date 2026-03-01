@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TestNewProvider tests provider creation
@@ -326,7 +327,7 @@ func TestFinishReasonMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := mapFinishReason(tt.moonshotReason)
+			result := providerutils.MapOpenAIFinishReason(tt.moonshotReason)
 			if result != tt.expected {
 				t.Errorf("expected %s, got %s", tt.expected, result)
 			}

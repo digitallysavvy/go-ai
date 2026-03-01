@@ -5,6 +5,106 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-02-28
+
+TypeScript AI SDK parity update — commit range `c123363c0..ed17fe86d`
+(124 commits, 18 PRDs, 321 tasks).
+
+### ⚠️ Breaking Changes
+
+- **Anthropic / Bedrock**: `output_format` renamed to `output_config.format` in
+  request builder — matches the live Anthropic API
+
+### Added
+
+#### New Provider
+- **ByteDance (Volcengine)** video generation provider (`pkg/providers/bytedance/`)
+  with async-polling `DoGenerate`, all model ID constants, and README
+
+#### Core SDK
+- `Output[T]` interface and five factories: `TextOutput`, `ObjectOutput`,
+  `ArrayOutput`, `ChoiceOutput`, `JSONOutput`
+- `WithOutput` parameter for `GenerateText` and `StreamText`
+- Six structured callback event types: `OnStartEvent`, `OnStepStartEvent`,
+  `OnToolCallStartEvent`, `OnToolCallFinishEvent`, `OnStepFinishEvent`,
+  `OnFinishEvent`
+- Panic-safe `Notify[E]` dispatch utility
+- Agent callback merging support
+
+#### Anthropic Provider
+- `code-execution-20260120` tool with `programmatic-tool-call`,
+  `bash_code_execution`, `text_editor_code_execution` input types
+- Automatic caching support
+- `claude-sonnet-4-6` model ID constant
+- `DisableParallelToolUse` model option
+- `fine-grained-tool-streaming` and `cache-control` beta header support
+- Streaming tool calls via `contentBlocks` state tracker in `anthropicStream`
+- Native MCP client: `MCPServerConfig`, `MCPToolConfiguration`, `mcp_servers`
+  request field, `mcp_tool_use` / `mcp_tool_result` response blocks
+- Agent container & skills: `ContainerConfig`, `ContainerSkill`,
+  `Container` / `ContainerID` model options, three beta headers
+- `StructuredOutputMode` option (`auto` / `outputFormat` / `jsonTool`)
+  with `jsonTool` fallback for older models
+- `SendReasoning *bool` model option with `filterReasoningContent()` helper
+- `ReasoningContent.Signature` and `ReasoningContent.RedactedData` fields
+- `ToAnthropicMessages` handler for `ReasoningContent` (thinking block round-trip)
+
+#### OpenAI Provider
+- `CustomTool` with grammar and text format options
+- `LocalShell`, `Shell`, `ApplyPatch` container tool types
+- MCP approval response type
+- `Phase` field on Responses API message items
+
+#### Google Provider
+- `gemini-3.1-pro-preview` and `gemini-3.1-flash-image-preview` model constants
+- New image aspect ratios and sizes for Google AI and Vertex Imagen
+
+#### KlingAI Provider
+- `kling-v3.0-t2v` and `kling-v3.0-i2v` model ID constants
+
+#### Fireworks Provider
+- Async image generation for `flux-kontext-*` models with 2s polling loop
+
+#### Gateway
+- SSE video streaming with heartbeat / progress / complete / error event handling
+- `ProjectID` field and `WithProjectID()` option for request observability
+
+#### Model IDs
+- OpenAI: `gpt-5.3-codex` and additional model constants
+- XAI: resolution option, image model IDs
+- Bedrock: complete Anthropic model ID set
+- TogetherAI: `TOGETHER_API_KEY` environment variable
+
+#### Docs & Examples
+- Provider architecture guide
+- Memory management guide
+- Coding agents guide
+- `gpt-5.3-codex`, Gemini flash-image, Anthropic context editing examples
+
+### Changed
+
+- `GenerateObject` and `StreamObject` deprecated in favor of `WithOutput`
+- Anthropic thinking blocks now strip `temperature`, `topP`, `topK` automatically
+- Streaming token counts captured from `message_start` in Anthropic provider
+- Alibaba cache control applied to all messages (not just first)
+- Cerebras: deprecated model IDs removed
+
+### Fixed
+
+- Unknown tool name in model response produces error `ToolResult` instead of
+  duplicate tool part
+- Tool choice (`required` / `auto` / specific tool) now always forwarded to provider
+- Stream resumption no longer flashes status to `submitted` when no active stream
+- `StreamingToolCallDelta.Type` is now `*string` (nullable) for OpenAI streaming
+- `WebSearchToolCall.Action` is now `*string` (optional) for OpenAI
+- OpenAI reasoning parts with `EncryptedContent` included even without `ItemID`
+- Bedrock and Groq now pass `strict: true` in tool definitions when strict mode set
+- `chatgpt-image` recognized in OpenAI response format prefix detection
+- `compaction_delta` null content no longer panics in Anthropic provider
+- `SupportsStructuredOutput()` now correctly returns `false` for pre-4.5 models
+
+---
+
 ## [Unreleased] - 2026-02-15
 
 ### 🎉 100% Feature Parity Achieved

@@ -480,6 +480,126 @@ func TestStreamText_PromptParams(t *testing.T) {
 	}
 }
 
+// BUG-T04: tool choice "required" must be forwarded to the provider (#12854)
+func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
+	t.Parallel()
+
+	var capturedChoice types.ToolChoice
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			capturedChoice = opts.ToolChoice
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:      model,
+		Prompt:     "use a tool",
+		ToolChoice: types.RequiredToolChoice(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedChoice.Type != types.ToolChoiceRequired {
+		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// BUG-T06: calling Resume() on a completed stream must return an error, not flash
+// the status back to "submitted" (#12102)
+func TestStreamTextResult_ResumeOnDoneStreamReturnsError(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Drain the stream so it transitions to StreamStatusDone.
+	_, _ = result.ReadAll()
+
+	if result.Status() != StreamStatusDone {
+		t.Fatalf("expected status Done after ReadAll, got %q", result.Status())
+	}
+
+	// Resume on a done stream must return an error and must NOT change the status.
+	resumeErr := result.Resume(context.Background())
+	if resumeErr == nil {
+		t.Fatal("expected error from Resume() on completed stream")
+	}
+	// Status must remain Done — not flash to Submitted.
+	if result.Status() != StreamStatusDone {
+		t.Errorf("status should remain Done after failed Resume, got %q", result.Status())
+	}
+}
+
+// TestStreamTextResult_StatusLifecycle verifies the Submitted→Streaming→Done transitions.
+func TestStreamTextResult_StatusLifecycle(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	statuses := make([]StreamStatus, 0, 3)
+	recordStatus := func(s StreamStatus) {
+		mu.Lock()
+		statuses = append(statuses, s)
+		mu.Unlock()
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hello"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		OnFinish: func(r *StreamTextResult) {
+			// By the time OnFinish fires the status must already be Done.
+			recordStatus(r.Status())
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Initial status must be Submitted.
+	if result.Status() != StreamStatusSubmitted {
+		t.Errorf("expected Submitted immediately after StreamText, got %q", result.Status())
+	}
+
+	// Wait for the goroutine to finish.
+	time.Sleep(100 * time.Millisecond)
+
+	if result.Status() != StreamStatusDone {
+		t.Errorf("expected Done after stream completes, got %q", result.Status())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(statuses) != 1 || statuses[0] != StreamStatusDone {
+		t.Errorf("expected OnFinish to observe Done, got %v", statuses)
+	}
+}
+
 func TestStreamText_NoCallbacks(t *testing.T) {
 	t.Parallel()
 

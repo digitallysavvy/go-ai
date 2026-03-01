@@ -59,6 +59,19 @@ type Config struct {
 	// ZeroDataRetention enables zero data retention mode
 	// When true, requests are not logged or retained by the gateway
 	ZeroDataRetention bool
+
+	// ProjectID is an optional project identifier for observability and billing attribution.
+	// When set, it is forwarded as the "ai-o11y-project-id" header on all requests.
+	// Can also be set via the VERCEL_PROJECT_ID environment variable.
+	ProjectID *string
+}
+
+// WithProjectID returns a Config option that sets the project ID for observability.
+// The project ID is forwarded as the "ai-o11y-project-id" header on all gateway requests.
+func WithProjectID(id string) func(*Config) {
+	return func(c *Config) {
+		c.ProjectID = &id
+	}
 }
 
 // MetadataResponse contains available models and providers from the gateway
@@ -87,8 +100,14 @@ type CreditsInfo struct {
 	Used      int `json:"used"`
 }
 
-// New creates a new AI Gateway provider with the given configuration
-func New(cfg Config) (*Provider, error) {
+// New creates a new AI Gateway provider with the given configuration.
+// Optional functional options (e.g. WithProjectID) can be passed to override config fields.
+func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
+	// Apply functional options
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -106,9 +125,9 @@ func New(cfg Config) (*Provider, error) {
 
 	// Create headers with authentication
 	headers := map[string]string{
-		"Authorization":                  fmt.Sprintf("Bearer %s", apiKey),
-		"ai-gateway-protocol-version":    AIGatewayProtocolVersion,
-		"ai-gateway-auth-method":         "api-key",
+		"Authorization":               fmt.Sprintf("Bearer %s", apiKey),
+		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
+		"ai-gateway-auth-method":      "api-key",
 	}
 
 	// Add custom headers
@@ -119,6 +138,11 @@ func New(cfg Config) (*Provider, error) {
 	// Add zero data retention header if enabled
 	if cfg.ZeroDataRetention {
 		headers["ai-gateway-zero-retention"] = "true"
+	}
+
+	// Inject project ID header when explicitly configured
+	if cfg.ProjectID != nil {
+		headers["ai-o11y-project-id"] = *cfg.ProjectID
 	}
 
 	// Create HTTP client
@@ -280,6 +304,8 @@ type O11yHeaders struct {
 	Environment  string
 	Region       string
 	RequestID    string
+	// ProjectID is the Vercel project identifier, read from VERCEL_PROJECT_ID
+	ProjectID string
 }
 
 // GetO11yHeaders returns observability headers from the environment
@@ -288,6 +314,7 @@ func GetO11yHeaders() O11yHeaders {
 		DeploymentID: os.Getenv("VERCEL_DEPLOYMENT_ID"),
 		Environment:  os.Getenv("VERCEL_ENV"),
 		Region:       os.Getenv("VERCEL_REGION"),
+		ProjectID:    os.Getenv("VERCEL_PROJECT_ID"),
 	}
 }
 
@@ -304,6 +331,9 @@ func AddO11yHeaders(headers map[string]string, o11y O11yHeaders) {
 	}
 	if o11y.RequestID != "" {
 		headers["ai-o11y-request-id"] = o11y.RequestID
+	}
+	if o11y.ProjectID != "" {
+		headers["ai-o11y-project-id"] = o11y.ProjectID
 	}
 }
 

@@ -166,12 +166,22 @@ func convertAssistantContent(content []types.ContentPart) ([]interface{}, []inte
 			}
 
 		case "reasoning":
-			// Include reasoning as text for now
+			// Emit reasoning as a top-level reasoning input item, not as output_text.
+			// Only forward when EncryptedContent is present; without it the API cannot
+			// reconstruct the reasoning context for multi-turn conversations (#12869).
 			if reasoningPart, ok := part.(types.ReasoningContent); ok {
-				textContent = append(textContent, OutputTextContent{
-					Type: "output_text",
-					Text: reasoningPart.Text,
-				})
+				if reasoningPart.EncryptedContent != "" {
+					item := ReasoningInputItem{
+						Type:             "reasoning",
+						EncryptedContent: reasoningPart.EncryptedContent,
+					}
+					if reasoningPart.Text != "" {
+						item.Summary = []SummaryPart{{Type: "summary_text", Text: reasoningPart.Text}}
+					}
+					toolCalls = append(toolCalls, item)
+				}
+				// No EncryptedContent: skip (e.g. Anthropic reasoning blocks, or
+				// reasoning from a provider that doesn't use this field).
 			}
 		}
 	}

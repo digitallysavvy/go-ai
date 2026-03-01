@@ -165,6 +165,37 @@ const (
 
 	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
 	BetaHeaderFastMode = "fast-mode-2026-02-01"
+
+	// BetaHeaderPromptCaching is required for automatic prompt caching
+	BetaHeaderPromptCaching = "prompt-caching-2024-07-31"
+
+	// BetaHeaderCodeExecution is required for the code execution tool (2026-01-20).
+	// It is automatically injected when the code execution tool is present in the tool list.
+	BetaHeaderCodeExecution = "code-execution-20260120"
+
+	// BetaHeaderEffort is required when the Effort model option is set.
+	BetaHeaderEffort = "effort-2025-11-24"
+
+	// BetaHeaderFineGrainedToolStreaming enables incremental tool call streaming.
+	// Automatically injected on streaming requests unless ToolStreaming is disabled.
+	BetaHeaderFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
+
+	// BetaHeaderMCPClient is required for native MCP server support.
+	// It is automatically injected when MCPServers is non-empty.
+	BetaHeaderMCPClient = "mcp-client-2025-04-04"
+
+	// BetaHeaderCodeExecution20250825 is required for the container skills system (2025-08-25 version).
+	// It is automatically injected when container skills are present.
+	// Distinct from BetaHeaderCodeExecution (code-execution-20260120) for the newer standalone tool.
+	BetaHeaderCodeExecution20250825 = "code-execution-2025-08-25"
+
+	// BetaHeaderSkills is required for the agent container skills system.
+	// It is automatically injected when container skills are present.
+	BetaHeaderSkills = "skills-2025-10-02"
+
+	// BetaHeaderFilesAPI is required for the agent container skills system.
+	// It is automatically injected when container skills are present.
+	BetaHeaderFilesAPI = "files-api-2025-04-14"
 )
 
 // Helper functions for creating edit configurations

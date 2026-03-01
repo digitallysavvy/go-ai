@@ -608,6 +608,151 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 	}
 }
 
+// TestDoStreamToolCallChunks verifies that incremental tool call deltas are accumulated
+// and emitted as complete ChunkTypeToolCall chunks before the finish chunk.
+// OpenAI streams tool call arguments across multiple SSE deltas; each delta for a given
+// tool call carries a partial argument string that must be concatenated before parsing.
+func TestDoStreamToolCallChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// A short text delta
+		w.Write([]byte(`data: {"choices":[{"delta":{"content":"Sure!"}}]}` + "\n\n"))
+		// First tool call delta: id + name + empty args
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}` + "\n\n"))
+		// Second tool call delta: partial arguments
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]}}]}` + "\n\n"))
+		// Third tool call delta: remaining arguments
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"New York\"}"}}]}}]}` + "\n\n"))
+		// Finish with tool_calls reason
+		w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+	})
+	model := NewLanguageModel(p, "gpt-4")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role:    types.RoleUser,
+					Content: []types.ContentPart{types.TextContent{Text: "What is the weather?"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close()
+
+	// Chunk 1: text
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next (text) failed: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Sure!" {
+		t.Errorf("expected text chunk 'Sure!', got type=%q text=%q", chunk.Type, chunk.Text)
+	}
+
+	// Chunk 2: tool call (fully assembled from three deltas)
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("Next (tool call) failed: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall {
+		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
+	}
+	if chunk.ToolCall == nil {
+		t.Fatal("ToolCall is nil")
+	}
+	if chunk.ToolCall.ToolName != "get_weather" {
+		t.Errorf("ToolName = %q, want %q", chunk.ToolCall.ToolName, "get_weather")
+	}
+	if chunk.ToolCall.ID != "call_abc" {
+		t.Errorf("ToolCall.ID = %q, want %q", chunk.ToolCall.ID, "call_abc")
+	}
+	location, ok := chunk.ToolCall.Arguments["location"]
+	if !ok || location != "New York" {
+		t.Errorf("ToolCall.Arguments[location] = %v, want %q", location, "New York")
+	}
+
+	// Chunk 3: finish with FinishReasonToolCalls
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("Next (finish) failed: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeFinish {
+		t.Fatalf("expected ChunkTypeFinish, got %q", chunk.Type)
+	}
+	if chunk.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("FinishReason = %q, want %q", chunk.FinishReason, types.FinishReasonToolCalls)
+	}
+}
+
+// BUG-T08: OpenAI may send null for the "type" field in streaming tool call deltas.
+// The parser must not fail when that field is absent or null (#12901).
+func TestDoStreamToolCallDeltaNullType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// First delta carries id + name with a null "type" field.
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_nulltype","type":null,"function":{"name":"greet","arguments":""}}]}}]}` + "\n\n"))
+		// Second delta has partial arguments and omits "type" entirely.
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"name\":\"world\"}"}}]}}]}` + "\n\n"))
+		// Finish
+		w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewLanguageModel(p, "gpt-4")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close()
+
+	// Expect a tool call chunk assembled from the two deltas.
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("stream.Next failed: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall {
+		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
+	}
+	if chunk.ToolCall == nil {
+		t.Fatal("ToolCall is nil")
+	}
+	if chunk.ToolCall.ToolName != "greet" {
+		t.Errorf("ToolName = %q, want %q", chunk.ToolCall.ToolName, "greet")
+	}
+	if chunk.ToolCall.Arguments["name"] != "world" {
+		t.Errorf("argument name = %v, want %q", chunk.ToolCall.Arguments["name"], "world")
+	}
+
+	// Consume finish chunk — must not error.
+	_, err = stream.Next()
+	if err != nil {
+		t.Fatalf("unexpected error on finish chunk: %v", err)
+	}
+}
+
 // TestProviderOptionsInvalidType tests handling of invalid provider option types
 func TestProviderOptionsInvalidType(t *testing.T) {
 	p := New(Config{

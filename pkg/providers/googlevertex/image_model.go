@@ -54,23 +54,49 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // doGenerateImagen generates images using the Imagen API (:predict endpoint)
 // Supports both text-to-image and image editing (inpainting, outpainting, etc.)
 func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	// Build request body for Imagen
-	instances := []map[string]interface{}{
-		{
-			"prompt": opts.Prompt,
-		},
+	// Build instance — negativePrompt is an instance-level field (not a parameter).
+	instance := map[string]interface{}{
+		"prompt": opts.Prompt,
+	}
+
+	vertexOpts := extractVertexOptions(opts.ProviderOptions)
+
+	if negPrompt, ok := vertexOpts["negativePrompt"].(string); ok && negPrompt != "" {
+		instance["negativePrompt"] = negPrompt
 	}
 
 	parameters := map[string]interface{}{
 		"sampleCount": getIntValue(opts.N, 1),
 	}
 
-	// Add aspect ratio if specified (Imagen uses aspectRatio, not size)
-	if opts.Size != "" {
-		aspectRatio := convertSizeToAspectRatio(opts.Size)
-		if aspectRatio != "" {
-			parameters["aspectRatio"] = aspectRatio
-		}
+	// Add aspect ratio if specified.
+	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
+	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
+		parameters["aspectRatio"] = aspectRatio
+	}
+
+	// sampleImageSize provider option (e.g., VertexImageSize1K, VertexImageSize2K)
+	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
+		parameters["sampleImageSize"] = imageSize
+	}
+
+	// Seed for reproducible generation.
+	if opts.Seed != nil {
+		parameters["seed"] = *opts.Seed
+	}
+
+	// Additional Vertex AI provider options.
+	if pgen, ok := vertexOpts["personGeneration"].(string); ok && pgen != "" {
+		parameters["personGeneration"] = pgen
+	}
+	if safetySetting, ok := vertexOpts["safetySetting"].(string); ok && safetySetting != "" {
+		parameters["safetySetting"] = safetySetting
+	}
+	if addWatermark, ok := vertexOpts["addWatermark"].(bool); ok {
+		parameters["addWatermark"] = addWatermark
+	}
+	if storageUri, ok := vertexOpts["storageUri"].(string); ok && storageUri != "" {
+		parameters["storageUri"] = storageUri
 	}
 
 	// TODO: Image editing support
@@ -117,7 +143,7 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 	// }
 
 	reqBody := map[string]interface{}{
-		"instances":  instances,
+		"instances":  []map[string]interface{}{instance},
 		"parameters": parameters,
 	}
 
@@ -162,8 +188,25 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 
 // doGenerateGemini generates images using Gemini models via the generateContent API
 func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	// Image editing with masks is not supported for Gemini image models.
+	if opts.Mask != nil {
+		return nil, fmt.Errorf("image editing with masks is not supported for Gemini image models")
+	}
+	// Gemini image models only support generating a single image at a time.
+	if opts.N != nil && *opts.N > 1 {
+		return nil, fmt.Errorf("Gemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
+	}
+
 	// Gemini image models use the language model API with responseModalities: ["IMAGE"]
-	// Build request body for Gemini
+	genConfig := map[string]interface{}{
+		"responseModalities": []string{"IMAGE"},
+	}
+
+	// Add seed if specified for reproducible generation.
+	if opts.Seed != nil {
+		genConfig["seed"] = *opts.Seed
+	}
+
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
@@ -175,20 +218,20 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 				},
 			},
 		},
-		"generationConfig": map[string]interface{}{
-			"responseModalities": []string{"IMAGE"},
-		},
+		"generationConfig": genConfig,
 	}
 
-	// Add aspect ratio if specified
-	if opts.Size != "" {
-		aspectRatio := convertSizeToAspectRatio(opts.Size)
-		if aspectRatio != "" {
-			genConfig := reqBody["generationConfig"].(map[string]interface{})
-			genConfig["imageConfig"] = map[string]interface{}{
-				"aspectRatio": aspectRatio,
-			}
-		}
+	// Add aspect ratio and/or imageSize if specified.
+	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
+	imageConfig := map[string]interface{}{}
+	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
+		imageConfig["aspectRatio"] = aspectRatio
+	}
+	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
+		imageConfig["imageSize"] = imageSize
+	}
+	if len(imageConfig) > 0 {
+		genConfig["imageConfig"] = imageConfig
 	}
 
 	// Build URL
@@ -250,6 +293,16 @@ func isGeminiModel(modelID string) bool {
 	return len(modelID) >= 7 && modelID[:7] == "gemini-"
 }
 
+// resolveAspectRatio returns the aspect ratio to send to the API.
+// If aspectRatio is already set (e.g., "16:9"), it is used directly.
+// Otherwise, size (e.g., "1920x1080") is converted to an aspect ratio.
+func resolveAspectRatio(aspectRatio, size string) string {
+	if aspectRatio != "" {
+		return aspectRatio
+	}
+	return convertSizeToAspectRatio(size)
+}
+
 // convertSizeToAspectRatio converts size format (e.g., "1024x1024") to aspect ratio (e.g., "1:1")
 func convertSizeToAspectRatio(size string) string {
 	switch size {
@@ -264,9 +317,29 @@ func convertSizeToAspectRatio(size string) string {
 	case "1080x1920", "1024x1792":
 		return "9:16"
 	default:
-		// Return empty for unsupported sizes, will use default
 		return ""
 	}
+}
+
+// extractVertexOptions returns the vertex-specific provider options map.
+func extractVertexOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	if providerOptions == nil {
+		return map[string]interface{}{}
+	}
+	opts, _ := providerOptions["vertex"].(map[string]interface{})
+	if opts == nil {
+		return map[string]interface{}{}
+	}
+	return opts
+}
+
+// resolveVertexImageSize extracts the sampleImageSize option from provider options.
+// Provider options format: map["vertex"]map["sampleImageSize"] = "1K"
+// Valid values: VertexImageSize1K ("1K"), VertexImageSize2K ("2K").
+func resolveVertexImageSize(providerOptions map[string]interface{}) string {
+	opts := extractVertexOptions(providerOptions)
+	size, _ := opts["sampleImageSize"].(string)
+	return size
 }
 
 // getIntValue safely gets int value or default
@@ -291,7 +364,7 @@ type vertexGeminiImageResponse struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text       string                `json:"text,omitempty"`
+				Text       string                  `json:"text,omitempty"`
 				InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
 			} `json:"parts"`
 		} `json:"content"`

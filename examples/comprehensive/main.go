@@ -71,7 +71,7 @@ func multiProviderExample(ctx context.Context) {
 	if apiKey := os.Getenv("GOOGLE_API_KEY"); apiKey != "" {
 		fmt.Println("  Using Google (Gemini):")
 		provider := google.New(google.Config{APIKey: apiKey})
-		model, _ := provider.LanguageModel("gemini-pro")
+		model, _ := provider.LanguageModel(google.ModelGemini20Flash)
 
 		result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 			Model:  model,

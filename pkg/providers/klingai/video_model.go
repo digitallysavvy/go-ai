@@ -145,11 +145,14 @@ func (m *VideoModel) getEndpoint() string {
 	}
 }
 
-// getAPIModelName derives the KlingAI API model_name from the SDK model ID
-// Strips the mode suffix and converts dots to hyphens
+// getAPIModelName derives the KlingAI API model_name from the SDK model ID.
+// Strips the mode suffix, removes trailing ".0" version suffixes, then converts
+// remaining dots to hyphens.
 // Examples:
 //   - 'kling-v2.6-t2v' → 'kling-v2-6'
 //   - 'kling-v2.1-master-i2v' → 'kling-v2-1-master'
+//   - 'kling-v3.0-t2v' → 'kling-v3'
+//   - 'kling-v3.0-i2v' → 'kling-v3'
 func (m *VideoModel) getAPIModelName() string {
 	var suffix string
 	switch m.mode {
@@ -160,7 +163,15 @@ func (m *VideoModel) getAPIModelName() string {
 	}
 
 	baseName := strings.TrimSuffix(m.modelID, suffix)
+	// Strip trailing ".0" version suffix before replacing dots with hyphens.
+	// This ensures "kling-v3.0" maps to "kling-v3" rather than "kling-v3-0".
+	baseName = strings.TrimSuffix(baseName, ".0")
 	return strings.ReplaceAll(baseName, ".", "-")
+}
+
+// IsImageToVideo returns true if this model performs image-to-video generation.
+func (m *VideoModel) IsImageToVideo() bool {
+	return m.mode == VideoModeI2V
 }
 
 // buildRequestBody builds the API request body based on the mode
@@ -214,6 +225,24 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 
 	if opts.Duration != nil {
 		body["duration"] = fmt.Sprintf("%.0f", *opts.Duration)
+	}
+
+	// v3.0 multi-shot
+	if provOpts.MultiShot != nil {
+		body["multi_shot"] = *provOpts.MultiShot
+	}
+
+	if provOpts.ShotType != nil {
+		body["shot_type"] = *provOpts.ShotType
+	}
+
+	if len(provOpts.MultiPrompt) > 0 {
+		body["multi_prompt"] = provOpts.MultiPrompt
+	}
+
+	// v3.0 voice control
+	if len(provOpts.VoiceList) > 0 {
+		body["voice_list"] = provOpts.VoiceList
 	}
 
 	// Image is not supported for T2V
@@ -289,6 +318,29 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 
 	if opts.Duration != nil {
 		body["duration"] = fmt.Sprintf("%.0f", *opts.Duration)
+	}
+
+	// v3.0 multi-shot
+	if provOpts.MultiShot != nil {
+		body["multi_shot"] = *provOpts.MultiShot
+	}
+
+	if provOpts.ShotType != nil {
+		body["shot_type"] = *provOpts.ShotType
+	}
+
+	if len(provOpts.MultiPrompt) > 0 {
+		body["multi_prompt"] = provOpts.MultiPrompt
+	}
+
+	// v3.0 element control (I2V only)
+	if len(provOpts.ElementList) > 0 {
+		body["element_list"] = provOpts.ElementList
+	}
+
+	// v3.0 voice control
+	if len(provOpts.VoiceList) > 0 {
+		body["voice_list"] = provOpts.VoiceList
 	}
 
 	// AspectRatio is not supported for I2V (determined by input image)

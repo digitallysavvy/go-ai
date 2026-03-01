@@ -208,6 +208,35 @@ os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
 - Regional data residency
 - Batch image generation for large-scale operations
 
+## Provider-Specific Options
+
+Use the `"google-vertex"` key (not `"google"`) to pass Vertex AI-specific options through `ProviderOptions`. The key is the provider name returned by the model's `Provider()` method.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Analyze this document for compliance issues.",
+    ProviderOptions: map[string]interface{}{
+        "google-vertex": map[string]interface{}{
+            // Vertex-specific safety settings
+            "safetySettings": []map[string]interface{}{
+                {
+                    "category":  "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_ONLY_HIGH",
+                },
+            },
+        },
+    },
+})
+```
+
+> **Important:** Use `"google-vertex"` as the key — not `"google"`. The `"google"` key is reserved for the Google Generative AI (AI Studio) provider. Using the wrong key will silently ignore your options.
+
+| Provider | `ProviderOptions` key |
+|----------|----------------------|
+| Google AI Studio (`providers/google`) | `"google"` |
+| Google Vertex AI (`providers/googlevertex`) | `"google-vertex"` |
+
 ## Examples
 
 ### Basic Text Generation

@@ -147,6 +147,16 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		genConfig["stopSequences"] = opts.StopSequences
 	}
 
+	// Extract thinkingConfig from ProviderOptions["google"].
+	// Matches TS: generationConfig.thinkingConfig = googleOptions?.thinkingConfig
+	if opts.ProviderOptions != nil {
+		if googleOpts, ok := opts.ProviderOptions["google"].(map[string]interface{}); ok {
+			if thinkingConfig, ok := googleOpts["thinkingConfig"].(map[string]interface{}); ok {
+				genConfig["thinkingConfig"] = thinkingConfig
+			}
+		}
+	}
+
 	// Add response MIME type for JSON mode
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json_object" {
 		genConfig["responseMimeType"] = "application/json"
@@ -183,6 +193,11 @@ func (m *LanguageModel) convertResponse(response googleResponse) *types.Generate
 		// Extract text from parts
 		var textParts []string
 		for _, part := range candidate.Content.Parts {
+			// Thought/reasoning parts are already counted in usage.OutputDetails.ReasoningTokens
+			// via ThoughtsTokenCount; exclude them from result.Text.
+			if part.Thought {
+				continue
+			}
 			if part.Text != "" {
 				textParts = append(textParts, part.Text)
 			}
@@ -337,8 +352,10 @@ type googleUsageMetadata struct {
 
 // googlePart represents a part in Google's content structure
 type googlePart struct {
-	Text         string `json:"text,omitempty"`
-	FunctionCall *struct {
+	Text             string `json:"text,omitempty"`
+	Thought          bool   `json:"thought,omitempty"`
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+	FunctionCall     *struct {
 		Name string                 `json:"name"`
 		Args map[string]interface{} `json:"args"`
 	} `json:"functionCall,omitempty"`
@@ -346,9 +363,11 @@ type googlePart struct {
 
 // googleStream implements provider.TextStream for Google streaming
 type googleStream struct {
-	reader io.ReadCloser
-	parser *streaming.SSEParser
-	err    error
+	reader        io.ReadCloser
+	parser        *streaming.SSEParser
+	err           error
+	partBuffer    []googlePart       // parts buffered from the current SSE event
+	finishPending *types.FinishReason // finish reason to emit after partBuffer is drained
 }
 
 // newGoogleStream creates a new Google stream
@@ -375,61 +394,88 @@ func (s *googleStream) Next() (*provider.StreamChunk, error) {
 		return nil, s.err
 	}
 
-	// Get next SSE event
+	// Drain buffered parts from the current SSE event before reading a new one.
+	if len(s.partBuffer) > 0 {
+		part := s.partBuffer[0]
+		s.partBuffer = s.partBuffer[1:]
+		// Thought parts (reasoning) map to ChunkTypeReasoning.
+		if part.Thought && part.Text != "" {
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeReasoning,
+				Text: part.Text,
+			}, nil
+		}
+		if part.Text != "" {
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeText,
+				Text: part.Text,
+			}, nil
+		}
+		// Non-text part (e.g. function call) — skip it.
+		return s.Next()
+	}
+
+	// Emit pending finish reason once all parts have been drained.
+	if s.finishPending != nil {
+		chunk := &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: *s.finishPending,
+		}
+		s.finishPending = nil
+		return chunk, nil
+	}
+
+	// Read next SSE event.
 	event, err := s.parser.Next()
 	if err != nil {
 		s.err = err
 		return nil, err
 	}
 
-	// Check for stream completion
+	// Check for stream completion.
 	if streaming.IsStreamDone(event) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
 
-	// Parse the event data as JSON
+	// Parse the event data as JSON.
 	var chunkData googleResponse
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
 	}
 
-	// Extract text from candidates
 	if len(chunkData.Candidates) > 0 {
 		candidate := chunkData.Candidates[0]
 
-		// Extract text from parts
-		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
-				return &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: part.Text,
-				}, nil
-			}
-		}
-
-		// Check for finish reason
-		if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
-			var finishReason types.FinishReason
+		// Save finish reason; emit it after all parts are drained.
+		if candidate.FinishReason != "" {
+			var fr types.FinishReason
 			switch candidate.FinishReason {
 			case "STOP":
-				finishReason = types.FinishReasonStop
+				fr = types.FinishReasonStop
 			case "MAX_TOKENS":
-				finishReason = types.FinishReasonLength
+				fr = types.FinishReasonLength
 			case "SAFETY":
-				finishReason = types.FinishReasonContentFilter
+				fr = types.FinishReasonContentFilter
 			default:
-				finishReason = types.FinishReasonOther
+				fr = types.FinishReasonOther
 			}
+			s.finishPending = &fr
+		}
 
-			return &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: finishReason,
-			}, nil
+		// Buffer all parts from this event so they are emitted one at a time.
+		if len(candidate.Content.Parts) > 0 {
+			s.partBuffer = candidate.Content.Parts
+			return s.Next()
+		}
+
+		// No parts — emit finish reason if pending, otherwise get next event.
+		if s.finishPending != nil {
+			return s.Next()
 		}
 	}
 
-	// Empty chunk, get next
+	// Empty event — get next.
 	return s.Next()
 }
 

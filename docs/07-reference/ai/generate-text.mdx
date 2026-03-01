@@ -33,7 +33,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | Seed | *int | No | Random seed for reproducibility |
 | Tools | []types.Tool | No | Tools available for the model to call |
 | ToolChoice | types.ToolChoice | No | How the model should choose tools |
-| MaxSteps | *int | No | Maximum tool calling steps (default: 10) |
+| StopWhen | []ai.StopCondition | No | Conditions that stop the tool-calling loop (see [StepCountIs](./step-count-is.mdx), [HasToolCall](./has-tool-call.mdx)) |
+| MaxSteps | *int | No | **Deprecated** — use `StopWhen: []ai.StopCondition{ai.StepCountIs(n)}` instead |
 | Timeout | *TimeoutConfig | No | Timeout configuration |
 | Output | interface{} | No | Output specification (v6.0+) |
 | ResponseFormat | *provider.ResponseFormat | No | Response format (deprecated: use Output) |
@@ -55,6 +56,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | ToolResults | []types.ToolResult | Results from executed tools |
 | Steps | []types.StepResult | Steps taken during generation |
 | FinishReason | types.FinishReason | Why generation finished |
+| StopReason | string | Reason string from the `StopCondition` that stopped the loop; empty if no condition fired |
 | Usage | types.Usage | Token usage information |
 | ContextManagement | interface{} | Context management info (Anthropic) |
 | Warnings | []types.Warning | Provider warnings |

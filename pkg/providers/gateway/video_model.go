@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -50,7 +54,7 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 	return &maxVideos
 }
 
-// DoGenerate generates videos based on the given options
+// DoGenerate generates videos based on the given options via SSE stream
 func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
 	// Build request body
 	body := map[string]interface{}{}
@@ -92,12 +96,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		body["image"] = encodedImage
 	}
 
-	// Add provider-specific options
-	if len(opts.ProviderOptions) > 0 {
-		body["providerOptions"] = opts.ProviderOptions
-	}
+	// Always include providerOptions (even when empty) to match gateway API expectations
+	body["providerOptions"] = opts.ProviderOptions
 
-	// Add headers
+	// Build headers
 	headers := m.getModelConfigHeaders()
 
 	// Add observability headers if in Vercel environment
@@ -109,37 +111,147 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		headers[k] = v
 	}
 
-	// Make API request
-	var responseData struct {
-		Videos           []videoData                `json:"videos"`
-		Warnings         []warningData              `json:"warnings,omitempty"`
-		ProviderMetadata map[string]interface{}     `json:"providerMetadata,omitempty"`
-	}
+	// Set Accept header to request SSE stream for video generation
+	headers["Accept"] = "text/event-stream"
 
-	err := m.provider.client.DoJSON(ctx, internalhttp.Request{
+	// Make streaming request for SSE
+	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/video-model",
 		Body:    body,
 		Headers: headers,
-	}, &responseData)
+	})
+	if err != nil {
+		return nil, m.handleError(err)
+	}
+	defer httpResp.Body.Close()
+
+	// Read and parse the SSE stream
+	result, err := m.readSSEVideoResponse(ctx, httpResp.Body)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Convert response to VideoModelV3Response
-	result := &provider.VideoModelV3Response{
-		Videos:           make([]provider.VideoModelV3VideoData, 0, len(responseData.Videos)),
-		Warnings:         make([]types.Warning, 0, len(responseData.Warnings)),
-		ProviderMetadata: responseData.ProviderMetadata,
-		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
-			ModelID:   m.modelID,
-			Headers:   headers,
-		},
+	// Set response metadata from the HTTP response
+	responseHeaders := make(map[string]string)
+	for k, vs := range httpResp.Header {
+		if len(vs) > 0 {
+			responseHeaders[k] = vs[0]
+		}
+	}
+	result.Response = provider.VideoModelV3ResponseInfo{
+		Timestamp: time.Now(),
+		ModelID:   m.modelID,
+		Headers:   responseHeaders,
 	}
 
-	// Convert videos
-	for _, video := range responseData.Videos {
+	return result, nil
+}
+
+// SSEVideoEvent represents an event in the SSE stream from the gateway video endpoint.
+// The gateway sends heartbeat and progress events as keep-alives, and a result or
+// error event to signal completion.
+type SSEVideoEvent struct {
+	Type string `json:"type"`
+
+	// Heartbeat fields (type="heartbeat")
+	Timestamp *int64 `json:"timestamp,omitempty"`
+
+	// Progress fields (type="progress")
+	Percent *int `json:"percent,omitempty"`
+
+	// Result fields (type="result") — the current gateway SSE completion format
+	Videos           []videoData            `json:"videos,omitempty"`
+	Warnings         []warningData          `json:"warnings,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Error fields (type="error")
+	Message   string      `json:"message,omitempty"`
+	ErrorType string      `json:"errorType,omitempty"`
+	StatusCode *int       `json:"statusCode,omitempty"`
+	Param     interface{} `json:"param,omitempty"`
+}
+
+// readSSEVideoResponse reads an SSE stream and returns the video generation result.
+// It handles heartbeat events (keep-alive), progress events (optional status),
+// result events (success), and error events (failure).
+// Context cancellation is checked on each iteration to stop reading immediately.
+func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (*provider.VideoModelV3Response, error) {
+	scanner := bufio.NewScanner(body)
+
+	for scanner.Scan() {
+		// Check for context cancellation before processing each line
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		line := scanner.Text()
+
+		// SSE data lines begin with "data: "
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+
+		var event SSEVideoEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			// Skip malformed events (e.g., "[DONE]" sentinel or unknown format)
+			continue
+		}
+
+		switch event.Type {
+		case "heartbeat":
+			// Keep-alive signal — discard and continue reading
+			continue
+
+		case "progress":
+			// Optional progress update — discard and continue reading
+			continue
+
+		case "result":
+			// Current completion format from the gateway SSE spec
+			return m.buildResponseFromSSEEvent(&event)
+
+		case "error":
+			msg := event.Message
+			if msg == "" {
+				msg = "unknown gateway video generation error"
+			}
+			statusCode := 0
+			if event.StatusCode != nil {
+				statusCode = *event.StatusCode
+			}
+			return nil, providererrors.NewProviderError("gateway", statusCode, event.ErrorType, msg, nil)
+		}
+		// Unknown event types are silently ignored to support forward compatibility
+	}
+
+	// Check if the scanner stopped due to context cancellation or a read error
+	if err := scanner.Err(); err != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		return nil, fmt.Errorf("SSE stream read error: %w", err)
+	}
+
+	// Stream ended without a result or error event
+	return nil, fmt.Errorf("SSE stream ended without completion event")
+}
+
+// buildResponseFromSSEEvent converts a result SSEVideoEvent into a VideoModelV3Response.
+func (m *VideoModel) buildResponseFromSSEEvent(event *SSEVideoEvent) (*provider.VideoModelV3Response, error) {
+	result := &provider.VideoModelV3Response{
+		Videos:           make([]provider.VideoModelV3VideoData, 0, len(event.Videos)),
+		Warnings:         make([]types.Warning, 0, len(event.Warnings)),
+		ProviderMetadata: event.ProviderMetadata,
+	}
+
+	for _, video := range event.Videos {
 		result.Videos = append(result.Videos, provider.VideoModelV3VideoData{
 			Type:      video.Type,
 			URL:       video.URL,
@@ -148,16 +260,13 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		})
 	}
 
-	// Convert warnings
-	for _, warning := range responseData.Warnings {
-		// Construct message from warning fields
+	for _, warning := range event.Warnings {
 		message := warning.Message
 		if message == "" && warning.Feature != "" {
 			message = fmt.Sprintf("%s: %s", warning.Feature, warning.Details)
 		} else if warning.Feature != "" {
 			message = fmt.Sprintf("%s (%s: %s)", message, warning.Feature, warning.Details)
 		}
-
 		result.Warnings = append(result.Warnings, types.Warning{
 			Type:    warning.Type,
 			Message: message,
@@ -183,14 +292,18 @@ type warningData struct {
 	Details string `json:"details,omitempty"`
 }
 
-// encodeVideoFile encodes a video file for transmission
+// encodeVideoFile encodes a video file for transmission.
+// URL-type files are sent as-is as a full object {type, url}.
+// Binary file data is base64-encoded; the rest of the object is preserved.
 func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface{}, error) {
 	if file.Type == "url" {
-		return file.URL, nil
+		return map[string]interface{}{
+			"type": "url",
+			"url":  file.URL,
+		}, nil
 	}
 
 	if file.Type == "file" && len(file.Data) > 0 {
-		// Encode binary data as base64
 		mediaType := file.MediaType
 		if mediaType == "" {
 			mediaType = "image/jpeg"
@@ -210,7 +323,7 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 func (m *VideoModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
 		"ai-video-model-specification-version": "3",
-		"ai-video-model-id":                    m.modelID,
+		"ai-model-id":                          m.modelID,
 	}
 }
 

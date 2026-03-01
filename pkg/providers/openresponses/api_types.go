@@ -55,6 +55,21 @@ type FunctionTool struct {
 
 // Message item types for input
 
+// ReasoningInputItem is a top-level reasoning item sent in the request input.
+// Used to forward reasoning blocks from previous response turns back to the API
+// so multi-turn reasoning works when store=false or itemId is unavailable (#12869).
+type ReasoningInputItem struct {
+	Type             string        `json:"type"`
+	EncryptedContent string        `json:"encrypted_content,omitempty"`
+	Summary          []SummaryPart `json:"summary,omitempty"`
+}
+
+// SummaryPart is a single entry in a reasoning item's summary array.
+type SummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 // MessageItem represents a message in the conversation
 type MessageItem struct {
 	Type    string      `json:"type"`

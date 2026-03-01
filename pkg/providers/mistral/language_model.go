@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -145,7 +146,7 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: convertFinishReason(choice.FinishReason),
+		FinishReason: mapMistralFinishReason(choice.FinishReason),
 		Usage:        convertMistralUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -247,19 +248,13 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 	return result
 }
 
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
+// mapMistralFinishReason extends the standard OpenAI finish reason mapping with
+// "model_length", a Mistral-specific variant of "length".
+func mapMistralFinishReason(reason string) types.FinishReason {
+	if reason == "model_length" {
 		return types.FinishReasonLength
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	case "model_length":
-		return types.FinishReasonLength
-	default:
-		return types.FinishReasonOther
 	}
+	return providerutils.MapOpenAIFinishReason(reason)
 }
 
 type mistralResponse struct {
@@ -381,7 +376,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 		if choice.FinishReason != "" {
-			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: convertFinishReason(choice.FinishReason)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapMistralFinishReason(choice.FinishReason)}, nil
 		}
 	}
 	return s.Next()

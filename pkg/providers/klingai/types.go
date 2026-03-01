@@ -39,6 +39,27 @@ type ProviderOptions struct {
 	// CameraControl configures camera movement
 	CameraControl *CameraControl `json:"cameraControl,omitempty"`
 
+	// v3.0 multi-shot options (T2V and I2V, Kling v3.0+)
+
+	// MultiShot enables multi-shot video generation. When true, the video is split
+	// into up to 6 storyboard shots. When true, the main prompt is ignored by the API.
+	MultiShot *bool `json:"multiShot,omitempty"`
+
+	// ShotType is the storyboard method for multi-shot generation ("customize" or "intelligence").
+	// Required when MultiShot is true.
+	ShotType *string `json:"shotType,omitempty"`
+
+	// MultiPrompt contains per-shot details for multi-shot generation.
+	// Required when MultiShot is true and ShotType is "customize".
+	MultiPrompt []MultiShotPrompt `json:"multiPrompt,omitempty"`
+
+	// v3.0 voice control (T2V and I2V, Kling v3.0+)
+
+	// VoiceList contains voice references for voice control (up to 2).
+	// Referenced via <<<voice_1>>> template syntax in the prompt.
+	// When used, Sound should be set to "on".
+	VoiceList []VoiceRef `json:"voiceList,omitempty"`
+
 	// I2V-specific options
 
 	// ImageTail is the end frame image for start+end frame control (pro mode)
@@ -49,6 +70,12 @@ type ProviderOptions struct {
 
 	// DynamicMasks are dynamic brush configurations for I2V motion brush
 	DynamicMasks []DynamicMask `json:"dynamicMasks,omitempty"`
+
+	// v3.0 element control (I2V only, Kling v3.0+)
+
+	// ElementList contains reference elements for element control (up to 3).
+	// Cannot coexist with VoiceList on the I2V endpoint.
+	ElementList []ElementRef `json:"elementList,omitempty"`
 
 	// Motion-control-specific options
 
@@ -66,6 +93,29 @@ type ProviderOptions struct {
 
 	// Passthrough options (for future API additions)
 	Additional map[string]interface{} `json:"-"`
+}
+
+// MultiShotPrompt contains per-shot details for multi-shot video generation (Kling v3.0+).
+// Up to 6 shots. Shot durations must sum to the total duration.
+type MultiShotPrompt struct {
+	// Index is the shot index (1-based)
+	Index int `json:"index"`
+	// Prompt is the shot-specific prompt (max 512 characters)
+	Prompt string `json:"prompt"`
+	// Duration is the shot duration in seconds (as a string, e.g. "5")
+	Duration string `json:"duration"`
+}
+
+// ElementRef references a video character or multi-image element for element control (Kling v3.0+ I2V).
+type ElementRef struct {
+	// ElementID is the element identifier
+	ElementID int `json:"element_id"`
+}
+
+// VoiceRef references a voice for voice control (Kling v3.0+).
+type VoiceRef struct {
+	// VoiceID is the voice identifier
+	VoiceID string `json:"voice_id"`
 }
 
 // CameraControl configures camera movement

@@ -35,6 +35,12 @@ var AnthropicTools = struct {
 	// Supported models: Claude Opus 4.5, Claude Sonnet 4.5
 	CodeExecution20250825 func() types.Tool
 
+	// CodeExecution20260120 creates the client-side code execution tool (version 2026-01-20).
+	// Supports Python programmatic tool calls, bash execution, and text editor file operations.
+	// The required beta header is automatically injected when this tool is in the tool list.
+	// Supported models: Claude Opus 4.6, Claude Sonnet 4.6
+	CodeExecution20260120 func() types.Tool
+
 	// ToolSearchBm2520251119 creates a BM25-based tool search for natural language queries.
 	// Enables Claude to work with hundreds or thousands of tools by discovering them on-demand.
 	// Supported models: Claude Opus 4.5, Claude Sonnet 4.5
@@ -49,6 +55,7 @@ var AnthropicTools = struct {
 	Bash20250124:            Bash20250124,
 	TextEditor20250728:      TextEditor20250728,
 	CodeExecution20250825:   CodeExecution20250825,
+	CodeExecution20260120:   CodeExecution20260120,
 	ToolSearchBm2520251119:  ToolSearchBm2520251119,
 	ToolSearchRegex20251119: ToolSearchRegex20251119,
 }

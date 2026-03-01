@@ -1,0 +1,479 @@
+---
+title: Memory Management
+description: Patterns for managing conversation history in long-running AI applications.
+---
+
+# Memory Management
+
+Long-running agents and multi-turn applications need strategies to keep conversation history within a model's context window. This guide covers three patterns: in-memory history, summarization-based compaction, and external memory stores.
+
+## The Problem: Context Window Limits
+
+Every language model has a fixed context window — the maximum number of tokens it can process in a single request. Conversations that exceed this limit fail or truncate silently. For reference:
+
+| Model | Context Window |
+|-------|---------------|
+| claude-sonnet-4-5 | 200K tokens |
+| gpt-4o | 128K tokens |
+| gemini-2.0-flash | 1M tokens |
+
+Even with large windows, longer conversations become expensive. Sending 100K tokens per request adds up quickly in production.
+
+## Pattern 1: In-Memory History
+
+The simplest approach — keep all messages in a Go slice and pass it on each call. Suitable for short sessions or when context window size isn't a concern.
+
+```go
+package main
+
+import (
+    "bufio"
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+// MessageHistory holds the in-memory conversation history.
+type MessageHistory struct {
+    messages []types.Message
+}
+
+// Add appends a message to the history.
+func (h *MessageHistory) Add(role types.Role, text string) {
+    h.messages = append(h.messages, types.Message{
+        Role: role,
+        Content: []types.ContentPart{
+            types.TextContent{Text: text},
+        },
+    })
+}
+
+// Messages returns all messages.
+func (h *MessageHistory) Messages() []types.Message {
+    return h.messages
+}
+
+func main() {
+    ctx := context.Background()
+
+    p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := p.LanguageModel(anthropic.ClaudeSonnet4_5)
+
+    history := &MessageHistory{}
+    scanner := bufio.NewScanner(os.Stdin)
+
+    fmt.Println("Chat (Ctrl+C to quit):")
+    for {
+        fmt.Print("> ")
+        if !scanner.Scan() {
+            break
+        }
+        userInput := scanner.Text()
+        history.Add(types.RoleUser, userInput)
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:    model,
+            System:   "You are a helpful assistant.",
+            Messages: history.Messages(),
+        })
+        if err != nil {
+            log.Printf("Error: %v", err)
+            continue
+        }
+
+        history.Add(types.RoleAssistant, result.Text)
+        fmt.Printf("Assistant: %s\n\n", result.Text)
+    }
+}
+```
+
+**Limitation:** History grows unbounded. Once it exceeds the model's context window, requests fail.
+
+## Pattern 2: Sliding Window
+
+Keep only the N most recent message pairs. Simple to implement, but loses older context entirely.
+
+```go
+// SlidingWindowHistory keeps only the most recent maxTurns exchanges.
+type SlidingWindowHistory struct {
+    messages []types.Message
+    maxTurns int // each "turn" = 1 user message + 1 assistant message
+}
+
+func NewSlidingWindowHistory(maxTurns int) *SlidingWindowHistory {
+    return &SlidingWindowHistory{maxTurns: maxTurns}
+}
+
+func (h *SlidingWindowHistory) Add(role types.Role, text string) {
+    h.messages = append(h.messages, types.Message{
+        Role:    role,
+        Content: []types.ContentPart{types.TextContent{Text: text}},
+    })
+    h.trim()
+}
+
+func (h *SlidingWindowHistory) trim() {
+    // Each turn has 2 messages (user + assistant); keep at most maxTurns*2
+    maxMessages := h.maxTurns * 2
+    if len(h.messages) > maxMessages {
+        h.messages = h.messages[len(h.messages)-maxMessages:]
+    }
+}
+
+func (h *SlidingWindowHistory) Messages() []types.Message {
+    return h.messages
+}
+```
+
+## Pattern 3: Summarization-Based Compaction
+
+When the conversation gets long, ask the model to summarize older turns and replace them with the summary. This preserves semantic meaning while reducing token count.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+const (
+    // Compact when the history exceeds this many messages.
+    compactThreshold = 20
+    // After compaction, keep this many recent messages verbatim.
+    keepRecentMessages = 6
+)
+
+// CompactingHistory maintains conversation history with automatic compaction.
+type CompactingHistory struct {
+    messages []types.Message
+    model    ai.LanguageModel
+    system   string
+}
+
+func NewCompactingHistory(model ai.LanguageModel, system string) *CompactingHistory {
+    return &CompactingHistory{model: model, system: system}
+}
+
+func (h *CompactingHistory) Add(role types.Role, text string) {
+    h.messages = append(h.messages, types.Message{
+        Role:    role,
+        Content: []types.ContentPart{types.TextContent{Text: text}},
+    })
+}
+
+// MaybeCompact compacts older messages if the history is too long.
+// It preserves the keepRecentMessages most recent messages verbatim,
+// and replaces older messages with a model-generated summary.
+func (h *CompactingHistory) MaybeCompact(ctx context.Context) error {
+    if len(h.messages) < compactThreshold {
+        return nil
+    }
+
+    // Split: older messages to summarize, recent ones to keep
+    splitAt := len(h.messages) - keepRecentMessages
+    toSummarize := h.messages[:splitAt]
+    toKeep := h.messages[splitAt:]
+
+    // Build a summary prompt from the older messages
+    var summaryPrompt string
+    summaryPrompt = "Summarize the following conversation history concisely, preserving key facts, decisions, and context:\n\n"
+    for _, msg := range toSummarize {
+        for _, part := range msg.Content {
+            if tc, ok := part.(types.TextContent); ok {
+                summaryPrompt += fmt.Sprintf("[%s]: %s\n", msg.Role, tc.Text)
+            }
+        }
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  h.model,
+        Prompt: summaryPrompt,
+    })
+    if err != nil {
+        return fmt.Errorf("compaction failed: %w", err)
+    }
+
+    // Replace older history with summary + recent messages
+    summaryMessage := types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{
+                Text: fmt.Sprintf("[Previous conversation summary]: %s", result.Text),
+            },
+        },
+    }
+
+    h.messages = append([]types.Message{summaryMessage}, toKeep...)
+    return nil
+}
+
+func (h *CompactingHistory) Messages() []types.Message {
+    return h.messages
+}
+
+func main() {
+    ctx := context.Background()
+
+    p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, _ := p.LanguageModel(anthropic.ClaudeSonnet4_5)
+    system := "You are a helpful assistant with a long memory."
+
+    history := NewCompactingHistory(model, system)
+
+    // Simulate a long conversation
+    exchanges := []string{
+        "What is Go's approach to concurrency?",
+        "Can you explain goroutines in more detail?",
+        "How do channels work in Go?",
+        "What is a select statement?",
+        "How does Go handle errors compared to exceptions?",
+        // ... many more turns would trigger compaction
+    }
+
+    for _, userMsg := range exchanges {
+        history.Add(types.RoleUser, userMsg)
+
+        // Compact if needed before generating
+        if err := history.MaybeCompact(ctx); err != nil {
+            log.Printf("Warning: compaction failed: %v", err)
+        }
+
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:    model,
+            System:   system,
+            Messages: history.Messages(),
+        })
+        if err != nil {
+            log.Fatalf("Generation error: %v", err)
+        }
+
+        history.Add(types.RoleAssistant, result.Text)
+        fmt.Printf("Q: %s\nA: %s\n\n", userMsg, result.Text)
+    }
+}
+```
+
+## Pattern 4: Automatic Compaction with Anthropic Context Management
+
+For Anthropic models, the API supports automatic context management — the model handles compaction server-side without a separate summarization call. This is more efficient than client-side summarization.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+    ctx := context.Background()
+
+    p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+
+    // Create a model with automatic compaction enabled.
+    // The API compacts the conversation server-side when input tokens exceed 50K.
+    model, err := p.LanguageModelWithOptions(
+        anthropic.ClaudeSonnet4_5,
+        &anthropic.ModelOptions{
+            ContextManagement: &anthropic.ContextManagement{
+                Edits: []anthropic.ContextManagementEdit{
+                    anthropic.NewCompactEdit().
+                        WithTrigger(50000).
+                        WithInstructions("Preserve key decisions, facts, and user preferences. Discard verbose explanations."),
+                },
+            },
+        },
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Use the model normally — compaction happens automatically
+    messages := []types.Message{
+        {
+            Role:    types.RoleUser,
+            Content: []types.ContentPart{types.TextContent{Text: "Let's work through a complex project together."}},
+        },
+    }
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        System:   "You are a helpful project assistant.",
+        Messages: messages,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Check if compaction was applied
+    if result.ContextManagement != nil {
+        cmr, ok := result.ContextManagement.(*anthropic.ContextManagementResponse)
+        if ok {
+            for _, edit := range cmr.AppliedEdits {
+                if _, isCompact := edit.(*anthropic.AppliedCompactEdit); isCompact {
+                    fmt.Println("Context automatically compacted by the API")
+                }
+            }
+        }
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+See the [Anthropic Provider](../05-providers/03-anthropic.mdx) guide for more details on `clear_tool_uses` and `clear_thinking` context management strategies.
+
+## Pattern 5: External Memory Store
+
+For persistent memory across sessions, store conversation history in a database or key-value store. Retrieve relevant history on demand rather than loading everything.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+// MemoryStore is an interface for persistent conversation storage.
+type MemoryStore interface {
+    Save(sessionID string, messages []types.Message) error
+    Load(sessionID string) ([]types.Message, error)
+    // LoadRecent returns the most recent n messages for a session.
+    LoadRecent(sessionID string, n int) ([]types.Message, error)
+}
+
+// FileMemoryStore is a simple file-based memory store (for illustration).
+// In production, use a database like PostgreSQL or Redis.
+type FileMemoryStore struct {
+    dir string
+}
+
+func NewFileMemoryStore(dir string) *FileMemoryStore {
+    os.MkdirAll(dir, 0755)
+    return &FileMemoryStore{dir: dir}
+}
+
+func (s *FileMemoryStore) Save(sessionID string, messages []types.Message) error {
+    path := fmt.Sprintf("%s/%s.json", s.dir, sessionID)
+    data, err := json.MarshalIndent(messages, "", "  ")
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(path, data, 0644)
+}
+
+func (s *FileMemoryStore) Load(sessionID string) ([]types.Message, error) {
+    path := fmt.Sprintf("%s/%s.json", s.dir, sessionID)
+    data, err := os.ReadFile(path)
+    if os.IsNotExist(err) {
+        return nil, nil // New session
+    }
+    if err != nil {
+        return nil, err
+    }
+    var messages []types.Message
+    return messages, json.Unmarshal(data, &messages)
+}
+
+func (s *FileMemoryStore) LoadRecent(sessionID string, n int) ([]types.Message, error) {
+    all, err := s.Load(sessionID)
+    if err != nil || len(all) == 0 {
+        return all, err
+    }
+    if len(all) <= n {
+        return all, nil
+    }
+    return all[len(all)-n:], nil
+}
+
+func main() {
+    ctx := context.Background()
+
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := p.LanguageModel("gpt-4o")
+
+    store := NewFileMemoryStore("/tmp/chat-sessions")
+    sessionID := fmt.Sprintf("session-%d", time.Now().Unix())
+
+    // Load recent history (last 10 messages)
+    history, err := store.LoadRecent(sessionID, 10)
+    if err != nil {
+        log.Fatalf("Failed to load history: %v", err)
+    }
+
+    userInput := "Continue our discussion about Go best practices."
+    history = append(history, types.Message{
+        Role:    types.RoleUser,
+        Content: []types.ContentPart{types.TextContent{Text: userInput}},
+    })
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:    model,
+        System:   "You are a Go programming expert.",
+        Messages: history,
+    })
+    if err != nil {
+        log.Fatalf("Generation error: %v", err)
+    }
+
+    history = append(history, types.Message{
+        Role:    types.RoleAssistant,
+        Content: []types.ContentPart{types.TextContent{Text: result.Text}},
+    })
+
+    // Persist the updated history
+    if err := store.Save(sessionID, history); err != nil {
+        log.Printf("Warning: failed to save history: %v", err)
+    }
+
+    fmt.Println(result.Text)
+}
+```
+
+## Choosing the Right Pattern
+
+| Pattern | Best For | Trade-off |
+|---------|----------|-----------|
+| In-memory history | Short sessions, prototyping | Fails on long conversations |
+| Sliding window | Simple apps, bounded memory | Loses older context |
+| Summarization compaction | Medium-length sessions | Extra API call for summarization |
+| Automatic compaction (Anthropic) | Anthropic-only apps | Provider-specific; most efficient |
+| External store | Multi-session, persistent apps | Requires database infrastructure |
+
+For most production applications, combine patterns:
+- Use a **sliding window** or **summarization** for in-flight messages
+- Use an **external store** for cross-session persistence
+- Use **automatic compaction** (Anthropic) for long single-session conversations
+
+## See Also
+
+- [Anthropic Provider](../05-providers/03-anthropic.mdx) — server-side context management
+- [Building Agents](../03-agents/02-building-agents.mdx) — agent memory patterns
+- [Coding Agents](./coding-agents.mdx) — memory in coding agent workflows

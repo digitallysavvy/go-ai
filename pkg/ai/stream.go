@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -37,7 +39,15 @@ type StreamTextOptions struct {
 	ToolChoice types.ToolChoice
 
 	// Response format (for structured output)
+	// Deprecated: Use Output instead.
 	ResponseFormat *provider.ResponseFormat
+
+	// Output specifies how to handle and parse model output during streaming.
+	// Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput().
+	// When set, the model is called with the appropriate ResponseFormat and
+	// PartialOutput() is updated after each text chunk via ParsePartialOutput.
+	// If nil, defaults to plain text streaming.
+	Output interface{}
 
 	// Timeout provides granular timeout controls
 	// Supports total timeout, per-step timeout, and per-chunk timeout
@@ -51,18 +61,64 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
+	// ExperimentalContext is user-defined context that flows through callbacks.
+	// It is passed as-is to all structured event callbacks.
+	ExperimentalContext interface{}
+
 	// Telemetry configuration for observability
 	ExperimentalTelemetry *TelemetrySettings
 
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
 	OnFinish func(result *StreamTextResult)
+
+	// ========================================================================
+	// Structured Event Callbacks (v6.1 - P0-3)
+	// These callbacks receive typed event structs and are panic-safe.
+	// ========================================================================
+
+	// OnStart is called once, before streaming begins.
+	OnStart func(ctx context.Context, e OnStartEvent)
+
+	// OnStepStart is called at the beginning of each LLM step.
+	OnStepStart func(ctx context.Context, e OnStepStartEvent)
+
+	// OnToolCallStart is called just before each tool's Execute function runs.
+	OnToolCallStart func(ctx context.Context, e OnToolCallStartEvent)
+
+	// OnToolCallFinish is called after each tool's Execute function returns.
+	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
+
+	// OnStepFinishEvent is called at the end of each LLM step.
+	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
+
+	// OnFinishEvent is called once when the stream fully completes.
+	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
 }
+
+// StreamStatus represents the lifecycle state of a streaming generation.
+type StreamStatus string
+
+const (
+	// StreamStatusSubmitted indicates the request has been submitted and the
+	// stream is actively receiving data from the model.
+	StreamStatusSubmitted StreamStatus = "submitted"
+
+	// StreamStatusStreaming indicates at least one chunk has been received.
+	StreamStatusStreaming StreamStatus = "streaming"
+
+	// StreamStatusDone indicates the stream has completed successfully.
+	StreamStatusDone StreamStatus = "done"
+)
 
 // StreamTextResult contains the result of streaming text generation
 type StreamTextResult struct {
 	// Stream of chunks
 	stream provider.TextStream
+
+	// status tracks the lifecycle of the stream.
+	// Protected by mu because it is read by Status() and written by processStream.
+	status StreamStatus
 
 	// Accumulated text (built as chunks arrive)
 	text string
@@ -80,12 +136,49 @@ type StreamTextResult struct {
 	// Error that occurred during streaming
 	err error
 
+	// Output spec resolved from StreamTextOptions.Output.
+	// nil when no Output option was provided.
+	outputSpec outputProcessor
+
+	// outputResult holds the final parsed output after streaming completes.
+	// Only populated when finishReason == Stop and an Output spec was provided.
+	// Protected by mu.
+	outputResult any
+
+	// outputErr holds any error that occurred during final output parsing.
+	// Protected by mu.
+	outputErr error
+
+	// partialOutput holds the most recently parsed partial output.
+	// Updated after each text chunk (with deduplication).
+	// Protected by mu because processStream updates it from a goroutine.
+	mu            sync.Mutex
+	partialOutput any
+
+	// lastPartialJSON is the JSON representation of the last published partialOutput.
+	// Used for deduplication — only written from the stream-consuming goroutine.
+	lastPartialJSON string
+
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
 
 	// Telemetry span (closed when stream completes)
 	telemetrySpan trace.Span
 	telemetryOpts *TelemetrySettings
+
+	// Structured event callbacks (v6.1 - P0-3)
+	// Stored here so processStream can fire them when the stream completes.
+	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
+	cbOnFinishEvent     func(ctx context.Context, e OnFinishEvent)
+	cbFuncID            string
+	cbMeta              map[string]any
+	cbModelProvider     string
+	cbModelID           string
+	cbExperimentalCtx   interface{}
+	// Snapshot of the initial messages and tools for event population
+	cbMessages []types.Message
+	cbTools    []types.Tool
+	cbSystem   string
 }
 
 // StreamText performs streaming text generation
@@ -145,6 +238,61 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
 
+	// Extract telemetry info once for all callback events
+	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+
+	// CB-T19: Emit OnStartEvent before streaming begins
+	Notify(ctx, OnStartEvent{
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		System:              opts.System,
+		Prompt:              opts.Prompt,
+		Messages:            opts.Messages,
+		Tools:               opts.Tools,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
+	}, opts.OnStart)
+
+	// CB-T20: Emit OnStepStartEvent for step 1 (current stream is single-step)
+	Notify(ctx, OnStepStartEvent{
+		StepNumber:          1,
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		System:              opts.System,
+		Messages:            prompt.Messages,
+		Tools:               opts.Tools,
+		PreviousSteps:       nil, // first (and only) step
+		ExperimentalContext: opts.ExperimentalContext,
+		FunctionID:          cbFuncID,
+		Metadata:            cbMeta,
+	}, opts.OnStepStart)
+
+	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
+	responseFormat := opts.ResponseFormat
+	var outputSpec outputProcessor
+	if op, ok := opts.Output.(outputProcessor); ok {
+		outputSpec = op
+		if responseFormat == nil {
+			rf, rfErr := op.ResponseFormat(ctx)
+			if rfErr != nil {
+				if span != nil {
+					span.End()
+				}
+				return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
+			}
+			responseFormat = rf
+		}
+	}
+
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -158,7 +306,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Seed:             opts.Seed,
 		Tools:            opts.Tools,
 		ToolChoice:       opts.ToolChoice,
-		ResponseFormat:   opts.ResponseFormat,
+		ResponseFormat:   responseFormat,
 		ProviderOptions:  opts.ProviderOptions,
 		Telemetry:        opts.ExperimentalTelemetry,
 	}
@@ -175,22 +323,36 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Create result
 	result := &StreamTextResult{
 		stream:        stream,
+		status:        StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:       opts.Timeout,
 		telemetrySpan: span,
 		telemetryOpts: opts.ExperimentalTelemetry,
+		outputSpec:    outputSpec,
+		// Structured event callbacks
+		cbOnStepFinishEvent: opts.OnStepFinishEvent,
+		cbOnFinishEvent:     opts.OnFinishEvent,
+		cbFuncID:            cbFuncID,
+		cbMeta:              cbMeta,
+		cbModelProvider:     opts.Model.Provider(),
+		cbModelID:           opts.Model.ModelID(),
+		cbExperimentalCtx:   opts.ExperimentalContext,
+		cbMessages:          prompt.Messages,
+		cbTools:             opts.Tools,
+		cbSystem:            opts.System,
 	}
 
 	// Start goroutine to process chunks and call callbacks
-	if opts.OnChunk != nil || opts.OnFinish != nil {
-		go result.processStream(opts.OnChunk, opts.OnFinish)
+	if opts.OnChunk != nil || opts.OnFinish != nil ||
+		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil {
+		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
 	}
 
 	return result, nil
 }
 
 // processStream processes the stream and calls callbacks
-func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
-	ctx := context.Background()
+func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
+	firstChunk := true
 	for {
 		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
@@ -201,9 +363,36 @@ func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onF
 			break
 		}
 
+		// Transition from Submitted → Streaming on first received chunk.
+		if firstChunk {
+			firstChunk = false
+			r.mu.Lock()
+			r.status = StreamStatusStreaming
+			r.mu.Unlock()
+		}
+
 		// Accumulate text
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
+
+			// Update partial output after each text chunk (with deduplication).
+			// Only publishes when the JSON representation of the partial changes,
+			// matching the TypeScript SDK's deduplication behavior.
+			if r.outputSpec != nil {
+				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+					Text: r.text,
+				})
+				if partial != nil {
+					if newJSON, err := json.Marshal(partial); err == nil {
+						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+							r.lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
+				}
+			}
 		}
 
 		// Update finish reason, usage, and context management
@@ -221,6 +410,21 @@ func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onF
 		if onChunk != nil {
 			onChunk(*chunk)
 		}
+	}
+
+	// Resolve final typed output if spec was provided and stream completed cleanly.
+	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
+	// would produce invalid JSON, matching the TypeScript SDK's behavior.
+	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         r.text,
+			FinishReason: r.finishReason,
+			Usage:        &r.usage,
+		})
+		r.mu.Lock()
+		r.outputResult = parsed
+		r.outputErr = parseErr
+		r.mu.Unlock()
 	}
 
 	// Record telemetry output attributes if span exists
@@ -248,10 +452,53 @@ func (r *StreamTextResult) processStream(onChunk func(provider.StreamChunk), onF
 		r.telemetrySpan.End()
 	}
 
+	// Mark stream as done before firing callbacks so callers that check
+	// Status() inside callbacks observe the terminal state.
+	r.mu.Lock()
+	r.status = StreamStatusDone
+	r.mu.Unlock()
+
 	// Call finish callback
 	if onFinish != nil {
 		onFinish(r)
 	}
+
+	// CB-T20 (step finish) and CB-T21 (generation finish): emit structured events
+	// These fire after all chunks are processed and the legacy callbacks have run.
+	stepResult := types.StepResult{
+		StepNumber:   1,
+		Text:         r.text,
+		ToolCalls:    nil,
+		ToolResults:  nil,
+		FinishReason: r.finishReason,
+		Usage:        r.usage,
+	}
+	Notify(ctx, OnStepFinishEvent{
+		StepNumber:          stepResult.StepNumber,
+		ModelProvider:       r.cbModelProvider,
+		ModelID:             r.cbModelID,
+		Text:                stepResult.Text,
+		ToolCalls:           stepResult.ToolCalls,
+		ToolResults:         stepResult.ToolResults,
+		FinishReason:        stepResult.FinishReason,
+		Usage:               stepResult.Usage,
+		ExperimentalContext: r.cbExperimentalCtx,
+		FunctionID:          r.cbFuncID,
+		Metadata:            r.cbMeta,
+	}, r.cbOnStepFinishEvent)
+
+	Notify(ctx, OnFinishEvent{
+		Text:                r.text,
+		ToolCalls:           nil,
+		ToolResults:         nil,
+		FinishReason:        r.finishReason,
+		Steps:               []types.StepResult{stepResult},
+		TotalUsage:          r.usage,
+		Warnings:            nil, // streaming is single-step; warnings surfaced via OnStepFinishEvent
+		ExperimentalContext: r.cbExperimentalCtx,
+		FunctionID:          r.cbFuncID,
+		Metadata:            r.cbMeta,
+	}, r.cbOnFinishEvent)
 }
 
 // Stream returns the underlying text stream
@@ -280,6 +527,62 @@ func (r *StreamTextResult) ContextManagement() interface{} {
 	return r.contextManagement
 }
 
+// Output returns the final parsed typed output after streaming completes.
+// This calls ParseCompleteOutput on the full accumulated text, matching the
+// TypeScript SDK's `.output` property behavior.
+//
+// Returns nil if:
+//   - no Output option was provided to StreamText
+//   - the stream has not yet completed
+//   - finishReason was not Stop (e.g. length limit hit)
+//   - output parsing failed (check OutputErr for details)
+//
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Output() any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outputResult
+}
+
+// OutputErr returns any error that occurred during final output parsing.
+// Only relevant after streaming completes when an Output option was provided.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) OutputErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outputErr
+}
+
+// PartialOutput returns the most recently parsed partial output.
+// Only populated when an Output option was provided to StreamText.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) PartialOutput() any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.partialOutput
+}
+
+// Status returns the current lifecycle state of the stream.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Status() StreamStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.status
+}
+
+// Resume returns an error when there is no active stream to resume.
+// A stream that has already reached StreamStatusDone cannot be continued,
+// which prevents the status from incorrectly flashing back to "submitted" (#12102).
+func (r *StreamTextResult) Resume(ctx context.Context) error {
+	r.mu.Lock()
+	s := r.status
+	r.mu.Unlock()
+	if s == StreamStatusDone {
+		return fmt.Errorf("cannot resume stream: stream is already done")
+	}
+	return nil
+}
+
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
 	return r.err
@@ -293,6 +596,7 @@ func (r *StreamTextResult) Close() error {
 // ReadAll reads all chunks from the stream and returns the complete text
 func (r *StreamTextResult) ReadAll() (string, error) {
 	ctx := context.Background()
+	firstChunk := true
 	for {
 		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
@@ -302,9 +606,34 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			return "", err
 		}
 
+		// Transition Submitted → Streaming on the first chunk.
+		if firstChunk {
+			firstChunk = false
+			r.mu.Lock()
+			r.status = StreamStatusStreaming
+			r.mu.Unlock()
+		}
+
 		// Accumulate text
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
+
+			// Update partial output after each text chunk (with deduplication).
+			if r.outputSpec != nil {
+				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+					Text: r.text,
+				})
+				if partial != nil {
+					if newJSON, err := json.Marshal(partial); err == nil {
+						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+							r.lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
+				}
+			}
 		}
 
 		// Update finish reason, usage, and context management
@@ -317,6 +646,19 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Usage != nil {
 			r.usage = *chunk.Usage
 		}
+	}
+
+	// Resolve final typed output if spec was provided and stream completed cleanly.
+	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         r.text,
+			FinishReason: r.finishReason,
+			Usage:        &r.usage,
+		})
+		r.mu.Lock()
+		r.outputResult = parsed
+		r.outputErr = parseErr
+		r.mu.Unlock()
 	}
 
 	// Record telemetry output attributes if span exists
@@ -343,6 +685,11 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		// End the telemetry span
 		r.telemetrySpan.End()
 	}
+
+	// Mark stream as done.
+	r.mu.Lock()
+	r.status = StreamStatusDone
+	r.mu.Unlock()
 
 	return r.text, nil
 }

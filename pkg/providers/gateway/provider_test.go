@@ -242,6 +242,7 @@ func TestGetO11yHeaders(t *testing.T) {
 	t.Setenv("VERCEL_DEPLOYMENT_ID", "test-deployment")
 	t.Setenv("VERCEL_ENV", "production")
 	t.Setenv("VERCEL_REGION", "us-east-1")
+	t.Setenv("VERCEL_PROJECT_ID", "proj-abc123")
 
 	headers := GetO11yHeaders()
 
@@ -256,6 +257,10 @@ func TestGetO11yHeaders(t *testing.T) {
 	if headers.Region != "us-east-1" {
 		t.Errorf("Expected Region us-east-1, got %s", headers.Region)
 	}
+
+	if headers.ProjectID != "proj-abc123" {
+		t.Errorf("Expected ProjectID proj-abc123, got %s", headers.ProjectID)
+	}
 }
 
 func TestAddO11yHeaders(t *testing.T) {
@@ -265,6 +270,7 @@ func TestAddO11yHeaders(t *testing.T) {
 		Environment:  "production",
 		Region:       "us-east-1",
 		RequestID:    "req-123",
+		ProjectID:    "proj-xyz",
 	}
 
 	AddO11yHeaders(headers, o11y)
@@ -274,11 +280,121 @@ func TestAddO11yHeaders(t *testing.T) {
 		"ai-o11y-environment":   "production",
 		"ai-o11y-region":        "us-east-1",
 		"ai-o11y-request-id":    "req-123",
+		"ai-o11y-project-id":    "proj-xyz",
 	}
 
 	for k, v := range expected {
 		if headers[k] != v {
 			t.Errorf("Expected header %s = %s, got %s", k, v, headers[k])
 		}
+	}
+}
+
+// TestNew_WithProjectID verifies that WithProjectID option sets the project ID config field.
+func TestNew_WithProjectID(t *testing.T) {
+	projectID := "my-project-123"
+	p, err := New(Config{APIKey: "test-key"}, WithProjectID(projectID))
+	if err != nil {
+		t.Fatalf("New() with WithProjectID error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("New() returned nil provider")
+	}
+	if p.config.ProjectID == nil {
+		t.Fatal("Expected ProjectID to be set, got nil")
+	}
+	if *p.config.ProjectID != projectID {
+		t.Errorf("Expected ProjectID %q, got %q", projectID, *p.config.ProjectID)
+	}
+}
+
+// TestProjectIDHeader_PresentWhenSet verifies that the ai-o11y-project-id header is
+// injected on all requests when ProjectID is configured. (GW-T15)
+func TestProjectIDHeader_PresentWhenSet(t *testing.T) {
+	var capturedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Get("ai-o11y-project-id")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"providers":[]}`))
+	}))
+	defer server.Close()
+
+	projectID := "proj-test-456"
+	p, err := New(Config{
+		APIKey:    "test-key",
+		BaseURL:   server.URL,
+		ProjectID: &projectID,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, _ = p.GetAvailableModels(context.Background())
+
+	if capturedHeader != projectID {
+		t.Errorf("Expected ai-o11y-project-id header %q, got %q", projectID, capturedHeader)
+	}
+}
+
+// TestProjectIDHeader_PresentWhenSetViaOption verifies that WithProjectID() injects the
+// header just as setting Config.ProjectID does. (GW-T15 via functional option)
+func TestProjectIDHeader_PresentWhenSetViaOption(t *testing.T) {
+	var capturedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Get("ai-o11y-project-id")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"providers":[]}`))
+	}))
+	defer server.Close()
+
+	projectID := "proj-option-789"
+	p, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+	}, WithProjectID(projectID))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, _ = p.GetAvailableModels(context.Background())
+
+	if capturedHeader != projectID {
+		t.Errorf("Expected ai-o11y-project-id header %q, got %q", projectID, capturedHeader)
+	}
+}
+
+// TestProjectIDHeader_AbsentWhenNotSet verifies that the ai-o11y-project-id header is
+// NOT present when ProjectID is not configured. (GW-T16)
+func TestProjectIDHeader_AbsentWhenNotSet(t *testing.T) {
+	var capturedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Get("ai-o11y-project-id")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"providers":[]}`))
+	}))
+	defer server.Close()
+
+	// Ensure VERCEL_PROJECT_ID is not set in the environment
+	t.Setenv("VERCEL_PROJECT_ID", "")
+
+	p, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		// ProjectID intentionally not set
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, _ = p.GetAvailableModels(context.Background())
+
+	if capturedHeader != "" {
+		t.Errorf("Expected ai-o11y-project-id header to be absent, got %q", capturedHeader)
 	}
 }

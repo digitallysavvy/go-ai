@@ -625,7 +625,7 @@ func TestUsageIterations(t *testing.T) {
 	require.NoError(t, err)
 
 	result := &LanguageModel{}
-	converted := result.convertResponse(response)
+	converted := result.convertResponse(response, false)
 
 	// Verify that usage is summed across iterations
 	require.NotNil(t, converted.Usage.InputTokens)

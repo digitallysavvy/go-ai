@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
@@ -108,22 +109,44 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 
-	// Convert prompt to messages using providerutils
-	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
-	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+	// Extract Alibaba-level cache control (applies to all message types).
+	// When enabled, a CacheControlValidator enforces the 4-breakpoint limit and
+	// accumulates warnings when the limit is exceeded.
+	var validator *CacheControlValidator
+	if opts.ProviderOptions != nil {
+		if alibabaOpts, ok := opts.ProviderOptions["alibaba"].(map[string]interface{}); ok {
+			if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
+				validator = NewCacheControlValidator()
+			}
+		}
 	}
 
-	// Add system message if present
+	// Convert prompt to messages with optional cache control support
+	var allMessages []map[string]interface{}
+
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
-		systemMsg := map[string]interface{}{
-			"role":    "system",
-			"content": opts.Prompt.System,
-		}
-		body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		// Prepend system message (with cache control if set)
+		allMessages = append(allMessages,
+			ConvertToAlibabaChatMessages([]types.Message{
+				{
+					Role:    types.RoleSystem,
+					Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}},
+				},
+			}, validator)...,
+		)
 	}
+
+	if opts.Prompt.IsMessages() {
+		allMessages = append(allMessages,
+			ConvertToAlibabaChatMessages(opts.Prompt.Messages, validator)...,
+		)
+	} else if opts.Prompt.IsSimple() {
+		allMessages = append(allMessages,
+			prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))...,
+		)
+	}
+
+	body["messages"] = allMessages
 
 	// Add standard parameters
 	if opts.MaxTokens != nil {
@@ -227,7 +250,7 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 	choice := resp.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: mapFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        ConvertAlibabaUsage(resp.Usage),
 		RawResponse:  resp,
 	}
@@ -261,21 +284,6 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
 }
 
-// mapFinishReason maps Alibaba finish reasons to SDK finish reasons
-func mapFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	case "content_filter":
-		return types.FinishReasonContentFilter
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 // alibabaResponse represents the response from Alibaba chat API
 type alibabaResponse struct {

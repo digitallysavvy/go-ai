@@ -278,7 +278,7 @@ func TestThinkingContentInResponse(t *testing.T) {
 	model := NewLanguageModel(prov, "claude-sonnet-4", nil)
 
 	// Convert response
-	result := model.convertResponse(response)
+	result := model.convertResponse(response, false)
 
 	// Verify text is extracted correctly (should skip thinking content)
 	if result.Text != "Here is my answer." {

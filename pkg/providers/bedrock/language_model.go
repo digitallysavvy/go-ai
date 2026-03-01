@@ -211,6 +211,56 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 		reqBody["thinking"] = thinkingConfig
 	}
 
+	// Add tools and tool choice (#12893 strict mode, #12854 tool choice enforcement).
+	// When toolChoice is "none" the tools array is cleared and no toolChoice is sent.
+	if len(opts.Tools) > 0 && opts.ToolChoice.Type != types.ToolChoiceNone {
+		// Filter to the single requested tool when a specific tool is named.
+		toolList := opts.Tools
+		if opts.ToolChoice.Type == types.ToolChoiceTool && opts.ToolChoice.ToolName != "" {
+			filtered := make([]types.Tool, 0, 1)
+			for _, t := range opts.Tools {
+				if t.Name == opts.ToolChoice.ToolName {
+					filtered = append(filtered, t)
+				}
+			}
+			toolList = filtered
+		}
+
+		bedrockTools := make([]interface{}, 0, len(toolList))
+		for _, t := range toolList {
+			toolSpec := map[string]interface{}{
+				"name": t.Name,
+			}
+			if t.Description != "" {
+				toolSpec["description"] = t.Description
+			}
+			if t.Strict {
+				toolSpec["strict"] = true
+			}
+			var inputSchema interface{}
+			if t.Parameters != nil {
+				inputSchema = t.Parameters
+			} else {
+				inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+			}
+			toolSpec["inputSchema"] = map[string]interface{}{"json": inputSchema}
+			bedrockTools = append(bedrockTools, map[string]interface{}{"toolSpec": toolSpec})
+		}
+		reqBody["tools"] = bedrockTools
+
+		// Map SDK tool choice to Bedrock's format.
+		switch opts.ToolChoice.Type {
+		case types.ToolChoiceAuto:
+			reqBody["toolChoice"] = map[string]interface{}{"auto": map[string]interface{}{}}
+		case types.ToolChoiceRequired:
+			reqBody["toolChoice"] = map[string]interface{}{"any": map[string]interface{}{}}
+		case types.ToolChoiceTool:
+			reqBody["toolChoice"] = map[string]interface{}{
+				"tool": map[string]interface{}{"name": opts.ToolChoice.ToolName},
+			}
+		}
+	}
+
 	return reqBody, nil
 }
 

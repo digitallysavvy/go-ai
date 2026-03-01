@@ -1,6 +1,6 @@
 # Anthropic Provider
 
-The Anthropic provider enables access to Claude models including Opus 4.5, Sonnet 4.5, and other Claude variants.
+The Anthropic provider enables access to Claude models including Opus 4.6, Sonnet 4.6, and other Claude variants.
 
 ## Features
 
@@ -10,6 +10,8 @@ The Anthropic provider enables access to Claude models including Opus 4.5, Sonne
 - Tool search for large tool catalogs
 - Streaming and non-streaming responses
 - Tool calling and function execution
+- Automatic prompt caching
+- Structured output via `output_config.format`
 
 ## Installation
 
@@ -66,19 +68,35 @@ func stringPtr(s string) *string { return &s }
 
 ## Available Models
 
+Use the model ID constants from this package to avoid typos:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+
+model, err := provider.LanguageModel(anthropic.ClaudeSonnet4_6)
+```
+
+### Claude Opus 4.6 (latest)
+- Constant: `anthropic.ClaudeOpus4_6` → `"claude-opus-4-6"`
+- Best for: Complex tasks, extended thinking, fast mode
+
+### Claude Sonnet 4.6 (new)
+- Constant: `anthropic.ClaudeSonnet4_6` → `"claude-sonnet-4-6"`
+- Best for: Balanced performance and capability
+
 ### Claude Opus 4.5
-- Model ID: `claude-opus-4-20250514`
+- Constant: `anthropic.ClaudeOpus4_5` → `"claude-opus-4-5"`
 - Best for: Complex tasks, advanced reasoning
 - Supports: Computer use, tool search, code execution
 
 ### Claude Sonnet 4.5
-- Model ID: `claude-sonnet-4-20250514`
+- Constant: `anthropic.ClaudeSonnet4_5` → `"claude-sonnet-4-5"`
 - Best for: Balanced performance and cost
 - Supports: Tool search, code execution
 
-### Claude Sonnet 4
-- Model ID: `claude-sonnet-4-20241022`
-- Best for: General purpose tasks
+### Claude Haiku 4.5
+- Constant: `anthropic.ClaudeHaiku4_5` → `"claude-haiku-4-5"`
+- Best for: Fast, cost-effective tasks
 
 ## Computer Use Tools
 
@@ -161,6 +179,81 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     MaxSteps: intPtr(10),
 })
 ```
+
+## Automatic Caching
+
+Anthropic supports **automatic prompt caching** — the API identifies and caches reusable
+prompt segments without requiring explicit `cache_control` markers on individual messages.
+
+### Quick Start
+
+```go
+model, err := provider.LanguageModelWithOptions(anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
+    AutomaticCaching: true,
+})
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
+```
+
+When `AutomaticCaching` is `true`, the SDK:
+1. Sends the `anthropic-beta: prompt-caching-2024-07-31` header
+2. Adds `cache_control: {type: "auto"}` to the request body
+
+### Checking Cache Usage
+
+```go
+if result.Usage != nil && result.Usage.InputDetails != nil {
+    cacheRead  := result.Usage.InputDetails.CacheReadTokens
+    cacheWrite := result.Usage.InputDetails.CacheWriteTokens
+    fmt.Printf("Cache read: %d tokens, cache write: %d tokens\n", *cacheRead, *cacheWrite)
+}
+```
+
+---
+
+## Structured Output (JSON Mode)
+
+Use `ResponseFormat` to request JSON output from the model. The SDK uses the
+`output_config.format` API field (not the deprecated `output_format`).
+
+```go
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name":  map[string]interface{}{"type": "string"},
+        "score": map[string]interface{}{"type": "number"},
+    },
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: messages,
+    ResponseFormat: &provider.ResponseFormat{
+        Type:   "json",
+        Schema: schema,
+    },
+})
+```
+
+### Migration Note: `output_format` → `output_config.format`
+
+**Anthropic removed the `output_format` API field.** If you were previously using a custom
+integration that set `output_format: "json"`, update to:
+
+```json
+// Old (no longer accepted by Anthropic API):
+{ "output_format": "json" }
+
+// New (correct):
+{ "output_config": { "format": { "type": "json_schema", "schema": { ... } } } }
+```
+
+The Go SDK handles this automatically via the `ResponseFormat` field on `GenerateOptions`.
+
+---
 
 ## Tool Caching (Prompt Caching)
 

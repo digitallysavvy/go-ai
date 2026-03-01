@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -40,6 +42,113 @@ type ParsePartialOutputOptions struct {
 // PartialOutput represents a partial output result
 type PartialOutput[T any] struct {
 	Partial T
+}
+
+// outputProcessor is an internal non-generic interface used by GenerateText and StreamText
+// to process outputs without needing to know the concrete type parameter T.
+// All concrete Output[T, P] implementations satisfy this interface.
+type outputProcessor interface {
+	ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error)
+	parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error)
+	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{}
+}
+
+// =============================================================================
+// SchemaFor Helper
+// =============================================================================
+
+// SchemaFor creates a Schema for the given Go struct type T by reflecting on its
+// JSON struct tags to generate a JSON Schema. This is a convenience helper for
+// use with ObjectOutput[T] and ArrayOutput[T].
+//
+// Example:
+//
+//	type Recipe struct {
+//	    Name        string   `json:"name"`
+//	    Ingredients []string `json:"ingredients"`
+//	}
+//
+//	output := ObjectOutput[Recipe](ObjectOutputOptions{
+//	    Schema: SchemaFor[Recipe](),
+//	})
+func SchemaFor[T any]() schema.Schema {
+	var zero T
+	t := reflect.TypeOf(zero)
+	jsonSchema := reflectJSONSchema(t)
+	return schema.NewSimpleJSONSchema(jsonSchema)
+}
+
+// reflectJSONSchema generates a JSON Schema map from a reflect.Type.
+func reflectJSONSchema(t reflect.Type) map[string]interface{} {
+	if t == nil {
+		return map[string]interface{}{"type": "object"}
+	}
+	// Dereference pointers
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return map[string]interface{}{"type": "string"}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return map[string]interface{}{"type": "integer"}
+	case reflect.Float32, reflect.Float64:
+		return map[string]interface{}{"type": "number"}
+	case reflect.Bool:
+		return map[string]interface{}{"type": "boolean"}
+	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			// []byte -> string (base64)
+			return map[string]interface{}{"type": "string"}
+		}
+		return map[string]interface{}{
+			"type":  "array",
+			"items": reflectJSONSchema(t.Elem()),
+		}
+	case reflect.Map:
+		return map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": true,
+		}
+	case reflect.Struct:
+		properties := map[string]interface{}{}
+		required := []string{}
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			jsonTag := field.Tag.Get("json")
+			if jsonTag == "-" {
+				continue
+			}
+			name := jsonTag
+			omitempty := false
+			if idx := strings.Index(name, ","); idx >= 0 {
+				opts := name[idx+1:]
+				name = name[:idx]
+				omitempty = strings.Contains(opts, "omitempty")
+			}
+			if name == "" {
+				name = field.Name
+			}
+			properties[name] = reflectJSONSchema(field.Type)
+			if !omitempty {
+				required = append(required, name)
+			}
+		}
+		result := map[string]interface{}{
+			"type":       "object",
+			"properties": properties,
+		}
+		if len(required) > 0 {
+			result["required"] = required
+		}
+		return result
+	default:
+		return map[string]interface{}{"type": "object"}
+	}
 }
 
 // NoObjectGeneratedError is returned when object generation fails
@@ -90,6 +199,18 @@ func (o *textOutput) ParsePartialOutput(ctx context.Context, options ParsePartia
 	return &PartialOutput[string]{
 		Partial: options.Text,
 	}, nil
+}
+
+func (o *textOutput) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
+	return o.ParseCompleteOutput(ctx, opts)
+}
+
+func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
+	r, _ := o.ParsePartialOutput(ctx, opts)
+	if r == nil {
+		return nil
+	}
+	return r.Partial
 }
 
 // =============================================================================
@@ -222,6 +343,18 @@ func (o *objectOutput[T]) ParsePartialOutput(ctx context.Context, options ParseP
 	return &PartialOutput[T]{
 		Partial: partial,
 	}, nil
+}
+
+func (o *objectOutput[T]) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
+	return o.ParseCompleteOutput(ctx, opts)
+}
+
+func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
+	r, _ := o.ParsePartialOutput(ctx, opts)
+	if r == nil {
+		return nil
+	}
+	return r.Partial
 }
 
 // =============================================================================
@@ -453,6 +586,18 @@ func (o *arrayOutput[ELEMENT]) ParsePartialOutput(ctx context.Context, options P
 	}, nil
 }
 
+func (o *arrayOutput[ELEMENT]) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
+	return o.ParseCompleteOutput(ctx, opts)
+}
+
+func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
+	r, _ := o.ParsePartialOutput(ctx, opts)
+	if r == nil {
+		return nil
+	}
+	return r.Partial
+}
+
 // =============================================================================
 // Choice Output
 // =============================================================================
@@ -644,6 +789,18 @@ func (o *choiceOutput[CHOICE]) ParsePartialOutput(ctx context.Context, options P
 	}, nil
 }
 
+func (o *choiceOutput[CHOICE]) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
+	return o.ParseCompleteOutput(ctx, opts)
+}
+
+func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
+	r, _ := o.ParsePartialOutput(ctx, opts)
+	if r == nil {
+		return nil
+	}
+	return r.Partial
+}
+
 // =============================================================================
 // JSON Output (Untyped)
 // =============================================================================
@@ -727,4 +884,16 @@ func (o *jsonOutput) ParsePartialOutput(ctx context.Context, options ParsePartia
 	return &PartialOutput[interface{}]{
 		Partial: parsed,
 	}, nil
+}
+
+func (o *jsonOutput) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
+	return o.ParseCompleteOutput(ctx, opts)
+}
+
+func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
+	r, _ := o.ParsePartialOutput(ctx, opts)
+	if r == nil {
+		return nil
+	}
+	return r.Partial
 }

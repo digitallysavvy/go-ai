@@ -93,9 +93,13 @@ type GenerateObjectResult struct {
 	Warnings []types.Warning
 }
 
-// GenerateObject performs structured object generation
-// The output is a JSON object that conforms to the provided schema
-// Supports multiple output modes: object, array, enum, no-schema
+// GenerateObject performs structured object generation.
+// The output is a JSON object that conforms to the provided schema.
+// Supports multiple output modes: object, array, enum, no-schema.
+//
+// Deprecated: Use GenerateText with ObjectOutput[T](), ArrayOutput[T](),
+// ChoiceOutput(), or JSONOutput() instead. The Output option provides
+// type-safe structured generation without a separate function call.
 func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateObjectResult, error) {
 	// Validate options
 	if opts.Model == nil {
@@ -462,8 +466,12 @@ type StreamObjectOptions struct {
 	ExperimentalContext interface{}
 }
 
-// StreamObject performs streaming object generation
-// As JSON is streamed, partial objects are parsed and validated
+// StreamObject performs streaming object generation.
+// As JSON is streamed, partial objects are parsed and validated.
+//
+// Deprecated: Use StreamText with ObjectOutput[T]() or ArrayOutput[T]()
+// instead. The Output option provides type-safe structured streaming with
+// PartialOutput() for incremental results.
 func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjectResult, error) {
 	// Validate options
 	if opts.Model == nil {

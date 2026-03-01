@@ -3,12 +3,58 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/google/uuid"
 )
+
+// ========================================================================
+// Callback merging (CB-T22)
+// ========================================================================
+
+// agentCallbacks groups the structured event callbacks used in a single
+// agent execution. It is built by mergeCallbacks combining settings-level
+// and per-call callbacks.
+type agentCallbacks struct {
+	onStart          func(ctx context.Context, e ai.OnStartEvent)
+	onStepStart      func(ctx context.Context, e ai.OnStepStartEvent)
+	onToolCallStart  func(ctx context.Context, e ai.OnToolCallStartEvent)
+	onToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
+	onStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
+	onFinish         func(ctx context.Context, e ai.OnFinishEvent)
+}
+
+// mergeCallbacks combines settings-level and per-call structured callbacks.
+// When both are provided, both fire in order: settings first, then call-level.
+// Either (or both) may be nil.
+func mergeCallbacks(settings AgentConfig, callOpts agentCallbacks) agentCallbacks {
+	return agentCallbacks{
+		onStart:          mergeListener(settings.OnStart, callOpts.onStart),
+		onStepStart:      mergeListener(settings.OnStepStartEvent, callOpts.onStepStart),
+		onToolCallStart:  mergeListener(settings.OnToolCallStart, callOpts.onToolCallStart),
+		onToolCallFinish: mergeListener(settings.OnToolCallFinish, callOpts.onToolCallFinish),
+		onStepFinish:     mergeListener(settings.OnStepFinishEvent, callOpts.onStepFinish),
+		onFinish:         mergeListener(settings.OnFinishEvent, callOpts.onFinish),
+	}
+}
+
+// mergeListener returns a single listener that calls both a and b in order.
+// If either is nil, returns the other. If both are nil, returns nil.
+func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.Context, e E) {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return func(ctx context.Context, e E) {
+		a(ctx, e)
+		b(ctx, e)
+	}
+}
 
 // Context keys for run tracking
 type contextKey string
@@ -83,6 +129,11 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		ctx = context.WithValue(ctx, runIDKey, runID)
 	}
 
+	// CB-T23: Merge settings-level callbacks with no per-call overrides.
+	// Per-call callback merging is used when ToolLoopAgent is called via
+	// dedicated generate/stream wrappers that accept per-call callbacks.
+	cbs := mergeCallbacks(a.config, agentCallbacks{})
+
 	// Extract input for OnChainStart callback
 	input := ""
 	if len(messages) > 0 {
@@ -98,6 +149,18 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	if a.config.OnChainStart != nil {
 		a.config.OnChainStart(input, messages)
 	}
+
+	// CB-T23: Emit OnStartEvent
+	ai.Notify(ctx, ai.OnStartEvent{
+		ModelProvider:       a.config.Model.Provider(),
+		ModelID:             a.config.Model.ModelID(),
+		System:              a.config.System,
+		Messages:            messages,
+		Tools:               a.config.Tools,
+		Temperature:         a.config.Temperature,
+		MaxTokens:           a.config.MaxTokens,
+		ExperimentalContext: a.config.ExperimentalContext,
+	}, cbs.onStart)
 
 	// Apply total timeout if configured
 	var cancel context.CancelFunc
@@ -122,13 +185,25 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 
 	// Execute agent loop
 	for stepNum := 1; stepNum <= a.config.MaxSteps; stepNum++ {
-		// Call step start callback
+		// Call step start callback (legacy)
 		if a.config.OnStepStart != nil {
 			a.config.OnStepStart(stepNum)
 		}
 
+		// CB-T23: Emit OnStepStartEvent
+		ai.Notify(ctx, ai.OnStepStartEvent{
+			StepNumber:          stepNum,
+			ModelProvider:       a.config.Model.Provider(),
+			ModelID:             a.config.Model.ModelID(),
+			System:              a.config.System,
+			Messages:            currentMessages,
+			Tools:               a.config.Tools,
+			PreviousSteps:       result.Steps,
+			ExperimentalContext: a.config.ExperimentalContext,
+		}, cbs.onStepStart)
+
 		// Execute one step with custom data
-		stepResult, shouldContinue, newCustomData, err := a.executeStep(ctx, stepNum, currentMessages, result.Usage, customData)
+		stepResult, shouldContinue, newCustomData, err := a.executeStep(ctx, stepNum, currentMessages, result.Usage, customData, cbs)
 		customData = newCustomData
 		if err != nil {
 			// Call OnChainError callback
@@ -143,11 +218,6 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		result.Usage = result.Usage.Add(stepResult.Usage)
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 
-		// Call step finish callback
-		if a.config.OnStepFinish != nil {
-			a.config.OnStepFinish(*stepResult)
-		}
-
 		// Update conversation with assistant response
 		assistantMsg := types.Message{
 			Role:    types.RoleAssistant,
@@ -159,6 +229,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		currentMessages = append(currentMessages, assistantMsg)
 
 		// If there are tool calls, execute them
+		var stepToolResults []types.ToolResult
 		if len(stepResult.ToolCalls) > 0 {
 			// Call OnAgentAction callback for each tool call
 			if a.config.OnAgentAction != nil {
@@ -179,7 +250,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 					a.config.OnAgentAction(action)
 				}
 			}
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls)
+			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, stepNum, cbs)
 			if err != nil {
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
@@ -188,6 +259,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
 
+			stepToolResults = toolResults
 			result.ToolResults = append(result.ToolResults, toolResults...)
 
 			// Add tool results to conversation
@@ -205,6 +277,25 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 				currentMessages = append(currentMessages, toolMsg)
 			}
 		}
+
+		// Call step finish callback (legacy)
+		if a.config.OnStepFinish != nil {
+			a.config.OnStepFinish(*stepResult)
+		}
+
+		// CB-T23: Emit OnStepFinishEvent (after tool execution so ToolResults is populated)
+		ai.Notify(ctx, ai.OnStepFinishEvent{
+			StepNumber:          stepResult.StepNumber,
+			ModelProvider:       a.config.Model.Provider(),
+			ModelID:             a.config.Model.ModelID(),
+			Text:                stepResult.Text,
+			ToolCalls:           stepResult.ToolCalls,
+			ToolResults:         stepToolResults,
+			FinishReason:        stepResult.FinishReason,
+			Usage:               stepResult.Usage,
+			Warnings:            stepResult.Warnings,
+			ExperimentalContext: a.config.ExperimentalContext,
+		}, cbs.onStepFinish)
 
 		// Check if we should continue
 		if !shouldContinue {
@@ -312,16 +403,34 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		a.config.OnChainEnd(result)
 	}
 
-	// Call finish callback
+	// Call finish callback (legacy)
 	if a.config.OnFinish != nil {
 		a.config.OnFinish(result)
 	}
+
+	// Aggregate all tool calls across steps for the finish event
+	var allToolCalls []types.ToolCall
+	for _, s := range result.Steps {
+		allToolCalls = append(allToolCalls, s.ToolCalls...)
+	}
+
+	// CB-T23: Emit OnFinishEvent
+	ai.Notify(ctx, ai.OnFinishEvent{
+		Text:                result.Text,
+		ToolCalls:           allToolCalls,
+		ToolResults:         result.ToolResults,
+		FinishReason:        result.FinishReason,
+		Steps:               result.Steps,
+		TotalUsage:          result.Usage,
+		Warnings:            result.Warnings,
+		ExperimentalContext: a.config.ExperimentalContext,
+	}, cbs.onFinish)
 
 	return result, nil
 }
 
 // executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages []types.Message, accumulatedUsage types.Usage, customData interface{}) (*types.StepResult, bool, interface{}, error) {
+func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages []types.Message, accumulatedUsage types.Usage, customData interface{}, cbs agentCallbacks) (*types.StepResult, bool, interface{}, error) {
 	// Apply per-step timeout if configured
 	stepCtx := ctx
 	var stepCancel context.CancelFunc
@@ -405,7 +514,8 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall) ([]types.ToolResult, error) {
+// Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, stepNum int, cbs agentCallbacks) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
 
 	for i, call := range toolCalls {
@@ -488,32 +598,60 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 		} else {
 			// Locally-executed tool: execute now
-			// Call OnToolStart before execution
+			// Call OnToolStart before execution (legacy)
 			if a.config.OnToolStart != nil {
 				a.config.OnToolStart(call)
 			}
 
+			// CB-T23: Emit OnToolCallStartEvent
+			ai.Notify(ctx, ai.OnToolCallStartEvent{
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Args:                call.Arguments,
+				StepNumber:          stepNum,
+				ModelProvider:       a.config.Model.Provider(),
+				ModelID:             a.config.Model.ModelID(),
+				ExperimentalContext: a.config.ExperimentalContext,
+			}, cbs.onToolCallStart)
+
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID: call.ID,
 			}
-			result, err := tool.Execute(ctx, call.Arguments, execOptions)
+			startMs := time.Now().UnixMilli()
+			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
+			durationMs := time.Now().UnixMilli() - startMs
+
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Result:           result,
-				Error:            err,
+				Result:           toolResult,
+				Error:            toolErr,
 				ProviderExecuted: false,
 			}
 
-			// Call tool result callback
+			// CB-T23: Emit OnToolCallFinishEvent
+			ai.Notify(ctx, ai.OnToolCallFinishEvent{
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Args:                call.Arguments,
+				Result:              toolResult,
+				Error:               toolErr,
+				DurationMs:          durationMs,
+				StepNumber:          stepNum,
+				ModelProvider:       a.config.Model.Provider(),
+				ModelID:             a.config.Model.ModelID(),
+				ExperimentalContext: a.config.ExperimentalContext,
+			}, cbs.onToolCallFinish)
+
+			// Call tool result callback (legacy)
 			if a.config.OnToolResult != nil {
 				a.config.OnToolResult(results[i])
 			}
 
-			// Call OnToolEnd or OnToolError based on execution result
-			if err != nil {
+			// Call OnToolEnd or OnToolError based on execution result (legacy)
+			if toolErr != nil {
 				if a.config.OnToolError != nil {
-					a.config.OnToolError(call, err)
+					a.config.OnToolError(call, toolErr)
 				}
 			} else {
 				if a.config.OnToolEnd != nil {

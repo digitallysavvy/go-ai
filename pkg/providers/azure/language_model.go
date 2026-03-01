@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -184,7 +185,7 @@ func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateR
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: convertFinishReason(choice.FinishReason),
+		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        convertAzureUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -290,21 +291,6 @@ func convertAzureUsage(usage azureUsage) types.Usage {
 	return result
 }
 
-// convertFinishReason converts Azure OpenAI finish reasons to our types
-func convertFinishReason(reason string) types.FinishReason {
-	switch reason {
-	case "stop":
-		return types.FinishReasonStop
-	case "length":
-		return types.FinishReasonLength
-	case "tool_calls", "function_call":
-		return types.FinishReasonToolCalls
-	case "content_filter":
-		return types.FinishReasonContentFilter
-	default:
-		return types.FinishReasonOther
-	}
-}
 
 // Azure OpenAI response types (same as OpenAI)
 // Updated in v6.0 to support detailed usage tracking
@@ -460,7 +446,7 @@ func (s *azureStream) Next() (*provider.StreamChunk, error) {
 		if choice.FinishReason != "" {
 			return &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
-				FinishReason: convertFinishReason(choice.FinishReason),
+				FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 			}, nil
 		}
 	}
