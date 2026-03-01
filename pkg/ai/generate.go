@@ -149,6 +149,33 @@ type GenerateTextOptions struct {
 	// OnFinish is called when generation completes
 	// Receives the user context if ExperimentalContext is set
 	OnFinish func(ctx context.Context, result *GenerateTextResult, userContext interface{})
+
+	// ========================================================================
+	// Structured Event Callbacks (v6.1 - P0-3)
+	// These callbacks receive typed event structs and are panic-safe.
+	// They fire in addition to (not instead of) the legacy callbacks above.
+	// ========================================================================
+
+	// OnStart is called once, before the first LLM step begins.
+	OnStart func(ctx context.Context, e OnStartEvent)
+
+	// OnStepStart is called at the beginning of each LLM step.
+	OnStepStart func(ctx context.Context, e OnStepStartEvent)
+
+	// OnToolCallStart is called just before each tool's Execute function runs.
+	OnToolCallStart func(ctx context.Context, e OnToolCallStartEvent)
+
+	// OnToolCallFinish is called after each tool's Execute function returns
+	// (whether the execution succeeded or failed).
+	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
+
+	// OnStepFinishEvent is called at the end of each LLM step with a typed
+	// OnStepFinishEvent. Use this instead of OnStepFinish for structured access.
+	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
+
+	// OnFinishEvent is called once when the entire generation completes with a
+	// typed OnFinishEvent. Use this instead of OnFinish for structured access.
+	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
 }
 
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
@@ -174,6 +201,11 @@ type PrepareStepOptions struct {
 type GenerateTextResult struct {
 	// Generated text content
 	Text string
+
+	// Output contains the parsed output when a WithOutput option was provided.
+	// Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
+	// Nil when no Output option was set.
+	Output any
 
 	// Tool calls made during generation
 	ToolCalls []types.ToolCall
@@ -263,6 +295,29 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
 
+	// Extract telemetry info once for all callback events
+	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+
+	// CB-T12: Emit OnStartEvent
+	Notify(ctx, OnStartEvent{
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		System:           opts.System,
+		Prompt:           opts.Prompt,
+		Messages:         opts.Messages,
+		Tools:            opts.Tools,
+		Temperature:      opts.Temperature,
+		MaxTokens:        opts.MaxTokens,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		PresencePenalty:  opts.PresencePenalty,
+		StopSequences:    opts.StopSequences,
+		Seed:             opts.Seed,
+		FunctionID:       cbFuncID,
+		Metadata:         cbMeta,
+	}, opts.OnStart)
+
 	// Initialize result
 	result := &GenerateTextResult{
 		Steps: []types.StepResult{},
@@ -294,6 +349,27 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			defer stepCancel()
 		}
 
+		// CB-T13: Emit OnStepStartEvent
+		Notify(ctx, OnStepStartEvent{
+			StepNumber: stepNum,
+			Messages:   currentMessages,
+			Tools:      opts.Tools,
+			FunctionID: cbFuncID,
+			Metadata:   cbMeta,
+		}, opts.OnStepStart)
+
+		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
+		responseFormat := opts.ResponseFormat
+		if responseFormat == nil {
+			if op, ok := opts.Output.(outputProcessor); ok {
+				rf, rfErr := op.ResponseFormat(stepCtx)
+				if rfErr != nil {
+					return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
+				}
+				responseFormat = rf
+			}
+		}
+
 		// Build generate options
 		genOpts := &provider.GenerateOptions{
 			Prompt: types.Prompt{
@@ -310,7 +386,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			Seed:             opts.Seed,
 			Tools:            opts.Tools,
 			ToolChoice:       opts.ToolChoice,
-			ResponseFormat:   opts.ResponseFormat,
+			ResponseFormat:   responseFormat,
 			ProviderOptions:  opts.ProviderOptions,
 			Telemetry:        opts.ExperimentalTelemetry,
 		}
@@ -337,8 +413,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 		// Check if there are tool calls to execute
 		if len(genResult.ToolCalls) > 0 && len(opts.Tools) > 0 {
-			// Execute tools with context flow (v6.0)
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, opts.ExperimentalContext, &result.Usage)
+			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
+			toolCallbacks := toolCallEventCallbacks{
+				onStart:    opts.OnToolCallStart,
+				onFinish:   opts.OnToolCallFinish,
+				stepNum:    stepNum,
+				functionID: cbFuncID,
+				metadata:   cbMeta,
+			}
+			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, opts.ExperimentalContext, &result.Usage, toolCallbacks)
 			if err != nil {
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
@@ -385,6 +468,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			result.Warnings = append(result.Warnings, genResult.Warnings...)
 			result.RawRequest = genResult.RawRequest
 			result.RawResponse = genResult.RawResponse
+
+			// Parse typed output if an Output spec was provided.
+			if op, ok := opts.Output.(outputProcessor); ok {
+				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
+					Text:         genResult.Text,
+					FinishReason: genResult.FinishReason,
+					Usage:        &genResult.Usage,
+				})
+				if parseErr != nil {
+					return nil, fmt.Errorf("output parsing failed: %w", parseErr)
+				}
+				result.Output = parsed
+			}
 		}
 
 		// Add step to results
@@ -394,6 +490,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		if opts.OnStepFinish != nil {
 			opts.OnStepFinish(ctx, stepResult, opts.ExperimentalContext)
 		}
+
+		// CB-T14: Emit structured OnStepFinishEvent
+		Notify(ctx, OnStepFinishEvent{
+			StepNumber:   stepResult.StepNumber,
+			Text:         stepResult.Text,
+			ToolCalls:    stepResult.ToolCalls,
+			ToolResults:  stepResult.ToolResults,
+			FinishReason: stepResult.FinishReason,
+			Usage:        stepResult.Usage,
+			FunctionID:   cbFuncID,
+			Metadata:     cbMeta,
+		}, opts.OnStepFinishEvent)
 
 		// Evaluate stop conditions after steps with tool results
 		if len(stopConditions) > 0 {
@@ -444,6 +552,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
+	// CB-T15: Emit structured OnFinishEvent
+	Notify(ctx, OnFinishEvent{
+		Text:         result.Text,
+		ToolCalls:    result.ToolCalls,
+		ToolResults:  result.ToolResults,
+		FinishReason: result.FinishReason,
+		Steps:        result.Steps,
+		TotalUsage:   result.Usage,
+		FunctionID:   cbFuncID,
+		Metadata:     cbMeta,
+	}, opts.OnFinishEvent)
+
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings
 	if opts.ExperimentalRetention != nil {
@@ -458,10 +578,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 	return result, nil
 }
 
+// toolCallEventCallbacks groups the per-tool-call structured event callbacks
+// and their associated metadata. All fields are optional (nil-safe).
+type toolCallEventCallbacks struct {
+	onStart    func(ctx context.Context, e OnToolCallStartEvent)
+	onFinish   func(ctx context.Context, e OnToolCallFinishEvent)
+	stepNum    int
+	functionID string
+	metadata   map[string]any
+}
+
 // executeTools executes a list of tool calls
 // Updated in v6.0 to pass ToolExecutionOptions with ToolCallID and UserContext
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
-func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, userContext interface{}, usage *types.Usage) ([]types.ToolResult, error) {
+// Updated in v6.1 to fire structured OnToolCallStart/Finish events (CB-T16/T17/T18)
+func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, userContext interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
 
 	for i, call := range toolCalls {
@@ -475,10 +606,11 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		}
 
 		if tool == nil {
+			toolErr := fmt.Errorf("tool not found: %s", call.ToolName)
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Error:            fmt.Errorf("tool not found: %s", call.ToolName),
+				Error:            toolErr,
 				ProviderExecuted: false,
 			}
 			continue
@@ -500,6 +632,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ProviderExecuted: true,
 			}
 		} else {
+			// CB-T16: Emit OnToolCallStartEvent before execution
+			Notify(ctx, OnToolCallStartEvent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Args:       call.Arguments,
+				StepNumber: callbacks.stepNum,
+				FunctionID: callbacks.functionID,
+				Metadata:   callbacks.metadata,
+			}, callbacks.onStart)
+
 			// Locally-executed tool: execute now
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID:  call.ID,
@@ -509,14 +651,26 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 
 			// Execute the tool with new signature
-			result, err := tool.Execute(ctx, call.Arguments, execOptions)
+			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Result:           result,
-				Error:            err,
+				Result:           toolResult,
+				Error:            toolErr,
 				ProviderExecuted: false,
 			}
+
+			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
+			Notify(ctx, OnToolCallFinishEvent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Args:       call.Arguments,
+				Result:     toolResult,
+				Error:      toolErr,
+				StepNumber: callbacks.stepNum,
+				FunctionID: callbacks.functionID,
+				Metadata:   callbacks.metadata,
+			}, callbacks.onFinish)
 		}
 	}
 
@@ -573,6 +727,23 @@ func wrapToolExecutionError(toolCallID, toolName string, err error, providerExec
 		Err:              err,
 		ProviderExecuted: providerExecuted,
 	}
+}
+
+// telemetryCallbackInfo extracts the function ID and metadata from telemetry
+// settings for use in structured callback events. Returns empty values when
+// telemetry is nil.
+func telemetryCallbackInfo(t *TelemetrySettings) (functionID string, metadata map[string]any) {
+	if t == nil {
+		return "", nil
+	}
+	functionID = t.FunctionID
+	if len(t.Metadata) > 0 {
+		metadata = make(map[string]any, len(t.Metadata))
+		for k, v := range t.Metadata {
+			metadata[k] = v.Emit()
+		}
+	}
+	return functionID, metadata
 }
 
 // buildPrompt builds a unified Prompt from various input formats

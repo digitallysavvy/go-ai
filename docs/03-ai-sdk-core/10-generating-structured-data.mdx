@@ -9,9 +9,220 @@ While text generation can be useful, your use case will likely call for generati
 
 Many language models are capable of generating structured data, often defined as using "JSON modes" or "tools". However, you need to manually provide schemas and then validate the generated data as LLMs can produce incorrect or incomplete structured data.
 
-The Go AI SDK standardizes structured object generation across model providers with the [`ai.GenerateObject()`](../07-reference/ai/generate-object.md) and [`ai.StreamObject()`](../07-reference/ai/stream-object.md) functions. You can use both functions with different output strategies, e.g. `array`, `object`, `enum`, or `no-schema`, and with different generation modes, e.g. `auto`, `tool`, or `json`.
+The Go AI SDK standardizes structured output via the `Output` option on [`ai.GenerateText()`](../07-reference/ai/generate-text.md) and [`ai.StreamText()`](../07-reference/ai/stream-text.md). Five output factories cover all common patterns:
 
-You can use JSON schemas to specify the shape of the data that you want, and the AI model will generate data that conforms to that structure.
+| Factory | Use case |
+|---|---|
+| `ai.TextOutput()` | Plain text (default) |
+| `ai.ObjectOutput[T]()` | Typed struct from JSON |
+| `ai.ArrayOutput[T]()` | Slice of typed structs from JSON |
+| `ai.ChoiceOutput[T]()` | Enum/classification |
+| `ai.JSONOutput()` | Untyped `interface{}` JSON |
+
+> **Note:** The older `ai.GenerateObject()` and `ai.StreamObject()` functions are **deprecated**. Use the `Output` option instead.
+
+## Structured Output with GenerateText
+
+Use `GenerateText` with an `Output` factory to get a fully typed, validated result in a single call. The SDK automatically sets the correct `ResponseFormat` and parses the model's response.
+
+### Object Output
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+type Recipe struct {
+    Name        string   `json:"name"`
+    Ingredients []string `json:"ingredients"`
+    Steps       []string `json:"steps"`
+}
+
+func main() {
+    ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := provider.LanguageModel("gpt-4o")
+
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Generate a lasagna recipe.",
+        Output: ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{
+            Schema:      ai.SchemaFor[Recipe](),
+            Name:        "recipe",
+            Description: "A complete recipe with name, ingredients, and steps",
+        }),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Type-assert the Output field to get your typed struct
+    recipe := result.Output.(Recipe)
+    fmt.Printf("Recipe: %s\n", recipe.Name)
+    fmt.Printf("Steps: %v\n", recipe.Steps)
+}
+```
+
+### Array Output
+
+```go
+type Hero struct {
+    Name        string `json:"name"`
+    Class       string `json:"class"`
+    Description string `json:"description"`
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate 3 hero descriptions for a fantasy RPG.",
+    Output: ai.ArrayOutput[Hero](ai.ArrayOutputOptions[Hero]{
+        ElementSchema: ai.SchemaFor[Hero](),
+        Name:          "heroes",
+    }),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+heroes := result.Output.([]Hero)
+for _, h := range heroes {
+    fmt.Printf("%s (%s): %s\n", h.Name, h.Class, h.Description)
+}
+```
+
+### Choice Output
+
+```go
+type Sentiment string
+
+const (
+    Positive Sentiment = "positive"
+    Negative Sentiment = "negative"
+    Neutral  Sentiment = "neutral"
+)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: `Classify the sentiment of: "I love this product!"`,
+    Output: ai.ChoiceOutput[Sentiment](ai.ChoiceOutputOptions[Sentiment]{
+        Options: []Sentiment{Positive, Negative, Neutral},
+    }),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+sentiment := result.Output.(Sentiment)
+fmt.Printf("Sentiment: %s\n", sentiment) // positive
+```
+
+### JSON Output (Untyped)
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Return some arbitrary structured data about the Go language.",
+    Output: ai.JSONOutput(ai.JSONOutputOptions{}),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+data := result.Output.(map[string]interface{})
+fmt.Printf("Data: %v\n", data)
+```
+
+## Structured Streaming with StreamText
+
+Use `StreamText` with an `Output` factory to receive structured data as it streams. Call `result.PartialOutput()` at any time to get the most recently parsed partial value.
+
+```go
+type Notification struct {
+    Name    string `json:"name"`
+    Message string `json:"message"`
+}
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate a system notification.",
+    Output: ai.ObjectOutput[Notification](ai.ObjectOutputOptions{
+        Schema: ai.SchemaFor[Notification](),
+    }),
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for chunk := range result.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        // Read incremental parsed value during streaming
+        partial := result.PartialOutput()
+        if n, ok := partial.(Notification); ok {
+            fmt.Printf("Partial name: %s\n", n.Name)
+        }
+    }
+}
+
+// Full text after stream completes
+fmt.Printf("Raw JSON: %s\n", result.Text())
+```
+
+### Element Streaming for Arrays
+
+When using `ArrayOutput`, you can receive fully validated array elements one at a time as they stream:
+
+```go
+streamResult, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate 5 notification objects.",
+    Output: arrayOut, // ArrayOutput[Notification]
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+elements := ai.ElementStreamWithOutput(streamResult, arrayOut)
+for elem := range elements {
+    if elem.Err != nil {
+        log.Printf("Error: %v", elem.Err)
+        break
+    }
+    fmt.Printf("Notification %d: %s\n", elem.Index, elem.Element.Name)
+}
+```
+
+## SchemaFor Helper
+
+`ai.SchemaFor[T]()` generates a JSON Schema from a Go struct's field types and `json` tags. Use it instead of writing schemas by hand:
+
+```go
+type Address struct {
+    Street  string `json:"street"`
+    City    string `json:"city"`
+    Country string `json:"country"`
+}
+
+schema := ai.SchemaFor[Address]()
+// Result: {"type":"object","properties":{"street":{"type":"string"},...},"required":["street","city","country"]}
+```
+
+Fields with `omitempty` in their json tag become optional (not included in `required`). Fields tagged `json:"-"` are excluded.
+
+---
+
+## Legacy API (Deprecated)
+
+> **Deprecated:** The functions below still work but are deprecated. Prefer `GenerateText` / `StreamText` with `Output` instead.
 
 ## Generate Object
 
