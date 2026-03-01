@@ -2,6 +2,7 @@ package xai
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -22,17 +23,32 @@ type Config struct {
 	BaseURL string
 }
 
-// New creates a new xAI provider with the given configuration
+// getAPIKey resolves the xAI API key.
+// Resolution order:
+//  1. Explicit value from cfg.APIKey
+//  2. XAI_API_KEY environment variable
+func getAPIKey(apiKey string) string {
+	if apiKey != "" {
+		return apiKey
+	}
+	return os.Getenv("XAI_API_KEY")
+}
+
+// New creates a new xAI provider with the given configuration.
+// If Config.APIKey is empty, the API key is loaded from the XAI_API_KEY
+// environment variable.
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.x.ai"
 	}
 
+	apiKey := getAPIKey(cfg.APIKey)
+
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
+			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		},
 	})

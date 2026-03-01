@@ -696,6 +696,63 @@ func TestDoStreamToolCallChunks(t *testing.T) {
 	}
 }
 
+// BUG-T08: OpenAI may send null for the "type" field in streaming tool call deltas.
+// The parser must not fail when that field is absent or null (#12901).
+func TestDoStreamToolCallDeltaNullType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// First delta carries id + name with a null "type" field.
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_nulltype","type":null,"function":{"name":"greet","arguments":""}}]}}]}` + "\n\n"))
+		// Second delta has partial arguments and omits "type" entirely.
+		w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"name\":\"world\"}"}}]}}]}` + "\n\n"))
+		// Finish
+		w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewLanguageModel(p, "gpt-4")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close()
+
+	// Expect a tool call chunk assembled from the two deltas.
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("stream.Next failed: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall {
+		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
+	}
+	if chunk.ToolCall == nil {
+		t.Fatal("ToolCall is nil")
+	}
+	if chunk.ToolCall.ToolName != "greet" {
+		t.Errorf("ToolName = %q, want %q", chunk.ToolCall.ToolName, "greet")
+	}
+	if chunk.ToolCall.Arguments["name"] != "world" {
+		t.Errorf("argument name = %v, want %q", chunk.ToolCall.Arguments["name"], "world")
+	}
+
+	// Consume finish chunk — must not error.
+	_, err = stream.Next()
+	if err != nil {
+		t.Fatalf("unexpected error on finish chunk: %v", err)
+	}
+}
+
 // TestProviderOptionsInvalidType tests handling of invalid provider option types
 func TestProviderOptionsInvalidType(t *testing.T) {
 	p := New(Config{

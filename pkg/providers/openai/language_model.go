@@ -425,9 +425,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Delta struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id"`
-					Type     string `json:"type"`
+					Index    int     `json:"index"`
+					ID       string  `json:"id"`
+					Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 					Function struct {
 						Name      string `json:"name"`
 						Arguments string `json:"arguments"`

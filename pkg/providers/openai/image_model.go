@@ -50,11 +50,38 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return m.convertResponse(response)
 }
 
+// defaultResponseFormatPrefixes lists model ID prefixes that have their own
+// default response format and should not receive an explicit "response_format"
+// override. Setting response_format: "b64_json" on these models causes errors
+// because they use a different default format (#12838).
+var defaultResponseFormatPrefixes = []string{
+	"chatgpt-image-",
+	"gpt-image-1-mini",
+	"gpt-image-1.5",
+	"gpt-image-1",
+}
+
+// hasDefaultResponseFormat returns true when the model has its own built-in
+// response format and must not be sent an explicit response_format field.
+func hasDefaultResponseFormat(modelID string) bool {
+	for _, prefix := range defaultResponseFormatPrefixes {
+		if len(modelID) >= len(prefix) && modelID[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":           m.modelID,
-		"prompt":          opts.Prompt,
-		"response_format": "b64_json",
+		"model":  m.modelID,
+		"prompt": opts.Prompt,
+	}
+
+	// Only set response_format for models that don't have a built-in default.
+	// chatgpt-image and gpt-image-1 variants manage their own format (#12838).
+	if !hasDefaultResponseFormat(m.modelID) {
+		body["response_format"] = "b64_json"
 	}
 	if opts.N != nil {
 		body["n"] = *opts.N

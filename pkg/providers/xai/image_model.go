@@ -51,6 +51,11 @@ type XAIImageProviderOptions struct {
 
 	// SyncMode controls synchronous vs asynchronous generation
 	SyncMode *bool `json:"sync_mode,omitempty"`
+
+	// Resolution controls the output resolution tier of the generated image.
+	// Accepted values: "1k" (1024px), "2k" (2048px).
+	// Only supported by models that accept this option (e.g., grok-imagine-image-pro).
+	Resolution *string `json:"resolution,omitempty"`
 }
 
 // DoGenerate performs image generation or editing
@@ -137,6 +142,10 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 
 	if provOpts.SyncMode != nil {
 		body["sync_mode"] = *provOpts.SyncMode
+	}
+
+	if provOpts.Resolution != nil {
+		body["resolution"] = *provOpts.Resolution
 	}
 
 	// Add source image for editing/variations
