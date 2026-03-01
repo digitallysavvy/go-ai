@@ -166,4 +166,84 @@ type ModelOptions struct {
 	//       DisableParallelToolUse: true,
 	//   }
 	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
+
+	// MCPServers configures remote MCP servers for native server-side tool invocation.
+	// The Anthropic API connects to these MCP servers directly, exposing their tools
+	// to the model without the caller having to proxy individual tool calls.
+	// Requires the "mcp-client-2025-04-04" beta header (injected automatically).
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       MCPServers: []anthropic.MCPServerConfig{
+	//           {Type: "url", Name: "my-server", URL: "https://mcp.example.com/sse"},
+	//       },
+	//   }
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+
+	// Container configures an Anthropic agent container for code execution and skills.
+	// When Skills are provided, the code-execution-2025-08-25, skills-2025-10-02, and
+	// files-api-2025-04-14 beta headers are automatically injected.
+	//
+	// Example (full config with skills):
+	//   options := anthropic.ModelOptions{
+	//       Container: &anthropic.ContainerConfig{
+	//           Skills: []anthropic.ContainerSkill{
+	//               {Type: "anthropic", SkillID: "web_search"},
+	//           },
+	//       },
+	//   }
+	Container *ContainerConfig `json:"container,omitempty"`
+
+	// ContainerID is a shorthand for specifying a plain container ID string.
+	// When set, the container body field is sent as a plain string value.
+	// Mutually exclusive with Container; ContainerID takes precedence if both are set.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       ContainerID: "container-abc123",
+	//   }
+	ContainerID string `json:"container_id,omitempty"`
+}
+
+// MCPServerConfig configures a remote MCP server for the Anthropic API to connect to.
+// The API handles discovery and invocation of tools from this server server-side.
+type MCPServerConfig struct {
+	// Type must be "url"
+	Type string `json:"type"`
+	// Name is a unique identifier for this server within the request
+	Name string `json:"name"`
+	// URL is the HTTP(S) endpoint of the MCP server
+	URL string `json:"url"`
+	// AuthorizationToken is an optional bearer token for authentication
+	AuthorizationToken string `json:"authorization_token,omitempty"`
+	// ToolConfiguration optionally restricts which tools from this server are available
+	ToolConfiguration *MCPToolConfiguration `json:"tool_configuration,omitempty"`
+}
+
+// MCPToolConfiguration controls which tools from an MCP server are exposed to the model.
+type MCPToolConfiguration struct {
+	// AllowedTools restricts which tool names are available from this server
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// Enabled controls whether tools from this server are active
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// ContainerSkill configures a skill within an agent container.
+type ContainerSkill struct {
+	// Type is "anthropic" for built-in skills or "custom" for custom skills
+	Type string `json:"type"`
+	// SkillID is the identifier of the skill
+	SkillID string `json:"skill_id"`
+	// Version is the optional skill version
+	Version string `json:"version,omitempty"`
+}
+
+// ContainerConfig configures the agent container for a request.
+// Use ContainerID (string shorthand) for a plain container ID, or ContainerConfig for
+// full configuration including skills.
+type ContainerConfig struct {
+	// ID is an optional existing container ID to reuse
+	ID string `json:"id,omitempty"`
+	// Skills are the capability bundles to load into the container
+	Skills []ContainerSkill `json:"skills,omitempty"`
 }

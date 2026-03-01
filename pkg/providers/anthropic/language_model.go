@@ -105,7 +105,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		}
 
 		// Convert response to GenerateResult
-		return m.convertResponse(response), nil
+		result := m.convertResponse(response)
+		if w := m.detectSkillsWarning(opts); w != nil {
+			result.Warnings = append(result.Warnings, *w)
+		}
+		return result, nil
 	}
 
 	// Make API request without beta header
@@ -116,7 +120,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Convert response to GenerateResult
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	if w := m.detectSkillsWarning(opts); w != nil {
+		result.Warnings = append(result.Warnings, *w)
+	}
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -266,6 +274,68 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["cache_control"] = map[string]string{"type": "auto"}
 	}
 
+	// Add MCP servers when configured. Optional fields (authorization_token,
+	// tool_configuration) are omitted when not set.
+	if m.options != nil && len(m.options.MCPServers) > 0 {
+		servers := make([]map[string]interface{}, len(m.options.MCPServers))
+		for i, s := range m.options.MCPServers {
+			srv := map[string]interface{}{
+				"type": s.Type,
+				"name": s.Name,
+				"url":  s.URL,
+			}
+			if s.AuthorizationToken != "" {
+				srv["authorization_token"] = s.AuthorizationToken
+			}
+			if s.ToolConfiguration != nil {
+				tc := map[string]interface{}{}
+				if len(s.ToolConfiguration.AllowedTools) > 0 {
+					tc["allowed_tools"] = s.ToolConfiguration.AllowedTools
+				}
+				if s.ToolConfiguration.Enabled != nil {
+					tc["enabled"] = *s.ToolConfiguration.Enabled
+				}
+				if len(tc) > 0 {
+					srv["tool_configuration"] = tc
+				}
+			}
+			servers[i] = srv
+		}
+		body["mcp_servers"] = servers
+	}
+
+	// Add container config. ContainerID (string shorthand) takes precedence over Container struct.
+	// When Container has skills, send as an object {id, skills}; otherwise send the plain ID string.
+	// This matches the TypeScript SDK behavior.
+	if m.options != nil && m.options.ContainerID != "" {
+		body["container"] = m.options.ContainerID
+	} else if m.options != nil && m.options.Container != nil {
+		if len(m.options.Container.Skills) > 0 {
+			// Object format when skills are provided (agent skills feature)
+			containerBody := map[string]interface{}{}
+			if m.options.Container.ID != "" {
+				containerBody["id"] = m.options.Container.ID
+			}
+			skills := make([]map[string]interface{}, len(m.options.Container.Skills))
+			for i, s := range m.options.Container.Skills {
+				skill := map[string]interface{}{
+					"type":     s.Type,
+					"skill_id": s.SkillID,
+				}
+				if s.Version != "" {
+					skill["version"] = s.Version
+				}
+				skills[i] = skill
+			}
+			containerBody["skills"] = skills
+			body["container"] = containerBody
+		} else if m.options.Container.ID != "" {
+			// String format when no skills (referencing/resuming an existing container)
+			body["container"] = m.options.Container.ID
+		}
+		// Otherwise (empty ContainerConfig): don't add any container field
+	}
+
 	return body
 }
 
@@ -288,9 +358,18 @@ func (m *LanguageModel) convertResponse(response anthropicResponse) *types.Gener
 		result.Text = textParts[0] // For now, just take first text block
 	}
 
-	// Extract tool calls
+	// Extract tool calls (regular and MCP)
 	for _, content := range response.Content {
-		if content.Type == "tool_use" {
+		switch content.Type {
+		case "tool_use":
+			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+				ID:        content.ID,
+				ToolName:  content.Name,
+				Arguments: content.Input,
+			})
+		case "mcp_tool_use":
+			// MCP tool calls are executed server-side; surface them as ToolCalls
+			// so callers can inspect which MCP tools the model invoked.
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 				ID:        content.ID,
 				ToolName:  content.Name,
@@ -389,9 +468,12 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	return result
 }
 
-// codeExecution20260120ToolName is the SDK internal name for the 2026-01-20 code execution tool.
-// Defined here to detect the tool without importing the tools sub-package.
-const codeExecution20260120ToolName = "anthropic.code_execution_20260120"
+// Tool name constants used to detect code execution tools when building beta headers and warnings.
+// Defined here to avoid importing the tools sub-package.
+const (
+	codeExecution20260120ToolName = "anthropic.code_execution_20260120"
+	codeExecution20250825ToolName = "anthropic.code_execution_20250825"
+)
 
 // combineBetaHeaders combines model-option beta headers with any request-specific
 // beta headers. stream should be true when called from DoStream.
@@ -476,6 +558,20 @@ func (m *LanguageModel) getBetaHeaders() string {
 		headers = append(headers, BetaHeaderEffort)
 	}
 
+	// Add MCP client beta header when MCP servers are configured
+	if len(m.options.MCPServers) > 0 {
+		headers = append(headers, BetaHeaderMCPClient)
+	}
+
+	// Container skills require three beta headers; plain container without skills needs none
+	if m.options.Container != nil && len(m.options.Container.Skills) > 0 {
+		headers = append(headers,
+			BetaHeaderCodeExecution20250825,
+			BetaHeaderSkills,
+			BetaHeaderFilesAPI,
+		)
+	}
+
 	// Join with comma as per Anthropic API spec
 	result := ""
 	for i, h := range headers {
@@ -487,9 +583,35 @@ func (m *LanguageModel) getBetaHeaders() string {
 	return result
 }
 
+// detectSkillsWarning returns a warning when container skills are configured but no code
+// execution tool is present in opts. Matches TypeScript SDK behavior.
+func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *types.Warning {
+	if m.options == nil || m.options.Container == nil || len(m.options.Container.Skills) == 0 {
+		return nil
+	}
+	if opts != nil {
+		for _, t := range opts.Tools {
+			if t.Name == codeExecution20250825ToolName || t.Name == codeExecution20260120ToolName {
+				return nil
+			}
+		}
+	}
+	return &types.Warning{
+		Type:    "other",
+		Message: "code execution tool is required when using skills",
+	}
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("anthropic", 0, "", err.Error(), err)
+}
+
+// anthropicContainerResponse represents container info returned in the Anthropic API response.
+// The container field is present when a container was used or created during the request.
+type anthropicContainerResponse struct {
+	ID        string `json:"id"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // anthropicResponse represents the Anthropic API response
@@ -505,6 +627,8 @@ type anthropicResponse struct {
 	Usage        anthropicUsage     `json:"usage"`
 	// Root-level context management (new location - takes precedence)
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
+	// Container info returned when a container was used/created
+	Container *anthropicContainerResponse `json:"container,omitempty"`
 }
 
 // anthropicUsage represents Anthropic usage information with cache tracking and context management
@@ -568,6 +692,9 @@ type anthropicStream struct {
 	// flow (e.g. pre-populated tool calls from message_start.message.content).
 	// They are drained before the next SSE event is read.
 	pending []*provider.StreamChunk
+	// container info parsed from message_start/message_delta events.
+	// Present when the model used or created a container during the request.
+	container *anthropicContainerResponse
 }
 
 // newAnthropicStream creates a new Anthropic stream
@@ -626,6 +753,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				ID    string                 `json:"id"`
 				Name  string                 `json:"name"`
 				Input map[string]interface{} `json:"input"` // non-empty for programmatic deferred tool calls
+				// mcp_tool_use fields
+				ServerName string `json:"server_name"`
+				// mcp_tool_result fields
+				ToolUseID string      `json:"tool_use_id"`
+				IsError   bool        `json:"is_error"`
+				Content   interface{} `json:"content"`
 			} `json:"content_block"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
@@ -688,6 +821,35 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				firstDelta:       true,
 			}
 
+		case "mcp_tool_use":
+			// MCP tool calls have their full input pre-populated in content_block_start.
+			// Emit immediately as a tool call chunk (no input_json_delta accumulation needed).
+			input := start.ContentBlock.Input
+			if input == nil {
+				input = map[string]interface{}{}
+			}
+			// Track as a non-buffering block so content_block_stop is a clean no-op.
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType: "mcp-tool-use",
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:        start.ContentBlock.ID,
+					ToolName:  start.ContentBlock.Name,
+					Arguments: input,
+				},
+			}, nil
+
+		case "mcp_tool_result":
+			// MCP tool results arrive in content_block_start but there is no
+			// ToolResult chunk type in the Go stream API. Track the block so
+			// content_block_stop is a clean no-op.
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType: "mcp-tool-result",
+			}
+			return s.Next()
+
 		default:
 			// "text", "compaction", and any unknown types: record so
 			// content_block_stop is always a clean no-op.
@@ -712,7 +874,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 				} `json:"usage"`
-				Content []struct {
+				Container *anthropicContainerResponse `json:"container,omitempty"`
+				Content   []struct {
 					Type  string                 `json:"type"`
 					ID    string                 `json:"id"`
 					Name  string                 `json:"name"`
@@ -724,6 +887,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			s.inputTokens = int64(msg.Message.Usage.InputTokens)
 			s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 			s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+
+			// Capture container info (present when container was used/created).
+			// In message_start it contains id and expires_at but no skills.
+			if msg.Message.Container != nil {
+				s.container = msg.Message.Container
+			}
 
 			// Buffer a ChunkTypeToolCall for each pre-populated tool_use block.
 			for _, part := range msg.Message.Content {
@@ -855,7 +1024,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		return s.Next()
 
 	case "message_delta":
-		// Parse message delta for finish reason and context management
+		// Parse message delta for finish reason, context management, and container.
 		var delta struct {
 			Delta struct {
 				StopReason string `json:"stop_reason"`
@@ -869,9 +1038,16 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			} `json:"usage"`
 			// Root-level context management (new location - takes precedence)
 			ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
+			// Container info (with skills, if any) from message_delta
+			Container *anthropicContainerResponse `json:"container,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 			return nil, fmt.Errorf("failed to parse message delta: %w", err)
+		}
+
+		// Update container state if the delta contains container info (includes skills).
+		if delta.Container != nil {
+			s.container = delta.Container
 		}
 
 		if delta.Delta.StopReason != "" {
