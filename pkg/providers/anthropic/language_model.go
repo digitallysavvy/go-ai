@@ -540,6 +540,17 @@ type anthropicContent struct {
 	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
 }
 
+// streamContentBlock tracks an in-flight content block across SSE events.
+// A block is opened by content_block_start and closed by content_block_stop.
+type streamContentBlock struct {
+	blockType        string          // "text", "tool-call", "reasoning"
+	toolCallID       string          // for tool-call blocks (content_block.id)
+	toolName         string          // for tool-call blocks (display name emitted in chunk)
+	providerToolName string          // original Anthropic provider name (e.g. "bash_code_execution")
+	inputBuf         strings.Builder // accumulates input_json_delta fragments
+	firstDelta       bool            // true until the first input_json_delta is consumed
+}
+
 // anthropicStream implements provider.TextStream for Anthropic streaming
 type anthropicStream struct {
 	reader io.ReadCloser
@@ -547,16 +558,24 @@ type anthropicStream struct {
 	err    error
 	// Input token counts captured from the message_start event.
 	// These are combined with output tokens when emitting the finish chunk.
-	inputTokens     int64
-	cacheReadTokens int64
+	inputTokens      int64
+	cacheReadTokens  int64
 	cacheWriteTokens int64
+	// In-flight content blocks, keyed by SSE index.
+	// Populated by content_block_start; removed on content_block_stop.
+	contentBlocks map[int]*streamContentBlock
+	// pending holds chunks assembled outside the normal one-event-per-call
+	// flow (e.g. pre-populated tool calls from message_start.message.content).
+	// They are drained before the next SSE event is read.
+	pending []*provider.StreamChunk
 }
 
 // newAnthropicStream creates a new Anthropic stream
 func newAnthropicStream(reader io.ReadCloser) *anthropicStream {
 	return &anthropicStream{
-		reader: reader,
-		parser: streaming.NewSSEParser(reader),
+		reader:        reader,
+		parser:        streaming.NewSSEParser(reader),
+		contentBlocks: make(map[int]*streamContentBlock),
 	}
 }
 
@@ -576,6 +595,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		return nil, s.err
 	}
 
+	// Drain any chunks buffered by a previous event (e.g. pre-populated tool
+	// calls from message_start) before reading the next SSE event.
+	if len(s.pending) > 0 {
+		chunk := s.pending[0]
+		s.pending = s.pending[1:]
+		return chunk, nil
+	}
+
 	// Get next SSE event
 	event, err := s.parser.Next()
 	if err != nil {
@@ -585,13 +612,99 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 	// Anthropic uses different event types
 	switch event.Event {
-	case "content_block_start", "ping":
-		// Skip these events, get next
+	case "ping":
+		// No-op: keep alive signal, get next chunk
+		return s.Next()
+
+	case "content_block_start":
+		// Parse the opening of a content block. Store tool_use, server_tool_use,
+		// and thinking blocks in s.contentBlocks for later accumulation/emission.
+		var start struct {
+			Index        int `json:"index"`
+			ContentBlock struct {
+				Type  string                 `json:"type"`
+				ID    string                 `json:"id"`
+				Name  string                 `json:"name"`
+				Input map[string]interface{} `json:"input"` // non-empty for programmatic deferred tool calls
+			} `json:"content_block"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
+			// Malformed start event: skip gracefully
+			return s.Next()
+		}
+		switch start.ContentBlock.Type {
+		case "tool_use":
+			// Some deferred (programmatic) tool calls carry their full input
+			// directly in content_block_start rather than via input_json_delta.
+			// Serialize it as the initial buffer content so content_block_stop
+			// emits the correct arguments even with no following deltas.
+			var initialInput string
+			if len(start.ContentBlock.Input) > 0 {
+				if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
+					initialInput = string(b)
+				}
+			}
+			block := &streamContentBlock{
+				blockType:  "tool-call",
+				toolCallID: start.ContentBlock.ID,
+				toolName:   start.ContentBlock.Name,
+				firstDelta: initialInput == "", // expect deltas only when no initial input
+			}
+			if initialInput != "" {
+				block.inputBuf.WriteString(initialInput)
+			}
+			s.contentBlocks[start.Index] = block
+
+		case "thinking":
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType: "reasoning",
+			}
+
+		case "redacted_thinking":
+			// Treat redacted thinking blocks the same as thinking: they carry
+			// reasoning content whose text has been redacted for safety reasons.
+			// We cannot surface the redacted data without a providerMetadata field,
+			// but we track the block so content_block_stop is a clean no-op.
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType: "reasoning",
+			}
+
+		case "server_tool_use":
+			// Provider-executed tools: web_fetch, web_search, code_execution,
+			// bash_code_execution, text_editor_code_execution.
+			// bash/text_editor variants are normalized to "code_execution" for
+			// the emitted tool name, but the original name is stored so the
+			// first-delta type prefix can be injected (see input_json_delta).
+			toolName := start.ContentBlock.Name
+			providerToolName := start.ContentBlock.Name
+			if toolName == "bash_code_execution" || toolName == "text_editor_code_execution" {
+				toolName = "code_execution"
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType:        "tool-call",
+				toolCallID:       start.ContentBlock.ID,
+				toolName:         toolName,
+				providerToolName: providerToolName,
+				firstDelta:       true,
+			}
+
+		default:
+			// "text", "compaction", and any unknown types: record so
+			// content_block_stop is always a clean no-op.
+			s.contentBlocks[start.Index] = &streamContentBlock{
+				blockType: start.ContentBlock.Type,
+			}
+		}
 		return s.Next()
 
 	case "message_start":
 		// Capture input/cache tokens for inclusion in the final finish chunk.
 		// These are only available here — the message_delta only has output_tokens.
+		//
+		// Also handle pre-populated tool_use content blocks (programmatic /
+		// deferred tool calling). In this pattern the tool call input arrives
+		// in message_start.message.content rather than via content_block_delta
+		// events, so we emit ChunkTypeToolCall for each such block immediately.
 		var msg struct {
 			Message struct {
 				Usage struct {
@@ -599,39 +712,101 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 				} `json:"usage"`
+				Content []struct {
+					Type  string                 `json:"type"`
+					ID    string                 `json:"id"`
+					Name  string                 `json:"name"`
+					Input map[string]interface{} `json:"input"`
+				} `json:"content"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &msg); err == nil {
 			s.inputTokens = int64(msg.Message.Usage.InputTokens)
 			s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 			s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+
+			// Buffer a ChunkTypeToolCall for each pre-populated tool_use block.
+			for _, part := range msg.Message.Content {
+				if part.Type != "tool_use" {
+					continue
+				}
+				args := part.Input
+				if args == nil {
+					args = map[string]interface{}{}
+				}
+				s.pending = append(s.pending, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:        part.ID,
+						ToolName:  part.Name,
+						Arguments: args,
+					},
+				})
+			}
 		}
 		return s.Next()
 
 	case "content_block_delta":
-		// Parse delta — content is *string to allow null in compaction_delta events
+		// Parse delta — content is *string to allow null in compaction_delta events.
+		// PartialJSON accumulates tool call argument fragments.
+		// Thinking carries reasoning text deltas.
 		var delta struct {
 			Type  string `json:"type"`
 			Index int    `json:"index"`
 			Delta struct {
-				Type    string  `json:"type"`
-				Text    string  `json:"text"`
-				Content *string `json:"content"` // nullable in compaction_delta
+				Type        string  `json:"type"`
+				Text        string  `json:"text"`
+				Content     *string `json:"content"`      // nullable in compaction_delta
+				PartialJSON string  `json:"partial_json"` // in input_json_delta
+				Thinking    string  `json:"thinking"`     // in thinking_delta
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 			return nil, fmt.Errorf("failed to parse content delta: %w", err)
 		}
 
-		if delta.Delta.Type == "text_delta" {
+		switch delta.Delta.Type {
+		case "text_delta":
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				Text: delta.Delta.Text,
 			}, nil
-		}
 
-		// compaction_delta: emit non-null content as text-delta; skip null content
-		if delta.Delta.Type == "compaction_delta" {
+		case "input_json_delta":
+			// Skip empty deltas — the TS SDK does the same to allow replacing
+			// the first character in code-execution tools without double-writing.
+			if delta.Delta.PartialJSON == "" {
+				return s.Next()
+			}
+			if block := s.contentBlocks[delta.Index]; block != nil {
+				partialJSON := delta.Delta.PartialJSON
+				// For bash_code_execution and text_editor_code_execution the API
+				// streams raw arguments without a type discriminator. On the first
+				// delta, inject {"type":"<providerToolName>", so that the assembled
+				// JSON can be decoded as a CodeExecutionInput union value.
+				if block.firstDelta && (block.providerToolName == "bash_code_execution" ||
+					block.providerToolName == "text_editor_code_execution") &&
+					len(partialJSON) > 0 && partialJSON[0] == '{' {
+					partialJSON = `{"type":"` + block.providerToolName + `",` + partialJSON[1:]
+				}
+				block.firstDelta = false
+				block.inputBuf.WriteString(partialJSON)
+			}
+			return s.Next()
+
+		case "thinking_delta":
+			// Emit each thinking fragment immediately as a reasoning chunk.
+			return &provider.StreamChunk{
+				Type:      provider.ChunkTypeReasoning,
+				Reasoning: delta.Delta.Thinking,
+			}, nil
+
+		case "signature_delta":
+			// Thinking block signature: cryptographic attestation, not user-visible.
+			return s.Next()
+
+		case "compaction_delta":
+			// Emit non-null content as text; skip null content.
 			if delta.Delta.Content != nil {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
@@ -640,6 +815,44 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			return s.Next()
 		}
+
+	case "content_block_stop":
+		// A content block has been fully delivered. For tool-call blocks, emit the
+		// assembled ChunkTypeToolCall with the complete JSON-parsed arguments.
+		// For all other block types this is a clean no-op.
+		var stop struct {
+			Index int `json:"index"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &stop); err != nil {
+			return s.Next()
+		}
+		block := s.contentBlocks[stop.Index]
+		delete(s.contentBlocks, stop.Index)
+
+		if block != nil && block.blockType == "tool-call" {
+			// Parse the accumulated JSON into ToolCall.Arguments.
+			var args map[string]interface{}
+			inputStr := block.inputBuf.String()
+			if inputStr != "" {
+				if err := json.Unmarshal([]byte(inputStr), &args); err != nil {
+					// Malformed JSON from the API: surface as error.
+					return nil, fmt.Errorf("failed to parse tool call arguments for %q: %w", block.toolName, err)
+				}
+			}
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:        block.toolCallID,
+					ToolName:  block.toolName,
+					Arguments: args,
+				},
+			}, nil
+		}
+		// Non-tool block (text, reasoning, etc.) — no chunk to emit.
+		return s.Next()
 
 	case "message_delta":
 		// Parse message delta for finish reason and context management
