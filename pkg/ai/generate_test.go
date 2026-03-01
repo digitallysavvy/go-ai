@@ -432,6 +432,34 @@ func TestGenerateText_ToolExecutionError(t *testing.T) {
 	}
 }
 
+// BUG-T04: tool choice option must be forwarded to the provider (#12854)
+func TestGenerateText_ToolChoiceForwardedToProvider(t *testing.T) {
+	t.Parallel()
+
+	var capturedChoice types.ToolChoice
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedChoice = opts.ToolChoice
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "use a tool",
+		ToolChoice: types.RequiredToolChoice(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedChoice.Type != types.ToolChoiceRequired {
+		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
 func TestGenerateText_MaxStepsLimit(t *testing.T) {
 	t.Parallel()
 

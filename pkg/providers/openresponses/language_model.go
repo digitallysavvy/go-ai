@@ -266,11 +266,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 			}
 
 		case "reasoning":
-			// Extract reasoning text (could be surfaced separately in future)
-			for _, part := range item.Content {
-				if part.Type == "reasoning_text" {
-					// For now, include reasoning as regular text
-					textParts = append(textParts, part.Text)
+			// Include reasoning parts when the item has an ID or encrypted_content (#12869).
+			// Previously these were skipped when ItemID was absent; now we include them
+			// as long as either the ID or EncryptedContent is non-empty.
+			if item.ID != "" || item.EncryptedContent != "" {
+				// Reasoning items expose their text through Summary, not Content.
+				for _, part := range item.Summary {
+					if part.Type == "summary_text" || part.Type == "text" {
+						textParts = append(textParts, part.Text)
+					}
 				}
 			}
 

@@ -2,6 +2,8 @@ package together
 
 import (
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -22,17 +24,43 @@ type Config struct {
 	BaseURL string
 }
 
-// New creates a new Together AI provider with the given configuration
+// getAPIKey resolves the Together AI API key.
+//
+// Resolution order:
+//  1. Explicit value from cfg.APIKey
+//  2. TOGETHER_API_KEY environment variable (primary)
+//  3. TOGETHER_AI_API_KEY environment variable (deprecated fallback)
+func getAPIKey(apiKey string) string {
+	if apiKey != "" {
+		return apiKey
+	}
+	if key := os.Getenv("TOGETHER_API_KEY"); key != "" {
+		return key
+	}
+	// Deprecated: TOGETHER_AI_API_KEY will be removed in a future release.
+	// Use TOGETHER_API_KEY instead.
+	if key := os.Getenv("TOGETHER_AI_API_KEY"); key != "" {
+		log.Println("together: TOGETHER_AI_API_KEY is deprecated and will be removed in a future release. Please use TOGETHER_API_KEY instead.")
+		return key
+	}
+	return ""
+}
+
+// New creates a new Together AI provider with the given configuration.
+// If Config.APIKey is empty, the API key is loaded from the TOGETHER_API_KEY
+// environment variable. TOGETHER_AI_API_KEY is accepted as a deprecated fallback.
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.together.xyz"
 	}
 
+	apiKey := getAPIKey(cfg.APIKey)
+
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
+			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		},
 	})

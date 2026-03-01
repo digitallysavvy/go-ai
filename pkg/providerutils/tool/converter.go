@@ -10,18 +10,24 @@ import (
 // ToJSONSchema converts a Tool to JSON Schema format
 // This is used when sending tool definitions to AI providers
 func ToJSONSchema(tool types.Tool) map[string]interface{} {
-	schema := map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        tool.Name,
-			"description": tool.Description,
-		},
+	functionDef := map[string]interface{}{
+		"name":        tool.Name,
+		"description": tool.Description,
 	}
 
 	// Add parameters if present
 	if tool.Parameters != nil {
-		functionMap := schema["function"].(map[string]interface{})
-		functionMap["parameters"] = tool.Parameters
+		functionDef["parameters"] = tool.Parameters
+	}
+
+	// Pass strict mode when requested (#12893)
+	if tool.Strict {
+		functionDef["strict"] = true
+	}
+
+	schema := map[string]interface{}{
+		"type":     "function",
+		"function": functionDef,
 	}
 
 	return schema

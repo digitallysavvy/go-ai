@@ -96,10 +96,29 @@ type StreamTextOptions struct {
 	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
 }
 
+// StreamStatus represents the lifecycle state of a streaming generation.
+type StreamStatus string
+
+const (
+	// StreamStatusSubmitted indicates the request has been submitted and the
+	// stream is actively receiving data from the model.
+	StreamStatusSubmitted StreamStatus = "submitted"
+
+	// StreamStatusStreaming indicates at least one chunk has been received.
+	StreamStatusStreaming StreamStatus = "streaming"
+
+	// StreamStatusDone indicates the stream has completed successfully.
+	StreamStatusDone StreamStatus = "done"
+)
+
 // StreamTextResult contains the result of streaming text generation
 type StreamTextResult struct {
 	// Stream of chunks
 	stream provider.TextStream
+
+	// status tracks the lifecycle of the stream.
+	// Protected by mu because it is read by Status() and written by processStream.
+	status StreamStatus
 
 	// Accumulated text (built as chunks arrive)
 	text string
@@ -304,6 +323,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Create result
 	result := &StreamTextResult{
 		stream:        stream,
+		status:        StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:       opts.Timeout,
 		telemetrySpan: span,
 		telemetryOpts: opts.ExperimentalTelemetry,
@@ -332,6 +352,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 // processStream processes the stream and calls callbacks
 func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
+	firstChunk := true
 	for {
 		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
@@ -340,6 +361,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if err != nil {
 			r.err = err
 			break
+		}
+
+		// Transition from Submitted → Streaming on first received chunk.
+		if firstChunk {
+			firstChunk = false
+			r.mu.Lock()
+			r.status = StreamStatusStreaming
+			r.mu.Unlock()
 		}
 
 		// Accumulate text
@@ -422,6 +451,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// End the telemetry span
 		r.telemetrySpan.End()
 	}
+
+	// Mark stream as done before firing callbacks so callers that check
+	// Status() inside callbacks observe the terminal state.
+	r.mu.Lock()
+	r.status = StreamStatusDone
+	r.mu.Unlock()
 
 	// Call finish callback
 	if onFinish != nil {
@@ -527,6 +562,27 @@ func (r *StreamTextResult) PartialOutput() any {
 	return r.partialOutput
 }
 
+// Status returns the current lifecycle state of the stream.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Status() StreamStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.status
+}
+
+// Resume returns an error when there is no active stream to resume.
+// A stream that has already reached StreamStatusDone cannot be continued,
+// which prevents the status from incorrectly flashing back to "submitted" (#12102).
+func (r *StreamTextResult) Resume(ctx context.Context) error {
+	r.mu.Lock()
+	s := r.status
+	r.mu.Unlock()
+	if s == StreamStatusDone {
+		return fmt.Errorf("cannot resume stream: stream is already done")
+	}
+	return nil
+}
+
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
 	return r.err
@@ -540,6 +596,7 @@ func (r *StreamTextResult) Close() error {
 // ReadAll reads all chunks from the stream and returns the complete text
 func (r *StreamTextResult) ReadAll() (string, error) {
 	ctx := context.Background()
+	firstChunk := true
 	for {
 		chunk, err := r.nextChunk(ctx)
 		if err == io.EOF {
@@ -547,6 +604,14 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		}
 		if err != nil {
 			return "", err
+		}
+
+		// Transition Submitted → Streaming on the first chunk.
+		if firstChunk {
+			firstChunk = false
+			r.mu.Lock()
+			r.status = StreamStatusStreaming
+			r.mu.Unlock()
 		}
 
 		// Accumulate text
@@ -620,6 +685,11 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		// End the telemetry span
 		r.telemetrySpan.End()
 	}
+
+	// Mark stream as done.
+	r.mu.Lock()
+	r.status = StreamStatusDone
+	r.mu.Unlock()
 
 	return r.text, nil
 }
