@@ -165,6 +165,13 @@ const (
 
 	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
 	BetaHeaderFastMode = "fast-mode-2026-02-01"
+
+	// BetaHeaderPromptCaching is required for automatic prompt caching
+	BetaHeaderPromptCaching = "prompt-caching-2024-07-31"
+
+	// BetaHeaderCodeExecution is required for the code execution tool (2026-01-20).
+	// It is automatically injected when the code execution tool is present in the tool list.
+	BetaHeaderCodeExecution = "code-execution-20260120"
 )
 
 // Helper functions for creating edit configurations

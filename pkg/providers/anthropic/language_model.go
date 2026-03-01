@@ -74,8 +74,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
-	// Add beta headers if context management is enabled
-	betaHeaders := m.getBetaHeaders()
+	// Collect beta headers from model options and tool requirements
+	betaHeaders := m.combineBetaHeaders(opts)
 	if len(betaHeaders) > 0 {
 		// Need to make request with custom headers
 		httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -122,8 +122,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		"Accept": "text/event-stream",
 	}
 
-	// Add beta headers if context management is enabled
-	betaHeaders := m.getBetaHeaders()
+	// Collect beta headers from model options and tool requirements
+	betaHeaders := m.combineBetaHeaders(opts)
 	if len(betaHeaders) > 0 {
 		headers["anthropic-beta"] = betaHeaders
 	}
@@ -211,6 +211,29 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// Add context management if configured (beta feature)
 	if m.options != nil && m.options.ContextManagement != nil {
 		body["context_management"] = m.options.ContextManagement
+	}
+
+	// Add output_config when ResponseFormat is specified.
+	// Anthropic API requires output_config.format instead of the old output_format field.
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" {
+		outputConfig := map[string]interface{}{}
+		if opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" {
+			if opts.ResponseFormat.Schema != nil {
+				outputConfig["format"] = map[string]interface{}{
+					"type":   "json_schema",
+					"schema": opts.ResponseFormat.Schema,
+				}
+			}
+		}
+		if len(outputConfig) > 0 {
+			body["output_config"] = outputConfig
+		}
+	}
+
+	// Add automatic caching when enabled.
+	// This lets the Anthropic API automatically identify and cache prompt segments.
+	if m.options != nil && m.options.AutomaticCaching {
+		body["cache_control"] = map[string]string{"type": "auto"}
 	}
 
 	return body
@@ -336,6 +359,32 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	return result
 }
 
+// codeExecution20260120ToolName is the SDK internal name for the 2026-01-20 code execution tool.
+// Defined here to detect the tool without importing the tools sub-package.
+const codeExecution20260120ToolName = "anthropic.code_execution_20260120"
+
+// combineBetaHeaders combines model-option beta headers with any tool-specific beta headers
+// required for the current request.
+func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions) string {
+	base := m.getBetaHeaders()
+
+	// Detect code execution tool and inject its required beta header
+	if opts != nil {
+		for _, t := range opts.Tools {
+			if t.Name == codeExecution20260120ToolName {
+				if base != "" {
+					base += "," + BetaHeaderCodeExecution
+				} else {
+					base = BetaHeaderCodeExecution
+				}
+				break
+			}
+		}
+	}
+
+	return base
+}
+
 // getBetaHeaders returns the comma-separated beta headers needed for context management
 func (m *LanguageModel) getBetaHeaders() string {
 	if m.options == nil {
@@ -369,6 +418,11 @@ func (m *LanguageModel) getBetaHeaders() string {
 	// Add fast mode header if fast mode is enabled
 	if m.options.Speed == SpeedFast {
 		headers = append(headers, BetaHeaderFastMode)
+	}
+
+	// Add automatic caching beta header when automatic caching is enabled
+	if m.options.AutomaticCaching {
+		headers = append(headers, BetaHeaderPromptCaching)
 	}
 
 	// Join with comma as per Anthropic API spec
@@ -480,13 +534,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		return s.Next()
 
 	case "content_block_delta":
-		// Parse delta
+		// Parse delta — content is *string to allow null in compaction_delta events
 		var delta struct {
 			Type  string `json:"type"`
 			Index int    `json:"index"`
 			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type    string  `json:"type"`
+				Text    string  `json:"text"`
+				Content *string `json:"content"` // nullable in compaction_delta
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
@@ -498,6 +553,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeText,
 				Text: delta.Delta.Text,
 			}, nil
+		}
+
+		// compaction_delta: content may be null — skip gracefully without error
+		if delta.Delta.Type == "compaction_delta" {
+			return s.Next()
 		}
 
 	case "message_delta":

@@ -92,4 +92,18 @@ type ModelOptions struct {
 	//       Speed: anthropic.SpeedFast,
 	//   }
 	Speed Speed `json:"speed,omitempty"`
+
+	// AutomaticCaching enables Anthropic's automatic prompt caching feature.
+	//
+	// When enabled, the API automatically identifies and caches reusable prompt
+	// segments without requiring explicit cache_control markers in individual
+	// messages. This requires the "prompt-caching-2024-07-31" beta header.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       AutomaticCaching: true,
+	//   }
+	//
+	// See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching for details.
+	AutomaticCaching bool `json:"automatic_caching,omitempty"`
 }
