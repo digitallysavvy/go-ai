@@ -1,56 +1,105 @@
 ---
 title: StepCountIs
-description: API reference for StepCountIs helper
+description: Built-in StopCondition that stops the tool-calling loop after n steps
 ---
 
 # StepCountIs
 
-Helper function to check if the step count matches a specific value. Useful in PrepareStep callbacks.
+Returns a `StopCondition` that stops the tool-calling loop when the number of completed
+steps meets or exceeds `n`. Pass it to `StopWhen` in `GenerateTextOptions` or `AgentConfig`.
 
 ## Signature
 
 ```go
-func StepCountIs(stepNumber int, target int) bool
+func StepCountIs(n int) StopCondition
 ```
 
 ## Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| stepNumber | int | Current step number |
-| target | int | Target step number to check |
+| n | int | Stop when `len(state.Steps) >= n` |
+
+## Return Value
+
+A `StopCondition` function. When the condition fires it returns the reason string
+`"maximum number of steps (n) reached"`; otherwise it returns `""`.
+
+```go
+type StopCondition func(state StopConditionState) string
+```
+
+## Behavior
+
+`StepCountIs` uses `>=` (greater-than-or-equal) rather than `==` (exact match).
+This is a deliberate, defensive choice: if a step produces more tool calls than
+expected, the count can never silently skip past the threshold.
+
+> **TypeScript difference:** The TypeScript SDK's `stepCountIs(n)` uses `steps.length === n`
+> (exact match). Go uses `>=` instead. Both default to `StepCountIs(1)` when no
+> `StopWhen` is configured.
 
 ## Examples
 
-### Basic Usage
+### Basic ceiling
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
-    Prompt: "Solve this problem step by step",
+    Prompt: "Analyze the dataset and create a summary",
     Tools:  tools,
-    PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
-        if ai.StepCountIs(step.StepNumber, 3) {
-            fmt.Println("On step 3, adding guidance...")
-            // Modify options for step 3
-        }
-        return step
+    StopWhen: []ai.StopCondition{
+        ai.StepCountIs(5),
     },
 })
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+fmt.Printf("Stopped because: %s\n", result.StopReason)
+// → "Stopped because: maximum number of steps (5) reached"
 ```
 
-### First Step Check
+### Combined with HasToolCall (safety ceiling pattern)
+
+Place `HasToolCall` first so the semantic completion signal fires before the hard
+ceiling. Because `EvaluateStopConditions` runs **all** conditions before returning
+the first match, both conditions always execute regardless of order.
 
 ```go
-PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
-    if ai.StepCountIs(step.StepNumber, 1) {
-        fmt.Println("First step - initializing...")
-    }
-    return step
-}
+StopWhen: []ai.StopCondition{
+    ai.HasToolCall("finish"), // semantic completion
+    ai.StepCountIs(10),       // hard limit fallback
+},
 ```
+
+### With ToolLoopAgent
+
+```go
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+    StopWhen: []ai.StopCondition{
+        ai.StepCountIs(8),
+    },
+})
+
+result, err := myAgent.Execute(ctx, "Complete the task")
+fmt.Printf("Steps: %d, StopReason: %s\n", len(result.Steps), result.StopReason)
+```
+
+## Defaults
+
+| Scenario | Behavior |
+|----------|----------|
+| Neither `StopWhen` nor `MaxSteps` set | Defaults to `StepCountIs(1)` |
+| `MaxSteps: &n` set, `StopWhen` not set | Converts to `StopWhen{StepCountIs(n)}` |
+| Both set | `StopWhen` takes precedence |
 
 ## See Also
 
-- [GenerateText](./generate-text.mdx) - Text generation with steps
-- [HasToolCall](./has-tool-call.mdx) - Check for tool calls
+- [HasToolCall](./has-tool-call.mdx) — stop when a specific tool is called
+- [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
+- [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field
+- [ToolLoopAgent](./tool-loop-agent.mdx) — `AgentConfig.StopWhen` field

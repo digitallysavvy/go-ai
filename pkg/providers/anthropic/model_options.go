@@ -235,6 +235,23 @@ type ModelOptions struct {
 	//       StructuredOutputMode: anthropic.StructuredOutputJSONTool,
 	//   }
 	StructuredOutputMode StructuredOutputMode `json:"structured_output_mode,omitempty"`
+
+	// SendReasoning controls whether ReasoningContent (thinking) blocks from message
+	// history are included when sending messages to the Anthropic API.
+	//
+	// Default (nil or true): reasoning blocks with a valid Signature are included
+	// in outgoing requests — required when the receiving model supports extended
+	// thinking and the blocks were originally produced by that model.
+	//
+	// Set to false when routing a conversation to a model that does not support
+	// thinking input (e.g. an older Claude model or one without thinking enabled).
+	// This strips all ReasoningContent parts from outgoing message history before
+	// the API call, preventing errors caused by unexpected thinking content.
+	//
+	// Example (disable when switching to non-thinking model):
+	//   disabled := false
+	//   options := anthropic.ModelOptions{SendReasoning: &disabled}
+	SendReasoning *bool `json:"send_reasoning,omitempty"`
 }
 
 // MCPServerConfig configures a remote MCP server for the Anthropic API to connect to.

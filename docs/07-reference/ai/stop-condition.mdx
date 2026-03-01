@@ -1,0 +1,159 @@
+---
+title: StopCondition
+description: Type reference for StopCondition and StopConditionState
+---
+
+# StopCondition
+
+A function type that determines whether the tool-calling loop should stop after a step.
+Pass one or more `StopCondition` values to the `StopWhen` field in
+`GenerateTextOptions` or `AgentConfig`.
+
+## Type Definition
+
+```go
+type StopCondition func(state StopConditionState) string
+```
+
+A `StopCondition` is called after each step. Return a non-empty reason string to stop
+the loop; return `""` to continue.
+
+## StopConditionState
+
+`StopConditionState` is passed to every `StopCondition` after each step completes.
+
+```go
+type StopConditionState struct {
+    // Steps completed so far. The step that just finished is the last element.
+    Steps []types.StepResult
+
+    // Full message history including the latest tool-result messages.
+    Messages []types.Message
+
+    // Accumulated token usage across all completed steps.
+    Usage types.Usage
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Steps | `[]types.StepResult` | Completed steps; last element is the most recent step |
+| Messages | `[]types.Message` | Full conversation history at this point in the loop |
+| Usage | `types.Usage` | Token usage summed across all steps so far |
+
+## EvaluateStopConditions
+
+```go
+func EvaluateStopConditions(conditions []StopCondition, state StopConditionState) string
+```
+
+The loop engine calls `EvaluateStopConditions` internally after every step. It runs
+**all** conditions before inspecting any result, then returns the first non-empty
+reason string (or `""` if none fired).
+
+Key invariant: **every condition always executes**, regardless of order. Side-effectful
+conditions (logging, metrics) are therefore safe to place anywhere in the slice and
+are guaranteed to run even when an earlier condition fires first.
+
+## Examples
+
+### Custom closure
+
+Any function with the right signature is a valid `StopCondition`:
+
+```go
+stopOnError := func(state ai.StopConditionState) string {
+    if len(state.Steps) == 0 {
+        return ""
+    }
+    last := state.Steps[len(state.Steps)-1]
+    for _, result := range last.ToolResults {
+        if result.IsError {
+            return "tool returned an error"
+        }
+    }
+    return ""
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "Search for recent Go releases",
+    Tools:    []types.Tool{searchTool},
+    StopWhen: []ai.StopCondition{stopOnError, ai.StepCountIs(10)},
+})
+```
+
+### Token budget
+
+Stop before the model runs out of context by inspecting `state.Usage`:
+
+```go
+tokenBudget := func(maxTokens int) ai.StopCondition {
+    return func(state ai.StopConditionState) string {
+        if int(state.Usage.TotalTokens) >= maxTokens {
+            return fmt.Sprintf("token budget of %d reached", maxTokens)
+        }
+        return ""
+    }
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize this document",
+    Tools:  tools,
+    StopWhen: []ai.StopCondition{
+        tokenBudget(50_000),
+        ai.HasToolCall("finish"),
+        ai.StepCountIs(20),
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("StopReason: %s\n", result.StopReason)
+```
+
+### Side-effectful condition (metrics)
+
+Because `EvaluateStopConditions` always runs all conditions, you can record metrics
+in a `StopCondition` without worrying about evaluation order:
+
+```go
+recordStepMetric := func(state ai.StopConditionState) string {
+    metrics.RecordStep(len(state.Steps), int(state.Usage.TotalTokens))
+    return "" // never stops the loop on its own
+}
+
+StopWhen: []ai.StopCondition{
+    recordStepMetric,      // always runs; records every step
+    ai.HasToolCall("done"), // may stop early
+    ai.StepCountIs(15),    // hard ceiling
+},
+```
+
+## Condition ordering guarantee
+
+`EvaluateStopConditions` collects all reason strings in a single pass, then returns
+the first non-empty one. This means:
+
+1. **Every condition runs on every step** — no short-circuit evaluation.
+2. The **first** condition with a non-empty reason wins (slice order matters for
+   which reason is surfaced, not for which conditions execute).
+3. The winning reason is returned as `GenerateTextResult.StopReason`.
+
+```go
+// Both conditions always run; the first non-empty reason is returned.
+StopWhen: []ai.StopCondition{
+    ai.HasToolCall("finish"), // fires → "tool 'finish' was called"
+    ai.StepCountIs(20),       // also evaluated, but result ignored if finish fired first
+},
+```
+
+## See Also
+
+- [StepCountIs](./step-count-is.mdx) — built-in condition: stop after n steps
+- [HasToolCall](./has-tool-call.mdx) — built-in condition: stop when a tool is called
+- [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
+- [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field
+- [ToolLoopAgent](./tool-loop-agent.mdx) — `AgentConfig.StopWhen` field

@@ -191,9 +191,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 
-	// Convert messages (Anthropic format)
+	// Determine whether to strip reasoning content from outgoing messages.
+	// Default (nil or true): include reasoning blocks. False: filter them out.
+	sendReasoning := true
+	if m.options != nil && m.options.SendReasoning != nil {
+		sendReasoning = *m.options.SendReasoning
+	}
+
+	// Convert messages (Anthropic format), optionally filtering reasoning blocks.
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToAnthropicMessages(opts.Prompt.Messages)
+		msgs := opts.Prompt.Messages
+		if !sendReasoning {
+			msgs = filterReasoningContent(msgs)
+		}
+		body["messages"] = prompt.ToAnthropicMessages(msgs)
 	} else if opts.Prompt.IsSimple() {
 		body["messages"] = prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
 	}
@@ -409,7 +420,7 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 		RawResponse: response,
 	}
 
-	// Extract text from content blocks.
+	// Extract text and reasoning content from content blocks.
 	// When jsonTool mode is active the model responds via a synthetic tool, not
 	// a text block — skip text blocks entirely in that case, matching the TS SDK.
 	if !usesJsonResponseTool {
@@ -421,6 +432,24 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 		}
 		if len(textParts) > 0 {
 			result.Text = textParts[0]
+		}
+	}
+
+	// Extract reasoning/thinking content blocks from the response.
+	// These are surfaced as ReasoningContent parts in result.Content so callers
+	// can include them in subsequent requests (round-tripping thinking blocks).
+	for _, content := range response.Content {
+		switch content.Type {
+		case "thinking":
+			result.Content = append(result.Content, types.ReasoningContent{
+				Text:      content.Thinking,
+				Signature: content.Signature,
+			})
+		case "redacted_thinking":
+			// Redacted blocks have no visible text — only the opaque data blob.
+			result.Content = append(result.Content, types.ReasoningContent{
+				RedactedData: content.Data,
+			})
 		}
 	}
 
@@ -689,6 +718,39 @@ func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *typ
 		Type:    "other",
 		Message: "code execution tool is required when using skills",
 	}
+}
+
+// filterReasoningContent returns a copy of messages with all ReasoningContent
+// parts removed from every message. The original slice is not modified.
+// Messages that have only reasoning content are kept but with an empty content
+// slice, matching the TypeScript SDK behaviour.
+func filterReasoningContent(messages []types.Message) []types.Message {
+	filtered := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		hasReasoning := false
+		for _, part := range msg.Content {
+			if _, ok := part.(types.ReasoningContent); ok {
+				hasReasoning = true
+				break
+			}
+		}
+		if !hasReasoning {
+			filtered = append(filtered, msg)
+			continue
+		}
+		// Rebuild message without reasoning parts.
+		newContent := make([]types.ContentPart, 0, len(msg.Content))
+		for _, part := range msg.Content {
+			if _, ok := part.(types.ReasoningContent); !ok {
+				newContent = append(newContent, part)
+			}
+		}
+		filtered = append(filtered, types.Message{
+			Role:    msg.Role,
+			Content: newContent,
+		})
+	}
+	return filtered
 }
 
 // handleError converts various errors to provider errors

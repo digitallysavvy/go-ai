@@ -271,11 +271,21 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 			// as long as either the ID or EncryptedContent is non-empty.
 			if item.ID != "" || item.EncryptedContent != "" {
 				// Reasoning items expose their text through Summary, not Content.
+				var summaryText string
 				for _, part := range item.Summary {
 					if part.Type == "summary_text" || part.Type == "text" {
-						textParts = append(textParts, part.Text)
+						summaryText += part.Text
 					}
 				}
+				if summaryText != "" {
+					textParts = append(textParts, summaryText)
+				}
+				// Preserve EncryptedContent so callers can forward this reasoning
+				// block in subsequent turns (input-side round-trip, #12869).
+				result.Content = append(result.Content, types.ReasoningContent{
+					Text:             summaryText,
+					EncryptedContent: item.EncryptedContent,
+				})
 			}
 
 		case "function_call":

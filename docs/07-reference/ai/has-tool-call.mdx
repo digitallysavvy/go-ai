@@ -1,57 +1,124 @@
 ---
 title: HasToolCall
-description: API reference for HasToolCall helper
+description: Built-in StopCondition that stops the tool-calling loop when a specific tool is called
 ---
 
 # HasToolCall
 
-Helper function to check if a step result contains a specific tool call. Useful in OnStepFinish callbacks.
+Returns a `StopCondition` that stops the tool-calling loop when the model calls
+a tool with the given name. Use this for **semantic completion signals** — for
+example, when the model is expected to call a `"finish"` or `"submit"` tool to
+indicate that it has completed its task.
 
 ## Signature
 
 ```go
-func HasToolCall(step types.StepResult, toolName string) bool
+func HasToolCall(toolName string) StopCondition
 ```
 
 ## Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| step | types.StepResult | Step result to check |
-| toolName | string | Name of the tool to look for |
+| toolName | string | Name of the tool whose invocation stops the loop |
+
+## Return Value
+
+A `StopCondition` function. When the condition fires it returns the reason string
+`"tool 'toolName' was called"`; otherwise it returns `""`.
+
+```go
+type StopCondition func(state StopConditionState) string
+```
+
+## Behavior
+
+`HasToolCall` inspects the **last step's tool calls**. If `toolName` appears in
+any of them the condition fires. It returns `""` when there are no completed steps
+yet (safe to evaluate on step zero).
 
 ## Examples
 
-### Basic Usage
+### Semantic completion signal
+
+Define a `finish` tool that the model calls when it is satisfied with its
+research. Use `HasToolCall("finish")` to stop the loop the moment it fires.
+Pair it with `StepCountIs` as a hard-limit fallback in case the model never
+calls the tool.
 
 ```go
+finishTool := types.Tool{
+    Name:        "finish",
+    Description: "Signal that the task is complete. Provide a summary of your findings.",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "summary": map[string]interface{}{
+                "type":        "string",
+                "description": "Final summary of the research",
+            },
+        },
+        "required": []string{"summary"},
+    },
+    Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        return map[string]interface{}{"status": "complete", "summary": args["summary"]}, nil
+    },
+}
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Search for information",
-    Tools:  []types.Tool{searchTool, calculatorTool},
-    OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
-        if ai.HasToolCall(step, "search") {
-            fmt.Println("Search tool was called in this step")
-        }
+    Model: model,
+    Prompt: `Research Go concurrency patterns.
+When you are satisfied with your findings, call the finish tool.`,
+    Tools: []types.Tool{searchTool, finishTool},
+    StopWhen: []ai.StopCondition{
+        ai.HasToolCall("finish"), // stop on semantic completion
+        ai.StepCountIs(10),       // safety ceiling
     },
 })
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("StopReason: %s\n", result.StopReason)
+// → "StopReason: tool 'finish' was called"   (if model finished early)
+// → "StopReason: maximum number of steps (10) reached"   (if it hit the ceiling)
 ```
 
-### Multiple Tool Checks
+### With ToolLoopAgent
 
 ```go
-OnStepFinish: func(ctx context.Context, step types.StepResult, userCtx interface{}) {
-    if ai.HasToolCall(step, "database_query") {
-        fmt.Println("Database queried")
-    }
-    if ai.HasToolCall(step, "send_email") {
-        fmt.Println("Email sent")
-    }
-}
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Tools: []types.Tool{searchTool, submitTool},
+    StopWhen: []ai.StopCondition{
+        ai.HasToolCall("submit"),
+        ai.StepCountIs(20),
+    },
+})
+
+result, err := myAgent.Execute(ctx, "Complete the report and submit it")
+fmt.Printf("StopReason: %s\n", result.StopReason)
+```
+
+### Condition ordering and side effects
+
+`EvaluateStopConditions` runs **all** conditions before returning the first match.
+This means every condition in `StopWhen` always executes, regardless of order.
+Side-effectful conditions (e.g. logging, metric recording) can therefore be placed
+anywhere and are guaranteed to run.
+
+```go
+// Both conditions always run; the first non-empty reason is returned.
+StopWhen: []ai.StopCondition{
+    ai.HasToolCall("finish"),   // fires → "tool 'finish' was called"
+    ai.StepCountIs(20),         // also evaluated, but result ignored if finish fired first
+},
 ```
 
 ## See Also
 
-- [GenerateText](./generate-text.mdx) - Text generation with tools
-- [StepCountIs](./step-count-is.mdx) - Check step number
-- [Tool](./tool.mdx) - Tool definition
+- [StepCountIs](./step-count-is.mdx) — stop after n steps (safety ceiling pattern)
+- [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
+- [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field
+- [ToolLoopAgent](./tool-loop-agent.mdx) — `AgentConfig.StopWhen` field
+- [Stop-When Example](../../../examples/agents/callbacks/stop-when/main.go) — runnable example

@@ -5,6 +5,11 @@ type GenerateResult struct {
 	// Generated text content
 	Text string `json:"text"`
 
+	// Content parts from the response beyond the primary text (e.g. ReasoningContent
+	// blocks from Anthropic extended thinking). Callers can include these parts in
+	// subsequent message history to round-trip thinking blocks through the API.
+	Content []ContentPart `json:"content,omitempty"`
+
 	// Tool calls made by the model (if any)
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 

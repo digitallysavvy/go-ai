@@ -43,10 +43,30 @@ func (t TextContent) ContentType() string {
 	return "text"
 }
 
-// ReasoningContent represents reasoning/thinking content in a message
-// This is used by models that expose their reasoning process (e.g., OpenAI o1, Anthropic Claude with thinking)
+// ReasoningContent represents reasoning/thinking content in a message.
+// This is used by models that expose their reasoning process (e.g., OpenAI o1, Anthropic Claude with thinking).
+//
+// For Anthropic models with extended thinking, Signature and RedactedData carry the
+// fields required to re-send this block in message history. When the Anthropic API
+// returns a thinking block its response includes a cryptographic Signature; callers
+// who pass conversation history back to the API must include that signature intact.
+// RedactedData is set instead when the API returns a redacted_thinking block.
 type ReasoningContent struct {
 	Text string `json:"text"`
+
+	// Signature is the cryptographic signature attached to Anthropic thinking blocks.
+	// Required when re-sending a thinking block as part of message history.
+	// Populated by the Anthropic provider when parsing API responses.
+	Signature string `json:"signature,omitempty"`
+
+	// RedactedData is set for redacted_thinking blocks returned by the Anthropic API.
+	// When non-empty, the block was redacted and only this opaque blob is available.
+	RedactedData string `json:"redacted_data,omitempty"`
+
+	// EncryptedContent is the opaque encrypted reasoning blob returned by the
+	// OpenAI Responses API. When present, callers must forward it verbatim in
+	// subsequent turns so the API can reconstruct the reasoning context.
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 // ContentType implements ContentPart interface

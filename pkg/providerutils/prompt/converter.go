@@ -117,6 +117,25 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 						"type": "text",
 						"text": p.Text,
 					})
+				case types.ReasoningContent:
+					// Emit thinking or redacted_thinking blocks for Anthropic.
+					// A Signature is required to re-send a thinking block; RedactedData
+					// identifies a redacted_thinking block. If neither is set the block
+					// cannot be safely re-sent and is silently skipped (same behaviour
+					// as sendReasoning=false).
+					if p.RedactedData != "" {
+						contentParts = append(contentParts, map[string]interface{}{
+							"type": "redacted_thinking",
+							"data": p.RedactedData,
+						})
+					} else if p.Signature != "" {
+						contentParts = append(contentParts, map[string]interface{}{
+							"type":      "thinking",
+							"thinking":  p.Text,
+							"signature": p.Signature,
+						})
+					}
+					// Neither field set: skip silently — block cannot be safely re-sent.
 				case types.ImageContent:
 					// Anthropic requires base64 encoded images
 					imageData := base64.StdEncoding.EncodeToString(p.Image)
