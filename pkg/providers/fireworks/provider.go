@@ -20,6 +20,14 @@ type Config struct {
 
 	// BaseURL is the base URL for the Fireworks AI API (optional)
 	BaseURL string
+
+	// ImagePollIntervalMs is the interval between poll attempts for async image
+	// generation models (e.g. flux-kontext-*). Defaults to 500ms.
+	ImagePollIntervalMs int
+
+	// ImagePollTimeoutMs is the maximum duration to wait for async image generation
+	// to complete. Defaults to 120000ms (2 minutes).
+	ImagePollTimeoutMs int
 }
 
 // New creates a new Fireworks AI provider with the given configuration

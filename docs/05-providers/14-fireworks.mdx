@@ -14,19 +14,18 @@ Fireworks AI provides blazing-fast inference for open-source models with optimiz
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("FIREWORKS_API_KEY"),
-    BaseURL: "https://api.fireworks.ai/inference/v1",
+prov := fireworks.New(fireworks.Config{
+    APIKey: os.Getenv("FIREWORKS_API_KEY"),
 })
 
-model, err := provider.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
+model, err := prov.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
 ```
 
 ### Get API Key
@@ -37,13 +36,28 @@ export FIREWORKS_API_KEY=fw_...
 
 ## Available Models
 
+### Language Models
+
 | Model ID | Context | Price | Best For |
 |----------|---------|-------|----------|
 | accounts/fireworks/models/llama-v3p1-70b-instruct | 128K | $0.90/1M | High quality |
 | accounts/fireworks/models/llama-v3p1-8b-instruct | 128K | $0.20/1M | Fast |
 | accounts/fireworks/models/mixtral-8x7b-instruct | 32K | $0.50/1M | Balanced |
+| accounts/fireworks/models/kimi-k2p5 | 128K | — | Extended reasoning |
+
+### Image Models
+
+| Model ID | Type | Notes |
+|----------|------|-------|
+| accounts/fireworks/models/flux-kontext-dev | Text-to-image, image editing | Async polling |
+| accounts/fireworks/models/flux-kontext-pro | Text-to-image, image editing | Async polling |
+| accounts/fireworks/models/flux-kontext-max | Text-to-image, image editing | Async polling |
+| accounts/fireworks/models/stable-diffusion-xl-1024-v1-0 | Text-to-image | Sync |
+| accounts/fireworks/models/playground-v2-5-1024px-aesthetic | Text-to-image | Sync, supports size |
 
 ## Examples
+
+### Language Model
 
 ```go
 package main
@@ -54,31 +68,114 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("FIREWORKS_API_KEY"),
-        BaseURL: "https://api.fireworks.ai/inference/v1",
+    prov := fireworks.New(fireworks.Config{
+        APIKey: os.Getenv("FIREWORKS_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
+    model, err := prov.LanguageModel("accounts/fireworks/models/llama-v3p1-70b-instruct")
     if err != nil {
         log.Fatal(err)
     }
 
     result, err := ai.GenerateText(model, "Explain Fireworks AI")
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Println(result.Text)
 }
 ```
 
+### Async Image Generation (flux-kontext-\*)
+
+`flux-kontext-*` models use a two-phase async flow: submit a request, then poll for the result. The Go-AI SDK handles this automatically.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
+)
+
+func main() {
+    prov := fireworks.New(fireworks.Config{
+        APIKey: os.Getenv("FIREWORKS_API_KEY"),
+    })
+
+    model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // The SDK submits asynchronously and polls until ready (up to 2 minutes)
+    result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+        Prompt:      "A serene mountain lake at golden hour, photorealistic",
+        AspectRatio: "16:9",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Image URL:", result.URL)
+}
+```
+
+### Image Editing with flux-kontext
+
+`flux-kontext-pro` and `flux-kontext-max` support image editing by providing an input image:
+
+```go
+// Edit using a URL
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Change the sky to a dramatic sunset",
+    Files: []provider.ImageFile{
+        {Type: "url", URL: "https://example.com/landscape.png"},
+    },
+})
+
+// Edit using file data
+imageBytes, _ := os.ReadFile("photo.jpg")
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Add a red barn in the background",
+    Files: []provider.ImageFile{
+        {Type: "file", Data: imageBytes, MediaType: "image/jpeg"},
+    },
+})
+```
+
+## Async Models — How It Works
+
+Models with IDs containing `flux-kontext` use a two-phase generation API:
+
+1. **Submit** — POST to `/v1/workflows/{modelID}` with the generation parameters. Returns a `request_id`.
+2. **Poll** — POST to `/v1/workflows/{modelID}/get_result` every 2 seconds until status is `"Ready"`.
+3. **Result** — When `"Ready"`, the response contains a URL in `result.sample`.
+
+The Go-AI SDK handles this flow transparently via `DoGenerate`. Polling respects context cancellation and has a 2-minute timeout.
+
+**Supported poll statuses:**
+- `Pending` / `Running` → continue polling
+- `Ready` → success, return image URL
+- `Error` / `Failed` → return descriptive error
+
+**Non-flux-kontext models** (e.g., `stable-diffusion-xl-1024-v1-0`) use a standard synchronous image generation endpoint and are unaffected.
+
 ## Best Practices
 
-1. Use for production workloads requiring speed
-2. Excellent for serving open-source models
-3. Great latency and throughput
+1. Use flux-kontext models for high-quality image generation and editing
+2. For time-sensitive workflows, consider setting a shorter deadline via `context.WithTimeout`
+3. The SDK automatically retries polling — do not add your own retry loop around `DoGenerate`
 
 ## See Also
 
 - [Fireworks AI Documentation](https://docs.fireworks.ai)
+- [flux-kontext Model Guide](https://docs.fireworks.ai/models/flux-kontext)
