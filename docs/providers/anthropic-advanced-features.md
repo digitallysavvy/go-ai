@@ -340,6 +340,107 @@ const (
 | Adaptive Thinking | claude-opus-4-6 | 2023-06-01+ |
 | Extended Thinking | claude-3+ | 2023-06-01+ |
 
+## Code Execution Tool (2026-01-20)
+
+The code execution tool (`code-execution_20260120`) enables Claude to request client-side
+code execution across three modes:
+
+- **Python programmatic tool calls** — execute Python code that may trigger client-side tools
+- **Bash command execution** — run shell commands and receive stdout/stderr/exit code
+- **Text editor file operations** — view, create, or str_replace files
+
+The required beta header `code-execution-20260120` is **automatically injected** when this
+tool is included in the tool list.
+
+### Requirements
+
+- **Models**: `claude-opus-4-6`, `claude-sonnet-4-6`
+- **Beta header**: injected automatically — no manual configuration needed
+
+### Usage
+
+```go
+import (
+    "context"
+    "encoding/json"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    anthropicTools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+)
+
+func main() {
+    prov := anthropic.New(anthropic.Config{APIKey: "your-api-key"})
+    model, _ := prov.LanguageModel("claude-sonnet-4-6")
+
+    // Create the tool with a client-side executor
+    codeExecTool := anthropicTools.CodeExecution20260120()
+    codeExecTool.Execute = func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        inputJSON, _ := json.Marshal(input)
+        parsed, err := anthropicTools.UnmarshalCodeExecutionInput(inputJSON)
+        if err != nil {
+            return nil, err
+        }
+
+        switch v := parsed.(type) {
+        case *anthropicTools.BashCodeExecutionInput:
+            stdout, stderr, code := runBash(v.Command)
+            return &anthropicTools.BashExecutionResult{
+                Type:       anthropicTools.CodeExecutionResultTypeBash,
+                Stdout:     stdout,
+                Stderr:     stderr,
+                ReturnCode: code,
+            }, nil
+
+        case *anthropicTools.TextEditorInput:
+            // handle view/create/str_replace based on v.Command
+            return handleTextEditor(v), nil
+        }
+        return nil, fmt.Errorf("unsupported input type: %T", parsed)
+    }
+
+    result, _ := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "List the files in /tmp using bash",
+        Tools:  []types.Tool{codeExecTool},
+    })
+    fmt.Println(result.Text)
+}
+```
+
+### Input Types
+
+| Type constant | JSON `type` value | Fields |
+|---|---|---|
+| `CodeExecutionInputTypeProgrammatic` | `programmatic-tool-call` | `code string` |
+| `CodeExecutionInputTypeBash` | `bash_code_execution` | `command string` |
+| `CodeExecutionInputTypeTextEditor` | `text_editor_code_execution` | `command`, `path`, `file_text?`, `old_str?`, `new_str?` |
+
+Use `anthropicTools.UnmarshalCodeExecutionInput(data)` to decode the discriminated union.
+
+### Result Types
+
+| Type constant | JSON `type` value | Description |
+|---|---|---|
+| `CodeExecutionResultTypeProgrammatic` | `code_execution_result` | Python execution result |
+| `CodeExecutionResultTypeBash` | `bash_code_execution_result` | Bash execution result |
+| `CodeExecutionResultTypeBashError` | `bash_code_execution_tool_result_error` | Bash execution error |
+| `CodeExecutionResultTypeTextEditorError` | `text_editor_code_execution_tool_result_error` | Text editor error |
+| `CodeExecutionResultTypeViewResult` | `text_editor_code_execution_view_result` | File view result |
+| `CodeExecutionResultTypeCreateResult` | `text_editor_code_execution_create_result` | File create/update result |
+| `CodeExecutionResultTypeStrReplaceResult` | `text_editor_code_execution_str_replace_result` | String replace result |
+
+Error codes: `invalid_tool_input`, `unavailable`, `too_many_requests`, `execution_time_exceeded`,
+`output_file_too_large` (bash), `file_not_found` (text editor).
+
+Use `anthropicTools.UnmarshalCodeExecutionResult(data)` to decode result JSON.
+
+### Complete Examples
+
+- `examples/anthropic-code-execution-bash/` — bash execution with result handling
+- `examples/anthropic-code-execution-text-editor/` — text editor view/create/str_replace flow
+
 ## Further Reading
 
 - [Anthropic API Documentation](https://docs.anthropic.com/)

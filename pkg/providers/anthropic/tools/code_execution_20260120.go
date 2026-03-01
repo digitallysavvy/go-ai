@@ -166,14 +166,16 @@ func (r *ProgrammaticExecutionResult) codeExecutionResult()    {}
 func (r *ProgrammaticExecutionResult) GetResultType() string   { return r.Type }
 
 // BashExecutionResult is returned after a bash command execution.
+// Content is always serialized (even if empty) because the Anthropic API schema
+// requires the field — it is not optional in the output schema.
 //
 // type: "bash_code_execution_result"
 type BashExecutionResult struct {
-	Type       string                       `json:"type"` // "bash_code_execution_result"
-	Content    []BashCodeExecutionOutputItem `json:"content,omitempty"`
-	Stdout     string                       `json:"stdout"`
-	Stderr     string                       `json:"stderr"`
-	ReturnCode int                          `json:"return_code"`
+	Type       string                        `json:"type"` // "bash_code_execution_result"
+	Content    []BashCodeExecutionOutputItem  `json:"content"`
+	Stdout     string                        `json:"stdout"`
+	Stderr     string                        `json:"stderr"`
+	ReturnCode int                           `json:"return_code"`
 }
 
 func (r *BashExecutionResult) codeExecutionResult()    {}

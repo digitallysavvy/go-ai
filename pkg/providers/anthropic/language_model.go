@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -54,10 +55,16 @@ func (m *LanguageModel) SupportsTools() bool {
 }
 
 // SupportsStructuredOutput returns whether the model supports structured output
+// via output_config.format. Matches the TS SDK getModelCapabilities() logic:
+// claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
 func (m *LanguageModel) SupportsStructuredOutput() bool {
-	// Claude doesn't have native JSON mode like OpenAI
-	// but can be instructed to output JSON
-	return false
+	id := m.modelID
+	return strings.Contains(id, "claude-sonnet-4-6") ||
+		strings.Contains(id, "claude-opus-4-6") ||
+		strings.Contains(id, "claude-sonnet-4-5") ||
+		strings.Contains(id, "claude-opus-4-5") ||
+		strings.Contains(id, "claude-haiku-4-5") ||
+		strings.Contains(id, "claude-opus-4-1")
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -74,8 +81,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
-	// Collect beta headers from model options and tool requirements
-	betaHeaders := m.combineBetaHeaders(opts)
+	// Collect beta headers from model options and tool requirements (non-streaming)
+	betaHeaders := m.combineBetaHeaders(opts, false)
 	if len(betaHeaders) > 0 {
 		// Need to make request with custom headers
 		httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -122,8 +129,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		"Accept": "text/event-stream",
 	}
 
-	// Collect beta headers from model options and tool requirements
-	betaHeaders := m.combineBetaHeaders(opts)
+	// Collect beta headers from model options and tool requirements (streaming)
+	betaHeaders := m.combineBetaHeaders(opts, true)
 	if len(betaHeaders) > 0 {
 		headers["anthropic-beta"] = betaHeaders
 	}
@@ -169,15 +176,22 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	body["max_tokens"] = maxTokens
 
-	// Add optional parameters
-	if opts.Temperature != nil {
-		body["temperature"] = *opts.Temperature
-	}
-	if opts.TopP != nil {
-		body["top_p"] = *opts.TopP
-	}
-	if opts.TopK != nil {
-		body["top_k"] = *opts.TopK
+	// Temperature, top_k, and top_p are incompatible with thinking mode (Anthropic API
+	// rejects them). Also, top_p and temperature are mutually exclusive — only one can
+	// be sent at a time. Matches TS SDK: !isThinking && (topP != null && temp == null).
+	isThinking := m.options != nil && m.options.Thinking != nil &&
+		m.options.Thinking.Type != ThinkingTypeDisabled
+	if !isThinking {
+		if opts.Temperature != nil {
+			body["temperature"] = *opts.Temperature
+		}
+		if opts.TopK != nil {
+			body["top_k"] = *opts.TopK
+		}
+		// top_p is only valid when temperature is not also set
+		if opts.TopP != nil && opts.Temperature == nil {
+			body["top_p"] = *opts.TopP
+		}
 	}
 	if len(opts.StopSequences) > 0 {
 		body["stop_sequences"] = opts.StopSequences
@@ -188,6 +202,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["tools"] = ToAnthropicFormatWithCache(opts.Tools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToAnthropic(opts.ToolChoice)
+		}
+	}
+
+	// disable_parallel_tool_use merges into the existing tool_choice object (or creates
+	// a new one). Matches TS SDK behavior: { ...toolChoice, disable_parallel_tool_use: true }.
+	if m.options != nil && m.options.DisableParallelToolUse {
+		if existing, ok := body["tool_choice"]; ok {
+			if tcMap, ok := existing.(map[string]interface{}); ok {
+				tcMap["disable_parallel_tool_use"] = true
+			}
+		} else {
+			body["tool_choice"] = map[string]interface{}{
+				"disable_parallel_tool_use": true,
+			}
 		}
 	}
 
@@ -213,26 +241,28 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["context_management"] = m.options.ContextManagement
 	}
 
-	// Add output_config when ResponseFormat is specified.
-	// Anthropic API requires output_config.format instead of the old output_format field.
-	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" {
-		outputConfig := map[string]interface{}{}
-		if opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" {
-			if opts.ResponseFormat.Schema != nil {
-				outputConfig["format"] = map[string]interface{}{
-					"type":   "json_schema",
-					"schema": opts.ResponseFormat.Schema,
-				}
+	// Build output_config from effort and/or ResponseFormat.
+	// Both can contribute to the same output_config object.
+	outputConfig := map[string]interface{}{}
+	if m.options != nil && m.options.Effort != "" {
+		outputConfig["effort"] = string(m.options.Effort)
+	}
+	if opts.ResponseFormat != nil && (opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
+		if opts.ResponseFormat.Schema != nil {
+			outputConfig["format"] = map[string]interface{}{
+				"type":   "json_schema",
+				"schema": opts.ResponseFormat.Schema,
 			}
 		}
-		if len(outputConfig) > 0 {
-			body["output_config"] = outputConfig
-		}
+	}
+	if len(outputConfig) > 0 {
+		body["output_config"] = outputConfig
 	}
 
-	// Add automatic caching when enabled.
-	// This lets the Anthropic API automatically identify and cache prompt segments.
-	if m.options != nil && m.options.AutomaticCaching {
+	// cache_control: explicit CacheControl takes precedence over AutomaticCaching.
+	if m.options != nil && m.options.CacheControl != nil {
+		body["cache_control"] = m.options.CacheControl
+	} else if m.options != nil && m.options.AutomaticCaching {
 		body["cache_control"] = map[string]string{"type": "auto"}
 	}
 
@@ -363,10 +393,26 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 // Defined here to detect the tool without importing the tools sub-package.
 const codeExecution20260120ToolName = "anthropic.code_execution_20260120"
 
-// combineBetaHeaders combines model-option beta headers with any tool-specific beta headers
-// required for the current request.
-func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions) string {
+// combineBetaHeaders combines model-option beta headers with any request-specific
+// beta headers. stream should be true when called from DoStream.
+func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, stream bool) string {
 	base := m.getBetaHeaders()
+
+	// Fine-grained tool streaming: always on by default during streaming.
+	// Disabled only when ToolStreaming is explicitly set to false.
+	if stream {
+		toolStreamingEnabled := true
+		if m.options != nil && m.options.ToolStreaming != nil {
+			toolStreamingEnabled = *m.options.ToolStreaming
+		}
+		if toolStreamingEnabled {
+			if base != "" {
+				base += "," + BetaHeaderFineGrainedToolStreaming
+			} else {
+				base = BetaHeaderFineGrainedToolStreaming
+			}
+		}
+	}
 
 	// Detect code execution tool and inject its required beta header
 	if opts != nil {
@@ -423,6 +469,11 @@ func (m *LanguageModel) getBetaHeaders() string {
 	// Add automatic caching beta header when automatic caching is enabled
 	if m.options.AutomaticCaching {
 		headers = append(headers, BetaHeaderPromptCaching)
+	}
+
+	// Add effort beta header when effort level is set
+	if m.options.Effort != "" {
+		headers = append(headers, BetaHeaderEffort)
 	}
 
 	// Join with comma as per Anthropic API spec
@@ -494,6 +545,11 @@ type anthropicStream struct {
 	reader io.ReadCloser
 	parser *streaming.SSEParser
 	err    error
+	// Input token counts captured from the message_start event.
+	// These are combined with output tokens when emitting the finish chunk.
+	inputTokens     int64
+	cacheReadTokens int64
+	cacheWriteTokens int64
 }
 
 // newAnthropicStream creates a new Anthropic stream
@@ -529,8 +585,27 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 	// Anthropic uses different event types
 	switch event.Event {
-	case "message_start", "content_block_start", "ping":
+	case "content_block_start", "ping":
 		// Skip these events, get next
+		return s.Next()
+
+	case "message_start":
+		// Capture input/cache tokens for inclusion in the final finish chunk.
+		// These are only available here — the message_delta only has output_tokens.
+		var msg struct {
+			Message struct {
+				Usage struct {
+					InputTokens              int `json:"input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &msg); err == nil {
+			s.inputTokens = int64(msg.Message.Usage.InputTokens)
+			s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
+			s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+		}
 		return s.Next()
 
 	case "content_block_delta":
@@ -555,8 +630,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
-		// compaction_delta: content may be null — skip gracefully without error
+		// compaction_delta: emit non-null content as text-delta; skip null content
 		if delta.Delta.Type == "compaction_delta" {
+			if delta.Delta.Content != nil {
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: *delta.Delta.Content,
+				}, nil
+			}
 			return s.Next()
 		}
 
@@ -593,9 +674,25 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				finishReason = types.FinishReasonOther
 			}
 
+			// Build usage from tokens captured across message_start and message_delta.
+			outputTokens := int64(delta.Usage.OutputTokens)
+			inputTotal := s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
+			totalTokens := inputTotal + outputTokens
+			usage := &types.Usage{
+				InputTokens:  &inputTotal,
+				OutputTokens: &outputTokens,
+				TotalTokens:  &totalTokens,
+				InputDetails: &types.InputTokenDetails{
+					NoCacheTokens:    &s.inputTokens,
+					CacheReadTokens:  &s.cacheReadTokens,
+					CacheWriteTokens: &s.cacheWriteTokens,
+				},
+			}
+
 			chunk := &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
+				Usage:        usage,
 			}
 
 			// Extract context management (check root level first, then usage block)

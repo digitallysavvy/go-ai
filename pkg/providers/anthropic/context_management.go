@@ -172,6 +172,13 @@ const (
 	// BetaHeaderCodeExecution is required for the code execution tool (2026-01-20).
 	// It is automatically injected when the code execution tool is present in the tool list.
 	BetaHeaderCodeExecution = "code-execution-20260120"
+
+	// BetaHeaderEffort is required when the Effort model option is set.
+	BetaHeaderEffort = "effort-2025-11-24"
+
+	// BetaHeaderFineGrainedToolStreaming enables incremental tool call streaming.
+	// Automatically injected on streaming requests unless ToolStreaming is disabled.
+	BetaHeaderFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
 )
 
 // Helper functions for creating edit configurations

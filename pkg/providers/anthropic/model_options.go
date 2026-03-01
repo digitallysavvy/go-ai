@@ -1,5 +1,26 @@
 package anthropic
 
+// Effort controls the reasoning effort level for supported models.
+// Higher effort values produce more thorough reasoning at the cost of speed.
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortMax    Effort = "max"
+)
+
+// CacheControlOption configures explicit ephemeral prompt caching for a request.
+// Use this to mark the request for Anthropic's ephemeral caching (distinct from
+// AutomaticCaching which uses {type: "auto"}).
+type CacheControlOption struct {
+	// Type must be "ephemeral"
+	Type string `json:"type"`
+	// TTL is the cache time-to-live: "5m" (default) or "1h" (Claude 4.5+ only)
+	TTL string `json:"ttl,omitempty"`
+}
+
 // ThinkingType represents the type of thinking configuration
 type ThinkingType string
 
@@ -106,4 +127,43 @@ type ModelOptions struct {
 	//
 	// See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching for details.
 	AutomaticCaching bool `json:"automatic_caching,omitempty"`
+
+	// CacheControl configures explicit ephemeral prompt caching.
+	// Mutually exclusive with AutomaticCaching; CacheControl takes precedence if both are set.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       CacheControl: &anthropic.CacheControlOption{Type: "ephemeral", TTL: "5m"},
+	//   }
+	CacheControl *CacheControlOption `json:"cache_control_option,omitempty"`
+
+	// Effort controls the model's reasoning effort level.
+	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortMax.
+	// Requires the "effort-2025-11-24" beta header (injected automatically).
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       Effort: anthropic.EffortHigh,
+	//   }
+	Effort Effort `json:"effort,omitempty"`
+
+	// ToolStreaming controls whether fine-grained tool streaming is enabled.
+	// When nil or true (default), the "fine-grained-tool-streaming-2025-05-14"
+	// beta header is added on streaming requests, enabling incremental tool call events.
+	// Set to a false pointer to disable.
+	//
+	// Example (disable):
+	//   disabled := false
+	//   options := anthropic.ModelOptions{ToolStreaming: &disabled}
+	ToolStreaming *bool `json:"tool_streaming,omitempty"`
+
+	// DisableParallelToolUse prevents the model from calling multiple tools in a
+	// single response. When true, adds {disable_parallel_tool_use: true} to the
+	// tool_choice object sent to the API.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       DisableParallelToolUse: true,
+	//   }
+	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
 }

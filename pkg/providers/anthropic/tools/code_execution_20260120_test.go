@@ -19,6 +19,9 @@ func TestCodeExecution20260120_Basic(t *testing.T) {
 	assert.NotEmpty(t, tool.Description)
 	assert.NotNil(t, tool.Parameters)
 	assert.NotNil(t, tool.Execute)
+	// This tool is CLIENT-executed (unlike 20250825 which is provider-executed).
+	// The client runs bash/text-editor commands locally and returns results.
+	assert.False(t, tool.ProviderExecuted, "20260120 is client-executed, not provider-executed")
 }
 
 func TestCodeExecution20260120_Constants(t *testing.T) {
@@ -424,6 +427,34 @@ func TestUnmarshalCodeExecutionResult_StrReplaceResult_NullFields(t *testing.T) 
 	require.True(t, ok)
 	assert.Nil(t, r.Lines)
 	assert.Nil(t, r.NewLines)
+}
+
+// TestBashExecutionResult_ContentAlwaysPresent verifies that the content field is
+// always serialized in bash results, even when empty. The Anthropic API output schema
+// marks this field as required (not optional), matching the TS SDK behaviour.
+func TestBashExecutionResult_ContentAlwaysPresent(t *testing.T) {
+	result := &BashExecutionResult{
+		Type:       CodeExecutionResultTypeBash,
+		Stdout:     "ok",
+		Stderr:     "",
+		ReturnCode: 0,
+		// Content deliberately left nil
+	}
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+
+	// content key must be present (null or []) — not absent
+	var raw map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, ok := raw["content"]
+	assert.True(t, ok, "content field must always be present in bash result JSON")
+
+	// Initialised with empty slice → serialises as []
+	result.Content = []BashCodeExecutionOutputItem{}
+	data2, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(data2), `"content":[]`)
 }
 
 func TestUnmarshalCodeExecutionResult_UnknownType(t *testing.T) {

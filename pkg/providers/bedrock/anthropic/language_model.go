@@ -225,6 +225,23 @@ func (m *BedrockAnthropicLanguageModel) buildRequestBody(opts *provider.Generate
 		body["stop_sequences"] = opts.StopSequences
 	}
 
+	// Add output_config when ResponseFormat is specified.
+	// Anthropic API requires output_config.format instead of the old output_format field.
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" {
+		outputConfig := map[string]interface{}{}
+		if opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" {
+			if opts.ResponseFormat.Schema != nil {
+				outputConfig["format"] = map[string]interface{}{
+					"type":   "json_schema",
+					"schema": opts.ResponseFormat.Schema,
+				}
+			}
+		}
+		if len(outputConfig) > 0 {
+			body["output_config"] = outputConfig
+		}
+	}
+
 	// Add tools if present - with Bedrock-specific transformations
 	if len(opts.Tools) > 0 {
 		// Prepare tools (upgrade versions and map names)
