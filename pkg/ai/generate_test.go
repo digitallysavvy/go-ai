@@ -1009,3 +1009,63 @@ func TestGenerateText_StopWhen_ToolCallAndStepCount(t *testing.T) {
 		t.Errorf("expected custom stop reason, got %q", result.StopReason)
 	}
 }
+
+// TestGenerateTextReasoningPropagated verifies that the Reasoning field is forwarded
+// from GenerateTextOptions to the provider's DoGenerate call options.
+func TestGenerateTextReasoningPropagated(t *testing.T) {
+	t.Parallel()
+
+	level := types.ReasoningLow
+	var capturedReasoning *types.ReasoningLevel
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedReasoning = opts.Reasoning
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:     model,
+		Prompt:    "think carefully",
+		Reasoning: &level,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedReasoning == nil {
+		t.Fatal("expected Reasoning to be propagated, got nil")
+	}
+	if *capturedReasoning != types.ReasoningLow {
+		t.Errorf("expected ReasoningLow, got %v", *capturedReasoning)
+	}
+}
+
+// TestGenerateTextReasoningNilNotPropagated verifies that a nil Reasoning is not set
+// (providers see nil, not a pointer to zero value).
+func TestGenerateTextReasoningNilNotPropagated(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if opts.Reasoning != nil {
+				t.Errorf("expected nil Reasoning, got %v", *opts.Reasoning)
+			}
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

@@ -221,11 +221,50 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	body["max_tokens"] = maxTokens
 
+	// Resolve thinking configuration. Call-level Reasoning takes precedence over
+	// model-level Thinking option. ReasoningDefault means "don't override".
+	//
+	// isThinking is true whenever thinking will be enabled in the final request,
+	// which affects whether temperature/top_k/top_p may be sent (Anthropic rejects
+	// those parameters when thinking is active).
+	isThinking := false
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		// Call-level Reasoning overrides model Thinking option
+		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			body["thinking"] = map[string]interface{}{"type": "disabled"}
+		case types.ReasoningMinimal:
+			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 1024}
+			isThinking = true
+		case types.ReasoningLow:
+			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 4000}
+			isThinking = true
+		case types.ReasoningMedium:
+			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 10000}
+			isThinking = true
+		case types.ReasoningHigh:
+			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 16000}
+			isThinking = true
+		case types.ReasoningXHigh:
+			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 32000}
+			isThinking = true
+		}
+	} else if m.options != nil && m.options.Thinking != nil {
+		// Fall back to model-level Thinking option
+		thinkingConfig := map[string]interface{}{
+			"type": string(m.options.Thinking.Type),
+		}
+		// Only add budget_tokens for "enabled" type
+		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
+			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
+		}
+		body["thinking"] = thinkingConfig
+		isThinking = m.options.Thinking.Type != ThinkingTypeDisabled
+	}
+
 	// Temperature, top_k, and top_p are incompatible with thinking mode (Anthropic API
 	// rejects them). Also, top_p and temperature are mutually exclusive — only one can
 	// be sent at a time. Matches TS SDK: !isThinking && (topP != null && temp == null).
-	isThinking := m.options != nil && m.options.Thinking != nil &&
-		m.options.Thinking.Type != ThinkingTypeDisabled
 	if !isThinking {
 		if opts.Temperature != nil {
 			body["temperature"] = *opts.Temperature
@@ -262,18 +301,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 				"disable_parallel_tool_use": true,
 			}
 		}
-	}
-
-	// Add thinking configuration if configured (beta feature)
-	if m.options != nil && m.options.Thinking != nil {
-		thinkingConfig := map[string]interface{}{
-			"type": string(m.options.Thinking.Type),
-		}
-		// Only add budget_tokens for "enabled" type
-		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
-			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
-		}
-		body["thinking"] = thinkingConfig
 	}
 
 	// Add speed configuration if set (fast mode for Opus 4.6)

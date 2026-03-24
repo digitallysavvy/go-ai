@@ -166,6 +166,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
+	// Map top-level Reasoning to OpenAI reasoning_effort.
+	// none → "disabled", minimal/low → "low", medium → "medium", high/xhigh → "high".
+	// provider-default → omit (let OpenAI use its own default).
+	if opts.Reasoning != nil {
+		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			body["reasoning_effort"] = "disabled"
+		case types.ReasoningMinimal, types.ReasoningLow:
+			body["reasoning_effort"] = "low"
+		case types.ReasoningMedium:
+			body["reasoning_effort"] = "medium"
+		case types.ReasoningHigh, types.ReasoningXHigh:
+			body["reasoning_effort"] = "high"
+		// ReasoningDefault: omit
+		}
+	}
+
 	// Extract OpenAI-specific provider options
 	if opts.ProviderOptions != nil {
 		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {

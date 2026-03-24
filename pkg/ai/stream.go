@@ -58,6 +58,11 @@ type StreamTextOptions struct {
 	// Default (nil) retains everything for backwards compatibility.
 	ExperimentalRetention *types.RetentionSettings
 
+	// Reasoning controls how much thinking effort the model applies.
+	// nil means unset (use provider default). Set to types.ReasoningDefault to
+	// explicitly omit from the API request.
+	Reasoning *types.ReasoningLevel
+
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
@@ -307,6 +312,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Tools:            opts.Tools,
 		ToolChoice:       opts.ToolChoice,
 		ResponseFormat:   responseFormat,
+		Reasoning:        opts.Reasoning,
 		ProviderOptions:  opts.ProviderOptions,
 		Telemetry:        opts.ExperimentalTelemetry,
 	}

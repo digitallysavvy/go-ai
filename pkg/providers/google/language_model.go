@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -147,12 +148,31 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		genConfig["stopSequences"] = opts.StopSequences
 	}
 
-	// Extract thinkingConfig from ProviderOptions["google"].
-	// Matches TS: generationConfig.thinkingConfig = googleOptions?.thinkingConfig
-	if opts.ProviderOptions != nil {
-		if googleOpts, ok := opts.ProviderOptions["google"].(map[string]interface{}); ok {
-			if thinkingConfig, ok := googleOpts["thinkingConfig"].(map[string]interface{}); ok {
-				genConfig["thinkingConfig"] = thinkingConfig
+	// Map top-level Reasoning to Google thinkingConfig.thinkingBudget.
+	// Call-level Reasoning takes precedence over ProviderOptions["google"].thinkingConfig.
+	// none → thinkingBudget: 0 (disables thinking).
+	// provider-default → omit (use model default).
+	// other levels → dynamic budget = percentage of min(maxOutputTokens, modelMax).
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			genConfig["thinkingConfig"] = map[string]interface{}{"thinkingBudget": 0}
+		default:
+			maxOut := 0
+			if opts.MaxTokens != nil {
+				maxOut = *opts.MaxTokens
+			}
+			budget := mapReasoningToGoogleBudget(*opts.Reasoning, maxOut, m.modelID)
+			genConfig["thinkingConfig"] = map[string]interface{}{"thinkingBudget": budget}
+		}
+	} else {
+		// Fall back to ProviderOptions["google"].thinkingConfig when Reasoning is unset.
+		// Matches TS: generationConfig.thinkingConfig = googleOptions?.thinkingConfig
+		if opts.ProviderOptions != nil {
+			if googleOpts, ok := opts.ProviderOptions["google"].(map[string]interface{}); ok {
+				if thinkingConfig, ok := googleOpts["thinkingConfig"].(map[string]interface{}); ok {
+					genConfig["thinkingConfig"] = thinkingConfig
+				}
 			}
 		}
 	}
@@ -234,6 +254,55 @@ func (m *LanguageModel) convertResponse(response googleResponse) *types.Generate
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("google", 0, "", err.Error(), err)
+}
+
+// maxThinkingTokensForModel returns the maximum thinking token capacity for a Google model.
+// These values mirror the Google AI SDK model capability table.
+func maxThinkingTokensForModel(modelID string) int {
+	switch {
+	case strings.Contains(modelID, "gemini-2.5-pro"):
+		return 32768
+	case strings.Contains(modelID, "gemini-2.5-flash"):
+		return 24576
+	case strings.Contains(modelID, "gemini-2.0-flash-thinking"):
+		return 8192
+	default:
+		return 8192 // conservative fallback for unknown models
+	}
+}
+
+// mapReasoningToGoogleBudget converts a ReasoningLevel to a concrete thinkingBudget
+// value using a dynamic percentage of min(maxOutputTokens, modelMaxThinking).
+// Percentages: minimal=5%, low=20%, medium=40%, high=70%, xhigh=100%.
+// Minimum 1 token for non-zero levels.
+func mapReasoningToGoogleBudget(level types.ReasoningLevel, maxOutputTokens int, modelID string) int {
+	modelMax := maxThinkingTokensForModel(modelID)
+	cap := modelMax
+	if maxOutputTokens > 0 && maxOutputTokens < cap {
+		cap = maxOutputTokens
+	}
+
+	var pct float64
+	switch level {
+	case types.ReasoningMinimal:
+		pct = 0.05
+	case types.ReasoningLow:
+		pct = 0.20
+	case types.ReasoningMedium:
+		pct = 0.40
+	case types.ReasoningHigh:
+		pct = 0.70
+	case types.ReasoningXHigh:
+		pct = 1.00
+	default:
+		pct = 0.40
+	}
+
+	budget := int(float64(cap) * pct)
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
 }
 
 // convertGoogleUsage converts Google usage to detailed Usage struct

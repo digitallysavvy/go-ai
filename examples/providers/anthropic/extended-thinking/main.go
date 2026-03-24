@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
@@ -29,14 +30,38 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Example 1: Complex Problem Solving ===")
+	fmt.Println("=== Example 1: Top-level Reasoning parameter (high) ===")
+	solveWithTopLevelReasoning(ctx, model)
+
+	fmt.Println("\n=== Example 2: Complex Problem Solving ===")
 	solveComplexProblem(ctx, model)
 
-	fmt.Println("\n=== Example 2: Multi-Step Reasoning ===")
+	fmt.Println("\n=== Example 3: Multi-Step Reasoning ===")
 	multiStepReasoning(ctx, model)
 
-	fmt.Println("\n=== Example 3: Code Analysis with Thinking ===")
+	fmt.Println("\n=== Example 4: Code Analysis with Thinking ===")
 	analyzeCodeWithThinking(ctx, model)
+}
+
+// solveWithTopLevelReasoning demonstrates the new top-level Reasoning parameter.
+// This replaces the old providerOptions["anthropic"]["thinking"] pattern.
+// Reasoning: &types.ReasoningHigh maps to thinking: {type: "enabled", budget_tokens: 16000}.
+func solveWithTopLevelReasoning(ctx context.Context, model provider.LanguageModel) {
+	reasoning := types.ReasoningHigh
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:     model,
+		Reasoning: &reasoning,
+		Prompt:    "A bat and a ball together cost $1.10. The bat costs $1.00 more than the ball. How much does the ball cost?",
+		System:    "Think carefully before answering.",
+	})
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
+
+	fmt.Println("Answer (high reasoning / budget_tokens: 16000):")
+	fmt.Println(result.Text)
+	fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 }
 
 func solveComplexProblem(ctx context.Context, model provider.LanguageModel) {

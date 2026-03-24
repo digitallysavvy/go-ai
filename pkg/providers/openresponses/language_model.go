@@ -191,6 +191,22 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["text"] = textConfig
 	}
 
+	// Map top-level Reasoning to Open Responses reasoning_effort.
+	// Same mapping as the OpenAI chat completions path.
+	if opts.Reasoning != nil {
+		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			body["reasoning_effort"] = "disabled"
+		case types.ReasoningMinimal, types.ReasoningLow:
+			body["reasoning_effort"] = "low"
+		case types.ReasoningMedium:
+			body["reasoning_effort"] = "medium"
+		case types.ReasoningHigh, types.ReasoningXHigh:
+			body["reasoning_effort"] = "high"
+		// ReasoningDefault: omit
+		}
+	}
+
 	return body, warnings
 }
 

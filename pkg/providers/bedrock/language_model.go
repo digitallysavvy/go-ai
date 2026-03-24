@@ -152,8 +152,66 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 		return m.buildClaudeRequest(opts)
 	}
 
+	// Amazon Nova models use an OpenAI-compatible format
+	if strings.HasPrefix(m.modelID, "amazon.nova") {
+		return m.buildNovaRequest(opts)
+	}
+
 	// Default format for other models
 	return m.buildGenericRequest(opts)
+}
+
+// isAnthropicStyleModel returns true for Claude-family models on Bedrock that use
+// the Anthropic-style reasoningConfig API (budgetTokens-based).
+func isAnthropicStyleModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "anthropic.") || strings.Contains(modelID, "claude")
+}
+
+// isNovaStyleModel returns true for Amazon Nova models on Bedrock that use
+// the OpenAI-compatible reasoning_effort API.
+func isNovaStyleModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "amazon.nova")
+}
+
+// mapReasoningToBedrockAnthropicConfig converts a ReasoningLevel to the Bedrock
+// Anthropic-style reasoningConfig map. Returns nil when level is ReasoningDefault
+// (meaning "don't override").
+func mapReasoningToBedrockAnthropicConfig(level types.ReasoningLevel) map[string]interface{} {
+	switch level {
+	case types.ReasoningNone:
+		return map[string]interface{}{"type": "disabled"}
+	case types.ReasoningMinimal:
+		return map[string]interface{}{"type": "enabled", "budgetTokens": 1024}
+	case types.ReasoningLow:
+		return map[string]interface{}{"type": "enabled", "budgetTokens": 4000}
+	case types.ReasoningMedium:
+		return map[string]interface{}{"type": "enabled", "budgetTokens": 10000}
+	case types.ReasoningHigh:
+		return map[string]interface{}{"type": "enabled", "budgetTokens": 16000}
+	case types.ReasoningXHigh:
+		return map[string]interface{}{"type": "enabled", "budgetTokens": 32000}
+	default:
+		// ReasoningDefault: omit
+		return nil
+	}
+}
+
+// mapReasoningToOpenAIEffort converts a ReasoningLevel to the OpenAI-style
+// reasoning_effort string. Returns "" when level is ReasoningDefault (omit).
+func mapReasoningToOpenAIEffort(level types.ReasoningLevel) string {
+	switch level {
+	case types.ReasoningNone:
+		return "disabled"
+	case types.ReasoningMinimal, types.ReasoningLow:
+		return "low"
+	case types.ReasoningMedium:
+		return "medium"
+	case types.ReasoningHigh, types.ReasoningXHigh:
+		return "high"
+	default:
+		// ReasoningDefault: omit
+		return ""
+	}
 }
 
 func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[string]interface{}, error) {
@@ -199,12 +257,17 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 		reqBody["top_p"] = *opts.TopP
 	}
 
-	// Add thinking configuration if configured
-	if m.options != nil && m.options.Thinking != nil {
+	// Map top-level Reasoning to Bedrock Anthropic-style reasoningConfig.
+	// Call-level Reasoning takes precedence over model-level Thinking option.
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		if rc := mapReasoningToBedrockAnthropicConfig(*opts.Reasoning); rc != nil {
+			reqBody["reasoningConfig"] = rc
+		}
+	} else if m.options != nil && m.options.Thinking != nil {
+		// Fall back to model-level Thinking option (existing behavior)
 		thinkingConfig := map[string]interface{}{
 			"type": string(m.options.Thinking.Type),
 		}
-		// Only add budget_tokens for "enabled" type
 		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
 			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
 		}
@@ -290,6 +353,52 @@ func (m *LanguageModel) buildGenericRequest(opts *provider.GenerateOptions) (map
 
 	if opts.Temperature != nil {
 		reqBody["temperature"] = *opts.Temperature
+	}
+
+	return reqBody, nil
+}
+
+// buildNovaRequest builds a request for Amazon Nova models using OpenAI-compatible format.
+// Nova models support reasoning_effort instead of reasoningConfig.
+func (m *LanguageModel) buildNovaRequest(opts *provider.GenerateOptions) (map[string]interface{}, error) {
+	messages := []map[string]interface{}{}
+
+	if opts.Prompt.IsMessages() {
+		for _, msg := range opts.Prompt.Messages {
+			content := ""
+			for _, c := range msg.Content {
+				if tc, ok := c.(types.TextContent); ok {
+					content += tc.Text
+				}
+			}
+			messages = append(messages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": content,
+			})
+		}
+	} else if opts.Prompt.IsSimple() {
+		messages = append(messages, map[string]interface{}{
+			"role":    "user",
+			"content": opts.Prompt.Text,
+		})
+	}
+
+	reqBody := map[string]interface{}{
+		"messages": messages,
+	}
+
+	if opts.MaxTokens != nil {
+		reqBody["max_tokens"] = *opts.MaxTokens
+	}
+	if opts.Temperature != nil {
+		reqBody["temperature"] = *opts.Temperature
+	}
+
+	// Map top-level Reasoning to OpenAI-compatible reasoning_effort for Nova models.
+	if opts.Reasoning != nil {
+		if effort := mapReasoningToOpenAIEffort(*opts.Reasoning); effort != "" {
+			reqBody["reasoning_effort"] = effort
+		}
 	}
 
 	return reqBody, nil

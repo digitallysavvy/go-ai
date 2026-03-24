@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -22,14 +23,43 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Example 1: o1-preview - Complex Math Problem ===")
+	fmt.Println("=== Example 1: Top-level Reasoning parameter (medium) ===")
+	solveWithTopLevelReasoning(ctx, p)
+
+	fmt.Println("\n=== Example 2: o1-preview - Complex Math Problem ===")
 	solveComplexMath(ctx, p)
 
-	fmt.Println("\n=== Example 2: o1-mini - Logic Puzzle ===")
+	fmt.Println("\n=== Example 3: o1-mini - Logic Puzzle ===")
 	solveLogicPuzzle(ctx, p)
 
-	fmt.Println("\n=== Example 3: o1-preview - Code Optimization ===")
+	fmt.Println("\n=== Example 4: o1-preview - Code Optimization ===")
 	optimizeCode(ctx, p)
+}
+
+// solveWithTopLevelReasoning demonstrates the new top-level Reasoning parameter
+// introduced in v6.1. This replaces per-provider providerOptions hacks.
+func solveWithTopLevelReasoning(ctx context.Context, p *openai.Provider) {
+	model, err := p.LanguageModel("o3-mini")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Use the top-level Reasoning field — maps to reasoning_effort: "medium"
+	// for OpenAI o-series models.
+	reasoning := types.ReasoningMedium
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:     model,
+		Reasoning: &reasoning,
+		Prompt:    "What is the sum of all integers from 1 to 100?",
+	})
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
+
+	fmt.Println("Answer (medium reasoning):")
+	fmt.Println(result.Text)
+	fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }
 
 func solveComplexMath(ctx context.Context, p *openai.Provider) {

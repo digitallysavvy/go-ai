@@ -69,6 +69,12 @@ type GenerateOptions struct {
 	// Maximum number of automatic tool call steps
 	MaxSteps *int
 
+	// Reasoning controls how much thinking effort the model applies.
+	// nil means the field is unset (inherits the provider's own default).
+	// Use types.ReasoningDefault to explicitly omit the field from API requests.
+	// Providers map this to their native reasoning APIs (see types.ReasoningLevel).
+	Reasoning *types.ReasoningLevel
+
 	// Provider-specific options
 	// These are passed directly to the provider and can contain any provider-specific settings
 	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}

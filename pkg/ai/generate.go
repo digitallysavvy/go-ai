@@ -105,6 +105,17 @@ type GenerateTextOptions struct {
 	ExperimentalRetention *types.RetentionSettings
 
 	// ========================================================================
+	// Reasoning (v6.1 - P0-1)
+	// ========================================================================
+
+	// Reasoning controls how much thinking effort the model applies.
+	// nil means unset (use provider default). Set to types.ReasoningDefault to
+	// explicitly omit from the API request. Providers map this to their native
+	// reasoning APIs (Anthropic: thinking.budget_tokens, OpenAI: reasoning_effort,
+	// Google: thinkingConfig.thinkingBudget, Bedrock: reasoningConfig).
+	Reasoning *types.ReasoningLevel
+
+	// ========================================================================
 	// Provider Options (v6.0.61 - NEW)
 	// ========================================================================
 
@@ -400,6 +411,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 			Tools:            opts.Tools,
 			ToolChoice:       opts.ToolChoice,
 			ResponseFormat:   responseFormat,
+			Reasoning:        opts.Reasoning,
 			ProviderOptions:  opts.ProviderOptions,
 			Telemetry:        opts.ExperimentalTelemetry,
 		}

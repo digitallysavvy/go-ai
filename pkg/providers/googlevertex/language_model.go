@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -156,6 +157,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		genConfig["stopSequences"] = opts.StopSequences
 	}
 
+	// Map top-level Reasoning to Vertex AI thinkingConfig.thinkingBudget.
+	// Call-level Reasoning takes precedence over ProviderOptions.
+	// none → thinkingBudget: 0; provider-default → omit; others → dynamic %.
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			genConfig["thinkingConfig"] = map[string]interface{}{"thinkingBudget": 0}
+		default:
+			maxOut := 0
+			if opts.MaxTokens != nil {
+				maxOut = *opts.MaxTokens
+			}
+			budget := mapReasoningToVertexBudget(*opts.Reasoning, maxOut, m.modelID)
+			genConfig["thinkingConfig"] = map[string]interface{}{"thinkingBudget": budget}
+		}
+	}
+
 	// Add response MIME type for JSON mode
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json_object" {
 		genConfig["responseMimeType"] = "application/json"
@@ -175,6 +193,53 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 	}
 
 	return body
+}
+
+// maxThinkingTokensForVertexModel returns the maximum thinking token capacity for
+// a Google Vertex AI model. Same values as the Google Generative AI provider.
+func maxThinkingTokensForVertexModel(modelID string) int {
+	switch {
+	case strings.Contains(modelID, "gemini-2.5-pro"):
+		return 32768
+	case strings.Contains(modelID, "gemini-2.5-flash"):
+		return 24576
+	case strings.Contains(modelID, "gemini-2.0-flash-thinking"):
+		return 8192
+	default:
+		return 8192
+	}
+}
+
+// mapReasoningToVertexBudget converts a ReasoningLevel to a concrete thinkingBudget
+// value for Vertex AI using a dynamic percentage of min(maxOutputTokens, modelMax).
+func mapReasoningToVertexBudget(level types.ReasoningLevel, maxOutputTokens int, modelID string) int {
+	modelMax := maxThinkingTokensForVertexModel(modelID)
+	cap := modelMax
+	if maxOutputTokens > 0 && maxOutputTokens < cap {
+		cap = maxOutputTokens
+	}
+
+	var pct float64
+	switch level {
+	case types.ReasoningMinimal:
+		pct = 0.05
+	case types.ReasoningLow:
+		pct = 0.20
+	case types.ReasoningMedium:
+		pct = 0.40
+	case types.ReasoningHigh:
+		pct = 0.70
+	case types.ReasoningXHigh:
+		pct = 1.00
+	default:
+		pct = 0.40
+	}
+
+	budget := int(float64(cap) * pct)
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
 }
 
 // convertResponse converts a Vertex AI response to GenerateResult

@@ -639,3 +639,39 @@ func TestStreamText_NoCallbacks(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamTextReasoningPropagated verifies that the Reasoning field is forwarded
+// from StreamTextOptions to the provider's DoStream call options.
+func TestStreamTextReasoningPropagated(t *testing.T) {
+	t.Parallel()
+
+	level := types.ReasoningHigh
+	var capturedReasoning *types.ReasoningLevel
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			capturedReasoning = opts.Reasoning
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:     model,
+		Prompt:    "think hard",
+		Reasoning: &level,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, _ = result.ReadAll()
+
+	if capturedReasoning == nil {
+		t.Fatal("expected Reasoning to be propagated, got nil")
+	}
+	if *capturedReasoning != types.ReasoningHigh {
+		t.Errorf("expected ReasoningHigh, got %v", *capturedReasoning)
+	}
+}
