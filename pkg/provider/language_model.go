@@ -167,6 +167,10 @@ type StreamChunk struct {
 	// Tool call (when Type is ChunkTypeToolCall)
 	ToolCall *types.ToolCall
 
+	// Tool result (when Type is ChunkTypeToolResult).
+	// Synthetic chunks emitted by streamText after deferred tool execution.
+	ToolResult *types.ToolResult
+
 	// Usage information (when Type is ChunkTypeUsage or ChunkTypeFinish)
 	Usage *types.Usage
 
@@ -205,6 +209,12 @@ const (
 
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"
+
+	// ChunkTypeToolResult is a synthetic chunk emitted by streamText after
+	// deferred tool execution.  It carries the result of a tool call and is
+	// forwarded to OnChunk consumers just like any other chunk, matching the
+	// TypeScript AI SDK's tool-result forwarding behaviour.
+	ChunkTypeToolResult ChunkType = "tool-result"
 )
 
 // EmbeddingModel represents an embedding model

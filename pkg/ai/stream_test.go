@@ -675,3 +675,249 @@ func TestStreamTextReasoningPropagated(t *testing.T) {
 		t.Errorf("expected ReasoningHigh, got %v", *capturedReasoning)
 	}
 }
+
+// TestStreamTextToolsExecutedAfterStreamEnd verifies that tool Execute() is NOT
+// called while the stream is in progress, only after all chunks are consumed.
+// With Gap 3, tool-result chunks are forwarded to OnChunk AFTER execute fires.
+// Invariant: all stream chunks → execute → tool-result chunks.
+func TestStreamTextToolsExecutedAfterStreamEnd(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	// Events are either "chunk:<type>" or "execute".
+	var events []string
+
+	tool := types.Tool{
+		Name:        "get_weather",
+		Description: "Get weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			events = append(events, "execute")
+			mu.Unlock()
+			return "sunny", nil
+		},
+	}
+
+	// Stream: text chunk, tool-call chunk, finish chunk — 3 chunks total.
+	// Execute must NOT fire until the stream loop has completed.
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "Checking weather..."},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "call_1",
+					ToolName:  "get_weather",
+					Arguments: map[string]interface{}{"city": "NY"},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "What's the weather?",
+		Tools:  []types.Tool{tool},
+		OnChunk: func(chunk provider.StreamChunk) {
+			mu.Lock()
+			events = append(events, "chunk:"+string(chunk.Type))
+			mu.Unlock()
+		},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Locate the execute event and the first tool-result chunk.
+	executeIdx := -1
+	toolResultIdx := -1
+	streamChunksBefore := 0 // stream-originating chunks before execute
+	for i, e := range events {
+		if e == "execute" {
+			executeIdx = i
+		}
+		if e == "chunk:tool-result" && toolResultIdx == -1 {
+			toolResultIdx = i
+		}
+	}
+	// Count stream chunks (all chunks before execute).
+	for _, e := range events[:max(executeIdx+1, 0)] {
+		if e != "execute" {
+			streamChunksBefore++
+		}
+	}
+
+	if executeIdx == -1 {
+		t.Fatal("Execute was never called")
+	}
+	// The 3 stream chunks (text, tool-call, finish) must precede execute.
+	if streamChunksBefore < 3 {
+		t.Errorf("expected at least 3 stream chunks before execute, got %d; events: %v",
+			streamChunksBefore, events)
+	}
+	// Gap 3: a tool-result chunk must appear after execute.
+	if toolResultIdx == -1 {
+		t.Error("expected tool-result chunk to be forwarded to OnChunk after execute (Gap 3)")
+	} else if toolResultIdx <= executeIdx {
+		t.Errorf("tool-result chunk (idx %d) must come after execute (idx %d); events: %v",
+			toolResultIdx, executeIdx, events)
+	}
+}
+
+// max is a local helper for the test above (avoids importing math for a trivial op).
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// TestStreamTextToolExecutionOrderPreserved verifies that multiple tool call chunks
+// are executed in the order they were received from the stream.
+func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var executionOrder []string
+
+	makeExec := func(name string) types.ToolExecutor {
+		return func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			executionOrder = append(executionOrder, name)
+			mu.Unlock()
+			return name + "_result", nil
+		}
+	}
+
+	tools := []types.Tool{
+		{Name: "tool_a", Description: "A", Execute: makeExec("tool_a")},
+		{Name: "tool_b", Description: "B", Execute: makeExec("tool_b")},
+		{Name: "tool_c", Description: "C", Execute: makeExec("tool_c")},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "1", ToolName: "tool_a", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "2", ToolName: "tool_b", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "3", ToolName: "tool_c", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Run all tools",
+		Tools:  tools,
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	expected := []string{"tool_a", "tool_b", "tool_c"}
+	if len(executionOrder) != len(expected) {
+		t.Fatalf("expected %d executions, got %d: %v", len(expected), len(executionOrder), executionOrder)
+	}
+	for i, name := range expected {
+		if executionOrder[i] != name {
+			t.Errorf("execution[%d]: expected %q, got %q", i, name, executionOrder[i])
+		}
+	}
+}
+
+// TestStreamTextChunksDeliveredBeforeToolCallback verifies that the tool call
+// chunk is forwarded to the OnChunk consumer before Execute fires.
+func TestStreamTextChunksDeliveredBeforeToolCallback(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var events []string // "chunk:<type>" or "execute"
+
+	tool := types.Tool{
+		Name:        "weather",
+		Description: "Get weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			events = append(events, "execute")
+			mu.Unlock()
+			return "sunny", nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "checking"},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "c1",
+					ToolName:  "weather",
+					Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "weather?",
+		Tools:  []types.Tool{tool},
+		OnChunk: func(chunk provider.StreamChunk) {
+			mu.Lock()
+			events = append(events, "chunk:"+string(chunk.Type))
+			mu.Unlock()
+		},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Find where the tool-call chunk and execute appear in the event sequence.
+	toolCallChunkIdx := -1
+	executeIdx := -1
+	for i, e := range events {
+		if e == "chunk:tool-call" && toolCallChunkIdx == -1 {
+			toolCallChunkIdx = i
+		}
+		if e == "execute" {
+			executeIdx = i
+		}
+	}
+
+	if toolCallChunkIdx == -1 {
+		t.Fatal("tool-call chunk was never delivered to OnChunk consumer")
+	}
+	if executeIdx == -1 {
+		t.Fatal("Execute was never called")
+	}
+	if executeIdx <= toolCallChunkIdx {
+		t.Errorf("Execute fired at event index %d but tool-call chunk was at index %d; "+
+			"all chunks must be delivered before Execute fires; events: %v",
+			executeIdx, toolCallChunkIdx, events)
+	}
+}

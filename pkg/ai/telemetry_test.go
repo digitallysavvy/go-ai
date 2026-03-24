@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -133,7 +134,12 @@ func setupTelemetryTest(t *testing.T) (*tracetest.SpanRecorder, func()) {
 	// Set as global tracer provider
 	otel.SetTracerProvider(tp)
 
+	// Register OTelTelemetryIntegration so generate.go/stream.go use OTel spans.
+	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
+
 	cleanup := func() {
+		// Restore noop integration so other tests are not affected.
+		telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
 		if err := tp.Shutdown(context.Background()); err != nil {
 			t.Logf("Error shutting down tracer provider: %v", err)
 		}
@@ -436,4 +442,120 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 			t.Errorf("Expected attribute %s not found", key)
 		}
 	}
+}
+
+// TestGenerateTextWithNoTelemetry verifies that GenerateText works without any
+// telemetry integration registered — no panics, no OTel dependency required.
+func TestGenerateTextWithNoTelemetry(t *testing.T) {
+	// Ensure noop is registered (default, but set explicitly for clarity).
+	telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
+
+	model := &mockTelemetryModel{}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		// No ExperimentalTelemetry set.
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "Test response" {
+		t.Errorf("unexpected text: %s", result.Text)
+	}
+}
+
+// TestGenerateTextWithMockTelemetry verifies that a registered mock integration
+// receives OnStart/OnFinish events from GenerateText.
+func TestGenerateTextWithMockTelemetry(t *testing.T) {
+	mock := &mockTelemetryIntegration{}
+	telemetry.RegisterTelemetryIntegration(mock)
+	defer telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
+
+	model := &mockTelemetryModel{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		ExperimentalTelemetry: &telemetry.Settings{
+			IsEnabled: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+
+	if len(mock.spans) == 0 {
+		t.Fatal("expected mock integration to receive at least one span")
+	}
+	if mock.spans[0].name != "ai.generateText" {
+		t.Errorf("expected span name 'ai.generateText', got %q", mock.spans[0].name)
+	}
+	if !mock.spans[0].ended {
+		t.Error("expected span to be ended (OnFinish called)")
+	}
+}
+
+// mockTelemetryCtxKey is the context key used to thread mock span records.
+type mockTelemetryCtxKey struct{}
+
+// mockTelemetryIntegration records operation names and end-states for assertions.
+type mockTelemetryIntegration struct {
+	mu    sync.Mutex
+	spans []*mockTelemetrySpan
+}
+
+type mockTelemetrySpan struct {
+	mu    sync.Mutex
+	name  string
+	ended bool
+}
+
+func (m *mockTelemetryIntegration) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	if e.Settings == nil || !e.Settings.IsEnabled {
+		return ctx
+	}
+	sp := &mockTelemetrySpan{name: e.OperationType}
+	m.mu.Lock()
+	m.spans = append(m.spans, sp)
+	m.mu.Unlock()
+	// Embed the span pointer so OnFinish can mark it ended.
+	return context.WithValue(ctx, mockTelemetryCtxKey{}, sp)
+}
+
+func (m *mockTelemetryIntegration) OnStepStart(_ context.Context, _ telemetry.TelemetryStepStartEvent) {
+}
+func (m *mockTelemetryIntegration) OnToolCallStart(ctx context.Context, _ telemetry.TelemetryToolCallStartEvent) context.Context {
+	return ctx
+}
+func (m *mockTelemetryIntegration) OnToolCallFinish(_ context.Context, _ telemetry.TelemetryToolCallFinishEvent) {
+}
+func (m *mockTelemetryIntegration) OnChunk(_ context.Context, _ telemetry.TelemetryChunkEvent) {}
+func (m *mockTelemetryIntegration) OnStepFinish(_ context.Context, _ telemetry.TelemetryStepFinishEvent) {
+}
+
+func (m *mockTelemetryIntegration) OnFinish(ctx context.Context, _ telemetry.TelemetryFinishEvent) {
+	if sp, ok := ctx.Value(mockTelemetryCtxKey{}).(*mockTelemetrySpan); ok {
+		sp.mu.Lock()
+		sp.ended = true
+		sp.mu.Unlock()
+	}
+}
+
+func (m *mockTelemetryIntegration) OnError(ctx context.Context, _ telemetry.TelemetryErrorEvent) {
+	if sp, ok := ctx.Value(mockTelemetryCtxKey{}).(*mockTelemetrySpan); ok {
+		sp.mu.Lock()
+		sp.ended = true
+		sp.mu.Unlock()
+	}
+}
+
+func (m *mockTelemetryIntegration) ExecuteTool(
+	ctx context.Context,
+	_ string,
+	args map[string]interface{},
+	execute func(context.Context, map[string]interface{}) (interface{}, error),
+) (interface{}, error) {
+	return execute(ctx, args)
 }

@@ -8,8 +8,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // now returns the current time in milliseconds since Unix epoch.
@@ -257,51 +255,37 @@ type GenerateTextResult struct {
 }
 
 // GenerateText performs non-streaming text generation with optional tool calling
-func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextResult, error) {
+func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *GenerateTextResult, err error) {
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
 
-	// Create telemetry span if enabled
-	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
-		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
-
-		// Create top-level ai.generateText span
-		spanName := "ai.generateText"
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
-		}
-
-		ctx, span = tracer.Start(ctx, spanName)
-		defer span.End()
-
-		// Add base telemetry attributes
-		span.SetAttributes(
-			attribute.String("ai.operationId", "ai.generateText"),
-			attribute.String("ai.model.provider", opts.Model.Provider()),
-			attribute.String("ai.model.id", opts.Model.ModelID()),
-		)
-
-		// Add function ID if present
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
-		}
-
-		// Add custom metadata
-		for key, value := range opts.ExperimentalTelemetry.Metadata {
-			span.SetAttributes(attribute.KeyValue{
-				Key:   attribute.Key("ai.telemetry.metadata." + key),
-				Value: value,
-			})
-		}
-
-		// Record prompt if enabled
-		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
-			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
-		}
+	// Fire OnStart — registered integrations start their root spans here and
+	// embed them in the returned context.  When no integration is registered
+	// the fire function is a no-op.
+	telPrompt := ""
+	telSystem := ""
+	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.RecordInputs {
+		telPrompt = opts.Prompt
+		telSystem = opts.System
 	}
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Settings:      opts.ExperimentalTelemetry,
+		Prompt:        telPrompt,
+		System:        telSystem,
+	})
+
+	// Ensure telemetry is always closed — OnError ends the span on failure,
+	// OnFinish ends it on success.
+	defer func() {
+		if err != nil {
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Error: err})
+		}
+	}()
 
 	// Apply total timeout if configured
 	var cancel context.CancelFunc
@@ -337,8 +321,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		Metadata:            cbMeta,
 	}, opts.OnStart)
 
-	// Initialize result
-	result := &GenerateTextResult{
+	// Initialize result (named return — assign, not declare)
+	result = &GenerateTextResult{
 		Steps: []types.StepResult{},
 	}
 
@@ -560,27 +544,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 		}
 	}
 
-	// Record telemetry output attributes
-	if span != nil {
-		// Record output if enabled
-		if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.RecordOutputs {
-			span.SetAttributes(attribute.String("ai.response.text", result.Text))
-		}
-
-		// Record finish reason
-		span.SetAttributes(attribute.String("ai.response.finishReason", string(result.FinishReason)))
-
-		// Record usage information
-		if result.Usage.InputTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.promptTokens", *result.Usage.InputTokens))
-		}
-		if result.Usage.OutputTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.completionTokens", *result.Usage.OutputTokens))
-		}
-		if result.Usage.TotalTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *result.Usage.TotalTokens))
-		}
-	}
+	// Fire OnFinish — integrations record output attributes and end their spans.
+	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		FinishReason: string(result.FinishReason),
+		Usage: telemetry.TelemetryUsage{
+			InputTokens:  result.Usage.InputTokens,
+			OutputTokens: result.Usage.OutputTokens,
+			TotalTokens:  result.Usage.TotalTokens,
+		},
+		Text:     result.Text,
+		Settings: opts.ExperimentalTelemetry,
+	})
 
 	// Call finish callback (v6.0: with user context)
 	if opts.OnFinish != nil {
@@ -687,7 +661,15 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Metadata:            callbacks.metadata,
 			}, callbacks.onStart)
 
-			// Locally-executed tool: execute now
+			// Fire telemetry OnToolCallStart — integrations may inject a child span.
+			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Args:       call.Arguments,
+			})
+
+			// Locally-executed tool: execute now, wrapped by telemetry integrations
+			// so they can create nested spans (Gap 4).
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID:  call.ID,
 				UserContext: userContext,
@@ -696,7 +678,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 
 			startTime := now()
-			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
+			toolResult, toolErr := telemetry.FireExecuteTool(
+				toolCtx,
+				call.ToolName,
+				call.Arguments,
+				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+					return tool.Execute(execCtx, args, execOptions)
+				},
+			)
 			durationMs := now() - startTime
 
 			results[i] = types.ToolResult{
@@ -706,6 +695,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Error:            toolErr,
 				ProviderExecuted: false,
 			}
+
+			// Fire telemetry OnToolCallFinish (Gap 5 partial: integrations can record errors).
+			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Args:       call.Arguments,
+				Result:     toolResult,
+				Error:      toolErr,
+				DurationMs: durationMs,
+			})
 
 			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
 			Notify(ctx, OnToolCallFinishEvent{
