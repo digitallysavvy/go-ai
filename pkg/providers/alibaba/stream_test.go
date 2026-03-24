@@ -295,6 +295,87 @@ data: [DONE]
 	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
 }
 
+// TestAlibabaStream_ToolCallPartialJSONNotFinalized verifies that a tool call whose
+// accumulated arguments happen to form valid JSON mid-stream is NOT emitted early.
+// This is a regression test for the security fix: tool calls must only be finalized
+// at flush time (when finish_reason is received), never based on JSON parsability.
+func TestAlibabaStream_ToolCallPartialJSONNotFinalized(t *testing.T) {
+	// Chunk 2 delivers {"done":true} which IS valid, parseable JSON by itself.
+	// The old (buggy) code would have emitted the tool call at this point.
+	// The fix requires it to wait until finish_reason in chunk 3.
+	sseData := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"fn"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"done\":true}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+
+	reader := io.NopCloser(strings.NewReader(sseData))
+	stream := newAlibabaStream(reader)
+	defer stream.Close()
+
+	var chunks []*provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		chunks = append(chunks, chunk)
+	}
+
+	// Must have exactly: 1 tool_call + 1 finish (not more from premature emission)
+	require.Len(t, chunks, 2)
+
+	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
+	assert.Equal(t, "call_1", chunks[0].ToolCall.ID)
+	assert.Equal(t, "fn", chunks[0].ToolCall.ToolName)
+	assert.Equal(t, true, chunks[0].ToolCall.Arguments["done"])
+
+	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
+	assert.Equal(t, types.FinishReasonToolCalls, chunks[1].FinishReason)
+}
+
+// TestAlibabaStream_ToolCallFinalizedAtFlush verifies that tool call chunks are
+// only emitted after finish_reason, not before.
+func TestAlibabaStream_ToolCallFinalizedAtFlush(t *testing.T) {
+	sseData := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"get_data","arguments":"{\"key\":"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"value\"}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+
+	reader := io.NopCloser(strings.NewReader(sseData))
+	stream := newAlibabaStream(reader)
+	defer stream.Close()
+
+	var chunks []*provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		chunks = append(chunks, chunk)
+	}
+
+	require.Len(t, chunks, 2)
+
+	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
+	assert.Equal(t, "call_x", chunks[0].ToolCall.ID)
+	assert.Equal(t, "get_data", chunks[0].ToolCall.ToolName)
+	assert.Equal(t, "value", chunks[0].ToolCall.Arguments["key"])
+
+	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
+}
+
 // TestAlibabaStream_MixedContent tests mixed text and reasoning content
 func TestAlibabaStream_MixedContent(t *testing.T) {
 	sseData := `data: {"choices":[{"index":0,"delta":{"reasoning_content":"Thinking..."},"finish_reason":""}]}

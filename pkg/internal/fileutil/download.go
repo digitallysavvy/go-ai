@@ -31,6 +31,10 @@ type DownloadOptions struct {
 	// MaxSize limits the size of the download (in bytes)
 	// Default: 2 GiB (DefaultMaxDownloadSize)
 	MaxSize int64
+
+	// URLValidator is called before fetching and after each redirect to validate
+	// the URL. Return a non-nil error to abort the download. Nil means no validation.
+	URLValidator func(string) error
 }
 
 // DefaultDownloadOptions returns default download options
@@ -55,9 +59,25 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 		opts.MaxSize = DefaultMaxDownloadSize
 	}
 
-	// Create HTTP client with timeout
+	// Validate URL before fetching (SSRF prevention).
+	if opts.URLValidator != nil {
+		if err := opts.URLValidator(url); err != nil {
+			return nil, err
+		}
+	}
+
+	// Create HTTP client with timeout and optional post-redirect URL validation.
 	client := &http.Client{
 		Timeout: opts.Timeout,
+	}
+	if opts.URLValidator != nil {
+		validator := opts.URLValidator
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validator(req.URL.String())
+		}
 	}
 
 	// Create request with context for cancellation support
@@ -134,9 +154,25 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		opts.MaxSize = DefaultMaxDownloadSize
 	}
 
-	// Create HTTP client with timeout
+	// Validate URL before fetching (SSRF prevention).
+	if opts.URLValidator != nil {
+		if err := opts.URLValidator(url); err != nil {
+			return err
+		}
+	}
+
+	// Create HTTP client with timeout and optional post-redirect URL validation.
 	client := &http.Client{
 		Timeout: opts.Timeout,
+	}
+	if opts.URLValidator != nil {
+		validator := opts.URLValidator
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validator(req.URL.String())
+		}
 	}
 
 	// Create request with context for cancellation support

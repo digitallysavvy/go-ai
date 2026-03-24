@@ -320,19 +320,37 @@ type groqStreamChunk struct {
 	} `json:"choices"`
 }
 
+// groqStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
+type groqStreamAccumToolCall struct {
+	id        string
+	name      string
+	arguments string
+}
+
 type groqStream struct {
-	reader io.ReadCloser
-	parser *streaming.SSEParser
-	err    error
+	reader        io.ReadCloser
+	parser        *streaming.SSEParser
+	err           error
+	toolCallAccum map[int]*groqStreamAccumToolCall
+	flushQueue    []*provider.StreamChunk
 }
 
 func newGroqStream(reader io.ReadCloser) *groqStream {
-	return &groqStream{reader: reader, parser: streaming.NewSSEParser(reader)}
+	return &groqStream{
+		reader:        reader,
+		parser:        streaming.NewSSEParser(reader),
+		toolCallAccum: make(map[int]*groqStreamAccumToolCall),
+	}
 }
 
 func (s *groqStream) Read(p []byte) (n int, err error)  { return s.reader.Read(p) }
 func (s *groqStream) Close() error                      { return s.reader.Close() }
 func (s *groqStream) Next() (*provider.StreamChunk, error) {
+	if len(s.flushQueue) > 0 {
+		chunk := s.flushQueue[0]
+		s.flushQueue = s.flushQueue[1:]
+		return chunk, nil
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -354,27 +372,62 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		if choice.Delta.Content != "" {
 			return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content}, nil
 		}
+		// Tool call delta — accumulate partial arguments by index.
+		// Finalize only when finish_reason is received, never mid-stream.
 		if len(choice.Delta.ToolCalls) > 0 {
-			tc := choice.Delta.ToolCalls[0]
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			for _, tc := range choice.Delta.ToolCalls {
+				accum, ok := s.toolCallAccum[tc.Index]
+				if !ok {
+					accum = &groqStreamAccumToolCall{}
+					s.toolCallAccum[tc.Index] = accum
+				}
+				if tc.ID != "" {
+					accum.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					accum.name = tc.Function.Name
+				}
+				accum.arguments += tc.Function.Arguments
 			}
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:        tc.ID,
-					ToolName:  tc.Function.Name,
-					Arguments: args,
-				},
-			}, nil
+			if choice.FinishReason != "" {
+				s.flushGroqToolCalls(choice.FinishReason)
+				return s.Next()
+			}
+			return s.Next()
 		}
 		if choice.FinishReason != "" {
-			return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason)}, nil
+			s.flushGroqToolCalls(choice.FinishReason)
+			return s.Next()
 		}
 	}
 	return s.Next()
 }
+
+func (s *groqStream) flushGroqToolCalls(finishReason string) {
+	for i := 0; i < len(s.toolCallAccum); i++ {
+		accum, ok := s.toolCallAccum[i]
+		if !ok {
+			continue
+		}
+		var args map[string]interface{}
+		if accum.arguments != "" {
+			json.Unmarshal([]byte(accum.arguments), &args)
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:        accum.id,
+				ToolName:  accum.name,
+				Arguments: args,
+			},
+		})
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:         provider.ChunkTypeFinish,
+		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+	})
+}
+
 func (s *groqStream) Err() error {
 	if s.err == io.EOF {
 		return nil

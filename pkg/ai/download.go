@@ -54,6 +54,8 @@ func CreateDownload(options *DownloadOptions) DownloadFunction {
 			opts.Headers = options.Headers
 		}
 
+		opts.URLValidator = validateDownloadURL
+
 		return fileutil.Download(ctx, url, opts)
 	}
 }
