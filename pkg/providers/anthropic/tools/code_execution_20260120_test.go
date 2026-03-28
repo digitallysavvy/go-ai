@@ -25,7 +25,7 @@ func TestCodeExecution20260120_Basic(t *testing.T) {
 }
 
 func TestCodeExecution20260120_Constants(t *testing.T) {
-	assert.Equal(t, "code-execution_20260120", AnthropicCodeExecutionToolType)
+	assert.Equal(t, "code_execution_20260120", AnthropicCodeExecutionToolType)
 	assert.Equal(t, "code-execution-20260120", BetaHeaderCodeExecution)
 }
 

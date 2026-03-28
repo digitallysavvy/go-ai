@@ -10,7 +10,7 @@ import (
 
 // AnthropicCodeExecutionToolType is the type identifier sent to the Anthropic API
 // in the tools array when using the code execution tool (version 2026-01-20).
-const AnthropicCodeExecutionToolType = "code-execution_20260120"
+const AnthropicCodeExecutionToolType = "code_execution_20260120"
 
 // BetaHeaderCodeExecution is the beta header value required for code execution (20260120).
 // It is automatically injected by the Anthropic provider when this tool is in the tool list.
