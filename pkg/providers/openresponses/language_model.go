@@ -318,6 +318,14 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 				ToolName:  item.Name,
 				Arguments: args,
 			})
+
+		case "custom_tool_call":
+			hasToolCalls = true
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:        item.CallID,
+				ToolName:  item.Name,
+				Arguments: map[string]interface{}{"input": item.Input},
+			})
 		}
 	}
 
@@ -519,64 +527,76 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 
 	case "response.output_item.done":
 		// Output item complete
-		if event.Item != nil && event.Item.Type == "function_call" {
+		if event.Item == nil {
+			return s.Next()
+		}
+		switch event.Item.Type {
+		case "function_call":
 			s.hasToolCalls = true
-
-			// Get the tool call state and convert to ToolCall
 			if toolCallState, ok := s.toolCallsByItemID[event.Item.ID]; ok {
-				// Parse arguments as JSON
 				var args map[string]interface{}
 				if toolCallState.ArgsJSON != "" {
 					json.Unmarshal([]byte(toolCallState.ArgsJSON), &args)
 				}
-
-				// Create final tool call
-				toolCall := &types.ToolCall{
-					ID:        toolCallState.ID,
-					ToolName:  toolCallState.ToolName,
-					Arguments: args,
-				}
-
-				// Emit tool call chunk
 				return &provider.StreamChunk{
-					Type:     provider.ChunkTypeToolCall,
-					ToolCall: toolCall,
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:        toolCallState.ID,
+						ToolName:  toolCallState.ToolName,
+						Arguments: args,
+					},
 				}, nil
 			}
+		case "custom_tool_call":
+			s.hasToolCalls = true
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:       event.Item.CallID,
+					ToolName: event.Item.Name,
+					Arguments: map[string]interface{}{"input": event.Item.Input},
+				},
+			}, nil
+		case "reasoning":
+			// Forward encrypted_content for multi-turn reasoning when store=false.
+			if event.Item.ID == "" && event.Item.EncryptedContent == "" {
+				return s.Next()
+			}
+			meta := map[string]interface{}{}
+			if event.Item.EncryptedContent != "" {
+				meta["encryptedContent"] = event.Item.EncryptedContent
+			}
+			if event.Item.ID != "" {
+				meta["itemId"] = event.Item.ID
+			}
+			providerMeta, _ := json.Marshal(map[string]interface{}{"openresponses": meta})
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningEnd,
+				ID:               "reasoning-" + event.Item.ID,
+				ProviderMetadata: providerMeta,
+			}, nil
 		}
 		return s.Next()
 
-	case "response.completed":
-		// Response completed successfully
+	case "response.completed", "response.incomplete":
 		finishReason := ""
 		if event.Response != nil && event.Response.IncompleteDetails != nil {
 			finishReason = event.Response.IncompleteDetails.Reason
 		}
-		s.finishReason = MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
+		fr := MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
 
-		// Update usage
+		var usage *types.Usage
 		if event.Response != nil && event.Response.Usage != nil {
-			usage := convertOpenResponsesUsage(event.Response.Usage)
-			s.usage = &usage
+			u := convertOpenResponsesUsage(event.Response.Usage)
+			usage = &u
 		}
 
-		return s.Next()
-
-	case "response.incomplete":
-		// Response incomplete
-		finishReason := ""
-		if event.Response != nil && event.Response.IncompleteDetails != nil {
-			finishReason = event.Response.IncompleteDetails.Reason
-		}
-		s.finishReason = MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
-
-		// Update usage
-		if event.Response != nil && event.Response.Usage != nil {
-			usage := convertOpenResponsesUsage(event.Response.Usage)
-			s.usage = &usage
-		}
-
-		return s.Next()
+		s.err = io.EOF
+		return &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: fr,
+			Usage:        usage,
+		}, nil
 
 	case "response.failed":
 		// Response failed

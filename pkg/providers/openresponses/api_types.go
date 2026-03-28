@@ -160,6 +160,9 @@ type OutputItem struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 
+	// For custom_tool_call type
+	Input string `json:"input,omitempty"`
+
 	// For reasoning type
 	Summary           []ContentPart `json:"summary,omitempty"`
 	EncryptedContent  string        `json:"encrypted_content,omitempty"`
