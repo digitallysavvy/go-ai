@@ -32,9 +32,35 @@ type CacheControl struct {
 //	    },
 //	}
 type ToolOptions struct {
-	// CacheControl enables prompt caching for this tool definition
-	// When set, the tool definition will be cached for reuse across requests
+	// CacheControl enables prompt caching for this tool definition.
+	// When set, the tool definition will be cached for reuse across requests.
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+
+	// EagerInputStreaming enables eager (larger-chunk) streaming of tool input deltas
+	// for this custom function tool. When true, Anthropic streams tool input in larger
+	// batches rather than byte-by-byte, improving streaming responsiveness.
+	//
+	// Only applies to custom function tools. Do NOT set on provider tools
+	// (web_search_20260209, web_fetch_20260209, etc.).
+	//
+	// When enabled, the stream emits tool-input-start, tool-input-delta, and
+	// tool-input-end chunks alongside the final tool-call chunk.
+	EagerInputStreaming *bool `json:"eager_input_streaming,omitempty"`
+
+	// DeferLoading marks this tool for deferred loading when used alongside a tool search tool.
+	// When true, Claude does not load this tool's full definition upfront; instead it discovers
+	// and loads the tool on demand via tool_search.
+	//
+	// Use with AnthropicTools.ToolSearchBm2520251119 or AnthropicTools.ToolSearchRegex20251119.
+	// Serialized as defer_loading in the API request.
+	DeferLoading *bool `json:"defer_loading,omitempty"`
+
+	// AllowedCallers restricts which tool types can invoke this tool programmatically.
+	// Valid values: "direct", "code_execution_20250825", "code_execution_20260120"
+	//
+	// When set, the anthropic-beta: advanced-tool-use-2025-11-20 header is automatically
+	// injected. Serialized as allowed_callers in the API request.
+	AllowedCallers []string `json:"allowed_callers,omitempty"`
 }
 
 // WithCacheControl is a helper to create ToolOptions with cache control enabled.

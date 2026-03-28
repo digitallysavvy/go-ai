@@ -1,9 +1,12 @@
 package anthropic
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
 
 func TestWithCacheControl(t *testing.T) {
@@ -271,7 +274,7 @@ func TestToAnthropicFormatWithCache(t *testing.T) {
 
 func TestToolOptionsNilSafety(t *testing.T) {
 	// Test that nil ProviderOptions doesn't cause issues
-	tools := []types.Tool{
+	toolList := []types.Tool{
 		{
 			Name:            "test_tool",
 			Description:     "Test",
@@ -280,7 +283,7 @@ func TestToolOptionsNilSafety(t *testing.T) {
 		},
 	}
 
-	result := ToAnthropicFormatWithCache(tools)
+	result := ToAnthropicFormatWithCache(toolList)
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 tool, got %d", len(result))
@@ -289,4 +292,207 @@ func TestToolOptionsNilSafety(t *testing.T) {
 	if _, hasCacheControl := result[0]["cache_control"]; hasCacheControl {
 		t.Error("Expected no cache_control for nil ProviderOptions")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Beta header injection — web tools 20260209
+// ---------------------------------------------------------------------------
+
+func TestWebSearch20260209BetaHeaderInjected(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{tools.WebSearch20260209(tools.WebSearch20260209Config{})},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if !headerContains(header, BetaHeaderWebTools20260209) {
+		t.Errorf("header %q does not contain %q", header, BetaHeaderWebTools20260209)
+	}
+}
+
+func TestWebFetch20260209BetaHeaderInjected(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{tools.WebFetch20260209(tools.WebFetch20260209Config{})},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if !headerContains(header, BetaHeaderWebTools20260209) {
+		t.Errorf("header %q does not contain %q", header, BetaHeaderWebTools20260209)
+	}
+}
+
+func TestWebToolsBetaHeaderAbsentForOtherTools(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{
+			{Name: "my_fn", Parameters: map[string]interface{}{"type": "object"}},
+		},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if headerContains(header, BetaHeaderWebTools20260209) {
+		t.Errorf("web-tools beta should not appear for non-web tools, got %q", header)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeferLoading serialization
+// ---------------------------------------------------------------------------
+
+func TestDeferLoadingTrueSerializedInTool(t *testing.T) {
+	deferLoad := true
+	tool := types.Tool{
+		Name:            "my_function",
+		Parameters:      map[string]interface{}{"type": "object"},
+		ProviderOptions: &ToolOptions{DeferLoading: &deferLoad},
+	}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if converted[0]["defer_loading"] != true {
+		t.Errorf("defer_loading = %v, want true", converted[0]["defer_loading"])
+	}
+}
+
+func TestDeferLoadingFalseSerializedInTool(t *testing.T) {
+	deferLoad := false
+	tool := types.Tool{
+		Name:            "my_function",
+		Parameters:      map[string]interface{}{"type": "object"},
+		ProviderOptions: &ToolOptions{DeferLoading: &deferLoad},
+	}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if converted[0]["defer_loading"] != false {
+		t.Errorf("defer_loading = %v, want false", converted[0]["defer_loading"])
+	}
+}
+
+func TestDeferLoadingAbsentByDefault(t *testing.T) {
+	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if _, ok := converted[0]["defer_loading"]; ok {
+		t.Error("defer_loading should not be present when DeferLoading is nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AllowedCallers serialization + beta header
+// ---------------------------------------------------------------------------
+
+func TestAllowedCallersSerializedInTool(t *testing.T) {
+	tool := types.Tool{
+		Name:       "my_function",
+		Parameters: map[string]interface{}{"type": "object"},
+		ProviderOptions: &ToolOptions{
+			AllowedCallers: []string{"direct", "code_execution_20260120"},
+		},
+	}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	callers, ok := converted[0]["allowed_callers"].([]string)
+	if !ok {
+		t.Fatalf("allowed_callers type = %T, want []string", converted[0]["allowed_callers"])
+	}
+	if len(callers) != 2 || callers[0] != "direct" || callers[1] != "code_execution_20260120" {
+		t.Errorf("allowed_callers = %v, want [direct code_execution_20260120]", callers)
+	}
+}
+
+func TestAllowedCallersAbsentByDefault(t *testing.T) {
+	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if _, ok := converted[0]["allowed_callers"]; ok {
+		t.Error("allowed_callers should not be present when AllowedCallers is empty")
+	}
+}
+
+func TestAllowedCallersBetaHeaderInjected(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{{
+			Name:            "my_function",
+			Parameters:      map[string]interface{}{"type": "object"},
+			ProviderOptions: &ToolOptions{AllowedCallers: []string{"direct"}},
+		}},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if !headerContains(header, BetaHeaderAdvancedToolUse) {
+		t.Errorf("header %q does not contain %q", header, BetaHeaderAdvancedToolUse)
+	}
+}
+
+func TestAllowedCallersBetaAbsentWhenEmpty(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if headerContains(header, BetaHeaderAdvancedToolUse) {
+		t.Errorf("advanced-tool-use beta should not appear without AllowedCallers/InputExamples, got %q", header)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InputExamples serialization + beta header
+// ---------------------------------------------------------------------------
+
+func TestInputExamplesSerializedInTool(t *testing.T) {
+	tool := types.Tool{
+		Name:       "my_function",
+		Parameters: map[string]interface{}{"type": "object"},
+		InputExamples: []types.ToolInputExample{
+			{Input: map[string]interface{}{"query": "hello world"}},
+			{Input: map[string]interface{}{"query": "foo bar"}},
+		},
+	}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	examples, ok := converted[0]["input_examples"].([]interface{})
+	if !ok {
+		t.Fatalf("input_examples type = %T, want []interface{}", converted[0]["input_examples"])
+	}
+	if len(examples) != 2 {
+		t.Fatalf("input_examples len = %d, want 2", len(examples))
+	}
+	first := examples[0].(map[string]interface{})
+	if first["query"] != "hello world" {
+		t.Errorf("input_examples[0][query] = %v, want hello world", first["query"])
+	}
+}
+
+func TestInputExamplesAbsentByDefault(t *testing.T) {
+	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if _, ok := converted[0]["input_examples"]; ok {
+		t.Error("input_examples should not be present when InputExamples is empty")
+	}
+}
+
+func TestInputExamplesBetaHeaderInjected(t *testing.T) {
+	m := &LanguageModel{}
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{{
+			Name:          "my_function",
+			Parameters:    map[string]interface{}{"type": "object"},
+			InputExamples: []types.ToolInputExample{{Input: map[string]interface{}{"q": "test"}}},
+		}},
+	}
+	header := m.combineBetaHeaders(opts, false)
+	if !headerContains(header, BetaHeaderAdvancedToolUse) {
+		t.Errorf("header %q does not contain %q", header, BetaHeaderAdvancedToolUse)
+	}
+}
+
+func TestInputExamplesNotOnProviderTools(t *testing.T) {
+	// Provider tools self-serialize; InputExamples must not bleed into their map.
+	tool := tools.WebSearch20260209(tools.WebSearch20260209Config{})
+	tool.InputExamples = []types.ToolInputExample{{Input: map[string]interface{}{"query": "test"}}}
+	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	if _, ok := converted[0]["input_examples"]; ok {
+		t.Error("input_examples must not appear on provider tools (they self-serialize)")
+	}
+}
+
+// headerContains checks if target appears in a comma-separated header string.
+func headerContains(headers, target string) bool {
+	for _, h := range strings.Split(headers, ",") {
+		if strings.TrimSpace(h) == target {
+			return true
+		}
+	}
+	return false
 }
