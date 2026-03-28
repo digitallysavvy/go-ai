@@ -166,7 +166,7 @@ func TestPrepareTools_ApplyPatch(t *testing.T) {
 func TestPrepareTools_CustomTool_WithGrammarFormat(t *testing.T) {
 	syntax := "lark"
 	def := `start: WORD`
-	ct := openaitool.NewCustomTool("json-extractor",
+	ct := openaitool.NewCustomTool(
 		openaitool.WithDescription("Extract JSON"),
 		openaitool.WithFormat(openaitool.CustomToolFormat{
 			Type:       "grammar",
@@ -174,7 +174,7 @@ func TestPrepareTools_CustomTool_WithGrammarFormat(t *testing.T) {
 			Definition: &def,
 		}),
 	)
-	sdkTool := ct.ToTool()
+	sdkTool := ct.ToTool("json-extractor")
 
 	result := PrepareTools([]types.Tool{sdkTool})
 	if len(result) != 1 {
@@ -206,10 +206,10 @@ func TestPrepareTools_CustomTool_WithGrammarFormat(t *testing.T) {
 }
 
 func TestPrepareTools_CustomTool_WithTextFormat(t *testing.T) {
-	ct := openaitool.NewCustomTool("text-tool",
+	ct := openaitool.NewCustomTool(
 		openaitool.WithFormat(openaitool.CustomToolFormat{Type: "text"}),
 	)
-	sdkTool := ct.ToTool()
+	sdkTool := ct.ToTool("text-tool")
 
 	result := PrepareTools([]types.Tool{sdkTool})
 	toolDef, ok := result[0].(CustomToolDef)
@@ -225,8 +225,8 @@ func TestPrepareTools_CustomTool_WithTextFormat(t *testing.T) {
 }
 
 func TestPrepareTools_CustomTool_NoFormat(t *testing.T) {
-	ct := openaitool.NewCustomTool("simple-tool")
-	sdkTool := ct.ToTool()
+	ct := openaitool.NewCustomTool()
+	sdkTool := ct.ToTool("simple-tool")
 
 	result := PrepareTools([]types.Tool{sdkTool})
 	toolDef, ok := result[0].(CustomToolDef)
@@ -239,6 +239,9 @@ func TestPrepareTools_CustomTool_NoFormat(t *testing.T) {
 	if toolDef.Description != nil {
 		t.Error("Description should be nil")
 	}
+	if toolDef.Name != "simple-tool" {
+		t.Errorf("Name: got %q, want %q", toolDef.Name, "simple-tool")
+	}
 }
 
 func TestPrepareTools_MixedTools_SerializesToJSON(t *testing.T) {
@@ -248,7 +251,7 @@ func TestPrepareTools_MixedTools_SerializesToJSON(t *testing.T) {
 		NewLocalShellTool(),
 		NewShellTool(),
 		NewApplyPatchTool(),
-		openaitool.NewCustomTool("my-tool").ToTool(),
+		openaitool.NewCustomTool().ToTool("my-tool"),
 	}
 
 	result := PrepareTools(tools)
@@ -299,5 +302,86 @@ func TestPrepareTools_Shell_NetworkPolicy(t *testing.T) {
 	}
 	if len(def.Environment.NetworkPolicy.AllowedDomains) != 1 {
 		t.Error("AllowedDomains count mismatch")
+	}
+}
+
+// TestPrepareTools_ToolSearch_ServerMode verifies tool_search in server mode.
+func TestPrepareTools_ToolSearch_ServerMode(t *testing.T) {
+	tool := openaitool.ToolSearch(openaitool.ToolSearchArgs{})
+
+	result := PrepareTools([]types.Tool{tool})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result))
+	}
+
+	def, ok := result[0].(ToolSearchToolDef)
+	if !ok {
+		t.Fatalf("expected ToolSearchToolDef, got %T", result[0])
+	}
+	if def.Type != "tool_search" {
+		t.Errorf("Type: got %q, want %q", def.Type, "tool_search")
+	}
+	// Server mode: Execution field is omitted (OpenAI default)
+	if def.Execution != "" {
+		t.Errorf("Execution: got %q, want empty (server default)", def.Execution)
+	}
+}
+
+// TestPrepareTools_ToolSearch_ClientMode verifies tool_search in client mode.
+func TestPrepareTools_ToolSearch_ClientMode(t *testing.T) {
+	tool := openaitool.ToolSearch(openaitool.ToolSearchArgs{
+		Execution:   "client",
+		Description: "Find tools matching a query",
+		Parameters: map[string]interface{}{
+			"type": "object",
+		},
+	})
+
+	result := PrepareTools([]types.Tool{tool})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result))
+	}
+
+	def, ok := result[0].(ToolSearchToolDef)
+	if !ok {
+		t.Fatalf("expected ToolSearchToolDef, got %T", result[0])
+	}
+	if def.Type != "tool_search" {
+		t.Errorf("Type: got %q, want %q", def.Type, "tool_search")
+	}
+	if def.Execution != "client" {
+		t.Errorf("Execution: got %q, want %q", def.Execution, "client")
+	}
+	if def.Description != "Find tools matching a query" {
+		t.Errorf("Description: got %q", def.Description)
+	}
+	if def.Parameters == nil {
+		t.Error("Parameters should not be nil for client mode")
+	}
+}
+
+// TestPrepareTools_ToolSearch_SerializesToJSON verifies JSON wire format.
+func TestPrepareTools_ToolSearch_SerializesToJSON(t *testing.T) {
+	tool := openaitool.ToolSearch(openaitool.ToolSearchArgs{Execution: "client", Description: "search"})
+	result := PrepareTools([]types.Tool{tool})
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var raw []map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if len(raw) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(raw))
+	}
+	if raw[0]["type"] != "tool_search" {
+		t.Errorf("type: got %v, want tool_search", raw[0]["type"])
+	}
+	if raw[0]["execution"] != "client" {
+		t.Errorf("execution: got %v, want client", raw[0]["execution"])
 	}
 }

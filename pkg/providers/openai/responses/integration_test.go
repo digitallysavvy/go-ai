@@ -33,7 +33,7 @@ func TestIntegration_CustomTool_WireFormat(t *testing.T) {
 	// Build custom tool
 	syntax := "lark"
 	def := `start: WORD`
-	ct := openaitool.NewCustomTool("json-tool",
+	ct := openaitool.NewCustomTool(
 		openaitool.WithDescription("Extract JSON"),
 		openaitool.WithFormat(openaitool.CustomToolFormat{
 			Type:       "grammar",
@@ -42,7 +42,7 @@ func TestIntegration_CustomTool_WireFormat(t *testing.T) {
 		}),
 	)
 
-	tools := PrepareTools([]types.Tool{ct.ToTool()})
+	tools := PrepareTools([]types.Tool{ct.ToTool("json-tool")})
 
 	reqBody := map[string]interface{}{
 		"model": "gpt-4o",
@@ -194,12 +194,12 @@ func TestIntegration_LiveOpenAI_CustomTool(t *testing.T) {
 	ctx := context.Background()
 	_ = ctx
 
-	ct := openaitool.NewCustomTool("sentiment-analyzer",
+	ct := openaitool.NewCustomTool(
 		openaitool.WithDescription("Analyze sentiment of text"),
 		openaitool.WithFormat(openaitool.CustomToolFormat{Type: "text"}),
 	)
 
-	tools := PrepareTools([]types.Tool{ct.ToTool()})
+	tools := PrepareTools([]types.Tool{ct.ToTool("sentiment-analyzer")})
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}

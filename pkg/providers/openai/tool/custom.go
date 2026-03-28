@@ -10,16 +10,19 @@
 //
 //	syntax := "lark"
 //	definition := `start: OBJECT\nOBJECT: "{" pair* "}"\n...`
-//	tool := openaitool.NewCustomTool("json-extractor",
+//	tool := openaitool.NewCustomTool(
 //	    openaitool.WithDescription("Extract JSON matching a schema"),
 //	    openaitool.WithFormat(openaitool.CustomToolFormat{
 //	        Type:       "grammar",
 //	        Syntax:     &syntax,
 //	        Definition: &definition,
 //	    }),
-//	)
+//	).ToTool("json-extractor")
 //	// Convert to types.Tool for use with GenerateText:
-//	sdkTool := tool.ToTool()
+//	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+//	    Model: model,
+//	    Tools: []types.Tool{tool},
+//	})
 package tool
 
 import (
@@ -48,10 +51,11 @@ type CustomToolFormat struct {
 // CustomTool defines an OpenAI custom tool for the Responses API.
 // Custom tools constrain model output using grammar or text format specifications.
 // They are executed by the OpenAI API, not locally.
+//
+// The tool name is not stored in CustomTool itself — it is supplied when calling
+// ToTool("tool-name"), so the name is derived from the caller's context (e.g., the
+// key in a tools map), matching the TypeScript SDK's key-based naming convention.
 type CustomTool struct {
-	// Name is the unique identifier for this custom tool.
-	Name string `json:"name"`
-
 	// Description explains what the tool does (optional).
 	Description *string `json:"description,omitempty"`
 
@@ -77,22 +81,23 @@ func WithFormat(format CustomToolFormat) CustomToolOption {
 	}
 }
 
-// NewCustomTool creates a new CustomTool with the given name and options.
+// NewCustomTool creates a new CustomTool with the given options.
+// The tool name is not provided here — supply it when calling ToTool("name").
 //
 // Example:
 //
 //	syntax := "lark"
 //	definition := `start: OBJECT\n...`
-//	tool := openaitool.NewCustomTool("json-extractor",
+//	tool := openaitool.NewCustomTool(
 //	    openaitool.WithDescription("Extract JSON matching a schema"),
 //	    openaitool.WithFormat(openaitool.CustomToolFormat{
 //	        Type:       "grammar",
 //	        Syntax:     &syntax,
 //	        Definition: &definition,
 //	    }),
-//	)
-func NewCustomTool(name string, opts ...CustomToolOption) CustomTool {
-	ct := CustomTool{Name: name}
+//	).ToTool("json-extractor")
+func NewCustomTool(opts ...CustomToolOption) CustomTool {
+	ct := CustomTool{}
 	for _, opt := range opts {
 		opt(&ct)
 	}
@@ -100,24 +105,24 @@ func NewCustomTool(name string, opts ...CustomToolOption) CustomTool {
 }
 
 // ToTool converts a CustomTool to a types.Tool for use with generate functions.
-// The tool name is set to "openai.custom" so the OpenAI Responses API provider
-// knows to serialize it as a custom tool definition.
+// The name parameter sets the tool's identifier — it will be used as the "name"
+// field in the OpenAI Responses API wire format.
 //
 // Example:
 //
-//	sdkTool := tool.ToTool()
+//	sdkTool := openaitool.NewCustomTool(openaitool.WithDescription("a tool")).ToTool("my-tool")
 //	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 //	    Model: model,
 //	    Tools: []types.Tool{sdkTool},
 //	})
-func (ct CustomTool) ToTool() types.Tool {
+func (ct CustomTool) ToTool(name string) types.Tool {
 	return types.Tool{
-		Name:             "openai.custom",
+		Name:             name,
 		Description:      func() string { if ct.Description != nil { return *ct.Description }; return "" }(),
 		ProviderExecuted: true,
 		ProviderOptions:  ct,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("custom tool %q is executed by the OpenAI API, not locally", ct.Name)
+			return nil, fmt.Errorf("custom tool %q is executed by the OpenAI API, not locally", name)
 		},
 	}
 }

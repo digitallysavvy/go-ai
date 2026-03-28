@@ -6,10 +6,7 @@ import (
 )
 
 func TestNewCustomTool_NoOptions(t *testing.T) {
-	ct := NewCustomTool("my-tool")
-	if ct.Name != "my-tool" {
-		t.Errorf("expected name %q, got %q", "my-tool", ct.Name)
-	}
+	ct := NewCustomTool()
 	if ct.Description != nil {
 		t.Error("expected nil description")
 	}
@@ -19,7 +16,7 @@ func TestNewCustomTool_NoOptions(t *testing.T) {
 }
 
 func TestNewCustomTool_WithDescription(t *testing.T) {
-	ct := NewCustomTool("my-tool", WithDescription("does something"))
+	ct := NewCustomTool(WithDescription("does something"))
 	if ct.Description == nil || *ct.Description != "does something" {
 		t.Errorf("expected description %q", "does something")
 	}
@@ -28,7 +25,7 @@ func TestNewCustomTool_WithDescription(t *testing.T) {
 func TestNewCustomTool_WithGrammarFormat(t *testing.T) {
 	syntax := "lark"
 	def := `start: WORD`
-	ct := NewCustomTool("grammar-tool", WithFormat(CustomToolFormat{
+	ct := NewCustomTool(WithFormat(CustomToolFormat{
 		Type:       "grammar",
 		Syntax:     &syntax,
 		Definition: &def,
@@ -49,7 +46,7 @@ func TestNewCustomTool_WithGrammarFormat(t *testing.T) {
 }
 
 func TestNewCustomTool_WithTextFormat(t *testing.T) {
-	ct := NewCustomTool("text-tool", WithFormat(CustomToolFormat{
+	ct := NewCustomTool(WithFormat(CustomToolFormat{
 		Type: "text",
 	}))
 
@@ -124,7 +121,6 @@ func TestCustomTool_JSON_RoundTrip(t *testing.T) {
 	def := `start: WORD`
 
 	original := CustomTool{
-		Name:        "json-extractor",
 		Description: &desc,
 		Format: &CustomToolFormat{
 			Type:       "grammar",
@@ -143,9 +139,6 @@ func TestCustomTool_JSON_RoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	if got.Name != original.Name {
-		t.Errorf("name: got %q, want %q", got.Name, original.Name)
-	}
 	if got.Description == nil || *got.Description != *original.Description {
 		t.Error("description mismatch")
 	}
@@ -158,7 +151,7 @@ func TestCustomTool_JSON_RoundTrip(t *testing.T) {
 }
 
 func TestCustomTool_JSON_NoFormat(t *testing.T) {
-	ct := NewCustomTool("simple-tool")
+	ct := NewCustomTool()
 	data, err := json.Marshal(ct)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
@@ -177,11 +170,11 @@ func TestCustomTool_JSON_NoFormat(t *testing.T) {
 }
 
 func TestCustomTool_ToTool(t *testing.T) {
-	ct := NewCustomTool("my-tool", WithDescription("a tool"))
-	sdkTool := ct.ToTool()
+	ct := NewCustomTool(WithDescription("a tool"))
+	sdkTool := ct.ToTool("my-tool")
 
-	if sdkTool.Name != "openai.custom" {
-		t.Errorf("expected name %q, got %q", "openai.custom", sdkTool.Name)
+	if sdkTool.Name != "my-tool" {
+		t.Errorf("expected name %q, got %q", "my-tool", sdkTool.Name)
 	}
 	if !sdkTool.ProviderExecuted {
 		t.Error("expected ProviderExecuted to be true")
@@ -190,11 +183,23 @@ func TestCustomTool_ToTool(t *testing.T) {
 		t.Error("expected ProviderOptions to be set")
 	}
 	// ProviderOptions should be the CustomTool itself
-	ctOpts, ok := sdkTool.ProviderOptions.(CustomTool)
+	_, ok := sdkTool.ProviderOptions.(CustomTool)
 	if !ok {
 		t.Errorf("ProviderOptions should be CustomTool, got %T", sdkTool.ProviderOptions)
 	}
-	if ctOpts.Name != "my-tool" {
-		t.Errorf("ProviderOptions.Name: got %q, want %q", ctOpts.Name, "my-tool")
+}
+
+// TestCustomTool_ToTool_NameFromCaller verifies that the tool name comes from
+// the ToTool argument, not stored internally in CustomTool.
+func TestCustomTool_ToTool_NameFromCaller(t *testing.T) {
+	ct := NewCustomTool()
+	tool1 := ct.ToTool("extractor")
+	tool2 := ct.ToTool("analyzer")
+
+	if tool1.Name != "extractor" {
+		t.Errorf("tool1.Name = %q, want %q", tool1.Name, "extractor")
+	}
+	if tool2.Name != "analyzer" {
+		t.Errorf("tool2.Name = %q, want %q", tool2.Name, "analyzer")
 	}
 }

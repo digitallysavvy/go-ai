@@ -30,15 +30,20 @@ func PrepareTools(tools []types.Tool) []interface{} {
 
 // convertTool converts a single types.Tool to its Responses API representation.
 func convertTool(t types.Tool) interface{} {
-	switch t.Name {
-	case "openai.custom":
+	// Custom tools are detected by ProviderOptions type since t.Name holds the
+	// caller-assigned tool name (not the "openai.custom" sentinel).
+	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
 		return convertCustomTool(t)
+	}
+	switch t.Name {
 	case "openai.local_shell":
 		return LocalShellToolDef{Type: "local_shell"}
 	case "openai.shell":
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.tool_search":
+		return convertToolSearchTool(t)
 	default:
 		return convertFunctionTool(t)
 	}
@@ -46,17 +51,15 @@ func convertTool(t types.Tool) interface{} {
 
 // convertCustomTool builds a CustomToolDef from a tool whose ProviderOptions
 // holds an openaitool.CustomTool value.
+// The tool name is taken from t.Name (set by the caller via ToTool("name")).
 func convertCustomTool(t types.Tool) CustomToolDef {
-	def := CustomToolDef{Type: "custom"}
+	def := CustomToolDef{Type: "custom", Name: t.Name}
 
 	ct, ok := t.ProviderOptions.(openaitool.CustomTool)
 	if !ok {
-		// Fallback: use the SDK tool name as the custom tool name.
-		def.Name = t.Name
 		return def
 	}
 
-	def.Name = ct.Name
 	def.Description = ct.Description
 
 	if ct.Format != nil {
@@ -68,6 +71,28 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 			f.Definition = ct.Format.Definition
 		}
 		def.Format = f
+	}
+
+	return def
+}
+
+// convertToolSearchTool builds a ToolSearchToolDef from a tool_search tool.
+func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
+	def := ToolSearchToolDef{Type: "tool_search"}
+
+	opts, ok := t.ProviderOptions.(openaitool.ToolSearchOptions)
+	if ok && opts.Execution != "" && opts.Execution != "server" {
+		def.Execution = opts.Execution
+	}
+
+	if t.Description != "" {
+		def.Description = t.Description
+	}
+
+	if t.Parameters != nil {
+		if params, ok := t.Parameters.(map[string]interface{}); ok {
+			def.Parameters = params
+		}
 	}
 
 	return def

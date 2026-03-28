@@ -9,8 +9,15 @@ func TestOpenAIModelIDs(t *testing.T) {
 		constant string
 		expected string
 	}{
+		// GPT-5.4 series
+		{"GPT54", ModelGPT54, "gpt-5.4"},
+		{"GPT54Pro", ModelGPT54Pro, "gpt-5.4-pro"},
+		{"GPT542026_03_05", ModelGPT542026_03_05, "gpt-5.4-2026-03-05"},
+		{"GPT54Pro2026_03_05", ModelGPT54Pro2026_03_05, "gpt-5.4-pro-2026-03-05"},
+
 		// GPT-5.3 Codex
 		{"GPT53Codex", ModelGPT53Codex, "gpt-5.3-codex"},
+		{"GPT53ChatLatest", ModelGPT53ChatLatest, "gpt-5.3-chat-latest"},
 
 		// GPT-5 series
 		{"GPT5", ModelGPT5, "gpt-5"},
@@ -77,6 +84,52 @@ func TestOpenAIModelIDs(t *testing.T) {
 				t.Errorf("model ID constant %s = %q, want %q", tt.name, tt.constant, tt.expected)
 			}
 		})
+	}
+}
+
+// TestGPT54CapabilitiesSupportsStructuredOutput verifies that all gpt-5.4 models
+// can be used with the provider and report the expected capabilities.
+func TestGPT54CapabilitiesSupportsStructuredOutput(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	models := []struct {
+		name    string
+		modelID string
+	}{
+		{"GPT54", ModelGPT54},
+		{"GPT54Pro", ModelGPT54Pro},
+		{"GPT542026_03_05", ModelGPT542026_03_05},
+		{"GPT54Pro2026_03_05", ModelGPT54Pro2026_03_05},
+	}
+
+	for _, tt := range models {
+		t.Run(tt.name, func(t *testing.T) {
+			model, err := p.LanguageModel(tt.modelID)
+			if err != nil {
+				t.Fatalf("LanguageModel(%q) returned error: %v", tt.modelID, err)
+			}
+			if model.ModelID() != tt.modelID {
+				t.Errorf("ModelID() = %q, want %q", model.ModelID(), tt.modelID)
+			}
+			if !model.SupportsStructuredOutput() {
+				t.Errorf("SupportsStructuredOutput() = false, want true for %q", tt.modelID)
+			}
+			if !model.SupportsTools() {
+				t.Errorf("SupportsTools() = false, want true for %q", tt.modelID)
+			}
+		})
+	}
+}
+
+// TestGPT53ChatLatestAccepted verifies gpt-5.3-chat-latest can be used with the provider.
+func TestGPT53ChatLatestAccepted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model, err := p.LanguageModel(ModelGPT53ChatLatest)
+	if err != nil {
+		t.Fatalf("LanguageModel(%q) returned error: %v", ModelGPT53ChatLatest, err)
+	}
+	if model.ModelID() != ModelGPT53ChatLatest {
+		t.Errorf("ModelID() = %q, want %q", model.ModelID(), ModelGPT53ChatLatest)
 	}
 }
 

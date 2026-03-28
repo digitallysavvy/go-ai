@@ -75,8 +75,15 @@ const (
 	ModelGPT52Pro          = "gpt-5.2-pro"
 	ModelGPT52Pro_2025_12_11 = "gpt-5.2-pro-2025-12-11"
 
-	// GPT-5.3 Codex — coding-focused model added in #12814
-	ModelGPT53Codex = "gpt-5.3-codex"
+	// GPT-5.3 series
+	ModelGPT53Codex      = "gpt-5.3-codex"
+	ModelGPT53ChatLatest = "gpt-5.3-chat-latest"
+
+	// GPT-5.4 series
+	ModelGPT54              = "gpt-5.4"
+	ModelGPT54Pro           = "gpt-5.4-pro"
+	ModelGPT542026_03_05    = "gpt-5.4-2026-03-05"
+	ModelGPT54Pro2026_03_05 = "gpt-5.4-pro-2026-03-05"
 )
 
 // Image model ID constants for OpenAI image generation models.
