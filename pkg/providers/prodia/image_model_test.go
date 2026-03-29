@@ -116,12 +116,13 @@ func TestProdiaProviderName(t *testing.T) {
 	}
 }
 
-// TestProdiaImageModelProvider verifies the image model provider name.
+// TestProdiaImageModelProvider verifies the image model provider name matches
+// the TypeScript SDK's "prodia.image" value.
 func TestProdiaImageModelProvider(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewImageModel(prov, "inference.flux-fast.schnell.txt2img.v2")
-	if model.Provider() != "prodia" {
-		t.Errorf("Provider() = %q, want %q", model.Provider(), "prodia")
+	if model.Provider() != "prodia.image" {
+		t.Errorf("Provider() = %q, want %q", model.Provider(), "prodia.image")
 	}
 	if model.ModelID() != "inference.flux-fast.schnell.txt2img.v2" {
 		t.Errorf("ModelID() = %q, want %q", model.ModelID(), "inference.flux-fast.schnell.txt2img.v2")

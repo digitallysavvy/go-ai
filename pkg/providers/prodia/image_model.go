@@ -1,13 +1,9 @@
 package prodia
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -34,9 +30,10 @@ func (m *ImageModel) SpecificationVersion() string {
 	return "v3"
 }
 
-// Provider returns the provider name
+// Provider returns the provider identifier for this model type.
+// Matches the TypeScript SDK's config.provider value: "prodia.image".
 func (m *ImageModel) Provider() string {
-	return "prodia"
+	return "prodia.image"
 }
 
 // ModelID returns the model ID
@@ -56,7 +53,7 @@ type ProdiaImageProviderOptions struct {
 	Height *int `json:"height,omitempty"`
 
 	// StylePreset applies a visual theme to the output image.
-	StylePreset *string `json:"style_preset,omitempty"`
+	StylePreset *string `json:"stylePreset,omitempty"`
 
 	// Loras specifies LoRA model augmentations (max 3).
 	Loras []string `json:"loras,omitempty"`
@@ -87,15 +84,30 @@ func extractProviderOptions(opts *provider.ImageGenerateOptions) *ProdiaImagePro
 
 // DoGenerate performs image generation using the Prodia API.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	var warnings []types.Warning
+
+	// Warn about invalid size format — matches TS getArgs warning.
+	if opts.Size != "" {
+		var w, h int
+		n, _ := fmt.Sscanf(opts.Size, "%dx%d", &w, &h)
+		if n != 2 || w <= 0 || h <= 0 {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Message: fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size),
+			})
+		}
+	}
+
 	provOpts := extractProviderOptions(opts)
 
 	reqBody := m.buildRequestBody(opts, provOpts)
 
 	resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-		Method: "POST",
-		Path:   "/job",
-		Body:   reqBody,
-		Query:  m.buildQuery(),
+		Method:  "POST",
+		Path:    "/job",
+		Body:    reqBody,
+		Query:   m.buildQuery(),
+		Headers: map[string]string{"Accept": "multipart/form-data; image/png"},
 	})
 	if err != nil {
 		return nil, providererrors.NewProviderError("prodia", 0, "", err.Error(), err)
@@ -118,6 +130,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	result := &types.ImageResult{
 		Image:    imageData,
 		MimeType: mimeType,
+		Warnings: warnings,
+		ProviderMetadata: map[string]interface{}{
+			"prodia": map[string]interface{}{
+				"images": []interface{}{buildProdiaProviderMetadata(jobResp)},
+			},
+		},
 	}
 	if len(imageData) == 0 && jobResp.ImageURL != "" {
 		result.URL = jobResp.ImageURL
@@ -179,65 +197,3 @@ func (m *ImageModel) buildQuery() map[string]string {
 	return map[string]string{"price": "true"}
 }
 
-// parseMultipartResponse parses a multipart/form-data response from the Prodia API.
-// It extracts the "job" JSON metadata part and the "output" binary image part.
-// Returns the job metadata, image bytes, image MIME type, and any error.
-func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse, []byte, string, error) {
-	_, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
-	}
-
-	boundary, ok := params["boundary"]
-	if !ok {
-		return nil, nil, "", fmt.Errorf("multipart response missing boundary in Content-Type %q", contentType)
-	}
-
-	mr := multipart.NewReader(bytes.NewReader(body), boundary)
-	var jobResp *prodiaJobResponse
-	var imageData []byte
-	var imageMIME string
-
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("failed to read multipart part: %w", err)
-		}
-
-		partData, err := io.ReadAll(part)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("failed to read multipart part data: %w", err)
-		}
-
-		switch part.FormName() {
-		case "job":
-			var j prodiaJobResponse
-			if err := json.Unmarshal(partData, &j); err != nil {
-				return nil, nil, "", fmt.Errorf("failed to parse job metadata: %w", err)
-			}
-			jobResp = &j
-		case "output":
-			imageData = partData
-			if ct := part.Header.Get("Content-Type"); ct != "" {
-				if mt, _, err := mime.ParseMediaType(ct); err == nil {
-					imageMIME = mt
-				}
-			}
-		}
-	}
-
-	if jobResp == nil {
-		return nil, nil, "", fmt.Errorf("multipart response missing 'job' part")
-	}
-
-	return jobResp, imageData, imageMIME, nil
-}
-
-// prodiaJobResponse represents the Prodia job API response metadata.
-type prodiaJobResponse struct {
-	ID       string `json:"id"`
-	ImageURL string `json:"imageUrl,omitempty"`
-}
