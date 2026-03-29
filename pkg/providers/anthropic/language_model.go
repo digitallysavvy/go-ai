@@ -654,10 +654,10 @@ func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, strea
 				needed[BetaHeaderCodeExecution20250825] = true
 			case "anthropic.code_execution_20250522":
 				needed[BetaHeaderCodeExecution20250522] = true
-			case "anthropic.web_search_20260209", "anthropic.web_fetch_20260209":
-				needed[BetaHeaderWebTools20260209] = true
 			case "anthropic.web_fetch_20250910":
 				needed[BetaHeaderWebFetch20250910] = true
+			case "anthropic.web_search_20260209", "anthropic.web_fetch_20260209":
+				needed[BetaHeaderWebTools20260209] = true
 			case "anthropic.bash_20241022", "anthropic.computer_20241022", "anthropic.text_editor_20241022":
 				needed[BetaHeaderComputerUse20241022] = true
 			case "anthropic.bash_20250124", "anthropic.computer_20250124",
@@ -684,8 +684,8 @@ func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, strea
 			BetaHeaderCodeExecution,
 			BetaHeaderCodeExecution20250522,
 			BetaHeaderCodeExecution20250825,
-			BetaHeaderWebTools20260209,
 			BetaHeaderWebFetch20250910,
+			BetaHeaderWebTools20260209,
 			BetaHeaderComputerUse20241022,
 			BetaHeaderComputerUse20250124,
 			BetaHeaderComputerUse20251124,
@@ -827,9 +827,34 @@ func filterReasoningContent(messages []types.Message) []types.Message {
 	return filtered
 }
 
-// handleError converts various errors to provider errors
+// anthropicErrorBody is the top-level structure of an Anthropic API error response.
+// Example: {"type":"error","error":{"type":"overloaded_error","message":"..."}}
+type anthropicErrorBody struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// handleError converts various errors to provider errors.
+// It attempts to parse Anthropic API error responses (HTTP NNN: {...}) so that
+// error.type is surfaced as ProviderError.ErrorCode rather than being lost.
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("anthropic", 0, "", err.Error(), err)
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	// HTTP errors from the internal client look like "HTTP NNN: <body>"
+	// Try to find the JSON body portion.
+	if idx := strings.Index(msg, ": {"); idx != -1 {
+		jsonPart := msg[idx+2:]
+		var body anthropicErrorBody
+		if jsonErr := json.Unmarshal([]byte(jsonPart), &body); jsonErr == nil && body.Error.Type != "" {
+			return providererrors.NewProviderError("anthropic", 0, body.Error.Type, body.Error.Message, err)
+		}
+	}
+	return providererrors.NewProviderError("anthropic", 0, "", msg, err)
 }
 
 // anthropicMaxOutputTokens returns the maximum output tokens for a given Anthropic model.

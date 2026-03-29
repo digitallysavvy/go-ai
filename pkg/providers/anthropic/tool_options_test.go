@@ -298,25 +298,26 @@ func TestToolOptionsNilSafety(t *testing.T) {
 // Beta header injection — web tools 20260209
 // ---------------------------------------------------------------------------
 
-func TestWebSearch20260209BetaHeaderInjected(t *testing.T) {
+// TestAnthropicWebTools20260209BetaHeaderInjected verifies that web_search_20260209
+// and web_fetch_20260209 inject the code-execution-web-tools-2026-02-09 beta header,
+// matching the TypeScript SDK behaviour in anthropic-prepare-tools.ts.
+func TestAnthropicWebTools20260209BetaHeaderInjected(t *testing.T) {
 	m := &LanguageModel{}
-	opts := &provider.GenerateOptions{
-		Tools: []types.Tool{tools.WebSearch20260209(tools.WebSearch20260209Config{})},
+	tests := []struct {
+		name string
+		tool types.Tool
+	}{
+		{"web_search_20260209", tools.WebSearch20260209(tools.WebSearch20260209Config{})},
+		{"web_fetch_20260209", tools.WebFetch20260209(tools.WebFetch20260209Config{})},
 	}
-	header := m.combineBetaHeaders(opts, false)
-	if !headerContains(header, BetaHeaderWebTools20260209) {
-		t.Errorf("header %q does not contain %q", header, BetaHeaderWebTools20260209)
-	}
-}
-
-func TestWebFetch20260209BetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
-	opts := &provider.GenerateOptions{
-		Tools: []types.Tool{tools.WebFetch20260209(tools.WebFetch20260209Config{})},
-	}
-	header := m.combineBetaHeaders(opts, false)
-	if !headerContains(header, BetaHeaderWebTools20260209) {
-		t.Errorf("header %q does not contain %q", header, BetaHeaderWebTools20260209)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &provider.GenerateOptions{Tools: []types.Tool{tt.tool}}
+			header := m.combineBetaHeaders(opts, false)
+			if !headerContains(header, BetaHeaderWebTools20260209) {
+				t.Errorf("%s must inject beta header %q, got %q", tt.name, BetaHeaderWebTools20260209, header)
+			}
+		})
 	}
 }
 
