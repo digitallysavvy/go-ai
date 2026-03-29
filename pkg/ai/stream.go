@@ -199,6 +199,11 @@ type StreamTextResult struct {
 	cbMessages []types.Message
 	cbTools    []types.Tool
 	cbSystem   string
+
+	// cbModel and cbStreamOpts are retained so that processStream can start
+	// additional streaming steps when deferred provider tool results are pending.
+	cbModel      provider.LanguageModel
+	cbStreamOpts StreamTextOptions
 }
 
 // StreamText performs streaming text generation
@@ -337,6 +342,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cbMessages:          prompt.Messages,
 		cbTools:             opts.Tools,
 		cbSystem:            opts.System,
+		// Retained for deferred provider tool continuation (P0-4)
+		cbModel:      opts.Model,
+		cbStreamOpts: opts,
 	}
 
 	// Start goroutine to process chunks and call callbacks
@@ -355,133 +363,273 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 //  2. Tool calls are accumulated during streaming; Execute is called only after the
 //     stream is fully consumed (after the loop, not mid-stream).
 //  3. Telemetry is recorded through the telemetry.Span interface (no direct OTel imports).
+//
+// P0-4: Supports multi-step continuation for provider tools with SupportsDeferredResults.
+// When such tools are pending, processStream starts a new DoStream call and loops.
 func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
-	firstChunk := true
-	// pendingToolCalls accumulates tool call chunks received during streaming.
-	// All Execute() calls happen after the stream loop ends (Fix 1).
-	var pendingToolCalls []types.ToolCall
+	opts := r.cbStreamOpts
+	currentMessages := r.cbMessages
 
-	for {
-		chunk, err := r.nextChunk(ctx)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			r.err = err
-			break
-		}
+	// Build tool name → pointer map for deferred provider tool tracking (P0-4).
+	toolsByName := make(map[string]*types.Tool, len(opts.Tools))
+	for i := range opts.Tools {
+		toolsByName[opts.Tools[i].Name] = &opts.Tools[i]
+	}
+	// pendingDeferredToolCalls tracks provider tools (SupportsDeferredResults=true) whose
+	// results haven't arrived yet. Key = toolCallID, value = toolName.
+	pendingDeferredToolCalls := make(map[string]string)
 
-		// Transition from Submitted → Streaming on first received chunk.
-		if firstChunk {
-			firstChunk = false
-			r.mu.Lock()
-			r.status = StreamStatusStreaming
-			r.mu.Unlock()
-		}
+	var allSteps []types.StepResult
+	var allToolCalls []types.ToolCall
+	var allToolResults []types.ToolResult
+	firstChunkEver := true
 
-		// Accumulate warnings from stream-start chunks
-		if chunk.Type == provider.ChunkTypeStreamStart {
-			r.warnings = append(r.warnings, chunk.Warnings...)
-		}
+	for stepNum := 1; ; stepNum++ {
+		// pendingToolCalls accumulates tool call chunks received during this step's stream.
+		// All Execute() calls happen after the stream loop ends (Fix 1).
+		var stepToolCalls []types.ToolCall
+		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
+		// result inline in this step's stream (used for the deferred hasResult check).
+		streamedToolResultIDs := make(map[string]bool)
 
-		// Accumulate text
-		if chunk.Type == provider.ChunkTypeText {
-			r.text += chunk.Text
+		for {
+			chunk, err := r.nextChunk(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				r.err = err
+				break
+			}
 
-			// Update partial output after each text chunk (with deduplication).
-			// Only publishes when the JSON representation of the partial changes,
-			// matching the TypeScript SDK's deduplication behavior.
-			if r.outputSpec != nil {
-				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-					Text: r.text,
-				})
-				if partial != nil {
-					if newJSON, err := json.Marshal(partial); err == nil {
-						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
-							r.lastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
+			// Transition from Submitted → Streaming on first received chunk ever.
+			if firstChunkEver {
+				firstChunkEver = false
+				r.mu.Lock()
+				r.status = StreamStatusStreaming
+				r.mu.Unlock()
+			}
+
+			// Accumulate warnings from stream-start chunks
+			if chunk.Type == provider.ChunkTypeStreamStart {
+				r.warnings = append(r.warnings, chunk.Warnings...)
+			}
+
+			// Accumulate text
+			if chunk.Type == provider.ChunkTypeText {
+				r.text += chunk.Text
+
+				// Update partial output after each text chunk (with deduplication).
+				// Only publishes when the JSON representation of the partial changes,
+				// matching the TypeScript SDK's deduplication behavior.
+				if r.outputSpec != nil {
+					partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+						Text: r.text,
+					})
+					if partial != nil {
+						if newJSON, err := json.Marshal(partial); err == nil {
+							if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+								r.lastPartialJSON = newJSONStr
+								r.mu.Lock()
+								r.partialOutput = partial
+								r.mu.Unlock()
+							}
 						}
 					}
 				}
 			}
+
+			// Accumulate tool call chunks — do NOT execute yet (Fix 1).
+			// The chunk is still forwarded to the consumer below (Fix 2).
+			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
+				stepToolCalls = append(stepToolCalls, *chunk.ToolCall)
+			}
+
+			// Track provider-inline tool results for the deferred hasResult check (P0-4).
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+				streamedToolResultIDs[chunk.ToolResult.ToolCallID] = true
+			}
+
+			// Update finish reason, usage, and context management
+			if chunk.Type == provider.ChunkTypeFinish {
+				r.finishReason = chunk.FinishReason
+				if chunk.ContextManagement != nil {
+					r.contextManagement = chunk.ContextManagement
+				}
+			}
+			if chunk.Usage != nil {
+				r.usage = *chunk.Usage
+			}
+
+			// Accumulate provider metadata from each chunk that carries it.
+			if len(chunk.ProviderMetadata) > 0 {
+				r.mu.Lock()
+				r.providerMetadata = chunk.ProviderMetadata
+				r.mu.Unlock()
+			}
+
+			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
+			if onChunk != nil {
+				onChunk(*chunk)
+			}
+			// Notify telemetry integrations of each chunk.
+			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				ChunkType: string(chunk.Type),
+				Text:      chunk.Text,
+			})
+		}
+		if r.err != nil {
+			break
 		}
 
-		// Accumulate tool call chunks — do NOT execute yet (Fix 1).
-		// The chunk is still forwarded to the consumer below (Fix 2).
-		if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
-			pendingToolCalls = append(pendingToolCalls, *chunk.ToolCall)
+		// Execute accumulated tool calls AFTER stream is fully consumed (Fix 1).
+		// All chunks (including tool call chunks) have already been forwarded above.
+		var stepToolResults []types.ToolResult
+		if len(stepToolCalls) > 0 && len(opts.Tools) > 0 {
+			toolCallbacks := toolCallEventCallbacks{
+				onStart:             r.cbOnToolCallStart,
+				onFinish:            r.cbOnToolCallFinish,
+				stepNum:             stepNum,
+				modelProvider:       r.cbModelProvider,
+				modelID:             r.cbModelID,
+				messages:            currentMessages,
+				experimentalContext: r.cbExperimentalCtx,
+				functionID:          r.cbFuncID,
+				metadata:            r.cbMeta,
+				timeout:             r.timeout,
+			}
+			stepToolResults, _ = executeTools(ctx, stepToolCalls, opts.Tools, r.cbExperimentalCtx, &r.usage, toolCallbacks)
 		}
 
-		// Update finish reason, usage, and context management
-		if chunk.Type == provider.ChunkTypeFinish {
-			r.finishReason = chunk.FinishReason
-			if chunk.ContextManagement != nil {
-				r.contextManagement = chunk.ContextManagement
+		// Gap 3: Forward tool-result chunks to onChunk consumers, matching the
+		// TypeScript SDK's behaviour where tool-result objects flow back through
+		// the stream pipeline after execution.
+		for i := range stepToolResults {
+			resultChunk := provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: &stepToolResults[i],
+			}
+			if onChunk != nil {
+				onChunk(resultChunk)
+			}
+			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				ChunkType: string(provider.ChunkTypeToolResult),
+			})
+		}
+
+		// Deferred provider tool tracking (P0-4, mirrors TS SDK pendingDeferredToolCalls).
+		// Add tool calls whose results haven't arrived yet.
+		// Note: check tool.ProviderExecuted on the definition because some providers
+		// (e.g. Anthropic) do not set ProviderExecuted on the ToolCall itself.
+		for _, call := range stepToolCalls {
+			tool := toolsByName[call.ToolName]
+			if tool == nil || !tool.ProviderExecuted || !tool.SupportsDeferredResults {
+				continue
+			}
+			if !streamedToolResultIDs[call.ID] {
+				pendingDeferredToolCalls[call.ID] = call.ToolName
 			}
 		}
-		if chunk.Usage != nil {
-			r.usage = *chunk.Usage
+		// Remove entries resolved by inline provider results (ChunkTypeToolResult chunks)
+		// delivered in this step's stream. This is the primary resolution path for
+		// deferred tools: the provider streams the result in a subsequent response.
+		// Note: stepToolResults includes placeholder entries for provider-executed tools
+		// (ProviderExecuted=true, Result=nil) — those must NOT clear the pending map.
+		// Only real locally-executed results (ProviderExecuted=false) are safe to clear,
+		// and those tools are never added to pendingDeferredToolCalls anyway, so this is
+		// a no-op for them. Only streamedToolResultIDs represents actual inline results.
+		for callID := range streamedToolResultIDs {
+			delete(pendingDeferredToolCalls, callID)
 		}
 
-		// Accumulate provider metadata from each chunk that carries it.
-		if len(chunk.ProviderMetadata) > 0 {
-			r.mu.Lock()
-			r.providerMetadata = chunk.ProviderMetadata
-			r.mu.Unlock()
+		// Accumulate step tool calls and results into the overall result.
+		r.mu.Lock()
+		r.toolCalls = append(r.toolCalls, stepToolCalls...)
+		r.toolResults = append(r.toolResults, stepToolResults...)
+		r.mu.Unlock()
+		allToolCalls = append(allToolCalls, stepToolCalls...)
+		allToolResults = append(allToolResults, stepToolResults...)
+
+		// Record this step. For multi-step streaming, r.text accumulates across steps;
+		// use the current snapshot as the step's text.
+		stepResult := types.StepResult{
+			StepNumber:   stepNum,
+			Text:         r.text,
+			ToolCalls:    stepToolCalls,
+			ToolResults:  stepToolResults,
+			FinishReason: r.finishReason,
+			Usage:        r.usage,
+		}
+		allSteps = append(allSteps, stepResult)
+
+		// Check continuation: for streaming, only continue when a deferred provider tool
+		// (SupportsDeferredResults=true) has not yet delivered its result (P0-4).
+		// Local tool calls are handled in-step by executeTools — no additional model
+		// call is needed for them here (unlike generate.go's step loop).
+		if len(pendingDeferredToolCalls) == 0 {
+			break
 		}
 
-		// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
-		if onChunk != nil {
-			onChunk(*chunk)
+		// Build conversation history for the next step.
+		assistantMsg := types.Message{
+			Role:      types.RoleAssistant,
+			Content:   []types.ContentPart{},
+			ToolCalls: stepToolCalls,
 		}
-		// Notify telemetry integrations of each chunk.
-		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-			ChunkType: string(chunk.Type),
-			Text:      chunk.Text,
-		})
+		if r.text != "" {
+			assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: r.text})
+		}
+		currentMessages = append(currentMessages, assistantMsg)
+		for _, tr := range stepToolResults {
+			toolMsg := types.Message{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: tr.ToolCallID,
+						ToolName:   tr.ToolName,
+						Result:     tr.Result,
+					},
+				},
+			}
+			currentMessages = append(currentMessages, toolMsg)
+		}
+
+		// Resolve ResponseFormat for the next step.
+		responseFormat := opts.ResponseFormat
+		if responseFormat == nil && r.outputSpec != nil {
+			if rf, rfErr := r.outputSpec.ResponseFormat(ctx); rfErr == nil {
+				responseFormat = rf
+			}
+		}
+
+		// Start a new stream for the next step.
+		nextGenOpts := &provider.GenerateOptions{
+			Prompt: types.Prompt{
+				Messages: currentMessages,
+				System:   opts.System,
+			},
+			Temperature:      opts.Temperature,
+			MaxTokens:        opts.MaxTokens,
+			TopP:             opts.TopP,
+			TopK:             opts.TopK,
+			FrequencyPenalty: opts.FrequencyPenalty,
+			PresencePenalty:  opts.PresencePenalty,
+			StopSequences:    opts.StopSequences,
+			Seed:             opts.Seed,
+			Tools:            opts.Tools,
+			ToolChoice:       opts.ToolChoice,
+			ResponseFormat:   responseFormat,
+			Reasoning:        opts.Reasoning,
+			ProviderOptions:  opts.ProviderOptions,
+			Telemetry:        opts.ExperimentalTelemetry,
+		}
+		newStream, err := r.cbModel.DoStream(ctx, nextGenOpts)
+		if err != nil {
+			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
+			break
+		}
+		r.stream = newStream
 	}
-
-	// Execute accumulated tool calls AFTER stream is fully consumed (Fix 1).
-	// All chunks (including tool call chunks) have already been forwarded above.
-	var toolResults []types.ToolResult
-	if len(pendingToolCalls) > 0 && len(r.cbTools) > 0 {
-		toolCallbacks := toolCallEventCallbacks{
-			onStart:             r.cbOnToolCallStart,
-			onFinish:            r.cbOnToolCallFinish,
-			stepNum:             1,
-			modelProvider:       r.cbModelProvider,
-			modelID:             r.cbModelID,
-			messages:            r.cbMessages,
-			experimentalContext: r.cbExperimentalCtx,
-			functionID:          r.cbFuncID,
-			metadata:            r.cbMeta,
-			timeout:             r.timeout,
-		}
-		toolResults, _ = executeTools(ctx, pendingToolCalls, r.cbTools, r.cbExperimentalCtx, &r.usage, toolCallbacks)
-	}
-
-	// Gap 3: Forward tool-result chunks to onChunk consumers, matching the
-	// TypeScript SDK's behaviour where tool-result objects flow back through
-	// the stream pipeline after execution.
-	for i := range toolResults {
-		resultChunk := provider.StreamChunk{
-			Type:       provider.ChunkTypeToolResult,
-			ToolResult: &toolResults[i],
-		}
-		if onChunk != nil {
-			onChunk(resultChunk)
-		}
-		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-			ChunkType: string(provider.ChunkTypeToolResult),
-		})
-	}
-
-	r.mu.Lock()
-	r.toolCalls = pendingToolCalls
-	r.toolResults = toolResults
-	r.mu.Unlock()
 
 	// Resolve final typed output if spec was provided and stream completed cleanly.
 	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
@@ -533,12 +681,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	// CB-T20 (step finish) and CB-T21 (generation finish): emit structured events.
 	// These fire after all chunks are processed and the legacy callbacks have run.
+	// For multi-step streaming, allSteps contains one entry per step.
 	r.mu.Lock()
 	finalToolCalls := r.toolCalls
 	finalToolResults := r.toolResults
 	r.mu.Unlock()
 
-	stepResult := types.StepResult{
+	// Emit per-step finish events and use the last step for the single-step path.
+	lastStep := types.StepResult{
 		StepNumber:   1,
 		Text:         r.text,
 		ToolCalls:    finalToolCalls,
@@ -546,26 +696,33 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		FinishReason: r.finishReason,
 		Usage:        r.usage,
 	}
+	if len(allSteps) > 0 {
+		lastStep = allSteps[len(allSteps)-1]
+	}
 	Notify(ctx, OnStepFinishEvent{
-		StepNumber:          stepResult.StepNumber,
+		StepNumber:          lastStep.StepNumber,
 		ModelProvider:       r.cbModelProvider,
 		ModelID:             r.cbModelID,
-		Text:                stepResult.Text,
-		ToolCalls:           stepResult.ToolCalls,
-		ToolResults:         stepResult.ToolResults,
-		FinishReason:        stepResult.FinishReason,
-		Usage:               stepResult.Usage,
+		Text:                lastStep.Text,
+		ToolCalls:           lastStep.ToolCalls,
+		ToolResults:         lastStep.ToolResults,
+		FinishReason:        lastStep.FinishReason,
+		Usage:               lastStep.Usage,
 		ExperimentalContext: r.cbExperimentalCtx,
 		FunctionID:          r.cbFuncID,
 		Metadata:            r.cbMeta,
 	}, r.cbOnStepFinishEvent)
 
+	stepsForEvent := allSteps
+	if len(stepsForEvent) == 0 {
+		stepsForEvent = []types.StepResult{lastStep}
+	}
 	Notify(ctx, OnFinishEvent{
 		Text:                r.text,
 		ToolCalls:           finalToolCalls,
 		ToolResults:         finalToolResults,
 		FinishReason:        r.finishReason,
-		Steps:               []types.StepResult{stepResult},
+		Steps:               stepsForEvent,
 		TotalUsage:          r.usage,
 		Warnings:            r.warnings,
 		ExperimentalContext: r.cbExperimentalCtx,

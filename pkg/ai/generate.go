@@ -519,12 +519,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Scan the current step's tool calls: if a provider tool with SupportsDeferredResults
 		// did not return its result inline in this response, register it as pending so the
 		// step loop continues even when FinishReason is not ToolCalls.
+		// Note: we check tool.ProviderExecuted on the definition (not call.ProviderExecuted)
+		// because some providers (e.g. Anthropic) do not set ProviderExecuted on ToolCalls.
 		for _, call := range genResult.ToolCalls {
-			if !call.ProviderExecuted {
-				continue
-			}
 			tool := toolsByName[call.ToolName]
-			if tool == nil || !tool.SupportsDeferredResults {
+			if tool == nil || !tool.ProviderExecuted || !tool.SupportsDeferredResults {
 				continue
 			}
 			hasResult := false
