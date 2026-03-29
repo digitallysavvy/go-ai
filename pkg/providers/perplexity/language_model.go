@@ -133,6 +133,42 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	return body
 }
 
+// PerplexityImage mirrors the image object returned by the Perplexity API.
+// Matches TS: { imageUrl, originUrl, height, width }.
+type PerplexityImage struct {
+	ImageUrl  string `json:"imageUrl"`
+	OriginUrl string `json:"originUrl"`
+	Height    int    `json:"height"`
+	Width     int    `json:"width"`
+}
+
+// PerplexityUsageMeta contains Perplexity-specific usage counters that are not
+// part of the standard token usage. Matches TS providerMetadata.perplexity.usage.
+type PerplexityUsageMeta struct {
+	CitationTokens   *int `json:"citationTokens"`
+	NumSearchQueries *int `json:"numSearchQueries"`
+}
+
+// PerplexityCost contains the per-request cost breakdown returned by Perplexity.
+// All fields use *float64 so that missing fields are represented as null rather
+// than zero — matching the TS SDK's null semantics.
+type PerplexityCost struct {
+	InputTokensCost  *float64 `json:"inputTokensCost"`
+	OutputTokensCost *float64 `json:"outputTokensCost"`
+	RequestCost      *float64 `json:"requestCost"`
+	TotalCost        *float64 `json:"totalCost"`
+}
+
+// PerplexityMetadata is the full providerMetadata.perplexity object.
+// It is always present on non-streaming results, matching the TS SDK which
+// unconditionally sets providerMetadata.perplexity.
+// Cost is nil when the API does not return cost information.
+type PerplexityMetadata struct {
+	Images []PerplexityImage   `json:"images"`
+	Usage  PerplexityUsageMeta `json:"usage"`
+	Cost   *PerplexityCost     `json:"cost"`
+}
+
 func (m *LanguageModel) convertResponse(response perplexityResponse) *types.GenerateResult {
 	if len(response.Choices) == 0 {
 		return &types.GenerateResult{
@@ -141,12 +177,49 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 		}
 	}
 	choice := response.Choices[0]
-	return &types.GenerateResult{
+	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		Usage:        convertPerplexityUsage(response.Usage),
 		RawResponse:  response,
 	}
+
+	// Build providerMetadata.perplexity — always set (matches TS SDK behaviour).
+	meta := PerplexityMetadata{
+		Usage: PerplexityUsageMeta{
+			CitationTokens:   response.Usage.CitationTokens,
+			NumSearchQueries: response.Usage.NumSearchQueries,
+		},
+	}
+
+	// Map images from API wire format to public type.
+	if len(response.Images) > 0 {
+		meta.Images = make([]PerplexityImage, len(response.Images))
+		for i, img := range response.Images {
+			meta.Images[i] = PerplexityImage{
+				ImageUrl:  img.ImageUrl,
+				OriginUrl: img.OriginUrl,
+				Height:    img.Height,
+				Width:     img.Width,
+			}
+		}
+	}
+
+	// Cost is a nested object in the API response (usage.cost.*).
+	if c := response.Usage.Cost; c != nil {
+		meta.Cost = &PerplexityCost{
+			InputTokensCost:  c.InputTokensCost,
+			OutputTokensCost: c.OutputTokensCost,
+			RequestCost:      c.RequestCost,
+			TotalCost:        c.TotalCost,
+		}
+	}
+
+	result.ProviderMetadata = map[string]interface{}{
+		"perplexity": meta,
+	}
+
+	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
@@ -196,9 +269,11 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 
 
 type perplexityResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
+	ID        string               `json:"id"`
+	Model     string               `json:"model"`
+	Citations []string             `json:"citations,omitempty"`
+	Images    []perplexityRawImage `json:"images,omitempty"`
+	Choices   []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
@@ -209,10 +284,31 @@ type perplexityResponse struct {
 	Usage perplexityUsage `json:"usage"`
 }
 
+// perplexityRawImage is the wire format of an image returned by the Perplexity API.
+type perplexityRawImage struct {
+	ImageUrl  string `json:"image_url"`
+	OriginUrl string `json:"origin_url"`
+	Height    int    `json:"height"`
+	Width     int    `json:"width"`
+}
+
+// perplexityCostRaw is the wire format of the nested cost object in usage.
+type perplexityCostRaw struct {
+	InputTokensCost  *float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost *float64 `json:"output_tokens_cost,omitempty"`
+	RequestCost      *float64 `json:"request_cost,omitempty"`
+	TotalCost        *float64 `json:"total_cost,omitempty"`
+}
+
 type perplexityUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Perplexity-specific usage counters.
+	CitationTokens   *int `json:"citation_tokens,omitempty"`
+	NumSearchQueries *int `json:"num_search_queries,omitempty"`
+	// Cost is a nested object in the API response (not flat fields).
+	Cost *perplexityCostRaw `json:"cost,omitempty"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`
