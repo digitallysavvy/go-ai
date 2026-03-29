@@ -345,6 +345,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
 
+	// Build tool name → pointer map for deferred provider tool tracking.
+	toolsByName := make(map[string]*types.Tool, len(opts.Tools))
+	for i := range opts.Tools {
+		toolsByName[opts.Tools[i].Name] = &opts.Tools[i]
+	}
+	// pendingDeferredToolCalls tracks provider tools whose results will arrive in
+	// a subsequent response (SupportsDeferredResults=true). Key = toolCallID, value = toolName.
+	pendingDeferredToolCalls := make(map[string]string)
+
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
 		// Apply per-step timeout if configured
@@ -506,6 +515,36 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 
+		// Deferred provider tool tracking (mirrors TS SDK pendingDeferredToolCalls).
+		// Scan the current step's tool calls: if a provider tool with SupportsDeferredResults
+		// did not return its result inline in this response, register it as pending so the
+		// step loop continues even when FinishReason is not ToolCalls.
+		for _, call := range genResult.ToolCalls {
+			if !call.ProviderExecuted {
+				continue
+			}
+			tool := toolsByName[call.ToolName]
+			if tool == nil || !tool.SupportsDeferredResults {
+				continue
+			}
+			hasResult := false
+			for _, part := range genResult.Content {
+				if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == call.ID {
+					hasResult = true
+					break
+				}
+			}
+			if !hasResult {
+				pendingDeferredToolCalls[call.ID] = call.ToolName
+			}
+		}
+		// Remove entries resolved by tool-result parts in the current response.
+		for _, part := range genResult.Content {
+			if tr, ok := part.(types.ToolResultContent); ok {
+				delete(pendingDeferredToolCalls, tr.ToolCallID)
+			}
+		}
+
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)
 
@@ -546,8 +585,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 
-		// Check if we should continue
-		if genResult.FinishReason != types.FinishReasonToolCalls {
+		// Check if we should continue.
+		// Continue when there are local tool calls pending execution OR when a
+		// provider tool with SupportsDeferredResults has not yet delivered its result.
+		hasLocalToolCalls := genResult.FinishReason == types.FinishReasonToolCalls
+		hasPendingDeferred := len(pendingDeferredToolCalls) > 0
+		if !hasLocalToolCalls && !hasPendingDeferred {
 			break
 		}
 	}
@@ -650,10 +693,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			continue
 		}
 
-		// Check if this is a provider-executed tool
-		// Provider-executed tools are handled by the LLM provider (e.g., Anthropic, xAI)
-		// and their results come back in the provider's response, not from local execution
-		providerExecuted := isProviderExecutedTool(tool)
+		// Check if this is a provider-executed tool.
+		// ProviderExecuted is set to true on types.Tool by each provider tool constructor
+		// (e.g., web_search_20260209, web_fetch_20260209, code_execution, tool_search_bm25).
+		providerExecuted := tool.ProviderExecuted
 
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
@@ -755,28 +798,6 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 	}
 
 	return results, nil
-}
-
-// isProviderExecutedTool determines if a tool is executed by the provider
-// Provider-executed tools include:
-// - Anthropic: tool-search-bm25, tool-search-regex, web-search, web-fetch, code-execution
-// - xAI: file-search, mcp-server
-// - OpenAI: MCP tools (with approval)
-func isProviderExecutedTool(tool *types.Tool) bool {
-	// Check for common provider-executed tool names
-	providerTools := map[string]bool{
-		// Anthropic built-in tools
-		"tool-search-bm25":  true,
-		"tool-search-regex": true,
-		"web-search":        true,
-		"web-fetch":         true,
-		"code-execution":    true,
-		// xAI tools
-		"file-search": true,
-		"mcp-server":  true,
-	}
-
-	return providerTools[tool.Name]
 }
 
 // validateToolResults validates tool results, especially for provider-executed tools

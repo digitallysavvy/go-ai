@@ -49,6 +49,13 @@ type Tool struct {
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 
+	// SupportsDeferredResults indicates that this provider-executed tool may not
+	// return its result in the same response that contains the tool call. When
+	// true, the step loop continues even if FinishReason is not ToolCalls,
+	// waiting for the provider to deliver the result in a later response.
+	// Only meaningful when ProviderExecuted is also true.
+	SupportsDeferredResults bool `json:"supportsDeferredResults,omitempty"`
+
 	// ProviderOptions contains provider-specific options for the tool
 	// This allows passing provider-specific configuration without polluting the main Tool struct
 	// Example: Anthropic cache_control, OpenAI response_format, etc.
