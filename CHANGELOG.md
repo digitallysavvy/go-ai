@@ -5,38 +5,94 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-03-27
+## [0.4.0] - 2026-03-29
 
-TS SDK parity pass + OpenAI Responses API client — commit range `429b88a79..HEAD`.
+TS SDK parity — commit range `ed17fe86d..429b88a79` (13 PRDs, 244 tasks).
+Full release notes: `release_notes/RELEASE_NOTES_V0.4.0.md`.
+
+### Breaking Changes
+
+- **Streaming tool execution** now deferred to after stream end (not mid-stream)
+- **XAI** `LanguageModel()` returns Responses API model; use `ChatCompletionsLanguageModel()` for legacy
+- **XAI** removed `grok-2` and `grok-2-vision-1212` model IDs
+- **MCP** default redirect mode changed to `MCPRedirectError` (reject)
 
 ### Added
 
-#### OpenAI Provider
-- **`ResponsesLanguageModel`** — full `/v1/responses` client (`pkg/providers/openai/responses_language_model.go`)
-  - `DoGenerate` and `DoStream` against the Responses API endpoint
-  - SSE streaming: handles `response.output_text.delta`, `response.function_call_arguments.delta`,
-    `response.reasoning_summary_text.delta`, `response.output_item.added/done`, `response.completed`
-  - Tool calls accumulate by `output_index`, flushed as `ChunkTypeToolCall` at `output_item.done`
-  - Reasoning chunks emitted as `ChunkTypeReasoning` deltas
-  - Supports `previousResponseId`, `store`, `reasoningEffort`, `serviceTier` provider options
-  - When `store=false` on a reasoning model, auto-appends `reasoning.encrypted_content` to `include[]`
-- **`Provider.ResponsesModel(modelID)`** factory in `provider.go`
-- **`ConvertPromptToInput`** helper (`pkg/providers/openai/responses/convert.go`) — converts
-  `types.Prompt` to Responses API `input[]` format, handling system/user/assistant/tool messages
-- **`ToolSearchOutputItem`** type added to `responses/api_types.go` (TS parity fix)
-- **`isReasoningModel()`** helper — `o1*`, `o3*`, `o4-mini*`, `gpt-5*` (excl. `gpt-5-chat*`)
-  allowlist used to select `"developer"` role for system messages on reasoning models
-- **`filterUnencryptedReasoningParts`** now wired into `buildRequestBody` — strips `ReasoningContent`
-  without `EncryptedContent` from assistant history when `store=false`
-
 #### Core SDK
-- `types.Message.ToolCalls []ToolCall` field — carries tool calls in assistant history messages
+- **Top-level `Reasoning *types.ReasoningLevel`** on `GenerateTextOptions` and `StreamTextOptions`
+  with 7 levels (provider-default, none, minimal, low, medium, high, xhigh)
+- **Deferred provider tool results** — `pendingDeferredToolCalls` tracking in generate.go
+  and stream.go step loops; `SupportsDeferredResults bool` on `types.Tool`
+- **`CustomContent`** and **`ReasoningFileContent`** content types with stream chunks
+  (`ChunkTypeCustom`, `ChunkTypeReasoningFile`)
+- **`TelemetryIntegration`** global registry with `sync.RWMutex`, `NoopTelemetryIntegration`
+  default, `OTelTelemetryIntegration` wrapper; `Fire*` fan-out in generate.go/stream.go
+- **Tool-level timeouts** — `TimeoutConfig.ToolMs`, `TimeoutConfig.Tools`, `GetToolTimeout()`
+- **Embed/rerank callbacks** — `EmbedOnStartEvent`, `EmbedOnFinishEvent`,
+  `RerankOnStartEvent`, `RerankOnFinishEvent` with provider options threading
+- **`StreamTextResult.ProviderMetadata()`** — accumulated from stream chunks
+- **`ToolResult.Input`** always populated with `call.Arguments`
+
+#### Anthropic Provider
+- **`WebSearch20260209(config)`** tool — allowedDomains, blockedDomains, userLocation, maxUses;
+  returns `[]WebSearchResult20260209` with encryptedContent
+- **`WebFetch20260209(config)`** tool — citations, maxContentTokens; returns discriminated
+  `WebFetchSource` (PDF/text) with `IsPDF()`/`IsPlainText()` helpers
+- **`EagerInputStreaming *bool`** per-tool option; `tool-input-start/delta/end` stream chunks
+- **Error code preservation** — `error.type` surfaces as `ProviderError.Code`
+- Beta header `code-execution-web-tools-2026-02-09` auto-injected for 20260209 tools
+
+#### OpenAI Provider
+- **GPT-5.4 model family** — `gpt-5.4`, `gpt-5.4-pro`, dated variants; `gpt-5.3-chat-latest`
+- **Responses API compaction** — parsed as `CustomContent` with `Kind: "openai-compaction"`
+- **`ToolSearch(args)`** factory — server (default) and client execution modes
+- **`CustomTool.Name` removed** — name supplied via `ToTool(name)` method
+- **store=false** strips unencrypted reasoning from assistant history
+
+#### XAI Provider
+- **Responses API as default** with `ChatCompletionsLanguageModel()` opt-in
+- Multi-image editing, b64_json output, quality/user params
+- `CostInUsdTicks` in image and video metadata
+- `ReasoningSummary` option, `ModerationError` type, `Logprobs`/`TopLogprobs`
+- Reasoning extraction fix (summary + content fallback)
+
+#### Google Provider
+- **VALIDATED** function calling mode when `tool.Strict == true`
+- Grounding metadata accumulation across stream chunks
+- Multimodal `functionResponse.parts[]` for Gemini 3+ models
+- `finishMessage` in Vertex provider metadata
+- 7 native Vertex tools (GoogleSearch, UrlContext, CodeExecution, etc.)
+- `gemini-embedding-2-preview` with multimodal embedding support
+
+#### Multi-Provider Reasoning
+- DeepSeek, Alibaba, Fireworks, Groq, Mistral, Perplexity (warning),
+  Cohere (warning), Open Responses, XAI — all wired to top-level `Reasoning`
+
+#### KlingAI Provider
+- **v3.0 motion control** — multi-shot, element control, voice control, motion brush
+- Model IDs: `kling-v3.0-motion-control`, `kling-v2.6-motion-control`
+
+#### New Provider: Prodia
+- **Language model** (img2img) — multipart form-data, 11 aspect ratios
+- **Video model** — T2V and I2V with multipart response parsing
+- Shared `prodia_api.go` infrastructure
+
+#### Provider Fixes
+- Alibaba: single-item content array with cache_control preserves array
+- Perplexity: `ProviderMetadata` restructured to `{Images, Usage, Cost}` sub-objects
+- MCP: protocol version `2025-11-25` added; `MCPRedirectMode` typed option
+- MCP: OAuth state uses `crypto/subtle.ConstantTimeCompare`
+- HTTP transport: custom `User-Agent` header removed
 
 ### Fixed
-- **OpenAI wire format for multi-turn tool calls**: assistant messages in history now include
-  top-level `tool_calls` array; tool role messages use top-level `tool_call_id`. Fixes
-  `"messages with role 'tool' must be a response to a preceding message with 'tool_calls'"` error.
-  Affected: `ToOpenAIMessages` in `pkg/providerutils/prompt/converter.go` and `generate.go`
+- **SSRF protection** — `validateDownloadURL()` rejects private IP redirects
+  (IPv4, IPv6, IPv4-mapped-IPv6, localhost, link-local, CGNAT)
+- **Streaming tool calls** — accumulate+flush in OpenAI, Groq, DeepSeek, Alibaba;
+  no mid-stream finalization from isParsableJson
+- **`isProviderExecutedTool()`** hardcoded name map deleted; replaced with `tool.ProviderExecuted`
+- **OpenAI wire format** for multi-turn tool calls (assistant `tool_calls` array,
+  tool role `tool_call_id`)
 
 ---
 
