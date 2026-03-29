@@ -3,7 +3,9 @@ package ai
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -14,11 +16,13 @@ import (
 func TestDeferrableTools_ProviderExecutedTool(t *testing.T) {
 	t.Parallel()
 
-	// Create a provider-executed tool (Anthropic tool-search)
+	// Create a provider-executed tool (Anthropic tool-search).
+	// ProviderExecuted must be set on the Tool so executeTools skips local execution.
 	searchTool := types.Tool{
-		Name:        "tool-search-bm25",
-		Description: "Search using BM25",
-		Parameters:  map[string]interface{}{"type": "object"},
+		Name:             "tool-search-bm25",
+		Description:      "Search using BM25",
+		Parameters:       map[string]interface{}{"type": "object"},
+		ProviderExecuted: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			t.Fatal("provider-executed tool should not be executed locally")
 			return nil, nil
@@ -138,9 +142,10 @@ func TestDeferrableTools_ErrorResult(t *testing.T) {
 	t.Parallel()
 
 	searchTool := types.Tool{
-		Name:        "tool-search-bm25",
-		Description: "Search using BM25",
-		Parameters:  map[string]interface{}{"type": "object"},
+		Name:             "tool-search-bm25",
+		Description:      "Search using BM25",
+		Parameters:       map[string]interface{}{"type": "object"},
+		ProviderExecuted: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			t.Fatal("provider-executed tool should not be executed locally")
 			return nil, nil
@@ -291,36 +296,6 @@ func TestValidateToolResults_ValidResults(t *testing.T) {
 	}
 }
 
-// TestIsProviderExecutedTool tests the provider tool detection
-func TestIsProviderExecutedTool(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		toolName string
-		want     bool
-	}{
-		{"Anthropic tool-search-bm25", "tool-search-bm25", true},
-		{"Anthropic tool-search-regex", "tool-search-regex", true},
-		{"Anthropic web-search", "web-search", true},
-		{"Anthropic web-fetch", "web-fetch", true},
-		{"Anthropic code-execution", "code-execution", true},
-		{"xAI file-search", "file-search", true},
-		{"xAI mcp-server", "mcp-server", true},
-		{"local tool", "get_weather", false},
-		{"local tool 2", "calculate", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tool := &types.Tool{Name: tt.toolName}
-			if got := isProviderExecutedTool(tool); got != tt.want {
-				t.Errorf("isProviderExecutedTool() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // TestDeferrableTools_MixedLocalAndProvider tests handling of both local and provider tools
 func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 	t.Parallel()
@@ -337,9 +312,10 @@ func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 	}
 
 	providerTool := types.Tool{
-		Name:        "tool-search-bm25",
-		Description: "Search using BM25",
-		Parameters:  map[string]interface{}{"type": "object"},
+		Name:             "tool-search-bm25",
+		Description:      "Search using BM25",
+		Parameters:       map[string]interface{}{"type": "object"},
+		ProviderExecuted: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			t.Fatal("provider-executed tool should not be executed locally")
 			return nil, nil
@@ -477,5 +453,284 @@ func TestToolExecutionError(t *testing.T) {
 				t.Error("error message should not be empty")
 			}
 		})
+	}
+}
+
+// TestDeferredToolContinuesStepLoop verifies that a provider tool with SupportsDeferredResults
+// causes the step loop to continue when no inline result arrives in the first response.
+// Step 1: model returns a deferred tool call, no inline result, FinishReason != ToolCalls.
+// Step 2: model returns the deferred result + final text.
+func TestDeferredToolContinuesStepLoop(t *testing.T) {
+	t.Parallel()
+
+	deferredTool := types.Tool{
+		Name:                    "anthropic.web_search_20260209",
+		Description:             "Web search (deferred)",
+		Parameters:              map[string]interface{}{"type": "object"},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				// Step 1: model issues a deferred tool call; result not yet available.
+				// FinishReason is Stop (not ToolCalls) — the loop must NOT break here.
+				return &types.GenerateResult{
+					Text:         "",
+					FinishReason: types.FinishReasonStop,
+					ToolCalls: []types.ToolCall{
+						{
+							ID:       "call_deferred_1",
+							ToolName: "anthropic.web_search_20260209",
+							Arguments: map[string]interface{}{
+								"query": "latest AI news",
+							},
+						},
+					},
+					Content: []types.ContentPart{}, // no inline result yet
+				}, nil
+			case 2:
+				// Step 2: provider delivers the deferred result; model generates final text.
+				return &types.GenerateResult{
+					Text:         "Here are the latest AI news results.",
+					FinishReason: types.FinishReasonStop,
+					Content: []types.ContentPart{
+						types.ToolResultContent{
+							ToolCallID: "call_deferred_1",
+							ToolName:   "anthropic.web_search_20260209",
+							Result:     map[string]interface{}{"results": []string{"AI news item 1"}},
+						},
+					},
+				}, nil
+			}
+			t.Fatalf("unexpected call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Search for AI news",
+		Tools:    []types.Tool{deferredTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 model calls, got %d", callCount)
+	}
+	if result.Text != "Here are the latest AI news results." {
+		t.Errorf("unexpected text: %q", result.Text)
+	}
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+}
+
+// TestDeferredToolResolvesOnResult verifies that once a tool-result arrives in a response,
+// the pending entry is removed and the loop exits when no further work remains.
+func TestDeferredToolResolvesOnResult(t *testing.T) {
+	t.Parallel()
+
+	deferredTool := types.Tool{
+		Name:                    "anthropic.web_search_20260209",
+		Description:             "Web search (deferred)",
+		Parameters:              map[string]interface{}{"type": "object"},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonStop,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "anthropic.web_search_20260209", Arguments: map[string]interface{}{"query": "test"}},
+					},
+					Content: []types.ContentPart{},
+				}, nil
+			case 2:
+				// Deliver the result inline — pendingDeferredToolCalls should clear.
+				return &types.GenerateResult{
+					Text:         "Done",
+					FinishReason: types.FinishReasonStop,
+					Content: []types.ContentPart{
+						types.ToolResultContent{
+							ToolCallID: "call_1",
+							ToolName:   "anthropic.web_search_20260209",
+							Result:     "search results",
+						},
+					},
+				}, nil
+			}
+			t.Fatalf("unexpected call %d — loop should have exited after step 2", callCount)
+			return nil, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Search test",
+		Tools:    []types.Tool{deferredTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The loop must exit after step 2 — callCount must be exactly 2.
+	if callCount != 2 {
+		t.Errorf("expected exactly 2 model calls (deferred resolved), got %d", callCount)
+	}
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+}
+
+// TestDeferredToolContinuesStepLoopStreaming is the streaming equivalent of
+// TestDeferredToolContinuesStepLoop. It verifies that processStream starts a
+// second DoStream call when a deferred provider tool has no inline result in
+// step 1, and that it exits after the deferred result arrives as a
+// ChunkTypeToolResult in step 2.
+func TestDeferredToolContinuesStepLoopStreaming(t *testing.T) {
+	t.Parallel()
+
+	deferredTool := types.Tool{
+		Name:                    "anthropic.web_search_20260209",
+		Description:             "Web search (deferred)",
+		Parameters:              map[string]interface{}{"type": "object"},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
+	}
+
+	var mu sync.Mutex
+	streamCallCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			streamCallCount++
+			n := streamCallCount
+			mu.Unlock()
+			switch n {
+			case 1:
+				// Step 1: deferred tool call; no inline result; FinishReason is Stop.
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:        "call_deferred_1",
+							ToolName:  "anthropic.web_search_20260209",
+							Arguments: map[string]interface{}{"query": "AI news"},
+						},
+					},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			case 2:
+				// Step 2: provider delivers the result inline, then final text.
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{
+						Type: provider.ChunkTypeToolResult,
+						ToolResult: &types.ToolResult{
+							ToolCallID: "call_deferred_1",
+							ToolName:   "anthropic.web_search_20260209",
+							Result:     "search results",
+						},
+					},
+					{Type: provider.ChunkTypeText, Text: "Done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Errorf("unexpected stream call %d — loop should have exited", n)
+			return nil, nil
+		},
+	}
+
+	done := make(chan *StreamTextResult, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools:  []types.Tool{deferredTool},
+		OnFinish: func(r *StreamTextResult) {
+			done <- r
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out — processStream did not terminate")
+	}
+
+	mu.Lock()
+	calls := streamCallCount
+	mu.Unlock()
+
+	if calls != 2 {
+		t.Errorf("expected 2 stream calls, got %d", calls)
+	}
+	if result.Text() != "Done" {
+		t.Errorf("text = %q, want %q", result.Text(), "Done")
+	}
+}
+
+// TestNonDeferredProviderToolDoesNotContinue verifies that a provider tool WITHOUT
+// SupportsDeferredResults causes the loop to exit after the first response,
+// even if no inline result is present.
+func TestNonDeferredProviderToolDoesNotContinue(t *testing.T) {
+	t.Parallel()
+
+	// ProviderExecuted=true but SupportsDeferredResults=false (default).
+	providerTool := types.Tool{
+		Name:             "anthropic.computer_20251124",
+		Description:      "Computer use (not deferred)",
+		Parameters:       map[string]interface{}{"type": "object"},
+		ProviderExecuted: true,
+		// SupportsDeferredResults defaults to false
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			// Return a tool call with FinishReason != ToolCalls and no inline result.
+			// Without deferred support the loop must exit immediately.
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonStop,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "anthropic.computer_20251124", Arguments: map[string]interface{}{}},
+				},
+				Content: []types.ContentPart{},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Take a screenshot",
+		Tools:    []types.Tool{providerTool},
+		StopWhen: []StopCondition{StepCountIs(5)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 model call (non-deferred exits immediately), got %d", callCount)
+	}
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(result.Steps))
 	}
 }

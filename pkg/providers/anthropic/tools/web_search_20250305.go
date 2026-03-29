@@ -77,8 +77,9 @@ func WebSearch20250305(config WebSearch20260209Config) types.Tool {
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("web_search_20250305 is executed by the Anthropic provider, not locally")
 		},
-		ProviderExecuted: true,
-		ProviderOptions:  &webSearch20250305Opts{Config: config},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
+		ProviderOptions:         &webSearch20250305Opts{Config: config},
 	}
 }
 

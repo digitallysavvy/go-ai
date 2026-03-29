@@ -102,11 +102,12 @@ func TestDynamicToolResultIncludesInput(t *testing.T) {
 		},
 	}
 
-	// web-search is in the providerTools map → will be treated as provider-executed.
-	// We still need to define it in Tools so it is found.
+	// web-search is a provider-executed tool — ProviderExecuted must be set on the
+	// Tool definition so executeTools skips local execution.
 	webSearch := types.Tool{
-		Name:    "web-search",
-		Execute: nil, // provider-executed; Execute won't be called
+		Name:             "web-search",
+		ProviderExecuted: true,
+		Execute:          nil, // provider-executed; Execute won't be called
 	}
 
 	var captured []types.ToolResult

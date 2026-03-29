@@ -102,7 +102,8 @@ Important: This tool must be executed by the Anthropic API, not locally.`,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("code execution tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},
-		ProviderExecuted: true,
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
 	}
 
 	return tool

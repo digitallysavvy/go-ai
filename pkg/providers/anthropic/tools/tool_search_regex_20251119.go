@@ -107,11 +107,12 @@ Best practices:
 - Test patterns against your tool names
 - Consider case-insensitive patterns with (?i) prefix
 - Use OR patterns (|) for flexibility`,
-		Parameters:       parameters,
+		Parameters:              parameters,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("tool search regex must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},
-		ProviderExecuted: true,
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
 	}
 
 	return tool

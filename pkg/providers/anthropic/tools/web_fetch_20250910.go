@@ -67,8 +67,9 @@ func WebFetch20250910(config WebFetch20260209Config) types.Tool {
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("web_fetch_20250910 is executed by the Anthropic provider, not locally")
 		},
-		ProviderExecuted: true,
-		ProviderOptions:  &webFetch20250910Opts{Config: config},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
+		ProviderOptions:         &webFetch20250910Opts{Config: config},
 	}
 }
 
