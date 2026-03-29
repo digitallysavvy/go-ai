@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -41,7 +44,7 @@ func (m *VideoModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "klingai"
+	return "klingai.video"
 }
 
 // ModelID returns the model ID
@@ -56,6 +59,9 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 
 // DoGenerate performs video generation with polling
 func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	// Capture timestamp before any I/O, matching TS SDK's currentDate capture
+	startTime := time.Now()
+
 	// Extract provider options
 	provOpts, err := extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
@@ -77,9 +83,14 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, NewAuthError(err.Error())
 	}
 
-	// Submit generation request
+	// Submit generation request with auth header
 	endpoint := m.getEndpoint()
-	submitResp, err := m.prov.client.Post(ctx, endpoint, body)
+	submitResp, err := m.prov.client.Do(ctx, internalhttp.Request{
+		Method:  "POST",
+		Path:    endpoint,
+		Body:    body,
+		Headers: map[string]string{"Authorization": "Bearer " + authToken},
+	})
 	if err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
 	}
@@ -107,14 +118,26 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	// Get polling options
 	pollOpts := m.getPollOptions(provOpts)
 
-	// Poll for completion
-	statusResp, err := m.pollForCompletion(ctx, authToken, endpoint, taskID, pollOpts)
+	// Poll for completion; capture response headers from the final poll
+	statusResp, responseHeaders, err := m.pollForCompletion(ctx, authToken, endpoint, taskID, pollOpts)
 	if err != nil {
 		return nil, err
 	}
 
+	// Check that the task returned at least one video (first TS empty-check)
+	if statusResp.Data == nil || statusResp.Data.TaskResult == nil || len(statusResp.Data.TaskResult.Videos) == 0 {
+		return nil, NewVideoGenerationError("No videos were returned in the response.")
+	}
+
 	// Convert response to SDK format
-	return m.convertResponse(statusResp, taskID, warnings), nil
+	result := m.convertResponse(statusResp, taskID, warnings, startTime, responseHeaders)
+
+	// Second TS check: all returned videos had empty URLs
+	if len(result.Videos) == 0 {
+		return nil, NewVideoGenerationError("No valid video URLs in response.")
+	}
+
+	return result, nil
 }
 
 // detectMode detects the video generation mode from the model ID suffix
@@ -224,7 +247,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = fmt.Sprintf("%.0f", *opts.Duration)
+		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
 	}
 
 	// v3.0 multi-shot
@@ -245,12 +268,16 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["voice_list"] = provOpts.VoiceList
 	}
 
+	if provOpts.WatermarkEnabled != nil {
+		body["watermark_info"] = map[string]bool{"enabled": *provOpts.WatermarkEnabled}
+	}
+
 	// Image is not supported for T2V
 	if opts.Image != nil {
 		warnings = append(warnings, types.Warning{
-			Type: "unsupported",
-			Message: "KlingAI text-to-video does not support image input. " +
-				"Use an image-to-video model instead.",
+			Type:    "unsupported",
+			Feature: "image",
+			Details: "KlingAI text-to-video does not support image input. Use an image-to-video model instead.",
 		})
 	}
 
@@ -317,7 +344,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = fmt.Sprintf("%.0f", *opts.Duration)
+		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
 	}
 
 	// v3.0 multi-shot
@@ -343,12 +370,16 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["voice_list"] = provOpts.VoiceList
 	}
 
+	if provOpts.WatermarkEnabled != nil {
+		body["watermark_info"] = map[string]bool{"enabled": *provOpts.WatermarkEnabled}
+	}
+
 	// AspectRatio is not supported for I2V (determined by input image)
 	if opts.AspectRatio != "" {
 		warnings = append(warnings, types.Warning{
-			Type: "unsupported",
-			Message: "KlingAI image-to-video does not support aspectRatio. " +
-				"The output dimensions are determined by the input image.",
+			Type:    "unsupported",
+			Feature: "aspectRatio",
+			Details: "KlingAI image-to-video does not support aspectRatio. The output dimensions are determined by the input image.",
 		})
 	}
 
@@ -368,19 +399,20 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 
 	// Validate required options
 	if provOpts.VideoUrl == nil || *provOpts.VideoUrl == "" {
-		return nil, nil, NewInvalidOptionsError("videoUrl is required for motion control")
+		return nil, nil, NewMissingVideoOptionsError("videoUrl")
 	}
 	if provOpts.CharacterOrientation == nil || *provOpts.CharacterOrientation == "" {
-		return nil, nil, NewInvalidOptionsError("characterOrientation is required for motion control")
+		return nil, nil, NewMissingVideoOptionsError("characterOrientation")
 	}
 	if provOpts.Mode == nil || *provOpts.Mode == "" {
-		return nil, nil, NewInvalidOptionsError("mode is required for motion control")
+		return nil, nil, NewMissingVideoOptionsError("mode")
 	}
 
 	body := map[string]interface{}{
-		"video_url":              *provOpts.VideoUrl,
-		"character_orientation":  *provOpts.CharacterOrientation,
-		"mode":                   *provOpts.Mode,
+		"model_name":            m.getAPIModelName(),
+		"video_url":             *provOpts.VideoUrl,
+		"character_orientation": *provOpts.CharacterOrientation,
+		"mode":                  *provOpts.Mode,
 	}
 
 	if opts.Prompt != "" {
@@ -406,20 +438,25 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		}
 	}
 
+	// v3.0 element control
+	if len(provOpts.ElementList) > 0 {
+		body["element_list"] = provOpts.ElementList
+	}
+
 	// AspectRatio and duration not supported for motion control
 	if opts.AspectRatio != "" {
 		warnings = append(warnings, types.Warning{
-			Type: "unsupported",
-			Message: "KlingAI Motion Control does not support aspectRatio. " +
-				"The output dimensions are determined by the reference image/video.",
+			Type:    "unsupported",
+			Feature: "aspectRatio",
+			Details: "KlingAI Motion Control does not support aspectRatio. The output dimensions are determined by the reference image/video.",
 		})
 	}
 
 	if opts.Duration != nil {
 		warnings = append(warnings, types.Warning{
-			Type: "unsupported",
-			Message: "KlingAI Motion Control does not support custom duration. " +
-				"The output duration matches the reference video duration.",
+			Type:    "unsupported",
+			Feature: "duration",
+			Details: "KlingAI Motion Control does not support custom duration. The output duration matches the reference video duration.",
 		})
 	}
 
@@ -454,29 +491,32 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	if opts.Resolution != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Message: "KlingAI video models do not support the resolution option.",
+			Feature: "resolution",
+			Details: "KlingAI video models do not support the resolution option.",
 		})
 	}
 
 	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Message: "KlingAI video models do not support seed for deterministic generation.",
+			Feature: "seed",
+			Details: "KlingAI video models do not support seed for deterministic generation.",
 		})
 	}
 
 	if opts.FPS != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Message: "KlingAI video models do not support custom FPS.",
+			Feature: "fps",
+			Details: "KlingAI video models do not support custom FPS.",
 		})
 	}
 
 	if opts.N > 1 {
 		warnings = append(warnings, types.Warning{
-			Type: "unsupported",
-			Message: "KlingAI video models do not support generating multiple videos per call. " +
-				"Only 1 video will be generated.",
+			Type:    "unsupported",
+			Feature: "n",
+			Details: "KlingAI video models do not support generating multiple videos per call. Only 1 video will be generated.",
 		})
 	}
 
@@ -502,14 +542,24 @@ func (m *VideoModel) getPollOptions(provOpts *ProviderOptions) polling.PollOptio
 	return opts
 }
 
-// pollForCompletion polls the task status until completion or timeout
-func (m *VideoModel) pollForCompletion(ctx context.Context, authToken, endpoint, taskID string, opts polling.PollOptions) (*taskStatusResponse, error) {
+// pollForCompletion polls the task status until completion or timeout.
+// Returns the final status response, the HTTP headers from the last poll, and any error.
+// Distinguishes between task failure (KLINGAI_VIDEO_GENERATION_FAILED) and timeout errors.
+func (m *VideoModel) pollForCompletion(ctx context.Context, authToken, endpoint, taskID string, opts polling.PollOptions) (*taskStatusResponse, map[string]string, error) {
 	statusURL := fmt.Sprintf("%s/%s", endpoint, taskID)
 
+	// taskFailedErr captures the error when the KlingAI task explicitly fails
+	// (task_status == "failed"), so we can distinguish it from a timeout.
+	var taskFailedErr error
+	var lastHeaders map[string]string
+
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
-		// Make status request with auth header
-		m.prov.client.SetHeader("Authorization", "Bearer "+authToken)
-		resp, err := m.prov.client.Get(ctx, statusURL)
+		// Make status request with per-request auth header (avoids mutating shared client state)
+		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
+			Method:  "GET",
+			Path:    statusURL,
+			Headers: map[string]string{"Authorization": "Bearer " + authToken},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to check status: %w", err)
 		}
@@ -518,72 +568,72 @@ func (m *VideoModel) pollForCompletion(ctx context.Context, authToken, endpoint,
 			return nil, fmt.Errorf("status check returned %d: %s", resp.StatusCode, string(resp.Body))
 		}
 
+		// Capture headers from every poll; the last successful one is used in the response.
+		lastHeaders = convertHTTPHeaders(resp.Headers)
+
 		var statusResp taskStatusResponse
 		if err := json.Unmarshal(resp.Body, &statusResp); err != nil {
 			return nil, fmt.Errorf("failed to parse status response: %w", err)
 		}
 
 		if statusResp.Code != 0 {
-			return &polling.JobResult{
-				Status: polling.JobStatusFailed,
-				Error:  statusResp.Message,
-			}, nil
+			taskFailedErr = NewVideoGenerationFailedError(statusResp.Message)
+			return &polling.JobResult{Status: polling.JobStatusFailed, Error: statusResp.Message}, nil
 		}
 
 		if statusResp.Data == nil {
-			return &polling.JobResult{
-				Status: polling.JobStatusFailed,
-				Error:  "no data in status response",
-			}, nil
+			taskFailedErr = NewVideoGenerationError("no data in status response")
+			return &polling.JobResult{Status: polling.JobStatusFailed, Error: "no data in status response"}, nil
 		}
 
-		// Map KlingAI status to polling status
 		switch statusResp.Data.TaskStatus {
 		case "succeed":
 			return &polling.JobResult{
 				Status:   polling.JobStatusCompleted,
-				Metadata: map[string]interface{}{"response": statusResp},
+				Metadata: map[string]interface{}{"response": &statusResp},
 			}, nil
 		case "failed":
 			errMsg := statusResp.Data.TaskStatusMsg
 			if errMsg == "" {
-				errMsg = "unknown error"
+				errMsg = "Unknown error"
 			}
-			return &polling.JobResult{
-				Status: polling.JobStatusFailed,
-				Error:  errMsg,
-			}, nil
+			taskFailedErr = NewVideoGenerationFailedError(errMsg)
+			return &polling.JobResult{Status: polling.JobStatusFailed, Error: errMsg}, nil
 		case "submitted", "processing":
-			return &polling.JobResult{
-				Status: polling.JobStatusProcessing,
-			}, nil
+			return &polling.JobResult{Status: polling.JobStatusProcessing}, nil
 		default:
-			return &polling.JobResult{
-				Status: polling.JobStatusProcessing,
-			}, nil
+			return &polling.JobResult{Status: polling.JobStatusProcessing}, nil
 		}
 	}
 
-	result, err := polling.PollForCompletion(ctx, checker, opts)
-	if err != nil {
-		return nil, NewTimeoutError(fmt.Sprintf("%dms", opts.PollTimeoutMs))
+	result, pollErr := polling.PollForCompletion(ctx, checker, opts)
+
+	// Task explicitly failed — surface KLINGAI_VIDEO_GENERATION_FAILED, not a timeout.
+	if taskFailedErr != nil {
+		return nil, lastHeaders, taskFailedErr
 	}
 
-	// Extract response from metadata
+	if pollErr != nil {
+		return nil, lastHeaders, NewTimeoutError(fmt.Sprintf("%dms", opts.PollTimeoutMs))
+	}
+
+	// Extract the status response from polling metadata.
 	statusResp, ok := result.Metadata["response"].(*taskStatusResponse)
 	if !ok {
-		return nil, NewVideoGenerationError("failed to extract status response from polling result")
+		return nil, lastHeaders, NewVideoGenerationError("failed to extract status response from polling result")
 	}
 
-	return statusResp, nil
+	return statusResp, lastHeaders, nil
 }
 
-// convertResponse converts the KlingAI response to SDK format
-func (m *VideoModel) convertResponse(resp *taskStatusResponse, taskID string, warnings []types.Warning) *provider.VideoModelV3Response {
+// convertResponse converts the KlingAI response to SDK format.
+// startTime is captured at the beginning of DoGenerate (matches TS currentDate behavior).
+// responseHeaders are the HTTP headers from the final poll response.
+func (m *VideoModel) convertResponse(resp *taskStatusResponse, taskID string, warnings []types.Warning, startTime time.Time, responseHeaders map[string]string) *provider.VideoModelV3Response {
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	if resp.Data != nil && resp.Data.TaskResult != nil && len(resp.Data.TaskResult.Videos) > 0 {
+	if resp.Data != nil && resp.Data.TaskResult != nil {
 		for _, video := range resp.Data.TaskResult.Videos {
 			if video.URL != "" {
 				videos = append(videos, provider.VideoModelV3VideoData{
@@ -607,6 +657,10 @@ func (m *VideoModel) convertResponse(resp *taskStatusResponse, taskID string, wa
 		}
 	}
 
+	if responseHeaders == nil {
+		responseHeaders = map[string]string{}
+	}
+
 	return &provider.VideoModelV3Response{
 		Videos:   videos,
 		Warnings: warnings,
@@ -617,14 +671,43 @@ func (m *VideoModel) convertResponse(resp *taskStatusResponse, taskID string, wa
 			},
 		},
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: startTime,
 			ModelID:   m.modelID,
-			Headers:   map[string]string{},
+			Headers:   responseHeaders,
 		},
 	}
 }
 
-// extractProviderOptions extracts KlingAI provider options from the generic options map
+// convertHTTPHeaders flattens net/http.Header (map[string][]string) into the
+// map[string]string expected by VideoModelV3ResponseInfo.Headers, taking the
+// first value for each header key (matching the TS SDK's single-value behavior).
+func convertHTTPHeaders(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(h))
+	for k, vals := range h {
+		if len(vals) > 0 {
+			out[k] = vals[0]
+		}
+	}
+	return out
+}
+
+// handledProviderOptionKeys is the set of JSON keys that ProviderOptions handles directly.
+// Any keys not in this set are treated as passthrough options (stored in Additional).
+var handledProviderOptionKeys = map[string]bool{
+	"mode": true, "pollIntervalMs": true, "pollTimeoutMs": true,
+	"negativePrompt": true, "sound": true, "cfgScale": true, "cameraControl": true,
+	"multiShot": true, "shotType": true, "multiPrompt": true, "voiceList": true,
+	"imageTail": true, "staticMask": true, "dynamicMasks": true,
+	"elementList": true, "videoUrl": true, "characterOrientation": true,
+	"keepOriginalSound": true, "watermarkEnabled": true,
+}
+
+// extractProviderOptions extracts KlingAI provider options from the generic options map.
+// Unknown keys are captured into ProviderOptions.Additional for passthrough to the API body,
+// matching the TS SDK addPassthroughOptions behavior.
 func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, error) {
 	if opts == nil {
 		return &ProviderOptions{}, nil
@@ -635,7 +718,7 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 		return &ProviderOptions{}, nil
 	}
 
-	// Convert to JSON and back to get proper typing
+	// Marshal to JSON for typed unmarshaling of known fields
 	jsonData, err := json.Marshal(klingaiOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal provider options: %w", err)
@@ -644,6 +727,19 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	var provOpts ProviderOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
+	}
+
+	// Capture unknown keys as passthrough options (Additional)
+	var allKeys map[string]interface{}
+	if err := json.Unmarshal(jsonData, &allKeys); err == nil {
+		for k, v := range allKeys {
+			if !handledProviderOptionKeys[k] {
+				if provOpts.Additional == nil {
+					provOpts.Additional = make(map[string]interface{})
+				}
+				provOpts.Additional[k] = v
+			}
+		}
 	}
 
 	return &provOpts, nil

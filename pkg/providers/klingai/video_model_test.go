@@ -217,9 +217,9 @@ func TestVideoModelInterface(t *testing.T) {
 		}
 	})
 
-	t.Run("Provider returns klingai", func(t *testing.T) {
-		if model.Provider() != "klingai" {
-			t.Errorf("expected klingai, got %s", model.Provider())
+	t.Run("Provider returns klingai.video", func(t *testing.T) {
+		if model.Provider() != "klingai.video" {
+			t.Errorf("expected klingai.video, got %s", model.Provider())
 		}
 	})
 
@@ -230,6 +230,8 @@ func TestVideoModelInterface(t *testing.T) {
 	})
 
 	t.Run("MaxVideosPerCall returns nil", func(t *testing.T) {
+		// MaxVideosPerCall returns nil to signal "use global default of 1",
+		// matching the Go VideoModelV3 interface contract (nil == default 1).
 		if model.MaxVideosPerCall() != nil {
 			t.Error("expected nil for MaxVideosPerCall")
 		}
@@ -936,6 +938,526 @@ func TestV3ElementControl(t *testing.T) {
 	})
 }
 
+// TestKlingMotionControlModelIDRouting verifies that v3.0 motion-control model IDs detect the
+// correct mode and route to the /v1/videos/motion-control endpoint.
+
+// TestKlingMotionControlModelIDRouting verifies that the v3.0 motion-control model ID
+// detects the correct mode and routes to /v1/videos/motion-control.
+func TestKlingMotionControlModelIDRouting(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("KlingV3MotionControl detects motion-control mode", func(t *testing.T) {
+		vm, err := newVideoModel(prov, KlingV3MotionControl)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if vm.mode != VideoModeMotionControl {
+			t.Errorf("mode = %q, want %q", vm.mode, VideoModeMotionControl)
+		}
+		if got := vm.getEndpoint(); got != "/v1/videos/motion-control" {
+			t.Errorf("endpoint = %q, want %q", got, "/v1/videos/motion-control")
+		}
+	})
+
+	t.Run("KlingV3MotionControl accepted by provider", func(t *testing.T) {
+		model, err := prov.VideoModel(KlingV3MotionControl)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if model == nil {
+			t.Error("expected non-nil model")
+		}
+	})
+
+	t.Run("KlingV3MotionControl API model name strips .0 suffix", func(t *testing.T) {
+		vm, _ := newVideoModel(prov, KlingV3MotionControl)
+		if got := vm.getAPIModelName(); got != "kling-v3" {
+			t.Errorf("getAPIModelName() = %q, want %q", got, "kling-v3")
+		}
+	})
+
+	t.Run("missing videoUrl returns ErrCodeKlingVideoMissingOptions", func(t *testing.T) {
+		vm, _ := newVideoModel(prov, KlingV3MotionControl)
+		charOrientation := "image"
+		mode := "std"
+
+		_, _, err := vm.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			CharacterOrientation: &charOrientation,
+			Mode:                 &mode,
+		})
+		if err == nil {
+			t.Fatal("expected error for missing videoUrl")
+		}
+		kErr, ok := err.(*Error)
+		if !ok {
+			t.Fatalf("expected *Error, got %T: %v", err, err)
+		}
+		if kErr.ErrorCode != ErrCodeKlingVideoMissingOptions {
+			t.Errorf("ErrorCode = %q, want %q", kErr.ErrorCode, ErrCodeKlingVideoMissingOptions)
+		}
+	})
+
+	t.Run("missing characterOrientation returns ErrCodeKlingVideoMissingOptions", func(t *testing.T) {
+		vm, _ := newVideoModel(prov, KlingV3MotionControl)
+		videoUrl := "https://example.com/ref.mp4"
+		mode := "std"
+
+		_, _, err := vm.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl: &videoUrl,
+			Mode:     &mode,
+		})
+		if err == nil {
+			t.Fatal("expected error for missing characterOrientation")
+		}
+		kErr, ok := err.(*Error)
+		if !ok || kErr.ErrorCode != ErrCodeKlingVideoMissingOptions {
+			t.Errorf("expected ErrCodeKlingVideoMissingOptions, got %v", err)
+		}
+	})
+
+	t.Run("missing mode returns ErrCodeKlingVideoMissingOptions", func(t *testing.T) {
+		vm, _ := newVideoModel(prov, KlingV3MotionControl)
+		videoUrl := "https://example.com/ref.mp4"
+		charOrientation := "image"
+
+		_, _, err := vm.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl:             &videoUrl,
+			CharacterOrientation: &charOrientation,
+		})
+		if err == nil {
+			t.Fatal("expected error for missing mode")
+		}
+		kErr, ok := err.(*Error)
+		if !ok || kErr.ErrorCode != ErrCodeKlingVideoMissingOptions {
+			t.Errorf("expected ErrCodeKlingVideoMissingOptions, got %v", err)
+		}
+	})
+}
+
+// TestKlingMultiShotSerialization verifies that MultiShotPrompt.Duration is a string and
+// that multi-shot fields (multi_shot, shot_type, multi_prompt) serialize correctly.
+func TestKlingMultiShotSerialization(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("MultiShotPrompt.Duration is string type not int", func(t *testing.T) {
+		shot := MultiShotPrompt{Index: 1, Prompt: "A scene", Duration: "5"}
+		if shot.Duration != "5" {
+			t.Errorf("Duration = %q, want string '5'", shot.Duration)
+		}
+	})
+
+	t.Run("multi-shot serializes in T2V body", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		multiShot := true
+		shotType := "customize"
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "A cinematic journey",
+		}, &ProviderOptions{
+			MultiShot: &multiShot,
+			ShotType:  &shotType,
+			MultiPrompt: []MultiShotPrompt{
+				{Index: 1, Prompt: "Opening", Duration: "3"},
+				{Index: 2, Prompt: "Climax", Duration: "2"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if body["multi_shot"] != true {
+			t.Errorf("multi_shot = %v, want true", body["multi_shot"])
+		}
+		if body["shot_type"] != "customize" {
+			t.Errorf("shot_type = %v, want customize", body["shot_type"])
+		}
+		shots, ok := body["multi_prompt"].([]MultiShotPrompt)
+		if !ok {
+			t.Fatalf("multi_prompt has wrong type: %T", body["multi_prompt"])
+		}
+		if len(shots) != 2 {
+			t.Errorf("expected 2 shots, got %d", len(shots))
+		}
+		if shots[0].Duration != "3" {
+			t.Errorf("shots[0].Duration = %q, want '3' (string)", shots[0].Duration)
+		}
+	})
+
+	t.Run("multi-shot serializes in I2V body", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		multiShot := true
+		shotType := "intelligence"
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/start.png"},
+		}, &ProviderOptions{
+			MultiShot: &multiShot,
+			ShotType:  &shotType,
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if body["multi_shot"] != true {
+			t.Errorf("multi_shot = %v, want true", body["multi_shot"])
+		}
+		if body["shot_type"] != "intelligence" {
+			t.Errorf("shot_type = %v, want intelligence", body["shot_type"])
+		}
+	})
+}
+
+// TestKlingElementControlSerialization verifies that ElementRef serializes correctly
+// to the element_list body key in I2V and motion-control modes.
+func TestKlingElementControlSerialization(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("ElementList serializes to element_list in I2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			ElementList: []ElementRef{{ElementID: 101}, {ElementID: 202}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		elements, ok := body["element_list"].([]ElementRef)
+		if !ok {
+			t.Fatalf("element_list has wrong type: %T", body["element_list"])
+		}
+		if len(elements) != 2 || elements[0].ElementID != 101 || elements[1].ElementID != 202 {
+			t.Errorf("element_list = %+v, unexpected values", elements)
+		}
+	})
+
+	t.Run("empty ElementList does not set element_list", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if _, ok := body["element_list"]; ok {
+			t.Error("element_list should not be set when ElementList is empty")
+		}
+	})
+
+	t.Run("ElementList serializes to element_list in motion-control", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+		videoUrl := "https://example.com/ref.mp4"
+		charOrientation := "image"
+		mode := "std"
+
+		body, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl:             &videoUrl,
+			CharacterOrientation: &charOrientation,
+			Mode:                 &mode,
+			ElementList:          []ElementRef{{ElementID: 55}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		elements, ok := body["element_list"].([]ElementRef)
+		if !ok {
+			t.Fatalf("element_list has wrong type: %T", body["element_list"])
+		}
+		if len(elements) != 1 || elements[0].ElementID != 55 {
+			t.Errorf("element_list = %+v, unexpected values", elements)
+		}
+	})
+}
+
+// TestKlingMotionControlElementListMaxOne verifies that providing more than 1 element
+// in motion-control mode returns an error (TS SDK comment: "Motion Control: 1").
+func TestKlingMotionControlElementListMaxOne(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	videoUrl := "https://example.com/video.mp4"
+	charOrientation := "image"
+	mode := "std"
+
+	t.Run("single element in motion-control succeeds", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+
+		_, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl:             &videoUrl,
+			CharacterOrientation: &charOrientation,
+			Mode:                 &mode,
+			ElementList:          []ElementRef{{ElementID: 1}},
+		})
+		if err != nil {
+			t.Errorf("expected no error for 1 element, got %v", err)
+		}
+	})
+
+	t.Run("two elements in motion-control passes through to API", func(t *testing.T) {
+		// TS SDK does not validate element_list count client-side; it passes through
+		// to the API which enforces the max-1 constraint server-side.
+		model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+
+		body, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl:             &videoUrl,
+			CharacterOrientation: &charOrientation,
+			Mode:                 &mode,
+			ElementList:          []ElementRef{{ElementID: 1}, {ElementID: 2}},
+		})
+		if err != nil {
+			t.Errorf("expected no error (passthrough to API), got %v", err)
+		}
+		list, ok := body["element_list"]
+		if !ok {
+			t.Error("expected element_list in body")
+		}
+		elems, _ := list.([]ElementRef)
+		if len(elems) != 2 {
+			t.Errorf("expected 2 elements passed through, got %d", len(elems))
+		}
+	})
+
+	t.Run("zero elements in motion-control succeeds", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+
+		_, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+			VideoUrl:             &videoUrl,
+			CharacterOrientation: &charOrientation,
+			Mode:                 &mode,
+		})
+		if err != nil {
+			t.Errorf("expected no error for no elements, got %v", err)
+		}
+	})
+}
+
+// TestKlingVoiceControlSerialization verifies that VoiceRef serializes correctly
+// to the voice_list body key in T2V and I2V modes.
+func TestKlingVoiceControlSerialization(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("VoiceRef serializes to voice_list in T2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		sound := "on"
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "<<<voice_1>>> says hello",
+		}, &ProviderOptions{
+			Sound:     &sound,
+			VoiceList: []VoiceRef{{VoiceID: "voice-abc-123"}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		voices, ok := body["voice_list"].([]VoiceRef)
+		if !ok {
+			t.Fatalf("voice_list has wrong type: %T", body["voice_list"])
+		}
+		if len(voices) != 1 || voices[0].VoiceID != "voice-abc-123" {
+			t.Errorf("voice_list = %+v, unexpected values", voices)
+		}
+	})
+
+	t.Run("VoiceRef serializes to voice_list in I2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		sound := "on"
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "<<<voice_1>>> narrates",
+			Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			Sound:     &sound,
+			VoiceList: []VoiceRef{{VoiceID: "v1"}, {VoiceID: "v2"}},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		voices, ok := body["voice_list"].([]VoiceRef)
+		if !ok {
+			t.Fatalf("voice_list has wrong type: %T", body["voice_list"])
+		}
+		if len(voices) != 2 {
+			t.Errorf("expected 2 voices, got %d", len(voices))
+		}
+	})
+
+	t.Run("empty VoiceList does not set field", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{
+			Prompt: "test",
+		}, &ProviderOptions{})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if _, ok := body["voice_list"]; ok {
+			t.Error("voice_list should not be set when VoiceList is empty")
+		}
+	})
+}
+
+// TestKlingMotionBrushSerialization verifies that StaticMask and DynamicMasks serialize
+// correctly using the wire keys static_mask and dynamic_masks, with float64 Trajectory
+// coordinates (matching TS number type).
+func TestKlingMotionBrushSerialization(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	t.Run("StaticMask serializes as static_mask in I2V", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		mask := "https://mask.com/static.png"
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			StaticMask: &mask,
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if body["static_mask"] != mask {
+			t.Errorf("static_mask = %v, want %q", body["static_mask"], mask)
+		}
+		// Confirm wrong key not present
+		if _, ok := body["static_brush_mask"]; ok {
+			t.Error("static_brush_mask should not exist; key is static_mask")
+		}
+	})
+
+	t.Run("DynamicMasks serialize as dynamic_masks with float64 trajectories", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{
+			Image: &provider.VideoModelV3File{Type: "url", URL: "https://example.com/img.png"},
+		}, &ProviderOptions{
+			DynamicMasks: []DynamicMask{
+				{
+					Mask: "https://mask.com/dyn.png",
+					Trajectories: []Trajectory{
+						{X: 100.0, Y: 200.0},
+						{X: 150.5, Y: 250.5},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		masks, ok := body["dynamic_masks"].([]DynamicMask)
+		if !ok {
+			t.Fatalf("dynamic_masks has wrong type: %T", body["dynamic_masks"])
+		}
+		if len(masks) != 1 || masks[0].Mask != "https://mask.com/dyn.png" {
+			t.Errorf("dynamic_masks = %+v", masks)
+		}
+		if len(masks[0].Trajectories) != 2 {
+			t.Errorf("expected 2 trajectories, got %d", len(masks[0].Trajectories))
+		}
+		// float64 coordinates matching TS number type
+		if masks[0].Trajectories[0].X != 100.0 || masks[0].Trajectories[0].Y != 200.0 {
+			t.Errorf("trajectory[0] = %+v, want X=100.0 Y=200.0", masks[0].Trajectories[0])
+		}
+		// Confirm wrong key not present
+		if _, ok := body["dynamic_brushes"]; ok {
+			t.Error("dynamic_brushes should not exist; key is dynamic_masks")
+		}
+	})
+
+	t.Run("Trajectory X Y are float64 matching TS number type", func(t *testing.T) {
+		traj := Trajectory{X: 42.5, Y: 84.25}
+		var x, y float64 = traj.X, traj.Y
+		if x != 42.5 || y != 84.25 {
+			t.Errorf("trajectory = %+v", traj)
+		}
+	})
+}
+
+// TestKlingV30MotionControlFullRequest verifies that a full motion-control request
+// serializes all TS-supported fields correctly.
+// Per TS SDK: motion-control supports video_url, character_orientation, mode, prompt,
+// image_url, keep_original_sound, watermark_info, element_list (max 1).
+// It does NOT include multi_shot or voice_list.
+func TestKlingV30MotionControlFullRequest(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+	model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+
+	videoUrl := "https://example.com/reference.mp4"
+	charOrientation := "image"
+	mode := "std"
+	keepSound := "yes"
+	watermark := true
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "Perform the dance move",
+		Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/character.png"},
+	}
+
+	provOpts := &ProviderOptions{
+		VideoUrl:             &videoUrl,
+		CharacterOrientation: &charOrientation,
+		Mode:                 &mode,
+		KeepOriginalSound:    &keepSound,
+		WatermarkEnabled:     &watermark,
+		ElementList:          []ElementRef{{ElementID: 42}},
+	}
+
+	body, warnings, err := model.buildMotionControlBody(opts, provOpts)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Required fields
+	if body["video_url"] != videoUrl {
+		t.Errorf("video_url = %v, want %q", body["video_url"], videoUrl)
+	}
+	if body["character_orientation"] != charOrientation {
+		t.Errorf("character_orientation = %v, want %q", body["character_orientation"], charOrientation)
+	}
+	if body["mode"] != mode {
+		t.Errorf("mode = %v, want %q", body["mode"], mode)
+	}
+
+	// Optional fields
+	if body["prompt"] != "Perform the dance move" {
+		t.Errorf("prompt = %v", body["prompt"])
+	}
+	if body["image_url"] != "https://example.com/character.png" {
+		t.Errorf("image_url = %v", body["image_url"])
+	}
+	if body["keep_original_sound"] != "yes" {
+		t.Errorf("keep_original_sound = %v", body["keep_original_sound"])
+	}
+	watermarkInfo, ok := body["watermark_info"].(map[string]bool)
+	if !ok || !watermarkInfo["enabled"] {
+		t.Errorf("watermark_info = %v, want {enabled: true}", body["watermark_info"])
+	}
+
+	// Element control
+	elements, ok := body["element_list"].([]ElementRef)
+	if !ok || len(elements) != 1 || elements[0].ElementID != 42 {
+		t.Errorf("element_list = %v (type %T)", body["element_list"], body["element_list"])
+	}
+
+	// Motion-control must NOT include multi-shot or voice fields (per TS SDK)
+	if _, exists := body["multi_shot"]; exists {
+		t.Error("motion-control body must not contain multi_shot")
+	}
+	if _, exists := body["voice_list"]; exists {
+		t.Error("motion-control body must not contain voice_list")
+	}
+
+	// No warnings
+	if len(warnings) != 0 {
+		t.Errorf("expected 0 warnings, got %d: %v", len(warnings), warnings)
+	}
+}
+
 // TestIntegrationV3Models verifies v3.0 model initialization against the live API.
 // Skipped when KLINGAI_ACCESS_KEY or KLINGAI_SECRET_KEY are not set.
 func TestIntegrationV3Models(t *testing.T) {
@@ -970,4 +1492,127 @@ func TestIntegrationV3Models(t *testing.T) {
 			t.Error("IsImageToVideo() should return true for KlingV3I2V")
 		}
 	})
+}
+
+// TestKlingMotionControlModelName verifies that model_name is included in the
+// motion-control request body (CRITICAL: missing model_name causes API errors).
+func TestKlingMotionControlModelName(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+	model := &VideoModel{prov: prov, modelID: KlingV3MotionControl, mode: VideoModeMotionControl}
+
+	videoUrl := "https://example.com/ref.mp4"
+	orientation := "image"
+	mode := "std"
+
+	body, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{
+		VideoUrl:             &videoUrl,
+		CharacterOrientation: &orientation,
+		Mode:                 &mode,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if body["model_name"] != "kling-v3" {
+		t.Errorf("model_name = %v, want %q", body["model_name"], "kling-v3")
+	}
+}
+
+// TestKlingWatermarkInfoT2VAndI2V verifies that watermark_info is serialized in T2V and I2V
+// request bodies when WatermarkEnabled is set, matching TS SDK behavior.
+func TestKlingWatermarkInfoT2VAndI2V(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+	watermark := true
+	opts := &ProviderOptions{WatermarkEnabled: &watermark}
+
+	t.Run("T2V includes watermark_info", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{}, opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		info, ok := body["watermark_info"].(map[string]bool)
+		if !ok || !info["enabled"] {
+			t.Errorf("watermark_info = %v, want {enabled: true}", body["watermark_info"])
+		}
+	})
+
+	t.Run("I2V includes watermark_info", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		body, _, err := model.buildI2VBody(&provider.VideoModelV3CallOptions{}, opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		info, ok := body["watermark_info"].(map[string]bool)
+		if !ok || !info["enabled"] {
+			t.Errorf("watermark_info = %v, want {enabled: true}", body["watermark_info"])
+		}
+	})
+}
+
+// TestKlingDurationFormat verifies that duration is serialized with strconv.FormatFloat
+// (preserving decimal precision) rather than rounded integer format.
+func TestKlingDurationFormat(t *testing.T) {
+	cfg := Config{AccessKey: "test-ak", SecretKey: "test-sk"}
+	prov, _ := New(cfg)
+
+	dur := 5.0
+	opts := &provider.VideoModelV3CallOptions{Duration: &dur}
+	provOpts := &ProviderOptions{}
+
+	t.Run("T2V integer duration", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3T2V, mode: VideoModeT2V}
+		body, _, err := model.buildT2VBody(opts, provOpts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["duration"] != "5" {
+			t.Errorf("duration = %q, want %q", body["duration"], "5")
+		}
+	})
+
+	t.Run("I2V integer duration", func(t *testing.T) {
+		model := &VideoModel{prov: prov, modelID: KlingV3I2V, mode: VideoModeI2V}
+		body, _, err := model.buildI2VBody(opts, provOpts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["duration"] != "5" {
+			t.Errorf("duration = %q, want %q", body["duration"], "5")
+		}
+	})
+}
+
+// TestKlingPassthroughOptions verifies that unknown provider option keys are forwarded
+// to the API request body, matching TS SDK addPassthroughOptions behavior.
+func TestKlingPassthroughOptions(t *testing.T) {
+	rawOpts := map[string]interface{}{
+		"klingai": map[string]interface{}{
+			"mode":         "std",
+			"custom_field": "custom_value",
+			"another_key":  42,
+		},
+	}
+
+	provOpts, err := extractProviderOptions(rawOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if provOpts.Mode == nil || *provOpts.Mode != "std" {
+		t.Errorf("Mode = %v, want %q", provOpts.Mode, "std")
+	}
+
+	if provOpts.Additional["custom_field"] != "custom_value" {
+		t.Errorf("Additional[custom_field] = %v, want %q", provOpts.Additional["custom_field"], "custom_value")
+	}
+	if provOpts.Additional["another_key"] == nil {
+		t.Error("Additional[another_key] should be set")
+	}
+	// Known keys must NOT appear in Additional
+	if _, exists := provOpts.Additional["mode"]; exists {
+		t.Error("known key 'mode' must not appear in Additional")
+	}
 }

@@ -71,9 +71,10 @@ type ProviderOptions struct {
 	// DynamicMasks are dynamic brush configurations for I2V motion brush
 	DynamicMasks []DynamicMask `json:"dynamicMasks,omitempty"`
 
-	// v3.0 element control (I2V only, Kling v3.0+)
+	// v3.0 element control (I2V and motion-control, Kling v3.0+)
 
-	// ElementList contains reference elements for element control (up to 3).
+	// ElementList contains reference elements for element control.
+	// I2V supports up to 3 elements; motion-control supports at most 1.
 	// Cannot coexist with VoiceList on the I2V endpoint.
 	ElementList []ElementRef `json:"elementList,omitempty"`
 

@@ -66,4 +66,7 @@ const (
 
 	// KlingV2_6MotionControl is the KlingAI v2.6 motion-control model.
 	KlingV2_6MotionControl KlingAIVideoModelID = "kling-v2.6-motion-control"
+
+	// KlingV3MotionControl is the KlingAI v3.0 motion-control model.
+	KlingV3MotionControl KlingAIVideoModelID = "kling-v3.0-motion-control"
 )

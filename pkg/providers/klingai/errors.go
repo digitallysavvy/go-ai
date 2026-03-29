@@ -4,15 +4,26 @@ import (
 	"fmt"
 )
 
+// ErrCodeKlingVideoMissingOptions is the error code returned when required motion-control
+// fields (VideoUrl, CharacterOrientation, Mode) are absent.
+const ErrCodeKlingVideoMissingOptions = "KLINGAI_VIDEO_MISSING_OPTIONS"
+
 // Error represents a KlingAI API error
 type Error struct {
-	Code    int
-	Message string
-	Details string
+	Code      int    // HTTP status code
+	ErrorCode string // semantic error code (e.g. ErrCodeKlingVideoMissingOptions)
+	Message   string
+	Details   string
 }
 
 // Error implements the error interface
 func (e *Error) Error() string {
+	if e.ErrorCode != "" {
+		if e.Details != "" {
+			return fmt.Sprintf("klingai error (%s): %s - %s", e.ErrorCode, e.Message, e.Details)
+		}
+		return fmt.Sprintf("klingai error (%s): %s", e.ErrorCode, e.Message)
+	}
 	if e.Details != "" {
 		return fmt.Sprintf("klingai error (code %d): %s - %s", e.Code, e.Message, e.Details)
 	}
@@ -39,12 +50,14 @@ func NewAuthError(details string) *Error {
 	}
 }
 
-// NewVideoGenerationError creates a video generation error
+// NewVideoGenerationError creates a video generation error.
+// Sets ErrorCode to "KLINGAI_VIDEO_GENERATION_ERROR", matching TS AISDKError name.
 func NewVideoGenerationError(details string) *Error {
 	return &Error{
-		Code:    500,
-		Message: "Video generation failed",
-		Details: details,
+		Code:      500,
+		ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR",
+		Message:   "Video generation failed",
+		Details:   details,
 	}
 }
 
@@ -63,5 +76,26 @@ func NewInvalidOptionsError(details string) *Error {
 		Code:    400,
 		Message: "Invalid provider options",
 		Details: details,
+	}
+}
+
+// NewVideoGenerationFailedError creates an error for a task that explicitly failed
+// (task_status == "failed"). Matches TS KLINGAI_VIDEO_GENERATION_FAILED.
+func NewVideoGenerationFailedError(details string) *Error {
+	return &Error{
+		Code:      500,
+		ErrorCode: "KLINGAI_VIDEO_GENERATION_FAILED",
+		Message:   "Video generation failed",
+		Details:   details,
+	}
+}
+
+// NewMissingVideoOptionsError creates an error for missing required motion-control fields.
+// Sets ErrorCode to ErrCodeKlingVideoMissingOptions.
+func NewMissingVideoOptionsError(field string) *Error {
+	return &Error{
+		Code:      400,
+		ErrorCode: ErrCodeKlingVideoMissingOptions,
+		Message:   fmt.Sprintf("%s is required for motion control", field),
 	}
 }

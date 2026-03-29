@@ -205,13 +205,20 @@ type VideoUsage struct {
 	TotalDurationSeconds float64 `json:"totalDurationSeconds,omitempty"`
 }
 
-// Warning represents a warning message from the provider
+// Warning represents a warning message from the provider.
+// Mirrors the TS SDK SharedV4Warning shape: { type, feature, details }.
 type Warning struct {
-	// Type of warning
+	// Type of warning (e.g. "unsupported")
 	Type string `json:"type"`
 
-	// Warning message
-	Message string `json:"message"`
+	// Feature is the specific feature that caused the warning (e.g. "image", "resolution").
+	Feature string `json:"feature,omitempty"`
+
+	// Details is the human-readable description of the warning.
+	Details string `json:"details,omitempty"`
+
+	// Message is kept for backward compatibility; prefer Details for new code.
+	Message string `json:"message,omitempty"`
 }
 
 // FinishReason represents why the model stopped generating
