@@ -81,11 +81,21 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		timeout = 30 * time.Second
 	}
 
+	httpClient := &http.Client{
+		Timeout: timeout,
+	}
+
+	// Default redirect policy: error on redirect (security-first posture for MCP).
+	// Callers can opt into following redirects by setting Redirect: MCPRedirectFollow.
+	if config.Config.Redirect != MCPRedirectFollow {
+		httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return fmt.Errorf("mcp: server returned redirect to %s; set Redirect: MCPRedirectFollow to allow redirects", req.URL)
+		}
+	}
+
 	return &HTTPTransport{
-		url: config.URL,
-		client: &http.Client{
-			Timeout: timeout,
-		},
+		url:          config.URL,
+		client:       httpClient,
 		receiveQueue: make([]*MCPMessage, 0),
 		config:       config.Config,
 		oauth:        config.OAuth,

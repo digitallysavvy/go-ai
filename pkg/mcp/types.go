@@ -2,8 +2,21 @@ package mcp
 
 import "encoding/json"
 
-// MCP Protocol Version
-const ProtocolVersion = "2024-11-05"
+// ProtocolVersion is the MCP protocol version this client advertises as its
+// preferred version during initialization. It is always set to the newest
+// supported version.
+const ProtocolVersion = "2025-11-25"
+
+// SupportedProtocolVersions lists all MCP protocol versions this client
+// understands, in order of preference (newest first). During capability
+// negotiation the client advertises these versions so that the server can
+// select the highest mutually-supported version.
+var SupportedProtocolVersions = []string{
+	"2025-11-25",
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+}
 
 // MCPMessage represents a generic MCP protocol message
 type MCPMessage struct {
