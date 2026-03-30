@@ -1435,6 +1435,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if block.isCustomTool {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
+					ID:   block.toolCallID,
 					Text: delta.Delta.PartialJSON,
 				}, nil
 			}
