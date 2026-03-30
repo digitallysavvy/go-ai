@@ -96,7 +96,7 @@ func main() {
         fmt.Print(chunk.Text)
     }
 
-    fmt.Println("\n\nFinish reason:", result.FinishReason)
+    fmt.Println("\n\nFinish reason:", result.FinishReason())
 }
 ```
 
@@ -108,7 +108,7 @@ For more control, you can use callbacks to process each chunk:
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Explain quantum computing.",
-    OnChunk: func(chunk types.StreamChunk) {
+    OnChunk: func(chunk provider.StreamChunk) {
         fmt.Print(chunk.Text)
 
         // You can also process other chunk data
@@ -116,9 +116,9 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
             fmt.Printf("[Tokens: %d]", chunk.Usage.TotalTokens)
         }
     },
-    OnFinish: func(ctx context.Context, result types.StreamResult, userContext interface{}) {
-        fmt.Printf("\n\nTotal tokens: %d\n", result.Usage.TotalTokens)
-        fmt.Printf("Finish reason: %s\n", result.FinishReason)
+    OnFinish: func(result *ai.StreamTextResult) {
+        fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
+        fmt.Printf("Finish reason: %s\n", result.FinishReason())
     },
 })
 if err != nil {
@@ -168,14 +168,14 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather in Tokyo and Paris?",
     Tools:  []types.Tool{weatherTool},
-    OnChunk: func(chunk types.StreamChunk) {
+    OnChunk: func(chunk provider.StreamChunk) {
         if chunk.Text != "" {
             fmt.Print(chunk.Text)
         }
 
         // Handle tool calls as they arrive
-        for _, toolCall := range chunk.ToolCalls {
-            fmt.Printf("\n[Calling tool: %s]\n", toolCall.ToolName)
+        if chunk.ToolCall != nil {
+            fmt.Printf("\n[Calling tool: %s]\n", chunk.ToolCall.ToolName)
         }
     },
 })
@@ -187,6 +187,24 @@ defer result.Close()
 for range result.Chunks() {
 }
 ```
+
+## Tool Execution Timing (v0.4.0)
+
+In v0.4.0, tool execution in `StreamText` is deferred until the stream is fully consumed. This means:
+
+- All text, reasoning, and custom content chunks arrive first
+- Tool calls are accumulated during streaming
+- Tool execution happens after the stream ends
+- Tool-result chunks are forwarded to `OnChunk` after execution
+
+**Chunk ordering:**
+
+1. Provider chunks — text (`ChunkTypeText`), reasoning (`ChunkTypeReasoning`), and custom content (`ChunkTypeCustom`, `ChunkTypeReasoningFile`) — arrive in whatever order the provider streams them and are forwarded to `OnChunk` immediately
+2. Stream end
+3. Tool execution (deferred)
+4. Tool-result chunks (`ChunkTypeToolResult`) forwarded to `OnChunk` after execution
+
+This ensures consumers receive all content before any tool side-effects fire. If your application previously relied on tool results arriving mid-stream, see the [v0.3 to v0.4 migration guide](../08-migration-guides/from-v0.3-to-v0.4.mdx) for details.
 
 ## Cancellation
 
@@ -230,18 +248,17 @@ result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:  model,
     Prompt: "Generate a recipe for chocolate chip cookies",
     Schema: recipeSchema,
+    OnChunk: func(partialObject interface{}) {
+        fmt.Printf("Partial object: %v\n", partialObject)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
-defer result.Close()
 
-for chunk := range result.Chunks() {
-    fmt.Printf("Partial object: %s\n", chunk.PartialObject)
-}
-
-// Get final complete object
-finalRecipe := result.Object
+// StreamObject is deprecated — use StreamText with ObjectOutput[T]() instead.
+// The result is a *GenerateObjectResult with the complete object.
+fmt.Println(result.Object)
 ```
 
 ## Channel-Based Architecture
@@ -278,15 +295,15 @@ if err != nil {
 defer result.Close()
 
 for chunk := range result.Chunks() {
-    if chunk.Error != nil {
-        fmt.Printf("Error during streaming: %v\n", chunk.Error)
+    if chunk.Type == provider.ChunkTypeError {
+        fmt.Printf("Error during streaming: %s\n", chunk.AbortReason)
         break
     }
     fmt.Print(chunk.Text)
 }
 
 // Check for final error
-if err := result.Error(); err != nil {
+if err := result.Err(); err != nil {
     log.Printf("Stream ended with error: %v", err)
 }
 ```

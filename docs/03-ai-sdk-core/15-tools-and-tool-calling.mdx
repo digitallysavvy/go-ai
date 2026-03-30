@@ -347,6 +347,114 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+## Tool Timeouts
+
+Set timeouts for tool execution to prevent long-running tools from blocking the step loop. The Go AI SDK provides both global and per-tool timeout configuration.
+
+### Global Tool Timeout
+
+Set a default timeout for all tools using `ToolMs`:
+
+```go
+import (
+    "time"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+fiveSeconds := 5 * time.Second
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather?",
+    Tools:  []types.Tool{weatherTool},
+    Timeout: &ai.TimeoutConfig{
+        ToolMs: &fiveSeconds, // 5 second timeout for all tools
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+### Per-Tool Timeout
+
+Override timeouts for individual tools using the `Tools` map. Per-tool timeouts take precedence over the global `ToolMs`:
+
+```go
+import "time"
+
+fiveSeconds := 5 * time.Second
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Search for weather and news",
+    Tools:  []types.Tool{weatherTool, searchTool},
+    Timeout: &ai.TimeoutConfig{
+        ToolMs: &fiveSeconds, // Default: 5s for all tools
+        Tools: map[string]time.Duration{
+            "get_weather": 5 * time.Second,  // 5s for weather
+            "search_web":  15 * time.Second, // 15s for web search
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+### Timeout Resolution Order
+
+The `GetToolTimeout()` helper resolves the effective timeout for a tool name using this priority:
+
+1. **Per-tool override** (`Tools[toolName]`) — highest priority
+2. **Global default** (`ToolMs`) — used if no per-tool entry exists
+3. **No timeout** — if neither is set, the tool runs without a timeout
+
+```go
+timeout := &ai.TimeoutConfig{
+    ToolMs: &fiveSeconds,
+    Tools: map[string]time.Duration{
+        "slow_tool": 30 * time.Second,
+    },
+}
+
+timeout.GetToolTimeout("slow_tool")    // 30s (per-tool override)
+timeout.GetToolTimeout("fast_tool")    // 5s  (global default)
+timeout.GetToolTimeout("another_tool") // 5s  (global default)
+```
+
+### Timeout Behavior
+
+When a tool exceeds its timeout, the tool's context is cancelled and the `Execute` function receives a `context.DeadlineExceeded` error. Tools that respect context cancellation will stop immediately:
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    // Long-running operation that respects context
+    req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+    if err != nil {
+        return nil, err
+    }
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        // Returns context.DeadlineExceeded if the tool timeout fires
+        return nil, fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    // Process response...
+    return result, nil
+},
+```
+
+> **Tip:** Always use `http.NewRequestWithContext(ctx, ...)` and pass the context to external calls so they respect tool timeouts and cancellation.
+
 ## Complex Tool Examples
 
 ### Multiple Tools

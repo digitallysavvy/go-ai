@@ -599,6 +599,92 @@ for i, result := range results {
 }
 ```
 
+## Custom Content Types
+
+Some providers return content that does not map to standard text, reasoning, or tool call types. The Go AI SDK represents these as `CustomContent` and `ReasoningFileContent`.
+
+### CustomContent
+
+`CustomContent` wraps provider-specific response parts that have no standard mapping (e.g., XAI citations, OpenAI compaction events):
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+// CustomContent is emitted by providers for unknown/provider-specific parts
+type CustomContent struct {
+    Kind             string                 // e.g. "xai-citation", "openai-compaction"
+    ProviderOptions  map[string]interface{} // input: provider-specific options to forward
+    ProviderMetadata json.RawMessage        // output: raw JSON from provider
+}
+```
+
+- `Kind` identifies the content type using the format `"{provider}-{type}"` (e.g., `"xai-citation"`)
+- `ProviderMetadata` carries the raw JSON returned by the provider (output direction)
+- `ProviderOptions` carries provider-specific options keyed by provider name (input direction)
+
+### ReasoningFileContent
+
+`ReasoningFileContent` carries reasoning output as a binary file (e.g., PDFs from Google models):
+
+```go
+// ReasoningFileContent carries reasoning output as a binary file
+type ReasoningFileContent struct {
+    MediaType        string                 // e.g. "application/pdf", "image/png"
+    Data             []byte                 // auto base64-encodes in JSON marshaling
+    ProviderOptions  map[string]interface{} // input: provider-specific options to forward
+    ProviderMetadata json.RawMessage        // output: raw JSON from provider
+}
+```
+
+- `MediaType` is the IANA media type of the file
+- `Data` holds raw bytes; Go's `encoding/json` automatically handles base64 encoding/decoding
+- `ProviderOptions` and `ProviderMetadata` serve the same input/output roles as on `CustomContent`
+
+### Stream Chunk Handling
+
+Both content types flow through stream chunks via `OnChunk`. Use `ChunkTypeCustom` and `ChunkTypeReasoningFile` to detect them:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider"
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Analyze this data with reasoning.",
+    OnChunk: func(chunk provider.StreamChunk) {
+        switch chunk.Type {
+        case provider.ChunkTypeText:
+            fmt.Print(chunk.Text)
+
+        case provider.ChunkTypeCustom:
+            // Provider-specific content
+            fmt.Printf("Custom content [%s]: %s\n",
+                chunk.CustomContent.Kind,
+                string(chunk.CustomContent.ProviderMetadata))
+
+        case provider.ChunkTypeReasoningFile:
+            // Reasoning output as file
+            fmt.Printf("Reasoning file: %s (%d bytes)\n",
+                chunk.ReasoningFileContent.MediaType,
+                len(chunk.ReasoningFileContent.Data))
+        }
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+for range result.Chunks() {
+}
+```
+
+### Multi-Turn Behavior
+
+In multi-turn conversations, `CustomContent` and `ReasoningFileContent` appear in assistant messages within the conversation history:
+
+- **`ProviderOptions`** is forwarded back to the provider in subsequent requests. This allows provider-specific state (e.g., cached references) to round-trip correctly.
+- **`ProviderMetadata`** is output-only and is **not** re-sent to the provider. It is preserved in conversation history for logging and debugging.
+
 ## Next Steps
 
 - Learn about [Generating Structured Data](./03-generating-structured-data.md)
