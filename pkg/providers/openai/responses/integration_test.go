@@ -58,7 +58,7 @@ func TestIntegration_CustomTool_WireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected status: %d", resp.StatusCode)
@@ -113,7 +113,7 @@ func TestIntegration_ShellTools_WireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	rawTools := capturedBody["tools"].([]interface{})
 	expectedTypes := []string{"local_shell", "shell", "apply_patch"}
@@ -161,7 +161,7 @@ func TestIntegration_Phase_InResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var body struct {
 		Output []AssistantMessageItem `json:"output"`

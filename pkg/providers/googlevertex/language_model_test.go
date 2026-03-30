@@ -22,7 +22,7 @@ func TestLanguageModel_GenerateText_MockServer(t *testing.T) {
 			t.Errorf("Expected Authorization 'Bearer test-token', got '%s'", auth)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"candidates": [{
 				"content": {"parts": [{"text": "Hello! How can I help you today?"}], "role": "model"},
 				"finishReason": "STOP",
@@ -78,7 +78,7 @@ func TestLanguageModel_GenerateWithTools_MockServer(t *testing.T) {
 			t.Error("Expected tools to be included in request")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"candidates": [{
 				"content": {"parts": [{"functionCall": {"name": "get_weather", "args": {"location": "San Francisco"}}}], "role": "model"},
 				"finishReason": "STOP",
@@ -147,7 +147,7 @@ func TestLanguageModel_JSONMode_MockServer(t *testing.T) {
 			t.Errorf("Expected responseMimeType 'application/json', got '%v'", genConfig["responseMimeType"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"candidates": [{
 				"content": {"parts": [{"text": "{\"name\": \"John Doe\", \"age\": 30}"}], "role": "model"},
 				"finishReason": "STOP",
@@ -197,7 +197,7 @@ func TestLanguageModel_JSONMode_MockServer(t *testing.T) {
 func TestLanguageModel_UsageTracking(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"candidates": [{
 				"content": {"parts": [{"text": "Response with detailed token tracking"}], "role": "model"},
 				"finishReason": "STOP",
@@ -402,7 +402,7 @@ func TestVertexLanguageModel_StreamText_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	var chunks []string
 	for {

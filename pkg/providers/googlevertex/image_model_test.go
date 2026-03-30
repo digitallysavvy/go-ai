@@ -338,7 +338,7 @@ func TestImageModel_DoGenerate_Error_EmptyPredictions(t *testing.T) {
 func TestImageModel_DoGenerate_Error_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": {"code": 401, "message": "Unauthorized"}}`))
+		_, _ = w.Write([]byte(`{"error": {"code": 401, "message": "Unauthorized"}}`))
 	}))
 	defer server.Close()
 

@@ -894,12 +894,12 @@ func TestPolling_TimeoutError(t *testing.T) {
 
 	mux.HandleFunc("/api/v3/contents/generations/tasks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"id": "timeout-test-id"}`)
+		_, _ = fmt.Fprintln(w, `{"id": "timeout-test-id"}`)
 	})
 
 	mux.HandleFunc("/api/v3/contents/generations/tasks/timeout-test-id", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"id": "timeout-test-id", "status": "processing"}`)
+		_, _ = fmt.Fprintln(w, `{"id": "timeout-test-id", "status": "processing"}`)
 	})
 
 	server := httptest.NewServer(mux)
@@ -931,7 +931,7 @@ func TestPolling_ContextCancellation(t *testing.T) {
 
 	mux.HandleFunc("/api/v3/contents/generations/tasks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"id": "abort-test-id"}`)
+		_, _ = fmt.Fprintln(w, `{"id": "abort-test-id"}`)
 	})
 
 	mux.HandleFunc("/api/v3/contents/generations/tasks/abort-test-id", func(w http.ResponseWriter, r *http.Request) {

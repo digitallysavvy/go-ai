@@ -87,7 +87,7 @@ func generateCalendarEvent(ctx context.Context, model provider.LanguageModel) {
 	})
 
 	// OpenAI's structured outputs use response_format with JSON schema
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck
 		Model:  model,
 		Prompt: "Create a calendar event for a team standup meeting tomorrow at 10 AM for 30 minutes with 3 attendees",
 		Schema: eventSchema,
@@ -147,7 +147,7 @@ func generateAPIResponse(ctx context.Context, model provider.LanguageModel) {
 		"required": []string{"status", "code", "message"},
 	})
 
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck
 		Model:  model,
 		Prompt: "Generate a successful API response for a user creation request with user ID 'usr_123'",
 		Schema: apiSchema,
@@ -232,7 +232,7 @@ Tax (8.5%): $169.15
 Total: $2,159.15
 `
 
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck
 		Model:  model,
 		Prompt: fmt.Sprintf("Extract all information from this invoice into structured format:\n\n%s", invoiceText),
 		Schema: extractionSchema,

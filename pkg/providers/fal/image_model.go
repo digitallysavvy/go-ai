@@ -52,7 +52,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Fal.ai API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("fal.ai API returned status %d: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	var response falImageResponse

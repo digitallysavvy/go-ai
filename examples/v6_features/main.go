@@ -161,7 +161,7 @@ func main() {
 	} else {
 		// Parse the structured output
 		var recipe Recipe
-		json.Unmarshal([]byte(recipeResult.Text), &recipe)
+		_ = json.Unmarshal([]byte(recipeResult.Text), &recipe)
 		fmt.Printf("Generated Recipe: %s\n", recipe.Name)
 		fmt.Printf("  Prep Time: %d minutes\n", recipe.PrepTime)
 		fmt.Printf("  Ingredients: %d items\n\n", len(recipe.Ingredients))

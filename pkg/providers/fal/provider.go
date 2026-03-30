@@ -50,12 +50,12 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("Fal.ai does not support language models")
+	return nil, fmt.Errorf("fal.ai does not support language models")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("Fal.ai does not support embeddings")
+	return nil, fmt.Errorf("fal.ai does not support embeddings")
 }
 
 // ImageModel returns an image generation model by ID

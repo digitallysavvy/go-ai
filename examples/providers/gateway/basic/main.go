@@ -89,7 +89,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to stream text: %v", err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	fmt.Println("\nStreamed response:")
 	for chunk := range stream.Chunks() {

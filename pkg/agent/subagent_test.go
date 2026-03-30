@@ -120,8 +120,8 @@ func TestSubagentRegistry_List(t *testing.T) {
 	agent1 := &mockAgent{}
 	agent2 := &mockAgent{}
 
-	registry.Register("research", agent1)
-	registry.Register("analysis", agent2)
+	_ = registry.Register("research", agent1)
+	_ = registry.Register("analysis", agent2)
 
 	names := registry.List()
 	if len(names) != 2 {
@@ -211,8 +211,8 @@ func TestSubagentRegistry_Clear(t *testing.T) {
 	agent1 := &mockAgent{}
 	agent2 := &mockAgent{}
 
-	registry.Register("research", agent1)
-	registry.Register("analysis", agent2)
+	_ = registry.Register("research", agent1)
+	_ = registry.Register("analysis", agent2)
 
 	if registry.Count() != 2 {
 		t.Fatalf("expected 2 subagents, got: %d", registry.Count())

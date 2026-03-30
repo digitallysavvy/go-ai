@@ -572,8 +572,8 @@ func TestGenerateObject_RawText(t *testing.T) {
 
 	// Verify the raw text is preserved (may have whitespace differences)
 	var expected, actual interface{}
-	json.Unmarshal([]byte(expectedJSON), &expected)
-	json.Unmarshal([]byte(result.Text), &actual)
+	_ = json.Unmarshal([]byte(expectedJSON), &expected)
+	_ = json.Unmarshal([]byte(result.Text), &actual)
 
 	if expected.(map[string]interface{})["test"] != actual.(map[string]interface{})["test"] {
 		t.Error("text content mismatch")
