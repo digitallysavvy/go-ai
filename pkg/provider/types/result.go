@@ -196,6 +196,10 @@ type StepResult struct {
 	// Warnings from this step
 	Warnings []Warning `json:"warnings,omitempty"`
 
+	// Sources contains citation or grounding references for this step.
+	// Populated by filtering SourceContent parts from the provider response.
+	Sources []SourceContent `json:"sources,omitempty"`
+
 	// Response messages generated in this step
 	// Contains the assistant message with any text and tool calls
 	ResponseMessages []Message `json:"responseMessages,omitempty"`

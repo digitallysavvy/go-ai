@@ -252,6 +252,10 @@ type GenerateTextResult struct {
 	// ProviderMetadata holds provider-specific metadata from the last generation step.
 	ProviderMetadata map[string]interface{}
 
+	// Sources contains citation or grounding references from the final generation step.
+	// Populated by providers such as Perplexity and Google Generative AI.
+	Sources []types.SourceContent
+
 	// Raw request/response (for debugging)
 	RawRequest  interface{}
 	RawResponse interface{}
@@ -418,6 +422,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
 		}
 
+		// Extract sources from content parts
+		var stepSources []types.SourceContent
+		for _, part := range genResult.Content {
+			if src, ok := part.(types.SourceContent); ok {
+				stepSources = append(stepSources, src)
+			}
+		}
+
 		// Create step result
 		stepResult := types.StepResult{
 			StepNumber:   stepNum,
@@ -427,6 +439,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			FinishReason: genResult.FinishReason,
 			Usage:        genResult.Usage,
 			Warnings:     genResult.Warnings,
+			Sources:      stepSources,
 		}
 
 		// Update accumulated usage
@@ -493,6 +506,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.Text = genResult.Text
 			result.FinishReason = genResult.FinishReason
 			result.ToolCalls = genResult.ToolCalls
+			result.Sources = stepSources
 			result.ContextManagement = genResult.ContextManagement
 			result.Warnings = append(result.Warnings, genResult.Warnings...)
 			result.RawRequest = genResult.RawRequest

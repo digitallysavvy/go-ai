@@ -184,6 +184,9 @@ type StreamTextResult struct {
 	// warnings accumulated from stream-start chunks
 	warnings []types.Warning
 
+	// sources accumulated from ChunkTypeSource chunks
+	sources []types.SourceContent
+
 	// Structured event callbacks (v6.1 - P0-3)
 	// Stored here so processStream can fire them when the stream completes.
 	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
@@ -466,6 +469,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.mu.Unlock()
 			}
 
+			// Accumulate sources from ChunkTypeSource chunks.
+			if chunk.Type == provider.ChunkTypeSource && chunk.SourceContent != nil {
+				r.sources = append(r.sources, *chunk.SourceContent)
+			}
+
 			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
 			if onChunk != nil {
 				onChunk(*chunk)
@@ -554,6 +562,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolResults:  stepToolResults,
 			FinishReason: r.finishReason,
 			Usage:        r.usage,
+			Sources:      r.sources,
 		}
 		allSteps = append(allSteps, stepResult)
 
@@ -768,6 +777,15 @@ func (r *StreamTextResult) ToolResults() []types.ToolResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.toolResults
+}
+
+// Sources returns citation or grounding references accumulated during streaming.
+// Populated by providers such as Perplexity and Google Generative AI.
+// Only populated after stream completes.
+func (r *StreamTextResult) Sources() []types.SourceContent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sources
 }
 
 // Output returns the final parsed typed output after streaming completes.
