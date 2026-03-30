@@ -1,0 +1,433 @@
+---
+title: Event callbacks
+description: Subscribe to lifecycle events in GenerateText, StreamText, Embed, EmbedMany, and Rerank calls.
+---
+
+# Event callbacks
+
+The Go AI SDK provides per-call event callbacks that you can pass to `GenerateText`, `StreamText`, `Embed`, `EmbedMany`, and `Rerank` to observe lifecycle events. This is useful for building observability tools, logging systems, analytics, and debugging utilities.
+
+## Basic usage
+
+Pass callbacks directly to `GenerateText` or `StreamText`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/teilomillet/go-ai/pkg/ai"
+	"github.com/teilomillet/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	ctx := context.Background()
+	p := openai.NewProvider("your-api-key")
+	model := p.LanguageModel("gpt-4o")
+
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "What is the weather in San Francisco?",
+		OnStart: func(ctx context.Context, event ai.OnStartEvent) {
+			fmt.Println("Generation started:", event.ModelID)
+		},
+		OnFinishEvent: func(ctx context.Context, event ai.OnFinishEvent) {
+			fmt.Println("Total tokens:", event.TotalUsage.TotalTokens)
+		},
+	})
+	if err != nil {
+		log.Fatalf("Generation failed: %v", err)
+	}
+
+	fmt.Println(result.Text)
+}
+```
+
+## Available callbacks
+
+### GenerateText / StreamText
+
+| Callback | Event type | Description |
+|----------|-----------|-------------|
+| `OnStart` | `OnStartEvent` | Called when generation begins, before any LLM calls. |
+| `OnStepStart` | `OnStepStartEvent` | Called when a step (LLM call) begins, before the provider is called. |
+| `OnToolCallStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
+| `OnToolCallFinish` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
+| `OnStepFinishEvent` | `OnStepFinishEvent` | Called when a step (LLM call) completes. |
+| `OnFinishEvent` | `OnFinishEvent` | Called when the entire generation completes (all steps finished). |
+
+### Embed / EmbedMany
+
+| Callback | Event type | Description |
+|----------|-----------|-------------|
+| `ExperimentalOnStart` | `EmbedOnStartEvent` | Called before the embedding model is invoked. |
+| `ExperimentalOnFinish` | `EmbedOnFinishEvent` | Called after the embedding model returns. |
+
+### Rerank
+
+| Callback | Event type | Description |
+|----------|-----------|-------------|
+| `ExperimentalOnStart` | `RerankOnStartEvent` | Called before the reranking model is invoked. |
+| `ExperimentalOnFinish` | `RerankOnFinishEvent` | Called after the reranking model returns. |
+
+## Event reference
+
+### GenerateText / StreamText
+
+#### OnStartEvent
+
+Called when the generation begins, before any LLM calls are made.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ModelProvider` | `string` | The provider name (e.g., `"openai"`). |
+| `ModelID` | `string` | The model identifier (e.g., `"gpt-4o"`). |
+| `System` | `string` | The system message provided to the model. |
+| `Prompt` | `string` | The prompt string if using the Prompt option. |
+| `Messages` | `[]types.Message` | The messages array if using the Messages option. |
+| `Tools` | `[]types.Tool` | The tools available for this generation. |
+| `Temperature` | `*float64` | Sampling temperature. |
+| `MaxTokens` | `*int` | Maximum number of tokens to generate. |
+| `TopP` | `*float64` | Top-p (nucleus) sampling parameter. |
+| `TopK` | `*int` | Top-k sampling parameter. |
+| `FrequencyPenalty` | `*float64` | Frequency penalty. |
+| `PresencePenalty` | `*float64` | Presence penalty. |
+| `StopSequences` | `[]string` | Sequences that stop generation. |
+| `Seed` | `*int` | Random seed for reproducible generation. |
+| `ExperimentalContext` | `interface{}` | User-defined context flowing through the lifecycle. |
+| `FunctionID` | `string` | Telemetry function identifier for grouping operations. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### OnStepStartEvent
+
+Called before each step (LLM call) begins. Useful for tracking multi-step generations with tool loops.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `StepNumber` | `int` | Zero-based index of the current step. |
+| `ModelProvider` | `string` | The provider name. |
+| `ModelID` | `string` | The model identifier. |
+| `System` | `string` | The system message for this step. |
+| `Messages` | `[]types.Message` | The messages sent to the model for this step. |
+| `Tools` | `[]types.Tool` | The tools available for this step. |
+| `PreviousSteps` | `[]types.StepResult` | Results from previous steps (empty for the first step). |
+| `ExperimentalContext` | `interface{}` | User-defined context object. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### OnToolCallStartEvent
+
+Called before a tool's `Execute` function runs.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ToolCallID` | `string` | Unique identifier for this tool call. |
+| `ToolName` | `string` | Name of the tool being called. |
+| `Args` | `map[string]any` | Input arguments passed to the tool. |
+| `StepNumber` | `int` | Zero-based step index where this tool call occurs. |
+| `ModelProvider` | `string` | The provider name. |
+| `ModelID` | `string` | The model identifier. |
+| `Messages` | `[]types.Message` | The conversation messages at tool execution time. |
+| `ExperimentalContext` | `interface{}` | User-defined context object. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### OnToolCallFinishEvent
+
+Called after a tool's `Execute` function completes or errors.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ToolCallID` | `string` | Unique identifier for this tool call. |
+| `ToolName` | `string` | Name of the tool that was called. |
+| `Args` | `map[string]any` | Input arguments passed to the tool. |
+| `Result` | `any` | The tool's return value (nil on error). |
+| `Error` | `error` | The error from tool execution (nil on success). |
+| `DurationMs` | `int64` | Execution time of the tool call in milliseconds. |
+| `StepNumber` | `int` | Zero-based step index where this tool call occurred. |
+| `ModelProvider` | `string` | The provider name. |
+| `ModelID` | `string` | The model identifier. |
+| `Messages` | `[]types.Message` | The conversation messages at tool execution time. |
+| `ExperimentalContext` | `interface{}` | User-defined context object. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### OnStepFinishEvent
+
+Called after each step (LLM call) completes.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `StepNumber` | `int` | Zero-based index of this step. |
+| `ModelProvider` | `string` | The provider name. |
+| `ModelID` | `string` | The model identifier. |
+| `Text` | `string` | The generated text from this step. |
+| `ToolCalls` | `[]types.ToolCall` | Tool calls made during this step. |
+| `ToolResults` | `[]types.ToolResult` | Results of tool calls from this step. |
+| `FinishReason` | `types.FinishReason` | Why the generation finished (`"stop"`, `"length"`, `"tool-calls"`, etc.). |
+| `Usage` | `types.Usage` | Token usage for this step. |
+| `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `ExperimentalContext` | `interface{}` | User-defined context object. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### OnFinishEvent
+
+Called when the entire generation completes (all steps finished). Includes aggregated data.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Text` | `string` | The full generated text. |
+| `ToolCalls` | `[]types.ToolCall` | Tool calls from the final step. |
+| `ToolResults` | `[]types.ToolResult` | Tool results from the final step. |
+| `FinishReason` | `types.FinishReason` | Why the final step finished. |
+| `Steps` | `[]types.StepResult` | Results from all steps in the generation. |
+| `TotalUsage` | `types.Usage` | Aggregated token usage across all steps. |
+| `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `ExperimentalContext` | `interface{}` | Final state of the user-defined context. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+### Embed / EmbedMany
+
+#### EmbedOnStartEvent
+
+Called when the embedding operation begins, before the embedding model is called. Both `Embed` and `EmbedMany` share the same event type; the `OperationID` field distinguishes them (`"ai.embed"` vs `"ai.embedMany"`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `CallID` | `string` | Unique identifier for this embed call. |
+| `OperationID` | `string` | Operation type: `"ai.embed"` or `"ai.embedMany"`. |
+| `Provider` | `string` | The embedding provider name. |
+| `ModelID` | `string` | The embedding model identifier. |
+| `Values` | `[]string` | The input text(s) being embedded. |
+| `MaxRetries` | `int` | Maximum retries for failed requests. |
+| `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |
+| `ProviderOptions` | `map[string]interface{}` | Provider-specific options. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### EmbedOnFinishEvent
+
+Called when the embedding operation completes. For `Embed`, `Embeddings` contains a single vector. For `EmbedMany`, it contains one vector per input value.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `CallID` | `string` | Matches the `CallID` from the corresponding start event. |
+| `OperationID` | `string` | Operation type: `"ai.embed"` or `"ai.embedMany"`. |
+| `Provider` | `string` | The embedding provider name. |
+| `ModelID` | `string` | The embedding model identifier. |
+| `Value` | `[]string` | The input text(s) that were embedded. |
+| `Embeddings` | `[][]float64` | The resulting embedding vectors. |
+| `Usage` | `types.EmbeddingUsage` | Token usage for the embedding operation. |
+| `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `ProviderMetadata` | `json.RawMessage` | Provider-specific metadata. |
+| `Responses` | `[]types.EmbeddingResponse` | HTTP response metadata (headers, body). Length 1 for `Embed`; one per batch chunk for `EmbedMany`. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+### Rerank
+
+#### RerankOnStartEvent
+
+Called when the reranking operation begins, before the reranking model is called.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `CallID` | `string` | Unique identifier for this rerank call. |
+| `OperationID` | `string` | Always `"ai.rerank"`. |
+| `Provider` | `string` | The reranking provider name. |
+| `ModelID` | `string` | The reranking model identifier. |
+| `Query` | `string` | The query to rerank documents against. |
+| `Documents` | `interface{}` | The documents being reranked (`[]string` or `[]map[string]interface{}`). |
+| `TopN` | `*int` | Number of top documents to return (nil means all). |
+| `MaxRetries` | `int` | Maximum retries for failed requests. |
+| `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |
+| `ProviderOptions` | `map[string]interface{}` | Provider-specific options. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+#### RerankOnFinishEvent
+
+Called when the reranking operation completes, after the reranking model returns.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `CallID` | `string` | Matches the `CallID` from the corresponding start event. |
+| `OperationID` | `string` | Always `"ai.rerank"`. |
+| `Provider` | `string` | The reranking provider name. |
+| `ModelID` | `string` | The reranking model identifier. |
+| `Documents` | `interface{}` | The documents that were reranked. |
+| `Query` | `string` | The query that documents were reranked against. |
+| `Ranking` | `[]ai.RerankItem` | Reranked results sorted by relevance score (descending). Each item has `OriginalIndex`, `Score`, and `Document`. |
+| `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `Response` | `types.RerankResponse` | Response metadata (id, timestamp, modelId, headers). |
+| `ProviderMetadata` | `json.RawMessage` | Provider-specific metadata. |
+| `FunctionID` | `string` | Telemetry function identifier. |
+| `Metadata` | `map[string]any` | Additional telemetry metadata. |
+
+## Use cases
+
+### Logging and debugging
+
+Track the full lifecycle of a generation with timestamps:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/teilomillet/go-ai/pkg/ai"
+	"github.com/teilomillet/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	ctx := context.Background()
+	p := openai.NewProvider("your-api-key")
+	model := p.LanguageModel("gpt-4o")
+
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello!",
+		OnStart: func(ctx context.Context, event ai.OnStartEvent) {
+			fmt.Printf("[%s] Generation started: model=%s provider=%s\n",
+				time.Now().Format(time.RFC3339), event.ModelID, event.ModelProvider)
+		},
+		OnStepFinishEvent: func(ctx context.Context, event ai.OnStepFinishEvent) {
+			fmt.Printf("[%s] Step %d finished: reason=%s tokens=%d\n",
+				time.Now().Format(time.RFC3339), event.StepNumber,
+				event.FinishReason, event.Usage.TotalTokens)
+		},
+		OnFinishEvent: func(ctx context.Context, event ai.OnFinishEvent) {
+			fmt.Printf("[%s] Generation complete: steps=%d totalTokens=%d\n",
+				time.Now().Format(time.RFC3339), len(event.Steps),
+				event.TotalUsage.TotalTokens)
+		},
+	})
+	if err != nil {
+		log.Fatalf("Generation failed: %v", err)
+	}
+
+	fmt.Println(result.Text)
+}
+```
+
+### Tool execution monitoring
+
+Track tool call durations and detect failures:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/teilomillet/go-ai/pkg/ai"
+	"github.com/teilomillet/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	ctx := context.Background()
+	p := openai.NewProvider("your-api-key")
+	model := p.LanguageModel("gpt-4o")
+
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "What is the weather?",
+		// Tools: []types.Tool{getWeather},
+		OnToolCallStart: func(ctx context.Context, event ai.OnToolCallStartEvent) {
+			fmt.Printf("Tool %q starting...\n", event.ToolName)
+		},
+		OnToolCallFinish: func(ctx context.Context, event ai.OnToolCallFinishEvent) {
+			if event.Error == nil {
+				fmt.Printf("Tool %q completed in %dms\n",
+					event.ToolName, event.DurationMs)
+			} else {
+				fmt.Printf("Tool %q failed: %v\n",
+					event.ToolName, event.Error)
+			}
+		},
+	})
+	if err != nil {
+		log.Fatalf("Generation failed: %v", err)
+	}
+
+	fmt.Println(result.Text)
+}
+```
+
+### Embedding observability
+
+Monitor embedding operations with token usage tracking:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/teilomillet/go-ai/pkg/ai"
+	"github.com/teilomillet/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	ctx := context.Background()
+	p := openai.NewProvider("your-api-key")
+	model := p.EmbeddingModel("text-embedding-3-small")
+
+	result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+		Model:  model,
+		Inputs: []string{"sunny day at the beach", "rainy afternoon in the city"},
+		ExperimentalOnStart: func(event ai.EmbedOnStartEvent) {
+			fmt.Printf("Embedding started (%s): model=%s values=%d\n",
+				event.OperationID, event.ModelID, len(event.Values))
+		},
+		ExperimentalOnFinish: func(event ai.EmbedOnFinishEvent) {
+			fmt.Printf("Embedding complete (%s): tokens=%d vectors=%d\n",
+				event.OperationID, event.Usage.Tokens, len(event.Embeddings))
+		},
+	})
+	if err != nil {
+		log.Fatalf("Embedding failed: %v", err)
+	}
+
+	fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
+}
+```
+
+## Error handling
+
+Errors that occur inside callbacks are caught internally and **do not break** the generation, embedding, or reranking flow. This ensures that monitoring code cannot disrupt your application:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+	Model:  model,
+	Prompt: "Hello!",
+	OnStart: func(ctx context.Context, event ai.OnStartEvent) {
+		panic("this panic is recovered internally")
+		// Generation continues normally
+	},
+})
+// err is nil — the callback panic did not propagate
+```
+
+If you need to capture callback errors for debugging, handle them within the callback itself (e.g., log them or send them to an error tracking service).
+
+## Related documentation
+
+- [Generating text](./05-generating-text.mdx)
+- [Embeddings](./30-embeddings.mdx)
+- [Reranking](./31-reranking.mdx)
+- [Tools and tool calling](./15-tools-and-tool-calling.mdx)
+- [Telemetry](./60-telemetry.mdx)
