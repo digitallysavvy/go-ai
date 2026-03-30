@@ -177,9 +177,10 @@ func TestExtractReasoningMiddleware_Stream(t *testing.T) {
 					t.Fatalf("unexpected error during streaming: %v", err)
 				}
 
-				if chunk.Type == provider.ChunkTypeReasoning {
+				switch chunk.Type {
+				case provider.ChunkTypeReasoning:
 					reasoningChunks = append(reasoningChunks, chunk.Reasoning)
-				} else if chunk.Type == provider.ChunkTypeText {
+				case provider.ChunkTypeText:
 					textChunks = append(textChunks, chunk.Text)
 				}
 			}

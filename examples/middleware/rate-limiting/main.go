@@ -269,7 +269,7 @@ func main() {
 
 	// Example 1: Token Bucket Rate Limiting
 	fmt.Println("1. Token Bucket Rate Limiting (2 requests/sec, burst 3)")
-	fmt.Println("   " + string(make([]byte, 60, 60)))
+	fmt.Println("   " + string(make([]byte, 60)))
 
 	limiter := NewTokenBucketLimiter(2.0, 3)
 	middleware := NewRateLimitingMiddleware(limiter)
@@ -299,7 +299,7 @@ func main() {
 
 	// Example 2: Sliding Window Rate Limiting
 	fmt.Println("\n2. Sliding Window (3 requests per 10 seconds)")
-	fmt.Println("   " + string(make([]byte, 60, 60)))
+	fmt.Println("   " + string(make([]byte, 60)))
 
 	windowLimiter := NewSlidingWindowLimiter(3, 10*time.Second)
 	windowMiddleware := NewRateLimitingMiddleware(windowLimiter)
@@ -341,7 +341,7 @@ func main() {
 
 	// Example 3: Concurrent Request Limiting
 	fmt.Println("\n3. Concurrent Request Limiting (max 2 concurrent)")
-	fmt.Println("   " + string(make([]byte, 60, 60)))
+	fmt.Println("   " + string(make([]byte, 60)))
 
 	concurrentLimiter := NewConcurrentLimiter(2)
 	var wg sync.WaitGroup
@@ -384,7 +384,7 @@ func main() {
 
 	// Example 4: Combined Rate Limiters
 	fmt.Println("\n4. Combined Rate Limiters (token bucket + concurrent)")
-	fmt.Println("   " + string(make([]byte, 60, 60)))
+	fmt.Println("   " + string(make([]byte, 60)))
 
 	combinedLimiter := NewCombinedLimiter(
 		NewTokenBucketLimiter(1.0, 2), // 1 req/sec, burst 2
@@ -426,7 +426,7 @@ func main() {
 	wg2.Wait()
 
 	fmt.Println("\n5. Final Summary")
-	fmt.Println("   " + string(make([]byte, 60, 60)))
+	fmt.Println("   " + string(make([]byte, 60)))
 	fmt.Println("   Rate limiting helps:")
 	fmt.Println("   • Stay within API rate limits")
 	fmt.Println("   • Prevent cost overruns")

@@ -36,7 +36,7 @@ type TimeoutConfig struct {
 	// ToolMs is the default timeout for all tool executions.
 	// If a tool execution exceeds this duration, it is cancelled.
 	// Per-tool overrides in Tools take precedence over this value.
-	ToolMs *time.Duration
+	ToolMs *time.Duration //nolint:revive,stylecheck // name matches TS SDK field "toolMs" for parity
 
 	// Tools provides per-tool timeout overrides, keyed by the tool name
 	// (e.g. "searchWeb", not "searchWebMs"). When a tool name is found here,

@@ -75,7 +75,7 @@ func main() {
 	e.HideBanner = true
 
 	// Middleware
-	e.Use(middleware.Logger())
+	e.Use(middleware.Logger()) //nolint:staticcheck // intentional use of deprecated API in example
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORS())
 	e.Use(middleware.RequestID())

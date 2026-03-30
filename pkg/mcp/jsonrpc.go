@@ -114,7 +114,7 @@ func IsError(msg *MCPMessage) bool {
 
 // ParseParams parses the params from a message into the target type
 func ParseParams(msg *MCPMessage, target interface{}) error {
-	if msg.Params == nil || len(msg.Params) == 0 {
+	if len(msg.Params) == 0 {
 		return nil
 	}
 
@@ -123,7 +123,7 @@ func ParseParams(msg *MCPMessage, target interface{}) error {
 
 // ParseResult parses the result from a message into the target type
 func ParseResult(msg *MCPMessage, target interface{}) error {
-	if msg.Result == nil || len(msg.Result) == 0 {
+	if len(msg.Result) == 0 {
 		return nil
 	}
 

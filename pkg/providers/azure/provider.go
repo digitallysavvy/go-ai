@@ -41,11 +41,6 @@ func New(cfg Config) *Provider {
 		baseURL = fmt.Sprintf("https://%s.openai.azure.com", cfg.ResourceName)
 	}
 
-	// Default API version if not specified
-	apiVersion := cfg.APIVersion
-	if apiVersion == "" {
-	}
-
 	// Create HTTP client with API key header
 	headers := map[string]string{
 		"api-key": cfg.APIKey,

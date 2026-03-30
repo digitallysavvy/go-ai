@@ -116,12 +116,6 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 
 			// Handle finish
 			if chunk.Type == provider.ChunkTypeFinish {
-				// Mark the last element as final if we have any
-				if lastElementCount > 0 {
-				// Intentionally empty - waiting for more complete element
-
-					// We already emitted all elements, just note that it's complete
-				}
 				break
 			}
 		}

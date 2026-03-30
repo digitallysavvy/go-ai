@@ -566,12 +566,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		s.itemTypes[e.OutputIndex] = e.Item.Type
-		if e.Item.Type == "function_call" {
+		switch e.Item.Type {
+		case "function_call":
 			s.toolAccum[e.OutputIndex] = &responsesToolAccum{
 				id:   e.Item.CallID,
 				name: e.Item.Name,
 			}
-		} else if e.Item.Type == "reasoning" {
+		case "reasoning":
 			s.reasoningAccum[e.OutputIndex] = &responsesReasoningAccum{}
 		}
 		return s.Next()

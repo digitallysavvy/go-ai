@@ -587,18 +587,19 @@ func TestVideoModel_CustomPollInterval(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
-		if requestCount == 1 {
+		switch requestCount {
+		case 1:
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"request_id": "test-request-id",
 			})
-		} else if requestCount == 2 {
+		case 2:
 			// First poll - return pending
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "pending",
 			})
-		} else {
+		default:
 			// Second poll - return done
 			pollDuration = time.Since(pollStart)
 			w.Header().Set("Content-Type", "application/json")

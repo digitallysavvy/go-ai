@@ -196,12 +196,7 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 	if len(response.Images) > 0 {
 		meta.Images = make([]PerplexityImage, len(response.Images))
 		for i, img := range response.Images {
-			meta.Images[i] = PerplexityImage{
-				ImageUrl:  img.ImageUrl,
-				OriginUrl: img.OriginUrl,
-				Height:    img.Height,
-				Width:     img.Width,
-			}
+			meta.Images[i] = PerplexityImage(img)
 		}
 	}
 

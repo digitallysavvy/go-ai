@@ -16,7 +16,7 @@ import (
 func TestToolTimeoutGlobalMs(t *testing.T) {
 	t.Parallel()
 
-	toolMs := 50 * time.Millisecond
+	toolTimeout := 50 * time.Millisecond
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{
@@ -46,7 +46,7 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 		Prompt:   "go",
 		Tools:    []types.Tool{slowTool},
 		StopWhen: []StopCondition{StepCountIs(1)},
-		Timeout:  &TimeoutConfig{ToolMs: &toolMs},
+		Timeout:  &TimeoutConfig{ToolMs: &toolTimeout},
 		OnToolCallFinish: func(_ context.Context, e OnToolCallFinishEvent) {
 			toolErrMu.Lock()
 			toolErr = e.Error
@@ -69,8 +69,8 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 func TestToolTimeoutPerToolOverride(t *testing.T) {
 	t.Parallel()
 
-	globalMs := 20 * time.Millisecond  // very short global timeout
-	overrideMs := 5 * time.Second      // generous per-tool override
+	globalTimeout := 20 * time.Millisecond  // very short global timeout
+	overrideTimeout := 5 * time.Second      // generous per-tool override
 
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -96,8 +96,8 @@ func TestToolTimeoutPerToolOverride(t *testing.T) {
 	}
 
 	tc := &TimeoutConfig{
-		ToolMs: &globalMs,
-		Tools:  map[string]time.Duration{"fastTool": overrideMs},
+		ToolMs: &globalTimeout,
+		Tools:  map[string]time.Duration{"fastTool": overrideTimeout},
 	}
 
 	var toolErrMu sync.Mutex
@@ -179,24 +179,24 @@ func TestToolTimeoutNotSetNoTimeout(t *testing.T) {
 func TestGetToolTimeout(t *testing.T) {
 	t.Parallel()
 
-	globalMs := 10 * time.Second
-	overrideMs := 30 * time.Second
+	globalTimeout := 10 * time.Second
+	overrideTimeout := 30 * time.Second
 
 	tc := &TimeoutConfig{
-		ToolMs: &globalMs,
-		Tools:  map[string]time.Duration{"special": overrideMs},
+		ToolMs: &globalTimeout,
+		Tools:  map[string]time.Duration{"special": overrideTimeout},
 	}
 
 	// Per-tool override present
 	got := tc.GetToolTimeout("special")
-	if got == nil || *got != overrideMs {
-		t.Errorf("GetToolTimeout(special) = %v, want %v", got, overrideMs)
+	if got == nil || *got != overrideTimeout {
+		t.Errorf("GetToolTimeout(special) = %v, want %v", got, overrideTimeout)
 	}
 
 	// Falls back to ToolMs
 	got = tc.GetToolTimeout("other")
-	if got == nil || *got != globalMs {
-		t.Errorf("GetToolTimeout(other) = %v, want %v", got, globalMs)
+	if got == nil || *got != globalTimeout {
+		t.Errorf("GetToolTimeout(other) = %v, want %v", got, globalTimeout)
 	}
 
 	// Nil config

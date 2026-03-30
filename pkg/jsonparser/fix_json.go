@@ -90,9 +90,10 @@ func FixJSON(jsonText string) string {
 
 	// Close any open braces/brackets in reverse order
 	for i := len(openStack) - 1; i >= 0; i-- {
-		if openStack[i] == '{' {
+		switch openStack[i] {
+		case '{':
 			result += "}"
-		} else if openStack[i] == '[' {
+		case '[':
 			result += "]"
 		}
 	}

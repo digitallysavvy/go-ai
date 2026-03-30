@@ -78,7 +78,7 @@ func generateCharacters(ctx context.Context, model provider.LanguageModel) {
 	fmt.Println("Generating characters...")
 
 	// Use StreamObject with OnFinish callback
-	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Generate 3 fantasy RPG characters with unique abilities and backstories",
 		Schema: characterSchema,
@@ -137,7 +137,7 @@ func generateProductCatalog(ctx context.Context, model provider.LanguageModel) {
 
 	fmt.Println("Generating product catalog...")
 
-	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Generate a catalog of 4 tech products (laptops, phones, tablets) with realistic specs",
 		Schema: productSchema,
@@ -196,7 +196,7 @@ func generateTaskList(ctx context.Context, model provider.LanguageModel) {
 
 	fmt.Println("Generating task list...")
 
-	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+	result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Create a project plan for building a mobile app with 5 tasks including dependencies",
 		Schema: taskSchema,

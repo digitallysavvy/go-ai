@@ -102,9 +102,10 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) ma
 
 	// Add image if provided (for image-to-video)
 	if opts.Image != nil {
-		if opts.Image.Type == "url" {
+		switch opts.Image.Type {
+		case "url":
 			body["image_url"] = opts.Image.URL
-		} else if opts.Image.Type == "file" {
+		case "file":
 			// Convert file data to data URI
 			dataURI := imageutil.ConvertToDataURI(opts.Image.Data, opts.Image.MediaType)
 			body["image_url"] = dataURI

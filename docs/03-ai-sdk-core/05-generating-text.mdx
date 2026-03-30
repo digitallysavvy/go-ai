@@ -405,39 +405,20 @@ for i, step := range result.Steps {
 
 Some providers such as Perplexity and Google Generative AI include sources in the response. These are web pages that ground the response.
 
-You can access them using the `Sources` field of the result:
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "List the top 5 San Francisco news from the past week.",
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-for _, source := range result.Sources {
-    if source.SourceType == "url" {
-        fmt.Printf("ID: %s\n", source.ID)
-        fmt.Printf("Title: %s\n", source.Title)
-        fmt.Printf("URL: %s\n", source.URL)
-        fmt.Println()
-    }
-}
-```
-
-When streaming, sources are available in the chunks:
+When streaming, sources are available as `ChunkTypeSource` chunks with a `SourceContent` field:
 
 ```go
 result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
-    Prompt: "Latest news",
+    Prompt: "List the top 5 San Francisco news from the past week.",
 })
 defer result.Close()
 
 for chunk := range result.Chunks() {
-    if chunk.Type == "source" && chunk.Source.SourceType == "url" {
-        fmt.Printf("Source: %s - %s\n", chunk.Source.Title, chunk.Source.URL)
+    if chunk.Type == provider.ChunkTypeSource && chunk.SourceContent != nil {
+        if chunk.SourceContent.SourceType == "url" {
+            fmt.Printf("Source: %s - %s\n", chunk.SourceContent.Title, chunk.SourceContent.URL)
+        }
     }
 }
 ```

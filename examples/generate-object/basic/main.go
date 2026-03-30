@@ -105,7 +105,7 @@ func generateLasagnaRecipe(ctx context.Context, model provider.LanguageModel) {
 	})
 
 	// Generate the recipe
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Generate a lasagna recipe.",
 		Schema: recipeSchema,
@@ -170,7 +170,7 @@ func generateVeganRecipe(ctx context.Context, model provider.LanguageModel) {
 		"required": []string{"name", "ingredients", "steps"},
 	})
 
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Generate a vegan pasta recipe that's quick to make (under 30 minutes).",
 		Schema: recipeSchema,
@@ -233,7 +233,7 @@ func generateMultipleRecipes(ctx context.Context, model provider.LanguageModel) 
 		"required": []string{"recipes"},
 	})
 
-	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+	result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{ //nolint:staticcheck // intentional use of deprecated API in example
 		Model:  model,
 		Prompt: "Generate 3 different dinner recipes: one easy, one medium difficulty, and one hard. Include diverse cuisines.",
 		Schema: recipesSchema,

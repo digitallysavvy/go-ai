@@ -112,11 +112,12 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 				}
 			}
 
-			if msg.Role == "system" {
+			switch msg.Role {
+			case "system":
 				promptText += fmt.Sprintf("System: %s\n", content)
-			} else if msg.Role == "user" {
+			case "user":
 				promptText += fmt.Sprintf("User: %s\n", content)
-			} else if msg.Role == "assistant" {
+			case "assistant":
 				promptText += fmt.Sprintf("Assistant: %s\n", content)
 			}
 		}

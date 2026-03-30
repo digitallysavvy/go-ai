@@ -221,10 +221,10 @@ func defaultKeyFunc(opts ai.GenerateTextOptions) string {
 	h.Write([]byte(opts.System))
 
 	if opts.Temperature != nil {
-		h.Write([]byte(fmt.Sprintf("%f", *opts.Temperature)))
+		fmt.Fprintf(h, "%f", *opts.Temperature)
 	}
 	if opts.MaxTokens != nil {
-		h.Write([]byte(fmt.Sprintf("%d", *opts.MaxTokens)))
+		fmt.Fprintf(h, "%d", *opts.MaxTokens)
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
@@ -269,7 +269,7 @@ func main() {
 
 	// Example 1: Basic caching
 	fmt.Println("1. Basic Caching (5 minute TTL)")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 
 	cache := NewMemoryCache(5*time.Minute, 100)
 	middleware := NewCachingMiddleware(cache)
@@ -302,7 +302,7 @@ func main() {
 
 	// Example 2: Multiple requests
 	fmt.Println("\n2. Multiple Requests with Caching")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 
 	questions := []string{
 		"What is 2+2?",
@@ -332,7 +332,7 @@ func main() {
 	// Show cache statistics
 	stats := cache.Stats()
 	fmt.Println("\n3. Cache Statistics")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 	fmt.Printf("   Cache Hits:          %d\n", stats.Hits)
 	fmt.Printf("   Cache Misses:        %d\n", stats.Misses)
 	fmt.Printf("   Hit Rate:            %.1f%%\n", float64(stats.Hits)/float64(stats.Hits+stats.Misses)*100)
@@ -341,7 +341,7 @@ func main() {
 
 	// Example 4: Non-cacheable requests
 	fmt.Println("\n4. Non-Cacheable Requests")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 
 	// High temperature (not cacheable)
 	highTemp := 1.0
@@ -387,7 +387,7 @@ func main() {
 	// Final stats
 	finalStats := cache.Stats()
 	fmt.Println("\n5. Final Statistics")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 	fmt.Printf("   Total Requests:      %d\n", finalStats.Hits+finalStats.Misses)
 	fmt.Printf("   Cache Hits:          %d\n", finalStats.Hits)
 	fmt.Printf("   Cache Misses:        %d\n", finalStats.Misses)
@@ -398,7 +398,7 @@ func main() {
 
 	// Example 6: Cache inspection
 	fmt.Println("\n6. Cache Management")
-	fmt.Println("   " + string(make([]byte, 50, 50)))
+	fmt.Println("   " + string(make([]byte, 50)))
 	fmt.Printf("   Current cache size: %d entries\n", len(cache.entries))
 	fmt.Println("   Clearing cache...")
 	cache.Clear()

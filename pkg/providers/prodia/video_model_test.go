@@ -1,6 +1,7 @@
 package prodia
 
 import (
+	"context"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -146,7 +147,7 @@ func TestVideoModelT2VRejectsInvalidAspectRatio(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
 
-	_, err := model.DoGenerate(nil, &provider.VideoModelV3CallOptions{
+	_, err := model.DoGenerate(context.TODO(), &provider.VideoModelV3CallOptions{
 		Prompt:      "a cat running",
 		AspectRatio: "10:3", // invalid
 	})
@@ -161,7 +162,7 @@ func TestVideoModelI2VRejectsInvalidAspectRatio(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, VideoModelWan22LightningImg2Vid)
 
-	_, err := model.DoGenerate(nil, &provider.VideoModelV3CallOptions{
+	_, err := model.DoGenerate(context.TODO(), &provider.VideoModelV3CallOptions{
 		Prompt:      "animate this",
 		AspectRatio: "bad",
 		Image: &provider.VideoModelV3File{

@@ -119,9 +119,10 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) ma
 	case "i2v":
 		// Image-to-video: needs image and optional text
 		if opts.Image != nil {
-			if opts.Image.Type == "url" {
+			switch opts.Image.Type {
+			case "url":
 				input["img_url"] = opts.Image.URL
-			} else if opts.Image.Type == "file" {
+			case "file":
 				// Convert file data to base64
 				base64Data := imageutil.EncodeToBase64(opts.Image.Data)
 				input["img_url"] = base64Data

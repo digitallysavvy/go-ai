@@ -625,17 +625,12 @@ func TestStreamText_NoCallbacks(t *testing.T) {
 	// Directly iterate on stream
 	stream := result.Stream()
 	for {
-		chunk, err := stream.Next()
+		_, err := stream.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
-		}
-		if chunk.Type == provider.ChunkTypeText {
-			// Expected text chunk in test
-
-			// Just process the chunk
 		}
 	}
 }

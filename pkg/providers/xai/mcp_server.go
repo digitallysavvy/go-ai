@@ -114,14 +114,7 @@ func MCPServer(config MCPServerConfig) types.Tool {
 		Title:       "MCP Server",
 		Parameters:  parameters,
 		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
-		ProviderOptions: MCPServerOptions{
-			ServerURL:         config.ServerURL,
-			ServerLabel:       config.ServerLabel,
-			ServerDescription: config.ServerDescription,
-			AllowedTools:      config.AllowedTools,
-			Headers:           config.Headers,
-			Authorization:     config.Authorization,
-		},
+		ProviderOptions: MCPServerOptions(config),
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.mcp"),
