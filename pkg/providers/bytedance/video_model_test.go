@@ -17,9 +17,7 @@ import (
 type testServer struct {
 	server       *httptest.Server
 	requests     []*recordedRequest
-	createBody   map[string]interface{}
-	createStatus string
-	statusBody   string
+	createBody map[string]interface{}
 }
 
 type recordedRequest struct {
@@ -121,11 +119,6 @@ func providerForServer(t *testing.T, serverURL string) *Provider {
 		t.Fatalf("failed to create provider: %v", err)
 	}
 	return prov
-}
-
-var defaultOpts = &provider.VideoModelV3CallOptions{
-	Prompt: "A futuristic city with flying cars",
-	N:      1,
 }
 
 func makeSuccessStatusBody(taskID, videoURL string) string {

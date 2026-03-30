@@ -334,13 +334,6 @@ func summarizeToolResult(result interface{}) string {
 	return fmt.Sprintf("%v", result)
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 func simulateStreaming(text string) {
 	// Simulate streaming by printing character by character with slight delay
 	words := strings.Fields(text)

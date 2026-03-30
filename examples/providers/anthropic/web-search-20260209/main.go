@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -101,29 +100,6 @@ func runFilteredSearch(model provider.LanguageModel) {
 	fmt.Println("\nNote: For multi-turn citations, preserve EncryptedContent from")
 	fmt.Println("WebSearchResult20260209 and include it in subsequent tool_result messages.")
 	_ = result
-}
-
-// parseExampleResult shows how to decode web_search_20260209 tool results.
-func parseExampleResult() {
-	exampleJSON := `[
-		{
-			"type": "web_search_result",
-			"url": "https://docs.anthropic.com/claude/",
-			"title": "Claude Documentation",
-			"pageAge": "2026-01-15",
-			"encryptedContent": "encrypted_abc123..."
-		}
-	]`
-
-	results, err := tools.ParseWebSearchResults([]byte(exampleJSON))
-	if err != nil {
-		log.Fatalf("failed to parse results: %v", err)
-	}
-
-	for i, r := range results {
-		b, _ := json.MarshalIndent(r, "  ", "  ")
-		fmt.Printf("Result %d:\n  %s\n", i+1, b)
-	}
 }
 
 func intPtr(v int) *int { return &v }

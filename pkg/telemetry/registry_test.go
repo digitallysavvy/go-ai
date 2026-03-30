@@ -234,11 +234,6 @@ func TestMockIntegration_ReceivesStartFinish(t *testing.T) {
 func TestFireExecuteTool_Chains(t *testing.T) {
 	var order []string
 
-	type wrapIntegration struct {
-		NoopTelemetryIntegration
-		tag string
-	}
-
 	// Custom wrapper: records entry/exit around execute.
 	makeWrapper := func(tag string) TelemetryIntegration {
 		return &struct {

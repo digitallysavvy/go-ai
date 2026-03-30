@@ -11,10 +11,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func chatTestPrompt(text string) types.Prompt {
-	return types.Prompt{Text: text}
-}
-
 // TestXAIChatLogprobsOption verifies that logprobs:true is serialized correctly
 // in the chat completions request body.
 func TestXAIChatLogprobsOption(t *testing.T) {

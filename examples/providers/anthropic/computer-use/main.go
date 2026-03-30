@@ -73,10 +73,6 @@ func main() {
 	fmt.Printf("\nUsage: %+v\n", result.Usage)
 }
 
-func stringPtr(s string) *string {
-	return &s
-}
-
 func intPtr(i int) *int {
 	return &i
 }

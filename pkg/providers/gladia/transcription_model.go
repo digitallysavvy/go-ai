@@ -34,12 +34,6 @@ func (m *TranscriptionModel) ModelID() string {
 	return m.modelID
 }
 
-// gladiaTranscriptionRequest represents the Gladia API request
-type _gladiaTranscriptionRequest struct {
-	Audio    string `json:"audio"`
-	Language string `json:"language,omitempty"`
-}
-
 // gladiaTranscriptionResponse represents the Gladia API response
 type gladiaTranscriptionResponse struct {
 	Result struct {

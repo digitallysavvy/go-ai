@@ -161,18 +161,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 	return m.buildGenericRequest(opts)
 }
 
-// isAnthropicStyleModel returns true for Claude-family models on Bedrock that use
-// the Anthropic-style reasoningConfig API (budgetTokens-based).
-func isAnthropicStyleModel(modelID string) bool {
-	return strings.HasPrefix(modelID, "anthropic.") || strings.Contains(modelID, "claude")
-}
-
-// isNovaStyleModel returns true for Amazon Nova models on Bedrock that use
-// the OpenAI-compatible reasoning_effort API.
-func isNovaStyleModel(modelID string) bool {
-	return strings.HasPrefix(modelID, "amazon.nova")
-}
-
 // mapReasoningToBedrockAnthropicConfig converts a ReasoningLevel to the Bedrock
 // Anthropic-style reasoningConfig map. Returns nil when level is ReasoningDefault
 // (meaning "don't override").

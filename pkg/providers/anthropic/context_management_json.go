@@ -7,8 +7,6 @@ import (
 
 // MarshalJSON implements custom JSON marshaling for ContextManagement
 func (cm *ContextManagement) MarshalJSON() ([]byte, error) {
-	type _Alias ContextManagement
-
 	// Convert edits to JSON-serializable format
 	var editsJSON []map[string]interface{}
 	for _, edit := range cm.Edits {

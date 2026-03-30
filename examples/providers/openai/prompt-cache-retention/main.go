@@ -8,9 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
-	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func main() {
@@ -191,35 +189,3 @@ Given this architecture, `
 	fmt.Println("With 24h retention, the cache remains active even if calls are hours apart!")
 }
 
-// Example with provider.GenerateOptions (lower-level API)
-func lowLevelExample(ctx context.Context, p *openai.Provider) {
-	model, err := p.LanguageModel("gpt-5.1")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Messages: []types.Message{
-				{
-					Role: types.RoleUser,
-					Content: []types.ContentPart{
-						types.TextContent{
-							Text: "What is the capital of France?",
-						},
-					},
-				},
-			},
-		},
-		ProviderOptions: map[string]interface{}{
-			"openai": map[string]interface{}{
-				"promptCacheRetention": "24h",
-			},
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println(result.Text)
-}

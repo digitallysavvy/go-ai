@@ -425,7 +425,6 @@ type openResponsesStream struct {
 	toolCallsByItemID     map[string]*toolCallState
 	hasToolCalls          bool
 	finishReason          types.FinishReason
-	usage                 *types.Usage
 }
 
 // toolCallState tracks the state of a tool call during streaming
