@@ -4,12 +4,26 @@ The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive tool
 
 To learn more about how to use the Go AI SDK, check out our [Documentation](./docs).
 
+### What's new in v0.4.0
+
+- **Top-level reasoning** — portable `Reasoning` parameter across 10+ providers
+- **Deferred provider tools** — step loop continues for async server-side tools (web search, code execution)
+- **Streaming refactor** — tools execute after stream end, telemetry via global registry
+- **Security** — SSRF redirect protection, constant-time OAuth state validation
+- **Anthropic** — webSearch/webFetch 20260209, eager input streaming
+- **OpenAI** — GPT-5.4, Responses API compaction, ToolSearch
+- **XAI** — Responses API as default, logprobs, ReasoningSummary
+- **Google** — VALIDATED tool mode, native Vertex tools, multimodal embeddings
+- **New providers** — Prodia (image + video), KlingAI v3.0 motion control
+
+See the full [release notes](./release_notes/RELEASE_NOTES_V0.4.0.md) and [changelog](./CHANGELOG.md).
+
 ## Installation
 
 You will need Go 1.21+ installed on your local development machine.
 
 ```bash
-go get github.com/digitallysavvy/go-ai
+go get github.com/digitallysavvy/go-ai@v0.4.0
 ```
 
 ## Unified Provider Architecture
@@ -42,7 +56,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-5.4")
 
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -239,45 +253,51 @@ See [examples/features/retention](./examples/features/retention) for detailed us
 
 ## Supported Providers
 
-The Go AI SDK supports 26+ providers:
+The Go AI SDK supports 30+ providers:
 
-| Provider         | Language Models             | Embeddings | Images           | Speech       |
-| ---------------- | --------------------------- | ---------- | ---------------- | ------------ |
-| **OpenAI**       | GPT-4, GPT-3.5, O1          | ✓          | DALL-E           | TTS, Whisper |
-| **Anthropic**    | Claude 3.5 Sonnet, Claude 3 | -          | -                | -            |
-| **Google**       | Gemini Pro, Flash           | ✓          | -                | -            |
-| **AWS Bedrock**  | Claude, Titan, Llama        | ✓          | -                | -            |
-| **Azure OpenAI** | Azure-hosted models         | ✓          | ✓                | ✓            |
-| **Mistral**      | Large, Medium, Small        | ✓          | -                | -            |
-| **Cohere**       | Command R+, Command         | ✓          | -                | -            |
-| **Groq**         | Llama, Mixtral              | -          | -                | Whisper      |
-| **Together AI**  | Llama, Mixtral, Qwen        | -          | Stable Diffusion | -            |
-| **Fireworks**    | Llama, Mixtral              | ✓          | -                | -            |
-| **Perplexity**   | Sonar models                | -          | -                | -            |
-| **DeepSeek**     | DeepSeek Chat, Coder        | -          | -                | -            |
-| **xAI**          | Grok                        | -          | -                | -            |
-| **Replicate**    | All hosted models           | -          | ✓                | -            |
-| **Hugging Face** | Inference API               | -          | -                | -            |
-| **Ollama**       | Local models                | ✓          | -                | -            |
+| Provider         | Language Models              | Embeddings | Images / Video   | Speech       |
+| ---------------- | ---------------------------- | ---------- | ---------------- | ------------ |
+| **OpenAI**       | GPT-5.4, GPT-5.3, O3, O4    | ✓          | DALL-E           | TTS, Whisper |
+| **Anthropic**    | Claude Sonnet 4.6, Opus 4.6  | -          | -                | -            |
+| **Google**       | Gemini 3, 2.5 Pro/Flash      | ✓          | -                | -            |
+| **Google Vertex**| Gemini (enterprise)          | ✓          | Imagen           | -            |
+| **AWS Bedrock**  | Claude, Titan, Nova, Llama   | ✓          | -                | -            |
+| **Azure OpenAI** | Azure-hosted models          | ✓          | ✓                | ✓            |
+| **xAI**          | Grok-3 (Responses API)       | -          | ✓                | -            |
+| **Mistral**      | Large, Small                 | ✓          | -                | -            |
+| **Cohere**       | Command R+, Command          | ✓          | -                | -            |
+| **Groq**         | Llama, Mixtral               | -          | -                | Whisper      |
+| **Together AI**  | Llama, Mixtral, Qwen         | -          | Stable Diffusion | -            |
+| **Fireworks**    | Llama, Mixtral               | ✓          | FLUX Kontext     | -            |
+| **Perplexity**   | Sonar models                 | -          | -                | -            |
+| **DeepSeek**     | DeepSeek R1, Chat            | -          | -                | -            |
+| **Alibaba**      | Qwen models                  | ✓          | -                | -            |
+| **KlingAI**      | -                            | -          | Video (v3.0)     | -            |
+| **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
+| **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And many more...
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway)...
 
 ## Features
 
-- ✅ **Unified API** - One interface for 26+ providers
-- ✅ **Text Generation** - `GenerateText()` and `StreamText()`
-- ✅ **Structured Output** - Type-safe `GenerateObject()` with JSON validation
-- ✅ **Tool Calling** - Extend models with custom functions
-- ✅ **Agents** - Autonomous multi-step reasoning with `ToolLoopAgent`
-- ✅ **Embeddings** - Generate and search with vector embeddings
-- ✅ **Image Generation** - Text-to-image with multiple providers
-- ✅ **Speech** - TTS and transcription capabilities
-- ✅ **Middleware** - Logging, caching, rate limiting, and more
-- ✅ **Telemetry** - Built-in OpenTelemetry integration
-- ✅ **Registry** - Resolve models by string ID (e.g., `"openai:gpt-4"`)
-- ✅ **Context Support** - Native Go context cancellation and timeouts
-- ✅ **Streaming** - Real-time responses with automatic backpressure
-- ✅ **Memory Optimization** - Retention settings for 50-80% memory reduction
+- ✅ **Unified API** — one interface for 30+ providers
+- ✅ **Text Generation** — `GenerateText()` and `StreamText()`
+- ✅ **Structured Output** — type-safe `GenerateObject()` with JSON validation
+- ✅ **Tool Calling** — custom functions with per-tool timeouts
+- ✅ **Reasoning** — portable `Reasoning` parameter across providers (Anthropic, OpenAI, Google, Bedrock, xAI, and more)
+- ✅ **Deferred Tools** — async provider tools (web search, code execution) with step loop continuation
+- ✅ **Agents** — autonomous multi-step reasoning with `ToolLoopAgent`
+- ✅ **Embeddings** — generate and search with vector embeddings, multimodal support
+- ✅ **Image Generation** — text-to-image with multiple providers
+- ✅ **Video Generation** — text/image-to-video (KlingAI, Prodia, ByteDance, xAI)
+- ✅ **Speech** — TTS and transcription capabilities
+- ✅ **Middleware** — logging, caching, rate limiting, and more
+- ✅ **Telemetry** — global registry with OpenTelemetry integration
+- ✅ **Security** — SSRF protection, constant-time OAuth validation
+- ✅ **MCP** — Model Context Protocol client with redirect control
+- ✅ **Registry** — resolve models by string ID (e.g., `"openai:gpt-5.4"`)
+- ✅ **Context Support** — native Go context cancellation and timeouts
+- ✅ **Streaming** — deferred tool execution, real-time responses with backpressure
 
 ## Why Go for AI?
 
