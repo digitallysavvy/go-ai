@@ -1,6 +1,6 @@
 module example/multimodal-token-tracking
 
-go 1.24.0
+go 1.25.0
 
 replace github.com/digitallysavvy/go-ai => ../..
 
