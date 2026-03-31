@@ -84,6 +84,10 @@ const (
 	ModelGPT54Pro           = "gpt-5.4-pro"
 	ModelGPT542026_03_05    = "gpt-5.4-2026-03-05"
 	ModelGPT54Pro2026_03_05 = "gpt-5.4-pro-2026-03-05"
+	ModelGPT54Mini             = "gpt-5.4-mini"
+	ModelGPT54Mini2026_03_17   = "gpt-5.4-mini-2026-03-17"
+	ModelGPT54Nano             = "gpt-5.4-nano"
+	ModelGPT54Nano2026_03_17   = "gpt-5.4-nano-2026-03-17"
 )
 
 // Image model ID constants for OpenAI image generation models.

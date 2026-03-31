@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-03-29
 
-TS SDK parity — commit range `ed17fe86d..429b88a79` (13 PRDs, 244 tasks).
+TS SDK parity — fully compatible with TS AI SDK v6.0.137.
+Commit range `ed17fe86d..429b88a79` plus v6.0.137 backports (13 PRDs, 244 tasks).
 Full release notes: `release_notes/RELEASE_NOTES_V0.4.0.md`.
 
 ### Breaking Changes
@@ -44,14 +45,16 @@ Full release notes: `release_notes/RELEASE_NOTES_V0.4.0.md`.
 - Beta header `code-execution-web-tools-2026-02-09` auto-injected for 20260209 tools
 
 #### OpenAI Provider
-- **GPT-5.4 model family** — `gpt-5.4`, `gpt-5.4-pro`, dated variants; `gpt-5.3-chat-latest`
+- **GPT-5.4 model family** — `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, dated variants; `gpt-5.3-chat-latest`
 - **Responses API compaction** — parsed as `CustomContent` with `Kind: "openai-compaction"`
+- **`response.failed` SSE event** — maps `incomplete_details.reason` to finish reason, falls back to `error`
 - **`ToolSearch(args)`** factory — server (default) and client execution modes
 - **`CustomTool.Name` removed** — name supplied via `ToTool(name)` method
 - **store=false** strips unencrypted reasoning from assistant history
 
 #### XAI Provider
 - **Responses API as default** with `ChatCompletionsLanguageModel()` opt-in
+- **Grok 4.20 GA models** — multi-agent, reasoning, non-reasoning variants
 - Multi-image editing, b64_json output, quality/user params
 - `CostInUsdTicks` in image and video metadata
 - `ReasoningSummary` option, `ModerationError` type, `Logprobs`/`TopLogprobs`

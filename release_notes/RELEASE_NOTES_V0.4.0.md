@@ -2,11 +2,12 @@
 
 ## Overview
 
-Version 0.4.0 closes the gap to TS AI SDK commit range `ed17fe86d..429b88a79`
-with 13 PRDs and 244 tasks across 3 priority waves. Highlights: top-level
-reasoning parameter, SSRF protection, streaming architecture refactor, deferred
-provider tool results, new Anthropic tools, OpenAI Responses API features, XAI
-Responses API migration, and a new Prodia provider.
+Version 0.4.0 achieves full parity with TS AI SDK v6.0.137 (commit range
+`ed17fe86d..429b88a79` plus v6.0.137 backports). 13 PRDs and 244 tasks across
+3 priority waves. Highlights: top-level reasoning parameter, SSRF protection,
+streaming architecture refactor, deferred provider tool results, new Anthropic
+tools, OpenAI Responses API features, XAI Responses API migration, and a new
+Prodia provider.
 
 ## Installation
 
@@ -312,7 +313,8 @@ provider-specific functionality.
 
 ---
 
-**TS SDK Commit Range:** `ed17fe86d..429b88a79`
+**TS SDK Parity:** v6.0.137 (fully compatible)
+**TS SDK Commit Range:** `ed17fe86d..429b88a79` plus v6.0.137 backports
 **Total PRDs:** 13
 **Total Tasks:** 244
 **Branch:** `release/0.4.0`

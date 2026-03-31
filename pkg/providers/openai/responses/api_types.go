@@ -434,6 +434,21 @@ type ResponseCompletedEvent struct {
 	} `json:"response"`
 }
 
+// ResponseFailedEvent is emitted when the response fails (e.g. max tokens exceeded).
+type ResponseFailedEvent struct {
+	Type     string `json:"type"` // "response.failed"
+	Response struct {
+		ID          string             `json:"id"`
+		ServiceTier string             `json:"service_tier,omitempty"`
+		Usage       ResponsesAPIUsage  `json:"usage"`
+		Error       *struct {
+			Code    string `json:"code,omitempty"`
+			Message string `json:"message,omitempty"`
+		} `json:"error,omitempty"`
+		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+	} `json:"response"`
+}
+
 // ResponsesStreamErrorEvent carries an API error during streaming.
 type ResponsesStreamErrorEvent struct {
 	Type    string `json:"type"` // "error"

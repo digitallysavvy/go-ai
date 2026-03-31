@@ -646,6 +646,38 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			ProviderMetadata: meta,
 		}, nil
 
+	case "response.failed":
+		var e responses.ResponseFailedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		usage := convertResponsesUsage(e.Response.Usage)
+		finishReason := types.FinishReason("error")
+		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
+			finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+		}
+
+		metaMap := map[string]interface{}{}
+		if e.Response.ID != "" {
+			metaMap["responseId"] = e.Response.ID
+		}
+		if e.Response.ServiceTier != "" {
+			metaMap["serviceTier"] = e.Response.ServiceTier
+		}
+		var meta json.RawMessage
+		if len(metaMap) > 0 {
+			meta, _ = json.Marshal(metaMap)
+		}
+
+		s.err = io.EOF
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeFinish,
+			FinishReason:     finishReason,
+			Usage:            &usage,
+			ProviderMetadata: meta,
+		}, nil
+
 	case "error":
 		var e responses.ResponsesStreamErrorEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
