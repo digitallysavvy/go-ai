@@ -372,13 +372,15 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality:
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **v6.0.137** for backend functionality:
 
-- Same function signatures and patterns
-- Same provider interfaces
-- Same middleware system
-- Compatible workflows
+- Same public APIs and response shapes
+- Same provider interfaces and tool system
+- Same middleware and telemetry patterns
+- Compatible workflows across all 30+ providers
 - Feature complete for server-side use
+
+**Not included:** React/UI components (`@ai-sdk/react`, `@ai-sdk/vue`, etc.) — these are client-side only in the TypeScript SDK.
 
 ## Community
 
