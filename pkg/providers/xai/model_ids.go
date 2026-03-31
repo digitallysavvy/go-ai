@@ -46,6 +46,24 @@ const (
 
 	// ModelGrokCodeFast1 — Grok Code fast model
 	ModelGrokCodeFast1 = "grok-code-fast-1"
+
+	// ModelGrok420MultiAgent — Grok 4.20 multi-agent model (GA)
+	ModelGrok420MultiAgent = "grok-4.20-multi-agent"
+
+	// ModelGrok420MultiAgent0309 — Grok 4.20 multi-agent dated release (2025-03-09)
+	ModelGrok420MultiAgent0309 = "grok-4.20-multi-agent-0309"
+
+	// ModelGrok420NonReasoning — Grok 4.20 non-reasoning model (GA)
+	ModelGrok420NonReasoning = "grok-4.20-non-reasoning"
+
+	// ModelGrok4200309NonReasoning — Grok 4.20 non-reasoning dated release (2025-03-09)
+	ModelGrok4200309NonReasoning = "grok-4.20-0309-non-reasoning"
+
+	// ModelGrok420Reasoning — Grok 4.20 reasoning model (GA)
+	ModelGrok420Reasoning = "grok-4.20-reasoning"
+
+	// ModelGrok4200309Reasoning — Grok 4.20 reasoning dated release (2025-03-09)
+	ModelGrok4200309Reasoning = "grok-4.20-0309-reasoning"
 )
 
 // Image model ID constants for xAI Grok image generation models.
