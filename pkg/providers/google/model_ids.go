@@ -24,7 +24,6 @@ const (
 	ModelGemini20FlashLite        = "gemini-2.0-flash-lite"
 	ModelGemini20FlashLite001     = "gemini-2.0-flash-lite-001"
 	ModelGemini20FlashExp         = "gemini-2.0-flash-exp"
-	ModelGemini20FlashExpImage    = "gemini-2.0-flash-exp-image-generation"
 	ModelGemini20FlashThinkingExp = "gemini-2.0-flash-thinking-exp-01-21"
 	ModelGemini20ProExp           = "gemini-2.0-pro-exp-02-05"
 

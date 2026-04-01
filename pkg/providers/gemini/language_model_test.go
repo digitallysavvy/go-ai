@@ -461,3 +461,87 @@ func TestConvertResponse_GroundingMetadataInProviderMetadata(t *testing.T) {
 		t.Errorf("groundingMetadata = %s, want %s", googleMeta["groundingMetadata"], groundingJSON)
 	}
 }
+
+// --- serviceTier tests (P1-8 Feature 3) ---
+
+func TestBuildRequestBody_ServiceTier(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{
+				"serviceTier": "SERVICE_TIER_FLEX",
+			},
+		},
+	}
+	body := m.buildRequestBody(opts)
+	if body["serviceTier"] != "SERVICE_TIER_FLEX" {
+		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "SERVICE_TIER_FLEX")
+	}
+}
+
+func TestBuildRequestBody_ServiceTierAbsentWhenNotSet(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+	}
+	body := m.buildRequestBody(opts)
+	if _, ok := body["serviceTier"]; ok {
+		t.Error("serviceTier should not be present when not provided")
+	}
+}
+
+func TestConvertResponse_ServiceTierInMetadata(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{{Text: "Hello"}}},
+			FinishReason: "STOP",
+		}},
+		ServiceTier: "SERVICE_TIER_PRIORITY",
+	}
+	result := m.convertResponse(resp)
+	if result.ProviderMetadata == nil {
+		t.Fatal("ProviderMetadata is nil")
+	}
+	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatalf("ProviderMetadata[google] type = %T", result.ProviderMetadata["google"])
+	}
+	var serviceTier string
+	if err := json.Unmarshal(googleMeta["serviceTier"], &serviceTier); err != nil {
+		t.Fatalf("unmarshal serviceTier: %v", err)
+	}
+	if serviceTier != "SERVICE_TIER_PRIORITY" {
+		t.Errorf("serviceTier = %q, want %q", serviceTier, "SERVICE_TIER_PRIORITY")
+	}
+}
+
+func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{{Text: "Hello"}}},
+			FinishReason: "STOP",
+		}},
+	}
+	result := m.convertResponse(resp)
+	// serviceTier is always emitted (as null) per TS SDK parity.
+	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatal("expected google providerMetadata")
+	}
+	raw, has := googleMeta["serviceTier"]
+	if !has {
+		t.Fatal("serviceTier should always be present in metadata (as null when absent from response)")
+	}
+	if string(raw) != "null" {
+		t.Errorf("serviceTier = %s, want null", raw)
+	}
+}

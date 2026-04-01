@@ -45,6 +45,8 @@ type stream struct {
 	lastFinishMessage      string
 	lastPromptFeedback     json.RawMessage
 	lastUsageMetadata      *UsageMetadata
+	// lastServiceTier accumulates serviceTier across chunks; last non-empty value wins.
+	lastServiceTier string
 }
 
 // newStream creates a stream with the given reader and provider configuration.
@@ -107,6 +109,9 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	}
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
+	}
+	if chunkData.ServiceTier != "" {
+		s.lastServiceTier = chunkData.ServiceTier
 	}
 	if len(chunkData.Candidates) == 0 {
 		return
@@ -216,6 +221,14 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
+	}
+	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
+	if s.lastServiceTier != "" {
+		if st, err := json.Marshal(s.lastServiceTier); err == nil {
+			meta["serviceTier"] = st
+		}
+	} else {
+		meta["serviceTier"] = json.RawMessage("null")
 	}
 	if len(meta) == 0 {
 		return nil

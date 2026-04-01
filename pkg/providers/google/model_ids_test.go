@@ -74,7 +74,6 @@ func TestProvider_LanguageModel_AllMissingModelIDs(t *testing.T) {
 		ModelGemini20FlashLite,
 		ModelGemini20FlashLite001,
 		ModelGemini20FlashExp,
-		ModelGemini20FlashExpImage,
 		ModelGemini20FlashThinkingExp,
 		ModelGemini20ProExp,
 		ModelGemini25Pro,

@@ -483,3 +483,128 @@ func TestStream_MetadataKeyAppearsInFinishChunk(t *testing.T) {
 		t.Errorf("unexpected 'google' key in vertex stream ProviderMetadata")
 	}
 }
+
+// drainChunks reads all chunks from the stream until EOF or error.
+func drainChunks(t *testing.T, s *stream) []*provider.StreamChunk {
+	t.Helper()
+	var chunks []*provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		chunks = append(chunks, c)
+	}
+	return chunks
+}
+
+// --- serviceTier streaming tests (P1-8 Feature 3) ---
+
+func TestStreamServiceTierAccumulated(t *testing.T) {
+	// First chunk sets serviceTier; second chunk has text + finish.
+	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk2 := `{"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
+
+	s := newTestStream(sseStream(chunk1, chunk2))
+	chunks := drainChunks(t, s)
+
+	var finishChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish {
+			finishChunk = c
+		}
+	}
+	if finishChunk == nil {
+		t.Fatal("no finish chunk found")
+	}
+	if finishChunk.ProviderMetadata == nil {
+		t.Fatal("finish chunk has no ProviderMetadata")
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal outer meta: %v", err)
+	}
+	googleRaw, ok := meta["google"]
+	if !ok {
+		t.Fatal("no 'google' key in finish chunk ProviderMetadata")
+	}
+	var googleMeta map[string]json.RawMessage
+	if err := json.Unmarshal(googleRaw, &googleMeta); err != nil {
+		t.Fatalf("unmarshal google meta: %v", err)
+	}
+	var serviceTier string
+	if err := json.Unmarshal(googleMeta["serviceTier"], &serviceTier); err != nil {
+		t.Fatalf("unmarshal serviceTier: %v", err)
+	}
+	if serviceTier != "SERVICE_TIER_STANDARD" {
+		t.Errorf("serviceTier = %q, want %q", serviceTier, "SERVICE_TIER_STANDARD")
+	}
+}
+
+func TestStreamServiceTierNullWhenAbsent(t *testing.T) {
+	// When no chunk carries serviceTier, metadata should still have serviceTier: null (TS parity).
+	chunk1 := `{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}]}`
+
+	s := newTestStream(sseStream(chunk1))
+	chunks := drainChunks(t, s)
+
+	var finishChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish {
+			finishChunk = c
+		}
+	}
+	if finishChunk == nil || finishChunk.ProviderMetadata == nil {
+		t.Fatal("no finish chunk or no metadata")
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal outer meta: %v", err)
+	}
+	googleRaw, ok := meta["google"]
+	if !ok {
+		t.Fatal("no 'google' key in metadata")
+	}
+	var googleMeta map[string]json.RawMessage
+	if err := json.Unmarshal(googleRaw, &googleMeta); err != nil {
+		t.Fatalf("unmarshal google meta: %v", err)
+	}
+	raw, has := googleMeta["serviceTier"]
+	if !has {
+		t.Fatal("serviceTier should always be present (as null when absent from chunks)")
+	}
+	if string(raw) != "null" {
+		t.Errorf("serviceTier = %s, want null", raw)
+	}
+}
+
+func TestStreamServiceTierLastValueWins(t *testing.T) {
+	// When multiple chunks set serviceTier, the last non-empty value wins.
+	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk2 := `{"serviceTier":"SERVICE_TIER_PRIORITY","candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
+
+	s := newTestStream(sseStream(chunk1, chunk2))
+	chunks := drainChunks(t, s)
+
+	var finishChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish {
+			finishChunk = c
+		}
+	}
+	if finishChunk == nil || finishChunk.ProviderMetadata == nil {
+		t.Fatal("no finish chunk or no metadata")
+	}
+	var meta map[string]json.RawMessage
+	json.Unmarshal(finishChunk.ProviderMetadata, &meta)
+	var googleMeta map[string]json.RawMessage
+	json.Unmarshal(meta["google"], &googleMeta)
+	var serviceTier string
+	json.Unmarshal(googleMeta["serviceTier"], &serviceTier)
+	if serviceTier != "SERVICE_TIER_PRIORITY" {
+		t.Errorf("serviceTier = %q, want last value %q", serviceTier, "SERVICE_TIER_PRIORITY")
+	}
+}

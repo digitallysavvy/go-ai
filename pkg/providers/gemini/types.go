@@ -26,6 +26,9 @@ type Response struct {
 	Candidates     []Candidate     `json:"candidates"`
 	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
+	// ServiceTier is the service tier used for this request (non-streaming).
+	// Values: "SERVICE_TIER_STANDARD", "SERVICE_TIER_FLEX", "SERVICE_TIER_PRIORITY".
+	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
 // UsageMetadata represents token usage information returned by Gemini.

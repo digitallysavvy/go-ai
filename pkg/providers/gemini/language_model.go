@@ -218,6 +218,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 			// Store it temporarily; the tools section below will pick it up.
 			body["_retrievalConfig"] = rc
 		}
+		// serviceTier: forward to top-level request body (not generationConfig).
+		// Allowed values: SERVICE_TIER_STANDARD, SERVICE_TIER_FLEX, SERVICE_TIER_PRIORITY.
+		if st, ok := provOpts["serviceTier"].(string); ok && st != "" {
+			body["serviceTier"] = st
+		}
 	}
 
 	if len(genConfig) > 0 {
@@ -448,6 +453,15 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 		if um, err := json.Marshal(response.UsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
+	}
+	// serviceTier is always emitted (null when absent) to match TS SDK behavior:
+	// `serviceTier: response.serviceTier ?? null`
+	if response.ServiceTier != "" {
+		if st, err := json.Marshal(response.ServiceTier); err == nil {
+			meta["serviceTier"] = st
+		}
+	} else {
+		meta["serviceTier"] = json.RawMessage("null")
 	}
 	if len(meta) > 0 {
 		result.ProviderMetadata = map[string]interface{}{
