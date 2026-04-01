@@ -849,3 +849,76 @@ func TestOutputConfigIntegration(t *testing.T) {
 func TestAutomaticCachingIntegration(t *testing.T) {
 	t.Skip("Integration test: run manually with ANTHROPIC_API_KEY set")
 }
+
+// --- metadata.user_id tests (P1-8 Feature 1) ---
+
+// TestMetadataUserIDInRequest verifies that metadata.userId from anthropic provider options
+// is forwarded as metadata: { user_id: "..." } in the wire format.
+func TestMetadataUserIDInRequest(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"userId": "user-abc-123",
+				},
+			},
+		},
+	}
+
+	body := model.buildRequestBody(opts, false)
+
+	metadata, ok := body["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatal("metadata field missing or not a map")
+	}
+	if metadata["user_id"] != "user-abc-123" {
+		t.Errorf("user_id = %v, want %q", metadata["user_id"], "user-abc-123")
+	}
+	// camelCase key must NOT appear in wire format
+	if _, hasCamel := metadata["userId"]; hasCamel {
+		t.Error("wire format must not contain camelCase userId key")
+	}
+}
+
+// TestMetadataUserIDOmittedWhenNotSet verifies that the metadata field is omitted entirely
+// when no userId is provided in provider options.
+func TestMetadataUserIDOmittedWhenNotSet(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+	}
+	body := model.buildRequestBody(opts, false)
+
+	if _, hasMetadata := body["metadata"]; hasMetadata {
+		t.Error("metadata field should be absent when userId not provided")
+	}
+}
+
+// TestMetadataUserIDOmittedWhenEmpty verifies that an empty userId string does not
+// emit the metadata field.
+func TestMetadataUserIDOmittedWhenEmpty(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"userId": "",
+				},
+			},
+		},
+	}
+	body := model.buildRequestBody(opts, false)
+
+	if _, hasMetadata := body["metadata"]; hasMetadata {
+		t.Error("metadata field should be absent when userId is empty string")
+	}
+}

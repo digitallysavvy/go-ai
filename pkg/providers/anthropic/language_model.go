@@ -402,6 +402,19 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["mcp_servers"] = servers
 	}
 
+	// Extract metadata.userId from call-level anthropic provider options.
+	// Wire format: metadata: { user_id: "..." } (snake_case per Anthropic API spec).
+	// Omitted entirely when userId is not provided.
+	if opts.ProviderOptions != nil {
+		if anthropicOpts, ok := opts.ProviderOptions["anthropic"].(map[string]interface{}); ok {
+			if metadata, ok := anthropicOpts["metadata"].(map[string]interface{}); ok {
+				if userID, ok := metadata["userId"].(string); ok && userID != "" {
+					body["metadata"] = map[string]interface{}{"user_id": userID}
+				}
+			}
+		}
+	}
+
 	// Add container config. ContainerID (string shorthand) takes precedence over Container struct.
 	// When Container has skills, send as an object {id, skills}; otherwise send the plain ID string.
 	// This matches the TypeScript SDK behavior.
