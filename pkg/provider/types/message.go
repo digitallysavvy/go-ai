@@ -345,16 +345,21 @@ func (i ImageContentBlock) ToolResultContentType() string {
 	return "image"
 }
 
-// FileContentBlock represents a file in tool results
+// FileContentBlock represents a file in tool results.
+// Set URL for file-url references (a remote URL, no data bytes required);
+// set Data + MediaType for file-data (inline bytes).
 type FileContentBlock struct {
-	// File data as bytes
-	Data []byte `json:"data"`
+	// File data as bytes (file-data).
+	Data []byte `json:"data,omitempty"`
 
-	// MIME type of the file
-	MediaType string `json:"mediaType"`
+	// MIME type of the file.
+	MediaType string `json:"mediaType,omitempty"`
 
-	// Optional filename
+	// Optional filename.
 	Filename string `json:"filename,omitempty"`
+
+	// URL for file-url references (mutually exclusive with Data).
+	URL string `json:"url,omitempty"`
 
 	// Provider-specific options
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
