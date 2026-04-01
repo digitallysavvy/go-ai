@@ -187,6 +187,9 @@ type StreamTextResult struct {
 	// sources accumulated from ChunkTypeSource chunks
 	sources []types.SourceContent
 
+	// files accumulated from ChunkTypeFile chunks
+	files []types.GeneratedFileContent
+
 	// Structured event callbacks (v6.1 - P0-3)
 	// Stored here so processStream can fire them when the stream completes.
 	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
@@ -474,6 +477,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.sources = append(r.sources, *chunk.SourceContent)
 			}
 
+			// Accumulate generated files from ChunkTypeFile chunks.
+			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
+				r.files = append(r.files, *chunk.GeneratedFileContent)
+			}
+
 			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
 			if onChunk != nil {
 				onChunk(*chunk)
@@ -665,10 +673,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		streamTelUsage.OutputTextTokens = r.usage.OutputDetails.TextTokens
 		streamTelUsage.ReasoningTokens = r.usage.OutputDetails.ReasoningTokens
 	}
+	r.mu.Lock()
+	streamFiles := r.files
+	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason: string(r.finishReason),
 		Usage:        streamTelUsage,
 		Text:         r.text,
+		Files:        streamFiles,
 		Settings:     r.telemetrySettings,
 	})
 
@@ -926,6 +938,11 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if len(chunk.ProviderMetadata) > 0 {
 			r.providerMetadata = chunk.ProviderMetadata
 		}
+
+		// Accumulate generated files.
+		if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
+			r.files = append(r.files, *chunk.GeneratedFileContent)
+		}
 	}
 
 	// Store collected tool calls.
@@ -963,10 +980,14 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		readAllTelUsage.OutputTextTokens = r.usage.OutputDetails.TextTokens
 		readAllTelUsage.ReasoningTokens = r.usage.OutputDetails.ReasoningTokens
 	}
+	r.mu.Lock()
+	readAllFiles := r.files
+	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason: string(r.finishReason),
 		Usage:        readAllTelUsage,
 		Text:         r.text,
+		Files:        readAllFiles,
 		Settings:     r.telemetrySettings,
 	})
 

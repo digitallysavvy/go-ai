@@ -2,11 +2,15 @@ package telemetry
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,7 +76,10 @@ type TelemetryFinishEvent struct {
 	Usage        TelemetryUsage
 	// Text is the full generated text. Integrations should check
 	// Settings.RecordOutputs before recording this value.
-	Text     string
+	Text string
+	// Files holds any model-generated output files (e.g. images, audio).
+	// Integrations should check Settings.RecordOutputs before recording file data.
+	Files    []types.GeneratedFileContent
 	Settings *Settings
 }
 
@@ -268,6 +275,24 @@ func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishE
 	}
 	if e.Settings != nil && e.Settings.RecordOutputs && e.Text != "" {
 		span.SetAttributes(attribute.String("ai.response.text", e.Text))
+	}
+	if e.Settings != nil && e.Settings.RecordOutputs && len(e.Files) > 0 {
+		type fileEntry struct {
+			Type      string `json:"type"`
+			MediaType string `json:"mediaType"`
+			Data      string `json:"data"`
+		}
+		entries := make([]fileEntry, len(e.Files))
+		for i, f := range e.Files {
+			entries[i] = fileEntry{
+				Type:      "file",
+				MediaType: f.MediaType,
+				Data:      base64.StdEncoding.EncodeToString(f.Data),
+			}
+		}
+		if b, err := json.Marshal(entries); err == nil {
+			span.SetAttributes(attribute.String("ai.response.files", string(b)))
+		}
 	}
 	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 	// Gen AI semantic convention attributes (OpenTelemetry Gen AI spec).

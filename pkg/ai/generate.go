@@ -256,6 +256,9 @@ type GenerateTextResult struct {
 	// Populated by providers such as Perplexity and Google Generative AI.
 	Sources []types.SourceContent
 
+	// Files contains model-generated output files (e.g. images, audio) from the final step.
+	Files []types.GeneratedFileContent
+
 	// Raw request/response (for debugging)
 	RawRequest  interface{}
 	RawResponse interface{}
@@ -513,6 +516,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.RawResponse = genResult.RawResponse
 			result.ProviderMetadata = genResult.ProviderMetadata
 
+			// Extract generated files from the final step content.
+			var stepFiles []types.GeneratedFileContent
+			for _, part := range genResult.Content {
+				if gfc, ok := part.(types.GeneratedFileContent); ok {
+					stepFiles = append(stepFiles, gfc)
+				}
+			}
+			result.Files = stepFiles
+
 			// Parse typed output if an Output spec was provided.
 			// Only parse when generation finished cleanly; a 'length' finish means
 			// the response was truncated and would likely produce invalid JSON.
@@ -627,6 +639,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		FinishReason: string(result.FinishReason),
 		Usage:        telUsage,
 		Text:         result.Text,
+		Files:        result.Files,
 		Settings:     opts.ExperimentalTelemetry,
 	})
 
