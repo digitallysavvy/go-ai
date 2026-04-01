@@ -120,15 +120,17 @@ func convertToolItems(msg types.Message) []interface{} {
 			items = append(items, FunctionCallOutputItem{
 				Type:   "function_call_output",
 				CallID: tr.ToolCallID,
-				Output: toolResultString(tr),
+				Output: toolResultOutput(tr),
 			})
 		}
 	}
 	return items
 }
 
-// toolResultString extracts a plain string from a ToolResultContent.
-func toolResultString(tr types.ToolResultContent) string {
+// toolResultOutput converts a ToolResultContent to the Responses API output value.
+// Returns a plain string for text/json outputs, or a []CustomToolCallOutputPart for
+// content-array outputs (text, image-data, image-url, file-data, file-url).
+func toolResultOutput(tr types.ToolResultContent) interface{} {
 	if tr.Output != nil {
 		switch tr.Output.Type {
 		case types.ToolResultOutputText:
@@ -139,11 +141,52 @@ func toolResultString(tr types.ToolResultContent) string {
 			if b, err := json.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
+		case types.ToolResultOutputExecutionDenied:
+			if tr.Output.Reason != "" {
+				return tr.Output.Reason
+			}
+			return "Tool execution denied."
 		case types.ToolResultOutputContent:
+			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))
 			for _, block := range tr.Output.Content {
-				if textBlock, ok := block.(types.TextContentBlock); ok {
-					return textBlock.Text
+				switch b := block.(type) {
+				case types.TextContentBlock:
+					parts = append(parts, CustomToolCallOutputPart{
+						Type: "input_text",
+						Text: b.Text,
+					})
+				case types.ImageContentBlock:
+					imageURL := fmt.Sprintf("data:%s;base64,%s",
+						b.MediaType, base64.StdEncoding.EncodeToString(b.Data))
+					parts = append(parts, CustomToolCallOutputPart{
+						Type:     "input_image",
+						ImageURL: imageURL,
+					})
+				case types.FileContentBlock:
+					if b.URL != "" {
+						// file-url: remote URL reference
+						parts = append(parts, CustomToolCallOutputPart{
+							Type:    "input_file",
+							FileURL: b.URL,
+						})
+					} else if len(b.Data) > 0 {
+						// file-data: inline base64
+						fileData := fmt.Sprintf("data:%s;base64,%s",
+							b.MediaType, base64.StdEncoding.EncodeToString(b.Data))
+						filename := b.Filename
+						if filename == "" {
+							filename = "data"
+						}
+						parts = append(parts, CustomToolCallOutputPart{
+							Type:     "input_file",
+							Filename: filename,
+							FileData: fileData,
+						})
+					}
 				}
+			}
+			if len(parts) > 0 {
+				return parts
 			}
 		}
 	}

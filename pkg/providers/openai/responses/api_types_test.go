@@ -3,6 +3,8 @@ package responses
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Tests for AssistantMessageItem Phase field round-trip (present and absent)
@@ -290,4 +292,122 @@ func TestCustomToolDef_JSON_NoFormat(t *testing.T) {
 	if _, ok := m["description"]; ok {
 		t.Error("description should be omitted when nil")
 	}
+}
+
+// --- file-url conversion tests (P1-8 Feature 2) ---
+
+func TestFileURLInToolOutput(t *testing.T) {
+	// Build a tool result message with a file-url content block.
+	msg := types.Message{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID: "call-xyz",
+				ToolName:   "read_file",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.FileContentBlock{
+							URL: "https://example.com/report.pdf",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	items := convertToolItems(msg)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	out, ok := items[0].(FunctionCallOutputItem)
+	if !ok {
+		t.Fatal("expected FunctionCallOutputItem")
+	}
+	parts, ok := out.Output.([]CustomToolCallOutputPart)
+	if !ok {
+		t.Fatalf("expected []CustomToolCallOutputPart, got %T", out.Output)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	if parts[0].Type != "input_file" {
+		t.Errorf("type = %q, want %q", parts[0].Type, "input_file")
+	}
+	if parts[0].FileURL != "https://example.com/report.pdf" {
+		t.Errorf("file_url = %q, want %q", parts[0].FileURL, "https://example.com/report.pdf")
+	}
+	if parts[0].FileData != "" {
+		t.Error("file_data should be empty for file-url")
+	}
+}
+
+func TestMixedContentWithFileURL(t *testing.T) {
+	// Build a tool result with text + file-url mixed content.
+	msg := types.Message{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID: "call-abc",
+				ToolName:   "search",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.TextContentBlock{Text: "Found document"},
+						types.FileContentBlock{URL: "https://example.com/doc.pdf"},
+					},
+				},
+			},
+		},
+	}
+
+	items := convertToolItems(msg)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	out := items[0].(FunctionCallOutputItem)
+	parts, ok := out.Output.([]CustomToolCallOutputPart)
+	if !ok {
+		t.Fatalf("expected []CustomToolCallOutputPart, got %T", out.Output)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if parts[0].Type != "input_text" || parts[0].Text != "Found document" {
+		t.Errorf("first part: type=%q text=%q", parts[0].Type, parts[0].Text)
+	}
+	if parts[1].Type != "input_file" || parts[1].FileURL != "https://example.com/doc.pdf" {
+		t.Errorf("second part: type=%q file_url=%q", parts[1].Type, parts[1].FileURL)
+	}
+}
+
+func TestFileURLJSONSerialization(t *testing.T) {
+	part := CustomToolCallOutputPart{
+		Type:    "input_file",
+		FileURL: "https://example.com/file.pdf",
+	}
+	data, err := json.Marshal(part)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	jsonStr := string(data)
+	if !contains(jsonStr, `"file_url"`) {
+		t.Error("serialized JSON missing file_url key")
+	}
+	if !contains(jsonStr, "https://example.com/file.pdf") {
+		t.Error("serialized JSON missing file URL value")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
+}
+
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

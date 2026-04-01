@@ -100,11 +100,14 @@ type CustomToolCallOutputPart struct {
 	// ImageURL is the image URL (input_image only).
 	ImageURL string `json:"image_url,omitempty"`
 
-	// Filename is the file name (input_file only).
+	// Filename is the file name (input_file with inline data only).
 	Filename string `json:"filename,omitempty"`
 
-	// FileData is the base64-encoded file content (input_file only).
+	// FileData is the base64-encoded file content (input_file with inline data only).
 	FileData string `json:"file_data,omitempty"`
+
+	// FileURL is a remote URL reference to a file (input_file with URL only).
+	FileURL string `json:"file_url,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
