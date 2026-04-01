@@ -61,8 +61,9 @@ func TestGenerateObject_ArrayMode(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			// Array mode wraps in { "elements": [...] } matching TS SDK's arrayOutputStrategy.
 			return &types.GenerateResult{
-				Text:         `[{"name": "John"}, {"name": "Jane"}]`,
+				Text:         `{"elements": [{"name": "John"}, {"name": "Jane"}]}`,
 				FinishReason: types.FinishReasonStop,
 			}, nil
 		},
@@ -96,8 +97,9 @@ func TestGenerateObject_EnumMode(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			// Enum mode wraps in { "result": "value" } matching TS SDK's enumOutputStrategy.
 			return &types.GenerateResult{
-				Text:         "happy",
+				Text:         `{"result": "happy"}`,
 				FinishReason: types.FinishReasonStop,
 			}, nil
 		},
@@ -224,6 +226,67 @@ func TestGenerateObject_InvalidOutputMode(t *testing.T) {
 	}
 }
 
+// TestGenerateObject_CrossModeValidation tests the cross-mode validation rules
+// that mirror TS SDK's validateObjectGenerationInput().
+func TestGenerateObject_CrossModeValidation(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{StructuredSupport: true}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	cases := []struct {
+		name string
+		opts GenerateObjectOptions
+	}{
+		{
+			name: "object mode with enum values",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", Schema: testSchema, OutputMode: ObjectModeObject, EnumValues: []string{"a"}},
+		},
+		{
+			name: "array mode with enum values",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", Schema: testSchema, OutputMode: ObjectModeArray, EnumValues: []string{"a"}},
+		},
+		{
+			name: "enum mode with schema",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", Schema: testSchema, OutputMode: ObjectModeEnum, EnumValues: []string{"a"}},
+		},
+		{
+			name: "enum mode with schema description",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: ObjectModeEnum, EnumValues: []string{"a"}, SchemaDescription: "desc"},
+		},
+		{
+			name: "enum mode with schema name",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: ObjectModeEnum, EnumValues: []string{"a"}, SchemaName: "Name"},
+		},
+		{
+			name: "no-schema mode with schema",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", Schema: testSchema, OutputMode: ObjectModeNoSchema},
+		},
+		{
+			name: "no-schema mode with schema description",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: ObjectModeNoSchema, SchemaDescription: "desc"},
+		},
+		{
+			name: "no-schema mode with schema name",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: ObjectModeNoSchema, SchemaName: "Name"},
+		},
+		{
+			name: "no-schema mode with enum values",
+			opts: GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: ObjectModeNoSchema, EnumValues: []string{"a"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := GenerateObject(context.Background(), tc.opts)
+			if err == nil {
+				t.Fatalf("expected error for %q", tc.name)
+			}
+		})
+	}
+}
+
 func TestGenerateObject_StructuredOutputUnsupported(t *testing.T) {
 	t.Parallel()
 
@@ -301,8 +364,9 @@ func TestGenerateObject_InvalidEnumValue(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			// Returns a valid wrapper object but with a value not in the enum list.
 			return &types.GenerateResult{
-				Text:         "invalid_value",
+				Text:         `{"result": "angry"}`,
 				FinishReason: types.FinishReasonStop,
 			}, nil
 		},
@@ -479,6 +543,134 @@ func TestStreamObject_NilSchema(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error for nil schema")
+	}
+}
+
+func TestStreamObject_ReasoningAccumulated(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoning, Reasoning: "I think "},
+				{Type: provider.ChunkTypeReasoning, Reasoning: "carefully."},
+				{Type: provider.ChunkTypeText, Text: `{"result": "ok"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream with reasoning",
+		Schema: testSchema,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Reasoning != "I think carefully." {
+		t.Errorf("expected accumulated reasoning, got %q", result.Reasoning)
+	}
+}
+
+func TestStreamObject_ProviderMetadataFromStream(t *testing.T) {
+	t.Parallel()
+
+	// Providers like Gemini emit ProviderMetadata on the ChunkTypeFinish chunk.
+	// StreamObject must accumulate it and surface it in both the result struct
+	// and the OnStepFinish / OnFinishEvent callbacks.
+	wantMeta := map[string]interface{}{"vendor": "gemini", "version": "1.0"}
+	metaJSON, _ := json.Marshal(wantMeta)
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"key": "val"}`},
+				{
+					Type:             provider.ChunkTypeFinish,
+					FinishReason:     types.FinishReasonStop,
+					ProviderMetadata: metaJSON,
+				},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	var stepMeta, finishMeta map[string]interface{}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "stream with provider metadata",
+		Schema: testSchema,
+		OnStepFinish: func(_ context.Context, e ObjectOnStepFinishEvent) {
+			stepMeta = e.ProviderMetadata
+		},
+		OnFinishEvent: func(_ context.Context, e ObjectOnFinishEvent) {
+			finishMeta = e.ProviderMetadata
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ProviderMetadata == nil {
+		t.Fatal("expected non-nil ProviderMetadata in result")
+	}
+	if result.ProviderMetadata["vendor"] != "gemini" {
+		t.Errorf("unexpected ProviderMetadata: %v", result.ProviderMetadata)
+	}
+	if stepMeta == nil || stepMeta["vendor"] != "gemini" {
+		t.Errorf("OnStepFinish ProviderMetadata wrong: %v", stepMeta)
+	}
+	if finishMeta == nil || finishMeta["vendor"] != "gemini" {
+		t.Errorf("OnFinishEvent ProviderMetadata wrong: %v", finishMeta)
+	}
+}
+
+func TestStreamObject_FallbackResultFields(t *testing.T) {
+	t.Parallel()
+
+	// When DoStream returns an error, StreamObject falls back to DoGenerate.
+	// The returned result struct must include Reasoning, Request, Response, ProviderMetadata
+	// (previously they were missing — populated only in the event but not the result).
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return nil, errors.New("streaming not supported")
+		},
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:             `{"key": "val"}`,
+				FinishReason:     types.FinishReasonStop,
+				ProviderMetadata: map[string]interface{}{"model": "test"},
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "test fallback",
+		Schema: testSchema,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Request == nil {
+		t.Error("expected non-nil Request in fallback result")
+	}
+	if result.Response == nil {
+		t.Error("expected non-nil Response in fallback result")
+	}
+	if result.ProviderMetadata == nil {
+		t.Error("expected non-nil ProviderMetadata in fallback result")
 	}
 }
 
