@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -93,9 +93,9 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool {
 	// Claude 3+ models support vision
 	return m.modelID == "claude-3-opus-20240229" ||
-		   m.modelID == "claude-3-sonnet-20240229" ||
-		   m.modelID == "claude-3-haiku-20240307" ||
-		   m.modelID == "claude-3-5-sonnet-20241022"
+		m.modelID == "claude-3-sonnet-20240229" ||
+		m.modelID == "claude-3-haiku-20240307" ||
+		m.modelID == "claude-3-5-sonnet-20241022"
 }
 
 // DoGenerate performs non-streaming text generation
@@ -167,7 +167,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
 	// events and route json tool input_json_delta as text chunks.
 	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Anthropic API request body
@@ -341,7 +341,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			// the TypeScript SDK's prepareTools({toolChoice:{type:'required'},
 			// disableParallelToolUse:true}) behaviour.
 			body["tool_choice"] = map[string]interface{}{
-				"type":                    "any",
+				"type":                      "any",
 				"disable_parallel_tool_use": true,
 			}
 		}
@@ -1011,10 +1011,10 @@ type anthropicResponse struct {
 
 // anthropicUsage represents Anthropic usage information with cache tracking and context management
 type anthropicUsage struct {
-	InputTokens              int                         `json:"input_tokens"`
-	OutputTokens             int                         `json:"output_tokens"`
-	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"` // v6.0
-	CacheReadInputTokens     int                         `json:"cache_read_input_tokens,omitempty"`     // v6.0
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // v6.0
 	// Legacy location for context management (fallback)
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Iterations breakdown when compaction is used
@@ -1193,7 +1193,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				toolCallID:   start.ContentBlock.ID,
 				toolName:     start.ContentBlock.Name,
 				firstDelta:   initialInput == "", // expect deltas only when no initial input
-				isCustomTool: true,              // user-defined function tool
+				isCustomTool: true,               // user-defined function tool
 			}
 			if initialInput != "" {
 				block.inputBuf.WriteString(initialInput)

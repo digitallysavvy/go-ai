@@ -12,6 +12,22 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// nextNonMeta reads and discards any leading ChunkTypeResponseMetadata chunks,
+// returning the first non-metadata chunk. Providers now emit response-metadata
+// as the very first chunk of every stream (carrying HTTP response headers).
+func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk {
+	t.Helper()
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("stream.Next failed: %v", err)
+		}
+		if chunk.Type != provider.ChunkTypeResponseMetadata {
+			return chunk
+		}
+	}
+}
+
 // TestPromptCacheRetention tests the prompt cache retention feature
 func TestPromptCacheRetention(t *testing.T) {
 	tests := []struct {
@@ -189,12 +205,8 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Read chunks
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("stream.Next failed: %v", err)
-	}
-
+	// Read first non-metadata chunk (response-metadata is emitted first with HTTP headers).
+	chunk := nextNonMeta(t, stream)
 	if chunk.Text != "Hello" {
 		t.Errorf("expected text=Hello, got %s", chunk.Text)
 	}
@@ -584,11 +596,8 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 			}
 			defer stream.Close() //nolint:errcheck
 
-			// Read text chunk
-			chunk, err := stream.Next()
-			if err != nil {
-				t.Fatalf("stream.Next (text) failed: %v", err)
-			}
+			// Read text chunk (skip response-metadata first chunk from HTTP headers).
+			chunk := nextNonMeta(t, stream)
 			if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hi" {
 				t.Errorf("expected text chunk 'Hi', got type=%q text=%q", chunk.Type, chunk.Text)
 			}
@@ -652,11 +661,8 @@ func TestDoStreamToolCallChunks(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Chunk 1: text
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next (text) failed: %v", err)
-	}
+	// Chunk 1: text (skip response-metadata first chunk from HTTP headers).
+	chunk := nextNonMeta(t, stream)
 	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Sure!" {
 		t.Errorf("expected text chunk 'Sure!', got type=%q text=%q", chunk.Type, chunk.Text)
 	}
@@ -728,11 +734,8 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Expect a tool call chunk assembled from the two deltas.
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("stream.Next failed: %v", err)
-	}
+	// Expect a tool call chunk assembled from the two deltas (skip leading response-metadata).
+	chunk := nextNonMeta(t, stream)
 	if chunk.Type != provider.ChunkTypeToolCall {
 		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
 	}

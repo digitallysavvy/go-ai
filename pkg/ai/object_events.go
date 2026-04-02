@@ -4,6 +4,10 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 // ObjectOnStartEvent is fired once when GenerateObject or StreamObject begins,
 // before any LLM call is made. Passed to ExperimentalOnStart callbacks.
+//
+// Note on cancellation: the TypeScript SDK includes an abortSignal field on this
+// event. In Go, the ctx parameter passed to the callback serves this role —
+// pass ctx to any operations that should respect cancellation.
 type ObjectOnStartEvent struct {
 	// CallID uniquely identifies this generation call, used to correlate events.
 	CallID string
@@ -86,6 +90,10 @@ type ObjectOnStartEvent struct {
 
 // ObjectOnStepStartEvent is fired just before the provider is called.
 // For object generation, there is always exactly one step (step 0).
+//
+// Note on cancellation: the TypeScript SDK includes an abortSignal field on this
+// event. In Go, the ctx parameter passed to the callback serves this role —
+// pass ctx to any operations that should respect cancellation.
 type ObjectOnStepStartEvent struct {
 	// CallID correlates this event with the other events for this call.
 	CallID string
@@ -147,11 +155,13 @@ type ObjectOnStepFinishEvent struct {
 	// Warnings are warnings from the model provider.
 	Warnings []types.Warning
 
-	// Request contains additional request information.
-	Request map[string]interface{}
+	// Request contains additional information about the request sent to the provider.
+	// Mirrors ObjectOnStepFinishEvent.request in the TypeScript SDK.
+	Request GenerateStepRequest
 
-	// Response contains additional response information.
-	Response map[string]interface{}
+	// Response contains additional information about the response from the provider.
+	// Mirrors ObjectOnStepFinishEvent.response in the TypeScript SDK.
+	Response GenerateStepResponse
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{}
@@ -191,11 +201,13 @@ type ObjectOnFinishEvent struct {
 	// Warnings are warnings from the model provider.
 	Warnings []types.Warning
 
-	// Request contains additional request information.
-	Request map[string]interface{}
+	// Request contains additional information about the request sent to the provider.
+	// Mirrors ObjectOnFinishEvent.request in the TypeScript SDK.
+	Request GenerateStepRequest
 
-	// Response contains additional response information.
-	Response map[string]interface{}
+	// Response contains additional information about the response from the provider.
+	// Mirrors ObjectOnFinishEvent.response in the TypeScript SDK.
+	Response GenerateStepResponse
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{}

@@ -289,6 +289,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	toolNames := resolveProviderToolNames(tools)
 
 	var toolCalls []types.ToolCall
+	var hasFunctionCall bool // true only when a function_call item is encountered
 
 	for _, rawItem := range resp.Output {
 		var peek struct {
@@ -349,6 +350,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:  item.Name,
 				Arguments: args,
 			})
+			hasFunctionCall = true
 
 		case "custom_tool_call":
 			var item responses.CustomToolCallItem
@@ -495,9 +497,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 	if len(toolCalls) > 0 {
 		result.ToolCalls = toolCalls
+	}
+	// Use hasFunctionCall (not len(toolCalls)) to avoid treating provider-executed
+	// tools (web_search, mcp, etc.) as finish reason "tool-calls".
+	// Mirrors TS SDK xai-responses-language-model.ts hasFunctionCall logic.
+	if hasFunctionCall {
 		result.FinishReason = types.FinishReasonToolCalls
 	} else {
-		result.FinishReason = mapXAIResponsesFinishReason(resp.IncompleteDetails)
+		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, resp.IncompleteDetails)
 	}
 
 	return result, nil
@@ -577,13 +584,29 @@ func providerToolNameFromType(outputType string) string {
 	}
 }
 
-// mapXAIResponsesFinishReason maps Responses API incomplete_details to a FinishReason.
-func mapXAIResponsesFinishReason(details *responses.IncompleteDetails) types.FinishReason {
-	if details == nil {
+// mapXAIResponsesFinishReason maps the Responses API status and incomplete_details
+// to a FinishReason. status is the primary signal; incomplete_details provides
+// truncation reason when status == "incomplete".
+//
+// Mirrors TS SDK xai-responses-language-model.ts mapXaiResponsesFinishReason.
+func mapXAIResponsesFinishReason(status string, details *responses.IncompleteDetails) types.FinishReason {
+	switch status {
+	case "completed", "stop", "":
+		// "": no status provided (older API versions) — treat as stop.
 		return types.FinishReasonStop
-	}
-	switch details.Reason {
-	case "max_output_tokens":
+	case "tool_calls":
+		return types.FinishReasonToolCalls
+	case "incomplete":
+		if details != nil {
+			switch details.Reason {
+			case "max_output_tokens":
+				return types.FinishReasonLength
+			case "content_filter":
+				return types.FinishReasonContentFilter
+			}
+		}
+		return types.FinishReasonLength
+	case "length":
 		return types.FinishReasonLength
 	case "content_filter":
 		return types.FinishReasonContentFilter
@@ -642,20 +665,25 @@ type xaiResponsesToolAccum struct {
 // xaiResponsesStream implements provider.TextStream for the XAI Responses API SSE stream.
 // XAI's Responses API uses the same SSE event schema as the OpenAI Responses API.
 type xaiResponsesStream struct {
-	reader     io.ReadCloser
-	parser     *streaming.SSEParser
-	err        error
-	toolAccum  map[int]*xaiResponsesToolAccum
-	itemTypes  map[int]string
-	flushQueue []*provider.StreamChunk
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolAccum       map[int]*xaiResponsesToolAccum
+	itemTypes       map[int]string
+	flushQueue      []*provider.StreamChunk
+	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
+	// Used to emit the matching reasoning-end in output_item.done, and to avoid
+	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
+	activeReasoning map[string]struct{}
 }
 
 func newXAIResponsesStream(r io.ReadCloser) *xaiResponsesStream {
 	return &xaiResponsesStream{
-		reader:    r,
-		parser:    streaming.NewSSEParser(r),
-		toolAccum: make(map[int]*xaiResponsesToolAccum),
-		itemTypes: make(map[int]string),
+		reader:          r,
+		parser:          streaming.NewSSEParser(r),
+		toolAccum:       make(map[int]*xaiResponsesToolAccum),
+		itemTypes:       make(map[int]string),
+		activeReasoning: make(map[string]struct{}),
 	}
 }
 
@@ -739,6 +767,22 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		return s.Next()
 
+	// reasoning_summary_part.added fires when a reasoning block starts.
+	// Emit reasoning-start with providerMetadata so consumers know the item ID.
+	case "response.reasoning_summary_part.added":
+		var e responses.ReasoningSummaryPartAddedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.Next()
+		}
+		blockID := "reasoning-" + e.ItemID
+		s.activeReasoning[e.ItemID] = struct{}{}
+		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeReasoningStart,
+			ID:               blockID,
+			ProviderMetadata: meta,
+		}, nil
+
 	case "response.reasoning_summary_text.delta":
 		var e responses.ReasoningSummaryTextDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
@@ -747,15 +791,21 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Delta == "" {
 			return s.Next()
 		}
+		blockID := "reasoning-" + e.ItemID
+		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 		return &provider.StreamChunk{
-			Type:      provider.ChunkTypeReasoning,
-			Reasoning: e.Delta,
+			Type:             provider.ChunkTypeReasoning,
+			ID:               blockID,
+			Reasoning:        e.Delta,
+			ProviderMetadata: meta,
 		}, nil
 
 	// Gap 6: raw reasoning text (not summary) — emitted by some Grok models.
+	// Also emits reasoning-start on first delta if not already started.
 	case "response.reasoning_text.delta":
 		var e struct {
-			Delta string `json:"delta"`
+			ItemID string `json:"item_id"`
+			Delta  string `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
@@ -763,9 +813,28 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Delta == "" {
 			return s.Next()
 		}
+		blockID := "reasoning-" + e.ItemID
+		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
+		if _, started := s.activeReasoning[e.ItemID]; !started {
+			// First delta without a prior summary_part.added — emit start now.
+			s.activeReasoning[e.ItemID] = struct{}{}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoning,
+				ID:               blockID,
+				Reasoning:        e.Delta,
+				ProviderMetadata: meta,
+			})
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningStart,
+				ID:               blockID,
+				ProviderMetadata: meta,
+			}, nil
+		}
 		return &provider.StreamChunk{
-			Type:      provider.ChunkTypeReasoning,
-			Reasoning: e.Delta,
+			Type:             provider.ChunkTypeReasoning,
+			ID:               blockID,
+			Reasoning:        e.Delta,
+			ProviderMetadata: meta,
 		}, nil
 
 	// Gap 7: url_citation annotations delivered when a text item is finalised.
@@ -841,7 +910,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, io.EOF
 		}
 		usage := convertXAIResponsesUsage(e.Response.Usage)
-		finishReason := mapXAIResponsesFinishReason(e.Response.IncompleteDetails)
+		finishReason := mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
 
 		var meta json.RawMessage
 		if e.Response.ID != "" {
@@ -973,6 +1042,9 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 
 	// Gap 2: forward encrypted_content from reasoning items so callers can
 	// round-trip it in subsequent turns when store=false.
+	// Also closes the reasoning block: emit a fallback reasoning-start if
+	// reasoning_summary_part.added was never sent (encrypted reasoning path),
+	// then emit reasoning-end.
 	case "reasoning":
 		delete(s.itemTypes, e.OutputIndex)
 		var item struct {
@@ -993,9 +1065,30 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			meta["reasoningEncryptedContent"] = item.EncryptedContent
 		}
 		providerMeta, _ := json.Marshal(map[string]interface{}{"xai": meta})
+		blockID := "reasoning-" + item.ID
+
+		// If no reasoning-start was emitted yet (encrypted reasoning path where
+		// reasoning_summary_part.added events are not sent), emit one now.
+		if _, started := s.activeReasoning[item.ID]; !started {
+			s.activeReasoning[item.ID] = struct{}{}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningEnd,
+				ID:               blockID,
+				ProviderMetadata: providerMeta,
+			})
+			delete(s.activeReasoning, item.ID)
+			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningStart,
+				ID:               blockID,
+				ProviderMetadata: startMeta,
+			}, nil
+		}
+
+		delete(s.activeReasoning, item.ID)
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
-			ID:               "reasoning-" + item.ID,
+			ID:               blockID,
 			ProviderMetadata: providerMeta,
 		}, nil
 

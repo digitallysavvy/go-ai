@@ -340,10 +340,13 @@ type FunctionCallOutputItem struct {
 
 // ResponsesAPIResponse is the body returned by a non-streaming POST /responses.
 type ResponsesAPIResponse struct {
-	ID                string             `json:"id"`
-	CreatedAt         int64              `json:"created_at"`
-	Model             string             `json:"model"`
-	ServiceTier       string             `json:"service_tier,omitempty"`
+	ID          string            `json:"id"`
+	CreatedAt   int64             `json:"created_at"`
+	Model       string            `json:"model"`
+	ServiceTier string            `json:"service_tier,omitempty"`
+	// Status is the terminal state: "completed", "incomplete", "failed".
+	// Primary signal for finish reason; use IncompleteDetails for truncation details.
+	Status            string             `json:"status,omitempty"`
 	Output            []json.RawMessage  `json:"output"`
 	Usage             ResponsesAPIUsage  `json:"usage"`
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
@@ -411,6 +414,14 @@ type FunctionCallArgumentsDeltaEvent struct {
 	Delta       string `json:"delta"`
 }
 
+// ReasoningSummaryPartAddedEvent is emitted when a new reasoning summary part begins.
+// Signals that a reasoning block has started for the given item.
+type ReasoningSummaryPartAddedEvent struct {
+	Type        string `json:"type"` // "response.reasoning_summary_part.added"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+}
+
 // ReasoningSummaryTextDeltaEvent carries an incremental reasoning text chunk.
 type ReasoningSummaryTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.reasoning_summary_text.delta"
@@ -432,6 +443,8 @@ type ResponseCompletedEvent struct {
 	Type     string `json:"type"` // "response.completed"
 	Response struct {
 		ID                string             `json:"id"`
+		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
+		Status            string             `json:"status,omitempty"`
 		Usage             ResponsesAPIUsage  `json:"usage"`
 		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
 	} `json:"response"`
