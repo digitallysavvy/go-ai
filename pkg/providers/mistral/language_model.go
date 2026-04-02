@@ -83,12 +83,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	warnings := m.checkReasoningWarnings(opts)
 	reqBody := m.buildRequestBody(opts, false)
 	var response mistralResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
 	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
 
@@ -108,7 +113,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newMistralStream(httpResp.Body)
-	return streaming.NewWarningsStream(inner, warnings), nil
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {

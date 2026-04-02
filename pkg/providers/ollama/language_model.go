@@ -64,11 +64,17 @@ func (m *LanguageModel) SupportsImageInput() bool {
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	reqBody := m.buildRequestBody(opts, false)
 	var response ollamaResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -85,7 +91,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newOllamaStream(httpResp.Body), nil
+	return providerutils.WithResponseMetadata(newOllamaStream(httpResp.Body), httpResp.Header), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {

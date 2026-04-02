@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -65,12 +66,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 
 	var response alibabaResponse
-	err := m.prov.client.PostJSON(ctx, "/chat/completions", reqBody, &response)
+	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -99,7 +105,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newAlibabaStream(httpResp.Body), nil
+	return providerutils.WithResponseMetadata(newAlibabaStream(httpResp.Body), httpResp.Header), nil
 }
 
 // buildRequestBody builds the API request body

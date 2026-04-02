@@ -66,12 +66,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 
 	var response moonshotResponse
-	err := m.prov.client.PostJSON(ctx, "/chat/completions", reqBody, &response)
+	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -93,7 +98,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newMoonshotStream(httpResp.Body), nil
+	return providerutils.WithResponseMetadata(newMoonshotStream(httpResp.Body), httpResp.Header), nil
 }
 
 // buildRequestBody builds the API request body

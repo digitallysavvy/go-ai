@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for AWS Bedrock
@@ -120,7 +121,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("LAWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return m.convertResponse(respBody)
+	result, err := m.convertResponse(respBody)
+	if err != nil {
+		return nil, err
+	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
+	return result, nil
 }
 
 // DoStream performs streaming text generation

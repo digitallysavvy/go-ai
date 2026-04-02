@@ -72,13 +72,19 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		m.deploymentID, m.provider.APIVersion())
 
 	var response azureResponse
-	err := m.provider.client.PostJSON(ctx, path, reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   path,
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
 	// Convert response to GenerateResult
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -103,7 +109,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newAzureStream(httpResp.Body), nil
+	return providerutils.WithResponseMetadata(newAzureStream(httpResp.Body), httpResp.Header), nil
 }
 
 // buildRequestBody builds the Azure OpenAI API request body

@@ -72,15 +72,21 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
-	// Make API request
+	// Make API request, capturing response headers.
 	var response openAIResponse
-	err := m.provider.client.PostJSON(ctx, "/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Convert response to GenerateResult
-	return m.convertResponse(response), nil
+	// Convert response to GenerateResult and attach HTTP headers.
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -101,8 +107,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 
-	// Create stream wrapper
-	return newOpenAIStream(httpResp.Body), nil
+	// Wrap the stream so the first chunk carries the HTTP response headers.
+	return providerutils.WithResponseMetadata(newOpenAIStream(httpResp.Body), httpResp.Header), nil
 }
 
 // buildRequestBody builds the OpenAI API request body

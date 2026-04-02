@@ -66,7 +66,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	warnings := m.checkUnsupportedOptions(opts)
 	reqBody := m.buildRequestBody(opts, false)
 	var response xaiResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -76,6 +80,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result := m.convertResponse(response, lastAssistantText(opts))
 	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
 
@@ -125,7 +130,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newXAIStream(httpResp.Body, lastAssistantText(opts)), nil
+	return providerutils.WithResponseMetadata(newXAIStream(httpResp.Body, lastAssistantText(opts)), httpResp.Header), nil
 }
 
 // XAIChatProviderOptions contains XAI-specific options for the chat completions path.

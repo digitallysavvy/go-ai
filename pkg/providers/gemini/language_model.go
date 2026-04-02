@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
@@ -56,10 +57,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts)
 
 	var response Response
-	if err := m.cfg.Client.PostJSON(ctx, m.cfg.GeneratePath(m.modelID), reqBody, &response); err != nil {
+	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   m.cfg.GeneratePath(m.modelID),
+		Body:   reqBody,
+	}, &response)
+	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation.
@@ -77,7 +85,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newStream(httpResp.Body, m.cfg), nil
+	return providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header), nil
 }
 
 // handleError wraps a low-level error into a provider error.
