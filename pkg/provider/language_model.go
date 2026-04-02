@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -223,6 +224,31 @@ type StreamChunk struct {
 	// optional `providerMetadata?: SharedV4ProviderMetadata` field on those
 	// stream part types.
 	ProviderMetadata json.RawMessage
+
+	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
+	// Carries the provider-level HTTP response metadata emitted early in the
+	// stream (after headers arrive, before content begins).
+	ResponseMetadata *ResponseMetadata
+}
+
+// ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.
+// Providers that know their response ID / model / timestamp before streaming
+// content should emit exactly one of these as the first meaningful chunk.
+// Mirrors the 'response-metadata' chunk type in the TypeScript SDK.
+type ResponseMetadata struct {
+	// ID is the provider-assigned response ID (e.g. "chatcmpl-abc123").
+	ID string
+
+	// Timestamp is when the provider started generating the response.
+	// Zero value means the provider did not supply a timestamp.
+	Timestamp time.Time
+
+	// ModelID is the model that handled the request. May differ from the
+	// model requested (e.g. when using model aliases).
+	ModelID string
+
+	// Headers are the raw HTTP response headers.
+	Headers map[string]string
 }
 
 // ChunkType represents the type of stream chunk
@@ -314,6 +340,13 @@ const (
 	// The Warnings field carries the warnings; the chunk has no text content.
 	// Consumers check chunk.Type == ChunkTypeStreamStart and read chunk.Warnings.
 	ChunkTypeStreamStart ChunkType = "stream-start"
+
+	// ChunkTypeResponseMetadata carries provider-level response metadata emitted
+	// early in the stream (e.g. after HTTP response headers are received).
+	// Providers that know their response ID / model / timestamp before streaming
+	// content should emit exactly one of these as the first meaningful chunk.
+	// Mirrors the 'response-metadata' chunk type in the TypeScript SDK.
+	ChunkTypeResponseMetadata ChunkType = "response-metadata"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.

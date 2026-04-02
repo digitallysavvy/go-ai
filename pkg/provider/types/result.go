@@ -35,6 +35,11 @@ type GenerateResult struct {
 	// ProviderMetadata holds provider-specific metadata keyed by provider name.
 	// Example: map[string]interface{}{"googleVertex": map[string]interface{}{"finishMessage": "..."}}
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ResponseHeaders are the raw HTTP response headers from the provider.
+	// Populated for HTTP-based providers; nil for others.
+	// Mirrors result.response?.headers in the TypeScript SDK.
+	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 }
 
 // EmbeddingResponse contains metadata about the HTTP response from the embedding provider.
