@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -33,6 +35,9 @@ type TelemetryStartEvent struct {
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
 type TelemetryStepStartEvent struct {
+	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
+	// Used to name the per-step OTel child span.
+	OperationType string
 	StepNumber    int
 	ModelProvider string
 	ModelID       string
@@ -68,6 +73,37 @@ type TelemetryStepFinishEvent struct {
 	StepNumber   int
 	FinishReason string
 	Usage        TelemetryUsage
+
+	// Text is the generated text for this step.
+	// Integrations should check Settings.RecordOutputs before recording.
+	Text string
+
+	// Reasoning is the joined reasoning/thinking text for this step.
+	// Integrations should check Settings.RecordOutputs before recording.
+	Reasoning string
+
+	// ToolCalls made by the model in this step.
+	// Integrations should check Settings.RecordOutputs before recording.
+	ToolCalls []types.ToolCall
+
+	// Files holds model-generated output files for this step.
+	// Integrations should check Settings.RecordOutputs before recording.
+	Files []types.GeneratedFileContent
+
+	// ProviderMetadata holds provider-specific response metadata for this step.
+	ProviderMetadata map[string]interface{}
+
+	// ResponseID is the provider-assigned response identifier for this step.
+	ResponseID string
+
+	// ResponseModelID is the model ID reported in the provider response.
+	ResponseModelID string
+
+	// ResponseTimestamp is when the provider response was received.
+	ResponseTimestamp time.Time
+
+	// Settings holds the caller-supplied telemetry configuration.
+	Settings *Settings
 }
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
@@ -123,7 +159,9 @@ type TelemetryIntegration interface {
 	OnStart(ctx context.Context, e TelemetryStartEvent) context.Context
 
 	// OnStepStart is called at the beginning of each LLM step.
-	OnStepStart(ctx context.Context, e TelemetryStepStartEvent)
+	// Implementations that create a per-step child span should embed it in the
+	// returned context so OnStepFinish can retrieve and end it.
+	OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context
 
 	// OnToolCallStart is called just before each tool's Execute function runs.
 	// Return a (possibly modified) context; OTel implementations may start a
@@ -172,7 +210,9 @@ type NoopTelemetryIntegration struct{}
 func (NoopTelemetryIntegration) OnStart(ctx context.Context, _ TelemetryStartEvent) context.Context {
 	return ctx
 }
-func (NoopTelemetryIntegration) OnStepStart(_ context.Context, _ TelemetryStepStartEvent) {}
+func (NoopTelemetryIntegration) OnStepStart(ctx context.Context, _ TelemetryStepStartEvent) context.Context {
+	return ctx
+}
 func (NoopTelemetryIntegration) OnToolCallStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
 	return ctx
 }
@@ -233,7 +273,31 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 	return ctx // span is embedded via OTel context propagation
 }
 
-func (OTelTelemetryIntegration) OnStepStart(_ context.Context, _ TelemetryStepStartEvent) {}
+// stepSpanKey is a private context key used to pass the OTel step span from
+// OnStepStart to OnStepFinish without relying on trace.SpanFromContext (which
+// would return the innermost span, potentially set by provider-level tracing).
+type stepSpanKey struct{}
+
+// OnStepStart creates a child OTel span for the step and embeds it in the
+// returned context via stepSpanKey, mirroring the TS SDK's onStepStart span.
+func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
+	rootSpan := trace.SpanFromContext(ctx)
+	if !rootSpan.IsRecording() {
+		return ctx
+	}
+	tracer := rootSpan.TracerProvider().Tracer("go-ai")
+	opType := e.OperationType
+	if opType == "" {
+		opType = "ai.step"
+	}
+	spanName := fmt.Sprintf("%s step %d", opType, e.StepNumber)
+	ctx, stepSpan := tracer.Start(ctx, spanName)
+	stepSpan.SetAttributes(
+		attribute.String("gen_ai.request.model", e.ModelID),
+		attribute.String("gen_ai.system", e.ModelProvider),
+	)
+	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
+}
 
 // OnToolCallStart starts a child span for tool execution and embeds it.
 func (OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
@@ -265,7 +329,119 @@ func (OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e Telemetr
 }
 
 func (OTelTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
-func (OTelTelemetryIntegration) OnStepFinish(_ context.Context, _ TelemetryStepFinishEvent) {}
+
+// OnStepFinish records step-level OTel attributes on the child step span created
+// by OnStepStart and ends the span. Mirrors the TS SDK's onStepFinish behavior.
+func (OTelTelemetryIntegration) OnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
+	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
+	if !ok || !stepSpan.IsRecording() {
+		return
+	}
+	recordOutputs := e.Settings != nil && e.Settings.RecordOutputs
+
+	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+
+	if recordOutputs && e.Text != "" {
+		stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
+	}
+	if recordOutputs && e.Reasoning != "" {
+		stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
+	}
+	if recordOutputs && len(e.ToolCalls) > 0 {
+		type toolCallEntry struct {
+			ToolCallID string      `json:"toolCallId"`
+			ToolName   string      `json:"toolName"`
+			Input      interface{} `json:"input"`
+		}
+		entries := make([]toolCallEntry, len(e.ToolCalls))
+		for i, tc := range e.ToolCalls {
+			entries[i] = toolCallEntry{
+				ToolCallID: tc.ID,
+				ToolName:   tc.ToolName,
+				Input:      tc.Arguments,
+			}
+		}
+		if b, err := json.Marshal(entries); err == nil {
+			stepSpan.SetAttributes(attribute.String("ai.response.toolCalls", string(b)))
+		}
+	}
+	if recordOutputs && len(e.Files) > 0 {
+		type fileEntry struct {
+			Type      string `json:"type"`
+			MediaType string `json:"mediaType"`
+			Data      string `json:"data"`
+		}
+		entries := make([]fileEntry, len(e.Files))
+		for i, f := range e.Files {
+			entries[i] = fileEntry{
+				Type:      "file",
+				MediaType: f.MediaType,
+				Data:      base64.StdEncoding.EncodeToString(f.Data),
+			}
+		}
+		if b, err := json.Marshal(entries); err == nil {
+			stepSpan.SetAttributes(attribute.String("ai.response.files", string(b)))
+		}
+	}
+	if e.ResponseID != "" {
+		stepSpan.SetAttributes(
+			attribute.String("ai.response.id", e.ResponseID),
+			attribute.String("gen_ai.response.id", e.ResponseID),
+		)
+	}
+	if e.ResponseModelID != "" {
+		stepSpan.SetAttributes(attribute.String("ai.response.model", e.ResponseModelID))
+	}
+	if !e.ResponseTimestamp.IsZero() {
+		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format(time.RFC3339)))
+	}
+	if e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			stepSpan.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
+
+	stepSpan.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}))
+
+	if e.Usage.InputTokens != nil {
+		stepSpan.SetAttributes(
+			attribute.Int64("ai.usage.inputTokens", *e.Usage.InputTokens),
+			attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens),
+		)
+	}
+	if e.Usage.OutputTokens != nil {
+		stepSpan.SetAttributes(
+			attribute.Int64("ai.usage.outputTokens", *e.Usage.OutputTokens),
+			attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens),
+		)
+	}
+	if e.Usage.TotalTokens != nil {
+		stepSpan.SetAttributes(attribute.Int64("ai.usage.totalTokens", *e.Usage.TotalTokens))
+	}
+	if e.Usage.ReasoningTokens != nil {
+		stepSpan.SetAttributes(
+			attribute.Int64("ai.usage.reasoningTokens", *e.Usage.ReasoningTokens),
+			attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *e.Usage.ReasoningTokens),
+		)
+	}
+	if e.Usage.CacheReadInputTokens != nil {
+		stepSpan.SetAttributes(
+			attribute.Int64("ai.usage.cachedInputTokens", *e.Usage.CacheReadInputTokens),
+			attribute.Int64("ai.usage.inputTokenDetails.cacheReadTokens", *e.Usage.CacheReadInputTokens),
+		)
+	}
+	if e.Usage.CacheCreationInputTokens != nil {
+		stepSpan.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.cacheWriteTokens", *e.Usage.CacheCreationInputTokens))
+	}
+	if e.Usage.NoCacheInputTokens != nil {
+		stepSpan.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.noCacheTokens", *e.Usage.NoCacheInputTokens))
+	}
+	if e.Usage.OutputTextTokens != nil {
+		stepSpan.SetAttributes(attribute.Int64("ai.usage.outputTokenDetails.textTokens", *e.Usage.OutputTextTokens))
+	}
+
+	stepSpan.End()
+}
 
 // OnFinish sets output attributes on the root span and ends it.
 func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishEvent) {
@@ -428,11 +604,13 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	return ctx
 }
 
-// FireOnStepStart calls OnStepStart on every registered integration.
-func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) {
+// FireOnStepStart calls OnStepStart on every registered integration, threading
+// the returned context through the chain so each integration can inject step spans.
+func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
 	for _, i := range snapshot() {
-		i.OnStepStart(ctx, e)
+		ctx = i.OnStepStart(ctx, e)
 	}
+	return ctx
 }
 
 // FireOnToolCallStart calls OnToolCallStart on every registered integration,

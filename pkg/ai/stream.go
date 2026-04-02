@@ -190,8 +190,13 @@ type StreamTextResult struct {
 	// files accumulated from ChunkTypeFile chunks
 	files []types.GeneratedFileContent
 
+	// responseHeaders accumulated from ChunkTypeResponseMetadata chunks.
+	// Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
+	responseHeaders map[string]string
+
 	// Structured event callbacks (v6.1 - P0-3)
 	// Stored here so processStream can fire them when the stream completes.
+	cbCallID            string
 	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
 	cbOnFinishEvent     func(ctx context.Context, e OnFinishEvent)
 	cbOnToolCallStart   func(ctx context.Context, e OnToolCallStartEvent)
@@ -250,15 +255,20 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+	callID := newCallID()
 
 	// CB-T19: Emit OnStartEvent before streaming begins
 	Notify(ctx, OnStartEvent{
+		CallID:              callID,
+		OperationID:         "ai.streamText",
 		ModelProvider:       opts.Model.Provider(),
 		ModelID:             opts.Model.ModelID(),
 		System:              opts.System,
 		Prompt:              opts.Prompt,
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
+		ToolChoice:          opts.ToolChoice,
+		ProviderOptions:     opts.ProviderOptions,
 		Temperature:         opts.Temperature,
 		MaxTokens:           opts.MaxTokens,
 		TopP:                opts.TopP,
@@ -274,6 +284,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// CB-T20: Emit OnStepStartEvent for step 1 (current stream is single-step)
 	Notify(ctx, OnStepStartEvent{
+		CallID:              callID,
 		StepNumber:          1,
 		ModelProvider:       opts.Model.Provider(),
 		ModelID:             opts.Model.ModelID(),
@@ -336,6 +347,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		telemetrySettings: opts.ExperimentalTelemetry,
 		outputSpec:        outputSpec,
 		// Structured event callbacks
+		cbCallID:            callID,
 		cbOnStepFinishEvent: opts.OnStepFinishEvent,
 		cbOnFinishEvent:     opts.OnFinishEvent,
 		cbOnToolCallStart:   opts.OnToolCallStart,
@@ -389,6 +401,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	firstChunkEver := true
 
 	for stepNum := 1; ; stepNum++ {
+		// Fire step-start telemetry. OTel implementations create a child step span.
+		stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
+			OperationType: "ai.streamText",
+			StepNumber:    stepNum,
+			ModelProvider: r.cbModelProvider,
+			ModelID:       r.cbModelID,
+		})
+
+		// Track how many files existed before this step so we can slice per-step files.
+		stepFilesStart := len(r.files)
+
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends (Fix 1).
 		var stepToolCalls []types.ToolCall
@@ -482,6 +505,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.files = append(r.files, *chunk.GeneratedFileContent)
 			}
 
+			// Update response headers from ChunkTypeResponseMetadata.
+			// Mirrors TS SDK's 'response-metadata' chunk handling in stream-text.ts.
+			if chunk.Type == provider.ChunkTypeResponseMetadata && chunk.ResponseMetadata != nil {
+				if chunk.ResponseMetadata.Headers != nil {
+					r.responseHeaders = chunk.ResponseMetadata.Headers
+				}
+			}
+
 			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
 			if onChunk != nil {
 				onChunk(*chunk)
@@ -501,6 +532,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepToolResults []types.ToolResult
 		if len(stepToolCalls) > 0 && len(opts.Tools) > 0 {
 			toolCallbacks := toolCallEventCallbacks{
+				callID:              r.cbCallID,
 				onStart:             r.cbOnToolCallStart,
 				onFinish:            r.cbOnToolCallFinish,
 				stepNum:             stepNum,
@@ -561,18 +593,60 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.toolCalls = append(r.toolCalls, stepToolCalls...)
 		r.toolResults = append(r.toolResults, stepToolResults...)
 		r.mu.Unlock()
+		// Decode provider metadata for this step.
+		r.mu.Lock()
+		var stepProviderMeta map[string]interface{}
+		if len(r.providerMetadata) > 0 {
+			_ = json.Unmarshal(r.providerMetadata, &stepProviderMeta)
+		}
+		r.mu.Unlock()
+
 		// Record this step. For multi-step streaming, r.text accumulates across steps;
 		// use the current snapshot as the step's text.
 		stepResult := types.StepResult{
-			StepNumber:   stepNum,
-			Text:         r.text,
-			ToolCalls:    stepToolCalls,
-			ToolResults:  stepToolResults,
-			FinishReason: r.finishReason,
-			Usage:        r.usage,
-			Sources:      r.sources,
+			StepNumber:       stepNum,
+			Text:             r.text,
+			ToolCalls:        stepToolCalls,
+			ToolResults:      stepToolResults,
+			FinishReason:     r.finishReason,
+			Usage:            r.usage,
+			Sources:          r.sources,
+			ProviderMetadata: stepProviderMeta,
 		}
 		allSteps = append(allSteps, stepResult)
+
+		// Fire step-finish telemetry — OTel implementation ends the child step span.
+		{
+			stepTelUsage := telemetry.TelemetryUsage{
+				InputTokens:  r.usage.InputTokens,
+				OutputTokens: r.usage.OutputTokens,
+				TotalTokens:  r.usage.TotalTokens,
+			}
+			if r.usage.InputDetails != nil {
+				stepTelUsage.NoCacheInputTokens = r.usage.InputDetails.NoCacheTokens
+				stepTelUsage.CacheReadInputTokens = r.usage.InputDetails.CacheReadTokens
+				stepTelUsage.CacheCreationInputTokens = r.usage.InputDetails.CacheWriteTokens
+			}
+			if r.usage.OutputDetails != nil {
+				stepTelUsage.OutputTextTokens = r.usage.OutputDetails.TextTokens
+				stepTelUsage.ReasoningTokens = r.usage.OutputDetails.ReasoningTokens
+			}
+			var stepFiles []types.GeneratedFileContent
+			r.mu.Lock()
+			if len(r.files) > stepFilesStart {
+				stepFiles = append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
+			}
+			r.mu.Unlock()
+			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
+				StepNumber:   stepNum,
+				FinishReason: string(r.finishReason),
+				Usage:        stepTelUsage,
+				Text:         r.text,
+				ToolCalls:    stepToolCalls,
+				Files:        stepFiles,
+				Settings:     opts.ExperimentalTelemetry,
+			})
+		}
 
 		// Check continuation: for streaming, only continue when a deferred provider tool
 		// (SupportsDeferredResults=true) has not yet delivered its result (P0-4).
@@ -591,6 +665,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if r.text != "" {
 			assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: r.text})
 		}
+
+		// Populate ResponseMessages on the step that just completed.
+		// Mirrors StepResult.response.messages in the TypeScript SDK.
+		stepResponseMsgs := []types.Message{assistantMsg}
 		currentMessages = append(currentMessages, assistantMsg)
 		for _, tr := range stepToolResults {
 			toolMsg := types.Message{
@@ -603,8 +681,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					},
 				},
 			}
+			stepResponseMsgs = append(stepResponseMsgs, toolMsg)
 			currentMessages = append(currentMessages, toolMsg)
 		}
+		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 
 		// Resolve ResponseFormat for the next step.
 		responseFormat := opts.ResponseFormat
@@ -675,6 +755,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Lock()
 	streamFiles := r.files
+	streamWarnings := r.warnings
+	streamSources := r.sources
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason: string(r.finishReason),
@@ -703,27 +785,58 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	finalToolResults := r.toolResults
 	r.mu.Unlock()
 
+	// Decode final provider metadata for the single-step path.
+	r.mu.Lock()
+	var finalProviderMeta map[string]interface{}
+	if len(r.providerMetadata) > 0 {
+		_ = json.Unmarshal(r.providerMetadata, &finalProviderMeta)
+	}
+	r.mu.Unlock()
+
+	// Build single-step response message (assistant with accumulated text + tool calls).
+	singleStepAssistantMsg := types.Message{
+		Role:      types.RoleAssistant,
+		Content:   []types.ContentPart{},
+		ToolCalls: finalToolCalls,
+	}
+	if r.text != "" {
+		singleStepAssistantMsg.Content = append(singleStepAssistantMsg.Content, types.TextContent{Text: r.text})
+	}
+
 	// Emit per-step finish events and use the last step for the single-step path.
 	lastStep := types.StepResult{
-		StepNumber:   1,
-		Text:         r.text,
-		ToolCalls:    finalToolCalls,
-		ToolResults:  finalToolResults,
-		FinishReason: r.finishReason,
-		Usage:        r.usage,
+		StepNumber:       1,
+		Text:             r.text,
+		ToolCalls:        finalToolCalls,
+		ToolResults:      finalToolResults,
+		FinishReason:     r.finishReason,
+		Usage:            r.usage,
+		ProviderMetadata: finalProviderMeta,
+		ResponseMessages: []types.Message{singleStepAssistantMsg},
 	}
 	if len(allSteps) > 0 {
 		lastStep = allSteps[len(allSteps)-1]
 	}
 	Notify(ctx, OnStepFinishEvent{
-		StepNumber:          lastStep.StepNumber,
-		ModelProvider:       r.cbModelProvider,
-		ModelID:             r.cbModelID,
-		Text:                lastStep.Text,
-		ToolCalls:           lastStep.ToolCalls,
-		ToolResults:         lastStep.ToolResults,
-		FinishReason:        lastStep.FinishReason,
-		Usage:               lastStep.Usage,
+		CallID:           r.cbCallID,
+		StepNumber:       lastStep.StepNumber,
+		ModelProvider:    r.cbModelProvider,
+		ModelID:          r.cbModelID,
+		Text:             lastStep.Text,
+		ToolCalls:        lastStep.ToolCalls,
+		ToolResults:      lastStep.ToolResults,
+		FinishReason:     lastStep.FinishReason,
+		RawFinishReason:  lastStep.RawFinishReason,
+		Usage:            lastStep.Usage,
+		Warnings:         streamWarnings,
+		Sources:          lastStep.Sources,
+		Files:            streamFiles,
+		ProviderMetadata: lastStep.ProviderMetadata,
+		ResponseHeaders:  r.responseHeaders,
+		Response: GenerateStepResponse{
+			Headers:  r.responseHeaders,
+			Messages: lastStep.ResponseMessages,
+		},
 		ExperimentalContext: r.cbExperimentalCtx,
 		FunctionID:          r.cbFuncID,
 		Metadata:            r.cbMeta,
@@ -734,13 +847,24 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepsForEvent = []types.StepResult{lastStep}
 	}
 	Notify(ctx, OnFinishEvent{
-		Text:                r.text,
-		ToolCalls:           finalToolCalls,
-		ToolResults:         finalToolResults,
-		FinishReason:        r.finishReason,
-		Steps:               stepsForEvent,
-		TotalUsage:          r.usage,
-		Warnings:            r.warnings,
+		CallID:           r.cbCallID,
+		Text:             r.text,
+		ToolCalls:        finalToolCalls,
+		ToolResults:      finalToolResults,
+		FinishReason:     r.finishReason,
+		RawFinishReason:  lastStep.RawFinishReason,
+		Usage:            lastStep.Usage,
+		Steps:            stepsForEvent,
+		TotalUsage:       r.usage,
+		Warnings:         streamWarnings,
+		Sources:          streamSources,
+		Files:            streamFiles,
+		ProviderMetadata: lastStep.ProviderMetadata,
+		ResponseHeaders:  r.responseHeaders,
+		Response: GenerateStepResponse{
+			Headers:  r.responseHeaders,
+			Messages: lastStep.ResponseMessages,
+		},
 		ExperimentalContext: r.cbExperimentalCtx,
 		FunctionID:          r.cbFuncID,
 		Metadata:            r.cbMeta,
@@ -1039,6 +1163,13 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.providerMetadata
+}
+
+// ResponseHeaders returns the raw HTTP response headers received from the provider.
+// Populated once a ChunkTypeResponseMetadata chunk has been processed.
+// Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
+func (r *StreamTextResult) ResponseHeaders() map[string]string {
+	return r.responseHeaders
 }
 
 // Warnings returns any provider warnings surfaced via stream-start chunks.

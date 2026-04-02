@@ -523,7 +523,8 @@ func (m *mockTelemetryIntegration) OnStart(ctx context.Context, e telemetry.Tele
 	return context.WithValue(ctx, mockTelemetryCtxKey{}, sp)
 }
 
-func (m *mockTelemetryIntegration) OnStepStart(_ context.Context, _ telemetry.TelemetryStepStartEvent) {
+func (m *mockTelemetryIntegration) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	return ctx
 }
 func (m *mockTelemetryIntegration) OnToolCallStart(ctx context.Context, _ telemetry.TelemetryToolCallStartEvent) context.Context {
 	return ctx

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -259,9 +260,20 @@ type GenerateTextResult struct {
 	// Files contains model-generated output files (e.g. images, audio) from the final step.
 	Files []types.GeneratedFileContent
 
+	// TotalUsage is the sum of token usage across all steps.
+	// Mirrors GenerateTextResult.totalUsage in the TypeScript SDK.
+	// For single-step generation, TotalUsage == Usage.
+	// Use Steps[len-1].Usage to get the last step's usage independently.
+	TotalUsage types.Usage
+
 	// Raw request/response (for debugging)
 	RawRequest  interface{}
 	RawResponse interface{}
+
+	// ResponseHeaders are the raw HTTP response headers from the provider.
+	// Populated for HTTP-based providers; nil for others.
+	// Mirrors result.response?.headers in the TypeScript SDK.
+	ResponseHeaders map[string]string
 }
 
 // GenerateText performs non-streaming text generation with optional tool calling
@@ -309,15 +321,20 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+	callID := newCallID()
 
 	// CB-T12: Emit OnStartEvent
 	Notify(ctx, OnStartEvent{
+		CallID:              callID,
+		OperationID:         "ai.generateText",
 		ModelProvider:       opts.Model.Provider(),
 		ModelID:             opts.Model.ModelID(),
 		System:              opts.System,
 		Prompt:              opts.Prompt,
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
+		ToolChoice:          opts.ToolChoice,
+		ProviderOptions:     opts.ProviderOptions,
 		Temperature:         opts.Temperature,
 		MaxTokens:           opts.MaxTokens,
 		TopP:                opts.TopP,
@@ -373,6 +390,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// CB-T13: Emit OnStepStartEvent
 		Notify(ctx, OnStepStartEvent{
+			CallID:              callID,
 			StepNumber:          stepNum,
 			ModelProvider:       opts.Model.Provider(),
 			ModelID:             opts.Model.ModelID(),
@@ -419,30 +437,55 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Telemetry:        opts.ExperimentalTelemetry,
 		}
 
+		// Fire step-start telemetry. OTel implementations create a child step span
+		// and embed it in the returned context so OnStepFinish can end it.
+		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
+			OperationType: "ai.generateText",
+			StepNumber:    stepNum,
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+		})
+
 		// Call the model with step context
 		genResult, err := opts.Model.DoGenerate(stepCtx, genOpts)
 		if err != nil {
 			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
 		}
 
-		// Extract sources from content parts
+		// Extract sources and files from content parts
 		var stepSources []types.SourceContent
+		var stepFiles []types.GeneratedFileContent
 		for _, part := range genResult.Content {
-			if src, ok := part.(types.SourceContent); ok {
-				stepSources = append(stepSources, src)
+			switch v := part.(type) {
+			case types.SourceContent:
+				stepSources = append(stepSources, v)
+			case types.GeneratedFileContent:
+				stepFiles = append(stepFiles, v)
+			}
+		}
+
+		// Extract raw finish reason pragmatically from RawResponse (mirrors agent/toolloop.go).
+		var stepRawFinishReason string
+		if genResult.RawResponse != nil {
+			if respMap, ok := genResult.RawResponse.(map[string]interface{}); ok {
+				if fr, ok := respMap["finish_reason"].(string); ok {
+					stepRawFinishReason = fr
+				}
 			}
 		}
 
 		// Create step result
 		stepResult := types.StepResult{
-			StepNumber:   stepNum,
-			Text:         genResult.Text,
-			ToolCalls:    genResult.ToolCalls,
-			ToolResults:  []types.ToolResult{},
-			FinishReason: genResult.FinishReason,
-			Usage:        genResult.Usage,
-			Warnings:     genResult.Warnings,
-			Sources:      stepSources,
+			StepNumber:       stepNum,
+			Text:             genResult.Text,
+			ToolCalls:        genResult.ToolCalls,
+			ToolResults:      []types.ToolResult{},
+			FinishReason:     genResult.FinishReason,
+			RawFinishReason:  stepRawFinishReason,
+			Usage:            genResult.Usage,
+			Warnings:         genResult.Warnings,
+			Sources:          stepSources,
+			ProviderMetadata: genResult.ProviderMetadata,
 		}
 
 		// Update accumulated usage
@@ -452,6 +495,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if len(genResult.ToolCalls) > 0 && len(opts.Tools) > 0 {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
+				callID:              callID,
 				onStart:             opts.OnToolCallStart,
 				onFinish:            opts.OnToolCallFinish,
 				stepNum:             stepNum,
@@ -488,6 +532,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if genResult.Text != "" {
 				assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: genResult.Text})
 			}
+
+			// Build response messages: assistant + tool results.
+			// Mirrors StepResult.response.messages in the TypeScript SDK.
+			stepResponseMsgs := []types.Message{assistantMsg}
 			currentMessages = append(currentMessages, assistantMsg)
 
 			// Add tool results to history
@@ -502,28 +550,35 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 						},
 					},
 				}
+				stepResponseMsgs = append(stepResponseMsgs, toolMsg)
 				currentMessages = append(currentMessages, toolMsg)
 			}
+			stepResult.ResponseMessages = stepResponseMsgs
 		} else {
 			// No more tool calls, we're done
 			result.Text = genResult.Text
 			result.FinishReason = genResult.FinishReason
 			result.ToolCalls = genResult.ToolCalls
 			result.Sources = stepSources
+			result.Files = stepFiles
 			result.ContextManagement = genResult.ContextManagement
 			result.Warnings = append(result.Warnings, genResult.Warnings...)
 			result.RawRequest = genResult.RawRequest
 			result.RawResponse = genResult.RawResponse
+			result.ResponseHeaders = genResult.ResponseHeaders
 			result.ProviderMetadata = genResult.ProviderMetadata
 
-			// Extract generated files from the final step content.
-			var stepFiles []types.GeneratedFileContent
-			for _, part := range genResult.Content {
-				if gfc, ok := part.(types.GeneratedFileContent); ok {
-					stepFiles = append(stepFiles, gfc)
-				}
+			// Build response message for this (final) step.
+			// Mirrors StepResult.response.messages in the TypeScript SDK.
+			finalAssistantMsg := types.Message{
+				Role:      types.RoleAssistant,
+				Content:   []types.ContentPart{},
+				ToolCalls: genResult.ToolCalls,
 			}
-			result.Files = stepFiles
+			if genResult.Text != "" {
+				finalAssistantMsg.Content = append(finalAssistantMsg.Content, types.TextContent{Text: genResult.Text})
+			}
+			stepResult.ResponseMessages = []types.Message{finalAssistantMsg}
 
 			// Parse typed output if an Output spec was provided.
 			// Only parse when generation finished cleanly; a 'length' finish means
@@ -580,19 +635,75 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// CB-T14: Emit structured OnStepFinishEvent
 		Notify(ctx, OnStepFinishEvent{
-			StepNumber:          stepResult.StepNumber,
-			ModelProvider:       opts.Model.Provider(),
-			ModelID:             opts.Model.ModelID(),
-			Text:                stepResult.Text,
-			ToolCalls:           stepResult.ToolCalls,
-			ToolResults:         stepResult.ToolResults,
-			FinishReason:        stepResult.FinishReason,
-			Usage:               stepResult.Usage,
-			Warnings:            stepResult.Warnings,
+			CallID:           callID,
+			StepNumber:       stepResult.StepNumber,
+			ModelProvider:    opts.Model.Provider(),
+			ModelID:          opts.Model.ModelID(),
+			Text:             stepResult.Text,
+			ToolCalls:        stepResult.ToolCalls,
+			ToolResults:      stepResult.ToolResults,
+			FinishReason:     stepResult.FinishReason,
+			RawFinishReason:  stepResult.RawFinishReason,
+			Usage:            stepResult.Usage,
+			Warnings:         stepResult.Warnings,
+			Sources:          stepResult.Sources,
+			Files:            stepFiles,
+			ProviderMetadata: stepResult.ProviderMetadata,
+			ResponseHeaders:  genResult.ResponseHeaders,
+			Request:          GenerateStepRequest{Body: genResult.RawRequest},
+			Response: GenerateStepResponse{
+				Headers:  genResult.ResponseHeaders,
+				Messages: stepResult.ResponseMessages,
+				Body:     genResult.RawResponse,
+			},
 			ExperimentalContext: opts.ExperimentalContext,
 			FunctionID:          cbFuncID,
 			Metadata:            cbMeta,
 		}, opts.OnStepFinishEvent)
+
+		// Fire step-finish telemetry — OTel implementation ends the child step span.
+		{
+			stepTelUsage := telemetry.TelemetryUsage{
+				InputTokens:  genResult.Usage.InputTokens,
+				OutputTokens: genResult.Usage.OutputTokens,
+				TotalTokens:  genResult.Usage.TotalTokens,
+			}
+			if genResult.Usage.InputDetails != nil {
+				stepTelUsage.NoCacheInputTokens = genResult.Usage.InputDetails.NoCacheTokens
+				stepTelUsage.CacheReadInputTokens = genResult.Usage.InputDetails.CacheReadTokens
+				stepTelUsage.CacheCreationInputTokens = genResult.Usage.InputDetails.CacheWriteTokens
+			}
+			if genResult.Usage.OutputDetails != nil {
+				stepTelUsage.OutputTextTokens = genResult.Usage.OutputDetails.TextTokens
+				stepTelUsage.ReasoningTokens = genResult.Usage.OutputDetails.ReasoningTokens
+			}
+			var stepTelFiles []types.GeneratedFileContent
+			var stepTelReasoning strings.Builder
+			for _, part := range genResult.Content {
+				switch v := part.(type) {
+				case types.GeneratedFileContent:
+					stepTelFiles = append(stepTelFiles, v)
+				case types.ReasoningContent:
+					if v.Text != "" {
+						if stepTelReasoning.Len() > 0 {
+							stepTelReasoning.WriteByte('\n')
+						}
+						stepTelReasoning.WriteString(v.Text)
+					}
+				}
+			}
+			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
+				StepNumber:       stepNum,
+				FinishReason:     string(genResult.FinishReason),
+				Usage:            stepTelUsage,
+				Text:             genResult.Text,
+				Reasoning:        stepTelReasoning.String(),
+				ToolCalls:        genResult.ToolCalls,
+				Files:            stepTelFiles,
+				ProviderMetadata: genResult.ProviderMetadata,
+				Settings:         opts.ExperimentalTelemetry,
+			})
+		}
 
 		// Evaluate stop conditions after steps with tool results
 		if len(stopConditions) > 0 {
@@ -648,15 +759,39 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
 	}
 
-	// CB-T15: Emit structured OnFinishEvent
+	// Populate TotalUsage (same as Usage for now; Usage = accumulated total).
+	// Mirrors GenerateTextResult.totalUsage in the TypeScript SDK.
+	result.TotalUsage = result.Usage
+
+	// CB-T15: Emit structured OnFinishEvent.
+	// Usage = last step's usage; TotalUsage = sum across all steps.
+	var finishUsage types.Usage
+	var finishRawReason string
+	if len(result.Steps) > 0 {
+		last := result.Steps[len(result.Steps)-1]
+		finishUsage = last.Usage
+		finishRawReason = last.RawFinishReason
+	}
 	Notify(ctx, OnFinishEvent{
-		Text:                result.Text,
-		ToolCalls:           result.ToolCalls,
-		ToolResults:         result.ToolResults,
-		FinishReason:        result.FinishReason,
-		Steps:               result.Steps,
-		TotalUsage:          result.Usage,
-		Warnings:            result.Warnings,
+		CallID:           callID,
+		Text:             result.Text,
+		ToolCalls:        result.ToolCalls,
+		ToolResults:      result.ToolResults,
+		FinishReason:     result.FinishReason,
+		RawFinishReason:  finishRawReason,
+		Usage:            finishUsage,
+		Steps:            result.Steps,
+		TotalUsage:       result.Usage,
+		Warnings:         result.Warnings,
+		Sources:          result.Sources,
+		Files:            result.Files,
+		ProviderMetadata: result.ProviderMetadata,
+		ResponseHeaders:  result.ResponseHeaders,
+		Request:          GenerateStepRequest{Body: result.RawRequest},
+		Response: GenerateStepResponse{
+			Headers: result.ResponseHeaders,
+			Body:    result.RawResponse,
+		},
 		ExperimentalContext: opts.ExperimentalContext,
 		FunctionID:          cbFuncID,
 		Metadata:            cbMeta,
@@ -679,6 +814,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks
 // and their associated metadata. All fields are optional (nil-safe).
 type toolCallEventCallbacks struct {
+	callID              string
 	onStart             func(ctx context.Context, e OnToolCallStartEvent)
 	onFinish            func(ctx context.Context, e OnToolCallFinishEvent)
 	stepNum             int
@@ -738,6 +874,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		} else {
 			// CB-T16: Emit OnToolCallStartEvent before execution
 			Notify(ctx, OnToolCallStartEvent{
+				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
 				Args:                call.Arguments,
@@ -806,6 +943,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
 			Notify(ctx, OnToolCallFinishEvent{
+				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
 				Args:                call.Arguments,

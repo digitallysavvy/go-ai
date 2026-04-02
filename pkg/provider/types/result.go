@@ -208,4 +208,8 @@ type StepResult struct {
 	// Response messages generated in this step
 	// Contains the assistant message with any text and tool calls
 	ResponseMessages []Message `json:"responseMessages,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata for this step.
+	// Mirrors StepResult.providerMetadata in the TypeScript SDK.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }

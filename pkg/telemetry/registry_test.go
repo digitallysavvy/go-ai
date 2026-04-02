@@ -33,7 +33,9 @@ func (m *mockIntegration) OnStart(ctx context.Context, e TelemetryStartEvent) co
 	return context.WithValue(ctx, mockIntegrationCtxKey{}, rec)
 }
 
-func (m *mockIntegration) OnStepStart(_ context.Context, _ TelemetryStepStartEvent) {}
+func (m *mockIntegration) OnStepStart(ctx context.Context, _ TelemetryStepStartEvent) context.Context {
+	return ctx
+}
 func (m *mockIntegration) OnToolCallStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
 	return ctx
 }
