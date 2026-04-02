@@ -85,7 +85,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header, m.ModelID()), nil
 }
 
 // handleError wraps a low-level error into a provider error.

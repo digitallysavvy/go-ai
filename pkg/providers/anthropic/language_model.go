@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -108,44 +109,28 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Collect beta headers from model options and tool requirements (non-streaming)
 	betaHeaders := m.combineBetaHeaders(opts, false)
+
+	reqHeaders := map[string]string{}
 	if len(betaHeaders) > 0 {
-		// Need to make request with custom headers
-		httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-			Method: http.MethodPost,
-			Path:   "/v1/messages",
-			Body:   reqBody,
-			Headers: map[string]string{
-				"anthropic-beta": betaHeaders,
-			},
-		})
-		if err != nil {
-			return nil, m.handleError(err)
-		}
-		defer httpResp.Body.Close() //nolint:errcheck
-
-		// Parse response
-		var response anthropicResponse
-		if err := json.NewDecoder(httpResp.Body).Decode(&response); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
-		}
-
-		// Convert response to GenerateResult
-		result := m.convertResponse(response, usesJsonResponseTool)
-		if w := m.detectSkillsWarning(opts); w != nil {
-			result.Warnings = append(result.Warnings, *w)
-		}
-		return result, nil
+		reqHeaders["anthropic-beta"] = betaHeaders
 	}
 
-	// Make API request without beta header
+	// Make API request, capturing response headers.
+	internalReq := internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/v1/messages",
+		Body:    reqBody,
+		Headers: reqHeaders,
+	}
 	var response anthropicResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/messages", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalReq, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Convert response to GenerateResult
+	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response, usesJsonResponseTool)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	if w := m.detectSkillsWarning(opts); w != nil {
 		result.Warnings = append(result.Warnings, *w)
 	}
@@ -182,7 +167,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
 	// events and route json tool input_json_delta as text chunks.
 	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return newAnthropicStream(httpResp.Body, usesJsonResponseTool), nil
+	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool), httpResp.Header), nil
 }
 
 // buildRequestBody builds the Anthropic API request body
@@ -527,8 +512,46 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 				ToolName:  content.Name,
 				Arguments: content.Input,
 			})
-		case "web_search_tool_result", "web_fetch_tool_result",
-			"code_execution_tool_result", "bash_code_execution_tool_result",
+		case "web_search_tool_result":
+			// Remap snake_case wire fields to camelCase and emit source chunks.
+			// Mirrors TS SDK anthropic-messages-language-model.ts:1055-1093.
+			trc := types.ToolResultContent{
+				ToolCallID: content.ToolUseID,
+				ToolName:   providerToolResultName(content.Type),
+			}
+			if content.IsError {
+				var errParsed interface{}
+				if len(content.Content) > 0 {
+					json.Unmarshal(content.Content, &errParsed) //nolint:errcheck
+				}
+				trc.Error = fmt.Sprintf("%v", errParsed)
+			} else if len(content.Content) > 0 {
+				mapped, sources := convertWebSearchToolResult(content.Content)
+				trc.Result = mapped
+				for _, src := range sources {
+					s := src
+					result.Content = append(result.Content, s)
+				}
+			}
+			result.Content = append(result.Content, trc)
+		case "web_fetch_tool_result":
+			// Remap snake_case wire fields (retrieved_at, media_type) to camelCase.
+			// Mirrors TS SDK anthropic-messages-language-model.ts:1015-1053.
+			trc := types.ToolResultContent{
+				ToolCallID: content.ToolUseID,
+				ToolName:   providerToolResultName(content.Type),
+			}
+			if content.IsError {
+				var errParsed interface{}
+				if len(content.Content) > 0 {
+					json.Unmarshal(content.Content, &errParsed) //nolint:errcheck
+				}
+				trc.Error = fmt.Sprintf("%v", errParsed)
+			} else if len(content.Content) > 0 {
+				trc.Result = convertWebFetchToolResult(content.Content)
+			}
+			result.Content = append(result.Content, trc)
+		case "code_execution_tool_result", "bash_code_execution_tool_result",
 			"text_editor_code_execution_tool_result", "tool_search_tool_result",
 			"mcp_tool_result":
 			// Deferred provider tool results: the provider executed the tool in a
@@ -1344,8 +1367,63 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							},
 						})
 					}
-				case "web_search_tool_result", "web_fetch_tool_result",
-					"code_execution_tool_result", "bash_code_execution_tool_result",
+				case "web_search_tool_result":
+					// Remap snake_case wire fields to camelCase and emit source chunks.
+					toolName := s.serverToolCallNames[part.ToolUseID]
+					if toolName == "" {
+						toolName = providerToolResultName(part.Type)
+					}
+					tr := &types.ToolResult{
+						ToolCallID: part.ToolUseID,
+						ToolName:   toolName,
+					}
+					var webSearchSources []types.SourceContent
+					if part.IsError {
+						var errContent interface{}
+						if len(part.Content) > 0 {
+							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
+						}
+						tr.Error = fmt.Errorf("%v", errContent)
+					} else if len(part.Content) > 0 {
+						mapped, sources := convertWebSearchToolResult(part.Content)
+						tr.Result = mapped
+						webSearchSources = sources
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:       provider.ChunkTypeToolResult,
+						ToolResult: tr,
+					})
+					for _, src := range webSearchSources {
+						s2 := src
+						s.pending = append(s.pending, &provider.StreamChunk{
+							Type:          provider.ChunkTypeSource,
+							SourceContent: &s2,
+						})
+					}
+				case "web_fetch_tool_result":
+					// Remap snake_case wire fields (retrieved_at, media_type) to camelCase.
+					toolName := s.serverToolCallNames[part.ToolUseID]
+					if toolName == "" {
+						toolName = providerToolResultName(part.Type)
+					}
+					tr := &types.ToolResult{
+						ToolCallID: part.ToolUseID,
+						ToolName:   toolName,
+					}
+					if part.IsError {
+						var errContent interface{}
+						if len(part.Content) > 0 {
+							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
+						}
+						tr.Error = fmt.Errorf("%v", errContent)
+					} else if len(part.Content) > 0 {
+						tr.Result = convertWebFetchToolResult(part.Content)
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:       provider.ChunkTypeToolResult,
+						ToolResult: tr,
+					})
+				case "code_execution_tool_result", "bash_code_execution_tool_result",
 					"text_editor_code_execution_tool_result", "tool_search_tool_result",
 					"mcp_tool_result":
 					// Deferred provider tool results pre-populated in message_start.
@@ -1624,4 +1702,122 @@ func (s *anthropicStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// ---------------------------------------------------------------------------
+// web_search_tool_result / web_fetch_tool_result wire-format converters
+// ---------------------------------------------------------------------------
+
+// webSearchResultWire is the snake_case wire format of a single web search result
+// as returned by the Anthropic API.
+type webSearchResultWire struct {
+	Type             string  `json:"type"`
+	URL              string  `json:"url"`
+	Title            *string `json:"title"`
+	PageAge          *string `json:"page_age"`
+	EncryptedContent string  `json:"encrypted_content"`
+}
+
+// convertWebSearchToolResult parses a web_search_tool_result content payload,
+// remaps snake_case wire fields to camelCase (page_age→pageAge,
+// encrypted_content→encryptedContent), and generates SourceContent parts for
+// each result entry.
+//
+// Mirrors TS SDK anthropic-messages-language-model.ts lines 1055-1093.
+func convertWebSearchToolResult(raw json.RawMessage) (interface{}, []types.SourceContent) {
+	var wireResults []webSearchResultWire
+	if err := json.Unmarshal(raw, &wireResults); err != nil {
+		// Fallback: return raw data as-is.
+		var fallback interface{}
+		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		return fallback, nil
+	}
+	mapped := make([]map[string]interface{}, 0, len(wireResults))
+	sources := make([]types.SourceContent, 0, len(wireResults))
+	for _, r := range wireResults {
+		m := map[string]interface{}{
+			"type":             r.Type,
+			"url":              r.URL,
+			"title":            r.Title,
+			"pageAge":          nil,
+			"encryptedContent": r.EncryptedContent,
+		}
+		if r.PageAge != nil {
+			m["pageAge"] = *r.PageAge
+		}
+		mapped = append(mapped, m)
+
+		// Build providerMetadata with anthropic.pageAge.
+		var pageAge interface{}
+		if r.PageAge != nil {
+			pageAge = *r.PageAge
+		}
+		meta, _ := json.Marshal(map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"pageAge": pageAge,
+			},
+		})
+		src := types.SourceContent{
+			SourceType:       "url",
+			URL:              r.URL,
+			ProviderMetadata: meta,
+		}
+		if r.Title != nil {
+			src.Title = *r.Title
+		}
+		sources = append(sources, src)
+	}
+	return mapped, sources
+}
+
+// webFetchResultWire is the snake_case wire format of a web_fetch_result object.
+type webFetchResultWire struct {
+	Type        string `json:"type"`
+	URL         string `json:"url"`
+	RetrievedAt string `json:"retrieved_at"`
+	Content     struct {
+		Type      string      `json:"type"`
+		Title     string      `json:"title"`
+		Citations interface{} `json:"citations"`
+		Source    struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	} `json:"content"`
+}
+
+// convertWebFetchToolResult parses a web_fetch_tool_result content payload and
+// remaps snake_case wire fields to camelCase (retrieved_at→retrievedAt,
+// media_type→mediaType).
+//
+// Mirrors TS SDK anthropic-messages-language-model.ts lines 1015-1053.
+func convertWebFetchToolResult(raw json.RawMessage) interface{} {
+	var wire webFetchResultWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		var fallback interface{}
+		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		return fallback
+	}
+	if wire.Type != "web_fetch_result" {
+		// Error or unknown type — pass through unchanged.
+		var fallback interface{}
+		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		return fallback
+	}
+	return map[string]interface{}{
+		"type":        wire.Type,
+		"url":         wire.URL,
+		"retrievedAt": wire.RetrievedAt,
+		"content": map[string]interface{}{
+			"type":      wire.Content.Type,
+			"title":     wire.Content.Title,
+			"citations": wire.Content.Citations,
+			"source": map[string]interface{}{
+				"type":      wire.Content.Source.Type,
+				"mediaType": wire.Content.Source.MediaType,
+				"data":      wire.Content.Source.Data,
+			},
+		},
+	}
 }

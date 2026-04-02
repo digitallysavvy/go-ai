@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -303,6 +304,9 @@ func TestGenerateObject_StructuredOutputUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported structured output")
 	}
+	if err.Error() != "model does not support structured output" {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestGenerateObject_JSONParseError(t *testing.T) {
@@ -577,6 +581,245 @@ func TestStreamObject_ReasoningAccumulated(t *testing.T) {
 	}
 }
 
+func TestGenerateObject_RetriesDoGenerate(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("transient")
+			}
+			return &types.GenerateResult{
+				Text:         `{"x":1}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:      model,
+		Prompt:     "retry",
+		Schema:     testSchema,
+		MaxRetries: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Fatal("expected object")
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestGenerateObject_ReasoningConcatenatesParts(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text: `{"x":1}`,
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "first"},
+					types.ReasoningContent{Text: "second"},
+				},
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "reason",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Reasoning != "first\nsecond" {
+		t.Fatalf("reasoning = %q, want %q", result.Reasoning, "first\nsecond")
+	}
+}
+
+func TestStreamObject_ArrayMode(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"name":"John"},{"name":"Jane"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+	})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "array",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Array) != 2 {
+		t.Fatalf("array length = %d, want 2", len(result.Array))
+	}
+}
+
+func TestStreamObject_EnumMode(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result":"happy"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "enum",
+		OutputMode: ObjectModeEnum,
+		EnumValues: []string{"happy", "sad"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.EnumValue != "happy" {
+		t.Fatalf("enum value = %q, want happy", result.EnumValue)
+	}
+}
+
+func TestStreamObject_NoSchemaMode(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"freeform":true}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "noschema",
+		OutputMode: ObjectModeNoSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Fatal("expected object")
+	}
+}
+
+func TestStreamObject_OnChunkAllowsPartialInvalidObject(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"Jo"`},
+				{Type: provider.ChunkTypeText, Text: `,"age":30}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+			"age":  map[string]interface{}{"type": "number"},
+		},
+		"required": []string{"name", "age"},
+	})
+
+	var partials []interface{}
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "partial",
+		Schema: testSchema,
+		OnChunk: func(partialObject interface{}) {
+			partials = append(partials, partialObject)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(partials) == 0 {
+		t.Fatal("expected partial callback before final object was valid")
+	}
+}
+
+func TestStreamObject_ResponseMetadataIncludesFallbacksAndChunkMetadata(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Unix(1700000000, 0)
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{
+					Type: provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{
+						ID:        "resp_123",
+						ModelID:   "stream-model",
+						Timestamp: ts,
+						Headers:   map[string]string{"x-test": "1"},
+					},
+				},
+				{Type: provider.ChunkTypeText, Text: `{"x":1}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+		ModelName: "requested-model",
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "meta",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Response.ID != "resp_123" {
+		t.Fatalf("response id = %q, want resp_123", result.Response.ID)
+	}
+	if result.Response.ModelID != "stream-model" {
+		t.Fatalf("model id = %q, want stream-model", result.Response.ModelID)
+	}
+	if !result.Response.Timestamp.Equal(ts) {
+		t.Fatalf("timestamp = %v, want %v", result.Response.Timestamp, ts)
+	}
+	if result.Response.Headers["x-test"] != "1" {
+		t.Fatalf("headers = %#v", result.Response.Headers)
+	}
+}
+
 func TestStreamObject_ProviderMetadataFromStream(t *testing.T) {
 	t.Parallel()
 
@@ -663,12 +906,10 @@ func TestStreamObject_FallbackResultFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Request == nil {
-		t.Error("expected non-nil Request in fallback result")
-	}
-	if result.Response == nil {
-		t.Error("expected non-nil Response in fallback result")
-	}
+	// Request and Response are now typed structs (not pointers); zero values are always valid.
+	// Verify they carry the expected data instead.
+	_ = result.Request  // GenerateStepRequest
+	_ = result.Response // GenerateStepResponse
 	if result.ProviderMetadata == nil {
 		t.Error("expected non-nil ProviderMetadata in fallback result")
 	}

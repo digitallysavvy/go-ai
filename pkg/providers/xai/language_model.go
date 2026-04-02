@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -130,7 +130,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newXAIStream(httpResp.Body, lastAssistantText(opts)), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newXAIStream(httpResp.Body, lastAssistantText(opts)), httpResp.Header, m.ModelID()), nil
 }
 
 // XAIChatProviderOptions contains XAI-specific options for the chat completions path.
@@ -302,7 +302,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			effort = "low"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			effort = "high"
-		// ReasoningNone → omit (no reasoning_effort field)
+			// ReasoningNone → omit (no reasoning_effort field)
 		}
 	}
 	if effort != "" {
@@ -611,7 +611,6 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	return result
 }
 
-
 // xaiChoice represents a single choice in an XAI chat completion response.
 type xaiChoice struct {
 	Index        int             `json:"index"`
@@ -700,10 +699,10 @@ type xaiUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 
 	// Detailed token counts for multimodal usage
-	CachedTokens        *int `json:"cached_tokens,omitempty"`
-	ReasoningTokens     *int `json:"reasoning_tokens,omitempty"`
-	ImageInputTokens    *int `json:"image_input_tokens,omitempty"`
-	TextInputTokens     *int `json:"text_input_tokens,omitempty"`
+	CachedTokens     *int `json:"cached_tokens,omitempty"`
+	ReasoningTokens  *int `json:"reasoning_tokens,omitempty"`
+	ImageInputTokens *int `json:"image_input_tokens,omitempty"`
+	TextInputTokens  *int `json:"text_input_tokens,omitempty"`
 
 	// Legacy structure for backward compatibility
 	PromptTokensDetails *struct {

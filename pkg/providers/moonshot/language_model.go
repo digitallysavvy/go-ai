@@ -98,7 +98,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newMoonshotStream(httpResp.Body), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newMoonshotStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the API request body
@@ -262,7 +262,6 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("moonshot", 0, "", err.Error(), err)
 }
 
-
 // moonshotResponse represents the response from Moonshot chat API
 type moonshotResponse struct {
 	ID                string           `json:"id"`
@@ -283,16 +282,16 @@ type moonshotChoice struct {
 
 // moonshotMessage represents a message in the chat
 type moonshotMessage struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content"`
-	ToolCalls []moonshotToolCall  `json:"tool_calls,omitempty"`
+	Role      string             `json:"role"`
+	Content   string             `json:"content"`
+	ToolCalls []moonshotToolCall `json:"tool_calls,omitempty"`
 }
 
 // moonshotToolCall represents a tool call in the response
 type moonshotToolCall struct {
-	ID       string                    `json:"id"`
-	Type     string                    `json:"type"`
-	Function moonshotToolCallFunction  `json:"function"`
+	ID       string                   `json:"id"`
+	Type     string                   `json:"type"`
+	Function moonshotToolCallFunction `json:"function"`
 }
 
 // moonshotToolCallFunction represents a tool call function

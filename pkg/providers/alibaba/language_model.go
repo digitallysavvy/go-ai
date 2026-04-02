@@ -105,7 +105,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newAlibabaStream(httpResp.Body), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newAlibabaStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the API request body
@@ -240,7 +240,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		case types.ReasoningXHigh:
 			body["enable_thinking"] = true
 			body["thinking_budget"] = 14746
-		// ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 
@@ -321,7 +321,6 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
 }
-
 
 // alibabaResponse represents the response from Alibaba chat API
 type alibabaResponse struct {

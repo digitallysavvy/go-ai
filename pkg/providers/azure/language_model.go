@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -109,7 +109,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newAzureStream(httpResp.Body), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newAzureStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Azure OpenAI API request body
@@ -297,7 +297,6 @@ func convertAzureUsage(usage azureUsage) types.Usage {
 	return result
 }
 
-
 // Azure OpenAI response types (same as OpenAI)
 // Updated in v6.0 to support detailed usage tracking
 type azureResponse struct {
@@ -339,9 +338,9 @@ type azureUsage struct {
 	} `json:"prompt_tokens_details,omitempty"`
 
 	CompletionTokensDetails *struct {
-		ReasoningTokens             *int `json:"reasoning_tokens,omitempty"`
-		AcceptedPredictionTokens    *int `json:"accepted_prediction_tokens,omitempty"`
-		RejectedPredictionTokens    *int `json:"rejected_prediction_tokens,omitempty"`
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 }
 

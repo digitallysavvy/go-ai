@@ -74,6 +74,7 @@ type webSearch20260209Opts struct {
 func (o *webSearch20260209Opts) ToAnthropicAPIMap() map[string]interface{} {
 	m := map[string]interface{}{
 		"type": "web_search_20260209",
+		"name": "web_search",
 	}
 	if o.Config.MaxUses != nil {
 		m["max_uses"] = *o.Config.MaxUses

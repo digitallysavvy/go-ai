@@ -100,6 +100,7 @@ type webFetch20260209Opts struct {
 func (o *webFetch20260209Opts) ToAnthropicAPIMap() map[string]interface{} {
 	m := map[string]interface{}{
 		"type": "web_fetch_20260209",
+		"name": "web_fetch",
 	}
 	if o.Config.MaxUses != nil {
 		m["max_uses"] = *o.Config.MaxUses

@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -105,7 +105,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newPerplexityStream(httpResp.Body)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -267,7 +267,6 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 	return result
 }
 
-
 type perplexityResponse struct {
 	ID        string               `json:"id"`
 	Model     string               `json:"model"`
@@ -308,7 +307,7 @@ type perplexityUsage struct {
 	CitationTokens   *int `json:"citation_tokens,omitempty"`
 	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 	// Cost is a nested object in the API response (not flat fields).
-	Cost *perplexityCostRaw `json:"cost,omitempty"`
+	Cost                *perplexityCostRaw `json:"cost,omitempty"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`

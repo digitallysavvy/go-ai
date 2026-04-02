@@ -108,7 +108,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Wrap the stream so the first chunk carries the HTTP response headers.
-	return providerutils.WithResponseMetadata(newOpenAIStream(httpResp.Body), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newOpenAIStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the OpenAI API request body
@@ -223,7 +223,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-		// ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 
@@ -623,4 +623,3 @@ func (s *openAIStream) Err() error {
 	}
 	return s.err
 }
-

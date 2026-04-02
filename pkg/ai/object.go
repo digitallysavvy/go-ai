@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"time"
 
+	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -33,12 +34,20 @@ func extractObjectReasoning(result *types.GenerateResult) string {
 	if result == nil {
 		return ""
 	}
+	var parts []string
 	for _, part := range result.Content {
 		if rc, ok := part.(types.ReasoningContent); ok {
-			return rc.Text
+			parts = append(parts, rc.Text)
 		}
 	}
-	return ""
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for i := 1; i < len(parts); i++ {
+		out += "\n" + parts[i]
+	}
+	return out
 }
 
 // schemaToMap extracts the JSON Schema representation from a schema.Schema.
@@ -54,6 +63,224 @@ func schemaToMap(s schema.Schema) map[string]interface{} {
 		return p.JSONSchema()
 	}
 	return nil
+}
+
+func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
+	if maxRetries <= 0 {
+		return model.DoGenerate(ctx, opts)
+	}
+
+	var result *types.GenerateResult
+	err := retryutil.Do(ctx, retryutil.Config{
+		MaxRetries:   maxRetries,
+		InitialDelay: 10 * time.Millisecond,
+		MaxDelay:     50 * time.Millisecond,
+		Multiplier:   2,
+		Jitter:       false,
+		ShouldRetry:  retryutil.IsRetryable,
+	}, func(retryCtx context.Context) error {
+		var err error
+		result, err = model.DoGenerate(retryCtx, opts)
+		return err
+	})
+	return result, err
+}
+
+func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (provider.TextStream, error) {
+	if maxRetries <= 0 {
+		return model.DoStream(ctx, opts)
+	}
+
+	var stream provider.TextStream
+	err := retryutil.Do(ctx, retryutil.Config{
+		MaxRetries:   maxRetries,
+		InitialDelay: 10 * time.Millisecond,
+		MaxDelay:     50 * time.Millisecond,
+		Multiplier:   2,
+		Jitter:       false,
+		ShouldRetry:  retryutil.IsRetryable,
+	}, func(retryCtx context.Context) error {
+		var err error
+		stream, err = model.DoStream(retryCtx, opts)
+		return err
+	})
+	return stream, err
+}
+
+func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.ResponseFormat, error) {
+	switch opts.OutputMode {
+	case ObjectModeObject:
+		return &provider.ResponseFormat{
+			Type:        "json_schema",
+			Schema:      opts.Schema,
+			Name:        opts.SchemaName,
+			Description: opts.SchemaDescription,
+		}, nil
+	case ObjectModeArray:
+		itemSchemaMap := schemaToMap(opts.Schema)
+		if itemSchemaMap == nil {
+			itemSchemaMap = map[string]interface{}{}
+		}
+		delete(itemSchemaMap, "$schema")
+		return &provider.ResponseFormat{
+			Type: "json_schema",
+			Schema: enumSchemaWrapper{map[string]interface{}{
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"type":    "object",
+				"properties": map[string]interface{}{
+					"elements": map[string]interface{}{
+						"type":  "array",
+						"items": itemSchemaMap,
+					},
+				},
+				"required":             []string{"elements"},
+				"additionalProperties": false,
+			}},
+			Name:        opts.SchemaName,
+			Description: opts.SchemaDescription,
+		}, nil
+	case ObjectModeEnum:
+		enumVals := make([]interface{}, len(opts.EnumValues))
+		for i, v := range opts.EnumValues {
+			enumVals[i] = v
+		}
+		return &provider.ResponseFormat{
+			Type: "json_schema",
+			Schema: enumSchemaWrapper{map[string]interface{}{
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"type":    "object",
+				"properties": map[string]interface{}{
+					"result": map[string]interface{}{
+						"type": "string",
+						"enum": enumVals,
+					},
+				},
+				"required":             []string{"result"},
+				"additionalProperties": false,
+			}},
+		}, nil
+	case ObjectModeNoSchema:
+		return &provider.ResponseFormat{Type: "json_object"}, nil
+	default:
+		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
+	}
+}
+
+func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []string, parseResult jsonparser.ParseResult) (interface{}, bool) {
+	if parseResult.Value == nil {
+		return nil, false
+	}
+
+	switch mode {
+	case ObjectModeObject, ObjectModeNoSchema:
+		return parseResult.Value, true
+	case ObjectModeArray:
+		wrapper, ok := parseResult.Value.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		rawElements, ok := wrapper["elements"]
+		if !ok {
+			return nil, false
+		}
+		arr, ok := rawElements.([]interface{})
+		if !ok {
+			return nil, false
+		}
+		if s != nil {
+			for _, element := range arr {
+				if err := s.Validator().Validate(element); err != nil {
+					return nil, false
+				}
+			}
+		}
+		return arr, true
+	case ObjectModeEnum:
+		wrapper, ok := parseResult.Value.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		rawResult, ok := wrapper["result"]
+		if !ok {
+			return nil, false
+		}
+		selected, ok := rawResult.(string)
+		if !ok {
+			return nil, false
+		}
+		for _, enumVal := range enumValues {
+			if selected == enumVal {
+				return selected, true
+			}
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []string, text string) (interface{}, []interface{}, string, error) {
+	if text == "" {
+		return nil, nil, "", nil
+	}
+
+	switch mode {
+	case ObjectModeObject:
+		var obj interface{}
+		if err := json.Unmarshal([]byte(text), &obj); err != nil {
+			return nil, nil, "", err
+		}
+		if err := s.Validator().Validate(obj); err != nil {
+			return nil, nil, "", err
+		}
+		return obj, nil, "", nil
+	case ObjectModeArray:
+		var wrapper map[string]interface{}
+		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+			return nil, nil, "", err
+		}
+		rawElements, ok := wrapper["elements"]
+		if !ok {
+			return nil, nil, "", fmt.Errorf("missing 'elements' field")
+		}
+		arr, ok := rawElements.([]interface{})
+		if !ok {
+			return nil, nil, "", fmt.Errorf("'elements' is not an array")
+		}
+		for i, element := range arr {
+			if err := s.Validator().Validate(element); err != nil {
+				return nil, nil, "", fmt.Errorf("validation failed for element %d: %w", i, err)
+			}
+		}
+		return arr, arr, "", nil
+	case ObjectModeEnum:
+		var wrapper map[string]interface{}
+		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+			return nil, nil, "", err
+		}
+		rawResult, ok := wrapper["result"]
+		if !ok {
+			return nil, nil, "", fmt.Errorf("enum output missing 'result' field")
+		}
+		selected, ok := rawResult.(string)
+		if !ok {
+			return nil, nil, "", fmt.Errorf("enum output 'result' is not a string: %T", rawResult)
+		}
+		for _, enumVal := range enumValues {
+			if selected == enumVal {
+				return selected, nil, selected, nil
+			}
+		}
+		return nil, nil, "", fmt.Errorf("invalid enum value: %q (expected one of %v)", selected, enumValues)
+	case ObjectModeNoSchema:
+		var obj interface{}
+		if err := json.Unmarshal([]byte(text), &obj); err != nil {
+			return nil, nil, "", err
+		}
+		return obj, nil, "", nil
+	default:
+		return nil, nil, "", fmt.Errorf("invalid output mode: %s", mode)
+	}
 }
 
 // ObjectOutputMode defines the output mode for structured generation
@@ -79,9 +306,9 @@ type GenerateObjectOptions struct {
 	Model provider.LanguageModel
 
 	// Prompt can be a simple string or a list of messages
-	Prompt string
+	Prompt   string
 	Messages []types.Message
-	System string
+	System   string
 
 	// Schema for the output object (not required for no-schema mode)
 	Schema schema.Schema
@@ -173,11 +400,11 @@ type GenerateObjectResult struct {
 
 	// Request holds raw request metadata (e.g. body sent to the provider).
 	// Mirrors GenerateObjectResult.request in the TS SDK.
-	Request map[string]interface{}
+	Request GenerateStepRequest
 
 	// Response holds raw response metadata (e.g. body received from the provider).
 	// Mirrors GenerateObjectResult.response in the TS SDK.
-	Response map[string]interface{}
+	Response GenerateStepResponse
 
 	// ProviderMetadata holds provider-specific metadata.
 	// Mirrors GenerateObjectResult.providerMetadata in the TS SDK.
@@ -288,6 +515,10 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		}
 	default:
 		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
+	}
+
+	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
+		return nil, fmt.Errorf("model does not support structured output")
 	}
 
 	// Generate a call ID for correlating all callback events for this call.
@@ -421,22 +652,15 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Metadata:        cc.metadata,
 	}, opts.ExperimentalOnStepStart)
 
-	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
+	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
 	reasoning := extractObjectReasoning(genResult)
 
-	// Build response metadata with generated fallbacks, mirroring TS SDK's responseData:
-	// { id: result.response?.id ?? generateId(), timestamp: ..., modelId: ..., body: ... }
-	reqMeta := map[string]interface{}{"body": genResult.RawRequest}
-	resMeta := map[string]interface{}{
-		"id":        newCallID(),
-		"timestamp": time.Now(),
-		"modelId":   opts.Model.ModelID(),
-		"body":      genResult.RawResponse,
-	}
+	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	resMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -558,20 +782,15 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Metadata:        cc.metadata,
 	}, opts.ExperimentalOnStepStart)
 
-	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
+	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
 	arrayReasoning := extractObjectReasoning(genResult)
 
-	arrReqMeta := map[string]interface{}{"body": genResult.RawRequest}
-	arrResMeta := map[string]interface{}{
-		"id":        newCallID(),
-		"timestamp": time.Now(),
-		"modelId":   opts.Model.ModelID(),
-		"body":      genResult.RawResponse,
-	}
+	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	arrResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -702,20 +921,15 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Metadata:        cc.metadata,
 	}, opts.ExperimentalOnStepStart)
 
-	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
+	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
 	enumReasoning := extractObjectReasoning(genResult)
 
-	enumReqMeta := map[string]interface{}{"body": genResult.RawRequest}
-	enumResMeta := map[string]interface{}{
-		"id":        newCallID(),
-		"timestamp": time.Now(),
-		"modelId":   opts.Model.ModelID(),
-		"body":      genResult.RawResponse,
-	}
+	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	enumResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -809,8 +1023,8 @@ type noopValidator struct {
 	jsonSchema map[string]interface{}
 }
 
-func (n noopValidator) Validate(_ interface{}) error          { return nil }
-func (n noopValidator) JSONSchema() map[string]interface{}    { return n.jsonSchema }
+func (n noopValidator) Validate(_ interface{}) error       { return nil }
+func (n noopValidator) JSONSchema() map[string]interface{} { return n.jsonSchema }
 
 // generateNoSchemaMode handles raw JSON generation without validation
 func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
@@ -845,20 +1059,15 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Metadata:        cc.metadata,
 	}, opts.ExperimentalOnStepStart)
 
-	genResult, err := opts.Model.DoGenerate(ctx, genOpts)
+	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
 	noSchemaReasoning := extractObjectReasoning(genResult)
 
-	nsReqMeta := map[string]interface{}{"body": genResult.RawRequest}
-	nsResMeta := map[string]interface{}{
-		"id":        newCallID(),
-		"timestamp": time.Now(),
-		"modelId":   opts.Model.ModelID(),
-		"body":      genResult.RawResponse,
-	}
+	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	nsResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -942,12 +1151,18 @@ type StreamObjectOptions struct {
 	Model provider.LanguageModel
 
 	// Prompt can be a simple string or a list of messages
-	Prompt string
+	Prompt   string
 	Messages []types.Message
-	System string
+	System   string
 
 	// Schema for the output object
 	Schema schema.Schema
+
+	// Output mode - object, array, enum, or no-schema
+	OutputMode ObjectOutputMode
+
+	// Enum values (required for enum mode)
+	EnumValues []string
 
 	// Generation parameters
 	Temperature      *float64
@@ -1015,8 +1230,55 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if opts.Schema == nil {
-		return nil, fmt.Errorf("schema is required")
+	if opts.OutputMode == "" {
+		opts.OutputMode = ObjectModeObject
+	}
+	switch opts.OutputMode {
+	case ObjectModeObject:
+		if opts.Schema == nil {
+			return nil, fmt.Errorf("schema is required for object output")
+		}
+		if len(opts.EnumValues) != 0 {
+			return nil, fmt.Errorf("enum values are not supported for object output")
+		}
+	case ObjectModeArray:
+		if opts.Schema == nil {
+			return nil, fmt.Errorf("element schema is required for array output")
+		}
+		if len(opts.EnumValues) != 0 {
+			return nil, fmt.Errorf("enum values are not supported for array output")
+		}
+	case ObjectModeEnum:
+		if opts.Schema != nil {
+			return nil, fmt.Errorf("schema is not supported for enum output")
+		}
+		if opts.SchemaDescription != "" {
+			return nil, fmt.Errorf("schema description is not supported for enum output")
+		}
+		if opts.SchemaName != "" {
+			return nil, fmt.Errorf("schema name is not supported for enum output")
+		}
+		if len(opts.EnumValues) == 0 {
+			return nil, fmt.Errorf("enum values are required for enum output")
+		}
+	case ObjectModeNoSchema:
+		if opts.Schema != nil {
+			return nil, fmt.Errorf("schema is not supported for no-schema output")
+		}
+		if opts.SchemaDescription != "" {
+			return nil, fmt.Errorf("schema description is not supported for no-schema output")
+		}
+		if opts.SchemaName != "" {
+			return nil, fmt.Errorf("schema name is not supported for no-schema output")
+		}
+		if len(opts.EnumValues) != 0 {
+			return nil, fmt.Errorf("enum values are not supported for no-schema output")
+		}
+	default:
+		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
+	}
+	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
+		return nil, fmt.Errorf("model does not support structured output")
 	}
 
 	// Generate call ID and extract telemetry info for callback events.
@@ -1052,7 +1314,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		MaxRetries:        opts.MaxRetries,
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
-		Output:            ObjectModeObject,
+		Output:            opts.OutputMode,
 		Schema:            schemaToMap(opts.Schema),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
@@ -1078,14 +1340,14 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Seed:             opts.Seed,
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
-		ResponseFormat: &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      opts.Schema,
-			Name:        opts.SchemaName,
-			Description: opts.SchemaDescription,
-		},
-		Telemetry: opts.ExperimentalTelemetry,
+		ResponseFormat:   nil,
+		Telemetry:        opts.ExperimentalTelemetry,
 	}
+	responseFormat, err := buildStreamObjectResponseFormat(opts)
+	if err != nil {
+		return nil, err
+	}
+	genOpts.ResponseFormat = responseFormat
 
 	// Fire ExperimentalOnStepStart before calling the provider.
 	Notify(ctx, ObjectOnStepStartEvent{
@@ -1102,10 +1364,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Try to start streaming
 	// If streaming is not supported or fails, fall back to non-streaming
-	stream, err := opts.Model.DoStream(ctx, genOpts)
+	stream, err := doStreamWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil || stream == nil {
 		// Fallback to non-streaming generation
-		result, err := opts.Model.DoGenerate(ctx, genOpts)
+		result, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 		if err != nil {
 			if opts.OnError != nil {
 				opts.OnError(ctx, err)
@@ -1115,13 +1377,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 		fallbackReasoning := extractObjectReasoning(result)
 
-		fbReqMeta := map[string]interface{}{"body": result.RawRequest}
-		fbResMeta := map[string]interface{}{
-			"id":        newCallID(),
-			"timestamp": time.Now(),
-			"modelId":   opts.Model.ModelID(),
-			"body":      result.RawResponse,
-		}
+		fbReqMeta := GenerateStepRequest{Body: result.RawRequest}
+		fbResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: result.ResponseHeaders, Body: result.RawResponse}
 
 		// Fire OnStepFinish before parsing.
 		Notify(ctx, ObjectOnStepFinishEvent{
@@ -1142,8 +1399,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		}, opts.OnStepFinish)
 
 		// Parse final JSON
-		var finalObject interface{}
-		if parseErr := json.Unmarshal([]byte(result.Text), &finalObject); parseErr != nil {
+		finalObject, finalArray, finalEnum, parseErr := parseStreamFinal(opts.OutputMode, opts.Schema, opts.EnumValues, result.Text)
+		if parseErr != nil {
 			// Parsing failed — fire OnFinishEvent with error and nil object.
 			Notify(ctx, ObjectOnFinishEvent{
 				CallID:           callID,
@@ -1162,27 +1419,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			return nil, fmt.Errorf("failed to parse JSON: %w", parseErr)
 		}
 
-		// Validate
-		if valErr := opts.Schema.Validator().Validate(finalObject); valErr != nil {
-			Notify(ctx, ObjectOnFinishEvent{
-				CallID:           callID,
-				Object:           nil,
-				Error:            valErr,
-				Reasoning:        fallbackReasoning,
-				FinishReason:     result.FinishReason,
-				Usage:            result.Usage,
-				Warnings:         result.Warnings,
-				Request:          fbReqMeta,
-				Response:         fbResMeta,
-				ProviderMetadata: result.ProviderMetadata,
-				FunctionID:       cbFuncID,
-				Metadata:         cbMeta,
-			}, opts.OnFinishEvent)
-			return nil, fmt.Errorf("validation failed: %w", valErr)
-		}
-
 		finalResult := &GenerateObjectResult{
 			Object:           finalObject,
+			Array:            finalArray,
+			EnumValue:        finalEnum,
 			Text:             result.Text,
 			FinishReason:     result.FinishReason,
 			Usage:            result.Usage,
@@ -1226,6 +1466,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var streamProviderMetadata map[string]interface{}
 	var streamErr error // captures a non-EOF stream error for deferred callback firing
 
+	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
+	streamResMeta := GenerateStepResponse{
+		ID:        newCallID(),
+		Timestamp: time.Now(),
+		ModelID:   opts.Model.ModelID(),
+	}
+
 	// Process stream chunks. On a non-EOF error we record it and break so that
 	// OnStepFinish / OnFinishEvent still fire with whatever was accumulated —
 	// matching the TS SDK's TransformStream flush behaviour where the flush
@@ -1258,16 +1505,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			parseResult := parsePartialJSON(accumulatedText)
 
 			// If we successfully parsed something and it's different from last
-			if parseResult.Value != nil && !deepEqual(parseResult.Value, lastObject) {
-				// Validate against schema
-				if err := opts.Schema.Validator().Validate(parseResult.Value); err == nil {
-					// Valid partial object - emit it
-					lastObject = parseResult.Value
-
-					// Call OnChunk callback if provided
-					if opts.OnChunk != nil {
-						opts.OnChunk(lastObject)
-					}
+			if partial, ok := parseStreamPartial(opts.OutputMode, opts.Schema, opts.EnumValues, parseResult); ok && !deepEqual(partial, lastObject) {
+				lastObject = partial
+				if opts.OnChunk != nil {
+					opts.OnChunk(lastObject)
 				}
 			}
 
@@ -1285,6 +1526,22 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			finishReason = chunk.FinishReason
 			if chunk.Usage != nil {
 				usage = usage.Add(*chunk.Usage)
+			}
+
+		case provider.ChunkTypeResponseMetadata:
+			if chunk.ResponseMetadata != nil {
+				if chunk.ResponseMetadata.Headers != nil {
+					streamResMeta.Headers = chunk.ResponseMetadata.Headers
+				}
+				if chunk.ResponseMetadata.ID != "" {
+					streamResMeta.ID = chunk.ResponseMetadata.ID
+				}
+				if !chunk.ResponseMetadata.Timestamp.IsZero() {
+					streamResMeta.Timestamp = chunk.ResponseMetadata.Timestamp
+				}
+				if chunk.ResponseMetadata.ModelID != "" {
+					streamResMeta.ModelID = chunk.ResponseMetadata.ModelID
+				}
 			}
 		}
 
@@ -1305,16 +1562,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		finishReason = types.FinishReasonOther
 	}
 
-	// DoStream returns no request/response metadata (unlike DoGenerate), so we
-	// generate fallback values matching the TS SDK's `request ?? {}` / `fullResponse` pattern.
-	// TS initializes fullResponse = { id: generateId(), timestamp: currentDate(), modelId: model.modelId }
-	// and resolves _request with `request ?? {}`.
-	streamReqMeta := map[string]interface{}{}
-	streamResMeta := map[string]interface{}{
-		"id":        newCallID(),
-		"timestamp": time.Now(),
-		"modelId":   opts.Model.ModelID(),
-	}
+	streamReqMeta := GenerateStepRequest{}
 
 	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
 	// error (matching TS flush handler) then return.
@@ -1373,8 +1621,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Parse final JSON
 	var finalObject interface{}
+	var finalArray []interface{}
+	var finalEnum string
 	if accumulatedText != "" {
-		if parseErr := json.Unmarshal([]byte(accumulatedText), &finalObject); parseErr != nil {
+		parsedObject, parsedArray, parsedEnum, parseErr := parseStreamFinal(opts.OutputMode, opts.Schema, opts.EnumValues, accumulatedText)
+		if parseErr != nil {
 			// Parse failure: fire OnFinishEvent with error and nil object.
 			Notify(ctx, ObjectOnFinishEvent{
 				CallID:           callID,
@@ -1392,31 +1643,17 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			}, opts.OnFinishEvent)
 			return nil, fmt.Errorf("failed to parse final JSON: %w", parseErr)
 		}
-
-		// Validate final object
-		if valErr := opts.Schema.Validator().Validate(finalObject); valErr != nil {
-			Notify(ctx, ObjectOnFinishEvent{
-				CallID:           callID,
-				Object:           nil,
-				Error:            valErr,
-				Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
-				FinishReason:     finishReason,
-				Usage:            usage,
-				Warnings:         streamWarnings,
-				Request:          streamReqMeta,
-				Response:         streamResMeta,
-				ProviderMetadata: streamProviderMetadata,
-				FunctionID:       cbFuncID,
-				Metadata:         cbMeta,
-			}, opts.OnFinishEvent)
-			return nil, fmt.Errorf("final object validation failed: %w", valErr)
-		}
+		finalObject = parsedObject
+		finalArray = parsedArray
+		finalEnum = parsedEnum
 	}
 
 	// Build result. Reasoning is accumulated for convenience but note that TS SDK does
 	// not expose reasoning in the streaming object path (onStepFinish/onFinish receive undefined).
 	result := &GenerateObjectResult{
 		Object:           finalObject,
+		Array:            finalArray,
+		EnumValue:        finalEnum,
 		Text:             accumulatedText,
 		Reasoning:        accumulatedReasoning,
 		FinishReason:     finishReason,

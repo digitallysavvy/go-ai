@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -92,7 +92,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newDeepseekStream(httpResp.Body), httpResp.Header), nil
+	return providerutils.WithResponseMetadata(newDeepseekStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -148,7 +148,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["thinking"] = map[string]interface{}{"type": "disabled"}
 		case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh:
 			body["thinking"] = map[string]interface{}{"type": "enabled"}
-		// ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 	return body
@@ -233,7 +233,6 @@ func convertDeepseekUsage(usage deepseekUsage) types.Usage {
 	return result
 }
 
-
 type deepseekResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -260,9 +259,9 @@ type deepseekResponse struct {
 }
 
 type deepseekUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`
@@ -288,7 +287,7 @@ type deepseekStreamChunk struct {
 			Role             string `json:"role"`
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"` // thinking mode
-			ToolCalls []struct {
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`

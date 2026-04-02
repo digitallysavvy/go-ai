@@ -47,7 +47,7 @@ func (s *responseMetadataStream) Close() error { return s.inner.Close() }
 // Consumers (StreamObject, StreamText) will pick up the real headers and
 // response ID from these headers, mirroring the TS SDK's 'response-metadata'
 // chunk. h may be nil; in that case the wrapped stream is returned unchanged.
-func WithResponseMetadata(stream provider.TextStream, h http.Header) provider.TextStream {
+func WithResponseMetadata(stream provider.TextStream, h http.Header, modelID string) provider.TextStream {
 	headers := ExtractHeaders(h)
 	if len(headers) == 0 {
 		return stream
@@ -57,6 +57,7 @@ func WithResponseMetadata(stream provider.TextStream, h http.Header) provider.Te
 		ResponseMetadata: &provider.ResponseMetadata{
 			Headers:   headers,
 			Timestamp: time.Now(),
+			ModelID:   modelID,
 		},
 	}
 	return &responseMetadataStream{meta: meta, inner: stream}
