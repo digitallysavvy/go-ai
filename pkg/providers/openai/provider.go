@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	netHTTP "net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,6 +32,17 @@ type Config struct {
 
 	// Project is the optional project ID
 	Project string
+
+	// Headers are additional HTTP headers sent with every request. They are
+	// merged on top of the default Authorization / OpenAI-* headers, so callers
+	// can override them when targeting OpenAI-compatible endpoints that require
+	// custom headers (e.g. GitHub Copilot's Editor-Version, Copilot-Integration-Id).
+	Headers map[string]string
+
+	// HTTPClient overrides the underlying *net/http.Client. Useful for plugging
+	// in custom transports (proxy, tracing, retry middleware) or for tests.
+	// If nil, the default shared client is used.
+	HTTPClient *netHTTP.Client
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -40,7 +52,7 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
-	// Create HTTP client with default headers
+	// Build default headers; user-supplied Headers override these.
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", cfg.APIKey),
 	}
@@ -53,9 +65,14 @@ func New(cfg Config) *Provider {
 		headers["OpenAI-Project"] = cfg.Project
 	}
 
+	for k, v := range cfg.Headers {
+		headers[k] = v
+	}
+
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:    baseURL,
+		Headers:    headers,
+		HTTPClient: cfg.HTTPClient,
 	})
 
 	return &Provider{
