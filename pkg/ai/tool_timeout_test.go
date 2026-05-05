@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -62,6 +63,13 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 	if err == nil && capturedErr == nil {
 		t.Fatal("expected a timeout error but got none")
 	}
+	var timeoutErr *TimeoutError
+	if !errors.As(capturedErr, &timeoutErr) {
+		t.Fatalf("expected captured TimeoutError, got %T: %v", capturedErr, capturedErr)
+	}
+	if timeoutErr.Reason != TimeoutReasonTool {
+		t.Fatalf("Reason = %q, want %q", timeoutErr.Reason, TimeoutReasonTool)
+	}
 }
 
 // TestToolTimeoutPerToolOverride verifies that a per-tool entry in Tools
@@ -69,8 +77,8 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 func TestToolTimeoutPerToolOverride(t *testing.T) {
 	t.Parallel()
 
-	globalTimeout := 20 * time.Millisecond  // very short global timeout
-	overrideTimeout := 5 * time.Second      // generous per-tool override
+	globalTimeout := 20 * time.Millisecond // very short global timeout
+	overrideTimeout := 5 * time.Second     // generous per-tool override
 
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {

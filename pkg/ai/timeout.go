@@ -2,8 +2,50 @@ package ai
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
+
+// TimeoutReason identifies which timeout boundary aborted an operation.
+type TimeoutReason string
+
+const (
+	TimeoutReasonTotal TimeoutReason = "total"
+	TimeoutReasonStep  TimeoutReason = "step"
+	TimeoutReasonChunk TimeoutReason = "chunk"
+	TimeoutReasonTool  TimeoutReason = "tool"
+)
+
+// TimeoutError wraps timeout failures so callers can inspect the reason with
+// errors.As, matching the TypeScript SDK's tagged timeout failures.
+type TimeoutError struct {
+	Reason TimeoutReason
+	Err    error
+}
+
+func (e *TimeoutError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("%s timeout exceeded", e.Reason)
+	}
+	return fmt.Sprintf("%s timeout exceeded: %v", e.Reason, e.Err)
+}
+
+func (e *TimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func wrapTimeoutError(reason TimeoutReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TimeoutError{Reason: reason, Err: err}
+}
 
 // TimeoutConfig provides granular timeout controls for AI operations
 // Supports total timeouts, per-step timeouts (for multi-step operations),
