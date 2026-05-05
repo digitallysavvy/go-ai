@@ -239,6 +239,9 @@ const (
 	// FinishReasonToolCalls indicates the model wants to call tools
 	FinishReasonToolCalls FinishReason = "tool-calls"
 
+	// FinishReasonUserApproval indicates execution paused for human approval.
+	FinishReasonUserApproval FinishReason = "user-approval"
+
 	// FinishReasonError indicates an error occurred
 	FinishReasonError FinishReason = "error"
 

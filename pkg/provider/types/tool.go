@@ -1,6 +1,25 @@
 package types
 
-import "context"
+import (
+	"context"
+
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+const (
+	// ToolTypeFunction is the default locally executed function tool.
+	ToolTypeFunction = "function"
+
+	// ToolTypeDynamic is a dynamic tool whose schema can vary at runtime.
+	ToolTypeDynamic = "dynamic"
+
+	// ToolTypeProviderDefined is a provider-defined native tool. The wire value
+	// remains "provider" to match the TypeScript SDK shape.
+	ToolTypeProviderDefined = "provider"
+
+	// ToolTypeProviderExecuted is a provider-executed tool.
+	ToolTypeProviderExecuted = "provider-executed"
+)
 
 // Tool represents a tool that can be called by the model
 // Tools allow the model to perform actions or retrieve information
@@ -39,6 +58,10 @@ type Tool struct {
 	// When true, the model must follow the schema exactly
 	Strict bool `json:"strict,omitempty"`
 
+	// ContextSchema optionally validates the tool-specific context passed to the
+	// tool execution and approval callbacks.
+	ContextSchema schema.Schema `json:"-"`
+
 	// NeedsApproval indicates whether tool execution requires user approval
 	// Can be a boolean or a function that determines approval based on input
 	NeedsApproval interface{} `json:"-"` // bool or NeedsApprovalFunc
@@ -61,6 +84,10 @@ type Tool struct {
 	// Example: Anthropic cache_control, OpenAI response_format, etc.
 	// The value should be provider-specific types (e.g., anthropic.ToolOptions)
 	ProviderOptions interface{} `json:"-"`
+
+	// ProviderMetadata carries provider-specific metadata for the tool and is
+	// propagated onto tool calls and results produced for this tool.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
 	// Type is "function" (default) or "provider" for provider-defined native tools.
 	// When Type is "provider", ProviderID and ProviderArgs specify the native tool.
@@ -98,9 +125,15 @@ type ToolExecutionOptions struct {
 	// ToolCallID is the unique ID of this tool call
 	ToolCallID string
 
-	// UserContext is optional user-defined context that flows through the conversation
-	// This is set from GenerateTextOptions.ExperimentalContext
+	// UserContext is optional user-defined context that flows through the conversation.
+	// Deprecated: use RuntimeContext.
 	UserContext interface{}
+
+	// RuntimeContext is the user-defined runtime context for the generation call.
+	RuntimeContext interface{}
+
+	// ToolContext is the per-tool context validated against the tool's ContextSchema.
+	ToolContext interface{}
 
 	// Usage contains token usage information up to this point
 	Usage *Usage
@@ -180,6 +213,9 @@ type ToolCall struct {
 	// When true, the provider handled execution server-side (e.g., xAI file_search, web_search).
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 
+	// ProviderMetadata carries provider-specific metadata associated with this tool call.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
 	// ThoughtSignature is Google's cryptographic token that seals the model's
 	// thinking chain across tool calls. Populated by the Google/Vertex providers
 	// when the API returns a thoughtSignature on a functionCall part. Must be
@@ -205,11 +241,22 @@ type ToolResult struct {
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`
 
+	// ApprovalStatus captures approval-driven outcomes such as denied or
+	// user-approval pending tool calls.
+	ApprovalStatus ToolApprovalStatus `json:"approvalStatus,omitempty"`
+
+	// ApprovalReason contains the optional approval reason for denied or
+	// approved tool calls.
+	ApprovalReason *string `json:"approvalReason,omitempty"`
+
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally)
 	// When true, the tool was executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
 	// When false or unset, the tool was executed locally by the client
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
+	// ProviderMetadata carries provider-specific metadata associated with this tool result.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // ToolChoice specifies how the model should choose tools
