@@ -100,6 +100,9 @@ type ImageContent struct {
 
 	// Optional URL if image is hosted remotely
 	URL string `json:"url,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the input direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -109,14 +112,34 @@ func (i ImageContent) ContentType() string {
 
 // FileContent represents file content in a message
 type FileContent struct {
-	// File data as bytes
-	Data []byte `json:"data"`
+	// FileData is the normalized provider-facing tagged file data shape.
+	// When unset, legacy Data/URL fields are normalized before provider calls.
+	FileData FileData `json:"fileData,omitempty"`
 
-	// MIME type of the file
-	MimeType string `json:"mimeType"`
+	// File data as bytes
+	Data []byte `json:"data,omitempty"`
+
+	// MIME type of the file.
+	// Deprecated: use MediaType. Kept for existing callers.
+	MimeType string `json:"mimeType,omitempty"`
+
+	// MediaType is the IANA media type of the file.
+	MediaType string `json:"mediaType,omitempty"`
 
 	// Optional filename
 	Filename string `json:"filename,omitempty"`
+
+	// URL holds a legacy remote file URL. It is normalized into FileData.
+	URL string `json:"url,omitempty"`
+
+	// Reference holds a provider file reference. It is normalized into FileData.
+	Reference string `json:"reference,omitempty"`
+
+	// Text holds inline text document content. It is normalized into FileData.
+	Text string `json:"text,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the input direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -223,6 +246,10 @@ func (c CustomContent) ContentType() string {
 //   - Input (LanguageModelV4ReasoningFilePart in assistant messages): ProviderOptions
 //     carries provider-specific options to forward to the provider.
 type ReasoningFileContent struct {
+	// FileData is the normalized provider-facing tagged file data shape. Only
+	// data and url variants are valid for reasoning-file parts.
+	FileData FileData `json:"fileData,omitempty"`
+
 	// MediaType is the IANA media type of the file (e.g., "image/png").
 	MediaType string `json:"mediaType"`
 
@@ -349,6 +376,10 @@ func (i ImageContentBlock) ToolResultContentType() string {
 // Set URL for file-url references (a remote URL, no data bytes required);
 // set Data + MediaType for file-data (inline bytes).
 type FileContentBlock struct {
+	// FileData is the normalized provider-facing tagged file data shape.
+	// When unset, legacy Data/URL/Text/Reference fields are normalized.
+	FileData FileData `json:"fileData,omitempty"`
+
 	// File data as bytes (file-data).
 	Data []byte `json:"data,omitempty"`
 
@@ -360,6 +391,12 @@ type FileContentBlock struct {
 
 	// URL for file-url references (mutually exclusive with Data).
 	URL string `json:"url,omitempty"`
+
+	// Reference holds a provider file reference.
+	Reference string `json:"reference,omitempty"`
+
+	// Text holds inline text file content.
+	Text string `json:"text,omitempty"`
 
 	// Provider-specific options
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
@@ -412,7 +449,8 @@ func (p Prompt) IsMessages() bool {
 // This is the old style and is maintained for backward compatibility.
 //
 // Example:
-//   result := types.SimpleTextResult("call_123", "search", "Found 3 results")
+//
+//	result := types.SimpleTextResult("call_123", "search", "Found 3 results")
 func SimpleTextResult(toolCallID, toolName, result string) ToolResultContent {
 	return ToolResultContent{
 		ToolCallID: toolCallID,
@@ -424,7 +462,8 @@ func SimpleTextResult(toolCallID, toolName, result string) ToolResultContent {
 // SimpleJSONResult creates a tool result with JSON value (backward compatible)
 //
 // Example:
-//   result := types.SimpleJSONResult("call_123", "calculate", map[string]interface{}{"answer": 42})
+//
+//	result := types.SimpleJSONResult("call_123", "calculate", map[string]interface{}{"answer": 42})
 func SimpleJSONResult(toolCallID, toolName string, result interface{}) ToolResultContent {
 	return ToolResultContent{
 		ToolCallID: toolCallID,
@@ -437,10 +476,11 @@ func SimpleJSONResult(toolCallID, toolName string, result interface{}) ToolResul
 // This is the recommended way to create tool results with rich content.
 //
 // Example:
-//   result := types.ContentResult("call_123", "search",
-//       types.TextContentBlock{Text: "Search results:"},
-//       types.ImageContentBlock{Data: imageBytes, MediaType: "image/png"},
-//   )
+//
+//	result := types.ContentResult("call_123", "search",
+//	    types.TextContentBlock{Text: "Search results:"},
+//	    types.ImageContentBlock{Data: imageBytes, MediaType: "image/png"},
+//	)
 func ContentResult(toolCallID, toolName string, blocks ...ToolResultContentBlock) ToolResultContent {
 	return ToolResultContent{
 		ToolCallID: toolCallID,
@@ -455,7 +495,8 @@ func ContentResult(toolCallID, toolName string, blocks ...ToolResultContentBlock
 // ErrorResult creates a tool result representing an error
 //
 // Example:
-//   result := types.ErrorResult("call_123", "search", "Network timeout")
+//
+//	result := types.ErrorResult("call_123", "search", "Network timeout")
 func ErrorResult(toolCallID, toolName, errorMsg string) ToolResultContent {
 	return ToolResultContent{
 		ToolCallID: toolCallID,
