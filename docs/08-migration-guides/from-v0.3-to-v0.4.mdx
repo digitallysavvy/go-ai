@@ -161,7 +161,7 @@ transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
 
 ### Telemetry global registry
 
-The `Tracer` field on `ExperimentalTelemetry` settings is no longer the recommended way to configure custom OpenTelemetry tracers. Instead, register a telemetry integration once at startup using `RegisterTelemetryIntegration()`. The `ExperimentalTelemetry` option still exists for controlling `IsEnabled`, `RecordInputs`, `RecordOutputs`, `FunctionID`, and `Metadata` per-call.
+The `Tracer` field on `ExperimentalTelemetry` settings is no longer the recommended way to configure custom OpenTelemetry tracers. Instead, register a telemetry integration once at startup using `RegisterTelemetryIntegration()`. Use the stable `Telemetry` option for per-call control of `IsEnabled`, `RecordInputs`, `RecordOutputs`, `FunctionID`, local `Integrations`, and context include settings. `ExperimentalTelemetry` remains as a deprecated alias for migration.
 
 **Before (v0.3.x):**
 
@@ -178,8 +178,8 @@ tracer := trace.NewNoopTracerProvider().Tracer("my-app")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Hello",
-    ExperimentalTelemetry: &telemetry.Settings{
-        IsEnabled: true,
+    Telemetry: &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         Tracer:    tracer, // custom tracer passed directly
     },
 })
@@ -201,9 +201,9 @@ func main() {
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
         Prompt: "Hello",
-        // ExperimentalTelemetry still available for per-call control:
-        ExperimentalTelemetry: &telemetry.Settings{
-            IsEnabled:    true,
+        // Telemetry is available for per-call control:
+        Telemetry: &telemetry.Options{
+            IsEnabled: telemetry.Bool(true),
             RecordInputs: true,
             FunctionID:   "my-chat",
         },

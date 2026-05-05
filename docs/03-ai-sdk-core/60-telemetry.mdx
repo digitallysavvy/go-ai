@@ -5,15 +5,13 @@ description: Using OpenTelemetry with the Go AI SDK Core
 
 # Telemetry
 
-> **Note:** AI SDK Telemetry is experimental and may change in the future.
-
 The Go AI SDK uses [OpenTelemetry](https://opentelemetry.io/) to collect telemetry data. OpenTelemetry is an open-source observability framework designed to provide standardized instrumentation for collecting telemetry data.
 
 Check out the [AI SDK Observability Integrations](/providers/observability) to see providers that offer monitoring and tracing for AI SDK applications.
 
 ## Enabling Telemetry
 
-Telemetry is disabled by default. You can enable it by passing telemetry settings to AI SDK functions:
+Telemetry is active by default when at least one telemetry integration is registered. Use `Telemetry` for per-call options; `ExperimentalTelemetry` remains as a deprecated alias for migration.
 
 ```go
 import (
@@ -21,15 +19,12 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/telemetry"
-    "go.opentelemetry.io/otel/attribute"
 )
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
-    Telemetry: &telemetry.Settings{
-        IsEnabled: true,
-    },
+    Telemetry: &telemetry.Options{},
 })
 ```
 
@@ -39,8 +34,8 @@ When telemetry is enabled, you can control whether to record input values and ou
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
-    Telemetry: &telemetry.Settings{
-        IsEnabled:     true,
+    Telemetry: &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         RecordInputs:  false, // Don't record sensitive inputs
         RecordOutputs: true,  // Record outputs
     },
@@ -57,30 +52,29 @@ Provide a `FunctionID` to identify the function that the telemetry data is for:
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
-    Telemetry: &telemetry.Settings{
-        IsEnabled:  true,
+    Telemetry: &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         FunctionID: "story-generator",
     },
 })
 ```
 
-### Metadata
+### Context Inclusion
 
-Include additional metadata in telemetry spans:
+Runtime and tool context is excluded from telemetry by default. Opt in to specific top-level keys:
 
 ```go
-import "go.opentelemetry.io/otel/attribute"
-
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Write a short story about a cat.",
-    Telemetry: &telemetry.Settings{
-        IsEnabled:  true,
-        FunctionID: "story-generator",
-        Metadata: map[string]attribute.Value{
-            "user_id":    attribute.String("user-123"),
-            "session_id": attribute.String("session-456"),
-            "version":    attribute.String("v1.0"),
+    Model:          model,
+    Prompt:         "Write a short story about a cat.",
+    RuntimeContext: map[string]interface{}{"request_id": "req-123", "secret": "token"},
+    ToolsContext: map[string]interface{}{
+        "weather": map[string]interface{}{"city": "Paris", "api_key": "secret"},
+    },
+    Telemetry: &telemetry.Options{
+        IncludeRuntimeContext: map[string]bool{"request_id": true},
+        IncludeToolsContext: map[string]map[string]bool{
+            "weather": map[string]bool{"city": true},
         },
     },
 })
@@ -103,8 +97,8 @@ tracer := tp.Tracer("my-custom-tracer")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
-    Telemetry: &telemetry.Settings{
-        IsEnabled: true,
+    Telemetry: &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         Tracer:    tracer,
     },
 })
@@ -118,10 +112,7 @@ Use the fluent API to build telemetry settings:
 telemetrySettings := telemetry.DefaultSettings().
     WithEnabled(true).
     WithFunctionID("story-generator").
-    WithRecordInputs(false).
-    WithMetadata(map[string]attribute.Value{
-        "environment": attribute.String("production"),
-    })
+    WithRecordInputs(false)
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:     model,
@@ -439,16 +430,11 @@ func main() {
     model, _ := provider.LanguageModel("gpt-4")
 
     // Configure telemetry settings
-    telemetrySettings := &telemetry.Settings{
-        IsEnabled:     true,
+    telemetrySettings := &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         RecordInputs:  true,
         RecordOutputs: true,
         FunctionID:    "story-generator",
-        Metadata: map[string]attribute.Value{
-            "user_id":     attribute.String("user-123"),
-            "environment": attribute.String("production"),
-            "version":     attribute.String("v1.0"),
-        },
     }
 
     // Generate text with telemetry
@@ -472,8 +458,8 @@ func main() {
 Disable input/output recording for sensitive data:
 
 ```go
-telemetrySettings := &telemetry.Settings{
-    IsEnabled:     true,
+telemetrySettings := &telemetry.Options{
+    IsEnabled: telemetry.Bool(true),
     RecordInputs:  false, // Don't record sensitive prompts
     RecordOutputs: false, // Don't record sensitive responses
     FunctionID:    "sensitive-operation",
@@ -495,16 +481,16 @@ FunctionID: "func1"
 FunctionID: "test"
 ```
 
-### 3. Add Contextual Metadata
+### 3. Include Safe Context Explicitly
 
-Include metadata that helps with debugging and analysis:
+Include only non-sensitive context keys that help with debugging and analysis:
 
 ```go
-Metadata: map[string]attribute.Value{
-    "user_id":      attribute.String(userID),
-    "request_id":   attribute.String(requestID),
-    "feature_flag": attribute.Bool(featureEnabled),
-    "model_type":   attribute.String("gpt-4"),
+Telemetry: &telemetry.Options{
+    IncludeRuntimeContext: map[string]bool{
+        "request_id": true,
+        "feature_flag": true,
+    },
 }
 ```
 
@@ -555,10 +541,10 @@ monitoredOp, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 Configure telemetry based on environment:
 
 ```go
-func getTelemetrySettings(env string) *telemetry.Settings {
+func getTelemetrySettings(env string) *telemetry.Options {
     if env == "production" {
-        return &telemetry.Settings{
-            IsEnabled:     true,
+        return &telemetry.Options{
+            IsEnabled: telemetry.Bool(true),
             RecordInputs:  false, // Privacy in production
             RecordOutputs: false,
             FunctionID:    "prod-operation",
@@ -566,8 +552,8 @@ func getTelemetrySettings(env string) *telemetry.Settings {
     }
 
     // Full telemetry in development
-    return &telemetry.Settings{
-        IsEnabled:     true,
+    return &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         RecordInputs:  true,
         RecordOutputs: true,
         FunctionID:    "dev-operation",

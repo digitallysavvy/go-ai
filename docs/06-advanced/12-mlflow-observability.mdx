@@ -20,7 +20,7 @@ When MLflow observability is enabled, the following information is automatically
 - **Token Usage**: Input, output, and total tokens (with cache details when available)
 - **Latencies**: Request duration and call hierarchy
 - **Exceptions**: Errors and stack traces
-- **Metadata**: Model IDs, parameters, and custom tags
+- **Metadata**: Model IDs, parameters, and explicitly included context
 
 ## Quick Start
 
@@ -76,8 +76,8 @@ func main() {
     model, _ := provider.LanguageModel("gpt-4")
 
     // Configure telemetry with MLflow tracer
-    telemetrySettings := &telemetry.Settings{
-        IsEnabled:     true,
+    telemetrySettings := &telemetry.Options{
+        IsEnabled: telemetry.Bool(true),
         RecordInputs:  true,
         RecordOutputs: true,
         FunctionID:    "text-generation",
@@ -185,9 +185,9 @@ prodTracker, _ := mlflow.New(mlflow.Config{
 Configure what gets tracked:
 
 ```go
-telemetrySettings := &telemetry.Settings{
+telemetrySettings := &telemetry.Options{
     // Enable/disable telemetry
-    IsEnabled: true,
+    IsEnabled: telemetry.Bool(true),
 
     // Control what gets recorded
     RecordInputs:  true,  // Record prompts and messages
@@ -196,12 +196,8 @@ telemetrySettings := &telemetry.Settings{
     // Function identifier for grouping traces
     FunctionID: "chatbot-generation",
 
-    // Custom metadata
-    Metadata: map[string]attribute.Value{
-        attribute.String("user_id", "user-123"),
-        attribute.String("session_id", "session-456"),
-        attribute.String("environment", "production"),
-    },
+    // Explicit context inclusion for telemetry
+    IncludeRuntimeContext: map[string]bool{"request_id": true},
 
     // MLflow tracer
     Tracer: tracker.Tracer(),
@@ -214,8 +210,8 @@ Control sensitive data recording:
 
 ```go
 // Disable input/output recording for sensitive data
-telemetrySettings := &telemetry.Settings{
-    IsEnabled:     true,
+telemetrySettings := &telemetry.Options{
+    IsEnabled: telemetry.Bool(true),
     RecordInputs:  false, // Don't log user prompts
     RecordOutputs: false, // Don't log responses
     Tracer:        tracker.Tracer(),
@@ -309,14 +305,13 @@ tracker, _ := mlflow.New(mlflow.Config{
 })
 ```
 
-### 2. Metadata for Context
+### 2. Include Safe Context
 
 ```go
-telemetrySettings.Metadata = map[string]attribute.Value{
-    attribute.String("user_id", userID),
-    attribute.String("model_version", "gpt-4-1106-preview"),
-    attribute.String("feature_flag", featureFlag),
-    attribute.String("ab_test_group", testGroup),
+telemetrySettings.IncludeRuntimeContext = map[string]bool{
+    "request_id": true,
+    "feature_flag": true,
+    "ab_test_group": true,
 }
 ```
 

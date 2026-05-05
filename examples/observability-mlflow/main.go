@@ -71,8 +71,8 @@ func main() {
 	}
 
 	// Create telemetry settings with MLflow tracer
-	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     true,
+	telemetrySettings := &telemetry.Options{
+		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
 		FunctionID:    "example-generation",
@@ -82,9 +82,9 @@ func main() {
 	// Example 1: Simple text generation with telemetry
 	fmt.Println("=== Example 1: Simple Text Generation ===")
 	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:                 model,
-		Prompt:                "Explain what MLflow is in one sentence.",
-		ExperimentalTelemetry: telemetrySettings,
+		Model:     model,
+		Prompt:    "Explain what MLflow is in one sentence.",
+		Telemetry: telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)
@@ -101,11 +101,11 @@ func main() {
 	temp := 0.7
 	maxTokens := 150
 	result2, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:                 model,
-		Prompt:                "Write a haiku about observability in AI systems.",
-		Temperature:           &temp,
-		MaxTokens:             &maxTokens,
-		ExperimentalTelemetry: telemetrySettings,
+		Model:       model,
+		Prompt:      "Write a haiku about observability in AI systems.",
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+		Telemetry:   telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)
