@@ -12,15 +12,15 @@ const (
 )
 
 // GetTracer returns an appropriate tracer based on the settings.
-// If telemetry is disabled, returns a no-op tracer.
+// If telemetry is explicitly disabled, returns a no-op tracer.
 // If a custom tracer is provided in settings, returns that.
 // Otherwise, returns the global tracer.
 func GetTracer(settings *Settings) trace.Tracer {
-	if settings == nil || !settings.IsEnabled {
+	if !Enabled(settings) {
 		return noop.NewTracerProvider().Tracer(TracerName)
 	}
 
-	if settings.Tracer != nil {
+	if settings != nil && settings.Tracer != nil {
 		return settings.Tracer
 	}
 
