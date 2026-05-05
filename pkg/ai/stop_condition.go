@@ -22,26 +22,48 @@ type StopConditionState struct {
 	Usage types.Usage
 }
 
-// StepCountIs returns a StopCondition that stops the loop after n steps.
-func StepCountIs(n int) StopCondition {
+// IsStepCount returns a StopCondition that stops the loop when exactly n steps
+// have completed. This mirrors the TypeScript SDK's isStepCount helper.
+func IsStepCount(n int) StopCondition {
 	return func(state StopConditionState) string {
-		if len(state.Steps) >= n {
+		if len(state.Steps) == n {
 			return fmt.Sprintf("maximum number of steps (%d) reached", n)
 		}
 		return ""
 	}
 }
 
-// HasToolCall returns a StopCondition that stops when a specific tool is called.
-func HasToolCall(toolName string) StopCondition {
+// StepCountIs returns a StopCondition that stops the loop when exactly n steps
+// have completed.
+//
+// Deprecated: use IsStepCount.
+func StepCountIs(n int) StopCondition {
+	return IsStepCount(n)
+}
+
+// IsLoopFinished returns a StopCondition that never stops the loop. This lets
+// the loop continue until a natural termination condition is reached.
+func IsLoopFinished() StopCondition {
+	return func(state StopConditionState) string {
+		return ""
+	}
+}
+
+// HasToolCall returns a StopCondition that stops when the most recent step
+// contains a tool call with any of the provided names.
+func HasToolCall(toolNames ...string) StopCondition {
 	return func(state StopConditionState) string {
 		if len(state.Steps) == 0 {
 			return ""
 		}
+		names := make(map[string]struct{}, len(toolNames))
+		for _, name := range toolNames {
+			names[name] = struct{}{}
+		}
 		lastStep := state.Steps[len(state.Steps)-1]
 		for _, toolCall := range lastStep.ToolCalls {
-			if toolCall.ToolName == toolName {
-				return fmt.Sprintf("tool '%s' was called", toolName)
+			if _, ok := names[toolCall.ToolName]; ok {
+				return fmt.Sprintf("tool '%s' was called", toolCall.ToolName)
 			}
 		}
 		return ""

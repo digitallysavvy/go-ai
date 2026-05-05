@@ -269,9 +269,9 @@ func TestGenerateObject_CallbacksShareCallID(t *testing.T) {
 	}
 
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model:  model,
-		Prompt: "gen",
-		Schema: testSchema,
+		Model:                   model,
+		Prompt:                  "gen",
+		Schema:                  testSchema,
 		ExperimentalOnStart:     func(_ context.Context, e ObjectOnStartEvent) { record(e.CallID) },
 		ExperimentalOnStepStart: func(_ context.Context, e ObjectOnStepStartEvent) { record(e.CallID) },
 		OnStepFinish:            func(_ context.Context, e ObjectOnStepFinishEvent) { record(e.CallID) },
@@ -515,9 +515,9 @@ func TestStreamObject_CallbacksShareCallID(t *testing.T) {
 	}
 
 	_, err := StreamObject(context.Background(), StreamObjectOptions{
-		Model:  model,
-		Prompt: "gen",
-		Schema: testSchema,
+		Model:                   model,
+		Prompt:                  "gen",
+		Schema:                  testSchema,
 		ExperimentalOnStart:     func(_ context.Context, e ObjectOnStartEvent) { record(e.CallID) },
 		ExperimentalOnStepStart: func(_ context.Context, e ObjectOnStepStartEvent) { record(e.CallID) },
 		OnStepFinish:            func(_ context.Context, e ObjectOnStepFinishEvent) { record(e.CallID) },
@@ -535,6 +535,23 @@ func TestStreamObject_CallbacksShareCallID(t *testing.T) {
 }
 
 // --- ExperimentalFilterActiveTools tests ---
+
+func TestFilterActiveTools_FiltersByName(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{
+		{Name: "tool1"},
+		{Name: "tool2"},
+		{Name: "providerTool", Type: types.ToolTypeProviderDefined},
+	}
+	result := FilterActiveTools(tools, []string{"tool1", "providerTool"})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(result))
+	}
+	if result[0].Name != "tool1" || result[1].Name != "providerTool" {
+		t.Errorf("unexpected tools: %+v", result)
+	}
+}
 
 func TestExperimentalFilterActiveTools_NilTools_ReturnsNil(t *testing.T) {
 	t.Parallel()

@@ -2,7 +2,7 @@ package ai
 
 import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
-// ExperimentalFilterActiveTools filters a slice of tools to only include those whose names
+// FilterActiveTools filters a slice of tools to only include those whose names
 // are in activeTools.
 //
 // Behaviour:
@@ -11,9 +11,9 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 //   - Otherwise returns a new slice containing only tools whose Name appears in
 //     activeTools.
 //
-// This mirrors the TypeScript SDK's experimental_filterActiveTools utility from
+// This mirrors the TypeScript SDK's filterActiveTools utility from
 // packages/ai/src/generate-text/filter-active-tool.ts.
-func ExperimentalFilterActiveTools(tools []types.Tool, activeTools []string) []types.Tool {
+func FilterActiveTools(tools []types.Tool, activeTools []string) []types.Tool {
 	if tools == nil {
 		return nil
 	}
@@ -33,4 +33,12 @@ func ExperimentalFilterActiveTools(tools []types.Tool, activeTools []string) []t
 		}
 	}
 	return filtered
+}
+
+// ExperimentalFilterActiveTools filters a slice of tools to only include those
+// whose names are in activeTools.
+//
+// Deprecated: use FilterActiveTools.
+func ExperimentalFilterActiveTools(tools []types.Tool, activeTools []string) []types.Tool {
+	return FilterActiveTools(tools, activeTools)
 }
