@@ -103,7 +103,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	headers := m.getModelConfigHeaders()
 
 	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
 	// Add custom headers from options
@@ -166,10 +166,10 @@ type SSEVideoEvent struct {
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
 	// Error fields (type="error")
-	Message   string      `json:"message,omitempty"`
-	ErrorType string      `json:"errorType,omitempty"`
-	StatusCode *int       `json:"statusCode,omitempty"`
-	Param     interface{} `json:"param,omitempty"`
+	Message    string      `json:"message,omitempty"`
+	ErrorType  string      `json:"errorType,omitempty"`
+	StatusCode *int        `json:"statusCode,omitempty"`
+	Param      interface{} `json:"param,omitempty"`
 }
 
 // readSSEVideoResponse reads an SSE stream and returns the video generation result.
@@ -278,7 +278,7 @@ func (m *VideoModel) buildResponseFromSSEEvent(event *SSEVideoEvent) (*provider.
 
 // videoData represents video data in the API response
 type videoData struct {
-	Type      string `json:"type"`      // "url" or "base64"
+	Type      string `json:"type"` // "url" or "base64"
 	URL       string `json:"url,omitempty"`
 	Data      string `json:"data,omitempty"`
 	MediaType string `json:"mediaType"`

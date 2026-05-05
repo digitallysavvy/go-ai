@@ -12,8 +12,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for AI Gateway
@@ -75,7 +75,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	headers := m.getModelConfigHeaders(false)
 
 	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
 	// Make API request
@@ -106,7 +106,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	headers["Accept"] = "text/event-stream"
 
 	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
 	// Make streaming API request

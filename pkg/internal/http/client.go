@@ -105,11 +105,18 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Serialize body if present
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		switch body := req.Body.(type) {
+		case io.Reader:
+			bodyReader = body
+		case []byte:
+			bodyReader = bytes.NewReader(body)
+		default:
+			bodyBytes, err := json.Marshal(req.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	// Create HTTP request
@@ -129,7 +136,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Set content type for JSON body
-	if req.Body != nil {
+	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
@@ -210,11 +217,18 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Serialize body if present
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		switch body := req.Body.(type) {
+		case io.Reader:
+			bodyReader = body
+		case []byte:
+			bodyReader = bytes.NewReader(body)
+		default:
+			bodyBytes, err := json.Marshal(req.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	// Create HTTP request
@@ -234,7 +248,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Set content type for JSON body
-	if req.Body != nil {
+	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 

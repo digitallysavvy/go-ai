@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // Usage represents token or resource usage for an API call
 // Updated to match TypeScript AI SDK v6.0 with detailed token tracking
 type Usage struct {
@@ -246,9 +248,15 @@ const (
 
 // ResponseMetadata contains metadata about the model's response
 type ResponseMetadata struct {
+	// ID is the provider-assigned response ID.
+	ID string `json:"id,omitempty"`
+
+	// Timestamp is when the provider started generating the response.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+
 	// Model ID that generated the response
 	ModelID string `json:"modelId,omitempty"`
 
-	// Provider-specific metadata
-	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+	// Headers are the raw HTTP response headers when available.
+	Headers map[string]string `json:"headers,omitempty"`
 }

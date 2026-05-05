@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
 )
 
@@ -29,11 +33,67 @@ const (
 type Provider struct {
 	config           Config
 	client           *internalhttp.Client
+	baseURL          string
+	headers          map[string]string
+	authResolver     gatewayAuthResolver
 	metadataCache    *MetadataResponse
 	metadataMutex    sync.RWMutex
 	lastFetchTime    time.Time
 	pendingMetadata  *sync.Once
 	cacheRefreshTime time.Duration
+}
+
+type gatewayAuthResolver func(ctx context.Context) (token string, authMethod string, err error)
+
+type gatewayAuthTransport struct {
+	base     http.RoundTripper
+	resolver gatewayAuthResolver
+}
+
+func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, authMethod, err := t.resolver(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	clone.Header.Set("ai-gateway-auth-method", authMethod)
+	return t.base.RoundTrip(clone)
+}
+
+func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
+	var httpClient *http.Client
+	if baseClient != nil {
+		clone := *baseClient
+		httpClient = &clone
+	} else {
+		httpClient = &http.Client{}
+	}
+	baseTransport := http.RoundTripper(http.DefaultTransport)
+	if httpClient.Transport != nil {
+		baseTransport = httpClient.Transport
+	}
+	if transport, ok := baseTransport.(*http.Transport); ok {
+		baseTransport = transport.Clone()
+	}
+	httpClient.Transport = &gatewayAuthTransport{
+		base:     baseTransport,
+		resolver: resolver,
+	}
+	return httpClient
+}
+
+func gatewayRequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if requestID, ok := ctx.Value("x-vercel-id").(string); ok {
+		return requestID
+	}
+	if requestID, ok := ctx.Value("X-Vercel-Id").(string); ok {
+		return requestID
+	}
+	return ""
 }
 
 // Config contains configuration for the AI Gateway provider
@@ -76,28 +136,62 @@ func WithProjectID(id string) func(*Config) {
 
 // MetadataResponse contains available models and providers from the gateway
 type MetadataResponse struct {
-	Providers []ProviderMetadata `json:"providers"`
-	Credits   *CreditsInfo       `json:"credits,omitempty"`
-}
-
-// ProviderMetadata contains information about a provider
-type ProviderMetadata struct {
-	ID     string          `json:"id"`
-	Name   string          `json:"name"`
 	Models []ModelMetadata `json:"models"`
 }
 
 // ModelMetadata contains information about a model
 type ModelMetadata struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Capabilities []string `json:"capabilities"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Description   *string            `json:"description,omitempty"`
+	Pricing       *ModelPricing      `json:"pricing,omitempty"`
+	Specification ModelSpecification `json:"specification"`
+	ModelType     string             `json:"modelType,omitempty"`
+}
+
+type ModelPricing struct {
+	Input                    string `json:"input"`
+	Output                   string `json:"output"`
+	CachedInputTokens        string `json:"cachedInputTokens,omitempty"`
+	CacheCreationInputTokens string `json:"cacheCreationInputTokens,omitempty"`
+}
+
+type ModelSpecification struct {
+	SpecificationVersion string `json:"specificationVersion"`
+	Provider             string `json:"provider"`
+	ModelID              string `json:"modelId"`
+}
+
+type metadataResponseWire struct {
+	Models []modelMetadataWire `json:"models"`
+}
+
+type modelMetadataWire struct {
+	ID            string                 `json:"id"`
+	Name          string                 `json:"name"`
+	Description   *string                `json:"description"`
+	Pricing       *modelPricingWire      `json:"pricing"`
+	Specification modelSpecificationWire `json:"specification"`
+	ModelType     string                 `json:"modelType"`
+}
+
+type modelPricingWire struct {
+	Input           string `json:"input"`
+	Output          string `json:"output"`
+	InputCacheRead  string `json:"input_cache_read"`
+	InputCacheWrite string `json:"input_cache_write"`
+}
+
+type modelSpecificationWire struct {
+	SpecificationVersion string `json:"specificationVersion"`
+	Provider             string `json:"provider"`
+	ModelID              string `json:"modelId"`
 }
 
 // CreditsInfo contains credit information for the authenticated user
 type CreditsInfo struct {
-	Available int `json:"available"`
-	Used      int `json:"used"`
+	Balance   string `json:"balance"`
+	TotalUsed string `json:"totalUsed"`
 }
 
 // New creates a new AI Gateway provider with the given configuration.
@@ -113,21 +207,13 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		baseURL = DefaultBaseURL
 	}
 
-	// Get API key from config or environment
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
-	}
-
-	if apiKey == "" {
-		return nil, fmt.Errorf("LAI Gateway API key is required (set via Config.APIKey or AI_GATEWAY_API_KEY environment variable)")
+	authResolver := func(ctx context.Context) (string, string, error) {
+		return resolveGatewayAuthToken(ctx, cfg)
 	}
 
 	// Create headers with authentication
 	headers := map[string]string{
-		"Authorization":               fmt.Sprintf("Bearer %s", apiKey),
 		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
-		"ai-gateway-auth-method":      "api-key",
 	}
 
 	// Add custom headers
@@ -145,11 +231,13 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
 	}
 
+	httpClient := newGatewayHTTPClient(cfg.HTTPClient, authResolver)
+
 	// Create HTTP client
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    baseURL,
 		Headers:    headers,
-		HTTPClient: cfg.HTTPClient,
+		HTTPClient: httpClient,
 	})
 
 	// Set cache refresh time
@@ -161,9 +249,28 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	return &Provider{
 		config:           cfg,
 		client:           client,
+		baseURL:          baseURL,
+		headers:          headers,
+		authResolver:     authResolver,
 		cacheRefreshTime: cacheRefreshTime,
 		pendingMetadata:  &sync.Once{},
 	}, nil
+}
+
+func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
+	}
+	if apiKey != "" {
+		return apiKey, "api-key", nil
+	}
+
+	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
+		return oidcToken, "oidc", nil
+	}
+
+	return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, fmt.Errorf("no API key or OIDC token configured"), "")
 }
 
 // Name returns the provider name
@@ -234,10 +341,40 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	p.metadataMutex.RUnlock()
 
 	// Fetch fresh metadata
-	var metadata MetadataResponse
-	err := p.client.GetJSON(ctx, "/metadata", &metadata)
+	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch available models: %w", err)
+		return nil, p.handleError(err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, p.gatewayAPIError(resp)
+	}
+	var wire metadataResponseWire
+	if err := json.Unmarshal(resp.Body, &wire); err != nil {
+		return nil, p.handleError(err)
+	}
+	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
+	for _, model := range wire.Models {
+		var pricing *ModelPricing
+		if model.Pricing != nil {
+			pricing = &ModelPricing{
+				Input:                    model.Pricing.Input,
+				Output:                   model.Pricing.Output,
+				CachedInputTokens:        model.Pricing.InputCacheRead,
+				CacheCreationInputTokens: model.Pricing.InputCacheWrite,
+			}
+		}
+		metadata.Models = append(metadata.Models, ModelMetadata{
+			ID:          model.ID,
+			Name:        model.Name,
+			Description: model.Description,
+			Pricing:     pricing,
+			Specification: ModelSpecification{
+				SpecificationVersion: model.Specification.SpecificationVersion,
+				Provider:             model.Specification.Provider,
+				ModelID:              model.Specification.ModelID,
+			},
+			ModelType: model.ModelType,
+		})
 	}
 
 	// Update cache
@@ -251,12 +388,76 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 
 // GetCredits returns credit information for the authenticated user
 func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
-	var credits CreditsInfo
-	err := p.client.GetJSON(ctx, "/credits", &credits)
+	body, err := p.doOriginRequest(ctx, "/v1/credits")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch credits: %w", err)
+		return nil, err
 	}
-	return &credits, nil
+	var wire struct {
+		Balance   string `json:"balance"`
+		TotalUsed string `json:"total_used"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return nil, p.handleError(err)
+	}
+	return &CreditsInfo{
+		Balance:   wire.Balance,
+		TotalUsed: wire.TotalUsed,
+	}, nil
+}
+
+func (p *Provider) originClient() (*internalhttp.Client, error) {
+	base, err := url.Parse(p.baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return internalhttp.NewClient(internalhttp.Config{
+		BaseURL:    base.Scheme + "://" + base.Host,
+		Headers:    p.headers,
+		HTTPClient: newGatewayHTTPClient(p.config.HTTPClient, p.authResolver),
+	}), nil
+}
+
+func (p *Provider) handleError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if gatewayerrors.IsTimeoutError(err) {
+		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
+	}
+	if gatewayerrors.IsGatewayError(err) {
+		return err
+	}
+	if providererrors.IsProviderError(err) {
+		return err
+	}
+	return providererrors.NewProviderError("gateway", 0, "", err.Error(), err)
+}
+
+func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, error) {
+	client, err := p.originClient()
+	if err != nil {
+		return nil, p.handleError(err)
+	}
+
+	resp, err := client.Get(ctx, path)
+	if err != nil {
+		return nil, p.handleError(err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, p.gatewayAPIError(resp)
+	}
+	return resp.Body, nil
+}
+
+func (p *Provider) gatewayAPIError(resp *internalhttp.Response) error {
+	if resp == nil {
+		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
+	}
+	authMethod := ""
+	if p.authResolver != nil {
+		_, authMethod, _ = p.authResolver(context.Background())
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", nil, authMethod)
 }
 
 // Client returns the HTTP client for making API requests
@@ -309,11 +510,12 @@ type O11yHeaders struct {
 }
 
 // GetO11yHeaders returns observability headers from the environment
-func GetO11yHeaders() O11yHeaders {
+func GetO11yHeaders(ctx context.Context) O11yHeaders {
 	return O11yHeaders{
 		DeploymentID: os.Getenv("VERCEL_DEPLOYMENT_ID"),
 		Environment:  os.Getenv("VERCEL_ENV"),
 		Region:       os.Getenv("VERCEL_REGION"),
+		RequestID:    gatewayRequestID(ctx),
 		ProjectID:    os.Getenv("VERCEL_PROJECT_ID"),
 	}
 }

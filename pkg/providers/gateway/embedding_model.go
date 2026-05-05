@@ -56,7 +56,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	}
 
 	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 	if opts != nil {
 		for k, v := range opts.Headers {
@@ -86,7 +86,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 
 	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 	if opts != nil {
 		for k, v := range opts.Headers {

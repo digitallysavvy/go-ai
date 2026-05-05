@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -39,7 +40,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "openai"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -86,6 +87,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	result.ResponseMetadata = &types.ResponseMetadata{
+		ID:        response.ID,
+		Timestamp: time.Unix(response.Created, 0).UTC(),
+		ModelID:   response.Model,
+		Headers:   result.ResponseHeaders,
+	}
 	return result, nil
 }
 
@@ -370,7 +377,7 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	// Try to parse as OpenAI error response
-	return providererrors.NewProviderError("openai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // openAIResponse represents the OpenAI API response

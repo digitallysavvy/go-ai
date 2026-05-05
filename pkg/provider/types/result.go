@@ -40,6 +40,10 @@ type GenerateResult struct {
 	// Populated for HTTP-based providers; nil for others.
 	// Mirrors result.response?.headers in the TypeScript SDK.
 	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
+
+	// ResponseMetadata contains normalized response metadata when the provider
+	// exposes it on non-streaming calls.
+	ResponseMetadata *ResponseMetadata `json:"response,omitempty"`
 }
 
 // EmbeddingResponse contains metadata about the HTTP response from the embedding provider.

@@ -5,8 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -31,7 +31,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "openai"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -43,9 +43,9 @@ func (m *ImageModel) ModelID() string {
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody := m.buildRequestBody(opts)
 	var response openaiImageResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/images/generations", reqBody, &response)
+	err := m.provider.client.PostJSON(ctx, "/images/generations", reqBody, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	return m.convertResponse(response)
 }
@@ -120,8 +120,8 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 type openaiImageResponse struct {
 	Created int64 `json:"created"`
 	Data    []struct {
-		B64JSON         string `json:"b64_json"`
-		URL             string `json:"url"`
-		RevisedPrompt   string `json:"revised_prompt"`
+		B64JSON       string `json:"b64_json"`
+		URL           string `json:"url"`
+		RevisedPrompt string `json:"revised_prompt"`
 	} `json:"data"`
 }

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	stdhttp "net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -23,6 +24,10 @@ type Config struct {
 	// APIKey is the OpenAI API key
 	APIKey string
 
+	// Name overrides the provider name returned by Provider.Name().
+	// Defaults to "openai".
+	Name string
+
 	// BaseURL is the base URL for the OpenAI API (default: https://api.openai.com/v1)
 	BaseURL string
 
@@ -31,6 +36,9 @@ type Config struct {
 
 	// Project is the optional project ID
 	Project string
+
+	// HTTPClient overrides the HTTP client used for all requests.
+	HTTPClient *stdhttp.Client
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -54,8 +62,9 @@ func New(cfg Config) *Provider {
 	}
 
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:    baseURL,
+		Headers:    headers,
+		HTTPClient: cfg.HTTPClient,
 	})
 
 	return &Provider{
@@ -66,6 +75,9 @@ func New(cfg Config) *Provider {
 
 // Name returns the provider name
 func (p *Provider) Name() string {
+	if p.config.Name != "" {
+		return p.config.Name
+	}
 	return "openai"
 }
 

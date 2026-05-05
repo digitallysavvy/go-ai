@@ -9,8 +9,8 @@ import (
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -35,7 +35,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "openai"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -53,7 +53,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// Use internal http client's Do method with custom headers
 	req := internalhttp.Request{
 		Method: "POST",
-		Path:   "/v1/audio/transcriptions",
+		Path:   "/audio/transcriptions",
 		Body:   body,
 		Headers: map[string]string{
 			"Content-Type": contentType,
@@ -62,7 +62,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	resp, err := m.provider.client.Do(ctx, req)
 	if err != nil {
-		return nil, providererrors.NewProviderError("openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {

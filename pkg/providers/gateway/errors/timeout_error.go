@@ -25,6 +25,9 @@ type GatewayTimeoutError struct {
 
 	// StatusCode is the HTTP status code (typically 408)
 	StatusCode int
+
+	// GenerationID identifies the failed gateway generation when available.
+	GenerationID string
 }
 
 // Error implements the error interface
@@ -42,6 +45,14 @@ func (e *GatewayTimeoutError) Error() string {
 func (e *GatewayTimeoutError) Unwrap() error {
 	return e.Cause
 }
+
+func (e *GatewayTimeoutError) GatewayErrorMarker() {}
+
+func (e *GatewayTimeoutError) GetStatusCode() int { return e.StatusCode }
+
+func (e *GatewayTimeoutError) GetType() string { return "timeout_error" }
+
+func (e *GatewayTimeoutError) GetGenerationID() string { return e.GenerationID }
 
 // IsGatewayTimeoutError checks if an error is a GatewayTimeoutError
 func IsGatewayTimeoutError(err error) bool {
@@ -131,10 +142,10 @@ func IsTimeoutError(err error) bool {
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(s == substr ||
-		 (len(s) > len(substr) &&
-		  (s[:len(substr)] == substr ||
-		   s[len(s)-len(substr):] == substr ||
-		   findSubstring(s, substr))))
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					findSubstring(s, substr))))
 }
 
 // findSubstring is a simple substring search helper

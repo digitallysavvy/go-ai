@@ -69,7 +69,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	headers := m.getModelConfigHeaders()
 
 	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders()
+	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
 	// Make API request

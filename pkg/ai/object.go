@@ -19,6 +19,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const defaultObjectMaxRetries = 2
+
+type RepairTextFunc func(ctx context.Context, text string, parseErr error) (*string, error)
+
 // objectCallCtx carries call-scoped metadata through the internal mode functions
 // so structured callback events can be correlated across OnStepStart/OnStepFinish/OnFinish.
 type objectCallCtx struct {
@@ -105,6 +109,103 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 		return err
 	})
 	return stream, err
+}
+
+func normalizeObjectMaxRetries(maxRetries int) (int, error) {
+	if maxRetries < 0 {
+		return 0, fmt.Errorf("maxRetries must be >= 0")
+	}
+	if maxRetries == 0 {
+		return defaultObjectMaxRetries, nil
+	}
+	return maxRetries, nil
+}
+
+func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
+	if result == nil {
+		return nil
+	}
+	if result.ResponseMetadata != nil {
+		return result.ResponseMetadata
+	}
+	result.ResponseMetadata = &types.ResponseMetadata{
+		ID:        newCallID(),
+		Timestamp: time.Now(),
+		ModelID:   model.ModelID(),
+		Headers:   result.ResponseHeaders,
+	}
+	return result.ResponseMetadata
+}
+
+func generateStepResponseFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) GenerateStepResponse {
+	meta := responseMetadataFromGenerateResult(model, result)
+	if meta == nil {
+		return GenerateStepResponse{Body: result.RawResponse}
+	}
+	return GenerateStepResponse{
+		ID:        meta.ID,
+		Timestamp: meta.Timestamp,
+		ModelID:   meta.ModelID,
+		Headers:   meta.Headers,
+		Body:      result.RawResponse,
+	}
+}
+
+func newNoObjectGeneratedError(message string, cause error, text string, model provider.LanguageModel, result *types.GenerateResult) error {
+	if result == nil {
+		return &NoObjectGeneratedError{
+			Message: message,
+			Cause:   cause,
+			Text:    text,
+		}
+	}
+	usage := result.Usage
+	return &NoObjectGeneratedError{
+		Message:      message,
+		Cause:        cause,
+		Text:         text,
+		Response:     responseMetadataFromGenerateResult(model, result),
+		Usage:        &usage,
+		FinishReason: result.FinishReason,
+	}
+}
+
+func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s schema.Schema, enumValues []string, model provider.LanguageModel) (interface{}, []interface{}, string, error) {
+	if result == nil {
+		return nil, nil, "", newNoObjectGeneratedError("No object generated.", nil, "", model, nil)
+	}
+	if result.Text == "" {
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+	}
+	obj, arr, enumValue, err := parseStreamFinal(mode, s, enumValues, result.Text)
+	if err != nil {
+		message := "No object generated: response did not match schema."
+		var syntaxErr *json.SyntaxError
+		var unmarshalTypeErr *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF):
+			message = "No object generated: could not parse the response."
+		}
+		return nil, nil, "", newNoObjectGeneratedError(message, err, result.Text, model, result)
+	}
+	return obj, arr, enumValue, nil
+}
+
+func attemptRepair(
+	ctx context.Context,
+	repair RepairTextFunc,
+	text string,
+	parseErr error,
+) (*string, error) {
+	if repair == nil {
+		return nil, nil
+	}
+	cause := parseErr
+	var noObjErr *NoObjectGeneratedError
+	if errors.As(parseErr, &noObjErr) && noObjErr.Cause != nil {
+		cause = noObjErr.Cause
+	}
+	return repair(ctx, text, cause)
 }
 
 func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.ResponseFormat, error) {
@@ -329,6 +430,10 @@ type GenerateObjectOptions struct {
 	Seed             *int
 	MaxRetries       int
 
+	// ExperimentalRepairText repairs invalid JSON or schema-invalid object output.
+	// Return nil when the output cannot be repaired.
+	ExperimentalRepairText RepairTextFunc
+
 	// Additional HTTP headers sent with the request.
 	Headers map[string]string
 
@@ -469,6 +574,11 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
+	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
+	if maxRetryErr != nil {
+		return nil, maxRetryErr
+	}
+	opts.MaxRetries = maxRetries
 
 	// Validate mode-specific requirements.
 	// Mirrors TS SDK's validateObjectGenerationInput() in validate-object-generation-input.ts.
@@ -660,7 +770,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	reasoning := extractObjectReasoning(genResult)
 
 	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
-	resMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
+	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -680,13 +790,20 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
-	var obj interface{}
-	if err := json.Unmarshal([]byte(genResult.Text), &obj); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
+	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
+	if err != nil && opts.ExperimentalRepairText != nil {
+		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+		if repairErr != nil {
+			return nil, repairErr
+		}
+		if repairedText != nil && *repairedText != genResult.Text {
+			repairedResult := *genResult
+			repairedResult.Text = *repairedText
+			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeObject, opts.Schema, nil, opts.Model)
+		}
 	}
-
-	if err := opts.Schema.Validator().Validate(obj); err != nil {
-		return nil, fmt.Errorf("output validation failed: %w", err)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &GenerateObjectResult{
@@ -790,7 +907,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	arrayReasoning := extractObjectReasoning(genResult)
 
 	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
-	arrResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
+	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -809,26 +926,20 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
-	// Parse the wrapper object and extract the 'elements' array.
-	// Model output is { "elements": [...] } matching the wrapper schema sent above.
-	var wrapper map[string]interface{}
-	if err := json.Unmarshal([]byte(genResult.Text), &wrapper); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON array: %w", err)
-	}
-	rawElements, ok := wrapper["elements"]
-	if !ok {
-		return nil, fmt.Errorf("failed to parse JSON array: missing 'elements' field")
-	}
-	arr, ok := rawElements.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("failed to parse JSON array: 'elements' is not an array")
-	}
-
-	// Validate each element against the original item schema.
-	for i, element := range arr {
-		if err := opts.Schema.Validator().Validate(element); err != nil {
-			return nil, fmt.Errorf("validation failed for element %d: %w", i, err)
+	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
+	if err != nil && opts.ExperimentalRepairText != nil {
+		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+		if repairErr != nil {
+			return nil, repairErr
 		}
+		if repairedText != nil && *repairedText != genResult.Text {
+			repairedResult := *genResult
+			repairedResult.Text = *repairedText
+			_, arr, _, err = parseObjectResult(&repairedResult, ObjectModeArray, opts.Schema, nil, opts.Model)
+		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	result := &GenerateObjectResult{
@@ -929,7 +1040,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	enumReasoning := extractObjectReasoning(genResult)
 
 	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
-	enumResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
+	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -948,31 +1059,20 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
-	// Parse the wrapper object and extract the 'result' string.
-	// Model output is { "result": "value" } matching the wrapper schema sent above.
-	var wrapper map[string]interface{}
-	if err := json.Unmarshal([]byte(genResult.Text), &wrapper); err != nil {
-		return nil, fmt.Errorf("failed to parse enum JSON output: %w", err)
-	}
-	resultVal, ok := wrapper["result"]
-	if !ok {
-		return nil, fmt.Errorf("enum output missing 'result' field")
-	}
-	selectedValue, ok := resultVal.(string)
-	if !ok {
-		return nil, fmt.Errorf("enum output 'result' is not a string: %T", resultVal)
-	}
-
-	// Validate selected value against allowed enum values.
-	valid := false
-	for _, enumVal := range opts.EnumValues {
-		if selectedValue == enumVal {
-			valid = true
-			break
+	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
+	if err != nil && opts.ExperimentalRepairText != nil {
+		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+		if repairErr != nil {
+			return nil, repairErr
+		}
+		if repairedText != nil && *repairedText != genResult.Text {
+			repairedResult := *genResult
+			repairedResult.Text = *repairedText
+			_, _, selectedValue, err = parseObjectResult(&repairedResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 		}
 	}
-	if !valid {
-		return nil, fmt.Errorf("invalid enum value: %q (expected one of %v)", selectedValue, opts.EnumValues)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &GenerateObjectResult{
@@ -1067,7 +1167,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	noSchemaReasoning := extractObjectReasoning(genResult)
 
 	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
-	nsResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: genResult.ResponseHeaders, Body: genResult.RawResponse}
+	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1086,9 +1186,20 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
-	var obj interface{}
-	if err := json.Unmarshal([]byte(genResult.Text), &obj); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
+	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
+	if err != nil && opts.ExperimentalRepairText != nil {
+		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+		if repairErr != nil {
+			return nil, repairErr
+		}
+		if repairedText != nil && *repairedText != genResult.Text {
+			repairedResult := *genResult
+			repairedResult.Text = *repairedText
+			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeNoSchema, nil, nil, opts.Model)
+		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	result := &GenerateObjectResult{
@@ -1174,6 +1285,10 @@ type StreamObjectOptions struct {
 	Seed             *int
 	MaxRetries       int
 
+	// ExperimentalRepairText repairs invalid JSON or schema-invalid object output.
+	// Return nil when the output cannot be repaired.
+	ExperimentalRepairText RepairTextFunc
+
 	// Additional HTTP headers sent with the request.
 	Headers map[string]string
 
@@ -1233,6 +1348,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
+	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
+	if maxRetryErr != nil {
+		return nil, maxRetryErr
+	}
+	opts.MaxRetries = maxRetries
 	switch opts.OutputMode {
 	case ObjectModeObject:
 		if opts.Schema == nil {
@@ -1378,7 +1498,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		fallbackReasoning := extractObjectReasoning(result)
 
 		fbReqMeta := GenerateStepRequest{Body: result.RawRequest}
-		fbResMeta := GenerateStepResponse{ModelID: opts.Model.ModelID(), Headers: result.ResponseHeaders, Body: result.RawResponse}
+		fbResMeta := generateStepResponseFromGenerateResult(opts.Model, result)
 
 		// Fire OnStepFinish before parsing.
 		Notify(ctx, ObjectOnStepFinishEvent{
@@ -1399,7 +1519,17 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		}, opts.OnStepFinish)
 
 		// Parse final JSON
-		finalObject, finalArray, finalEnum, parseErr := parseStreamFinal(opts.OutputMode, opts.Schema, opts.EnumValues, result.Text)
+		finalObject, finalArray, finalEnum, parseErr := parseObjectResult(result, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
+		if parseErr != nil && opts.ExperimentalRepairText != nil {
+			repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, result.Text, parseErr)
+			if repairErr != nil {
+				parseErr = repairErr
+			} else if repairedText != nil && *repairedText != result.Text {
+				repairedResult := *result
+				repairedResult.Text = *repairedText
+				finalObject, finalArray, finalEnum, parseErr = parseObjectResult(&repairedResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
+			}
+		}
 		if parseErr != nil {
 			// Parsing failed — fire OnFinishEvent with error and nil object.
 			Notify(ctx, ObjectOnFinishEvent{
@@ -1416,7 +1546,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 				FunctionID:       cbFuncID,
 				Metadata:         cbMeta,
 			}, opts.OnFinishEvent)
-			return nil, fmt.Errorf("failed to parse JSON: %w", parseErr)
+			return nil, parseErr
 		}
 
 		finalResult := &GenerateObjectResult{
@@ -1623,30 +1753,49 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var finalObject interface{}
 	var finalArray []interface{}
 	var finalEnum string
-	if accumulatedText != "" {
-		parsedObject, parsedArray, parsedEnum, parseErr := parseStreamFinal(opts.OutputMode, opts.Schema, opts.EnumValues, accumulatedText)
-		if parseErr != nil {
-			// Parse failure: fire OnFinishEvent with error and nil object.
-			Notify(ctx, ObjectOnFinishEvent{
-				CallID:           callID,
-				Object:           nil,
-				Error:            parseErr,
-				Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
-				FinishReason:     finishReason,
-				Usage:            usage,
-				Warnings:         streamWarnings,
-				Request:          streamReqMeta,
-				Response:         streamResMeta,
-				ProviderMetadata: streamProviderMetadata,
-				FunctionID:       cbFuncID,
-				Metadata:         cbMeta,
-			}, opts.OnFinishEvent)
-			return nil, fmt.Errorf("failed to parse final JSON: %w", parseErr)
-		}
-		finalObject = parsedObject
-		finalArray = parsedArray
-		finalEnum = parsedEnum
+	streamResult := &types.GenerateResult{
+		Text:         accumulatedText,
+		FinishReason: finishReason,
+		Usage:        usage,
+		ResponseMetadata: &types.ResponseMetadata{
+			ID:        streamResMeta.ID,
+			Timestamp: streamResMeta.Timestamp,
+			ModelID:   streamResMeta.ModelID,
+			Headers:   streamResMeta.Headers,
+		},
 	}
+	parsedObject, parsedArray, parsedEnum, parseErr := parseObjectResult(streamResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
+	if parseErr != nil && opts.ExperimentalRepairText != nil {
+		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, accumulatedText, parseErr)
+		if repairErr != nil {
+			parseErr = repairErr
+		} else if repairedText != nil && *repairedText != accumulatedText {
+			repairedResult := *streamResult
+			repairedResult.Text = *repairedText
+			parsedObject, parsedArray, parsedEnum, parseErr = parseObjectResult(&repairedResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
+		}
+	}
+	if parseErr != nil {
+		// Parse failure: fire OnFinishEvent with error and nil object.
+		Notify(ctx, ObjectOnFinishEvent{
+			CallID:           callID,
+			Object:           nil,
+			Error:            parseErr,
+			Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
+			FinishReason:     finishReason,
+			Usage:            usage,
+			Warnings:         streamWarnings,
+			Request:          streamReqMeta,
+			Response:         streamResMeta,
+			ProviderMetadata: streamProviderMetadata,
+			FunctionID:       cbFuncID,
+			Metadata:         cbMeta,
+		}, opts.OnFinishEvent)
+		return nil, parseErr
+	}
+	finalObject = parsedObject
+	finalArray = parsedArray
+	finalEnum = parsedEnum
 
 	// Build result. Reasoning is accumulated for convenience but note that TS SDK does
 	// not expose reasoning in the streaming object path (onStepFinish/onFinish receive undefined).

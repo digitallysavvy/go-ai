@@ -1,6 +1,9 @@
 package openai
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -64,5 +67,26 @@ func TestBuildRequestBody_ResponseFormatSetForDALLE(t *testing.T) {
 	}
 	if rf != "b64_json" {
 		t.Errorf("response_format = %v, want b64_json", rf)
+	}
+}
+
+func TestImageModel_DoGenerate_UsesVersionRelativePath(t *testing.T) {
+	var requestPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL + "/v1"})
+	model := NewImageModel(p, "dall-e-3")
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if requestPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", requestPath)
 	}
 }

@@ -333,6 +333,10 @@ func TestGenerateObject_JSONParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
 }
 
 func TestGenerateObject_ArrayParseError(t *testing.T) {
@@ -385,6 +389,264 @@ func TestGenerateObject_InvalidEnumValue(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error for invalid enum value")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+}
+
+func TestGenerateObject_NoObjectGeneratedErrorIncludesResponseMetadata(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Unix(1710000000, 0).UTC()
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"`,
+				FinishReason: types.FinishReasonStop,
+				ResponseMetadata: &types.ResponseMetadata{
+					ID:        "resp_123",
+					Timestamp: ts,
+					ModelID:   "mock-model",
+					Headers:   map[string]string{"x-test": "1"},
+				},
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+	if noObjErr.Response == nil {
+		t.Fatal("expected response metadata")
+	}
+	if noObjErr.Response.ID != "resp_123" {
+		t.Fatalf("id = %q", noObjErr.Response.ID)
+	}
+	if !noObjErr.Response.Timestamp.Equal(ts) {
+		t.Fatalf("timestamp = %v", noObjErr.Response.Timestamp)
+	}
+	if noObjErr.Response.ModelID != "mock-model" {
+		t.Fatalf("modelId = %q", noObjErr.Response.ModelID)
+	}
+	if noObjErr.Response.Headers["x-test"] != "1" {
+		t.Fatalf("headers = %#v", noObjErr.Response.Headers)
+	}
+}
+
+func TestGenerateObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Unix(1710000100, 0).UTC()
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "",
+				FinishReason: types.FinishReasonStop,
+				ResponseMetadata: &types.ResponseMetadata{
+					ID:        "resp_empty",
+					Timestamp: ts,
+					ModelID:   "mock-model",
+					Headers:   map[string]string{"x-empty": "1"},
+				},
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+	if noObjErr.Message != "No object generated: the model did not return a response." {
+		t.Fatalf("message = %q", noObjErr.Message)
+	}
+	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_empty" {
+		t.Fatalf("response = %#v", noObjErr.Response)
+	}
+}
+
+func TestGenerateObject_ResultResponseIncludesProviderMetadataFields(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Unix(1710000200, 0).UTC()
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"}`,
+				FinishReason: types.FinishReasonStop,
+				ResponseMetadata: &types.ResponseMetadata{
+					ID:        "resp_success",
+					Timestamp: ts,
+					ModelID:   "mock-model",
+					Headers:   map[string]string{"x-test": "1"},
+				},
+				RawResponse: map[string]interface{}{"ok": true},
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Response.ID != "resp_success" {
+		t.Fatalf("response id = %q", result.Response.ID)
+	}
+	if !result.Response.Timestamp.Equal(ts) {
+		t.Fatalf("timestamp = %v", result.Response.Timestamp)
+	}
+	if result.Response.ModelID != "mock-model" {
+		t.Fatalf("modelId = %q", result.Response.ModelID)
+	}
+	if result.Response.Headers["x-test"] != "1" {
+		t.Fatalf("headers = %#v", result.Response.Headers)
+	}
+}
+
+func TestGenerateObject_DefaultRetriesMatchesTS(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("retry me")
+			}
+			return &types.GenerateResult{
+				Text:         `{"ok":true}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestGenerateObject_ExperimentalRepairText(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+		ExperimentalRepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			repaired := text + "}"
+			return &repaired, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Fatal("expected repaired object")
+	}
+}
+
+func TestGenerateObject_ExperimentalRepairTextReceivesUnderlyingCauseAndCanDecline(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	var repairErr error
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+		ExperimentalRepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			repairErr = parseErr
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+	if repairErr == nil {
+		t.Fatal("expected repair function to receive parse error")
+	}
+	if repairErr == noObjErr {
+		t.Fatal("expected repair function to receive underlying cause, not wrapped error")
+	}
+	if noObjErr.Cause == nil || repairErr.Error() != noObjErr.Cause.Error() {
+		t.Fatalf("repair error = %v, cause = %v", repairErr, noObjErr.Cause)
 	}
 }
 
@@ -519,6 +781,125 @@ func TestStreamObject_Basic(t *testing.T) {
 	}
 	if result.Object == nil {
 		t.Error("expected non-nil object")
+	}
+}
+
+func TestStreamObject_DefaultRetriesMatchesTS(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("retry me")
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"ok":true}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestStreamObject_ExperimentalRepairText(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"Jane"`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+		ExperimentalRepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			repaired := text + "}"
+			return &repaired, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Fatal("expected repaired object")
+	}
+}
+
+func TestStreamObject_ExperimentalRepairTextReceivesUnderlyingCauseAndCanDecline(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"Jane"`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	var repairErr error
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+		ExperimentalRepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			repairErr = parseErr
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+	if repairErr == nil {
+		t.Fatal("expected repair function to receive parse error")
+	}
+	if repairErr == noObjErr {
+		t.Fatal("expected repair function to receive underlying cause, not wrapped error")
+	}
+	if noObjErr.Cause == nil || repairErr.Error() != noObjErr.Cause.Error() {
+		t.Fatalf("repair error = %v, cause = %v", repairErr, noObjErr.Cause)
 	}
 }
 
@@ -817,6 +1198,53 @@ func TestStreamObject_ResponseMetadataIncludesFallbacksAndChunkMetadata(t *testi
 	}
 	if result.Response.Headers["x-test"] != "1" {
 		t.Fatalf("headers = %#v", result.Response.Headers)
+	}
+}
+
+func TestStreamObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Unix(1710000300, 0).UTC()
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{
+					Type: provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{
+						ID:        "resp_stream_empty",
+						ModelID:   "stream-model",
+						Timestamp: ts,
+						Headers:   map[string]string{"x-empty": "1"},
+					},
+				},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+		ModelName: "requested-model",
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "empty stream",
+		Schema: testSchema,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) {
+		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
+	}
+	if noObjErr.Message != "No object generated: the model did not return a response." {
+		t.Fatalf("message = %q", noObjErr.Message)
+	}
+	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_stream_empty" {
+		t.Fatalf("response = %#v", noObjErr.Response)
+	}
+	if !noObjErr.Response.Timestamp.Equal(ts) {
+		t.Fatalf("timestamp = %v", noObjErr.Response.Timestamp)
 	}
 }
 
