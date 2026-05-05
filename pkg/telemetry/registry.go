@@ -31,37 +31,72 @@ type TelemetryStartEvent struct {
 	// Prompt and System are only populated when Settings.RecordInputs is true.
 	Prompt string
 	System string
+	// RuntimeContext and ToolsContext contain only keys explicitly included by
+	// Settings.IncludeRuntimeContext and Settings.IncludeToolsContext.
+	RuntimeContext map[string]interface{}
+	ToolsContext   map[string]interface{}
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
 type TelemetryStepStartEvent struct {
+	Settings *Settings
 	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
 	// Used to name the per-step OTel child span.
-	OperationType string
-	StepNumber    int
+	OperationType  string
+	StepNumber     int
+	ModelProvider  string
+	ModelID        string
+	RuntimeContext map[string]interface{}
+	ToolsContext   map[string]interface{}
+}
+
+// LanguageModelCallStartEvent is emitted immediately before a provider model call.
+type LanguageModelCallStartEvent struct {
+	Settings      *Settings
+	CallID        string
 	ModelProvider string
 	ModelID       string
+	Prompt        interface{}
+	Tools         interface{}
+}
+
+// LanguageModelCallEndEvent is emitted after a provider model call returns and
+// before client-side tool execution begins.
+type LanguageModelCallEndEvent struct {
+	Settings      *Settings
+	CallID        string
+	ModelProvider string
+	ModelID       string
+	FinishReason  string
+	Usage         TelemetryUsage
+	Content       interface{}
+	ResponseID    string
 }
 
 // TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolCallStart.
 type TelemetryToolCallStartEvent struct {
-	ToolCallID string
-	ToolName   string
-	Args       map[string]interface{}
+	Settings    *Settings
+	ToolCallID  string
+	ToolName    string
+	Args        map[string]interface{}
+	ToolContext map[string]interface{}
 }
 
 // TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolCallFinish.
 type TelemetryToolCallFinishEvent struct {
-	ToolCallID string
-	ToolName   string
-	Args       map[string]interface{}
-	Result     interface{}
-	Error      error
-	DurationMs int64
+	Settings    *Settings
+	ToolCallID  string
+	ToolName    string
+	Args        map[string]interface{}
+	Result      interface{}
+	Error       error
+	DurationMs  int64
+	ToolContext map[string]interface{}
 }
 
 // TelemetryChunkEvent is passed to TelemetryIntegration.OnChunk (streaming only).
 type TelemetryChunkEvent struct {
+	Settings *Settings
 	// ChunkType mirrors provider.ChunkType values: "text", "tool-call", "tool-result", etc.
 	ChunkType string
 	// Text is populated for text-type chunks.
@@ -103,7 +138,9 @@ type TelemetryStepFinishEvent struct {
 	ResponseTimestamp time.Time
 
 	// Settings holds the caller-supplied telemetry configuration.
-	Settings *Settings
+	Settings       *Settings
+	RuntimeContext map[string]interface{}
+	ToolsContext   map[string]interface{}
 }
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
@@ -115,13 +152,16 @@ type TelemetryFinishEvent struct {
 	Text string
 	// Files holds any model-generated output files (e.g. images, audio).
 	// Integrations should check Settings.RecordOutputs before recording file data.
-	Files    []types.GeneratedFileContent
-	Settings *Settings
+	Files          []types.GeneratedFileContent
+	Settings       *Settings
+	RuntimeContext map[string]interface{}
+	ToolsContext   map[string]interface{}
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
 type TelemetryErrorEvent struct {
-	Error error
+	Settings *Settings
+	Error    error
 }
 
 // TelemetryUsage carries token counts for telemetry events.
@@ -198,6 +238,17 @@ type TelemetryIntegration interface {
 	) (interface{}, error)
 }
 
+// Telemetry is the stable name for telemetry integrations.
+type Telemetry = TelemetryIntegration
+
+type languageModelCallStartHandler interface {
+	OnLanguageModelCallStart(context.Context, LanguageModelCallStartEvent)
+}
+
+type languageModelCallEndHandler interface {
+	OnLanguageModelCallEnd(context.Context, LanguageModelCallEndEvent)
+}
+
 // ---------------------------------------------------------------------------
 // NoopTelemetryIntegration
 // ---------------------------------------------------------------------------
@@ -242,14 +293,14 @@ func (NoopTelemetryIntegration) ExecuteTool(
 type OTelTelemetryIntegration struct{}
 
 // OnStart starts the root OTel span and embeds it in the returned context.
-// Returns ctx unchanged when settings is nil or disabled.
+// Returns ctx unchanged when settings explicitly disables telemetry.
 func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
-	if e.Settings == nil || !e.Settings.IsEnabled {
+	if !Enabled(e.Settings) {
 		return ctx
 	}
 	tracer := GetTracer(e.Settings)
 	spanName := e.OperationType
-	if e.Settings.FunctionID != "" {
+	if e.Settings != nil && e.Settings.FunctionID != "" {
 		spanName += "." + e.Settings.FunctionID
 	}
 	ctx, span := tracer.Start(ctx, spanName)
@@ -258,16 +309,10 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 		attribute.String("gen_ai.system", e.ModelProvider),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	if e.Settings.FunctionID != "" {
+	if e.Settings != nil && e.Settings.FunctionID != "" {
 		span.SetAttributes(attribute.String("ai.telemetry.functionId", e.Settings.FunctionID))
 	}
-	for key, value := range e.Settings.Metadata {
-		span.SetAttributes(attribute.KeyValue{
-			Key:   attribute.Key("ai.telemetry.metadata." + key),
-			Value: value,
-		})
-	}
-	if e.Settings.RecordInputs && e.Prompt != "" {
+	if (e.Settings == nil || e.Settings.RecordInputs) && e.Prompt != "" {
 		span.SetAttributes(attribute.String("ai.prompt", e.Prompt))
 	}
 	return ctx // span is embedded via OTel context propagation
@@ -546,13 +591,26 @@ var (
 	integrations []TelemetryIntegration
 )
 
-// RegisterTelemetryIntegration replaces all registered integrations with i.
-// Pass NoopTelemetryIntegration{} to reset to the quiet default.
+// RegisterTelemetryIntegration appends integrations to the global registry.
+// Passing only NoopTelemetryIntegration{} resets to the quiet default for
+// backward compatibility with older tests and examples.
 // Safe to call concurrently with fire functions.
-func RegisterTelemetryIntegration(i TelemetryIntegration) {
+func RegisterTelemetryIntegration(integration TelemetryIntegration, more ...TelemetryIntegration) {
 	mu.Lock()
 	defer mu.Unlock()
-	integrations = []TelemetryIntegration{i}
+	all := append([]TelemetryIntegration{integration}, more...)
+	if len(all) == 1 {
+		if _, ok := all[0].(NoopTelemetryIntegration); ok {
+			integrations = all
+			return
+		}
+		if len(integrations) == 1 {
+			if _, ok := integrations[0].(NoopTelemetryIntegration); ok {
+				integrations = nil
+			}
+		}
+	}
+	integrations = append(integrations, all...)
 }
 
 // AddTelemetryIntegration appends i to the list of registered integrations.
@@ -588,7 +646,18 @@ func GetTelemetryIntegration() TelemetryIntegration {
 func snapshot() []TelemetryIntegration {
 	mu.RLock()
 	defer mu.RUnlock()
-	return integrations
+	return append([]TelemetryIntegration(nil), integrations...)
+}
+
+func snapshotFor(settings *Settings) []TelemetryIntegration {
+	if settings != nil && len(settings.Integrations) > 0 {
+		return append([]TelemetryIntegration(nil), settings.Integrations...)
+	}
+	return snapshot()
+}
+
+func telemetryDisabled(settings *Settings) bool {
+	return !Enabled(settings)
 }
 
 // ---------------------------------------------------------------------------
@@ -598,7 +667,11 @@ func snapshot() []TelemetryIntegration {
 // FireOnStart calls OnStart on every registered integration, threading the
 // returned context through the chain so each integration can inject spans.
 func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return ctx
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnStart, e)
+	for _, i := range snapshotFor(e.Settings) {
 		ctx = i.OnStart(ctx, e)
 	}
 	return ctx
@@ -607,16 +680,50 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 // FireOnStepStart calls OnStepStart on every registered integration, threading
 // the returned context through the chain so each integration can inject step spans.
 func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return ctx
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnStepStart, e)
+	for _, i := range snapshotFor(e.Settings) {
 		ctx = i.OnStepStart(ctx, e)
 	}
 	return ctx
 }
 
+// FireOnLanguageModelCallStart publishes and fans out a model-call start event.
+func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(languageModelCallStartHandler); ok {
+			handler.OnLanguageModelCallStart(ctx, e)
+		}
+	}
+}
+
+// FireOnLanguageModelCallEnd publishes and fans out a model-call end event.
+func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallEnd, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(languageModelCallEndHandler); ok {
+			handler.OnLanguageModelCallEnd(ctx, e)
+		}
+	}
+}
+
 // FireOnToolCallStart calls OnToolCallStart on every registered integration,
 // threading the returned context through the chain.
 func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return ctx
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionStart, e)
+	for _, i := range snapshotFor(e.Settings) {
 		ctx = i.OnToolCallStart(ctx, e)
 	}
 	return ctx
@@ -624,35 +731,55 @@ func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) con
 
 // FireOnToolCallFinish calls OnToolCallFinish on every registered integration.
 func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionEnd, e)
+	for _, i := range snapshotFor(e.Settings) {
 		i.OnToolCallFinish(ctx, e)
 	}
 }
 
 // FireOnChunk calls OnChunk on every registered integration.
 func FireOnChunk(ctx context.Context, e TelemetryChunkEvent) {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnChunk, e)
+	for _, i := range snapshotFor(e.Settings) {
 		i.OnChunk(ctx, e)
 	}
 }
 
 // FireOnStepFinish calls OnStepFinish on every registered integration.
 func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
+	for _, i := range snapshotFor(e.Settings) {
 		i.OnStepFinish(ctx, e)
 	}
 }
 
 // FireOnFinish calls OnFinish on every registered integration.
 func FireOnFinish(ctx context.Context, e TelemetryFinishEvent) {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnFinish, e)
+	for _, i := range snapshotFor(e.Settings) {
 		i.OnFinish(ctx, e)
 	}
 }
 
 // FireOnError calls OnError on every registered integration.
 func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
-	for _, i := range snapshot() {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnError, e)
+	for _, i := range snapshotFor(e.Settings) {
 		i.OnError(ctx, e)
 	}
 }
@@ -665,7 +792,21 @@ func FireExecuteTool(
 	args map[string]interface{},
 	execute func(ctx context.Context, args map[string]interface{}) (interface{}, error),
 ) (interface{}, error) {
-	is := snapshot()
+	return FireExecuteToolWithSettings(ctx, nil, toolName, args, execute)
+}
+
+// FireExecuteToolWithSettings chains ExecuteTool across resolved integrations.
+func FireExecuteToolWithSettings(
+	ctx context.Context,
+	settings *Settings,
+	toolName string,
+	args map[string]interface{},
+	execute func(ctx context.Context, args map[string]interface{}) (interface{}, error),
+) (interface{}, error) {
+	if telemetryDisabled(settings) {
+		return execute(ctx, args)
+	}
+	is := snapshotFor(settings)
 	if len(is) == 0 {
 		return execute(ctx, args)
 	}

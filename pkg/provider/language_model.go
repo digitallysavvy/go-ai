@@ -32,6 +32,14 @@ type GenerateOptions struct {
 	// Prompt for the model (either text or messages)
 	Prompt types.Prompt
 
+	// AllowSystemMessages permits system-role messages in Prompt.Messages.
+	// Defaults to false, matching the TypeScript SDK's messages conversion.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
 	// Temperature controls randomness (0.0 to 2.0, typically)
 	Temperature *float64
 
@@ -58,6 +66,12 @@ type GenerateOptions struct {
 
 	// Tool choice strategy
 	ToolChoice types.ToolChoice
+
+	// RuntimeContext is user-defined runtime data for the call.
+	RuntimeContext interface{}
+
+	// ToolsContext is per-tool execution context for the call.
+	ToolsContext map[string]interface{}
 
 	// Response format (for structured output)
 	ResponseFormat *ResponseFormat
@@ -347,6 +361,14 @@ const (
 	// content should emit exactly one of these as the first meaningful chunk.
 	// Mirrors the 'response-metadata' chunk type in the TypeScript SDK.
 	ChunkTypeResponseMetadata ChunkType = "response-metadata"
+
+	// ChunkTypeFirstChunk is a synthetic stream lifecycle marker emitted before
+	// the first meaningful stream chunk is forwarded.
+	ChunkTypeFirstChunk ChunkType = "ai.stream.firstChunk"
+
+	// ChunkTypeStreamFinish is a synthetic stream lifecycle marker emitted when
+	// the stream has been fully consumed.
+	ChunkTypeStreamFinish ChunkType = "ai.stream.finish"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.

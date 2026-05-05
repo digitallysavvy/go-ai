@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -18,9 +19,18 @@ type StreamTextOptions struct {
 	Model provider.LanguageModel
 
 	// Prompt can be a simple string or a list of messages
-	Prompt string
+	Prompt   string
 	Messages []types.Message
-	System string
+	System   string
+
+	// AllowSystemMessages permits system-role messages in Messages.
+	// Defaults to false; use System for system instructions unless you are
+	// intentionally passing provider-native system messages.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
 
 	// Generation parameters
 	Temperature      *float64
@@ -33,8 +43,11 @@ type StreamTextOptions struct {
 	Seed             *int
 
 	// Tools available for the model to call
-	Tools []types.Tool
+	Tools      []types.Tool
 	ToolChoice types.ToolChoice
+
+	// ToolApproval configures approval handling for tool execution.
+	ToolApproval types.ToolApprovalConfig
 
 	// Response format (for structured output)
 	// Deprecated: Use Output instead.
@@ -64,11 +77,23 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
-	// ExperimentalContext is user-defined context that flows through callbacks.
+	// RuntimeContext is user-defined context that flows through callbacks.
 	// It is passed as-is to all structured event callbacks.
+	RuntimeContext interface{}
+
+	// ToolsContext is the per-tool context map passed to approval and execution hooks.
+	ToolsContext map[string]interface{}
+
+	// ExperimentalContext is a deprecated alias for RuntimeContext.
 	ExperimentalContext interface{}
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// Callbacks
@@ -86,10 +111,16 @@ type StreamTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
-	// OnToolCallStart is called just before each tool's Execute function runs.
+	// OnToolExecutionStart is called just before each tool's Execute function runs.
+	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
+
+	// OnToolExecutionEnd is called after each tool's Execute function returns.
+	OnToolExecutionEnd func(ctx context.Context, e OnToolCallFinishEvent)
+
+	// Deprecated: use OnToolExecutionStart.
 	OnToolCallStart func(ctx context.Context, e OnToolCallStartEvent)
 
-	// OnToolCallFinish is called after each tool's Execute function returns.
+	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
 
 	// OnStepFinishEvent is called at the end of each LLM step.
@@ -206,6 +237,8 @@ type StreamTextResult struct {
 	cbModelProvider     string
 	cbModelID           string
 	cbExperimentalCtx   interface{}
+	cbRuntimeCtx        interface{}
+	cbToolsCtx          map[string]interface{}
 	// Snapshot of the initial messages and tools for event population
 	cbMessages []types.Message
 	cbTools    []types.Tool
@@ -223,23 +256,31 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
+	toolsContext := opts.ToolsContext
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
 
 	// Fire OnStart — integrations start their root spans here and embed them
 	// in the returned context.  FireOnFinish / FireOnError are called later
 	// from processStream or ReadAll once the stream completes.
 	telPrompt := ""
 	telSystem := ""
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.RecordInputs {
+	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = opts.System
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		OperationType: "ai.streamText",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Settings:      opts.ExperimentalTelemetry,
-		Prompt:        telPrompt,
-		System:        telSystem,
+		OperationType:  "ai.streamText",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       telemetrySettings,
+		Prompt:         telPrompt,
+		System:         telSystem,
+		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
 
@@ -252,9 +293,19 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
+	if normErr != nil {
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
+		return nil, normErr
+	}
+	prompt = normalizedPrompt
+	opts.RuntimeContext = runtimeContext
+	opts.ExperimentalContext = runtimeContext
+	opts.ToolsContext = toolsContext
 
 	// Extract telemetry info once for all callback events
-	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	callID := newCallID()
 
 	// CB-T19: Emit OnStartEvent before streaming begins
@@ -277,9 +328,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		PresencePenalty:     opts.PresencePenalty,
 		StopSequences:       opts.StopSequences,
 		Seed:                opts.Seed,
-		ExperimentalContext: opts.ExperimentalContext,
-		FunctionID:          cbFuncID,
-		Metadata:            cbMeta,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
 	}, opts.OnStart)
 
 	// CB-T20: Emit OnStepStartEvent for step 1 (current stream is single-step)
@@ -292,9 +343,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Messages:            prompt.Messages,
 		Tools:               opts.Tools,
 		PreviousSteps:       nil, // first (and only) step
-		ExperimentalContext: opts.ExperimentalContext,
-		FunctionID:          cbFuncID,
-		Metadata:            cbMeta,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
 	}, opts.OnStepStart)
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
@@ -305,7 +356,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		if responseFormat == nil {
 			rf, rfErr := op.ResponseFormat(ctx)
 			if rfErr != nil {
-				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Error: rfErr})
+				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: rfErr})
 				return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
 			}
 			responseFormat = rf
@@ -314,27 +365,43 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
-		Prompt:           prompt,
-		Temperature:      opts.Temperature,
-		MaxTokens:        opts.MaxTokens,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		PresencePenalty:  opts.PresencePenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		Tools:            opts.Tools,
-		ToolChoice:       opts.ToolChoice,
-		ResponseFormat:   responseFormat,
-		Reasoning:        opts.Reasoning,
-		ProviderOptions:  opts.ProviderOptions,
-		Telemetry:        opts.ExperimentalTelemetry,
+		Prompt:                prompt,
+		AllowSystemMessages:   allowSystem,
+		AllowSystemInMessages: allowSystem,
+		Temperature:           opts.Temperature,
+		MaxTokens:             opts.MaxTokens,
+		TopP:                  opts.TopP,
+		TopK:                  opts.TopK,
+		FrequencyPenalty:      opts.FrequencyPenalty,
+		PresencePenalty:       opts.PresencePenalty,
+		StopSequences:         opts.StopSequences,
+		Seed:                  opts.Seed,
+		Tools:                 opts.Tools,
+		ToolChoice:            opts.ToolChoice,
+		RuntimeContext:        runtimeContext,
+		ToolsContext:          toolsContext,
+		ResponseFormat:        responseFormat,
+		Reasoning:             opts.Reasoning,
+		ProviderOptions:       opts.ProviderOptions,
+		Telemetry:             telemetrySettings,
 	}
+
+	telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
+		Settings:      telemetrySettings,
+		CallID:        callID,
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Prompt:        genOpts.Prompt,
+		Tools:         genOpts.Tools,
+	})
 
 	// Start streaming
 	stream, err := opts.Model.DoStream(ctx, genOpts)
 	if err != nil {
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Error: err})
+		if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+			err = wrapTimeoutError(TimeoutReasonTotal, err)
+		}
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
 
@@ -344,19 +411,21 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		status:            StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:           opts.Timeout,
 		telemetryCtx:      telemetryCtx,
-		telemetrySettings: opts.ExperimentalTelemetry,
+		telemetrySettings: telemetrySettings,
 		outputSpec:        outputSpec,
 		// Structured event callbacks
 		cbCallID:            callID,
 		cbOnStepFinishEvent: opts.OnStepFinishEvent,
 		cbOnFinishEvent:     opts.OnFinishEvent,
-		cbOnToolCallStart:   opts.OnToolCallStart,
-		cbOnToolCallFinish:  opts.OnToolCallFinish,
+		cbOnToolCallStart:   opts.OnToolExecutionStart,
+		cbOnToolCallFinish:  opts.OnToolExecutionEnd,
 		cbFuncID:            cbFuncID,
 		cbMeta:              cbMeta,
 		cbModelProvider:     opts.Model.Provider(),
 		cbModelID:           opts.Model.ModelID(),
-		cbExperimentalCtx:   opts.ExperimentalContext,
+		cbExperimentalCtx:   runtimeContext,
+		cbRuntimeCtx:        runtimeContext,
+		cbToolsCtx:          toolsContext,
 		cbMessages:          prompt.Messages,
 		cbTools:             opts.Tools,
 		cbSystem:            opts.System,
@@ -403,10 +472,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	for stepNum := 1; ; stepNum++ {
 		// Fire step-start telemetry. OTel implementations create a child step span.
 		stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
-			OperationType: "ai.streamText",
-			StepNumber:    stepNum,
-			ModelProvider: r.cbModelProvider,
-			ModelID:       r.cbModelID,
+			OperationType:  "ai.streamText",
+			Settings:       r.telemetrySettings,
+			StepNumber:     stepNum,
+			ModelProvider:  r.cbModelProvider,
+			ModelID:        r.cbModelID,
+			RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
 
 		// Track how many files existed before this step so we can slice per-step files.
@@ -415,6 +487,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends (Fix 1).
 		var stepToolCalls []types.ToolCall
+		var modelCallEndFired bool
 		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
 		// result inline in this step's stream (used for the deferred hasResult check).
 		streamedToolResultIDs := make(map[string]bool)
@@ -435,6 +508,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.mu.Lock()
 				r.status = StreamStatusStreaming
 				r.mu.Unlock()
+				first := provider.StreamChunk{Type: provider.ChunkTypeFirstChunk}
+				if onChunk != nil {
+					onChunk(first)
+				}
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(provider.ChunkTypeFirstChunk),
+				})
 			}
 
 			// Accumulate warnings from stream-start chunks
@@ -477,15 +558,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				streamedToolResultIDs[chunk.ToolResult.ToolCallID] = true
 			}
 
-			// Update finish reason, usage, and context management
+			if chunk.Usage != nil {
+				r.usage = *chunk.Usage
+			}
+
+			// Update finish reason and context management
 			if chunk.Type == provider.ChunkTypeFinish {
 				r.finishReason = chunk.FinishReason
 				if chunk.ContextManagement != nil {
 					r.contextManagement = chunk.ContextManagement
 				}
-			}
-			if chunk.Usage != nil {
-				r.usage = *chunk.Usage
+				if !modelCallEndFired {
+					modelCallEndFired = true
+					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
+						Settings:      r.telemetrySettings,
+						CallID:        r.cbCallID,
+						ModelProvider: r.cbModelProvider,
+						ModelID:       r.cbModelID,
+						FinishReason:  string(chunk.FinishReason),
+						Usage:         telemetryUsageFromUsage(r.usage),
+						ResponseID:    responseIDFromMetadata(chunk.ResponseMetadata),
+					})
+				}
 			}
 
 			// Accumulate provider metadata from each chunk that carries it.
@@ -519,6 +613,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			// Notify telemetry integrations of each chunk.
 			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				Settings:  r.telemetrySettings,
 				ChunkType: string(chunk.Type),
 				Text:      chunk.Text,
 			})
@@ -526,6 +621,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if r.err != nil {
 			break
 		}
+		finishChunk := provider.StreamChunk{Type: provider.ChunkTypeStreamFinish}
+		if onChunk != nil {
+			onChunk(finishChunk)
+		}
+		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+			Settings:  r.telemetrySettings,
+			ChunkType: string(provider.ChunkTypeStreamFinish),
+		})
 
 		// Execute accumulated tool calls AFTER stream is fully consumed (Fix 1).
 		// All chunks (including tool call chunks) have already been forwarded above.
@@ -535,16 +638,29 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				callID:              r.cbCallID,
 				onStart:             r.cbOnToolCallStart,
 				onFinish:            r.cbOnToolCallFinish,
+				fallbackStart:       opts.OnToolCallStart,
+				fallbackFinish:      opts.OnToolCallFinish,
 				stepNum:             stepNum,
 				modelProvider:       r.cbModelProvider,
 				modelID:             r.cbModelID,
 				messages:            currentMessages,
 				experimentalContext: r.cbExperimentalCtx,
+				runtimeContext:      r.cbRuntimeCtx,
+				toolsContext:        r.cbToolsCtx,
 				functionID:          r.cbFuncID,
 				metadata:            r.cbMeta,
 				timeout:             r.timeout,
+				telemetrySettings:   r.telemetrySettings,
 			}
-			stepToolResults, _ = executeTools(ctx, stepToolCalls, opts.Tools, r.cbExperimentalCtx, &r.usage, toolCallbacks)
+			stepToolResults, _ = executeTools(ctx, stepToolCalls, opts.Tools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &r.usage, toolCallbacks)
+		}
+		hasUserApproval := false
+		for _, tr := range stepToolResults {
+			if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+				hasUserApproval = true
+				r.finishReason = types.FinishReasonUserApproval
+				break
+			}
 		}
 
 		// Gap 3: Forward tool-result chunks to onChunk consumers, matching the
@@ -559,6 +675,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				onChunk(resultChunk)
 			}
 			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				Settings:  r.telemetrySettings,
 				ChunkType: string(provider.ChunkTypeToolResult),
 			})
 		}
@@ -638,13 +755,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
-				StepNumber:   stepNum,
-				FinishReason: string(r.finishReason),
-				Usage:        stepTelUsage,
-				Text:         r.text,
-				ToolCalls:    stepToolCalls,
-				Files:        stepFiles,
-				Settings:     opts.ExperimentalTelemetry,
+				StepNumber:     stepNum,
+				FinishReason:   string(r.finishReason),
+				Usage:          stepTelUsage,
+				Text:           r.text,
+				ToolCalls:      stepToolCalls,
+				Files:          stepFiles,
+				Settings:       r.telemetrySettings,
+				RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 			})
 		}
 
@@ -653,6 +772,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Local tool calls are handled in-step by executeTools — no additional model
 		// call is needed for them here (unlike generate.go's step loop).
 		if len(pendingDeferredToolCalls) == 0 {
+			break
+		}
+		if hasUserApproval {
 			break
 		}
 
@@ -700,23 +822,38 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Messages: currentMessages,
 				System:   opts.System,
 			},
-			Temperature:      opts.Temperature,
-			MaxTokens:        opts.MaxTokens,
-			TopP:             opts.TopP,
-			TopK:             opts.TopK,
-			FrequencyPenalty: opts.FrequencyPenalty,
-			PresencePenalty:  opts.PresencePenalty,
-			StopSequences:    opts.StopSequences,
-			Seed:             opts.Seed,
-			Tools:            opts.Tools,
-			ToolChoice:       opts.ToolChoice,
-			ResponseFormat:   responseFormat,
-			Reasoning:        opts.Reasoning,
-			ProviderOptions:  opts.ProviderOptions,
-			Telemetry:        opts.ExperimentalTelemetry,
+			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
+			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
+			Temperature:           opts.Temperature,
+			MaxTokens:             opts.MaxTokens,
+			TopP:                  opts.TopP,
+			TopK:                  opts.TopK,
+			FrequencyPenalty:      opts.FrequencyPenalty,
+			PresencePenalty:       opts.PresencePenalty,
+			StopSequences:         opts.StopSequences,
+			Seed:                  opts.Seed,
+			Tools:                 opts.Tools,
+			ToolChoice:            opts.ToolChoice,
+			RuntimeContext:        r.cbRuntimeCtx,
+			ToolsContext:          r.cbToolsCtx,
+			ResponseFormat:        responseFormat,
+			Reasoning:             opts.Reasoning,
+			ProviderOptions:       opts.ProviderOptions,
+			Telemetry:             r.telemetrySettings,
 		}
+		telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
+			Settings:      r.telemetrySettings,
+			CallID:        r.cbCallID,
+			ModelProvider: r.cbModelProvider,
+			ModelID:       r.cbModelID,
+			Prompt:        nextGenOpts.Prompt,
+			Tools:         nextGenOpts.Tools,
+		})
 		newStream, err := r.cbModel.DoStream(ctx, nextGenOpts)
 		if err != nil {
+			if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
+				err = wrapTimeoutError(TimeoutReasonTotal, err)
+			}
 			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
 			break
 		}
@@ -759,11 +896,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	streamSources := r.sources
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
-		FinishReason: string(r.finishReason),
-		Usage:        streamTelUsage,
-		Text:         r.text,
-		Files:        streamFiles,
-		Settings:     r.telemetrySettings,
+		FinishReason:   string(r.finishReason),
+		Usage:          streamTelUsage,
+		Text:           r.text,
+		Files:          streamFiles,
+		Settings:       r.telemetrySettings,
+		RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 
 	// Mark stream as done before firing callbacks so callers that check
@@ -838,8 +977,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages: lastStep.ResponseMessages,
 		},
 		ExperimentalContext: r.cbExperimentalCtx,
-		FunctionID:          r.cbFuncID,
-		Metadata:            r.cbMeta,
+		RuntimeContext:      r.cbRuntimeCtx,
+		ToolsContext:        r.cbToolsCtx,
 	}, r.cbOnStepFinishEvent)
 
 	stepsForEvent := allSteps
@@ -866,8 +1005,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages: lastStep.ResponseMessages,
 		},
 		ExperimentalContext: r.cbExperimentalCtx,
-		FunctionID:          r.cbFuncID,
-		Metadata:            r.cbMeta,
+		RuntimeContext:      r.cbRuntimeCtx,
+		ToolsContext:        r.cbToolsCtx,
 	}, r.cbOnFinishEvent)
 }
 
@@ -1013,6 +1152,10 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			r.mu.Lock()
 			r.status = StreamStatusStreaming
 			r.mu.Unlock()
+			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				Settings:  r.telemetrySettings,
+				ChunkType: string(provider.ChunkTypeFirstChunk),
+			})
 		}
 
 		// Accumulate warnings from stream-start chunks
@@ -1070,6 +1213,12 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	}
 
 	// Store collected tool calls.
+	telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+		Settings:  r.telemetrySettings,
+		ChunkType: string(provider.ChunkTypeStreamFinish),
+	})
+
+	// Store collected tool calls.
 	if len(pendingToolCalls) > 0 {
 		r.mu.Lock()
 		r.toolCalls = pendingToolCalls
@@ -1108,11 +1257,13 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	readAllFiles := r.files
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
-		FinishReason: string(r.finishReason),
-		Usage:        readAllTelUsage,
-		Text:         r.text,
-		Files:        readAllFiles,
-		Settings:     r.telemetrySettings,
+		FinishReason:   string(r.finishReason),
+		Usage:          readAllTelUsage,
+		Text:           r.text,
+		Files:          readAllFiles,
+		Settings:       r.telemetrySettings,
+		RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 
 	// Mark stream as done.
@@ -1152,7 +1303,7 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 	case result := <-resultCh:
 		return result.chunk, result.err
 	case <-chunkCtx.Done():
-		return nil, fmt.Errorf("chunk timeout exceeded: %w", chunkCtx.Err())
+		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
 	}
 }
 
@@ -1170,6 +1321,13 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 // Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
 func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	return r.responseHeaders
+}
+
+func responseIDFromMetadata(metadata *provider.ResponseMetadata) string {
+	if metadata == nil {
+		return ""
+	}
+	return metadata.ID
 }
 
 // Warnings returns any provider warnings surfaced via stream-start chunks.

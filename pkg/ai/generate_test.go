@@ -3,10 +3,12 @@ package ai
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -43,6 +45,134 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 	}
 	if result.FinishReason != types.FinishReasonStop {
 		t.Errorf("unexpected finish reason: %s", result.FinishReason)
+	}
+}
+
+func TestGenerateText_RejectsSystemMessagesByDefault(t *testing.T) {
+	t.Parallel()
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{
+			DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				t.Fatal("DoGenerate should not be called when system messages are rejected")
+				return nil, nil
+			},
+		},
+		Messages: []types.Message{
+			{
+				Role:    types.RoleSystem,
+				Content: []types.ContentPart{types.TextContent{Text: "be concise"}},
+			},
+		},
+	})
+	var unsupported *promptutils.UnsupportedSystemMessageError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("GenerateText() error = %T, want UnsupportedSystemMessageError", err)
+	}
+}
+
+func TestGenerateText_AllowsSystemMessagesWithOptIn(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if !opts.AllowSystemMessages {
+				t.Fatal("AllowSystemMessages was not forwarded to provider options")
+			}
+			if got := opts.Prompt.Messages[0].Role; got != types.RoleSystem {
+				t.Fatalf("role = %q, want system", got)
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:               model,
+		AllowSystemMessages: true,
+		Messages: []types.Message{
+			{
+				Role:    types.RoleSystem,
+				Content: []types.ContentPart{types.TextContent{Text: "be concise"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("Text = %q, want ok", result.Text)
+	}
+}
+
+func TestGenerateText_AllowsSystemMessagesWithTypeScriptAlias(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if !opts.AllowSystemInMessages {
+				t.Fatal("AllowSystemInMessages was not forwarded to provider options")
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:                 model,
+		AllowSystemInMessages: true,
+		Messages: []types.Message{
+			{
+				Role:    types.RoleSystem,
+				Content: []types.ContentPart{types.TextContent{Text: "be concise"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+}
+
+func TestGenerateText_NormalizesFileAndImagePartsBeforeProvider(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if len(opts.Prompt.Messages) != 1 || len(opts.Prompt.Messages[0].Content) != 2 {
+				t.Fatalf("prompt content = %+v", opts.Prompt.Messages)
+			}
+			imageFile, ok := opts.Prompt.Messages[0].Content[0].(types.FileContent)
+			if !ok {
+				t.Fatalf("image part normalized type = %T, want FileContent", opts.Prompt.Messages[0].Content[0])
+			}
+			if imageFile.FileData.Type != types.FileDataTypeData || imageFile.MediaType != "image/png" {
+				t.Fatalf("normalized image file = %+v", imageFile)
+			}
+			dataURLFile, ok := opts.Prompt.Messages[0].Content[1].(types.FileContent)
+			if !ok {
+				t.Fatalf("file part type = %T, want FileContent", opts.Prompt.Messages[0].Content[1])
+			}
+			if dataURLFile.FileData.Type != types.FileDataTypeData || string(dataURLFile.FileData.Data) != "hello" || dataURLFile.MediaType != "text/plain" {
+				t.Fatalf("normalized data URL file = %+v", dataURLFile)
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.ImageContent{Image: []byte{1, 2, 3}, MimeType: "image/png"},
+					types.FileContent{
+						FileData: types.FileData{Type: types.FileDataTypeURL, URL: "data:text/plain;base64,aGVsbG8="},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
 	}
 }
 
@@ -860,6 +990,264 @@ func TestGenerateText_StopWhen_HasToolCall(t *testing.T) {
 	}
 	if len(result.Steps) != 3 {
 		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	}
+}
+
+func TestGenerateText_RuntimeContextPrecedesExperimentalContext(t *testing.T) {
+	t.Parallel()
+
+	runtimeCtx := map[string]interface{}{"source": "runtime"}
+	experimentalCtx := map[string]interface{}{"source": "experimental"}
+	var capturedRuntime interface{}
+	var capturedUser interface{}
+	var capturedCallRuntime interface{}
+	var capturedCallToolsContext map[string]interface{}
+
+	tool := types.Tool{
+		Name: "tool",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			capturedRuntime = opts.RuntimeContext
+			capturedUser = opts.UserContext
+			return "ok", nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedCallRuntime = opts.RuntimeContext
+			capturedCallToolsContext = opts.ToolsContext
+			callCount++
+			if callCount == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:               model,
+		Prompt:              "run",
+		Tools:               []types.Tool{tool},
+		RuntimeContext:      runtimeCtx,
+		ExperimentalContext: experimentalCtx,
+		StopWhen:            []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(capturedRuntime, runtimeCtx) {
+		t.Fatalf("expected RuntimeContext to win, got %#v", capturedRuntime)
+	}
+	if !reflect.DeepEqual(capturedUser, runtimeCtx) {
+		t.Fatalf("expected UserContext alias to use RuntimeContext, got %#v", capturedUser)
+	}
+	if !reflect.DeepEqual(capturedCallRuntime, runtimeCtx) {
+		t.Fatalf("expected provider call RuntimeContext to win, got %#v", capturedCallRuntime)
+	}
+	if capturedCallToolsContext == nil {
+		t.Fatal("expected provider call ToolsContext to be set")
+	}
+}
+
+func TestGenerateText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
+	t.Parallel()
+
+	denyReason := "policy blocked"
+	approvalCalled := false
+	tool := types.Tool{
+		Name: "danger",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("denied tool should not execute")
+			return nil, nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "danger", Arguments: map[string]interface{}{"x": 1}}},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{tool},
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			approvalCalled = true
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &denyReason}
+		}),
+		StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !approvalCalled {
+		t.Fatal("expected approval function to be called")
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	}
+	tr := result.ToolResults[0]
+	if tr.ApprovalStatus != types.ToolApprovalStatusDenied {
+		t.Fatalf("expected denied approval status, got %s", tr.ApprovalStatus)
+	}
+	if tr.ApprovalReason == nil || *tr.ApprovalReason != denyReason {
+		t.Fatalf("expected denial reason %q, got %#v", denyReason, tr.ApprovalReason)
+	}
+	output, ok := tr.Result.(types.ToolResultOutput)
+	if !ok {
+		t.Fatalf("expected ToolResultOutput, got %T", tr.Result)
+	}
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != denyReason {
+		t.Fatalf("unexpected denied output: %#v", output)
+	}
+}
+
+func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "needs_human",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("user-approval tool should not execute")
+			return nil, nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "needs_human", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:        model,
+		Tools:        []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{"needs_human": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected generation to pause after one call, got %d calls", callCount)
+	}
+	if result.FinishReason != types.FinishReasonUserApproval {
+		t.Fatalf("expected user-approval finish reason, got %s", result.FinishReason)
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	}
+	request, ok := result.ToolResults[0].Result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected approval request output, got %T", result.ToolResults[0].Result)
+	}
+	if request["type"] != "tool-approval-request" || request["approvalId"] != "call_1" {
+		t.Fatalf("unexpected approval request output: %#v", request)
+	}
+}
+
+func TestGenerateText_ToolApprovalOverridesNeedsApproval(t *testing.T) {
+	t.Parallel()
+
+	executed := false
+	tool := types.Tool{
+		Name:          "tool",
+		NeedsApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			executed = true
+			return "ok", nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:        model,
+		Tools:        []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool": types.ToolApprovalStatusApproved},
+		StopWhen:     []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected call-level approval to override deprecated NeedsApproval")
+	}
+}
+
+func TestGenerateText_ProviderExecutedBypassesApproval(t *testing.T) {
+	t.Parallel()
+
+	approvalCalls := 0
+	tool := types.Tool{
+		Name:             "provider_tool",
+		ProviderExecuted: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("provider-executed tool should not execute locally")
+			return nil, nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "provider_tool", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{tool},
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			approvalCalls++
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+		}),
+		MaxSteps: intPtr(1),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if approvalCalls != 0 {
+		t.Fatalf("expected provider-executed tool to bypass approval, got %d calls", approvalCalls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].ProviderExecuted {
+		t.Fatalf("expected provider-executed pending result, got %#v", result.ToolResults)
 	}
 }
 

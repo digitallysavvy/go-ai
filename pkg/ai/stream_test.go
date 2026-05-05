@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -42,6 +43,69 @@ func TestStreamText_BasicStream(t *testing.T) {
 
 	if text != "Hello World!" {
 		t.Errorf("unexpected text: %s", text)
+	}
+}
+
+func TestStreamText_RejectsSystemMessagesByDefault(t *testing.T) {
+	t.Parallel()
+
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model: &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				t.Fatal("DoStream should not be called when system messages are rejected")
+				return nil, nil
+			},
+		},
+		Messages: []types.Message{
+			{
+				Role:    types.RoleSystem,
+				Content: []types.ContentPart{types.TextContent{Text: "be concise"}},
+			},
+		},
+	})
+	var unsupported *promptutils.UnsupportedSystemMessageError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("StreamText() error = %T, want UnsupportedSystemMessageError", err)
+	}
+}
+
+func TestStreamText_AllowsSystemMessagesWithOptIn(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			if !opts.AllowSystemMessages {
+				t.Fatal("AllowSystemMessages was not forwarded to provider options")
+			}
+			if got := opts.Prompt.Messages[0].Role; got != types.RoleSystem {
+				t.Fatalf("role = %q, want system", got)
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:               model,
+		AllowSystemMessages: true,
+		Messages: []types.Message{
+			{
+				Role:    types.RoleSystem,
+				Content: []types.ContentPart{types.TextContent{Text: "be concise"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("Text = %q, want ok", text)
 	}
 }
 
@@ -166,8 +230,8 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if chunkCallbackCount != 3 { // 2 text chunks + 1 finish chunk
-		t.Errorf("expected 3 chunk callbacks, got %d", chunkCallbackCount)
+	if chunkCallbackCount != 5 { // firstChunk + 2 text chunks + finish chunk + streamFinish
+		t.Errorf("expected 5 chunk callbacks, got %d", chunkCallbackCount)
 	}
 }
 
@@ -914,6 +978,66 @@ func TestStreamTextChunksDeliveredBeforeToolCallback(t *testing.T) {
 		t.Errorf("Execute fired at event index %d but tool-call chunk was at index %d; "+
 			"all chunks must be delivered before Execute fires; events: %v",
 			executeIdx, toolCallChunkIdx, events)
+	}
+}
+
+func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "danger",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("denied stream tool should not execute")
+			return nil, nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "call_1",
+					ToolName:  "danger",
+					Arguments: map[string]interface{}{"x": 1},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	var toolResults []types.ToolResult
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model,
+		Tools: []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{
+			"danger": types.ToolApprovalStatusDenied,
+		},
+		OnFinish: func(r *StreamTextResult) {
+			toolResults = r.ToolResults()
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	if len(toolResults) != 1 {
+		t.Fatalf("expected 1 denied tool result, got %d", len(toolResults))
+	}
+	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
+		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
+	}
+	if toolResults[0].ApprovalReason == nil || *toolResults[0].ApprovalReason == "" {
+		t.Fatalf("expected default denial reason, got %#v", toolResults[0].ApprovalReason)
+	}
+	output, ok := toolResults[0].Result.(types.ToolResultOutput)
+	if !ok {
+		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
+	}
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason == "" {
+		t.Fatalf("unexpected denied output: %#v", output)
 	}
 }
 

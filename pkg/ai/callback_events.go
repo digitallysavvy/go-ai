@@ -81,12 +81,14 @@ type OnStartEvent struct {
 	Seed             *int
 
 	// User-defined context flowing through the generation lifecycle.
-	// Set via GenerateTextOptions.ExperimentalContext.
+	// Deprecated: set via GenerateTextOptions.RuntimeContext.
 	ExperimentalContext interface{}
 
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	// RuntimeContext is the user-defined context flowing through the generation lifecycle.
+	RuntimeContext interface{}
+
+	// ToolsContext is the per-tool context map passed through tool approval and execution.
+	ToolsContext map[string]interface{}
 }
 
 // OnStepStartEvent is emitted at the beginning of each LLM step (before
@@ -121,10 +123,8 @@ type OnStepStartEvent struct {
 
 	// User-defined context flowing through the generation lifecycle.
 	ExperimentalContext interface{}
-
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
 }
 
 // OnToolCallStartEvent is emitted just before a tool's Execute function is
@@ -158,10 +158,8 @@ type OnToolCallStartEvent struct {
 
 	// User-defined context flowing through the generation lifecycle.
 	ExperimentalContext interface{}
-
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
 }
 
 // OnToolCallFinishEvent is emitted after a tool's Execute function returns,
@@ -204,10 +202,8 @@ type OnToolCallFinishEvent struct {
 
 	// User-defined context flowing through the generation lifecycle.
 	ExperimentalContext interface{}
-
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
 }
 
 // OnStepFinishEvent is emitted at the end of each LLM step, after tool
@@ -273,10 +269,8 @@ type OnStepFinishEvent struct {
 
 	// User-defined context flowing through the generation lifecycle.
 	ExperimentalContext interface{}
-
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
 }
 
 // OnFinishEvent is emitted once when the entire GenerateText or StreamText
@@ -343,8 +337,6 @@ type OnFinishEvent struct {
 
 	// User-defined context in its final state after all steps.
 	ExperimentalContext interface{}
-
-	// Telemetry / observability
-	FunctionID string
-	Metadata   map[string]any
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
 }

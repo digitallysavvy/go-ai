@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -28,6 +29,15 @@ type GenerateTextOptions struct {
 	Messages []types.Message
 	System   string
 
+	// AllowSystemMessages permits system-role messages in Messages.
+	// Defaults to false; use System for system instructions unless you are
+	// intentionally passing provider-native system messages.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
 	// Generation parameters
 	Temperature      *float64
 	MaxTokens        *int
@@ -41,6 +51,9 @@ type GenerateTextOptions struct {
 	// Tools available for the model to call
 	Tools      []types.Tool
 	ToolChoice types.ToolChoice
+
+	// ToolApproval configures approval handling for tool execution.
+	ToolApproval types.ToolApprovalConfig
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
 	// Deprecated: use StopWhen with StepCountIs instead.
@@ -78,12 +91,14 @@ type GenerateTextOptions struct {
 	// Context Flow (v6.0 - NEW)
 	// ========================================================================
 
-	// ExperimentalContext is user-defined context that flows through the conversation
-	// This context is passed to:
-	// - Tool execution functions (via ToolExecutionOptions)
-	// - PrepareStep callback
-	// - OnStepFinish callback
-	// - OnFinish callback
+	// RuntimeContext is user-defined context that flows through the conversation.
+	// This context is passed to tool execution functions, callbacks, and approval hooks.
+	RuntimeContext interface{}
+
+	// ToolsContext is the per-tool context map passed to approval and execution hooks.
+	ToolsContext map[string]interface{}
+
+	// ExperimentalContext is a deprecated alias for RuntimeContext.
 	ExperimentalContext interface{}
 
 	// ========================================================================
@@ -131,7 +146,13 @@ type GenerateTextOptions struct {
 	// Telemetry (v6.0 - Observability)
 	// ========================================================================
 
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
 	// ExperimentalTelemetry enables OpenTelemetry tracing for this operation
+	//
+	// Deprecated: use Telemetry.
 	// When set, automatically records spans with prompts, responses, token usage, and latencies
 	//
 	// Example:
@@ -179,11 +200,17 @@ type GenerateTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
-	// OnToolCallStart is called just before each tool's Execute function runs.
+	// OnToolExecutionStart is called just before each tool's Execute function runs.
+	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
+
+	// OnToolExecutionEnd is called after each tool's Execute function returns
+	// (whether the execution succeeded or failed).
+	OnToolExecutionEnd func(ctx context.Context, e OnToolCallFinishEvent)
+
+	// Deprecated: use OnToolExecutionStart.
 	OnToolCallStart func(ctx context.Context, e OnToolCallStartEvent)
 
-	// OnToolCallFinish is called after each tool's Execute function returns
-	// (whether the execution succeeded or failed).
+	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
 
 	// OnStepFinishEvent is called at the end of each LLM step with a typed
@@ -198,6 +225,20 @@ type GenerateTextOptions struct {
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
 // This is re-exported from pkg/telemetry for convenience
 type TelemetrySettings = telemetry.Settings
+
+// TelemetryOptions is the stable telemetry option type.
+type TelemetryOptions = telemetry.Options
+
+func effectiveTelemetrySettings(stable, experimental *TelemetrySettings) *TelemetrySettings {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
+
+func allowSystemMessages(allowSystemMessages, allowSystemInMessages bool) bool {
+	return allowSystemMessages || allowSystemInMessages
+}
 
 // PrepareStepOptions contains options that can be modified before each step
 type PrepareStepOptions struct {
@@ -282,30 +323,38 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
+	toolsContext := opts.ToolsContext
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
 
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
 	telPrompt := ""
 	telSystem := ""
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.RecordInputs {
+	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = opts.System
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		OperationType: "ai.generateText",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Settings:      opts.ExperimentalTelemetry,
-		Prompt:        telPrompt,
-		System:        telSystem,
+		OperationType:  "ai.generateText",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       telemetrySettings,
+		Prompt:         telPrompt,
+		System:         telSystem,
+		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Error: err})
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
 	}()
 
@@ -318,9 +367,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
+	if err != nil {
+		return nil, err
+	}
 	// Extract telemetry info once for all callback events
-	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
+	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	callID := newCallID()
 
 	// CB-T12: Emit OnStartEvent
@@ -343,9 +396,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		PresencePenalty:     opts.PresencePenalty,
 		StopSequences:       opts.StopSequences,
 		Seed:                opts.Seed,
-		ExperimentalContext: opts.ExperimentalContext,
-		FunctionID:          cbFuncID,
-		Metadata:            cbMeta,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
 	}, opts.OnStart)
 
 	// Initialize result (named return — assign, not declare)
@@ -398,9 +451,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Messages:            currentMessages,
 			Tools:               opts.Tools,
 			PreviousSteps:       result.Steps, // steps completed before this one
-			ExperimentalContext: opts.ExperimentalContext,
-			FunctionID:          cbFuncID,
-			Metadata:            cbMeta,
+			ExperimentalContext: runtimeContext,
+			RuntimeContext:      runtimeContext,
+			ToolsContext:        toolsContext,
 		}, opts.OnStepStart)
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
@@ -421,36 +474,75 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Messages: currentMessages,
 				System:   prompt.System,
 			},
-			Temperature:      opts.Temperature,
-			MaxTokens:        opts.MaxTokens,
-			TopP:             opts.TopP,
-			TopK:             opts.TopK,
-			FrequencyPenalty: opts.FrequencyPenalty,
-			PresencePenalty:  opts.PresencePenalty,
-			StopSequences:    opts.StopSequences,
-			Seed:             opts.Seed,
-			Tools:            opts.Tools,
-			ToolChoice:       opts.ToolChoice,
-			ResponseFormat:   responseFormat,
-			Reasoning:        opts.Reasoning,
-			ProviderOptions:  opts.ProviderOptions,
-			Telemetry:        opts.ExperimentalTelemetry,
+			AllowSystemMessages:   allowSystem,
+			AllowSystemInMessages: allowSystem,
+			Temperature:           opts.Temperature,
+			MaxTokens:             opts.MaxTokens,
+			TopP:                  opts.TopP,
+			TopK:                  opts.TopK,
+			FrequencyPenalty:      opts.FrequencyPenalty,
+			PresencePenalty:       opts.PresencePenalty,
+			StopSequences:         opts.StopSequences,
+			Seed:                  opts.Seed,
+			Tools:                 opts.Tools,
+			ToolChoice:            opts.ToolChoice,
+			RuntimeContext:        runtimeContext,
+			ToolsContext:          toolsContext,
+			ResponseFormat:        responseFormat,
+			Reasoning:             opts.Reasoning,
+			ProviderOptions:       opts.ProviderOptions,
+			Telemetry:             telemetrySettings,
 		}
 
 		// Fire step-start telemetry. OTel implementations create a child step span
 		// and embed it in the returned context so OnStepFinish can end it.
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-			OperationType: "ai.generateText",
-			StepNumber:    stepNum,
+			OperationType:  "ai.generateText",
+			Settings:       telemetrySettings,
+			StepNumber:     stepNum,
+			ModelProvider:  opts.Model.Provider(),
+			ModelID:        opts.Model.ModelID(),
+			RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		})
+
+		telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
+			Settings:      telemetrySettings,
+			CallID:        callID,
 			ModelProvider: opts.Model.Provider(),
 			ModelID:       opts.Model.ModelID(),
+			Prompt:        genOpts.Prompt,
+			Tools:         genOpts.Tools,
 		})
 
 		// Call the model with step context
 		genResult, err := opts.Model.DoGenerate(stepCtx, genOpts)
 		if err != nil {
+			if opts.Timeout != nil {
+				if opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
+					err = wrapTimeoutError(TimeoutReasonStep, err)
+				} else if opts.Timeout.HasTotal() && ctx.Err() != nil {
+					err = wrapTimeoutError(TimeoutReasonTotal, err)
+				}
+			}
 			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
 		}
+
+		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
+		responseID := ""
+		if meta := responseMetadataFromGenerateResult(opts.Model, genResult); meta != nil {
+			responseID = meta.ID
+		}
+		telemetry.FireOnLanguageModelCallEnd(stepCtx, telemetry.LanguageModelCallEndEvent{
+			Settings:      telemetrySettings,
+			CallID:        callID,
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			FinishReason:  string(genResult.FinishReason),
+			Usage:         modelCallUsage,
+			Content:       genResult.Content,
+			ResponseID:    responseID,
+		})
 
 		// Extract sources and files from content parts
 		var stepSources []types.SourceContent
@@ -491,24 +583,34 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Update accumulated usage
 		result.Usage = result.Usage.Add(genResult.Usage)
 
+		hasUserApproval := false
+
 		// Check if there are tool calls to execute
 		if len(genResult.ToolCalls) > 0 && len(opts.Tools) > 0 {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              callID,
-				onStart:             opts.OnToolCallStart,
-				onFinish:            opts.OnToolCallFinish,
+				onStart:             opts.OnToolExecutionStart,
+				onFinish:            opts.OnToolExecutionEnd,
+				fallbackStart:       opts.OnToolCallStart,
+				fallbackFinish:      opts.OnToolCallFinish,
 				stepNum:             stepNum,
 				modelProvider:       opts.Model.Provider(),
 				modelID:             opts.Model.ModelID(),
 				messages:            currentMessages,
-				experimentalContext: opts.ExperimentalContext,
+				experimentalContext: runtimeContext,
+				runtimeContext:      runtimeContext,
+				toolsContext:        toolsContext,
 				functionID:          cbFuncID,
 				metadata:            cbMeta,
 				timeout:             opts.Timeout,
+				telemetrySettings:   telemetrySettings,
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, opts.ExperimentalContext, &result.Usage, toolCallbacks)
+			toolResults, err := executeTools(ctx, genResult.ToolCalls, opts.Tools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
+				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+					err = wrapTimeoutError(TimeoutReasonTotal, err)
+				}
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
 
@@ -520,6 +622,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 			stepResult.ToolResults = toolResults
 			result.ToolResults = append(result.ToolResults, toolResults...)
+			for _, tr := range toolResults {
+				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+					hasUserApproval = true
+					stepResult.FinishReason = types.FinishReasonUserApproval
+				}
+			}
 
 			// Add assistant message with tool calls to history.
 			// ToolCalls must be carried on the message so providers that require
@@ -630,7 +738,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call step finish callback (v6.0: with user context)
 		if opts.OnStepFinish != nil {
-			opts.OnStepFinish(ctx, stepResult, opts.ExperimentalContext)
+			opts.OnStepFinish(ctx, stepResult, runtimeContext)
 		}
 
 		// CB-T14: Emit structured OnStepFinishEvent
@@ -656,9 +764,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Messages: stepResult.ResponseMessages,
 				Body:     genResult.RawResponse,
 			},
-			ExperimentalContext: opts.ExperimentalContext,
-			FunctionID:          cbFuncID,
-			Metadata:            cbMeta,
+			ExperimentalContext: runtimeContext,
+			RuntimeContext:      runtimeContext,
+			ToolsContext:        toolsContext,
 		}, opts.OnStepFinishEvent)
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
@@ -701,8 +809,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ToolCalls:        genResult.ToolCalls,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
-				Settings:         opts.ExperimentalTelemetry,
+				Settings:         telemetrySettings,
+				RuntimeContext:   telemetryRuntimeContext(telemetrySettings, runtimeContext),
+				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 			})
+		}
+
+		if hasUserApproval {
+			result.Text = stepResult.Text
+			result.FinishReason = types.FinishReasonUserApproval
+			break
 		}
 
 		// Evaluate stop conditions after steps with tool results
@@ -747,16 +863,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
-		FinishReason: string(result.FinishReason),
-		Usage:        telUsage,
-		Text:         result.Text,
-		Files:        result.Files,
-		Settings:     opts.ExperimentalTelemetry,
+		FinishReason:   string(result.FinishReason),
+		Usage:          telUsage,
+		Text:           result.Text,
+		Files:          result.Files,
+		Settings:       telemetrySettings,
+		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
 	// Call finish callback (v6.0: with user context)
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		opts.OnFinish(ctx, result, runtimeContext)
 	}
 
 	// Populate TotalUsage (same as Usage for now; Usage = accumulated total).
@@ -792,9 +910,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Headers: result.ResponseHeaders,
 			Body:    result.RawResponse,
 		},
-		ExperimentalContext: opts.ExperimentalContext,
-		FunctionID:          cbFuncID,
-		Metadata:            cbMeta,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
 	}, opts.OnFinishEvent)
 
 	// Apply retention settings (v6.0.60)
@@ -817,22 +935,30 @@ type toolCallEventCallbacks struct {
 	callID              string
 	onStart             func(ctx context.Context, e OnToolCallStartEvent)
 	onFinish            func(ctx context.Context, e OnToolCallFinishEvent)
+	fallbackStart       func(ctx context.Context, e OnToolCallStartEvent)
+	fallbackFinish      func(ctx context.Context, e OnToolCallFinishEvent)
 	stepNum             int
 	modelProvider       string
 	modelID             string
 	messages            []types.Message
 	experimentalContext interface{}
+	runtimeContext      interface{}
+	toolsContext        map[string]interface{}
 	functionID          string
 	metadata            map[string]any
 	timeout             *TimeoutConfig
+	telemetrySettings   *TelemetrySettings
 }
 
 // executeTools executes a list of tool calls
 // Updated in v6.0 to pass ToolExecutionOptions with ToolCallID and UserContext
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 to fire structured OnToolCallStart/Finish events (CB-T16/T17/T18)
-func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, userContext interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
+func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
 
 	for i, call := range toolCalls {
 		// Find the tool
@@ -860,6 +986,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		// (e.g., web_search_20260209, web_fetch_20260209, code_execution, tool_search_bm25).
 		providerExecuted := tool.ProviderExecuted
 
+		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
 			// We don't execute locally, just mark as pending
@@ -870,10 +997,52 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Result:           nil,
 				Error:            nil,
 				ProviderExecuted: true,
+				ProviderMetadata: providerMetadata,
 			}
 		} else {
+			approval := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			switch approval.Status {
+			case types.ToolApprovalStatusDenied:
+				reason := approval.Reason
+				if reason == nil {
+					reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+				}
+				results[i] = types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+					ApprovalStatus:   types.ToolApprovalStatusDenied,
+					ApprovalReason:   reason,
+					ProviderMetadata: providerMetadata,
+				}
+				continue
+			case types.ToolApprovalStatusUserApproval:
+				results[i] = types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+					ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+					ProviderMetadata: providerMetadata,
+				}
+				continue
+			}
+
+			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
+			if err != nil {
+				results[i] = types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Error:            err,
+					ProviderMetadata: providerMetadata,
+				}
+				continue
+			}
+
 			// CB-T16: Emit OnToolCallStartEvent before execution
-			Notify(ctx, OnToolCallStartEvent{
+			startEvent := OnToolCallStartEvent{
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
@@ -883,24 +1052,29 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ModelID:             callbacks.modelID,
 				Messages:            callbacks.messages,
 				ExperimentalContext: callbacks.experimentalContext,
-				FunctionID:          callbacks.functionID,
-				Metadata:            callbacks.metadata,
-			}, callbacks.onStart)
+				RuntimeContext:      callbacks.runtimeContext,
+				ToolsContext:        callbacks.toolsContext,
+			}
+			Notify(ctx, startEvent, callbacks.onStart, callbacks.fallbackStart)
 
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
 			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Args:       call.Arguments,
+				Settings:    callbacks.telemetrySettings,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				Args:        call.Arguments,
+				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
 
 			// Locally-executed tool: execute now, wrapped by telemetry integrations
 			// so they can create nested spans (Gap 4).
 			execOptions := types.ToolExecutionOptions{
-				ToolCallID:  call.ID,
-				UserContext: userContext,
-				Usage:       usage,
-				Metadata:    make(map[string]interface{}),
+				ToolCallID:     call.ID,
+				UserContext:    runtimeContext,
+				RuntimeContext: runtimeContext,
+				ToolContext:    toolContext,
+				Usage:          usage,
+				Metadata:       make(map[string]interface{}),
 			}
 
 			// Apply per-tool timeout if configured.
@@ -911,8 +1085,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 
 			startTime := now()
-			toolResult, toolErr := telemetry.FireExecuteTool(
+			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(
 				execCtx,
+				callbacks.telemetrySettings,
 				call.ToolName,
 				call.Arguments,
 				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
@@ -920,7 +1095,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				},
 			)
 			durationMs := now() - startTime
+			timedOut := execCtx.Err() != nil
 			execCancel() // release timeout resources immediately after execution
+			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {
+				if toolErr == nil {
+					toolErr = context.DeadlineExceeded
+				}
+				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
+			}
 
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
@@ -929,20 +1111,23 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Result:           toolResult,
 				Error:            toolErr,
 				ProviderExecuted: false,
+				ProviderMetadata: providerMetadata,
 			}
 
 			// Fire telemetry OnToolCallFinish (Gap 5 partial: integrations can record errors).
 			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Args:       call.Arguments,
-				Result:     toolResult,
-				Error:      toolErr,
-				DurationMs: durationMs,
+				Settings:    callbacks.telemetrySettings,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				Args:        call.Arguments,
+				Result:      toolResult,
+				Error:       toolErr,
+				DurationMs:  durationMs,
+				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
 
 			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
-			Notify(ctx, OnToolCallFinishEvent{
+			finishEvent := OnToolCallFinishEvent{
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
@@ -955,9 +1140,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ModelID:             callbacks.modelID,
 				Messages:            callbacks.messages,
 				ExperimentalContext: callbacks.experimentalContext,
-				FunctionID:          callbacks.functionID,
-				Metadata:            callbacks.metadata,
-			}, callbacks.onFinish)
+				RuntimeContext:      callbacks.runtimeContext,
+				ToolsContext:        callbacks.toolsContext,
+			}
+			Notify(ctx, finishEvent, callbacks.onFinish, callbacks.fallbackFinish)
 		}
 	}
 
@@ -1002,13 +1188,25 @@ func telemetryCallbackInfo(t *TelemetrySettings) (functionID string, metadata ma
 		return "", nil
 	}
 	functionID = t.FunctionID
-	if len(t.Metadata) > 0 {
-		metadata = make(map[string]any, len(t.Metadata))
-		for k, v := range t.Metadata {
-			metadata[k] = v.Emit()
-		}
-	}
 	return functionID, metadata
+}
+
+func telemetryUsageFromUsage(usage types.Usage) telemetry.TelemetryUsage {
+	out := telemetry.TelemetryUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+	}
+	if usage.InputDetails != nil {
+		out.NoCacheInputTokens = usage.InputDetails.NoCacheTokens
+		out.CacheReadInputTokens = usage.InputDetails.CacheReadTokens
+		out.CacheCreationInputTokens = usage.InputDetails.CacheWriteTokens
+	}
+	if usage.OutputDetails != nil {
+		out.OutputTextTokens = usage.OutputDetails.TextTokens
+		out.ReasoningTokens = usage.OutputDetails.ReasoningTokens
+	}
+	return out
 }
 
 // buildPrompt builds a unified Prompt from various input formats

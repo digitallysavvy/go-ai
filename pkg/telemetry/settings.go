@@ -4,15 +4,16 @@
 package telemetry
 
 import (
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Settings configures telemetry for AI operations.
-// Telemetry is disabled by default and must be explicitly enabled.
-type Settings struct {
-	// IsEnabled controls whether telemetry is active. Defaults to false.
-	IsEnabled bool
+// Options configures telemetry for AI operations.
+// Telemetry is active by default when integrations are registered. Set
+// IsEnabled to Bool(false) on per-call options to opt out.
+type Options struct {
+	// IsEnabled controls whether telemetry is active.
+	// nil means enabled, matching the TypeScript SDK's optional isEnabled field.
+	IsEnabled *bool
 
 	// RecordInputs controls whether input data is recorded in spans. Defaults to true when telemetry is enabled.
 	// You might want to disable input recording to avoid recording sensitive
@@ -27,27 +28,50 @@ type Settings struct {
 	// FunctionID is an identifier for grouping telemetry data by function or operation.
 	FunctionID string
 
-	// Metadata contains additional key-value pairs to include in telemetry spans.
-	Metadata map[string]attribute.Value
-
 	// Tracer is a custom OpenTelemetry tracer. If nil, the global tracer will be used.
 	Tracer trace.Tracer
+
+	// IncludeRuntimeContext lists top-level runtime context keys that should be
+	// included in telemetry. Context is excluded by default.
+	IncludeRuntimeContext map[string]bool
+
+	// IncludeToolsContext lists top-level tool context keys that should be
+	// included in telemetry per tool. Context is excluded by default.
+	IncludeToolsContext map[string]map[string]bool
+
+	// Integrations are per-call telemetry integrations. When non-empty, they
+	// replace globally registered integrations for this call.
+	Integrations []TelemetryIntegration
 }
+
+// Settings configures telemetry for AI operations.
+//
+// Deprecated: use Options.
+type Settings = Options
 
 // DefaultSettings returns Settings with sensible defaults.
 func DefaultSettings() *Settings {
 	return &Settings{
-		IsEnabled:     false,
+		IsEnabled:     Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
-		Metadata:      make(map[string]attribute.Value),
 	}
+}
+
+// Bool returns a bool pointer for optional telemetry fields.
+func Bool(v bool) *bool {
+	return &v
+}
+
+// Enabled reports whether telemetry should run for settings.
+func Enabled(settings *Settings) bool {
+	return settings == nil || settings.IsEnabled == nil || *settings.IsEnabled
 }
 
 // WithEnabled returns a copy of Settings with IsEnabled set to the given value.
 func (s *Settings) WithEnabled(enabled bool) *Settings {
 	copy := *s
-	copy.IsEnabled = enabled
+	copy.IsEnabled = Bool(enabled)
 	return &copy
 }
 
@@ -69,19 +93,6 @@ func (s *Settings) WithRecordOutputs(record bool) *Settings {
 func (s *Settings) WithFunctionID(id string) *Settings {
 	copy := *s
 	copy.FunctionID = id
-	return &copy
-}
-
-// WithMetadata returns a copy of Settings with the given metadata merged in.
-func (s *Settings) WithMetadata(metadata map[string]attribute.Value) *Settings {
-	copy := *s
-	copy.Metadata = make(map[string]attribute.Value)
-	for k, v := range s.Metadata {
-		copy.Metadata[k] = v
-	}
-	for k, v := range metadata {
-		copy.Metadata[k] = v
-	}
 	return &copy
 }
 
