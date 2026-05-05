@@ -108,6 +108,9 @@ type CustomToolCallOutputPart struct {
 
 	// FileURL is a remote URL reference to a file (input_file with URL only).
 	FileURL string `json:"file_url,omitempty"`
+
+	// FileID is a provider file reference (input_file with uploaded file id).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
@@ -316,20 +319,20 @@ type UserTextPart struct {
 
 // UserImageURLPart is an image content part in a user message.
 type UserImageURLPart struct {
-	Type     string `json:"type"`      // "input_image"
+	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
 }
 
 // UserFilePart references a file by URL in a user message.
 type UserFilePart struct {
-	Type    string `json:"type"`     // "input_file"
+	Type    string `json:"type"` // "input_file"
 	FileURL string `json:"file_url"`
 }
 
 // FunctionCallOutputItem sends a function tool result back to the Responses API.
 // It pairs with a FunctionCallItem via CallID.
 type FunctionCallOutputItem struct {
-	Type   string      `json:"type"`   // "function_call_output"
+	Type   string      `json:"type"` // "function_call_output"
 	CallID string      `json:"call_id"`
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
 }
@@ -340,10 +343,10 @@ type FunctionCallOutputItem struct {
 
 // ResponsesAPIResponse is the body returned by a non-streaming POST /responses.
 type ResponsesAPIResponse struct {
-	ID          string            `json:"id"`
-	CreatedAt   int64             `json:"created_at"`
-	Model       string            `json:"model"`
-	ServiceTier string            `json:"service_tier,omitempty"`
+	ID          string `json:"id"`
+	CreatedAt   int64  `json:"created_at"`
+	Model       string `json:"model"`
+	ServiceTier string `json:"service_tier,omitempty"`
 	// Status is the terminal state: "completed", "incomplete", "failed".
 	// Primary signal for finish reason; use IncompleteDetails for truncation details.
 	Status            string             `json:"status,omitempty"`
@@ -354,8 +357,8 @@ type ResponsesAPIResponse struct {
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
 type ResponsesAPIUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
 	InputTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
@@ -442,7 +445,7 @@ type OutputItemDoneEvent struct {
 type ResponseCompletedEvent struct {
 	Type     string `json:"type"` // "response.completed"
 	Response struct {
-		ID                string             `json:"id"`
+		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
 		Status            string             `json:"status,omitempty"`
 		Usage             ResponsesAPIUsage  `json:"usage"`
@@ -454,9 +457,9 @@ type ResponseCompletedEvent struct {
 type ResponseFailedEvent struct {
 	Type     string `json:"type"` // "response.failed"
 	Response struct {
-		ID          string             `json:"id"`
-		ServiceTier string             `json:"service_tier,omitempty"`
-		Usage       ResponsesAPIUsage  `json:"usage"`
+		ID          string            `json:"id"`
+		ServiceTier string            `json:"service_tier,omitempty"`
+		Usage       ResponsesAPIUsage `json:"usage"`
 		Error       *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`

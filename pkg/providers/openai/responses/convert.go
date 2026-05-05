@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -66,6 +67,33 @@ func convertUserMessage(msg types.Message) UserMessage {
 			}
 			if imageURL != "" {
 				parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: imageURL})
+			}
+		case types.FileContent:
+			mediaType := p.MediaType
+			if mediaType == "" {
+				mediaType = p.MimeType
+			}
+			if p.URL != "" {
+				if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+					parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: p.URL})
+				} else {
+					parts = append(parts, UserFilePart{Type: "input_file", FileURL: p.URL})
+				}
+			} else if p.Reference != "" {
+				parts = append(parts, map[string]interface{}{"type": "input_file", "file_id": p.Reference})
+			} else if p.Text != "" {
+				parts = append(parts, UserTextPart{Type: "input_text", Text: p.Text})
+			} else if len(p.Data) > 0 {
+				fileData := fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(p.Data))
+				if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+					parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: fileData})
+				} else {
+					part := map[string]interface{}{"type": "input_file", "file_data": fileData}
+					if p.Filename != "" {
+						part["filename"] = p.Filename
+					}
+					parts = append(parts, part)
+				}
 			}
 		}
 	}
@@ -168,6 +196,16 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 						parts = append(parts, CustomToolCallOutputPart{
 							Type:    "input_file",
 							FileURL: b.URL,
+						})
+					} else if b.Reference != "" {
+						parts = append(parts, CustomToolCallOutputPart{
+							Type:   "input_file",
+							FileID: b.Reference,
+						})
+					} else if b.Text != "" {
+						parts = append(parts, CustomToolCallOutputPart{
+							Type: "input_text",
+							Text: b.Text,
 						})
 					} else if len(b.Data) > 0 {
 						// file-data: inline base64

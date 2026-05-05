@@ -87,6 +87,8 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 							"url": imageData,
 						},
 					})
+				case types.FileContent:
+					contentParts = append(contentParts, openAIFileContentPart(p))
 				case types.CustomContent:
 					// CustomContent in assistant messages may carry OpenAI-specific
 					// provider options. Forward the openai-keyed options verbatim if
@@ -191,6 +193,8 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 							"data":       imageData,
 						},
 					})
+				case types.FileContent:
+					contentParts = append(contentParts, anthropicFileContentPart(p))
 				case types.CustomContent:
 					// CustomContent in assistant messages may carry Anthropic-specific
 					// provider options that the API understands (e.g., future block types).
@@ -232,15 +236,7 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 								})
 
 							case types.FileContentBlock:
-								fileData := base64.StdEncoding.EncodeToString(b.Data)
-								contentArray = append(contentArray, map[string]interface{}{
-									"type": "document",
-									"source": map[string]interface{}{
-										"type":       "base64",
-										"media_type": b.MediaType,
-										"data":       fileData,
-									},
-								})
+								contentArray = append(contentArray, anthropicFileContentBlockPart(b))
 
 							case types.CustomContentBlock:
 								// Check for Anthropic-specific content (e.g., tool-reference)
@@ -368,6 +364,8 @@ func ToGoogleMessages(messages []types.Message, supportsFunctionResponseParts bo
 							"data":     imageData,
 						},
 					})
+				case types.FileContent:
+					parts = append(parts, googleFileContentPart(p))
 				case types.CustomContent:
 					if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
 						block := map[string]interface{}{}
@@ -431,15 +429,7 @@ func ToGoogleMessages(messages []types.Message, supportsFunctionResponseParts bo
 						})
 					}
 				case types.FileContent:
-					// FileContent with a URL string stored in Filename acts as a file URI.
-					// The Go FileContent type doesn't have a URL field, so inline only.
-					fileData := base64.StdEncoding.EncodeToString(p.Data)
-					parts = append(parts, map[string]interface{}{
-						"inlineData": map[string]interface{}{
-							"mimeType": p.MimeType,
-							"data":     fileData,
-						},
-					})
+					parts = append(parts, googleFileContentPart(p))
 				case types.CustomContent:
 					if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
 						block := map[string]interface{}{}
@@ -528,12 +518,7 @@ func googleAppendToolResultParts(parts *[]map[string]interface{}, toolName strin
 				},
 			})
 		case types.FileContentBlock:
-			responseParts = append(responseParts, map[string]interface{}{
-				"inlineData": map[string]interface{}{
-					"mimeType": b.MediaType,
-					"data":     base64.StdEncoding.EncodeToString(b.Data),
-				},
-			})
+			responseParts = append(responseParts, googleFileContentBlockPart(b))
 		default:
 			// Unknown block type — serialize as JSON text.
 			if j, err := json.Marshal(block); err == nil {
@@ -590,6 +575,8 @@ func googleAppendLegacyToolResultParts(parts *[]map[string]interface{}, toolName
 					"text": "Tool executed successfully and returned this image as a response",
 				},
 			)
+		case types.FileContentBlock:
+			*parts = append(*parts, googleFileContentBlockPart(b))
 		default:
 			// Unknown types are serialized to JSON and sent as text.
 			j, _ := json.Marshal(block)
@@ -598,6 +585,131 @@ func googleAppendLegacyToolResultParts(parts *[]map[string]interface{}, toolName
 			})
 		}
 	}
+}
+
+func openAIFileContentPart(file types.FileContent) map[string]interface{} {
+	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
+	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+		imageURL := file.URL
+		if imageURL == "" && len(file.Data) > 0 {
+			imageURL = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
+		}
+		return map[string]interface{}{
+			"type": "image_url",
+			"image_url": map[string]interface{}{
+				"url": imageURL,
+			},
+		}
+	}
+
+	fileObject := map[string]interface{}{}
+	if file.Filename != "" {
+		fileObject["filename"] = file.Filename
+	}
+	switch {
+	case file.Reference != "":
+		fileObject["file_id"] = file.Reference
+	case file.URL != "":
+		fileObject["file_url"] = file.URL
+	case file.Text != "":
+		fileObject["file_data"] = file.Text
+	case len(file.Data) > 0:
+		fileObject["file_data"] = base64.StdEncoding.EncodeToString(file.Data)
+	}
+	if mediaType != "" {
+		fileObject["media_type"] = mediaType
+	}
+	return map[string]interface{}{
+		"type": "file",
+		"file": fileObject,
+	}
+}
+
+func anthropicFileContentPart(file types.FileContent) map[string]interface{} {
+	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
+	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+		source := map[string]interface{}{"type": "base64", "media_type": mediaType}
+		if file.URL != "" {
+			source = map[string]interface{}{"type": "url", "url": file.URL}
+		} else {
+			source["data"] = base64.StdEncoding.EncodeToString(file.Data)
+		}
+		return map[string]interface{}{"type": "image", "source": source}
+	}
+
+	source := map[string]interface{}{"media_type": mediaType}
+	switch {
+	case file.URL != "":
+		source["type"] = "url"
+		source["url"] = file.URL
+	case file.Reference != "":
+		source["type"] = "file"
+		source["file_id"] = file.Reference
+	case file.Text != "":
+		source["type"] = "text"
+		source["data"] = file.Text
+	default:
+		source["type"] = "base64"
+		source["data"] = base64.StdEncoding.EncodeToString(file.Data)
+	}
+	return map[string]interface{}{"type": "document", "source": source}
+}
+
+func anthropicFileContentBlockPart(block types.FileContentBlock) map[string]interface{} {
+	return anthropicFileContentPart(types.FileContent{
+		FileData:        block.FileData,
+		Data:            block.Data,
+		MediaType:       block.MediaType,
+		MimeType:        block.MediaType,
+		Filename:        block.Filename,
+		URL:             block.URL,
+		Reference:       block.Reference,
+		Text:            block.Text,
+		ProviderOptions: block.ProviderOptions,
+	})
+}
+
+func googleFileContentPart(file types.FileContent) map[string]interface{} {
+	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
+	if file.URL != "" {
+		return map[string]interface{}{
+			"fileData": map[string]interface{}{
+				"mimeType": mediaType,
+				"fileUri":  file.URL,
+			},
+		}
+	}
+	if file.Reference != "" {
+		return map[string]interface{}{
+			"fileData": map[string]interface{}{
+				"mimeType": mediaType,
+				"fileUri":  file.Reference,
+			},
+		}
+	}
+	if file.Text != "" {
+		return map[string]interface{}{"text": file.Text}
+	}
+	return map[string]interface{}{
+		"inlineData": map[string]interface{}{
+			"mimeType": mediaType,
+			"data":     base64.StdEncoding.EncodeToString(file.Data),
+		},
+	}
+}
+
+func googleFileContentBlockPart(block types.FileContentBlock) map[string]interface{} {
+	return googleFileContentPart(types.FileContent{
+		FileData:        block.FileData,
+		Data:            block.Data,
+		MediaType:       block.MediaType,
+		MimeType:        block.MediaType,
+		Filename:        block.Filename,
+		URL:             block.URL,
+		Reference:       block.Reference,
+		Text:            block.Text,
+		ProviderOptions: block.ProviderOptions,
+	})
 }
 
 // SimpleTextToMessages converts a simple text prompt to a message list

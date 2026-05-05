@@ -52,7 +52,7 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 			}
 
 			// Add tool calls as separate items
-		input = append(input, toolCalls...)
+			input = append(input, toolCalls...)
 
 		case types.RoleTool:
 			// Convert tool results
@@ -93,7 +93,11 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) 
 
 		case types.FileContent:
 			// Handle file content (converted to image if image type)
-			if strings.HasPrefix(p.MimeType, "image/") {
+			mediaType := p.MediaType
+			if mediaType == "" {
+				mediaType = p.MimeType
+			}
+			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 				imageURL := convertFileToImageURL(p, warnings)
 				if imageURL != "" {
 					result = append(result, InputImageContent{
@@ -104,7 +108,7 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) 
 			} else {
 				*warnings = append(*warnings, types.Warning{
 					Type:    "unsupported-content",
-					Message: fmt.Sprintf("unsupported file content type: %s", p.MimeType),
+					Message: fmt.Sprintf("unsupported file content type: %s", mediaType),
 				})
 			}
 		}
@@ -135,9 +139,24 @@ func convertImageContentToURL(img types.ImageContent, warnings *[]types.Warning)
 
 // convertFileToImageURL converts FileContent to an image data URL
 func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) string {
-	mediaType := file.MimeType
+	mediaType := file.MediaType
+	if mediaType == "" {
+		mediaType = file.MimeType
+	}
 	if mediaType == "" || mediaType == "image/*" {
 		mediaType = "image/jpeg"
+	}
+
+	if file.URL != "" {
+		return file.URL
+	}
+
+	if file.Reference != "" {
+		return file.Reference
+	}
+
+	if file.Text != "" {
+		return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text)))
 	}
 
 	if len(file.Data) > 0 {
