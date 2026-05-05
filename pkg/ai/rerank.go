@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // RerankOnStartEvent is emitted before calling the reranking model.
@@ -40,8 +41,6 @@ type RerankOnStartEvent struct {
 	RecordOutputs bool
 	// FunctionID is the telemetry function identifier.
 	FunctionID string
-	// Metadata holds additional telemetry key-value pairs.
-	Metadata map[string]any
 }
 
 // RerankOnFinishEvent is emitted after the reranking model returns.
@@ -75,8 +74,6 @@ type RerankOnFinishEvent struct {
 	RecordOutputs bool
 	// FunctionID is the telemetry function identifier.
 	FunctionID string
-	// Metadata holds additional telemetry key-value pairs.
-	Metadata map[string]any
 }
 
 // RerankOptions contains options for document reranking
@@ -104,7 +101,13 @@ type RerankOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"cohere": map[string]interface{}{"returnDocuments": true}}.
 	ProviderOptions map[string]interface{}
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// Callback called when reranking finishes
@@ -162,6 +165,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.Query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Validate documents type
 	var documentsSlice []interface{}
@@ -201,40 +205,36 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	// Extract telemetry fields for callback population.
 	telEnabled := false
 	var telFuncID string
-	var telMeta map[string]any
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
-		telEnabled = opts.ExperimentalTelemetry.IsEnabled
+		telEnabled = telemetry.Enabled(opts.ExperimentalTelemetry)
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
 		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
 		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
-		if len(opts.ExperimentalTelemetry.Metadata) > 0 {
-			telMeta = make(map[string]any, len(opts.ExperimentalTelemetry.Metadata))
-			for k, v := range opts.ExperimentalTelemetry.Metadata {
-				telMeta[k] = v.Emit()
-			}
-		}
 	}
 
 	// Fire ExperimentalOnStart callback
+	startEvent := RerankOnStartEvent{
+		CallID:          callID,
+		OperationID:     "ai.rerank",
+		Provider:        opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Query:           opts.Query,
+		Documents:       opts.Documents,
+		TopN:            opts.TopN,
+		MaxRetries:      opts.MaxRetries,
+		Headers:         opts.Headers,
+		ProviderOptions: opts.ProviderOptions,
+		IsEnabled:       telEnabled,
+		RecordInputs:    telRecordInputs,
+		RecordOutputs:   telRecordOutputs,
+		FunctionID:      telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, startEvent)
+	}
 	if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(RerankOnStartEvent{
-			CallID:          callID,
-			OperationID:     "ai.rerank",
-			Provider:        opts.Model.Provider(),
-			ModelID:         opts.Model.ModelID(),
-			Query:           opts.Query,
-			Documents:       opts.Documents,
-			TopN:            opts.TopN,
-			MaxRetries:      opts.MaxRetries,
-			Headers:         opts.Headers,
-			ProviderOptions: opts.ProviderOptions,
-			IsEnabled:       telEnabled,
-			RecordInputs:    telRecordInputs,
-			RecordOutputs:   telRecordOutputs,
-			FunctionID:      telFuncID,
-			Metadata:        telMeta,
-		})
+		opts.ExperimentalOnStart(startEvent)
 	}
 
 	// Build rerank options — thread caller-supplied headers and provider options to the provider.
@@ -280,32 +280,34 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	}
 
 	// Fire ExperimentalOnFinish callback
-	if opts.ExperimentalOnFinish != nil {
-		// Marshal provider metadata to json.RawMessage if available.
-		var providerMeta json.RawMessage
-		if result.ProviderMetadata != nil {
-			if b, merr := json.Marshal(result.ProviderMetadata); merr == nil {
-				providerMeta = b
-			}
+	var providerMeta json.RawMessage
+	if result.ProviderMetadata != nil {
+		if b, merr := json.Marshal(result.ProviderMetadata); merr == nil {
+			providerMeta = b
 		}
-		opts.ExperimentalOnFinish(RerankOnFinishEvent{
-			CallID:           callID,
-			OperationID:      "ai.rerank",
-			Provider:         opts.Model.Provider(),
-			ModelID:          opts.Model.ModelID(),
-			Documents:        opts.Documents,
-			Query:            opts.Query,
-			Ranking:          result.Ranking,
-			Warnings:         result.Warnings,
-			Response:         result.Response,
-			ProviderMetadata: providerMeta,
-			Result:           result,
-			IsEnabled:        telEnabled,
-			RecordInputs:     telRecordInputs,
-			RecordOutputs:    telRecordOutputs,
-			FunctionID:       telFuncID,
-			Metadata:         telMeta,
-		})
+	}
+	finishEvent := RerankOnFinishEvent{
+		CallID:           callID,
+		OperationID:      "ai.rerank",
+		Provider:         opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Documents:        opts.Documents,
+		Query:            opts.Query,
+		Ranking:          result.Ranking,
+		Warnings:         result.Warnings,
+		Response:         result.Response,
+		ProviderMetadata: providerMeta,
+		Result:           result,
+		IsEnabled:        telEnabled,
+		RecordInputs:     telRecordInputs,
+		RecordOutputs:    telRecordOutputs,
+		FunctionID:       telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankFinish, finishEvent)
+	}
+	if opts.ExperimentalOnFinish != nil {
+		opts.ExperimentalOnFinish(finishEvent)
 	}
 
 	return result, nil

@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -125,7 +127,7 @@ func TestNoopTelemetryIntegration_NoPanics(t *testing.T) {
 
 func TestNoopTelemetryIntegration_DisabledSettings_NoPanics(t *testing.T) {
 	noop := NoopTelemetryIntegration{}
-	settings := &Settings{IsEnabled: false}
+	settings := &Settings{IsEnabled: Bool(false)}
 	ctx := noop.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "test",
 		Settings:      settings,
@@ -164,7 +166,7 @@ func TestAddTelemetryIntegration_FanOut(t *testing.T) {
 
 	ctx := FireOnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
-		Settings:      &Settings{IsEnabled: true},
+		Settings:      &Settings{IsEnabled: Bool(true)},
 	})
 	FireOnFinish(ctx, TelemetryFinishEvent{})
 
@@ -187,15 +189,121 @@ func TestAddTelemetryIntegration_FanOut(t *testing.T) {
 	}
 }
 
+func TestTelemetryEnabledDefaultsToTrueUnlessExplicitFalse(t *testing.T) {
+	if !Enabled(nil) {
+		t.Fatal("nil settings should be enabled")
+	}
+	if !Enabled(&Settings{}) {
+		t.Fatal("empty settings should be enabled")
+	}
+	if Enabled(&Settings{IsEnabled: Bool(false)}) {
+		t.Fatal("explicit false should disable telemetry")
+	}
+}
+
+func TestRegisterTelemetryIntegration_AppendsMultiple(t *testing.T) {
+	ClearTelemetryIntegrations()
+	defer RegisterTelemetryIntegration(NoopTelemetryIntegration{})
+
+	m1 := &mockIntegration{}
+	m2 := &mockIntegration{}
+
+	RegisterTelemetryIntegration(m1)
+	RegisterTelemetryIntegration(m2)
+
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      &Settings{IsEnabled: Bool(true)},
+	})
+	FireOnFinish(ctx, TelemetryFinishEvent{Settings: &Settings{IsEnabled: Bool(true)}})
+
+	m1.mu.Lock()
+	m2.mu.Lock()
+	defer m1.mu.Unlock()
+	defer m2.mu.Unlock()
+
+	if len(m1.starts) != 1 || len(m2.starts) != 1 {
+		t.Fatalf("expected both integrations to receive start, got m1=%d m2=%d", len(m1.starts), len(m2.starts))
+	}
+	if m1.ends != 1 || m2.ends != 1 {
+		t.Fatalf("expected both integrations to receive finish, got m1=%d m2=%d", m1.ends, m2.ends)
+	}
+}
+
+func TestPerCallIntegrationsOverrideGlobal(t *testing.T) {
+	ClearTelemetryIntegrations()
+	defer RegisterTelemetryIntegration(NoopTelemetryIntegration{})
+
+	global := &mockIntegration{}
+	local := &mockIntegration{}
+	RegisterTelemetryIntegration(global)
+
+	settings := &Settings{IsEnabled: Bool(true), Integrations: []TelemetryIntegration{local}}
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	FireOnFinish(ctx, TelemetryFinishEvent{Settings: settings})
+
+	global.mu.Lock()
+	local.mu.Lock()
+	defer global.mu.Unlock()
+	defer local.mu.Unlock()
+
+	if len(global.starts) != 0 || global.ends != 0 {
+		t.Fatalf("expected global integration to be skipped, got starts=%d ends=%d", len(global.starts), global.ends)
+	}
+	if len(local.starts) != 1 || local.ends != 1 {
+		t.Fatalf("expected local integration to fire, got starts=%d ends=%d", len(local.starts), local.ends)
+	}
+}
+
+func TestDiagnosticChannelSubscribeUnsubscribeAndPanicCapture(t *testing.T) {
+	ch := NewDiagnosticChannel()
+	var got []DiagnosticMessage
+
+	unsubscribe := ch.Subscribe(func(_ context.Context, msg DiagnosticMessage) error {
+		got = append(got, msg)
+		return nil
+	})
+
+	if err := ch.Publish(context.Background(), DiagnosticMessage{Type: DiagnosticEventOnStart, Event: "first"}); err != nil {
+		t.Fatalf("unexpected publish error: %v", err)
+	}
+	unsubscribe()
+	if err := ch.Publish(context.Background(), DiagnosticMessage{Type: DiagnosticEventOnFinish, Event: "second"}); err != nil {
+		t.Fatalf("unexpected publish error after unsubscribe: %v", err)
+	}
+
+	if len(got) != 1 || got[0].Type != DiagnosticEventOnStart {
+		t.Fatalf("unexpected messages: %#v", got)
+	}
+
+	ch.Subscribe(func(context.Context, DiagnosticMessage) error {
+		panic("boom")
+	})
+	ch.Subscribe(func(context.Context, DiagnosticMessage) error {
+		return errors.New("subscriber error")
+	})
+
+	err := ch.Publish(context.Background(), DiagnosticMessage{Type: DiagnosticEventOnError})
+	if err == nil {
+		t.Fatal("expected joined subscriber errors")
+	}
+	if !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "subscriber error") {
+		t.Fatalf("expected panic and subscriber error, got %v", err)
+	}
+}
+
 func TestOTelTelemetryIntegration_DisabledReturnsNoop(t *testing.T) {
 	integration := OTelTelemetryIntegration{}
 
 	// Disabled settings must not panic.
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "test",
-		Settings:      &Settings{IsEnabled: false},
+		Settings:      &Settings{IsEnabled: Bool(false)},
 	})
-	integration.OnFinish(ctx, TelemetryFinishEvent{Settings: &Settings{IsEnabled: false}})
+	integration.OnFinish(ctx, TelemetryFinishEvent{Settings: &Settings{IsEnabled: Bool(false)}})
 	integration.OnError(ctx, TelemetryErrorEvent{})
 
 	// Nil settings must also be safe.
@@ -214,7 +322,7 @@ func TestMockIntegration_ReceivesStartFinish(t *testing.T) {
 			OperationType: "ai.generateText",
 			ModelProvider: "test-provider",
 			ModelID:       "test-model",
-			Settings:      &Settings{IsEnabled: true},
+			Settings:      &Settings{IsEnabled: Bool(true)},
 		},
 	)
 	FireOnFinish(ctx, TelemetryFinishEvent{FinishReason: "stop"})

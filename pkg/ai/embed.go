@@ -109,7 +109,13 @@ type EmbedOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ExperimentalOnStart is called before the embedding model is invoked.
@@ -140,10 +146,11 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Input == "" {
 		return nil, fmt.Errorf("input is required")
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
 	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
 		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
 
 		// Create top-level ai.embed span
@@ -168,12 +175,6 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		}
 
 		// Add custom metadata
-		for key, value := range opts.ExperimentalTelemetry.Metadata {
-			span.SetAttributes(attribute.KeyValue{
-				Key:   attribute.Key("ai.telemetry.metadata." + key),
-				Value: value,
-			})
-		}
 
 		// Record input if enabled
 		if opts.ExperimentalTelemetry.RecordInputs {
@@ -185,41 +186,37 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	callID := newCallID()
 
 	// Extract telemetry fields for callback population.
-	telEnabled := opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled
+	telEnabled := opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry)
 	var telFuncID string
-	var telMeta map[string]any
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
 		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
 		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
-		if len(opts.ExperimentalTelemetry.Metadata) > 0 {
-			telMeta = make(map[string]any, len(opts.ExperimentalTelemetry.Metadata))
-			for k, v := range opts.ExperimentalTelemetry.Metadata {
-				telMeta[k] = v.Emit()
-			}
-		}
 	}
 
 	// Fire ExperimentalOnStart callback
+	startEvent := EmbedOnStartEvent{
+		CallID:           callID,
+		OperationID:      "ai.embed",
+		Provider:         opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Values:           []string{opts.Input},
+		MaxRetries:       opts.MaxRetries,
+		Ctx:              ctx,
+		Headers:          opts.Headers,
+		ProviderOptions:  opts.ProviderOptions,
+		TelemetryEnabled: telEnabled,
+		IsEnabled:        telEnabled,
+		RecordInputs:     telRecordInputs,
+		RecordOutputs:    telRecordOutputs,
+		FunctionID:       telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
+	}
 	if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(EmbedOnStartEvent{
-			CallID:           callID,
-			OperationID:      "ai.embed",
-			Provider:         opts.Model.Provider(),
-			ModelID:          opts.Model.ModelID(),
-			Values:           []string{opts.Input},
-			MaxRetries:       opts.MaxRetries,
-			Ctx:              ctx,
-			Headers:          opts.Headers,
-			ProviderOptions:  opts.ProviderOptions,
-			TelemetryEnabled: telEnabled,
-			IsEnabled:        telEnabled,
-			RecordInputs:     telRecordInputs,
-			RecordOutputs:    telRecordOutputs,
-			FunctionID:       telFuncID,
-			Metadata:         telMeta,
-		})
+		opts.ExperimentalOnStart(startEvent)
 	}
 
 	// Build provider-level options.
@@ -247,23 +244,26 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 
 	// Fire ExperimentalOnFinish callback
+	finishEvent := EmbedOnFinishEvent{
+		CallID:        callID,
+		OperationID:   "ai.embed",
+		Provider:      opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Value:         []string{opts.Input},
+		Embeddings:    [][]float64{embedResult.Embedding},
+		Usage:         embedResult.Usage,
+		Warnings:      embedResult.Warnings,
+		Responses:     []types.EmbeddingResponse{result.Response},
+		IsEnabled:     telEnabled,
+		RecordInputs:  telRecordInputs,
+		RecordOutputs: telRecordOutputs,
+		FunctionID:    telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedFinish, finishEvent)
+	}
 	if opts.ExperimentalOnFinish != nil {
-		opts.ExperimentalOnFinish(EmbedOnFinishEvent{
-			CallID:        callID,
-			OperationID:   "ai.embed",
-			Provider:      opts.Model.Provider(),
-			ModelID:       opts.Model.ModelID(),
-			Value:         []string{opts.Input},
-			Embeddings:    [][]float64{embedResult.Embedding},
-			Usage:         embedResult.Usage,
-			Warnings:      embedResult.Warnings,
-			Responses:     []types.EmbeddingResponse{result.Response},
-			IsEnabled:     telEnabled,
-			RecordInputs:  telRecordInputs,
-			RecordOutputs: telRecordOutputs,
-			FunctionID:    telFuncID,
-			Metadata:      telMeta,
-		})
+		opts.ExperimentalOnFinish(finishEvent)
 	}
 
 	return embedResult, nil
@@ -287,7 +287,13 @@ type EmbedManyOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ExperimentalOnStart is called before the embedding model is invoked.
@@ -318,10 +324,11 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if len(opts.Inputs) == 0 {
 		return nil, fmt.Errorf("at least one input is required")
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
 	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
 		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
 
 		// Create top-level ai.embedMany span
@@ -347,53 +354,43 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		}
 
 		// Add custom metadata
-		for key, value := range opts.ExperimentalTelemetry.Metadata {
-			span.SetAttributes(attribute.KeyValue{
-				Key:   attribute.Key("ai.telemetry.metadata." + key),
-				Value: value,
-			})
-		}
 	}
 
 	// Generate a unique call ID for correlating start/finish events.
 	callID := newCallID()
 
 	// Extract telemetry fields for callback population.
-	telEnabled := opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled
+	telEnabled := opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry)
 	var telFuncID string
-	var telMeta map[string]any
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
 		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
 		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
-		if len(opts.ExperimentalTelemetry.Metadata) > 0 {
-			telMeta = make(map[string]any, len(opts.ExperimentalTelemetry.Metadata))
-			for k, v := range opts.ExperimentalTelemetry.Metadata {
-				telMeta[k] = v.Emit()
-			}
-		}
 	}
 
 	// Fire ExperimentalOnStart callback
+	startEvent := EmbedOnStartEvent{
+		CallID:           callID,
+		OperationID:      "ai.embedMany",
+		Provider:         opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Values:           opts.Inputs,
+		MaxRetries:       opts.MaxRetries,
+		Ctx:              ctx,
+		Headers:          opts.Headers,
+		ProviderOptions:  opts.ProviderOptions,
+		TelemetryEnabled: telEnabled,
+		IsEnabled:        telEnabled,
+		RecordInputs:     telRecordInputs,
+		RecordOutputs:    telRecordOutputs,
+		FunctionID:       telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
+	}
 	if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(EmbedOnStartEvent{
-			CallID:           callID,
-			OperationID:      "ai.embedMany",
-			Provider:         opts.Model.Provider(),
-			ModelID:          opts.Model.ModelID(),
-			Values:           opts.Inputs,
-			MaxRetries:       opts.MaxRetries,
-			Ctx:              ctx,
-			Headers:          opts.Headers,
-			ProviderOptions:  opts.ProviderOptions,
-			TelemetryEnabled: telEnabled,
-			IsEnabled:        telEnabled,
-			RecordInputs:     telRecordInputs,
-			RecordOutputs:    telRecordOutputs,
-			FunctionID:       telFuncID,
-			Metadata:         telMeta,
-		})
+		opts.ExperimentalOnStart(startEvent)
 	}
 
 	// Build provider-level options.
@@ -421,23 +418,26 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	}
 
 	// Fire ExperimentalOnFinish callback
+	finishEvent := EmbedOnFinishEvent{
+		CallID:        callID,
+		OperationID:   "ai.embedMany",
+		Provider:      opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Value:         opts.Inputs,
+		Embeddings:    embedResult.Embeddings,
+		Usage:         embedResult.Usage,
+		Warnings:      embedResult.Warnings,
+		Responses:     result.Responses,
+		IsEnabled:     telEnabled,
+		RecordInputs:  telRecordInputs,
+		RecordOutputs: telRecordOutputs,
+		FunctionID:    telFuncID,
+	}
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedFinish, finishEvent)
+	}
 	if opts.ExperimentalOnFinish != nil {
-		opts.ExperimentalOnFinish(EmbedOnFinishEvent{
-			CallID:        callID,
-			OperationID:   "ai.embedMany",
-			Provider:      opts.Model.Provider(),
-			ModelID:       opts.Model.ModelID(),
-			Value:         opts.Inputs,
-			Embeddings:    embedResult.Embeddings,
-			Usage:         embedResult.Usage,
-			Warnings:      embedResult.Warnings,
-			Responses:     result.Responses,
-			IsEnabled:     telEnabled,
-			RecordInputs:  telRecordInputs,
-			RecordOutputs: telRecordOutputs,
-			FunctionID:    telFuncID,
-			Metadata:      telMeta,
-		})
+		opts.ExperimentalOnFinish(finishEvent)
 	}
 
 	return embedResult, nil

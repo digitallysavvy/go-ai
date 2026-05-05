@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -183,7 +184,7 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 		Model:  model,
 		Prompt: "test",
 		ExperimentalTelemetry: &TelemetrySettings{
-			IsEnabled:  true,
+			IsEnabled:  telemetry.Bool(true),
 			FunctionID: "usage-test",
 		},
 	})
@@ -249,7 +250,7 @@ func TestTelemetryModelAttributesFlattened(t *testing.T) {
 		Model:  model,
 		Prompt: "test",
 		ExperimentalTelemetry: &TelemetrySettings{
-			IsEnabled:  true,
+			IsEnabled:  telemetry.Bool(true),
 			FunctionID: "flat-test",
 		},
 	})

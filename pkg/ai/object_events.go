@@ -118,7 +118,7 @@ type ObjectOnStepStartEvent struct {
 	// promptMessages field on ObjectOnStepStartEvent (used for telemetry).
 	PromptMessages *types.Prompt
 
-	// FunctionID is the identifier from telemetry settings.
+	// FunctionID is the identifier from telemetry settings for grouping related operations.
 	FunctionID string
 
 	// Metadata is additional metadata from telemetry settings.
@@ -165,12 +165,6 @@ type ObjectOnStepFinishEvent struct {
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{}
-
-	// FunctionID is the identifier from telemetry settings.
-	FunctionID string
-
-	// Metadata is additional metadata from telemetry settings.
-	Metadata map[string]interface{}
 }
 
 // ObjectOnFinishEvent is fired when the entire operation completes, including
@@ -211,10 +205,4 @@ type ObjectOnFinishEvent struct {
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{}
-
-	// FunctionID is the identifier from telemetry settings.
-	FunctionID string
-
-	// Metadata is additional metadata from telemetry settings.
-	Metadata map[string]interface{}
 }

@@ -446,7 +446,13 @@ type GenerateObjectOptions struct {
 	// SchemaDescription is an optional description for the output schema.
 	SchemaDescription string
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ========================================================================
@@ -528,10 +534,11 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
 	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && opts.ExperimentalTelemetry.IsEnabled {
+	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
 		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
 
 		// Create top-level ai.generateObject span
@@ -557,12 +564,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		}
 
 		// Add custom metadata
-		for key, value := range opts.ExperimentalTelemetry.Metadata {
-			span.SetAttributes(attribute.KeyValue{
-				Key:   attribute.Key("ai.telemetry.metadata." + key),
-				Value: value,
-			})
-		}
 
 		// Record prompt if enabled
 		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
@@ -640,8 +641,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// Build telemetry bool helpers
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
-		b := opts.ExperimentalTelemetry.IsEnabled
-		isEnabled = &b
+		isEnabled = opts.ExperimentalTelemetry.IsEnabled
 		ri := opts.ExperimentalTelemetry.RecordInputs
 		recordInputs = &ri
 		ro := opts.ExperimentalTelemetry.RecordOutputs
@@ -786,8 +786,6 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Request:          reqMeta,
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
@@ -830,8 +828,6 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Request:          reqMeta,
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnFinishEvent)
 
 	if opts.OnFinish != nil {
@@ -922,8 +918,6 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Request:          arrReqMeta,
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
 	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
@@ -965,8 +959,6 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Request:          arrReqMeta,
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnFinishEvent)
 
 	if opts.OnFinish != nil {
@@ -1055,8 +1047,6 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Request:          enumReqMeta,
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
 	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
@@ -1098,8 +1088,6 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Request:          enumReqMeta,
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnFinishEvent)
 
 	if opts.OnFinish != nil {
@@ -1182,8 +1170,6 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Request:          nsReqMeta,
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnStepFinish)
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
@@ -1225,8 +1211,6 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Request:          nsReqMeta,
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-		FunctionID:       cc.funcID,
-		Metadata:         cc.metadata,
 	}, opts.OnFinishEvent)
 
 	if opts.OnFinish != nil {
@@ -1301,7 +1285,13 @@ type StreamObjectOptions struct {
 	// SchemaDescription is an optional description for the output schema.
 	SchemaDescription string
 
-	// Telemetry configuration for observability
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// Telemetry configuration for observability.
+	//
+	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ========================================================================
@@ -1345,6 +1335,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
@@ -1407,8 +1398,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
-		b := opts.ExperimentalTelemetry.IsEnabled
-		isEnabled = &b
+		isEnabled = opts.ExperimentalTelemetry.IsEnabled
 		ri := opts.ExperimentalTelemetry.RecordInputs
 		recordInputs = &ri
 		ro := opts.ExperimentalTelemetry.RecordOutputs
@@ -1514,8 +1504,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          fbReqMeta,
 			Response:         fbResMeta,
 			ProviderMetadata: result.ProviderMetadata,
-			FunctionID:       cbFuncID,
-			Metadata:         cbMeta,
 		}, opts.OnStepFinish)
 
 		// Parse final JSON
@@ -1543,8 +1531,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 				Request:          fbReqMeta,
 				Response:         fbResMeta,
 				ProviderMetadata: result.ProviderMetadata,
-				FunctionID:       cbFuncID,
-				Metadata:         cbMeta,
 			}, opts.OnFinishEvent)
 			return nil, parseErr
 		}
@@ -1574,8 +1560,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          fbReqMeta,
 			Response:         fbResMeta,
 			ProviderMetadata: result.ProviderMetadata,
-			FunctionID:       cbFuncID,
-			Metadata:         cbMeta,
 		}, opts.OnFinishEvent)
 
 		if opts.OnFinish != nil {
@@ -1710,8 +1694,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-			FunctionID:       cbFuncID,
-			Metadata:         cbMeta,
 		}, opts.OnStepFinish)
 		Notify(ctx, ObjectOnFinishEvent{
 			CallID:           callID,
@@ -1724,8 +1706,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-			FunctionID:       cbFuncID,
-			Metadata:         cbMeta,
 		}, opts.OnFinishEvent)
 		return nil, fmt.Errorf("stream error: %w", streamErr)
 	}
@@ -1745,8 +1725,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Request:          streamReqMeta,
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
-		FunctionID:       cbFuncID,
-		Metadata:         cbMeta,
 	}, opts.OnStepFinish)
 
 	// Parse final JSON
@@ -1788,8 +1766,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-			FunctionID:       cbFuncID,
-			Metadata:         cbMeta,
 		}, opts.OnFinishEvent)
 		return nil, parseErr
 	}
@@ -1825,8 +1801,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Request:          streamReqMeta,
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
-		FunctionID:       cbFuncID,
-		Metadata:         cbMeta,
 	}, opts.OnFinishEvent)
 
 	// Call legacy OnFinish if provided

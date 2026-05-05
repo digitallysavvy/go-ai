@@ -9,7 +9,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -155,13 +154,10 @@ func TestGenerateText_Telemetry(t *testing.T) {
 	model := &mockTelemetryModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     true,
+		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
 		FunctionID:    "test-function",
-		Metadata: map[string]attribute.Value{
-			"test_key": attribute.StringValue("test_value"),
-		},
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
@@ -200,16 +196,15 @@ func TestGenerateText_Telemetry(t *testing.T) {
 	// Verify attributes
 	attrs := generateTextSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
-		"ai.operationId":                 "ai.generateText",
-		"gen_ai.system":                  "test-provider",
-		"gen_ai.request.model":           "test-model",
-		"ai.telemetry.functionId":        "test-function",
-		"ai.telemetry.metadata.test_key": "test_value",
-		"ai.prompt":                      "Test prompt",
-		"ai.response.text":               "Test response",
-		"ai.response.finishReason":       "stop",
-		"gen_ai.usage.input_tokens":      int64(10),
-		"gen_ai.usage.output_tokens":     int64(20),
+		"ai.operationId":             "ai.generateText",
+		"gen_ai.system":              "test-provider",
+		"gen_ai.request.model":       "test-model",
+		"ai.telemetry.functionId":    "test-function",
+		"ai.prompt":                  "Test prompt",
+		"ai.response.text":           "Test response",
+		"ai.response.finishReason":   "stop",
+		"gen_ai.usage.input_tokens":  int64(10),
+		"gen_ai.usage.output_tokens": int64(20),
 	}
 
 	for key, expectedValue := range expectedAttrs {
@@ -237,9 +232,9 @@ func TestGenerateText_TelemetryDisabled(t *testing.T) {
 	model := &mockTelemetryModel{}
 
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "Test prompt",
-		// No telemetry settings - should not create spans
+		Model:                 model,
+		Prompt:                "Test prompt",
+		ExperimentalTelemetry: &telemetry.Settings{IsEnabled: telemetry.Bool(false)},
 	})
 
 	if err != nil {
@@ -260,7 +255,7 @@ func TestGenerateText_TelemetryRecordInputsDisabled(t *testing.T) {
 	model := &mockTelemetryModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     true,
+		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  false, // Don't record inputs
 		RecordOutputs: true,
 		FunctionID:    "test-function",
@@ -301,7 +296,7 @@ func TestEmbed_Telemetry(t *testing.T) {
 	model := &mockEmbeddingModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     true,
+		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
 		FunctionID:    "embed-test",
@@ -376,7 +371,7 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	model := &mockEmbeddingModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:  true,
+		IsEnabled:  telemetry.Bool(true),
 		FunctionID: "embed-many-test",
 	}
 
@@ -475,7 +470,7 @@ func TestGenerateTextWithMockTelemetry(t *testing.T) {
 		Model:  model,
 		Prompt: "Hello",
 		ExperimentalTelemetry: &telemetry.Settings{
-			IsEnabled: true,
+			IsEnabled: telemetry.Bool(true),
 		},
 	})
 	if err != nil {
@@ -496,6 +491,136 @@ func TestGenerateTextWithMockTelemetry(t *testing.T) {
 	}
 }
 
+func TestGenerateText_TelemetryOptionTakesPrecedence(t *testing.T) {
+	global := &mockTelemetryIntegration{}
+	local := &mockTelemetryIntegration{}
+	telemetry.RegisterTelemetryIntegration(global)
+	defer telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
+
+	model := &mockTelemetryModel{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		Telemetry: &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{local},
+		},
+		ExperimentalTelemetry: &telemetry.Settings{
+			IsEnabled: telemetry.Bool(true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	global.mu.Lock()
+	local.mu.Lock()
+	defer global.mu.Unlock()
+	defer local.mu.Unlock()
+
+	if len(global.spans) != 0 {
+		t.Fatalf("expected global integration to be skipped by per-call Telemetry, got %d spans", len(global.spans))
+	}
+	if len(local.spans) != 1 {
+		t.Fatalf("expected local integration to receive one span, got %d", len(local.spans))
+	}
+}
+
+func TestGenerateText_GlobalTelemetryDefaultActive(t *testing.T) {
+	mock := &mockTelemetryIntegration{}
+	telemetry.RegisterTelemetryIntegration(mock)
+	defer telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
+
+	model := &mockTelemetryModel{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.spans) != 1 {
+		t.Fatalf("expected global telemetry integration to be active without per-call settings, got %d spans", len(mock.spans))
+	}
+}
+
+func TestGenerateText_TelemetryContextExcludedByDefault(t *testing.T) {
+	capture := &contextCaptureTelemetry{}
+	model := &mockTelemetryModel{}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:          model,
+		Prompt:         "Hello",
+		RuntimeContext: map[string]interface{}{"requestId": "req-1", "secret": "token"},
+		ToolsContext: map[string]interface{}{
+			"weather": map[string]interface{}{"safe": "city", "apiKey": "secret"},
+		},
+		Telemetry: &telemetry.Options{
+			Integrations: []telemetry.TelemetryIntegration{capture},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(capture.starts) != 1 {
+		t.Fatalf("expected one start event, got %d", len(capture.starts))
+	}
+	if len(capture.starts[0].RuntimeContext) != 0 || len(capture.starts[0].ToolsContext) != 0 {
+		t.Fatalf("expected context to be excluded by default, got runtime=%v tools=%v", capture.starts[0].RuntimeContext, capture.starts[0].ToolsContext)
+	}
+	if len(capture.finishes) != 1 {
+		t.Fatalf("expected one finish event, got %d", len(capture.finishes))
+	}
+	if len(capture.finishes[0].RuntimeContext) != 0 || len(capture.finishes[0].ToolsContext) != 0 {
+		t.Fatalf("expected finish context to be excluded by default, got runtime=%v tools=%v", capture.finishes[0].RuntimeContext, capture.finishes[0].ToolsContext)
+	}
+}
+
+func TestGenerateText_TelemetryContextIncludedWhenConfigured(t *testing.T) {
+	capture := &contextCaptureTelemetry{}
+	model := &mockTelemetryModel{}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:          model,
+		Prompt:         "Hello",
+		RuntimeContext: map[string]interface{}{"requestId": "req-1", "secret": "token"},
+		ToolsContext: map[string]interface{}{
+			"weather": map[string]interface{}{"safe": "city", "apiKey": "secret"},
+		},
+		Telemetry: &telemetry.Options{
+			IncludeRuntimeContext: map[string]bool{"requestId": true, "secret": false},
+			IncludeToolsContext: map[string]map[string]bool{
+				"weather": map[string]bool{"safe": true, "apiKey": false},
+			},
+			Integrations: []telemetry.TelemetryIntegration{capture},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := capture.starts[0].RuntimeContext; len(got) != 1 || got["requestId"] != "req-1" {
+		t.Fatalf("unexpected runtime context: %v", got)
+	}
+	weather, ok := capture.starts[0].ToolsContext["weather"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected weather tools context, got %T", capture.starts[0].ToolsContext["weather"])
+	}
+	if len(weather) != 1 || weather["safe"] != "city" {
+		t.Fatalf("unexpected weather tools context: %v", weather)
+	}
+	if got := capture.steps[0].RuntimeContext; len(got) != 1 || got["requestId"] != "req-1" {
+		t.Fatalf("unexpected step runtime context: %v", got)
+	}
+	if got := capture.finishes[0].RuntimeContext; len(got) != 1 || got["requestId"] != "req-1" {
+		t.Fatalf("unexpected finish runtime context: %v", got)
+	}
+}
+
 // mockTelemetryCtxKey is the context key used to thread mock span records.
 type mockTelemetryCtxKey struct{}
 
@@ -512,7 +637,7 @@ type mockTelemetrySpan struct {
 }
 
 func (m *mockTelemetryIntegration) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
-	if e.Settings == nil || !e.Settings.IsEnabled {
+	if !telemetry.Enabled(e.Settings) {
 		return ctx
 	}
 	sp := &mockTelemetrySpan{name: e.OperationType}
@@ -558,4 +683,32 @@ func (m *mockTelemetryIntegration) ExecuteTool(
 	execute func(context.Context, map[string]interface{}) (interface{}, error),
 ) (interface{}, error) {
 	return execute(ctx, args)
+}
+
+type contextCaptureTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu       sync.Mutex
+	starts   []telemetry.TelemetryStartEvent
+	steps    []telemetry.TelemetryStepStartEvent
+	finishes []telemetry.TelemetryFinishEvent
+}
+
+func (c *contextCaptureTelemetry) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	c.mu.Lock()
+	c.starts = append(c.starts, e)
+	c.mu.Unlock()
+	return ctx
+}
+
+func (c *contextCaptureTelemetry) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	c.mu.Lock()
+	c.steps = append(c.steps, e)
+	c.mu.Unlock()
+	return ctx
+}
+
+func (c *contextCaptureTelemetry) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	c.mu.Lock()
+	c.finishes = append(c.finishes, e)
+	c.mu.Unlock()
 }

@@ -1,6 +1,10 @@
 package ai
 
-import "context"
+import (
+	"context"
+
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+)
 
 // Listener is a function that receives an event of type E.
 type Listener[E any] func(ctx context.Context, event E)
@@ -13,11 +17,28 @@ type Listener[E any] func(ctx context.Context, event E)
 //
 // Passing a nil slice or an empty slice is valid and is a no-op.
 func Notify[E any](ctx context.Context, event E, listeners ...Listener[E]) {
+	publishDiagnosticForCallbackEvent(ctx, event)
 	for _, fn := range listeners {
 		if fn == nil {
 			continue
 		}
 		safeCall(ctx, event, fn)
+	}
+}
+
+func publishDiagnosticForCallbackEvent[E any](ctx context.Context, event E) {
+	switch e := any(event).(type) {
+	case ObjectOnStartEvent:
+		if e.IsEnabled != nil && !*e.IsEnabled {
+			return
+		}
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnStart, e)
+	case ObjectOnStepStartEvent:
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepStart, e)
+	case ObjectOnStepFinishEvent:
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepFinish, e)
+	case ObjectOnFinishEvent:
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnFinish, e)
 	}
 }
 

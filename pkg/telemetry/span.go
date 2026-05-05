@@ -77,12 +77,6 @@ func GetBaseAttributes(
 			attrs = append(attrs, attribute.String("ai.telemetry.functionId", settings.FunctionID))
 		}
 
-		for key, value := range settings.Metadata {
-			attrs = append(attrs, attribute.KeyValue{
-				Key:   attribute.Key("ai.telemetry.metadata." + key),
-				Value: value,
-			})
-		}
 	}
 
 	// Add request headers (but avoid sensitive headers)
