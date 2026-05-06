@@ -9,6 +9,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+func deepseekChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
+	var filtered []*provider.StreamChunk
+	for _, chunk := range chunks {
+		if chunk.Type == chunkType {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
 func TestDeepseekStream_TextChunks(t *testing.T) {
 	sseData := `data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
 
@@ -78,26 +88,25 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks (tool_call + finish), got %d", len(chunks))
+	toolCalls := deepseekChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk[0]: expected tool_call, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Errorf("tool call id: got %q", toolCalls[0].ToolCall.ID)
 	}
-	if chunks[0].ToolCall.ID != "call_1" {
-		t.Errorf("tool call id: got %q", chunks[0].ToolCall.ID)
+	if toolCalls[0].ToolCall.ToolName != "fn" {
+		t.Errorf("tool call name: got %q", toolCalls[0].ToolCall.ToolName)
 	}
-	if chunks[0].ToolCall.ToolName != "fn" {
-		t.Errorf("tool call name: got %q", chunks[0].ToolCall.ToolName)
+	if toolCalls[0].ToolCall.Arguments["ready"] != true {
+		t.Errorf("tool call arg ready: got %v", toolCalls[0].ToolCall.Arguments["ready"])
 	}
-	if chunks[0].ToolCall.Arguments["ready"] != true {
-		t.Errorf("tool call arg ready: got %v", chunks[0].ToolCall.Arguments["ready"])
+	finishes := deepseekChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[1]: expected finish, got %v", chunks[1].Type)
-	}
-	if chunks[1].FinishReason != types.FinishReasonToolCalls {
-		t.Errorf("finish reason: got %v", chunks[1].FinishReason)
+	if finishes[0].FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("finish reason: got %v", finishes[0].FinishReason)
 	}
 }
 
@@ -127,16 +136,14 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	toolCalls := deepseekChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("expected tool_call chunk, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.Arguments["op"] != "add" {
+		t.Errorf("expected op=add, got %v", toolCalls[0].ToolCall.Arguments["op"])
 	}
-	if chunks[0].ToolCall.Arguments["op"] != "add" {
-		t.Errorf("expected op=add, got %v", chunks[0].ToolCall.Arguments["op"])
-	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("expected finish chunk, got %v", chunks[1].Type)
+	if finishes := deepseekChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
 }

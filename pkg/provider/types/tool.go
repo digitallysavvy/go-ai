@@ -209,6 +209,11 @@ type ToolCall struct {
 	// Arguments to pass to the tool
 	Arguments map[string]interface{} `json:"arguments"`
 
+	// RawArguments preserves the provider's raw streamed JSON input when it is
+	// available. Response-message conversion uses it to skip invalid streamed
+	// tool inputs instead of sending malformed arguments back to a provider.
+	RawArguments string `json:"-"`
+
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally).
 	// When true, the provider handled execution server-side (e.g., xAI file_search, web_search).
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`

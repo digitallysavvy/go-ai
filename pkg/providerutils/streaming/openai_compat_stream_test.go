@@ -27,6 +27,32 @@ func newTestStream(sseData string) *OpenAICompatStream {
 	return NewOpenAICompatStream(io.NopCloser(strings.NewReader(sseData)), mapTestFinishReason)
 }
 
+func collectStreamChunks(t *testing.T, stream provider.TextStream) []*provider.StreamChunk {
+	t.Helper()
+	var chunks []*provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+func compatChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
+	var filtered []*provider.StreamChunk
+	for _, chunk := range chunks {
+		if chunk.Type == chunkType {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
 func TestOpenAICompatStream_TextChunks(t *testing.T) {
 	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
 
@@ -40,17 +66,7 @@ data: [DONE]
 	stream := newTestStream(sseData)
 	defer stream.Close() //nolint:errcheck
 
-	var chunks []*provider.StreamChunk
-	for {
-		chunk, err := stream.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		chunks = append(chunks, chunk)
-	}
+	chunks := collectStreamChunks(t, stream)
 
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(chunks))
@@ -84,38 +100,41 @@ data: [DONE]
 	stream := newTestStream(sseData)
 	defer stream.Close() //nolint:errcheck
 
-	var chunks []*provider.StreamChunk
-	for {
-		chunk, err := stream.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		chunks = append(chunks, chunk)
-	}
+	chunks := collectStreamChunks(t, stream)
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks (tool_call + finish), got %d", len(chunks))
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeToolInputStart,
+		provider.ChunkTypeToolInputDelta,
+		provider.ChunkTypeToolInputEnd,
+		provider.ChunkTypeToolCall,
+		provider.ChunkTypeFinish,
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk[0]: expected tool_call, got %v", chunks[0].Type)
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("expected %d chunks, got %d", len(wantTypes), len(chunks))
 	}
-	if chunks[0].ToolCall.ID != "call_1" {
-		t.Errorf("tool call id: got %q", chunks[0].ToolCall.ID)
+	for i, wantType := range wantTypes {
+		if chunks[i].Type != wantType {
+			t.Fatalf("chunk[%d]: expected %s, got %s", i, wantType, chunks[i].Type)
+		}
 	}
-	if chunks[0].ToolCall.ToolName != "fn" {
-		t.Errorf("tool call name: got %q", chunks[0].ToolCall.ToolName)
+	if chunks[0].ToolCall.ID != "call_1" || chunks[0].ToolCall.ToolName != "fn" {
+		t.Errorf("tool input start: got %#v", chunks[0].ToolCall)
 	}
-	if chunks[0].ToolCall.Arguments["ready"] != true {
-		t.Errorf("tool call arg ready: got %v", chunks[0].ToolCall.Arguments["ready"])
+	if chunks[1].Text != `{"ready":true}` {
+		t.Errorf("tool input delta: got %q", chunks[1].Text)
 	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[1]: expected finish, got %v", chunks[1].Type)
+	toolCall := chunks[3]
+	if toolCall.ToolCall.ID != "call_1" {
+		t.Errorf("tool call id: got %q", toolCall.ToolCall.ID)
 	}
-	if chunks[1].FinishReason != types.FinishReasonToolCalls {
-		t.Errorf("finish reason: got %v", chunks[1].FinishReason)
+	if toolCall.ToolCall.ToolName != "fn" {
+		t.Errorf("tool call name: got %q", toolCall.ToolCall.ToolName)
+	}
+	if toolCall.ToolCall.Arguments["ready"] != true {
+		t.Errorf("tool call arg ready: got %v", toolCall.ToolCall.Arguments["ready"])
+	}
+	if chunks[4].FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("finish reason: got %v", chunks[4].FinishReason)
 	}
 }
 
@@ -134,29 +153,17 @@ data: [DONE]
 	stream := newTestStream(sseData)
 	defer stream.Close() //nolint:errcheck
 
-	var chunks []*provider.StreamChunk
-	for {
-		chunk, err := stream.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		chunks = append(chunks, chunk)
-	}
+	chunks := collectStreamChunks(t, stream)
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("expected tool_call chunk, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.Arguments["op"] != "add" {
+		t.Errorf("expected op=add, got %v", toolCalls[0].ToolCall.Arguments["op"])
 	}
-	if chunks[0].ToolCall.Arguments["op"] != "add" {
-		t.Errorf("expected op=add, got %v", chunks[0].ToolCall.Arguments["op"])
-	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("expected finish chunk, got %v", chunks[1].Type)
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
 }
 
@@ -179,29 +186,95 @@ data: [DONE]
 	stream := newTestStream(sseData)
 	defer stream.Close() //nolint:errcheck
 
-	var chunks []*provider.StreamChunk
-	for {
-		chunk, err := stream.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		chunks = append(chunks, chunk)
-	}
+	chunks := collectStreamChunks(t, stream)
 
 	// Expect: tool_call[0], tool_call[1], finish
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected 2 tool-call chunks, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall || chunks[0].ToolCall.ID != "c0" {
-		t.Errorf("chunk[0]: expected tool_call c0, got %v/%v", chunks[0].Type, chunks[0].ToolCall)
+	if toolCalls[0].ToolCall.ID != "c0" {
+		t.Errorf("toolCalls[0]: expected c0, got %v", toolCalls[0].ToolCall)
 	}
-	if chunks[1].Type != provider.ChunkTypeToolCall || chunks[1].ToolCall.ID != "c1" {
-		t.Errorf("chunk[1]: expected tool_call c1, got %v/%v", chunks[1].Type, chunks[1].ToolCall)
+	if toolCalls[1].ToolCall.ID != "c1" {
+		t.Errorf("toolCalls[1]: expected c1, got %v", toolCalls[1].ToolCall)
 	}
-	if chunks[2].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[2]: expected finish, got %v", chunks[2].Type)
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
+	}
+}
+
+func TestOpenAICompatStream_BuffersArgumentsUntilNameArrives(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"arguments":"{\"city\":\""}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"weather","arguments":"Paris\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
+	}
+	if toolCalls[0].ToolCall.ToolName != "weather" {
+		t.Fatalf("tool name = %q, want weather", toolCalls[0].ToolCall.ToolName)
+	}
+	if got := toolCalls[0].ToolCall.Arguments["city"]; got != "Paris" {
+		t.Fatalf("city = %#v, want Paris", got)
+	}
+}
+
+func TestOpenAICompatStream_UsesIDFallbackWhenIndexMissing(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\""}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"arguments":"docs\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
+	}
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Fatalf("tool call id = %q, want call_1", toolCalls[0].ToolCall.ID)
+	}
+	if got := toolCalls[0].ToolCall.Arguments["q"]; got != "docs" {
+		t.Fatalf("q = %#v, want docs", got)
+	}
+}
+
+func TestOpenAICompatStream_PreservesToolCallProviderMetadata(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"fn","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig123"}}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
+	}
+	meta := toolCalls[0].ToolCall.ProviderMetadata
+	google, ok := meta["google"].(map[string]interface{})
+	if !ok || google["thoughtSignature"] != "sig123" {
+		t.Fatalf("unexpected provider metadata: %#v", meta)
 	}
 }

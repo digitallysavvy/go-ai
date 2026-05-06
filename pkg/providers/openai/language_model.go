@@ -471,28 +471,21 @@ func isReasoningModel(modelID string) bool {
 		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
 }
 
-// openAIStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
-type openAIStreamAccumToolCall struct {
-	id        string
-	name      string
-	arguments string // concatenated JSON argument fragments
-}
-
 // openAIStream implements provider.TextStream for OpenAI streaming
 type openAIStream struct {
-	reader        io.ReadCloser
-	parser        *streaming.SSEParser
-	err           error
-	toolCallAccum map[int]*openAIStreamAccumToolCall // keyed by tool call index
-	flushQueue    []*provider.StreamChunk            // fully assembled chunks ready to emit
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolCallTracker *streaming.StreamingToolCallTracker
+	flushQueue      []*provider.StreamChunk // fully assembled chunks ready to emit
 }
 
 // newOpenAIStream creates a new OpenAI stream
 func newOpenAIStream(reader io.ReadCloser) *openAIStream {
 	return &openAIStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		toolCallAccum: make(map[int]*openAIStreamAccumToolCall),
+		reader:          reader,
+		parser:          streaming.NewSSEParser(reader),
+		toolCallTracker: streaming.NewStreamingToolCallTracker(),
 	}
 }
 
@@ -540,7 +533,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Delta struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
-					Index    int     `json:"index"`
+					Index    *int    `json:"index"`
 					ID       string  `json:"id"`
 					Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 					Function struct {
@@ -573,18 +566,10 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// subsequent deltas for the same index carry argument fragments only.
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				accum, ok := s.toolCallAccum[tc.Index]
-				if !ok {
-					accum = &openAIStreamAccumToolCall{}
-					s.toolCallAccum[tc.Index] = accum
+				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := chunk
+					s.flushQueue = append(s.flushQueue, &c)
 				}
-				if tc.ID != "" {
-					accum.id = tc.ID
-				}
-				if tc.Function.Name != "" {
-					accum.name = tc.Function.Name
-				}
-				accum.arguments += tc.Function.Arguments
 			}
 			// No chunk to emit yet — keep accumulating.
 			return s.Next()
@@ -593,23 +578,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Finish chunk — flush all accumulated tool calls first.
 		if choice.FinishReason != nil {
 			// Emit one ChunkTypeToolCall per accumulated entry in index order.
-			for i := 0; i < len(s.toolCallAccum); i++ {
-				accum, ok := s.toolCallAccum[i]
-				if !ok {
-					continue
-				}
-				var args map[string]interface{}
-				if accum.arguments != "" {
-					_ = json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:        accum.id,
-						ToolName:  accum.name,
-						Arguments: args,
-					},
-				})
+			for _, chunk := range s.toolCallTracker.Flush() {
+				c := chunk
+				s.flushQueue = append(s.flushQueue, &c)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,

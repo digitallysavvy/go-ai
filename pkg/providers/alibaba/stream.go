@@ -3,7 +3,6 @@ package alibaba
 import (
 	"encoding/json"
 	"io"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -17,8 +16,7 @@ type alibabaStream struct {
 	parser *streaming.SSEParser
 	err    error
 
-	// State for accumulating tool calls across chunks
-	toolCalls map[int]*toolCallAccumulator
+	toolCallTracker *streaming.StreamingToolCallTracker
 	// Finish reason captured from final chunk
 	finishReason string
 	// Usage captured from final chunk
@@ -29,20 +27,12 @@ type alibabaStream struct {
 	isActiveReasoning bool
 }
 
-// toolCallAccumulator tracks the state of a tool call being built across chunks
-type toolCallAccumulator struct {
-	ID   string
-	Type string
-	Name string
-	Args strings.Builder
-}
-
 // newAlibabaStream creates a new Alibaba stream
 func newAlibabaStream(reader io.ReadCloser) *alibabaStream {
 	return &alibabaStream{
-		reader:    reader,
-		parser:    streaming.NewSSEParser(reader),
-		toolCalls: make(map[int]*toolCallAccumulator),
+		reader:          reader,
+		parser:          streaming.NewSSEParser(reader),
+		toolCallTracker: streaming.NewStreamingToolCallTracker(),
 	}
 }
 
@@ -186,28 +176,9 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 // accumulateToolCall accumulates tool call data from a delta chunk.
 // Tool calls are never emitted mid-stream; call flushToolCalls() at finish_reason.
 func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
-	index := tc.Index
-
-	acc, exists := s.toolCalls[index]
-	if !exists {
-		acc = &toolCallAccumulator{
-			ID:   tc.ID,
-			Type: tc.Type,
-		}
-		s.toolCalls[index] = acc
-	}
-
-	if tc.ID != "" {
-		acc.ID = tc.ID
-	}
-	if tc.Type != "" {
-		acc.Type = tc.Type
-	}
-	if tc.Function.Name != "" {
-		acc.Name = tc.Function.Name
-	}
-	if tc.Function.Arguments != "" {
-		acc.Args.WriteString(tc.Function.Arguments)
+	for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
 	}
 }
 
@@ -220,23 +191,9 @@ func (s *alibabaStream) flushToolCalls() {
 			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
 		}, s.flushQueue...)
 	}
-	for i := 0; i < len(s.toolCalls); i++ {
-		acc, ok := s.toolCalls[i]
-		if !ok {
-			continue
-		}
-		var argsMap map[string]interface{}
-		if acc.Args.Len() > 0 {
-			_ = json.Unmarshal([]byte(acc.Args.String()), &argsMap) //nolint:errcheck
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        acc.ID,
-				ToolName:  acc.Name,
-				Arguments: argsMap,
-			},
-		})
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
 }
@@ -260,12 +217,12 @@ func (s *alibabaStream) Err() error {
 
 // alibabaStreamChunk represents a single chunk in the Alibaba SSE stream
 type alibabaStreamChunk struct {
-	ID      string               `json:"id,omitempty"`
-	Object  string               `json:"object,omitempty"`
-	Created int64                `json:"created,omitempty"`
-	Model   string               `json:"model,omitempty"`
+	ID      string                `json:"id,omitempty"`
+	Object  string                `json:"object,omitempty"`
+	Created int64                 `json:"created,omitempty"`
+	Model   string                `json:"model,omitempty"`
 	Choices []alibabaStreamChoice `json:"choices"`
-	Usage   *AlibabaUsage        `json:"usage,omitempty"`
+	Usage   *AlibabaUsage         `json:"usage,omitempty"`
 }
 
 // alibabaStreamChoice represents a choice in a stream chunk
@@ -285,7 +242,7 @@ type alibabaStreamDelta struct {
 
 // alibabaToolCallDelta represents a tool call delta in the stream
 type alibabaToolCallDelta struct {
-	Index    int                          `json:"index"`
+	Index    *int                         `json:"index"`
 	ID       string                       `json:"id,omitempty"`
 	Type     string                       `json:"type,omitempty"`
 	Function alibabaToolCallFunctionDelta `json:"function"`

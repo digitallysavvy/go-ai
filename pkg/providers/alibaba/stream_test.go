@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func alibabaChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
+	var filtered []*provider.StreamChunk
+	for _, chunk := range chunks {
+		if chunk.Type == chunkType {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
 // TestAlibabaStream_ProcessTextChunks tests basic text chunk processing
 func TestAlibabaStream_ProcessTextChunks(t *testing.T) {
 	sseData := `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1234567890,"model":"qwen-plus","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":""}]}
@@ -133,19 +143,19 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	// Should have: tool_call + finish
-	require.Len(t, chunks, 2)
+	toolCalls := alibabaChunksOfType(chunks, provider.ChunkTypeToolCall)
+	require.Len(t, toolCalls, 1)
 
 	// Tool call chunk
-	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
-	assert.NotNil(t, chunks[0].ToolCall)
-	assert.Equal(t, "call_1", chunks[0].ToolCall.ID)
-	assert.Equal(t, "get_weather", chunks[0].ToolCall.ToolName)
-	assert.Equal(t, "SF", chunks[0].ToolCall.Arguments["location"])
+	assert.NotNil(t, toolCalls[0].ToolCall)
+	assert.Equal(t, "call_1", toolCalls[0].ToolCall.ID)
+	assert.Equal(t, "get_weather", toolCalls[0].ToolCall.ToolName)
+	assert.Equal(t, "SF", toolCalls[0].ToolCall.Arguments["location"])
 
 	// Finish chunk
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
-	assert.Equal(t, types.FinishReasonToolCalls, chunks[1].FinishReason)
+	finishes := alibabaChunksOfType(chunks, provider.ChunkTypeFinish)
+	require.Len(t, finishes, 1)
+	assert.Equal(t, types.FinishReasonToolCalls, finishes[0].FinishReason)
 }
 
 // TestAlibabaStream_ProcessToolCallMultiple tests multiple tool calls
@@ -174,22 +184,21 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	// Should have: 2 tool_calls + finish
-	require.Len(t, chunks, 3)
+	toolCalls := alibabaChunksOfType(chunks, provider.ChunkTypeToolCall)
+	require.Len(t, toolCalls, 2)
 
 	// First tool call
-	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
-	assert.Equal(t, "call_1", chunks[0].ToolCall.ID)
-	assert.Equal(t, "get_weather", chunks[0].ToolCall.ToolName)
+	assert.Equal(t, "call_1", toolCalls[0].ToolCall.ID)
+	assert.Equal(t, "get_weather", toolCalls[0].ToolCall.ToolName)
 
 	// Second tool call
-	assert.Equal(t, provider.ChunkTypeToolCall, chunks[1].Type)
-	assert.Equal(t, "call_2", chunks[1].ToolCall.ID)
-	assert.Equal(t, "get_time", chunks[1].ToolCall.ToolName)
+	assert.Equal(t, "call_2", toolCalls[1].ToolCall.ID)
+	assert.Equal(t, "get_time", toolCalls[1].ToolCall.ToolName)
 
 	// Finish chunk
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[2].Type)
-	assert.Equal(t, types.FinishReasonToolCalls, chunks[2].FinishReason)
+	finishes := alibabaChunksOfType(chunks, provider.ChunkTypeFinish)
+	require.Len(t, finishes, 1)
+	assert.Equal(t, types.FinishReasonToolCalls, finishes[0].FinishReason)
 }
 
 // TestAlibabaStream_WithUsage tests usage tracking in final chunk
@@ -333,16 +342,16 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	// Must have exactly: 1 tool_call + 1 finish (not more from premature emission)
-	require.Len(t, chunks, 2)
+	toolCalls := alibabaChunksOfType(chunks, provider.ChunkTypeToolCall)
+	require.Len(t, toolCalls, 1)
 
-	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
-	assert.Equal(t, "call_1", chunks[0].ToolCall.ID)
-	assert.Equal(t, "fn", chunks[0].ToolCall.ToolName)
-	assert.Equal(t, true, chunks[0].ToolCall.Arguments["done"])
+	assert.Equal(t, "call_1", toolCalls[0].ToolCall.ID)
+	assert.Equal(t, "fn", toolCalls[0].ToolCall.ToolName)
+	assert.Equal(t, true, toolCalls[0].ToolCall.Arguments["done"])
 
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
-	assert.Equal(t, types.FinishReasonToolCalls, chunks[1].FinishReason)
+	finishes := alibabaChunksOfType(chunks, provider.ChunkTypeFinish)
+	require.Len(t, finishes, 1)
+	assert.Equal(t, types.FinishReasonToolCalls, finishes[0].FinishReason)
 }
 
 // TestAlibabaStream_ToolCallFinalizedAtFlush verifies that tool call chunks are
@@ -372,14 +381,15 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	require.Len(t, chunks, 2)
+	toolCalls := alibabaChunksOfType(chunks, provider.ChunkTypeToolCall)
+	require.Len(t, toolCalls, 1)
 
-	assert.Equal(t, provider.ChunkTypeToolCall, chunks[0].Type)
-	assert.Equal(t, "call_x", chunks[0].ToolCall.ID)
-	assert.Equal(t, "get_data", chunks[0].ToolCall.ToolName)
-	assert.Equal(t, "value", chunks[0].ToolCall.Arguments["key"])
+	assert.Equal(t, "call_x", toolCalls[0].ToolCall.ID)
+	assert.Equal(t, "get_data", toolCalls[0].ToolCall.ToolName)
+	assert.Equal(t, "value", toolCalls[0].ToolCall.Arguments["key"])
 
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
+	finishes := alibabaChunksOfType(chunks, provider.ChunkTypeFinish)
+	require.Len(t, finishes, 1)
 }
 
 // TestAlibabaStream_MixedContent tests mixed text and reasoning content

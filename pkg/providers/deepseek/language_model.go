@@ -288,7 +288,7 @@ type deepseekStreamChunk struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"` // thinking mode
 			ToolCalls        []struct {
-				Index    int    `json:"index"`
+				Index    *int   `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -300,27 +300,20 @@ type deepseekStreamChunk struct {
 	} `json:"choices"`
 }
 
-// deepseekStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
-type deepseekStreamAccumToolCall struct {
-	id        string
-	name      string
-	arguments string
-}
-
 type deepseekStream struct {
 	reader            io.ReadCloser
 	parser            *streaming.SSEParser
 	err               error
-	toolCallAccum     map[int]*deepseekStreamAccumToolCall
+	toolCallTracker   *streaming.StreamingToolCallTracker
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
 }
 
 func newDeepseekStream(reader io.ReadCloser) *deepseekStream {
 	return &deepseekStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		toolCallAccum: make(map[int]*deepseekStreamAccumToolCall),
+		reader:          reader,
+		parser:          streaming.NewSSEParser(reader),
+		toolCallTracker: streaming.NewStreamingToolCallTracker(),
 	}
 }
 
@@ -383,18 +376,10 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		// Finalize only when finish_reason is received, never mid-stream.
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				accum, ok := s.toolCallAccum[tc.Index]
-				if !ok {
-					accum = &deepseekStreamAccumToolCall{}
-					s.toolCallAccum[tc.Index] = accum
+				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := chunk
+					s.flushQueue = append(s.flushQueue, &c)
 				}
-				if tc.ID != "" {
-					accum.id = tc.ID
-				}
-				if tc.Function.Name != "" {
-					accum.name = tc.Function.Name
-				}
-				accum.arguments += tc.Function.Arguments
 			}
 			if choice.FinishReason != "" {
 				s.flushDeepseekToolCalls(choice.FinishReason)
@@ -417,23 +402,9 @@ func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
 			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
 		}, s.flushQueue...)
 	}
-	for i := 0; i < len(s.toolCallAccum); i++ {
-		accum, ok := s.toolCallAccum[i]
-		if !ok {
-			continue
-		}
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			_ = json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
-			},
-		})
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:         provider.ChunkTypeFinish,

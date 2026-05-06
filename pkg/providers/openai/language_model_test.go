@@ -28,6 +28,16 @@ func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk
 	}
 }
 
+func nextChunkOfType(t *testing.T, stream provider.TextStream, chunkType provider.ChunkType) *provider.StreamChunk {
+	t.Helper()
+	for {
+		chunk := nextNonMeta(t, stream)
+		if chunk.Type == chunkType {
+			return chunk
+		}
+	}
+}
+
 // TestPromptCacheRetention tests the prompt cache retention feature
 func TestPromptCacheRetention(t *testing.T) {
 	tests := []struct {
@@ -668,10 +678,7 @@ func TestDoStreamToolCallChunks(t *testing.T) {
 	}
 
 	// Chunk 2: tool call (fully assembled from three deltas)
-	chunk, err = stream.Next()
-	if err != nil {
-		t.Fatalf("Next (tool call) failed: %v", err)
-	}
+	chunk = nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
 	if chunk.Type != provider.ChunkTypeToolCall {
 		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
 	}
@@ -735,7 +742,7 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 	defer stream.Close() //nolint:errcheck
 
 	// Expect a tool call chunk assembled from the two deltas (skip leading response-metadata).
-	chunk := nextNonMeta(t, stream)
+	chunk := nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
 	if chunk.Type != provider.ChunkTypeToolCall {
 		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
 	}

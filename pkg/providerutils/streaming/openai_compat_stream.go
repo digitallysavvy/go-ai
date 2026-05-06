@@ -9,13 +9,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// openAICompatAccumToolCall holds partial tool call state accumulated across SSE deltas.
-type openAICompatAccumToolCall struct {
-	id        string
-	name      string
-	arguments string // concatenated JSON argument fragments
-}
-
 // OpenAICompatStream implements the accumulate-and-flush streaming pattern for
 // any provider that uses the OpenAI chat completions SSE format.
 //
@@ -28,7 +21,7 @@ type OpenAICompatStream struct {
 	reader             io.ReadCloser
 	parser             *SSEParser
 	err                error
-	toolCallAccum      map[int]*openAICompatAccumToolCall
+	toolCallTracker    *StreamingToolCallTracker
 	flushQueue         []*provider.StreamChunk
 	finishReasonMapper func(string) types.FinishReason
 	// OnExtraDelta is an optional hook called with raw SSE event bytes before
@@ -65,7 +58,7 @@ func NewOpenAICompatStream(reader io.ReadCloser, mapper func(string) types.Finis
 	return &OpenAICompatStream{
 		reader:             reader,
 		parser:             NewSSEParser(reader),
-		toolCallAccum:      make(map[int]*openAICompatAccumToolCall),
+		toolCallTracker:    NewStreamingToolCallTracker(),
 		finishReasonMapper: mapper,
 	}
 }
@@ -120,13 +113,14 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			Delta struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
-					Index    int     `json:"index"`
+					Index    *int    `json:"index"`
 					ID       string  `json:"id"`
 					Type     *string `json:"type"` // nullable mid-stream
 					Function struct {
 						Name      string `json:"name"`
 						Arguments string `json:"arguments"`
 					} `json:"function"`
+					ExtraContent map[string]interface{} `json:"extra_content,omitempty"`
 				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
@@ -193,18 +187,14 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		// Tool call delta — accumulate arguments by index, never emit yet.
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				accum, ok := s.toolCallAccum[tc.Index]
-				if !ok {
-					accum = &openAICompatAccumToolCall{}
-					s.toolCallAccum[tc.Index] = accum
-				}
-				if tc.ID != "" {
-					accum.id = tc.ID
-				}
-				if tc.Function.Name != "" {
-					accum.name = tc.Function.Name
-				}
-				accum.arguments += tc.Function.Arguments
+				chunks := s.toolCallTracker.TrackDelta(ToolCallDelta{
+					Index:            tc.Index,
+					ID:               tc.ID,
+					Name:             tc.Function.Name,
+					ArgumentsDelta:   tc.Function.Arguments,
+					ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent),
+				})
+				s.enqueueChunks(chunks)
 			}
 			return s.Next()
 		}
@@ -217,23 +207,9 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
 				}, s.flushQueue...)
 			}
-			for i := 0; i < len(s.toolCallAccum); i++ {
-				accum, ok := s.toolCallAccum[i]
-				if !ok {
-					continue
-				}
-				var args map[string]interface{}
-				if accum.arguments != "" {
-					_ = json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:        accum.id,
-						ToolName:  accum.name,
-						Arguments: args,
-					},
-				})
+			for _, chunk := range s.toolCallTracker.Flush() {
+				c := chunk
+				s.flushQueue = append(s.flushQueue, &c)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
@@ -245,4 +221,30 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 
 	// Empty or unrecognised event — skip and fetch the next one.
 	return s.Next()
+}
+
+func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {
+	for _, chunk := range chunks {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
+	}
+}
+
+func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[string]interface{} {
+	if len(extraContent) == 0 {
+		return nil
+	}
+	googleRaw, ok := extraContent["google"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	signature, _ := googleRaw["thought_signature"].(string)
+	if signature == "" {
+		return nil
+	}
+	return map[string]interface{}{
+		"google": map[string]interface{}{
+			"thoughtSignature": signature,
+		},
+	}
 }

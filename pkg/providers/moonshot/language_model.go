@@ -304,29 +304,22 @@ type moonshotToolCallFunction struct {
 // Streaming Implementation
 // ========================================================================
 
-// moonshotStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
-type moonshotStreamAccumToolCall struct {
-	id        string
-	name      string
-	arguments string // concatenated JSON argument fragments
-}
-
 // moonshotStream implements provider.TextStream for Moonshot streaming responses.
 // Tool calls are accumulated across deltas and flushed only at finish_reason.
 type moonshotStream struct {
-	reader        io.ReadCloser
-	parser        *streaming.SSEParser
-	err           error
-	toolCallAccum map[int]*moonshotStreamAccumToolCall
-	flushQueue    []*provider.StreamChunk
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolCallTracker *streaming.StreamingToolCallTracker
+	flushQueue      []*provider.StreamChunk
 }
 
 // newMoonshotStream creates a new Moonshot stream
 func newMoonshotStream(reader io.ReadCloser) *moonshotStream {
 	return &moonshotStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		toolCallAccum: make(map[int]*moonshotStreamAccumToolCall),
+		reader:          reader,
+		parser:          streaming.NewSSEParser(reader),
+		toolCallTracker: streaming.NewStreamingToolCallTracker(),
 	}
 }
 
@@ -370,7 +363,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			Delta struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
-					Index    int    `json:"index"`
+					Index    *int   `json:"index"`
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
@@ -402,44 +395,19 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		// Tool call delta — accumulate, never emit yet.
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				accum, ok := s.toolCallAccum[tc.Index]
-				if !ok {
-					accum = &moonshotStreamAccumToolCall{}
-					s.toolCallAccum[tc.Index] = accum
+				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := chunk
+					s.flushQueue = append(s.flushQueue, &c)
 				}
-				if tc.ID != "" {
-					accum.id = tc.ID
-				}
-				if tc.Function.Name != "" {
-					accum.name = tc.Function.Name
-				}
-				accum.arguments += tc.Function.Arguments
 			}
 			return s.Next()
 		}
 
 		// Finish event — flush all accumulated tool calls, then emit finish.
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			for i := 0; i < len(s.toolCallAccum); i++ {
-				accum, ok := s.toolCallAccum[i]
-				if !ok {
-					continue
-				}
-				var args map[string]interface{}
-				if accum.arguments != "" {
-					json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-				}
-				if args == nil {
-					args = make(map[string]interface{})
-				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:        accum.id,
-						ToolName:  accum.name,
-						Arguments: args,
-					},
-				})
+			for _, chunk := range s.toolCallTracker.Flush() {
+				c := chunk
+				s.flushQueue = append(s.flushQueue, &c)
 			}
 
 			finishChunk := &provider.StreamChunk{
