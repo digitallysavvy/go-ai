@@ -14,6 +14,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
+func boolPtr(v bool) *bool { return &v }
+
 func TestStreamText_BasicStream(t *testing.T) {
 	t.Parallel()
 
@@ -232,6 +234,118 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 	defer mu.Unlock()
 	if chunkCallbackCount != 5 { // firstChunk + 2 text chunks + finish chunk + streamFinish
 		t.Errorf("expected 5 chunk callbacks, got %d", chunkCallbackCount)
+	}
+}
+
+func TestStreamText_FirstChunkEmittedBeforeFirstContentNotMetadata(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "resp_1"}},
+				{Type: provider.ChunkTypeText, Text: "hello"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var got []provider.ChunkType
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		OnChunk: func(chunk provider.StreamChunk) {
+			mu.Lock()
+			got = append(got, chunk.Type)
+			mu.Unlock()
+		},
+		OnFinish: func(result *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []provider.ChunkType{
+		provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk,
+		provider.ChunkTypeText,
+		provider.ChunkTypeFinish,
+		provider.ChunkTypeStreamFinish,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("chunk types = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk types = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestStreamText_SuppressesReasoningBoundariesWhenSendReasoningFalse(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+				{Type: provider.ChunkTypeReasoning, ID: "reasoning-0", Reasoning: "thinking"},
+				{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+				{Type: provider.ChunkTypeText, Text: "answer"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var got []provider.ChunkType
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:         model,
+		Prompt:        "Hello",
+		SendReasoning: boolPtr(false),
+		OnChunk: func(chunk provider.StreamChunk) {
+			mu.Lock()
+			got = append(got, chunk.Type)
+			mu.Unlock()
+		},
+		OnFinish: func(result *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, chunkType := range got {
+		if chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd {
+			t.Fatalf("unexpected reasoning boundary in chunks: %#v", got)
+		}
+	}
+	want := []provider.ChunkType{
+		provider.ChunkTypeFirstChunk,
+		provider.ChunkTypeReasoning,
+		provider.ChunkTypeText,
+		provider.ChunkTypeFinish,
+		provider.ChunkTypeStreamFinish,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("chunk types = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk types = %#v, want %#v", got, want)
+		}
 	}
 }
 
@@ -1419,8 +1533,9 @@ func TestStreamEmitsReasoningBlockBoundaries(t *testing.T) {
 	done := make(chan struct{})
 
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "Think then answer",
+		Model:         model,
+		Prompt:        "Think then answer",
+		SendReasoning: boolPtr(true),
 		OnChunk: func(chunk provider.StreamChunk) {
 			mu.Lock()
 			receivedChunks = append(receivedChunks, chunk)

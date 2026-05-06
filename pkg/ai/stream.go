@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -73,6 +75,11 @@ type StreamTextOptions struct {
 	// nil means unset (use provider default). Set to types.ReasoningDefault to
 	// explicitly omit from the API request.
 	Reasoning *types.ReasoningLevel
+
+	// SendReasoning controls whether reasoning/thinking boundary chunks are
+	// exposed to OnChunk. nil and false suppress reasoning-start/end, matching
+	// the TypeScript SDK default.
+	SendReasoning *bool
 
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
@@ -382,6 +389,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		ToolsContext:          toolsContext,
 		ResponseFormat:        responseFormat,
 		Reasoning:             opts.Reasoning,
+		SendReasoning:         opts.SendReasoning,
 		ProviderOptions:       opts.ProviderOptions,
 		Telemetry:             telemetrySettings,
 	}
@@ -468,6 +476,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	var allSteps []types.StepResult
 	firstChunkEver := true
+	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
+	var textParts []string
 
 	for stepNum := 1; ; stepNum++ {
 		// Fire step-start telemetry. OTel implementations create a child step span.
@@ -501,9 +511,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.err = err
 				break
 			}
+			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
 
-			// Transition from Submitted → Streaming on first received chunk ever.
-			if firstChunkEver {
+			// Transition from Submitted to Streaming on the first content chunk.
+			// Metadata and stream lifecycle chunks are forwarded before this
+			// marker, matching the TypeScript stream part order.
+			if firstChunkEver && forwardChunk && isFirstChunkContent(chunk.Type) {
 				firstChunkEver = false
 				r.mu.Lock()
 				r.status = StreamStatusStreaming
@@ -525,14 +538,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				r.text += chunk.Text
+				textParts = append(textParts, chunk.Text)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
 				// matching the TypeScript SDK's deduplication behavior.
 				if r.outputSpec != nil {
+					currentText := strings.Join(textParts, "")
 					partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-						Text: r.text,
+						Text: currentText,
 					})
 					if partial != nil {
 						if newJSON, err := json.Marshal(partial); err == nil {
@@ -608,27 +622,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
-			if onChunk != nil {
+			if onChunk != nil && forwardChunk {
 				onChunk(*chunk)
 			}
 			// Notify telemetry integrations of each chunk.
-			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-				Settings:  r.telemetrySettings,
-				ChunkType: string(chunk.Type),
-				Text:      chunk.Text,
-			})
+			if forwardChunk {
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(chunk.Type),
+					Text:      chunk.Text,
+				})
+			}
 		}
 		if r.err != nil {
 			break
 		}
-		finishChunk := provider.StreamChunk{Type: provider.ChunkTypeStreamFinish}
-		if onChunk != nil {
-			onChunk(finishChunk)
-		}
-		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-			Settings:  r.telemetrySettings,
-			ChunkType: string(provider.ChunkTypeStreamFinish),
-		})
+		r.text = strings.Join(textParts, "")
 
 		// Execute accumulated tool calls AFTER stream is fully consumed (Fix 1).
 		// All chunks (including tool call chunks) have already been forwarded above.
@@ -779,33 +788,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Build conversation history for the next step.
-		assistantMsg := types.Message{
-			Role:      types.RoleAssistant,
-			Content:   []types.ContentPart{},
-			ToolCalls: stepToolCalls,
-		}
-		if r.text != "" {
-			assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: r.text})
-		}
-
 		// Populate ResponseMessages on the step that just completed.
 		// Mirrors StepResult.response.messages in the TypeScript SDK.
-		stepResponseMsgs := []types.Message{assistantMsg}
-		currentMessages = append(currentMessages, assistantMsg)
-		for _, tr := range stepToolResults {
-			toolMsg := types.Message{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: tr.ToolCallID,
-						ToolName:   tr.ToolName,
-						Result:     tr.Result,
-					},
-				},
-			}
-			stepResponseMsgs = append(stepResponseMsgs, toolMsg)
-			currentMessages = append(currentMessages, toolMsg)
-		}
+		stepResponseMsgs := providerutils.ConvertToResponseMessages(
+			stepToolCalls,
+			[]types.ContentPart{types.TextContent{Text: r.text}},
+			stepToolResults,
+		)
+		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 
 		// Resolve ResponseFormat for the next step.
@@ -838,6 +828,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolsContext:          r.cbToolsCtx,
 			ResponseFormat:        responseFormat,
 			Reasoning:             opts.Reasoning,
+			SendReasoning:         opts.SendReasoning,
 			ProviderOptions:       opts.ProviderOptions,
 			Telemetry:             r.telemetrySettings,
 		}
@@ -858,6 +849,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stream = newStream
+	}
+
+	if r.err == nil {
+		finishChunk := provider.StreamChunk{Type: provider.ChunkTypeStreamFinish}
+		if onChunk != nil {
+			onChunk(finishChunk)
+		}
+		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+			Settings:  r.telemetrySettings,
+			ChunkType: string(provider.ChunkTypeStreamFinish),
+		})
 	}
 
 	// Resolve final typed output if spec was provided and stream completed cleanly.
@@ -932,16 +934,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 
-	// Build single-step response message (assistant with accumulated text + tool calls).
-	singleStepAssistantMsg := types.Message{
-		Role:      types.RoleAssistant,
-		Content:   []types.ContentPart{},
-		ToolCalls: finalToolCalls,
-	}
-	if r.text != "" {
-		singleStepAssistantMsg.Content = append(singleStepAssistantMsg.Content, types.TextContent{Text: r.text})
-	}
-
 	// Emit per-step finish events and use the last step for the single-step path.
 	lastStep := types.StepResult{
 		StepNumber:       1,
@@ -951,7 +943,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		FinishReason:     r.finishReason,
 		Usage:            r.usage,
 		ProviderMetadata: finalProviderMeta,
-		ResponseMessages: []types.Message{singleStepAssistantMsg},
+		ResponseMessages: providerutils.ConvertToResponseMessages(
+			finalToolCalls,
+			[]types.ContentPart{types.TextContent{Text: r.text}},
+			nil,
+		),
 	}
 	if len(allSteps) > 0 {
 		lastStep = allSteps[len(allSteps)-1]
@@ -1146,8 +1142,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			return "", err
 		}
 
-		// Transition Submitted → Streaming on the first chunk.
-		if firstChunk {
+		// Transition Submitted to Streaming on the first content chunk.
+		if firstChunk && isFirstChunkContent(chunk.Type) {
 			firstChunk = false
 			r.mu.Lock()
 			r.status = StreamStatusStreaming
@@ -1272,6 +1268,26 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	r.mu.Unlock()
 
 	return r.text, nil
+}
+
+func isFirstChunkContent(chunkType provider.ChunkType) bool {
+	switch chunkType {
+	case provider.ChunkTypeStreamStart,
+		provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk,
+		provider.ChunkTypeStreamFinish:
+		return false
+	default:
+		return true
+	}
+}
+
+func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
+	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
+	return sendReasoning == nil || !*sendReasoning
 }
 
 // nextChunk reads the next chunk with optional per-chunk timeout

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -128,6 +129,11 @@ type GenerateTextOptions struct {
 	// reasoning APIs (Anthropic: thinking.budget_tokens, OpenAI: reasoning_effort,
 	// Google: thinkingConfig.thinkingBudget, Bedrock: reasoningConfig).
 	Reasoning *types.ReasoningLevel
+
+	// SendReasoning controls whether reasoning/thinking stream boundary chunks
+	// are exposed to callbacks. nil and false suppress reasoning-start/end,
+	// matching the TypeScript SDK default.
+	SendReasoning *bool
 
 	// ========================================================================
 	// Provider Options (v6.0.61 - NEW)
@@ -490,6 +496,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
 			Reasoning:             opts.Reasoning,
+			SendReasoning:         opts.SendReasoning,
 			ProviderOptions:       opts.ProviderOptions,
 			Telemetry:             telemetrySettings,
 		}
@@ -632,35 +639,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// Add assistant message with tool calls to history.
 			// ToolCalls must be carried on the message so providers that require
 			// a top-level tool_calls field (e.g. OpenAI) can emit it correctly.
-			assistantMsg := types.Message{
-				Role:      types.RoleAssistant,
-				Content:   []types.ContentPart{},
-				ToolCalls: genResult.ToolCalls,
-			}
-			if genResult.Text != "" {
-				assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: genResult.Text})
-			}
+			assistantMsg := providerutils.ConvertToResponseMessage(
+				genResult.ToolCalls,
+				[]types.ContentPart{types.TextContent{Text: genResult.Text}},
+			)
 
 			// Build response messages: assistant + tool results.
 			// Mirrors StepResult.response.messages in the TypeScript SDK.
-			stepResponseMsgs := []types.Message{assistantMsg}
-			currentMessages = append(currentMessages, assistantMsg)
-
-			// Add tool results to history
-			for _, tr := range toolResults {
-				toolMsg := types.Message{
-					Role: types.RoleTool,
-					Content: []types.ContentPart{
-						types.ToolResultContent{
-							ToolCallID: tr.ToolCallID,
-							ToolName:   tr.ToolName,
-							Result:     tr.Result,
-						},
-					},
-				}
-				stepResponseMsgs = append(stepResponseMsgs, toolMsg)
-				currentMessages = append(currentMessages, toolMsg)
-			}
+			stepResponseMsgs := providerutils.ConvertToResponseMessages(
+				genResult.ToolCalls,
+				assistantMsg.Content,
+				toolResults,
+			)
+			currentMessages = append(currentMessages, stepResponseMsgs...)
 			stepResult.ResponseMessages = stepResponseMsgs
 		} else {
 			// No more tool calls, we're done
@@ -678,15 +669,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 			// Build response message for this (final) step.
 			// Mirrors StepResult.response.messages in the TypeScript SDK.
-			finalAssistantMsg := types.Message{
-				Role:      types.RoleAssistant,
-				Content:   []types.ContentPart{},
-				ToolCalls: genResult.ToolCalls,
-			}
-			if genResult.Text != "" {
-				finalAssistantMsg.Content = append(finalAssistantMsg.Content, types.TextContent{Text: genResult.Text})
-			}
-			stepResult.ResponseMessages = []types.Message{finalAssistantMsg}
+			stepResult.ResponseMessages = providerutils.ConvertToResponseMessages(
+				genResult.ToolCalls,
+				[]types.ContentPart{types.TextContent{Text: genResult.Text}},
+				nil,
+			)
 
 			// Parse typed output if an Output spec was provided.
 			// Only parse when generation finished cleanly; a 'length' finish means

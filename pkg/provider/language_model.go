@@ -91,6 +91,12 @@ type GenerateOptions struct {
 	// Providers map this to their native reasoning APIs (see types.ReasoningLevel).
 	Reasoning *types.ReasoningLevel
 
+	// SendReasoning controls whether reasoning/thinking stream parts are exposed
+	// to consumers. nil and false both mean reasoning boundary chunks are
+	// suppressed at the core stream layer; providers may additionally use this
+	// to suppress reasoning deltas in their native APIs.
+	SendReasoning *bool
+
 	// Provider-specific options
 	// These are passed directly to the provider and can contain any provider-specific settings
 	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}
