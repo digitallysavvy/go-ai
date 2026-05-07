@@ -294,7 +294,7 @@ func TestCustomToolDef_JSON_NoFormat(t *testing.T) {
 	}
 }
 
-// --- file-url conversion tests (P1-8 Feature 2) ---
+// --- file-url conversion tests ---
 
 func TestFileURLInToolOutput(t *testing.T) {
 	// Build a tool result message with a file-url content block.

@@ -23,10 +23,10 @@ func TestOutputConfigFormat(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		responseFormat *provider.ResponseFormat
+		name             string
+		responseFormat   *provider.ResponseFormat
 		wantOutputConfig bool
-		wantSchema     bool
+		wantSchema       bool
 	}{
 		{
 			name: "json with schema uses output_config",
@@ -35,7 +35,7 @@ func TestOutputConfigFormat(t *testing.T) {
 				Schema: schema,
 			},
 			wantOutputConfig: true,
-			wantSchema:     true,
+			wantSchema:       true,
 		},
 		{
 			name: "json_schema type uses output_config",
@@ -44,7 +44,7 @@ func TestOutputConfigFormat(t *testing.T) {
 				Schema: schema,
 			},
 			wantOutputConfig: true,
-			wantSchema:     true,
+			wantSchema:       true,
 		},
 		{
 			name: "json without schema skips output_config",
@@ -66,7 +66,7 @@ func TestOutputConfigFormat(t *testing.T) {
 			model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
 
 			opts := &provider.GenerateOptions{
-				Prompt: types.Prompt{Text: "Tell me a joke"},
+				Prompt:         types.Prompt{Text: "Tell me a joke"},
 				ResponseFormat: tt.responseFormat,
 			}
 
@@ -850,7 +850,7 @@ func TestAutomaticCachingIntegration(t *testing.T) {
 	t.Skip("Integration test: run manually with ANTHROPIC_API_KEY set")
 }
 
-// --- metadata.user_id tests (P1-8 Feature 1) ---
+// --- metadata.user_id tests ---
 
 // TestMetadataUserIDInRequest verifies that metadata.userId from anthropic provider options
 // is forwarded as metadata: { user_id: "..." } in the wire format.

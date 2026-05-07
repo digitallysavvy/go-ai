@@ -202,7 +202,7 @@ type AgentConfig struct {
 	OnFinish     func(result *AgentResult)
 
 	// ========================================================================
-	// Structured Event Callbacks (v6.1 - P0-3)
+	// Structured Event Callbacks (v6.1)
 	// These callbacks receive typed event structs and are panic-safe.
 	// They fire in addition to (not instead of) the legacy callbacks above.
 	// They are merged with per-call callbacks via mergeCallbacks.

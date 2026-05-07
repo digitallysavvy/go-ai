@@ -462,7 +462,7 @@ func TestConvertResponse_GroundingMetadataInProviderMetadata(t *testing.T) {
 	}
 }
 
-// --- serviceTier tests (P1-8 Feature 3) ---
+// --- serviceTier tests ---
 
 func TestBuildRequestBody_ServiceTier(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")

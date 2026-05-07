@@ -53,7 +53,9 @@ func validateDownloadURL(rawURL string) error {
 		return validateIP(rawURL, ip)
 	}
 
-	// Resolve hostname to IPs and validate each one.
+	// Intentional divergence from the TS SDK:
+	// resolve hostnames up front so we can reject URLs that map to
+	// private/internal addresses before any fetch is attempted.
 	addrs, err := net.LookupHost(host)
 	if err != nil {
 		return providererrors.NewDownloadError(
@@ -116,4 +118,3 @@ func validateIP(rawURL string, ip net.IP) error {
 
 	return nil
 }
-

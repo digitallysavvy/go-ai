@@ -11,7 +11,7 @@ import (
 )
 
 // ============================================================================
-// P1-6: MCP Client tests
+// MCP Client tests
 // ============================================================================
 
 // MCP-T11: MCPServers option adds mcp-client-2025-04-04 beta header.
@@ -341,7 +341,7 @@ func TestMCPToolUseStreamingEmitsImmediately(t *testing.T) {
 }
 
 // MCP streaming: mcp_tool_result in content_block_start emits a ChunkTypeToolResult
-// chunk so the SDK's pendingDeferredToolCalls map is cleared (P0-4).
+// chunk so the SDK's pendingDeferredToolCalls map is cleared.
 func TestMCPToolResultStreamingEmitsToolResult(t *testing.T) {
 	sseData := "" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp-stream-001\",\"is_error\":false,\"content\":{\"results\":[]}}}\n\n" +
@@ -385,7 +385,7 @@ func TestMCPIntegration(t *testing.T) {
 }
 
 // ============================================================================
-// P1-7: Container & Skills tests
+// Container & Skills tests
 // ============================================================================
 
 // ACT-T07: container with skills adds all three beta headers.
@@ -429,8 +429,8 @@ func TestContainerSkillsBetaHeaders(t *testing.T) {
 			wantAbsent:  []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
 		},
 		{
-			name:        "no container adds no headers",
-			wantAbsent:  []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
+			name:       "no container adds no headers",
+			wantAbsent: []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
 		},
 	}
 

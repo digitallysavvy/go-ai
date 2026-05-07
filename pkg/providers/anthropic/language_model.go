@@ -1270,7 +1270,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 		case "mcp_tool_result":
 			// MCP tool results arrive in content_block_start. Emit as ChunkTypeToolResult
-			// so the SDK's pendingDeferredToolCalls map is cleared (P0-4).
+			// so the SDK's pendingDeferredToolCalls map is cleared.
 			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
 			tr := &types.ToolResult{
 				ToolCallID: start.ContentBlock.ToolUseID,

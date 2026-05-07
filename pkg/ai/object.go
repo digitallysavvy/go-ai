@@ -456,7 +456,7 @@ type GenerateObjectOptions struct {
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ========================================================================
-	// Structured Event Callbacks (P1-7)
+	// Structured Event Callbacks.
 	// These callbacks receive typed event structs and are panic-safe.
 	// They fire in addition to (not instead of) the legacy OnFinish callback.
 	// ========================================================================
@@ -1295,7 +1295,7 @@ type StreamObjectOptions struct {
 	ExperimentalTelemetry *TelemetrySettings
 
 	// ========================================================================
-	// Structured Event Callbacks (P1-7)
+	// Structured Event Callbacks.
 	// These callbacks receive typed event structs and are panic-safe.
 	// ========================================================================
 

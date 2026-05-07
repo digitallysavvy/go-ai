@@ -449,8 +449,8 @@ func TestStream_MetadataKeyAppearsInFinishChunk(t *testing.T) {
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{{Text: "hi"}}},
-			FinishReason:      "STOP",
-			SafetyRatings:     json.RawMessage(`[{"category":"HARM_CATEGORY_HATE_SPEECH"}]`),
+			FinishReason:  "STOP",
+			SafetyRatings: json.RawMessage(`[{"category":"HARM_CATEGORY_HATE_SPEECH"}]`),
 		}},
 	})
 
@@ -501,7 +501,7 @@ func drainChunks(t *testing.T, s *stream) []*provider.StreamChunk {
 	return chunks
 }
 
-// --- serviceTier streaming tests (P1-8 Feature 3) ---
+// --- serviceTier streaming tests ---
 
 func TestStreamServiceTierAccumulated(t *testing.T) {
 	// First chunk sets serviceTier; second chunk has text + finish.
