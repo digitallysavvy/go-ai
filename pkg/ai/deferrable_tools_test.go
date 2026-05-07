@@ -19,10 +19,11 @@ func TestDeferrableTools_ProviderExecutedTool(t *testing.T) {
 	// Create a provider-executed tool (Anthropic tool-search).
 	// ProviderExecuted must be set on the Tool so executeTools skips local execution.
 	searchTool := types.Tool{
-		Name:             "tool-search-bm25",
-		Description:      "Search using BM25",
-		Parameters:       map[string]interface{}{"type": "object"},
-		ProviderExecuted: true,
+		Name:                    "tool-search-bm25",
+		Description:             "Search using BM25",
+		Parameters:              map[string]interface{}{"type": "object"},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			t.Fatal("provider-executed tool should not be executed locally")
 			return nil, nil
@@ -51,6 +52,13 @@ func TestDeferrableTools_ProviderExecutedTool(t *testing.T) {
 			return &types.GenerateResult{
 				Text:         "Found results",
 				FinishReason: types.FinishReasonStop,
+				Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "call_1",
+						ToolName:   "tool-search-bm25",
+						Result:     map[string]interface{}{"results": []string{"result"}},
+					},
+				},
 			}, nil
 		},
 	}

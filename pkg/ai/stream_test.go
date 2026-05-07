@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -851,7 +852,7 @@ func TestStreamTextReasoningPropagated(t *testing.T) {
 
 // TestStreamTextToolsExecutedAfterStreamEnd verifies that tool Execute() is NOT
 // called while the stream is in progress, only after all chunks are consumed.
-// With Gap 3, tool-result chunks are forwarded to OnChunk AFTER execute fires.
+// Tool-result chunks are forwarded to OnChunk after Execute fires.
 // Invariant: all stream chunks → execute → tool-result chunks.
 func TestStreamTextToolsExecutedAfterStreamEnd(t *testing.T) {
 	t.Parallel()
@@ -888,10 +889,12 @@ func TestStreamTextToolsExecutedAfterStreamEnd(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	maxSteps := 1
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "What's the weather?",
-		Tools:  []types.Tool{tool},
+		Model:    model,
+		Prompt:   "What's the weather?",
+		Tools:    []types.Tool{tool},
+		MaxSteps: &maxSteps,
 		OnChunk: func(chunk provider.StreamChunk) {
 			mu.Lock()
 			events = append(events, "chunk:"+string(chunk.Type))
@@ -936,9 +939,9 @@ func TestStreamTextToolsExecutedAfterStreamEnd(t *testing.T) {
 		t.Errorf("expected at least 3 stream chunks before execute, got %d; events: %v",
 			streamChunksBefore, events)
 	}
-	// Gap 3: a tool-result chunk must appear after execute.
+	// A tool-result chunk must appear after execute.
 	if toolResultIdx == -1 {
-		t.Error("expected tool-result chunk to be forwarded to OnChunk after execute (Gap 3)")
+		t.Error("expected tool-result chunk to be forwarded to OnChunk after execute")
 	} else if toolResultIdx <= executeIdx {
 		t.Errorf("tool-result chunk (idx %d) must come after execute (idx %d); events: %v",
 			toolResultIdx, executeIdx, events)
@@ -988,10 +991,12 @@ func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	maxSteps := 1
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "Run all tools",
-		Tools:  tools,
+		Model:    model,
+		Prompt:   "Run all tools",
+		Tools:    tools,
+		MaxSteps: &maxSteps,
 		OnFinish: func(r *StreamTextResult) {
 			close(done)
 		},
@@ -1049,10 +1054,12 @@ func TestStreamTextChunksDeliveredBeforeToolCallback(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	maxSteps := 1
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "weather?",
-		Tools:  []types.Tool{tool},
+		Model:    model,
+		Prompt:   "weather?",
+		Tools:    []types.Tool{tool},
+		MaxSteps: &maxSteps,
 		OnChunk: func(chunk provider.StreamChunk) {
 			mu.Lock()
 			events = append(events, "chunk:"+string(chunk.Type))
@@ -1120,10 +1127,12 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	maxSteps := 1
 	var toolResults []types.ToolResult
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model: model,
-		Tools: []types.Tool{tool},
+		Model:    model,
+		Tools:    []types.Tool{tool},
+		MaxSteps: &maxSteps,
 		ToolApproval: map[string]types.ToolApprovalValue{
 			"danger": types.ToolApprovalStatusDenied,
 		},
@@ -1152,6 +1161,216 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason == "" {
 		t.Fatalf("unexpected denied output: %#v", output)
+	}
+}
+
+func TestStreamText_ContinuesWhenToolCallFinishesWithStop(t *testing.T) {
+	t.Parallel()
+
+	var toolCalled int
+	tool := types.Tool{
+		Name:        "weather",
+		Description: "Get weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			toolCalled++
+			return "sunny", nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "call_1",
+						ToolName:  "weather",
+						Arguments: map[string]interface{}{"location": "NYC"},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			case 2:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "The weather in NYC is sunny!"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Fatalf("unexpected stream call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "weather?",
+		Tools:  []types.Tool{tool},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 stream calls, got %d", callCount)
+	}
+	if toolCalled != 1 {
+		t.Fatalf("expected tool to be called once, got %d", toolCalled)
+	}
+	if result.Text() != "The weather in NYC is sunny!" {
+		t.Fatalf("unexpected text: %q", result.Text())
+	}
+}
+
+func TestStreamText_StopWhenStepCount(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "loop",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "call_1",
+					ToolName:  "loop",
+					Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan *StreamTextResult, 1)
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "loop",
+		Tools:    []types.Tool{tool},
+		StopWhen: []StopCondition{StepCountIs(2)},
+		OnFinish: func(r *StreamTextResult) {
+			done <- r
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	var result *StreamTextResult
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 stream calls, got %d", callCount)
+	}
+	if result.StopReason() != "maximum number of steps (2) reached" {
+		t.Fatalf("unexpected stop reason: %q", result.StopReason())
+	}
+}
+
+func TestStreamText_UsesStepTextForContinuedPrompt(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "next",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	callCount := 0
+	var thirdPrompt []types.Message
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "first"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "call_1",
+						ToolName:  "next",
+						Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			case 2:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "second"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "call_2",
+						ToolName:  "next",
+						Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			case 3:
+				thirdPrompt = append([]types.Message(nil), opts.Prompt.Messages...)
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Fatalf("unexpected stream call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	done := make(chan *StreamTextResult, 1)
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "start",
+		Tools:  []types.Tool{tool},
+		OnFinish: func(r *StreamTextResult) {
+			done <- r
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	var result *StreamTextResult
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	if result.Text() != "firstseconddone" {
+		t.Fatalf("unexpected accumulated text: %q", result.Text())
+	}
+	var assistantTexts []string
+	for _, msg := range thirdPrompt {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, part := range msg.Content {
+			if text, ok := part.(types.TextContent); ok {
+				assistantTexts = append(assistantTexts, text.Text)
+			}
+		}
+	}
+	expected := []string{"first", "second"}
+	if !reflect.DeepEqual(assistantTexts, expected) {
+		t.Fatalf("assistant prompt texts = %#v, want %#v", assistantTexts, expected)
 	}
 }
 

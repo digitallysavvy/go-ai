@@ -64,7 +64,6 @@ type GenerateTextOptions struct {
 	// StopWhen defines conditions that terminate the tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
 	// Evaluated after each step that produces tool results.
-	// Default: []StopCondition{StepCountIs(1)}.
 	StopWhen []StopCondition
 
 	// ========================================================================
@@ -120,7 +119,7 @@ type GenerateTextOptions struct {
 	ExperimentalRetention *types.RetentionSettings
 
 	// ========================================================================
-	// Reasoning (v6.1 - P0-1)
+	// Reasoning (v6.1)
 	// ========================================================================
 
 	// Reasoning controls how much thinking effort the model applies.
@@ -195,7 +194,7 @@ type GenerateTextOptions struct {
 	OnFinish func(ctx context.Context, result *GenerateTextResult, userContext interface{})
 
 	// ========================================================================
-	// Structured Event Callbacks (v6.1 - P0-3)
+	// Structured Event Callbacks (v6.1)
 	// These callbacks receive typed event structs and are panic-safe.
 	// They fire in addition to (not instead of) the legacy callbacks above.
 	// ========================================================================
@@ -382,7 +381,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	callID := newCallID()
 
-	// CB-T12: Emit OnStartEvent
+	// Emit OnStartEvent.
 	Notify(ctx, OnStartEvent{
 		CallID:              callID,
 		OperationID:         "ai.generateText",
@@ -412,17 +411,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Steps: []types.StepResult{},
 	}
 
-	// Resolve stop conditions (Vercel AI SDK v5 approach):
-	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
-	// All termination flows through stop conditions.
-	stopConditions := opts.StopWhen
-	if len(stopConditions) == 0 {
-		if opts.MaxSteps != nil {
-			stopConditions = []StopCondition{StepCountIs(*opts.MaxSteps)}
-		} else {
-			stopConditions = []StopCondition{StepCountIs(1)}
-		}
-	}
+	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 	maxSteps := 1000 // safety ceiling only
 
 	// Current messages for conversation history
@@ -447,7 +436,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			defer stepCancel()
 		}
 
-		// CB-T13: Emit OnStepStartEvent
+		// Emit OnStepStartEvent.
 		Notify(ctx, OnStepStartEvent{
 			CallID:              callID,
 			StepNumber:          stepNum,
@@ -728,7 +717,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			opts.OnStepFinish(ctx, stepResult, runtimeContext)
 		}
 
-		// CB-T14: Emit structured OnStepFinishEvent
+		// Emit structured OnStepFinishEvent.
 		Notify(ctx, OnStepFinishEvent{
 			CallID:           callID,
 			StepNumber:       stepResult.StepNumber,
@@ -825,9 +814,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		// Check if we should continue.
-		// Continue when there are local tool calls pending execution OR when a
-		// provider tool with SupportsDeferredResults has not yet delivered its result.
-		hasLocalToolCalls := genResult.FinishReason == types.FinishReasonToolCalls
+		// Continue when there are local tool calls in the turn OR when a provider
+		// tool with SupportsDeferredResults has not yet delivered its result.
+		hasLocalToolCalls := false
+		for _, call := range genResult.ToolCalls {
+			tool := toolsByName[call.ToolName]
+			if tool != nil && !tool.ProviderExecuted {
+				hasLocalToolCalls = true
+				break
+			}
+		}
 		hasPendingDeferred := len(pendingDeferredToolCalls) > 0
 		if !hasLocalToolCalls && !hasPendingDeferred {
 			break
@@ -868,7 +864,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Mirrors GenerateTextResult.totalUsage in the TypeScript SDK.
 	result.TotalUsage = result.Usage
 
-	// CB-T15: Emit structured OnFinishEvent.
+	// Emit structured OnFinishEvent.
 	// Usage = last step's usage; TotalUsage = sum across all steps.
 	var finishUsage types.Usage
 	var finishRawReason string
@@ -940,7 +936,7 @@ type toolCallEventCallbacks struct {
 // executeTools executes a list of tool calls
 // Updated in v6.0 to pass ToolExecutionOptions with ToolCallID and UserContext
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
-// Updated in v6.1 to fire structured OnToolCallStart/Finish events (CB-T16/T17/T18)
+// Updated in v6.1 to fire structured OnToolCallStart/Finish events.
 func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, len(toolCalls))
 	if toolsContext == nil {
@@ -1028,7 +1024,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				continue
 			}
 
-			// CB-T16: Emit OnToolCallStartEvent before execution
+			// Emit OnToolCallStartEvent before execution.
 			startEvent := OnToolCallStartEvent{
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
@@ -1054,7 +1050,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			})
 
 			// Locally-executed tool: execute now, wrapped by telemetry integrations
-			// so they can create nested spans (Gap 4).
+			// so they can create nested spans.
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID:     call.ID,
 				UserContext:    runtimeContext,
@@ -1101,7 +1097,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ProviderMetadata: providerMetadata,
 			}
 
-			// Fire telemetry OnToolCallFinish (Gap 5 partial: integrations can record errors).
+			// Fire telemetry OnToolCallFinish so integrations can record errors.
 			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    callbacks.telemetrySettings,
 				ToolCallID:  call.ID,
@@ -1113,7 +1109,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
 
-			// CB-T17/T18: Emit OnToolCallFinishEvent after execution (success or error)
+			// Emit OnToolCallFinishEvent after execution, whether it succeeded or failed.
 			finishEvent := OnToolCallFinishEvent{
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,

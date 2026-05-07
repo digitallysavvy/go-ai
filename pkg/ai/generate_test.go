@@ -462,6 +462,70 @@ func TestGenerateText_MultiStepToolCalling(t *testing.T) {
 	}
 }
 
+func TestGenerateText_ContinuesWhenToolCallFinishesWithStop(t *testing.T) {
+	t.Parallel()
+
+	toolCalled := 0
+	tools := []types.Tool{
+		{
+			Name:        "get_weather",
+			Description: "Get weather",
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				toolCalled++
+				return map[string]interface{}{"temperature": 72}, nil
+			},
+		},
+	}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &types.GenerateResult{
+					Text:         "",
+					FinishReason: types.FinishReasonStop,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "get_weather", Arguments: map[string]interface{}{"location": "NYC"}},
+					},
+				}, nil
+			case 2:
+				return &types.GenerateResult{
+					Text:         "The weather in NYC is 72°F and sunny!",
+					FinishReason: types.FinishReasonStop,
+				}, nil
+			}
+			t.Fatalf("unexpected call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "What's the weather in NYC?",
+		Tools:    tools,
+		StopWhen: []StopCondition{StepCountIs(5)},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 model calls, got %d", callCount)
+	}
+	if toolCalled != 1 {
+		t.Fatalf("expected tool to be called once, got %d", toolCalled)
+	}
+	if result.Text != "The weather in NYC is 72°F and sunny!" {
+		t.Errorf("unexpected text: %s", result.Text)
+	}
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+}
+
 func TestGenerateText_ToolNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -1300,7 +1364,7 @@ func TestGenerateText_StopWhen_NaturalStopFirst(t *testing.T) {
 	}
 }
 
-func TestGenerateText_DefaultStopWhen(t *testing.T) {
+func TestGenerateText_NoDefaultStopWhen(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
@@ -1309,17 +1373,24 @@ func TestGenerateText_DefaultStopWhen(t *testing.T) {
 		}},
 	}
 
+	callCount := 0
 	model := &testutil.MockLanguageModel{
 		ToolSupport: true,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				}, nil
+			}
 			return &types.GenerateResult{
-				FinishReason: types.FinishReasonToolCalls,
-				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				Text:         "Done",
+				FinishReason: types.FinishReasonStop,
 			}, nil
 		},
 	}
 
-	// Neither MaxSteps nor StopWhen set -- should default to 1
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "Loop",
@@ -1329,8 +1400,14 @@ func TestGenerateText_DefaultStopWhen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.Steps) != 1 {
-		t.Errorf("expected 1 step (default), got %d", len(result.Steps))
+	if callCount != 2 {
+		t.Fatalf("expected 2 model calls, got %d", callCount)
+	}
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	}
+	if result.StopReason != "" {
+		t.Errorf("expected empty stop reason, got %q", result.StopReason)
 	}
 }
 

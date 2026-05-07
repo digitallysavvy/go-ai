@@ -51,6 +51,15 @@ type StreamTextOptions struct {
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
 
+	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
+	// Deprecated: use StopWhen with StepCountIs instead.
+	// If StopWhen is set, MaxSteps is ignored.
+	MaxSteps *int
+
+	// StopWhen defines conditions that terminate the tool-calling loop.
+	// Conditions are evaluated OR -- first non-empty string stops the loop.
+	StopWhen []StopCondition
+
 	// Response format (for structured output)
 	// Deprecated: Use Output instead.
 	ResponseFormat *provider.ResponseFormat
@@ -108,7 +117,7 @@ type StreamTextOptions struct {
 	OnFinish func(result *StreamTextResult)
 
 	// ========================================================================
-	// Structured Event Callbacks (v6.1 - P0-3)
+	// Structured Event Callbacks (v6.1)
 	// These callbacks receive typed event structs and are panic-safe.
 	// ========================================================================
 
@@ -167,6 +176,9 @@ type StreamTextResult struct {
 	// Finish reason (set when stream completes)
 	finishReason types.FinishReason
 
+	// stopReason is the reason string from the StopCondition that stopped the loop.
+	stopReason string
+
 	// Usage information (set when stream completes)
 	usage types.Usage
 
@@ -209,7 +221,7 @@ type StreamTextResult struct {
 	telemetryCtx      context.Context
 	telemetrySettings *TelemetrySettings
 
-	// Accumulated tool calls from ChunkTypeToolCall chunks (Fix 1).
+	// Accumulated tool calls from ChunkTypeToolCall chunks.
 	// Populated during streaming; executed after stream ends.
 	// Protected by mu.
 	toolCalls   []types.ToolCall
@@ -232,7 +244,7 @@ type StreamTextResult struct {
 	// Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
 	responseHeaders map[string]string
 
-	// Structured event callbacks (v6.1 - P0-3)
+	// Structured event callbacks (v6.1)
 	// Stored here so processStream can fire them when the stream completes.
 	cbCallID            string
 	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
@@ -315,7 +327,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	callID := newCallID()
 
-	// CB-T19: Emit OnStartEvent before streaming begins
+	// Emit OnStartEvent before streaming begins.
 	Notify(ctx, OnStartEvent{
 		CallID:              callID,
 		OperationID:         "ai.streamText",
@@ -340,7 +352,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		ToolsContext:        toolsContext,
 	}, opts.OnStart)
 
-	// CB-T20: Emit OnStepStartEvent for step 1 (current stream is single-step)
+	// Emit OnStepStartEvent for the first stream step.
 	Notify(ctx, OnStepStartEvent{
 		CallID:              callID,
 		StepNumber:          1,
@@ -437,7 +449,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cbMessages:          prompt.Messages,
 		cbTools:             opts.Tools,
 		cbSystem:            opts.System,
-		// Retained for deferred provider tool continuation (P0-4)
+		// Retained for deferred provider tool continuation.
 		cbModel:      opts.Model,
 		cbStreamOpts: opts,
 	}
@@ -452,20 +464,21 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 }
 
 // processStream processes the stream and calls callbacks.
-// Implements the three P0-3 architectural changes:
+// Implements the core streaming architecture changes:
 //
 //  1. Chunks are forwarded to the consumer (onChunk) before any tool Execute fires.
 //  2. Tool calls are accumulated during streaming; Execute is called only after the
 //     stream is fully consumed (after the loop, not mid-stream).
 //  3. Telemetry is recorded through the telemetry.Span interface (no direct OTel imports).
 //
-// P0-4: Supports multi-step continuation for provider tools with SupportsDeferredResults.
+// Supports multi-step continuation for provider tools with SupportsDeferredResults.
 // When such tools are pending, processStream starts a new DoStream call and loops.
 func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
+	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 
-	// Build tool name → pointer map for deferred provider tool tracking (P0-4).
+	// Build tool name → pointer map for deferred provider tool tracking.
 	toolsByName := make(map[string]*types.Tool, len(opts.Tools))
 	for i := range opts.Tools {
 		toolsByName[opts.Tools[i].Name] = &opts.Tools[i]
@@ -477,7 +490,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var allSteps []types.StepResult
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
-	var textParts []string
+	var accumulatedTextParts []string
 
 	for stepNum := 1; ; stepNum++ {
 		// Fire step-start telemetry. OTel implementations create a child step span.
@@ -495,7 +508,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepFilesStart := len(r.files)
 
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
-		// All Execute() calls happen after the stream loop ends (Fix 1).
+		// All Execute() calls happen after the stream loop ends.
+		var stepTextParts []string
 		var stepToolCalls []types.ToolCall
 		var modelCallEndFired bool
 		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
@@ -538,13 +552,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				textParts = append(textParts, chunk.Text)
+				stepTextParts = append(stepTextParts, chunk.Text)
+				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
 				// matching the TypeScript SDK's deduplication behavior.
 				if r.outputSpec != nil {
-					currentText := strings.Join(textParts, "")
+					currentText := strings.Join(accumulatedTextParts, "")
 					partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 						Text: currentText,
 					})
@@ -561,13 +576,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Accumulate tool call chunks — do NOT execute yet (Fix 1).
-			// The chunk is still forwarded to the consumer below (Fix 2).
+			// Accumulate tool call chunks without executing until the stream is consumed.
+			// The chunk is still forwarded to the consumer below.
 			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
 				stepToolCalls = append(stepToolCalls, *chunk.ToolCall)
 			}
 
-			// Track provider-inline tool results for the deferred hasResult check (P0-4).
+			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
 				streamedToolResultIDs[chunk.ToolResult.ToolCallID] = true
 			}
@@ -621,7 +636,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Forward chunk to consumer BEFORE any tool Execute fires (Fix 2).
+			// Forward chunk to consumer before any tool Execute fires.
 			if onChunk != nil && forwardChunk {
 				onChunk(*chunk)
 			}
@@ -637,9 +652,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if r.err != nil {
 			break
 		}
-		r.text = strings.Join(textParts, "")
+		stepText := strings.Join(stepTextParts, "")
+		r.text = strings.Join(accumulatedTextParts, "")
 
-		// Execute accumulated tool calls AFTER stream is fully consumed (Fix 1).
+		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
 		if len(stepToolCalls) > 0 && len(opts.Tools) > 0 {
@@ -672,9 +688,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 
-		// Gap 3: Forward tool-result chunks to onChunk consumers, matching the
-		// TypeScript SDK's behaviour where tool-result objects flow back through
-		// the stream pipeline after execution.
+		// Forward tool-result chunks to OnChunk consumers after execution.
 		for i := range stepToolResults {
 			resultChunk := provider.StreamChunk{
 				Type:       provider.ChunkTypeToolResult,
@@ -689,7 +703,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 
-		// Deferred provider tool tracking (P0-4, mirrors TS SDK pendingDeferredToolCalls).
+		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.
 		// Note: check tool.ProviderExecuted on the definition because some providers
 		// (e.g. Anthropic) do not set ProviderExecuted on the ToolCall itself.
@@ -731,7 +745,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// use the current snapshot as the step's text.
 		stepResult := types.StepResult{
 			StepNumber:       stepNum,
-			Text:             r.text,
+			Text:             stepText,
 			ToolCalls:        stepToolCalls,
 			ToolResults:      stepToolResults,
 			FinishReason:     r.finishReason,
@@ -767,7 +781,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				StepNumber:     stepNum,
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
-				Text:           r.text,
+				Text:           stepText,
 				ToolCalls:      stepToolCalls,
 				Files:          stepFiles,
 				Settings:       r.telemetrySettings,
@@ -776,27 +790,45 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 
-		// Check continuation: for streaming, only continue when a deferred provider tool
-		// (SupportsDeferredResults=true) has not yet delivered its result (P0-4).
-		// Local tool calls are handled in-step by executeTools — no additional model
-		// call is needed for them here (unlike generate.go's step loop).
-		if len(pendingDeferredToolCalls) == 0 {
-			break
-		}
-		if hasUserApproval {
-			break
-		}
-
-		// Build conversation history for the next step.
 		// Populate ResponseMessages on the step that just completed.
 		// Mirrors StepResult.response.messages in the TypeScript SDK.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
 			stepToolCalls,
-			[]types.ContentPart{types.TextContent{Text: r.text}},
+			[]types.ContentPart{types.TextContent{Text: stepText}},
 			stepToolResults,
 		)
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
+
+		if hasUserApproval {
+			break
+		}
+
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    allSteps,
+				Messages: currentMessages,
+				Usage:    r.usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				r.stopReason = reason
+				break
+			}
+		}
+
+		// Continue when this step included local tool calls that were executed
+		// in-step, or when a deferred provider tool has not yet delivered its result.
+		hasLocalToolCalls := false
+		for _, call := range stepToolCalls {
+			tool := toolsByName[call.ToolName]
+			if tool != nil && !tool.ProviderExecuted {
+				hasLocalToolCalls = true
+				break
+			}
+		}
+		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
+			break
+		}
 
 		// Resolve ResponseFormat for the next step.
 		responseFormat := opts.ResponseFormat
@@ -918,7 +950,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		onFinish(r)
 	}
 
-	// CB-T20 (step finish) and CB-T21 (generation finish): emit structured events.
+	// Emit structured step-finish and generation-finish events.
 	// These fire after all chunks are processed and the legacy callbacks have run.
 	// For multi-step streaming, allSteps contains one entry per step.
 	r.mu.Lock()
@@ -1019,6 +1051,12 @@ func (r *StreamTextResult) Text() string {
 // FinishReason returns the finish reason (only available after stream completes)
 func (r *StreamTextResult) FinishReason() types.FinishReason {
 	return r.finishReason
+}
+
+// StopReason returns the reason from the stop condition that ended the loop.
+// It is empty when the stream ended naturally.
+func (r *StreamTextResult) StopReason() string {
+	return r.stopReason
 }
 
 // Usage returns the usage information (only available after stream completes)

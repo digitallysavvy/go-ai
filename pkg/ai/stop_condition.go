@@ -88,3 +88,13 @@ func EvaluateStopConditions(conditions []StopCondition, state StopConditionState
 	}
 	return ""
 }
+
+func resolveStopConditions(stopWhen []StopCondition, maxSteps *int) []StopCondition {
+	if len(stopWhen) > 0 {
+		return stopWhen
+	}
+	if maxSteps != nil {
+		return []StopCondition{StepCountIs(*maxSteps)}
+	}
+	return nil
+}
