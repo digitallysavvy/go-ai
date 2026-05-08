@@ -63,7 +63,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 
 	var response moonshotResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -75,6 +75,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
@@ -82,7 +83,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 
 	// Make streaming API request
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
@@ -98,11 +99,17 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newMoonshotStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	inner := newMoonshotStream(httpResp.Body)
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
@@ -178,31 +185,37 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	// Moonshot-specific options from provider metadata
-	if opts.ProviderOptions != nil {
-		if moonshotOpts, ok := opts.ProviderOptions["moonshot"].(map[string]interface{}); ok {
-			// Thinking/reasoning support (for K2.5 and thinking models)
-			if thinking, ok := moonshotOpts["thinking"].(map[string]interface{}); ok {
-				thinkingBody := make(map[string]interface{})
+	moonshotOpts, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("moonshot", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(moonshotOpts)...)
+	warnings = append(warnings, providerutils.DeprecatedOpenAICompatibleOptionWarnings(moonshotOpts, map[string]string{
+		"reasoning-history": "reasoningHistory",
+		"reasoning_history": "reasoningHistory",
+	})...)
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, moonshotOpts)
+	// Thinking/reasoning support (for K2.5 and thinking models)
+	if thinking, ok := moonshotOpts["thinking"].(map[string]interface{}); ok {
+		warnings = append(warnings, providerutils.DeprecatedOpenAICompatibleOptionWarnings(thinking, map[string]string{
+			"budget-tokens": "budgetTokens",
+			"budget_tokens": "budgetTokens",
+		})...)
+		thinkingBody := make(map[string]interface{})
 
-				if thinkingType, ok := thinking["type"].(string); ok {
-					thinkingBody["type"] = thinkingType
-				}
-
-				if budgetTokens, ok := thinking["budget_tokens"].(int); ok {
-					thinkingBody["budget_tokens"] = budgetTokens
-				}
-
-				if len(thinkingBody) > 0 {
-					body["thinking"] = thinkingBody
-				}
-			}
-
-			// Reasoning history (for preserving thinking chains)
-			if reasoningHistory, ok := moonshotOpts["reasoning_history"].(string); ok {
-				body["reasoning_history"] = reasoningHistory
-			}
+		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
+			thinkingBody["type"] = thinkingType
 		}
+
+		if budgetTokens, ok := providerutils.OpenAICompatibleIntOption(thinking, "budgetTokens", "budget_tokens", "budget-tokens"); ok {
+			thinkingBody["budget_tokens"] = budgetTokens
+		}
+
+		if len(thinkingBody) > 0 {
+			body["thinking"] = thinkingBody
+		}
+	}
+
+	// Reasoning history (for preserving thinking chains)
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(moonshotOpts, "reasoningHistory", "reasoning_history", "reasoning-history"); ok {
+		body["reasoning_history"] = reasoningHistory
 	}
 
 	// Streaming options
@@ -212,7 +225,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return body
+	return body, warnings
 }
 
 // convertResponse converts Moonshot API response to SDK format

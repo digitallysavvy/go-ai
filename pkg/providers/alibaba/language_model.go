@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -63,7 +64,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 
 	var response alibabaResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -75,6 +76,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
@@ -82,7 +84,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 
 	// Make streaming API request
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
@@ -105,26 +107,39 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newAlibabaStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	inner := newAlibabaStream(httpResp.Body)
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
 	}
 
+	alibabaOpts, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("alibaba", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(alibabaOpts)...)
+	warnings = append(warnings, providerutils.DeprecatedOpenAICompatibleOptionWarnings(alibabaOpts, map[string]string{
+		"enable-thinking":     "enableThinking",
+		"enable_thinking":     "enableThinking",
+		"thinking-budget":     "thinkingBudget",
+		"thinking_budget":     "thinkingBudget",
+		"parallel-tool-calls": "parallelToolCalls",
+		"parallel_tool_calls": "parallelToolCalls",
+	})...)
+
 	// Extract Alibaba-level cache control (applies to all message types).
 	// When enabled, a CacheControlValidator enforces the 4-breakpoint limit and
 	// accumulates warnings when the limit is exceeded.
 	var validator *CacheControlValidator
-	if opts.ProviderOptions != nil {
-		if alibabaOpts, ok := opts.ProviderOptions["alibaba"].(map[string]interface{}); ok {
-			if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
-				validator = NewCacheControlValidator()
-			}
-		}
+	if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
+		validator = NewCacheControlValidator()
 	}
 
 	// Convert prompt to messages with optional cache control support
@@ -244,22 +259,19 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, alibabaOpts)
 	// Alibaba-specific options from provider metadata
-	if opts.ProviderOptions != nil {
-		if alibabaOpts, ok := opts.ProviderOptions["alibaba"].(map[string]interface{}); ok {
-			// Thinking/reasoning support (overrides top-level Reasoning if both set)
-			if enableThinking, ok := alibabaOpts["enable_thinking"].(bool); ok {
-				body["enable_thinking"] = enableThinking
-			}
-			if thinkingBudget, ok := alibabaOpts["thinking_budget"].(int); ok {
-				body["thinking_budget"] = thinkingBudget
-			}
+	// Thinking/reasoning support (overrides top-level Reasoning if both set)
+	if enableThinking, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "enableThinking", "enable_thinking", "enable-thinking"); ok {
+		body["enable_thinking"] = enableThinking
+	}
+	if thinkingBudget, ok := providerutils.OpenAICompatibleIntOption(alibabaOpts, "thinkingBudget", "thinking_budget", "thinking-budget"); ok {
+		body["thinking_budget"] = thinkingBudget
+	}
 
-			// Parallel tool calls
-			if parallelToolCalls, ok := alibabaOpts["parallel_tool_calls"].(bool); ok {
-				body["parallel_tool_calls"] = parallelToolCalls
-			}
-		}
+	// Parallel tool calls
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
 	}
 
 	// Streaming options
@@ -269,7 +281,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return body
+	if validator != nil {
+		warnings = append(warnings, validator.Warnings()...)
+	}
+
+	return body, warnings
 }
 
 // convertResponse converts Alibaba API response to SDK format

@@ -64,7 +64,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -75,13 +75,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/chat/completions",
@@ -93,10 +94,16 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newDeepseekStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	inner := newDeepseekStream(httpResp.Body)
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
@@ -152,7 +159,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			// ReasoningDefault: omit
 		}
 	}
-	return body
+	deepseekOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("deepseek", opts.ProviderOptions)
+	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
+		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
+			body["thinking"] = map[string]interface{}{"type": thinkingType}
+		}
+	}
+	return body, warnings
 }
 
 func (m *LanguageModel) toDeepSeekMessages(messages []types.Message) []map[string]interface{} {

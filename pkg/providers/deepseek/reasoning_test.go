@@ -88,3 +88,27 @@ func TestDeepSeekReasoningPropagated(t *testing.T) {
 		t.Errorf("expected thinking.type 'enabled', got: %v", thinking["type"])
 	}
 }
+
+func TestDeepSeekProviderOptionsOverrideReasoning(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "deepseek-reasoner")
+
+	level := types.ReasoningHigh
+	opts := &provider.GenerateOptions{
+		Reasoning: &level,
+		ProviderOptions: map[string]interface{}{
+			"deepseek": map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "disabled"},
+			},
+		},
+	}
+	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for camelCase provider options, got %#v", warnings)
+	}
+	thinking := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Errorf("provider options should override top-level Reasoning; got thinking.type=%v", thinking["type"])
+	}
+}

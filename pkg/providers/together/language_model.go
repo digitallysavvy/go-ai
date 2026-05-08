@@ -62,7 +62,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response togetherResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -73,13 +73,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/chat/completions",
@@ -91,10 +92,16 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newTogetherStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	inner := newTogetherStream(httpResp.Body)
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
@@ -135,7 +142,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			"type": opts.ResponseFormat.Type,
 		}
 	}
-	return body
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	return body, warnings
 }
 
 func (m *LanguageModel) convertResponse(response togetherResponse) *types.GenerateResult {
