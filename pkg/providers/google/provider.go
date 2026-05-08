@@ -25,6 +25,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Google API (default: https://generativelanguage.googleapis.com)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Google provider with the given configuration
@@ -37,15 +40,30 @@ func New(cfg Config) *Provider {
 	// Google uses API key in query parameter, not header
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Content-Type": "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateGoogle creates a new Google Generative AI provider.
+//
+// It mirrors the TypeScript SDK createGoogle export while New remains the
+// idiomatic Go constructor.
+func CreateGoogle(cfg Config) *Provider {
+	return New(cfg)
+}
+
+// CreateGoogleGenerativeAI creates a new Google Generative AI provider.
+//
+// Deprecated: use CreateGoogle.
+func CreateGoogleGenerativeAI(cfg Config) *Provider {
+	return CreateGoogle(cfg)
 }
 
 // Name returns the provider name

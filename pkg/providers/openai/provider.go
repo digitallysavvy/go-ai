@@ -39,6 +39,9 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for all requests.
 	HTTPClient *stdhttp.Client
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -63,7 +66,7 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    headers,
+		Headers:    http.MergeHeaders(headers, cfg.Headers),
 		HTTPClient: cfg.HTTPClient,
 	})
 
@@ -71,6 +74,14 @@ func New(cfg Config) *Provider {
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateOpenAI creates a new OpenAI provider.
+//
+// It mirrors the TypeScript SDK createOpenAI export while New remains the
+// idiomatic Go constructor.
+func CreateOpenAI(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

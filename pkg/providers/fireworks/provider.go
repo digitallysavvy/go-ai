@@ -28,6 +28,9 @@ type Config struct {
 	// ImagePollTimeoutMs is the maximum duration to wait for async image generation
 	// to complete. Defaults to 120000ms (2 minutes).
 	ImagePollTimeoutMs int
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Fireworks AI provider with the given configuration
@@ -39,16 +42,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateFireworks creates a new Fireworks AI provider.
+//
+// It mirrors the TypeScript SDK createFireworks export while New remains the
+// idiomatic Go constructor.
+func CreateFireworks(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

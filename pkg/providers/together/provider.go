@@ -22,6 +22,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Together AI API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // getAPIKey resolves the Together AI API key.
@@ -59,16 +62,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateTogetherAI creates a new Together AI provider.
+//
+// It mirrors the TypeScript SDK createTogetherAI export while New remains the
+// idiomatic Go constructor.
+func CreateTogetherAI(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

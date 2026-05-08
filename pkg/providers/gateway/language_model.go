@@ -426,7 +426,75 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 		body["headers"] = opts.Headers
 	}
 
+	if providerOptions := m.providerOptions(opts); len(providerOptions) > 0 {
+		body["providerOptions"] = providerOptions
+	}
+
 	return body, nil
+}
+
+func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[string]interface{} {
+	providerOptions := cloneProviderOptions(opts.ProviderOptions)
+	configGatewayOptions := m.provider.configGatewayProviderOptions()
+	if len(configGatewayOptions) > 0 {
+		providerOptions["gateway"] = configGatewayOptions
+	}
+	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
+		if configGatewayOptions == nil {
+			providerOptions["gateway"] = gatewayOptions
+			return providerOptions
+		}
+		if callerGatewayOptions, ok := gatewayOptions.(map[string]interface{}); ok {
+			merged := cloneMapStringInterface(configGatewayOptions)
+			for k, v := range callerGatewayOptions {
+				merged[k] = v
+			}
+			providerOptions["gateway"] = merged
+		} else {
+			providerOptions["gateway"] = gatewayOptions
+		}
+	}
+	return providerOptions
+}
+
+func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
+	out := map[string]interface{}{}
+	if p.config.DisallowPromptTraining {
+		out["disallowPromptTraining"] = true
+	}
+	if p.config.HIPAACompliant {
+		out["hipaaCompliant"] = true
+	}
+	if p.config.QuotaEntityID != "" {
+		out["quotaEntityId"] = p.config.QuotaEntityID
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneProviderOptions(in map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range in {
+		if nested, ok := v.(map[string]interface{}); ok {
+			out[k] = cloneMapStringInterface(nested)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func cloneMapStringInterface(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // convertContentPart converts a content part to the gateway format

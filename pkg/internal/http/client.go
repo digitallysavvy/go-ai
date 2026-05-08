@@ -44,6 +44,18 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
+// MergeHeaders returns a new map containing each header map in order. Later
+// maps override earlier maps, matching the TypeScript SDK combineHeaders helper.
+func MergeHeaders(headers ...map[string]string) map[string]string {
+	merged := make(map[string]string)
+	for _, h := range headers {
+		for k, v := range h {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
 // NewClient creates a new HTTP client with the given config
 func NewClient(cfg Config) *Client {
 	client := cfg.HTTPClient
@@ -68,6 +80,13 @@ func NewClient(cfg Config) *Client {
 		baseURL: cfg.BaseURL,
 		headers: cfg.Headers,
 	}
+}
+
+// HTTPClient returns the underlying HTTP client. It is intended for provider
+// code that must make auxiliary requests while preserving configured transport,
+// proxy, timeout, and middleware behavior.
+func (c *Client) HTTPClient() *http.Client {
+	return c.client
 }
 
 // Request represents an HTTP request

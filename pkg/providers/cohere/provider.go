@@ -25,6 +25,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Cohere API (default: https://api.cohere.ai/v1)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Cohere provider with the given configuration
@@ -41,13 +44,21 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: headers,
+		Headers: http.MergeHeaders(headers, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateCohere creates a new Cohere provider.
+//
+// It mirrors the TypeScript SDK createCohere export while New remains the
+// idiomatic Go constructor.
+func CreateCohere(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

@@ -53,6 +53,14 @@ func New(cfg Config) *Provider {
 	}
 }
 
+// CreateAlibaba creates a new Alibaba Cloud provider.
+//
+// It mirrors the TypeScript SDK createAlibaba export while New remains the
+// idiomatic Go constructor.
+func CreateAlibaba(cfg Config) *Provider {
+	return New(cfg)
+}
+
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "alibaba"
@@ -90,12 +98,12 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 	// Validate model ID
 	validModels := map[string]bool{
-		"wan2.5-t2v":        true,
-		"wan2.6-t2v":        true,
-		"wan2.6-i2v":        true,
-		"wan2.6-i2v-flash":  true,
-		"wan2.6-r2v":        true,
-		"wan2.6-r2v-flash":  true,
+		"wan2.5-t2v":       true,
+		"wan2.6-t2v":       true,
+		"wan2.6-i2v":       true,
+		"wan2.6-i2v-flash": true,
+		"wan2.6-r2v":       true,
+		"wan2.6-r2v-flash": true,
 	}
 
 	if !validModels[modelID] {

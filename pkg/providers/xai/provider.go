@@ -21,6 +21,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the xAI API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // getAPIKey resolves the xAI API key.
@@ -47,16 +50,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateXai creates a new xAI provider.
+//
+// It mirrors the TypeScript SDK createXai export while New remains the
+// idiomatic Go constructor.
+func CreateXai(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

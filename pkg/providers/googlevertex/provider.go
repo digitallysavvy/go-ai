@@ -33,6 +33,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Vertex AI API (optional, computed from project/location if not provided)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Google Vertex AI provider with the given configuration
@@ -58,16 +61,31 @@ func New(cfg Config) (*Provider, error) {
 	// Google Vertex uses Bearer token authentication
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + cfg.AccessToken,
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}, nil
+}
+
+// CreateGoogleVertex creates a new Google Vertex AI provider.
+//
+// It mirrors the TypeScript SDK createGoogleVertex export while New remains the
+// idiomatic Go constructor.
+func CreateGoogleVertex(cfg Config) (*Provider, error) {
+	return New(cfg)
+}
+
+// CreateVertex creates a new Google Vertex AI provider.
+//
+// Deprecated: use CreateGoogleVertex.
+func CreateVertex(cfg Config) (*Provider, error) {
+	return CreateGoogleVertex(cfg)
 }
 
 // Name returns the provider name

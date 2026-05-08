@@ -17,6 +17,9 @@ type Provider struct {
 type Config struct {
 	// BaseURL is the base URL for the Ollama API (default: http://localhost:11434)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Ollama provider with the given configuration
@@ -28,9 +31,9 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Content-Type": "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{

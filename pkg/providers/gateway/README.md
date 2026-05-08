@@ -268,7 +268,7 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 ### Provider Config
 
 - `APIKey` (string): AI Gateway API key (or set `AI_GATEWAY_API_KEY` env var)
-- `BaseURL` (string): Gateway API base URL (default: `https://ai-gateway.vercel.sh/v3/ai`)
+- `BaseURL` (string): Gateway API base URL (default: `https://ai-gateway.vercel.sh/v4/ai`)
 - `Headers` (map[string]string): Custom headers
 - `MetadataCacheRefreshMillis` (int64): Metadata cache refresh interval in milliseconds (default: 300000)
 - `HTTPClient` (*http.Client): Custom HTTP client

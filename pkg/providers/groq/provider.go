@@ -20,6 +20,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Groq API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Groq provider with the given configuration
@@ -31,16 +34,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateGroq creates a new Groq provider.
+//
+// It mirrors the TypeScript SDK createGroq export while New remains the
+// idiomatic Go constructor.
+func CreateGroq(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

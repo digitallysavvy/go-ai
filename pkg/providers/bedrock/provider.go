@@ -26,6 +26,9 @@ type Config struct {
 
 	// SessionToken is an optional AWS session token for temporary credentials
 	SessionToken string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new AWS Bedrock provider with the given configuration
@@ -37,15 +40,23 @@ func New(cfg Config) *Provider {
 	// For now, we'll create a basic client structure
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Content-Type": "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateAmazonBedrock creates a new AWS Bedrock provider.
+//
+// It mirrors the TypeScript SDK createAmazonBedrock export while New remains
+// the idiomatic Go constructor.
+func CreateAmazonBedrock(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

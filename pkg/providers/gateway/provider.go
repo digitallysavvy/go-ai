@@ -20,7 +20,7 @@ import (
 
 const (
 	// DefaultBaseURL is the default AI Gateway API base URL
-	DefaultBaseURL = "https://ai-gateway.vercel.sh/v3/ai"
+	DefaultBaseURL = "https://ai-gateway.vercel.sh/v4/ai"
 
 	// AIGatewayProtocolVersion is the protocol version for the AI Gateway
 	AIGatewayProtocolVersion = "0.0.1"
@@ -103,11 +103,11 @@ type Config struct {
 	APIKey string
 
 	// BaseURL is the base URL for the AI Gateway API
-	// Default: https://ai-gateway.vercel.sh/v3/ai
+	// Default: https://ai-gateway.vercel.sh/v4/ai
 	BaseURL string
 
 	// Headers are custom headers to include in requests
-	Headers map[string]string
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// MetadataCacheRefreshMillis is how frequently to refresh the metadata cache in milliseconds
 	// Default: 300000 (5 minutes)
@@ -124,6 +124,87 @@ type Config struct {
 	// When set, it is forwarded as the "ai-o11y-project-id" header on all requests.
 	// Can also be set via the VERCEL_PROJECT_ID environment variable.
 	ProjectID *string
+
+	// DisallowPromptTraining filters routing to providers that do not train on
+	// prompt data. It is forwarded as providerOptions.gateway.disallowPromptTraining.
+	DisallowPromptTraining bool
+
+	// HIPAACompliant filters routing to providers that are HIPAA compliant with
+	// Vercel AI Gateway. It is forwarded as providerOptions.gateway.hipaaCompliant.
+	HIPAACompliant bool
+
+	// QuotaEntityID identifies the entity against which quota is tracked. It is
+	// forwarded as providerOptions.gateway.quotaEntityId.
+	QuotaEntityID string
+}
+
+// GatewayProviderOptions contains AI Gateway request-scoped routing,
+// compliance, quota, and BYOK settings.
+type GatewayProviderOptions struct {
+	Only                   []string                       `json:"only,omitempty"`
+	Order                  []string                       `json:"order,omitempty"`
+	Sort                   string                         `json:"sort,omitempty"`
+	User                   string                         `json:"user,omitempty"`
+	Tags                   []string                       `json:"tags,omitempty"`
+	Models                 []string                       `json:"models,omitempty"`
+	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
+	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
+	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
+	HIPAACompliant         *bool                          `json:"hipaaCompliant,omitempty"`
+	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
+	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
+}
+
+// GatewayProviderTimeoutOptions contains Gateway provider timeout settings.
+type GatewayProviderTimeoutOptions struct {
+	BYOK map[string]int `json:"byok,omitempty"`
+}
+
+// ToProviderOptions returns a GenerateOptions.ProviderOptions map containing
+// these Gateway options under the "gateway" key.
+func (o GatewayProviderOptions) ToProviderOptions() map[string]interface{} {
+	return map[string]interface{}{"gateway": o.toMap()}
+}
+
+func (o GatewayProviderOptions) toMap() map[string]interface{} {
+	out := map[string]interface{}{}
+	if len(o.Only) > 0 {
+		out["only"] = o.Only
+	}
+	if len(o.Order) > 0 {
+		out["order"] = o.Order
+	}
+	if o.Sort != "" {
+		out["sort"] = o.Sort
+	}
+	if o.User != "" {
+		out["user"] = o.User
+	}
+	if len(o.Tags) > 0 {
+		out["tags"] = o.Tags
+	}
+	if len(o.Models) > 0 {
+		out["models"] = o.Models
+	}
+	if len(o.BYOK) > 0 {
+		out["byok"] = o.BYOK
+	}
+	if o.ZeroDataRetention != nil {
+		out["zeroDataRetention"] = *o.ZeroDataRetention
+	}
+	if o.DisallowPromptTraining != nil {
+		out["disallowPromptTraining"] = *o.DisallowPromptTraining
+	}
+	if o.HIPAACompliant != nil {
+		out["hipaaCompliant"] = *o.HIPAACompliant
+	}
+	if o.QuotaEntityID != "" {
+		out["quotaEntityId"] = o.QuotaEntityID
+	}
+	if o.ProviderTimeouts != nil && len(o.ProviderTimeouts.BYOK) > 0 {
+		out["providerTimeouts"] = map[string]interface{}{"byok": o.ProviderTimeouts.BYOK}
+	}
+	return out
 }
 
 // WithProjectID returns a Config option that sets the project ID for observability.
@@ -257,6 +338,21 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	}, nil
 }
 
+// CreateGateway creates a new AI Gateway provider.
+//
+// It mirrors the TypeScript SDK createGateway export while New remains the
+// idiomatic Go constructor.
+func CreateGateway(cfg Config, opts ...func(*Config)) (*Provider, error) {
+	return New(cfg, opts...)
+}
+
+// CreateGatewayProvider creates a new AI Gateway provider.
+//
+// Deprecated: use CreateGateway.
+func CreateGatewayProvider(cfg Config, opts ...func(*Config)) (*Provider, error) {
+	return CreateGateway(cfg, opts...)
+}
+
 func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
 	apiKey := cfg.APIKey
 	if apiKey == "" {
@@ -326,7 +422,17 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support reranking models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewRerankingModel(p, modelID), nil
+}
+
+// Reranking returns a reranking model by ID.
+//
+// It mirrors the TypeScript SDK reranking alias for rerankingModel.
+func (p *Provider) Reranking(modelID string) (provider.RerankingModel, error) {
+	return p.RerankingModel(modelID)
 }
 
 // GetAvailableModels returns available providers and models from the gateway

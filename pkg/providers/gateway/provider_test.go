@@ -658,6 +658,111 @@ func TestProvider_LanguageModel_DoGenerate_IncludesRequestIDHeader(t *testing.T)
 	}
 }
 
+func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	hipaa := true
+	disallowTraining := true
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: GatewayProviderOptions{
+			HIPAACompliant:         &hipaa,
+			QuotaEntityID:          "tenant-123",
+			DisallowPromptTraining: &disallowTraining,
+		}.ToProviderOptions(),
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+
+	providerOptions, ok := capturedBody["providerOptions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("providerOptions missing or wrong type: %#v", capturedBody["providerOptions"])
+	}
+	gatewayOptions, ok := providerOptions["gateway"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("providerOptions.gateway missing or wrong type: %#v", providerOptions["gateway"])
+	}
+	if gatewayOptions["hipaaCompliant"] != true {
+		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
+	}
+	if gatewayOptions["quotaEntityId"] != "tenant-123" {
+		t.Fatalf("quotaEntityId = %#v, want tenant-123", gatewayOptions["quotaEntityId"])
+	}
+	if gatewayOptions["disallowPromptTraining"] != true {
+		t.Fatalf("disallowPromptTraining = %#v, want true", gatewayOptions["disallowPromptTraining"])
+	}
+}
+
+func TestLanguageModel_DoGenerate_MergesGatewayConfigProviderOptions(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{
+		APIKey:                 "test-key",
+		BaseURL:                server.URL,
+		HIPAACompliant:         true,
+		DisallowPromptTraining: true,
+		QuotaEntityID:          "config-tenant",
+	})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"gateway": map[string]interface{}{
+				"quotaEntityId": "request-tenant",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+
+	gatewayOptions := capturedBody["providerOptions"].(map[string]interface{})["gateway"].(map[string]interface{})
+	if gatewayOptions["hipaaCompliant"] != true {
+		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
+	}
+	if gatewayOptions["disallowPromptTraining"] != true {
+		t.Fatalf("disallowPromptTraining = %#v, want true", gatewayOptions["disallowPromptTraining"])
+	}
+	if gatewayOptions["quotaEntityId"] != "request-tenant" {
+		t.Fatalf("quotaEntityId = %#v, want request override", gatewayOptions["quotaEntityId"])
+	}
+}
+
 func TestAddO11yHeaders(t *testing.T) {
 	headers := make(map[string]string)
 	o11y := O11yHeaders{

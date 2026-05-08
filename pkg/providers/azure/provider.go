@@ -30,6 +30,9 @@ type Config struct {
 
 	// BaseURL is an optional custom endpoint (if not using standard Azure endpoint)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Azure OpenAI provider with the given configuration
@@ -48,13 +51,21 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: headers,
+		Headers: http.MergeHeaders(headers, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateAzure creates a new Azure OpenAI provider.
+//
+// It mirrors the TypeScript SDK createAzure export while New remains the
+// idiomatic Go constructor.
+func CreateAzure(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

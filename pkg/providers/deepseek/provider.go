@@ -20,6 +20,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Deepseek API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Deepseek provider with the given configuration
@@ -31,16 +34,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateDeepSeek creates a new DeepSeek provider.
+//
+// It mirrors the TypeScript SDK createDeepSeek export while New remains the
+// idiomatic Go constructor.
+func CreateDeepSeek(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name

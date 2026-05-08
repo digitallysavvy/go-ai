@@ -31,6 +31,9 @@ type Config struct {
 
 	// APIVersion is the Anthropic API version (default: 2023-06-01)
 	APIVersion string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Anthropic provider with the given configuration
@@ -53,13 +56,21 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: headers,
+		Headers: http.MergeHeaders(headers, cfg.Headers),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateAnthropic creates a new Anthropic provider.
+//
+// It mirrors the TypeScript SDK createAnthropic export while New remains the
+// idiomatic Go constructor.
+func CreateAnthropic(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
