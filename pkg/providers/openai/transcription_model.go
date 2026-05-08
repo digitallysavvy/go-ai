@@ -52,12 +52,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	// Use internal http client's Do method with custom headers
 	req := internalhttp.Request{
-		Method: "POST",
-		Path:   "/audio/transcriptions",
-		Body:   body,
-		Headers: map[string]string{
-			"Content-Type": contentType,
-		},
+		Method:  "POST",
+		Path:    "/audio/transcriptions",
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}
 
 	resp, err := m.provider.client.Do(ctx, req)

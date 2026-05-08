@@ -3,7 +3,9 @@ package openai
 import (
 	"context"
 	"fmt"
+	"net/http"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -42,7 +44,12 @@ func (m *SpeechModel) ModelID() string {
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/audio/speech", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/audio/speech",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	})
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}

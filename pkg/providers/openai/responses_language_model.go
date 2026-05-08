@@ -55,7 +55,12 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 
 	var resp responses.ResponsesAPIResponse
-	if err := m.provider.client.PostJSON(ctx, "/responses", body, &resp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: opts.Headers,
+	}, &resp); err != nil {
 		return nil, m.wrapErr(err)
 	}
 
@@ -70,12 +75,10 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	}
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/responses",
-		Body:   body,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.wrapErr(err)

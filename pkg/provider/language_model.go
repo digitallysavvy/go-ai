@@ -495,6 +495,9 @@ type SpeechGenerateOptions struct {
 
 	// Speed of speech (0.25 to 4.0)
 	Speed *float64
+
+	// Additional HTTP headers
+	Headers map[string]string
 }
 
 // TranscriptionModel represents a speech-to-text model
@@ -521,4 +524,7 @@ type TranscriptionOptions struct {
 
 	// Whether to include timestamps
 	Timestamps bool
+
+	// Additional HTTP headers
+	Headers map[string]string
 }

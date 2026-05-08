@@ -74,7 +74,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	reqBody := m.buildRequestBody(opts)
 	var response openaiImageResponse
-	err := m.provider.client.PostJSON(ctx, "/images/generations", reqBody, &response)
+	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/images/generations",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
@@ -159,12 +164,10 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 
 	var response openaiImageResponse
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/images/edits",
-		Headers: map[string]string{
-			"Content-Type": contentType,
-		},
-		Body: body,
+		Method:  http.MethodPost,
+		Path:    "/images/edits",
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		Body:    body,
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
