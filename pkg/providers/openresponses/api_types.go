@@ -92,6 +92,15 @@ type InputImageContent struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// InputFileContent represents non-image file input.
+type InputFileContent struct {
+	Type     string `json:"type"`
+	FileURL  string `json:"file_url,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
 // OutputTextContent represents text output
 type OutputTextContent struct {
 	Type string `json:"type"`
@@ -164,8 +173,8 @@ type OutputItem struct {
 	Input string `json:"input,omitempty"`
 
 	// For reasoning type
-	Summary           []ContentPart `json:"summary,omitempty"`
-	EncryptedContent  string        `json:"encrypted_content,omitempty"`
+	Summary          []ContentPart `json:"summary,omitempty"`
+	EncryptedContent string        `json:"encrypted_content,omitempty"`
 }
 
 // ContentPart represents a part of message content
@@ -221,16 +230,16 @@ type ResponseError struct {
 
 // StreamEvent represents a server-sent event
 type StreamEvent struct {
-	Type           string          `json:"type"`
-	SequenceNumber int             `json:"sequence_number,omitempty"`
+	Type           string                 `json:"type"`
+	SequenceNumber int                    `json:"sequence_number,omitempty"`
 	Response       *OpenResponsesResponse `json:"response,omitempty"`
-	OutputIndex    int             `json:"output_index,omitempty"`
-	Item           *OutputItem     `json:"item,omitempty"`
-	ItemID         string          `json:"item_id,omitempty"`
-	ContentIndex   int             `json:"content_index,omitempty"`
-	Delta          string          `json:"delta,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	CallID         string          `json:"call_id,omitempty"`
-	Arguments      string          `json:"arguments,omitempty"`
-	Error          *ResponseError  `json:"error,omitempty"`
+	OutputIndex    int                    `json:"output_index,omitempty"`
+	Item           *OutputItem            `json:"item,omitempty"`
+	ItemID         string                 `json:"item_id,omitempty"`
+	ContentIndex   int                    `json:"content_index,omitempty"`
+	Delta          string                 `json:"delta,omitempty"`
+	Text           string                 `json:"text,omitempty"`
+	CallID         string                 `json:"call_id,omitempty"`
+	Arguments      string                 `json:"arguments,omitempty"`
+	Error          *ResponseError         `json:"error,omitempty"`
 }

@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -18,6 +18,10 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+}
+
+type OpenResponsesProviderOptions struct {
+	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 }
 
 // NewLanguageModel creates a new Open Responses language model
@@ -191,23 +195,59 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["text"] = textConfig
 	}
 
-	// Map top-level Reasoning to Open Responses reasoning_effort.
-	// Same mapping as the OpenAI chat completions path.
+	// Map top-level Reasoning to Open Responses reasoning.effort.
+	// Same mapping as TS open-responses behavior.
+	var reasoningEffort string
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
-			body["reasoning_effort"] = "disabled"
+			reasoningEffort = "none"
 		case types.ReasoningMinimal, types.ReasoningLow:
-			body["reasoning_effort"] = "low"
+			reasoningEffort = "low"
 		case types.ReasoningMedium:
-			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh:
-			body["reasoning_effort"] = "high"
-		// ReasoningDefault: omit
+			reasoningEffort = "medium"
+		case types.ReasoningHigh:
+			reasoningEffort = "high"
+		case types.ReasoningXHigh:
+			reasoningEffort = "xhigh"
+			// ReasoningDefault: omit
 		}
+	}
+	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
+	if reasoningEffort != "" || provOpts.ReasoningSummary != "" {
+		reasoning := map[string]interface{}{}
+		if reasoningEffort != "" {
+			reasoning["effort"] = reasoningEffort
+		}
+		if provOpts.ReasoningSummary != "" {
+			reasoning["summary"] = provOpts.ReasoningSummary
+		}
+		body["reasoning"] = reasoning
 	}
 
 	return body, warnings
+}
+
+func extractOpenResponsesProviderOptions(providerOptions map[string]interface{}, providerName string) OpenResponsesProviderOptions {
+	if providerOptions == nil {
+		return OpenResponsesProviderOptions{}
+	}
+	keys := []string{"openResponses", "open-responses", providerName}
+	for _, key := range keys {
+		raw, ok := providerOptions[key]
+		if !ok {
+			continue
+		}
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var opts OpenResponsesProviderOptions
+		if err := json.Unmarshal(data, &opts); err == nil {
+			return opts
+		}
+	}
+	return OpenResponsesProviderOptions{}
 }
 
 // convertToolsToOpenResponses converts AI SDK tools to Open Responses format
@@ -422,16 +462,16 @@ type openResponsesStream struct {
 	warnings []types.Warning
 
 	// Track state for tool calls and finish reason
-	toolCallsByItemID     map[string]*toolCallState
-	hasToolCalls          bool
-	finishReason          types.FinishReason
+	toolCallsByItemID map[string]*toolCallState
+	hasToolCalls      bool
+	finishReason      types.FinishReason
 }
 
 // toolCallState tracks the state of a tool call during streaming
 type toolCallState struct {
-	ID        string
-	ToolName  string
-	ArgsJSON  string // Accumulated JSON string
+	ID       string
+	ToolName string
+	ArgsJSON string // Accumulated JSON string
 }
 
 // newOpenResponsesStream creates a new Open Responses stream
@@ -551,8 +591,8 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
-					ID:       event.Item.CallID,
-					ToolName: event.Item.Name,
+					ID:        event.Item.CallID,
+					ToolName:  event.Item.Name,
 					Arguments: map[string]interface{}{"input": event.Item.Input},
 				},
 			}, nil

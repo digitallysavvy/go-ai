@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -147,5 +148,57 @@ func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.
 
 	if len(result.Content) != 0 {
 		t.Errorf("expected no content parts, got %d", len(result.Content))
+	}
+}
+
+func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1"})
+	m := NewLanguageModel(p, "lmstudio")
+	reasoning := types.ReasoningMedium
+
+	body, _ := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &reasoning,
+		ProviderOptions: map[string]interface{}{
+			"openResponses": map[string]interface{}{
+				"reasoningSummary": "detailed",
+			},
+		},
+	}, false)
+
+	reasoningBody, ok := body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reasoning body missing: %#v", body)
+	}
+	if reasoningBody["effort"] != "medium" {
+		t.Fatalf("effort = %v, want medium", reasoningBody["effort"])
+	}
+	if reasoningBody["summary"] != "detailed" {
+		t.Fatalf("summary = %v, want detailed", reasoningBody["summary"])
+	}
+}
+
+func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1"})
+	m := NewLanguageModel(p, "lmstudio")
+
+	high := types.ReasoningHigh
+	bodyHigh, _ := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &high,
+	}, false)
+	reasoningHigh := bodyHigh["reasoning"].(map[string]interface{})
+	if reasoningHigh["effort"] != "high" {
+		t.Fatalf("high effort = %v, want high", reasoningHigh["effort"])
+	}
+
+	xhigh := types.ReasoningXHigh
+	bodyXHigh, _ := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &xhigh,
+	}, false)
+	reasoningXHigh := bodyXHigh["reasoning"].(map[string]interface{})
+	if reasoningXHigh["effort"] != "xhigh" {
+		t.Fatalf("xhigh effort = %v, want xhigh", reasoningXHigh["effort"])
 	}
 }

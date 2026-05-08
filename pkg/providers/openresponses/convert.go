@@ -92,24 +92,28 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) 
 			}
 
 		case types.FileContent:
-			// Handle file content (converted to image if image type)
-			mediaType := p.MediaType
-			if mediaType == "" {
-				mediaType = p.MimeType
-			}
+			file := normalizeFileContentData(p)
+			mediaType := file.MediaType
 			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
-				imageURL := convertFileToImageURL(p, warnings)
+				imageURL := convertFileToImageURL(file, warnings)
 				if imageURL != "" {
-					result = append(result, InputImageContent{
-						Type:     "input_image",
-						ImageURL: imageURL,
-					})
+					result = append(result, InputImageContent{Type: "input_image", ImageURL: imageURL})
 				}
-			} else {
-				*warnings = append(*warnings, types.Warning{
-					Type:    "unsupported-content",
-					Message: fmt.Sprintf("unsupported file content type: %s", mediaType),
+				continue
+			}
+			switch {
+			case file.URL != "":
+				result = append(result, InputFileContent{Type: "input_file", FileURL: file.URL})
+			case file.Reference != "":
+				result = append(result, InputFileContent{Type: "input_file", FileID: file.Reference})
+			case len(file.Data) > 0:
+				result = append(result, InputFileContent{
+					Type:     "input_file",
+					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), base64.StdEncoding.EncodeToString(file.Data)),
+					Filename: file.Filename,
 				})
+			case file.Text != "":
+				result = append(result, InputTextContent{Type: "input_text", Text: file.Text})
 			}
 		}
 	}
@@ -165,6 +169,33 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 	}
 
 	return ""
+}
+
+func normalizeFileContentData(file types.FileContent) types.FileContent {
+	if file.FileData.IsZero() {
+		return file
+	}
+	switch file.FileData.Type {
+	case types.FileDataTypeData:
+		file.Data = file.FileData.Data
+	case types.FileDataTypeURL:
+		file.URL = file.FileData.URL
+	case types.FileDataTypeReference:
+		file.Reference = file.FileData.Reference
+	case types.FileDataTypeText:
+		file.Text = file.FileData.Text
+	}
+	if file.FileData.MediaType != "" && file.MediaType == "" {
+		file.MediaType = file.FileData.MediaType
+	}
+	return file
+}
+
+func mediaTypeOrDefault(mediaType string) string {
+	if mediaType == "" {
+		return "application/octet-stream"
+	}
+	return mediaType
 }
 
 // convertAssistantContent converts assistant message content
@@ -231,6 +262,10 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning) 
 
 // convertToolResultOutput converts tool result output to appropriate format
 func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]types.Warning) interface{} {
+	if toolResult.Output != nil {
+		return convertStructuredToolResultOutput(*toolResult.Output, warnings)
+	}
+
 	// If there's an error, return the error message
 	if toolResult.Error != "" {
 		return toolResult.Error
@@ -252,4 +287,126 @@ func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]typ
 		jsonBytes, _ := json.Marshal(v)
 		return string(jsonBytes)
 	}
+}
+
+func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning) interface{} {
+	switch output.Type {
+	case types.ToolResultOutputText, types.ToolResultOutputError:
+		if output.Value == nil {
+			return ""
+		}
+		if value, ok := output.Value.(string); ok {
+			return value
+		}
+		return fmt.Sprintf("%v", output.Value)
+	case types.ToolResultOutputExecutionDenied:
+		if output.Reason != "" {
+			return output.Reason
+		}
+		return "Tool call execution denied."
+	case types.ToolResultOutputJSON:
+		jsonBytes, _ := json.Marshal(output.Value)
+		return string(jsonBytes)
+	case types.ToolResultOutputContent:
+		parts := make([]interface{}, 0, len(output.Content))
+		for _, block := range output.Content {
+			switch item := block.(type) {
+			case types.TextContentBlock:
+				parts = append(parts, InputTextContent{Type: "input_text", Text: item.Text})
+			case types.ImageContentBlock:
+				mediaType := item.MediaType
+				if mediaType == "" {
+					mediaType = "image/jpeg"
+				}
+				parts = append(parts, InputImageContent{
+					Type:     "input_image",
+					ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(item.Data)),
+				})
+			case types.FileContentBlock:
+				if converted, ok := convertToolFileContentBlock(item, warnings); ok {
+					parts = append(parts, converted)
+				}
+			default:
+				*warnings = append(*warnings, types.Warning{
+					Type:    "other",
+					Message: fmt.Sprintf("unsupported tool content part type: %s", block.ToolResultContentType()),
+				})
+			}
+		}
+		return parts
+	default:
+		if output.Value == nil {
+			return ""
+		}
+		jsonBytes, _ := json.Marshal(output.Value)
+		return string(jsonBytes)
+	}
+}
+
+func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types.Warning) (interface{}, bool) {
+	file := normalizeFileContentBlockData(block)
+	mediaType := mediaTypeOrDefault(file.MediaType)
+	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+		switch {
+		case file.URL != "":
+			return InputImageContent{Type: "input_image", ImageURL: file.URL}, true
+		case file.Reference != "":
+			return InputImageContent{Type: "input_image", ImageURL: file.Reference}, true
+		case len(file.Data) > 0:
+			return InputImageContent{
+				Type:     "input_image",
+				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+			}, true
+		case file.Text != "":
+			return InputImageContent{
+				Type:     "input_image",
+				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text))),
+			}, true
+		default:
+			*warnings = append(*warnings, types.Warning{Type: "other", Message: "unsupported tool content part type: file"})
+			return nil, false
+		}
+	}
+
+	switch {
+	case file.URL != "":
+		return InputFileContent{Type: "input_file", FileURL: file.URL}, true
+	case file.Reference != "":
+		return InputFileContent{Type: "input_file", FileID: file.Reference}, true
+	case len(file.Data) > 0:
+		filename := file.Filename
+		if filename == "" {
+			filename = "data"
+		}
+		return InputFileContent{
+			Type:     "input_file",
+			Filename: filename,
+			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+		}, true
+	case file.Text != "":
+		return InputTextContent{Type: "input_text", Text: file.Text}, true
+	default:
+		*warnings = append(*warnings, types.Warning{Type: "other", Message: "unsupported tool content part type: file"})
+		return nil, false
+	}
+}
+
+func normalizeFileContentBlockData(block types.FileContentBlock) types.FileContentBlock {
+	if block.FileData.IsZero() {
+		return block
+	}
+	switch block.FileData.Type {
+	case types.FileDataTypeData:
+		block.Data = block.FileData.Data
+	case types.FileDataTypeURL:
+		block.URL = block.FileData.URL
+	case types.FileDataTypeReference:
+		block.Reference = block.FileData.Reference
+	case types.FileDataTypeText:
+		block.Text = block.FileData.Text
+	}
+	if block.FileData.MediaType != "" && block.MediaType == "" {
+		block.MediaType = block.FileData.MediaType
+	}
+	return block
 }

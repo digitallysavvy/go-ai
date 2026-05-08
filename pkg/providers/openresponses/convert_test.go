@@ -126,3 +126,88 @@ func TestConvertAssistantContent_ReasoningInputItemSerializesCorrectly(t *testin
 		t.Errorf(`encrypted_content = %v, want "enc-abc"`, m["encrypted_content"])
 	}
 }
+
+func TestConvertToOpenResponsesInput_NonImageFileURLUsesInputFile(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{
+					FileData: types.FileData{
+						Type:      types.FileDataTypeURL,
+						URL:       "https://example.com/report.pdf",
+						MediaType: "application/pdf",
+					},
+				},
+			},
+		},
+	}
+
+	input, _, _ := ConvertToOpenResponsesInput(msgs, "")
+	items := input.([]interface{})
+	msg := items[0].(MessageItem)
+	parts := msg.Content.([]interface{})
+	file := parts[0].(InputFileContent)
+	if file.Type != "input_file" || file.FileURL != "https://example.com/report.pdf" {
+		t.Fatalf("file part = %#v", file)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ToolResultContentFileParts(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call_123",
+					ToolName:   "read_files",
+					Output: &types.ToolResultOutput{
+						Type: types.ToolResultOutputContent,
+						Content: []types.ToolResultContentBlock{
+							types.TextContentBlock{Text: "attached files"},
+							types.FileContentBlock{
+								FileData: types.FileData{
+									Type:      types.FileDataTypeURL,
+									URL:       "https://example.com/report.pdf",
+									MediaType: "application/pdf",
+								},
+							},
+							types.FileContentBlock{
+								FileData: types.FileData{
+									Type:      types.FileDataTypeData,
+									Data:      []byte("a,b\n1,2\n"),
+									MediaType: "text/csv",
+								},
+								Filename: "data.csv",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	input, _, warnings := ConvertToOpenResponsesInput(msgs, "")
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+
+	items := input.([]interface{})
+	output := items[0].(FunctionCallOutputItem)
+	if output.CallID != "call_123" {
+		t.Fatalf("CallID = %q, want call_123", output.CallID)
+	}
+
+	parts := output.Output.([]interface{})
+	if text := parts[0].(InputTextContent); text.Type != "input_text" || text.Text != "attached files" {
+		t.Fatalf("text part = %#v", text)
+	}
+	urlFile := parts[1].(InputFileContent)
+	if urlFile.Type != "input_file" || urlFile.FileURL != "https://example.com/report.pdf" {
+		t.Fatalf("url file part = %#v", urlFile)
+	}
+	dataFile := parts[2].(InputFileContent)
+	if dataFile.Type != "input_file" || dataFile.Filename != "data.csv" || dataFile.FileData == "" {
+		t.Fatalf("data file part = %#v", dataFile)
+	}
+}
