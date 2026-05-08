@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Global registry instance
@@ -15,6 +16,7 @@ type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
 	aliases   map[string]string // model alias -> provider:model
+	tools     map[string]ToolEntry
 }
 
 // NewRegistry creates a new registry
@@ -22,7 +24,22 @@ func NewRegistry() *Registry {
 	return &Registry{
 		providers: make(map[string]provider.Provider),
 		aliases:   make(map[string]string),
+		tools:     make(map[string]ToolEntry),
 	}
+}
+
+const (
+	ToolKindLocal           = "local"
+	ToolKindProviderDefined = "provider-defined"
+)
+
+// ToolEntry describes a registry tool and preserves provider-defined metadata.
+type ToolEntry struct {
+	Name             string
+	Kind             string
+	ProviderName     string
+	ProviderMetadata map[string]interface{}
+	Factory          func() types.Tool
 }
 
 // RegisterProvider registers a provider with a name
@@ -131,6 +148,62 @@ func (r *Registry) ListAliases() map[string]string {
 	return aliases
 }
 
+// RegisterTool registers a tool factory and its metadata.
+func (r *Registry) RegisterTool(entry ToolEntry) error {
+	if entry.Name == "" {
+		return fmt.Errorf("tool entry name is required")
+	}
+	if entry.Kind == "" {
+		entry.Kind = ToolKindLocal
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[entry.Name] = cloneToolEntry(entry)
+	return nil
+}
+
+// LookupTool returns a registered tool entry by name.
+func (r *Registry) LookupTool(name string) (ToolEntry, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.tools[name]
+	if !ok {
+		return ToolEntry{}, fmt.Errorf("tool not found: %s", name)
+	}
+	return cloneToolEntry(entry), nil
+}
+
+// ListTools returns all registered tool entries keyed by name.
+func (r *Registry) ListTools() map[string]ToolEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tools := make(map[string]ToolEntry, len(r.tools))
+	for name, entry := range r.tools {
+		tools[name] = cloneToolEntry(entry)
+	}
+	return tools
+}
+
+func cloneToolEntry(entry ToolEntry) ToolEntry {
+	entry.ProviderMetadata = cloneMap(entry.ProviderMetadata)
+	return entry
+}
+
+func cloneMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		if nested, ok := v.(map[string]interface{}); ok {
+			out[k] = cloneMap(nested)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // parseModelString parses a model string into provider and model ID
 // Formats supported:
 //   - "provider:model" -> ("provider", "model")
@@ -172,6 +245,21 @@ func ResolveLanguageModel(model string) (provider.LanguageModel, error) {
 // ResolveEmbeddingModel resolves an embedding model string using the global registry
 func ResolveEmbeddingModel(model string) (provider.EmbeddingModel, error) {
 	return globalRegistry.ResolveEmbeddingModel(model)
+}
+
+// RegisterTool registers a tool in the global registry.
+func RegisterTool(entry ToolEntry) error {
+	return globalRegistry.RegisterTool(entry)
+}
+
+// LookupTool returns a tool entry from the global registry.
+func LookupTool(name string) (ToolEntry, error) {
+	return globalRegistry.LookupTool(name)
+}
+
+// ListTools returns all tool entries from the global registry.
+func ListTools() map[string]ToolEntry {
+	return globalRegistry.ListTools()
 }
 
 // GetGlobalRegistry returns the global registry instance
