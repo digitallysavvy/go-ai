@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -233,8 +233,19 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 	}
 
 	reqBody := map[string]interface{}{
-		"messages":      messages,
+		"messages":          messages,
 		"anthropic_version": "bedrock-2023-05-31",
+	}
+	for k, v := range m.bedrockProviderOptions(opts) {
+		if k == "serviceTier" || k == "reasoningConfig" || k == "additionalModelRequestFields" {
+			continue
+		}
+		reqBody[k] = v
+	}
+	if m.options != nil {
+		for k, v := range m.options.AdditionalModelRequestFields {
+			reqBody[k] = v
+		}
 	}
 
 	if opts.MaxTokens != nil {
@@ -251,8 +262,8 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 		reqBody["top_p"] = *opts.TopP
 	}
 
-	// Map top-level Reasoning to Bedrock Anthropic-style reasoningConfig.
-	// Call-level Reasoning takes precedence over model-level Thinking option.
+	// Map top-level Reasoning to Bedrock Anthropic-style reasoningConfig and
+	// merge partial caller/model config over the derived defaults.
 	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
 		if rc := mapReasoningToBedrockAnthropicConfig(*opts.Reasoning); rc != nil {
 			reqBody["reasoningConfig"] = rc
@@ -266,6 +277,25 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
 		}
 		reqBody["thinking"] = thinkingConfig
+	}
+	if rc := m.mergedReasoningConfig(opts, reqBody["reasoningConfig"]); rc != nil {
+		reqBody["reasoningConfig"] = rc
+	}
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
+		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
+		outputConfig := map[string]interface{}{}
+		if existing, ok := reqBody["output_config"].(map[string]interface{}); ok {
+			outputConfig = cloneMap(existing)
+		}
+		outputConfig["format"] = map[string]interface{}{
+			"type":   "json_schema",
+			"schema": opts.ResponseFormat.Schema,
+		}
+		reqBody["output_config"] = outputConfig
+	}
+
+	if serviceTier := m.serviceTier(opts); serviceTier != "" {
+		reqBody["serviceTier"] = map[string]interface{}{"type": serviceTier}
 	}
 
 	// Add tools and tool choice (#12893 strict mode, #12854 tool choice enforcement).
@@ -285,6 +315,10 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 
 		bedrockTools := make([]interface{}, 0, len(toolList))
 		for _, t := range toolList {
+			if providerTool := bedrockAnthropicProviderTool(t); providerTool != nil {
+				bedrockTools = append(bedrockTools, providerTool)
+				continue
+			}
 			toolSpec := map[string]interface{}{
 				"name": t.Name,
 			}
@@ -394,8 +428,118 @@ func (m *LanguageModel) buildNovaRequest(opts *provider.GenerateOptions) (map[st
 			reqBody["reasoning_effort"] = effort
 		}
 	}
+	if serviceTier := m.serviceTier(opts); serviceTier != "" {
+		reqBody["serviceTier"] = map[string]interface{}{"type": serviceTier}
+	}
 
 	return reqBody, nil
+}
+
+func (m *LanguageModel) bedrockProviderOptions(opts *provider.GenerateOptions) map[string]interface{} {
+	if opts == nil || opts.ProviderOptions == nil {
+		return nil
+	}
+	if raw, ok := opts.ProviderOptions["amazonBedrock"].(map[string]interface{}); ok {
+		return raw
+	}
+	if raw, ok := opts.ProviderOptions["bedrock"].(map[string]interface{}); ok {
+		return raw
+	}
+	return nil
+}
+
+func (m *LanguageModel) serviceTier(opts *provider.GenerateOptions) string {
+	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
+		if v, ok := provOpts["serviceTier"].(string); ok && v != "" {
+			return v
+		}
+	}
+	if m.options != nil {
+		return m.options.ServiceTier
+	}
+	return ""
+}
+
+func (m *LanguageModel) mergedReasoningConfig(opts *provider.GenerateOptions, derived interface{}) map[string]interface{} {
+	var out map[string]interface{}
+	if existing, ok := derived.(map[string]interface{}); ok {
+		out = cloneMap(existing)
+	}
+	if out == nil && m.optionsReasoningConfig() != nil {
+		out = map[string]interface{}{}
+	}
+	overlayReasoningConfig(out, m.optionsReasoningConfig())
+	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
+		if rc, ok := provOpts["reasoningConfig"].(map[string]interface{}); ok {
+			if out == nil {
+				out = map[string]interface{}{}
+			}
+			for k, v := range rc {
+				out[k] = v
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (m *LanguageModel) optionsReasoningConfig() *ReasoningConfig {
+	if m.options == nil {
+		return nil
+	}
+	return m.options.ReasoningConfig
+}
+
+func overlayReasoningConfig(out map[string]interface{}, rc *ReasoningConfig) {
+	if rc == nil {
+		return
+	}
+	if out == nil {
+		return
+	}
+	if rc.Type != "" {
+		out["type"] = rc.Type
+	}
+	if rc.BudgetTokens != nil {
+		out["budgetTokens"] = *rc.BudgetTokens
+	}
+	if rc.MaxReasoningEffort != "" {
+		out["maxReasoningEffort"] = rc.MaxReasoningEffort
+	}
+	if rc.Display != "" {
+		out["display"] = rc.Display
+	}
+}
+
+func cloneMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
+	id := t.ProviderID
+	if id == "" && t.Type == types.ToolTypeProviderDefined {
+		id = t.Name
+	}
+	switch id {
+	case "anthropic.tool_search_bm25_20251119", "anthropic_bm25_tool_search":
+		return map[string]interface{}{
+			"name": "tool_search_tool_bm25",
+			"type": "tool_search_tool_bm25_20251119",
+		}
+	case "anthropic.tool_search_regex_20251119", "anthropic_regex_tool_search":
+		return map[string]interface{}{
+			"name": "tool_search_tool_regex",
+			"type": "tool_search_tool_regex_20251119",
+		}
+	default:
+		return nil
+	}
 }
 
 // bedrockUsage represents Bedrock usage information with detailed token tracking
@@ -403,7 +547,7 @@ type bedrockUsage struct {
 	InputTokens           int `json:"input_tokens"`
 	OutputTokens          int `json:"output_tokens"`
 	TotalTokens           int `json:"total_tokens,omitempty"`
-	CacheReadInputTokens  int `json:"cache_read_input_tokens,omitempty"`  // v6.0
+	CacheReadInputTokens  int `json:"cache_read_input_tokens,omitempty"`     // v6.0
 	CacheWriteInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
 }
 

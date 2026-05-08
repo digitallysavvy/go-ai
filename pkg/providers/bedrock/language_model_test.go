@@ -1,6 +1,9 @@
 package bedrock
 
 import (
+	"net/http"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -14,6 +17,46 @@ func newTestBedrockModel() *LanguageModel {
 		Region:             "us-east-1",
 	})
 	return NewLanguageModel(p, "anthropic.claude-3-haiku-20240307-v1:0")
+}
+
+func TestAWSSignerExplicitKeysDoNotUseEnvSessionToken(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "env-session-token")
+
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/test/invoke", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	signer := NewAWSSigner("explicit-key", "explicit-secret", "", "us-east-1")
+	if err := signer.SignRequest(req, []byte("{}")); err != nil {
+		t.Fatalf("SignRequest error = %v", err)
+	}
+	if got := req.Header.Get("X-Amz-Security-Token"); got != "" {
+		t.Fatalf("X-Amz-Security-Token = %q, want empty despite AWS_SESSION_TOKEN=%q", got, os.Getenv("AWS_SESSION_TOKEN"))
+	}
+}
+
+func TestBuildClaudeRequest_DropsUnsignedReasoningBlocks(t *testing.T) {
+	model := newTestBedrockModel()
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "visible"},
+					types.ReasoningContent{Text: "foreign reasoning without signature"},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest error = %v", err)
+	}
+	messages := body["messages"].([]map[string]interface{})
+	if messages[0]["content"] != "visible" {
+		t.Fatalf("content = %#v, want only visible text", messages[0]["content"])
+	}
 }
 
 // getToolSpec extracts the toolSpec map from the first entry in the tools array.
@@ -84,8 +127,8 @@ func TestBuildClaudeRequest_ToolsForwardedWithStrictMode(t *testing.T) {
 func TestBuildClaudeRequest_ToolChoiceAuto(t *testing.T) {
 	model := newTestBedrockModel()
 	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools:  []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
+		Prompt:     types.Prompt{Text: "hello"},
+		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
 	}
 
@@ -108,8 +151,8 @@ func TestBuildClaudeRequest_ToolChoiceAuto(t *testing.T) {
 func TestBuildClaudeRequest_ToolChoiceRequired(t *testing.T) {
 	model := newTestBedrockModel()
 	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools:  []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
+		Prompt:     types.Prompt{Text: "hello"},
+		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
 	}
 
@@ -175,8 +218,8 @@ func TestBuildClaudeRequest_ToolChoiceTool_FiltersAndMapsCorrectly(t *testing.T)
 func TestBuildClaudeRequest_ToolChoiceNone_NoToolsInBody(t *testing.T) {
 	model := newTestBedrockModel()
 	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools:  []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
+		Prompt:     types.Prompt{Text: "hello"},
+		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceNone},
 	}
 
@@ -213,5 +256,118 @@ func TestBuildClaudeRequest_StrictFalse_OmittedFromSpec(t *testing.T) {
 	spec := getToolSpec(t, body)
 	if _, ok := spec["strict"]; ok {
 		t.Errorf("strict must be absent when Strict=false, got %v", spec["strict"])
+	}
+}
+
+func TestBuildClaudeRequest_AnthropicToolSearchProviderTools(t *testing.T) {
+	model := newTestBedrockModel()
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		Tools: []types.Tool{
+			{
+				Type:       types.ToolTypeProviderDefined,
+				ProviderID: "anthropic.tool_search_bm25_20251119",
+				Name:       "tool_search",
+			},
+			{
+				Type:       types.ToolTypeProviderDefined,
+				ProviderID: "anthropic.tool_search_regex_20251119",
+				Name:       "tool_search",
+			},
+		},
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
+	}
+
+	body, err := model.buildClaudeRequest(opts)
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 2 {
+		t.Fatalf("tools = %#v, want 2 provider tools", body["tools"])
+	}
+	first := tools[0].(map[string]interface{})
+	second := tools[1].(map[string]interface{})
+	if first["type"] != "tool_search_tool_bm25_20251119" || first["name"] != "tool_search_tool_bm25" {
+		t.Errorf("bm25 tool = %#v", first)
+	}
+	if second["type"] != "tool_search_tool_regex_20251119" || second["name"] != "tool_search_tool_regex" {
+		t.Errorf("regex tool = %#v", second)
+	}
+}
+
+func TestBuildClaudeRequest_ServiceTier(t *testing.T) {
+	model := newTestBedrockModel()
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"serviceTier": "priority"},
+		},
+	}
+
+	body, err := model.buildClaudeRequest(opts)
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	serviceTier, ok := body["serviceTier"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("serviceTier = %#v, want map", body["serviceTier"])
+	}
+	if serviceTier["type"] != "priority" {
+		t.Errorf("serviceTier.type = %v, want priority", serviceTier["type"])
+	}
+}
+
+func TestBuildClaudeRequest_PartialReasoningConfigMerge(t *testing.T) {
+	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
+	model := NewLanguageModel(p, "anthropic.claude-3-5-sonnet-20241022-v2:0", &ModelOptions{
+		ReasoningConfig: &ReasoningConfig{Display: "summarized"},
+	})
+	level := types.ReasoningHigh
+
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &level,
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	rc, ok := body["reasoningConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reasoningConfig = %#v, want map", body["reasoningConfig"])
+	}
+	if rc["type"] != "enabled" || rc["budgetTokens"] != 16000 || rc["display"] != "summarized" {
+		t.Errorf("reasoningConfig = %#v, want derived type/budget plus display", rc)
+	}
+}
+
+func TestBuildClaudeRequest_OutputObjectSupport(t *testing.T) {
+	model := newTestBedrockModel()
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"answer": map[string]interface{}{"type": "string"}},
+	}
+
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt:         types.Prompt{Text: "hello"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: schema},
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	outputConfig, ok := body["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output_config = %#v, want map", body["output_config"])
+	}
+	format, ok := outputConfig["format"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output_config.format = %#v, want map", outputConfig["format"])
+	}
+	if format["type"] != "json_schema" || format["schema"] == nil {
+		t.Errorf("format = %#v, want json_schema with schema", format)
 	}
 }

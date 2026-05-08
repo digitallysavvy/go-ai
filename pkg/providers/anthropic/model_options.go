@@ -29,8 +29,17 @@ const (
 	EffortLow    Effort = "low"
 	EffortMedium Effort = "medium"
 	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
 	EffortMax    Effort = "max"
 )
+
+// TaskBudget configures Anthropic's advisory task-level token budget.
+// It is serialized as output_config.task_budget.
+type TaskBudget struct {
+	Type      string `json:"type"`
+	Total     int    `json:"total"`
+	Remaining *int   `json:"remaining,omitempty"`
+}
 
 // CacheControlOption configures explicit ephemeral prompt caching for a request.
 // Use this to mark the request for Anthropic's ephemeral caching (distinct from
@@ -159,7 +168,7 @@ type ModelOptions struct {
 	CacheControl *CacheControlOption `json:"cache_control_option,omitempty"`
 
 	// Effort controls the model's reasoning effort level.
-	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortMax.
+	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax.
 	// Requires the "effort-2025-11-24" beta header (injected automatically).
 	//
 	// Example:
@@ -168,10 +177,18 @@ type ModelOptions struct {
 	//   }
 	Effort Effort `json:"effort,omitempty"`
 
+	// TaskBudget informs the model of the total token budget available for the
+	// current task. This is advisory only; it does not enforce a hard limit.
+	// Requires the "task-budgets-2026-03-13" beta header (injected automatically).
+	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+
+	// InferenceGeo controls where Anthropic inference may run for this request.
+	// Supported values match the TypeScript SDK: "us" or "global".
+	InferenceGeo string `json:"inference_geo,omitempty"`
+
 	// ToolStreaming controls whether fine-grained tool streaming is enabled.
-	// When nil or true (default), the "fine-grained-tool-streaming-2025-05-14"
-	// beta header is added on streaming requests, enabling incremental tool call events.
-	// Set to a false pointer to disable.
+	// Deprecated: the fine-grained-tool-streaming beta header is obsolete in the
+	// TypeScript SDK and is no longer injected by the Go provider.
 	//
 	// Example (disable):
 	//   disabled := false

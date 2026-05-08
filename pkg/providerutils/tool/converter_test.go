@@ -51,6 +51,45 @@ func TestToJSONSchema_StrictModeOmittedWhenFalse(t *testing.T) {
 	}
 }
 
+func TestToAnthropicFormatSanitizesUnsupportedValidationKeywords(t *testing.T) {
+	tools := []types.Tool{{
+		Name:        "search",
+		Description: "search",
+		Parameters: map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]interface{}{
+				"q": map[string]interface{}{
+					"type":      "string",
+					"minLength": 1,
+					"pattern":   "^[a-z]+$",
+				},
+			},
+			"required": []interface{}{"q"},
+		},
+	}}
+
+	result := ToAnthropicFormat(tools)
+	schema := result[0]["input_schema"].(map[string]interface{})
+	if schema["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	props := schema["properties"].(map[string]interface{})
+	q := props["q"].(map[string]interface{})
+	if _, ok := q["minLength"]; ok {
+		t.Fatal("nested minLength should be removed")
+	}
+	if _, ok := q["pattern"]; ok {
+		t.Fatal("nested pattern should be removed")
+	}
+	if q["description"] != "min length: 1; pattern: ^[a-z]+$." {
+		t.Fatalf("description = %q, want constraints moved into description", q["description"])
+	}
+	if q["type"] != "string" {
+		t.Fatalf("type should be preserved, got %v", q["type"])
+	}
+}
+
 // TestToOpenAIFormat_StrictModeForwarded verifies the full ToOpenAIFormat path
 // (used by OpenAI, Groq, and Bedrock providers) also forwards strict mode.
 func TestToOpenAIFormat_StrictModeForwarded(t *testing.T) {

@@ -27,6 +27,14 @@ type ThinkingConfig struct {
 	BudgetTokens *int `json:"budget_tokens,omitempty"`
 }
 
+// ReasoningConfig mirrors the TypeScript amazonBedrock.reasoningConfig option.
+type ReasoningConfig struct {
+	Type               string `json:"type,omitempty"`
+	BudgetTokens       *int   `json:"budgetTokens,omitempty"`
+	MaxReasoningEffort string `json:"maxReasoningEffort,omitempty"`
+	Display            string `json:"display,omitempty"`
+}
+
 // ModelOptions contains optional configuration for AWS Bedrock Claude models.
 // These options can be passed when creating a model instance to configure
 // provider-specific features for Claude models running on Bedrock.
@@ -52,4 +60,16 @@ type ModelOptions struct {
 	//       },
 	//   }
 	Thinking *ThinkingConfig `json:"thinking,omitempty"`
+
+	// ReasoningConfig configures Bedrock model-specific reasoning fields.
+	// Partial configs are merged with values derived from top-level Reasoning.
+	ReasoningConfig *ReasoningConfig `json:"reasoningConfig,omitempty"`
+
+	// AdditionalModelRequestFields are provider-specific fields forwarded into
+	// the request body after SDK-derived fields are applied.
+	AdditionalModelRequestFields map[string]interface{} `json:"additionalModelRequestFields,omitempty"`
+
+	// ServiceTier selects Bedrock service tier for inference: reserved,
+	// priority, default, or flex.
+	ServiceTier string `json:"serviceTier,omitempty"`
 }

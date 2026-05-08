@@ -81,7 +81,8 @@ func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
 // claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
 func (m *LanguageModel) SupportsStructuredOutput() bool {
 	id := m.modelID
-	return strings.Contains(id, "claude-sonnet-4-6") ||
+	return strings.Contains(id, "claude-opus-4-7") ||
+		strings.Contains(id, "claude-sonnet-4-6") ||
 		strings.Contains(id, "claude-opus-4-6") ||
 		strings.Contains(id, "claude-sonnet-4-5") ||
 		strings.Contains(id, "claude-opus-4-5") ||
@@ -214,26 +215,33 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// which affects whether temperature/top_k/top_p may be sent (Anthropic rejects
 	// those parameters when thinking is active).
 	isThinking := false
+	reasoningEffort := ""
 	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
 		// Call-level Reasoning overrides model Thinking option
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
+		if *opts.Reasoning == types.ReasoningNone {
 			body["thinking"] = map[string]interface{}{"type": "disabled"}
-		case types.ReasoningMinimal:
-			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMinimal, m.modelID)}
+		} else if anthropicSupportsAdaptiveThinking(m.modelID) {
+			body["thinking"] = map[string]interface{}{"type": "adaptive"}
+			reasoningEffort = anthropicReasoningEffort(*opts.Reasoning, m.modelID)
 			isThinking = true
-		case types.ReasoningLow:
-			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningLow, m.modelID)}
-			isThinking = true
-		case types.ReasoningMedium:
-			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMedium, m.modelID)}
-			isThinking = true
-		case types.ReasoningHigh:
-			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningHigh, m.modelID)}
-			isThinking = true
-		case types.ReasoningXHigh:
-			body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningXHigh, m.modelID)}
-			isThinking = true
+		} else {
+			switch *opts.Reasoning {
+			case types.ReasoningMinimal:
+				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMinimal, m.modelID)}
+				isThinking = true
+			case types.ReasoningLow:
+				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningLow, m.modelID)}
+				isThinking = true
+			case types.ReasoningMedium:
+				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMedium, m.modelID)}
+				isThinking = true
+			case types.ReasoningHigh:
+				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningHigh, m.modelID)}
+				isThinking = true
+			case types.ReasoningXHigh:
+				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningXHigh, m.modelID)}
+				isThinking = true
+			}
 		}
 	} else if m.options != nil && m.options.Thinking != nil {
 		// Fall back to model-level Thinking option
@@ -307,6 +315,18 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	outputConfig := map[string]interface{}{}
 	if m.options != nil && m.options.Effort != "" {
 		outputConfig["effort"] = string(m.options.Effort)
+	} else if reasoningEffort != "" {
+		outputConfig["effort"] = reasoningEffort
+	}
+	if m.options != nil && m.options.TaskBudget != nil {
+		taskBudget := map[string]interface{}{
+			"type":  m.options.TaskBudget.Type,
+			"total": m.options.TaskBudget.Total,
+		}
+		if m.options.TaskBudget.Remaining != nil {
+			taskBudget["remaining"] = *m.options.TaskBudget.Remaining
+		}
+		outputConfig["task_budget"] = taskBudget
 	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
 		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
@@ -324,7 +344,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			// outputFormat mode: use output_config.format (native structured output).
 			outputConfig["format"] = map[string]interface{}{
 				"type":   "json_schema",
-				"schema": opts.ResponseFormat.Schema,
+				"schema": tool.SanitizeAnthropicSchema(opts.ResponseFormat.Schema),
 			}
 		} else {
 			// jsonTool mode: inject a synthetic 'json' tool that forces the model
@@ -333,7 +353,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			jsonTool := map[string]interface{}{
 				"name":         "json",
 				"description":  "Respond with a JSON object.",
-				"input_schema": opts.ResponseFormat.Schema,
+				"input_schema": tool.SanitizeAnthropicSchema(opts.ResponseFormat.Schema),
 			}
 			existing, _ := body["tools"].([]map[string]interface{})
 			body["tools"] = append(existing, jsonTool)
@@ -348,6 +368,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if len(outputConfig) > 0 {
 		body["output_config"] = outputConfig
+	}
+
+	if m.options != nil && m.options.InferenceGeo != "" {
+		body["inference_geo"] = m.options.InferenceGeo
 	}
 
 	// cache_control: explicit CacheControl takes precedence over AutomaticCaching.
@@ -702,23 +726,17 @@ const (
 func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, stream bool) string {
 	base := m.getBetaHeaders()
 
-	// Fine-grained tool streaming: always on by default during streaming.
-	// Disabled only when ToolStreaming is explicitly set to false.
-	if stream {
-		toolStreamingEnabled := true
-		if m.options != nil && m.options.ToolStreaming != nil {
-			toolStreamingEnabled = *m.options.ToolStreaming
-		}
-		if toolStreamingEnabled {
+	if opts != nil {
+		if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault &&
+			*opts.Reasoning != types.ReasoningNone && anthropicSupportsAdaptiveThinking(m.modelID) &&
+			!strings.Contains(base, BetaHeaderEffort) {
 			if base != "" {
-				base += "," + BetaHeaderFineGrainedToolStreaming
+				base += "," + BetaHeaderEffort
 			} else {
-				base = BetaHeaderFineGrainedToolStreaming
+				base = BetaHeaderEffort
 			}
 		}
-	}
 
-	if opts != nil {
 		// Collect which beta headers are needed based on the tool list.
 		needed := map[string]bool{}
 
@@ -824,6 +842,10 @@ func (m *LanguageModel) getBetaHeaders() string {
 	// Add effort beta header when effort level is set
 	if m.options.Effort != "" {
 		headers = append(headers, BetaHeaderEffort)
+	}
+
+	if m.options.TaskBudget != nil {
+		headers = append(headers, BetaHeaderTaskBudgets)
 	}
 
 	// Add MCP client beta header when MCP servers are configured
@@ -938,6 +960,8 @@ func (m *LanguageModel) handleError(err error) error {
 func anthropicMaxOutputTokens(modelID string) int {
 	lower := strings.ToLower(modelID)
 	switch {
+	case strings.Contains(lower, "claude-opus-4-7"):
+		return 128000
 	case strings.Contains(lower, "claude-sonnet-4-6") || strings.Contains(lower, "claude-opus-4-6"):
 		return 128000
 	case strings.Contains(lower, "claude-sonnet-4-5") || strings.Contains(lower, "claude-opus-4-5") || strings.Contains(lower, "claude-haiku-4-5"):
@@ -952,6 +976,35 @@ func anthropicMaxOutputTokens(modelID string) int {
 		return 4096
 	default:
 		return 4096
+	}
+}
+
+func anthropicSupportsAdaptiveThinking(modelID string) bool {
+	lower := strings.ToLower(modelID)
+	return strings.Contains(lower, "claude-opus-4-7") ||
+		strings.Contains(lower, "claude-sonnet-4-6") ||
+		strings.Contains(lower, "claude-opus-4-6")
+}
+
+func anthropicSupportsXHighEffort(modelID string) bool {
+	return strings.Contains(strings.ToLower(modelID), "claude-opus-4-7")
+}
+
+func anthropicReasoningEffort(level types.ReasoningLevel, modelID string) string {
+	switch level {
+	case types.ReasoningMinimal, types.ReasoningLow:
+		return "low"
+	case types.ReasoningMedium:
+		return "medium"
+	case types.ReasoningHigh:
+		return "high"
+	case types.ReasoningXHigh:
+		if anthropicSupportsXHighEffort(modelID) {
+			return "xhigh"
+		}
+		return "max"
+	default:
+		return ""
 	}
 }
 

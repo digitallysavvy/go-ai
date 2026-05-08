@@ -113,6 +113,44 @@ func TestOutputConfigFormat(t *testing.T) {
 	}
 }
 
+func TestOutputConfigFormatSanitizesSchema(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"additionalProperties": true,
+		"properties": map[string]interface{}{
+			"slug": map[string]interface{}{
+				"type":      "string",
+				"minLength": 1,
+				"pattern":   "^[a-z]+$",
+			},
+		},
+	}
+
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "test"},
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json_schema",
+			Schema: schema,
+		},
+	}, false)
+
+	outputConfig := body["output_config"].(map[string]interface{})
+	format := outputConfig["format"].(map[string]interface{})
+	sanitized := format["schema"].(map[string]interface{})
+	if sanitized["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %v, want false", sanitized["additionalProperties"])
+	}
+	slug := sanitized["properties"].(map[string]interface{})["slug"].(map[string]interface{})
+	if _, ok := slug["minLength"]; ok {
+		t.Fatal("minLength should be moved into description")
+	}
+	if slug["description"] != "min length: 1; pattern: ^[a-z]+$." {
+		t.Fatalf("slug description = %q", slug["description"])
+	}
+}
+
 // TestOutputConfigJSONSerialization verifies the request body serializes correctly to JSON.
 func TestOutputConfigJSONSerialization(t *testing.T) {
 	schema := map[string]interface{}{
@@ -294,6 +332,7 @@ func TestClaudeSonnet4_6ModelID(t *testing.T) {
 // TestModelIDConstants verifies all model ID constants are non-empty strings.
 func TestModelIDConstants(t *testing.T) {
 	constants := map[string]string{
+		"ClaudeOpus4_7":            ClaudeOpus4_7,
 		"ClaudeOpus4_6":            ClaudeOpus4_6,
 		"ClaudeSonnet4_6":          ClaudeSonnet4_6,
 		"ClaudeOpus4_5_20251101":   ClaudeOpus4_5_20251101,
@@ -320,6 +359,8 @@ func TestSupportsStructuredOutput(t *testing.T) {
 		modelID string
 		want    bool
 	}{
+		// 4.7 models — true
+		{ClaudeOpus4_7, true},
 		// 4.6 models — true
 		{ClaudeOpus4_6, true},
 		{ClaudeSonnet4_6, true},
@@ -350,6 +391,63 @@ func TestSupportsStructuredOutput(t *testing.T) {
 				t.Errorf("SupportsStructuredOutput() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClaudeOpus47ReasoningBudgetUses128KMaxOutput(t *testing.T) {
+	if got := anthropicMaxOutputTokens(ClaudeOpus4_7); got != 128000 {
+		t.Fatalf("anthropicMaxOutputTokens(%q) = %d, want 128000", ClaudeOpus4_7, got)
+	}
+	if got := anthropicReasoningBudget(types.ReasoningXHigh, ClaudeOpus4_7); got != 115200 {
+		t.Fatalf("anthropicReasoningBudget(xhigh, %q) = %d, want 115200", ClaudeOpus4_7, got)
+	}
+}
+
+func TestTopLevelReasoningXHighUsesAdaptiveEffortForOpus47(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeOpus4_7, nil)
+	reasoning := types.ReasoningXHigh
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "test"},
+		Reasoning: &reasoning,
+	}, false)
+
+	thinking, ok := body["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("thinking = %#v, want adaptive map", body["thinking"])
+	}
+	if thinking["type"] != "adaptive" {
+		t.Fatalf("thinking.type = %v, want adaptive", thinking["type"])
+	}
+	oc, ok := body["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output_config = %#v, want map", body["output_config"])
+	}
+	if oc["effort"] != "xhigh" {
+		t.Fatalf("output_config.effort = %v, want xhigh", oc["effort"])
+	}
+	if headers := model.combineBetaHeaders(&provider.GenerateOptions{Reasoning: &reasoning}, false); !strings.Contains(headers, BetaHeaderEffort) {
+		t.Fatalf("anthropic-beta = %q, want %q", headers, BetaHeaderEffort)
+	}
+}
+
+func TestTopLevelReasoningXHighMapsToMaxForOpus46(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeOpus4_6, nil)
+	reasoning := types.ReasoningXHigh
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "test"},
+		Reasoning: &reasoning,
+	}, false)
+
+	oc, ok := body["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output_config = %#v, want map", body["output_config"])
+	}
+	if oc["effort"] != "max" {
+		t.Fatalf("output_config.effort = %v, want max", oc["effort"])
 	}
 }
 
@@ -447,6 +545,7 @@ func TestEffortBetaHeader(t *testing.T) {
 	}{
 		{"effort high adds header", EffortHigh, true},
 		{"effort low adds header", EffortLow, true},
+		{"effort xhigh adds header", EffortXHigh, true},
 		{"effort max adds header", EffortMax, true},
 		{"no effort no header", "", false},
 	}
@@ -481,6 +580,64 @@ func TestEffortInOutputConfig(t *testing.T) {
 	}
 	if oc["effort"] != "medium" {
 		t.Errorf("output_config.effort = %v, want %q", oc["effort"], "medium")
+	}
+}
+
+// TestXHighEffortInOutputConfig verifies the xhigh effort value is forwarded.
+func TestXHighEffortInOutputConfig(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeOpus4_6, &ModelOptions{Effort: EffortXHigh})
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "test"},
+	}, false)
+
+	oc, ok := body["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatal("output_config not present or wrong type")
+	}
+	if oc["effort"] != "xhigh" {
+		t.Errorf("output_config.effort = %v, want %q", oc["effort"], "xhigh")
+	}
+}
+
+func TestTaskBudgetInOutputConfig(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	remaining := 215000
+	model := NewLanguageModel(prov, ClaudeOpus4_6, &ModelOptions{
+		TaskBudget: &TaskBudget{Type: "tokens", Total: 400000, Remaining: &remaining},
+	})
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "test"},
+	}, false)
+
+	oc, ok := body["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatal("output_config not present or wrong type")
+	}
+	taskBudget, ok := oc["task_budget"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("task_budget missing or wrong type: %#v", oc["task_budget"])
+	}
+	if taskBudget["type"] != "tokens" || taskBudget["total"] != 400000 || taskBudget["remaining"] != 215000 {
+		t.Errorf("task_budget = %#v, want tokens/400000/215000", taskBudget)
+	}
+	if h := model.getBetaHeaders(); !strings.Contains(h, BetaHeaderTaskBudgets) {
+		t.Errorf("task budget beta header missing from %q", h)
+	}
+}
+
+func TestInferenceGeoInRequestBody(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeOpus4_6, &ModelOptions{InferenceGeo: "us"})
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "test"},
+	}, false)
+
+	if body["inference_geo"] != "us" {
+		t.Errorf("inference_geo = %v, want us", body["inference_geo"])
 	}
 }
 
@@ -555,26 +712,24 @@ func TestCacheControlTakesPrecedenceOverAutomatic(t *testing.T) {
 
 // --- Fine-grained tool streaming header tests ---
 
-// TestFineGrainedToolStreamingHeader verifies the header is added on streaming but not generate.
+// TestFineGrainedToolStreamingHeader verifies the obsolete beta header is no longer injected.
 func TestFineGrainedToolStreamingHeader(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "test"}}
 
-	// Streaming: header should be present by default
 	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
 	streamHeader := model.combineBetaHeaders(opts, true)
-	if !strings.Contains(streamHeader, BetaHeaderFineGrainedToolStreaming) {
-		t.Errorf("streaming should include fine-grained header, got: %q", streamHeader)
+	if strings.Contains(streamHeader, BetaHeaderFineGrainedToolStreaming) {
+		t.Errorf("streaming should not include obsolete fine-grained header, got: %q", streamHeader)
 	}
 
-	// Non-streaming: header should NOT be present
 	generateHeader := model.combineBetaHeaders(opts, false)
 	if strings.Contains(generateHeader, BetaHeaderFineGrainedToolStreaming) {
-		t.Errorf("non-streaming should NOT include fine-grained header, got: %q", generateHeader)
+		t.Errorf("non-streaming should not include obsolete fine-grained header, got: %q", generateHeader)
 	}
 }
 
-// TestFineGrainedToolStreamingDisabled verifies the header is suppressed when ToolStreaming=false.
+// TestFineGrainedToolStreamingDisabled verifies ToolStreaming no longer controls a beta header.
 func TestFineGrainedToolStreamingDisabled(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	disabled := false
