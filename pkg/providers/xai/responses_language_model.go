@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -139,6 +140,10 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
+	if err := validateXAIResponsesFileParts(opts.Prompt); err != nil {
+		return nil, err
+	}
+
 	input := responses.ConvertPromptToInput(opts.Prompt, "system")
 
 	body := map[string]interface{}{
@@ -176,7 +181,6 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 		body["reasoning"] = reasoning
 	}
-
 	if opts.MaxTokens != nil {
 		body["max_output_tokens"] = *opts.MaxTokens
 	}
@@ -261,6 +265,45 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	return body, nil
 }
 
+func validateXAIResponsesFileParts(prompt types.Prompt) error {
+	for _, msg := range prompt.Messages {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, part := range msg.Content {
+			file, ok := part.(types.FileContent)
+			if !ok {
+				continue
+			}
+			mediaType := xaiFileMediaType(file)
+			fileData := file.FileData
+			switch {
+			case fileData.Type == types.FileDataTypeText || file.Text != "":
+				return fmt.Errorf("xAI Responses API does not support text file parts")
+			case fileData.Type == types.FileDataTypeData && !isXAIImageMediaType(mediaType):
+				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
+			case fileData.Type == "" && len(file.Data) > 0 && !isXAIImageMediaType(mediaType):
+				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
+			}
+		}
+	}
+	return nil
+}
+
+func xaiFileMediaType(file types.FileContent) string {
+	if file.FileData.MediaType != "" {
+		return file.FileData.MediaType
+	}
+	if file.MediaType != "" {
+		return file.MediaType
+	}
+	return file.MimeType
+}
+
+func isXAIImageMediaType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
+}
+
 // convertXAIResponsesToolChoice maps a types.ToolChoice to the Responses API format.
 func convertXAIResponsesToolChoice(tc types.ToolChoice) interface{} {
 	switch tc.Type {
@@ -290,6 +333,24 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				"costInUsdTicks": *resp.Usage.CostInUsdTicks,
 			},
 		}
+	}
+	if resp.Usage.InputTokensCost != nil || resp.Usage.OutputTokensCost != nil {
+		if result.ProviderMetadata == nil {
+			result.ProviderMetadata = map[string]interface{}{}
+		}
+		xaiMeta, _ := result.ProviderMetadata["xai"].(map[string]interface{})
+		if xaiMeta == nil {
+			xaiMeta = map[string]interface{}{}
+			result.ProviderMetadata["xai"] = xaiMeta
+		}
+		cost := map[string]interface{}{}
+		if resp.Usage.InputTokensCost != nil {
+			cost["inputTokensCost"] = *resp.Usage.InputTokensCost
+		}
+		if resp.Usage.OutputTokensCost != nil {
+			cost["outputTokensCost"] = *resp.Usage.OutputTokensCost
+		}
+		xaiMeta["cost"] = cost
 	}
 
 	// Resolve user-registered tool names for provider-executed tools.
@@ -659,6 +720,12 @@ func convertXAIResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 	if u.CostInUsdTicks != nil {
 		result.Raw["cost_in_usd_ticks"] = *u.CostInUsdTicks
 	}
+	if u.InputTokensCost != nil {
+		result.Raw["input_tokens_cost"] = *u.InputTokensCost
+	}
+	if u.OutputTokensCost != nil {
+		result.Raw["output_tokens_cost"] = *u.OutputTokensCost
+	}
 	if u.InputTokensDetails != nil {
 		result.Raw["input_tokens_details"] = u.InputTokensDetails
 	}
@@ -938,10 +1005,22 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Response.ID != "" {
 			metaMap["responseId"] = e.Response.ID
 		}
-		if e.Response.Usage.CostInUsdTicks != nil {
-			metaMap["xai"] = map[string]interface{}{
-				"costInUsdTicks": *e.Response.Usage.CostInUsdTicks,
+		if e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil {
+			xaiMeta := map[string]interface{}{}
+			if e.Response.Usage.CostInUsdTicks != nil {
+				xaiMeta["costInUsdTicks"] = *e.Response.Usage.CostInUsdTicks
 			}
+			if e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil {
+				cost := map[string]interface{}{}
+				if e.Response.Usage.InputTokensCost != nil {
+					cost["inputTokensCost"] = *e.Response.Usage.InputTokensCost
+				}
+				if e.Response.Usage.OutputTokensCost != nil {
+					cost["outputTokensCost"] = *e.Response.Usage.OutputTokensCost
+				}
+				xaiMeta["cost"] = cost
+			}
+			metaMap["xai"] = xaiMeta
 		}
 		if len(metaMap) > 0 {
 			meta, _ = json.Marshal(metaMap)
@@ -955,15 +1034,53 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			ProviderMetadata: meta,
 		}, nil
 
+	case "response.incomplete":
+		var e struct {
+			Type     string `json:"type"`
+			Response struct {
+				ID                string                       `json:"id,omitempty"`
+				Usage             responses.ResponsesAPIUsage  `json:"usage"`
+				IncompleteDetails *responses.IncompleteDetails `json:"incomplete_details,omitempty"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.Next()
+		}
+		usage := convertXAIResponsesUsage(e.Response.Usage)
+		finishReason := mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+		s.err = io.EOF
+		return &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: finishReason,
+			Usage:        &usage,
+		}, nil
+
+	case "response.failed":
+		var e responses.ResponseFailedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.Next()
+		}
+		usage := convertXAIResponsesUsage(e.Response.Usage)
+		finishReason := types.FinishReasonOther
+		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
+			finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+		}
+		s.err = io.EOF
+		return &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: finishReason,
+			Usage:        &usage,
+		}, nil
+
 	case "error":
 		var e responses.ResponsesStreamErrorEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
 		}
-		s.err = fmt.Errorf("xai.responses stream error: %s (code: %s)", e.Message, e.Code)
+		s.err = &XAIStreamError{Code: e.Code, Message: e.Message}
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: e.Message,
+			Text: s.err.Error(),
 		}, nil
 
 	default:

@@ -3,8 +3,10 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -145,9 +147,8 @@ func TestXAIResponsesBuildRequestBodyNonImageFilesUseInputFile(t *testing.T) {
 						MediaType: "application/pdf",
 					},
 					types.FileContent{
-						Data:      []byte("a,b\n1,2\n"),
+						URL:       "https://example.com/data.csv",
 						MediaType: "text/csv",
-						Filename:  "data.csv",
 					},
 				},
 			},
@@ -164,12 +165,59 @@ func TestXAIResponsesBuildRequestBodyNonImageFilesUseInputFile(t *testing.T) {
 	if urlPart.Type != "input_file" || urlPart.FileURL != "https://example.com/report.pdf" {
 		t.Fatalf("url part = %#v", urlPart)
 	}
-	dataPart := parts[1].(map[string]interface{})
-	if dataPart["type"] != "input_file" || dataPart["filename"] != "data.csv" {
-		t.Fatalf("data part = %#v", dataPart)
+	textURLPart := parts[1].(responses.UserFilePart)
+	if textURLPart.Type != "input_file" || textURLPart.FileURL != "https://example.com/data.csv" {
+		t.Fatalf("text url part = %#v", textURLPart)
 	}
-	if _, ok := dataPart["file_data"].(string); !ok {
-		t.Fatalf("data part missing file_data: %#v", dataPart)
+}
+
+func TestXAIResponsesBuildRequestBodyRejectsInlineNonImageFileData(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	_, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.FileContent{
+						Data:      []byte("%PDF-1.7"),
+						MediaType: "application/pdf",
+					},
+				},
+			},
+		}},
+	}, false)
+	if err == nil {
+		t.Fatal("expected inline non-image file data to be rejected")
+	}
+	if !strings.Contains(err.Error(), "file part media type application/pdf") {
+		t.Fatalf("error = %q, want media type message", err.Error())
+	}
+}
+
+func TestXAIResponsesBuildRequestBodyRejectsInlineTextFileParts(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	_, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.FileContent{
+						Text:      "inline report",
+						MediaType: "text/plain",
+					},
+				},
+			},
+		}},
+	}, false)
+	if err == nil {
+		t.Fatal("expected inline text file part to be rejected")
+	}
+	if !strings.Contains(err.Error(), "text file parts") {
+		t.Fatalf("error = %q, want text file parts message", err.Error())
 	}
 }
 
@@ -693,6 +741,90 @@ func TestXAIResponsesToolChoice(t *testing.T) {
 			gotStr, _ := got.(string)
 			if gotStr != tt.want {
 				t.Errorf("convertXAIResponsesToolChoice() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestXAIResponsesDoGenerateTokenCostMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":     "resp_cost",
+			"status": "completed",
+			"output": []interface{}{},
+			"usage": map[string]interface{}{
+				"input_tokens":       10,
+				"output_tokens":      5,
+				"input_tokens_cost":  0.001,
+				"output_tokens_cost": 0.002,
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	xaiMeta := result.ProviderMetadata["xai"].(map[string]interface{})
+	cost := xaiMeta["cost"].(map[string]interface{})
+	if cost["inputTokensCost"] != 0.001 || cost["outputTokensCost"] != 0.002 {
+		t.Fatalf("cost metadata = %#v", cost)
+	}
+}
+
+func TestXAIResponsesStreamEventsHandling(t *testing.T) {
+	tests := []struct {
+		name          string
+		event         string
+		wantChunkType provider.ChunkType
+		wantErrType   interface{}
+	}{
+		{
+			name:          "error",
+			event:         `{"type":"error","code":"bad_request","message":"boom"}`,
+			wantChunkType: provider.ChunkTypeError,
+			wantErrType:   &XAIStreamError{},
+		},
+		{
+			name:          "incomplete",
+			event:         `{"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":2},"incomplete_details":{"reason":"max_output_tokens"}}}`,
+			wantChunkType: provider.ChunkTypeFinish,
+		},
+		{
+			name:          "failed",
+			event:         `{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4},"error":{"code":"server_error","message":"failed"},"incomplete_details":{"reason":"error"}}}`,
+			wantChunkType: provider.ChunkTypeFinish,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sse := "data: " + tt.event + "\n\n"
+			stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(sse)))
+			chunk, err := stream.Next()
+			if err != nil {
+				t.Fatalf("Next error: %v", err)
+			}
+			if chunk.Type != tt.wantChunkType {
+				t.Fatalf("chunk.Type = %s, want %s", chunk.Type, tt.wantChunkType)
+			}
+			_, err = stream.Next()
+			if err == nil {
+				t.Fatal("expected stream termination")
+			}
+			switch tt.wantErrType.(type) {
+			case *XAIStreamError:
+				if _, ok := err.(*XAIStreamError); !ok {
+					t.Fatalf("err = %T, want *XAIStreamError", err)
+				}
+			default:
+				if err != io.EOF {
+					t.Fatalf("err = %T %v, want io.EOF", err, err)
+				}
 			}
 		})
 	}
