@@ -30,7 +30,7 @@ func NewLanguageModel(cfg Config, modelID string) *LanguageModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
 func (m *LanguageModel) Provider() string { return m.cfg.ProviderName }
@@ -54,7 +54,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts)
+	reqBody := m.buildRequestBody(opts, false)
 
 	var response Response
 	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
@@ -72,7 +72,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts)
+	reqBody := m.buildRequestBody(opts, true)
 
 	httpResp, err := m.cfg.Client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -108,7 +108,7 @@ func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[stri
 }
 
 // buildRequestBody builds the Gemini API request body from GenerateOptions.
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[string]interface{} {
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStreaming bool) map[string]interface{} {
 	body := map[string]interface{}{}
 
 	// Messages / simple prompt → contents.
@@ -238,6 +238,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 	}
 
 	// Tools.
+	var toolConfig map[string]interface{}
 	if len(opts.Tools) > 0 {
 		var functionTools []types.Tool
 		var nativeEntries []map[string]interface{}
@@ -253,18 +254,48 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		}
 
 		if len(nativeEntries) > 0 {
-			body["tools"] = nativeEntries
-			if rc, ok := body["_retrievalConfig"]; ok {
-				body["toolConfig"] = map[string]interface{}{"retrievalConfig": rc}
+			toolsOut := make([]map[string]interface{}, 0, len(nativeEntries)+1)
+			toolsOut = append(toolsOut, nativeEntries...)
+			// TS parity: Gemini 3+ may mix native provider tools with function declarations.
+			if len(functionTools) > 0 && isGemini3Model(m.modelID) {
+				toolsOut = append(toolsOut, map[string]interface{}{
+					"functionDeclarations": tool.ToGoogleFormat(functionTools),
+				})
 			}
+			body["tools"] = toolsOut
 		} else if len(functionTools) > 0 {
 			body["tools"] = []map[string]interface{}{
 				{"functionDeclarations": tool.ToGoogleFormat(functionTools)},
 			}
-			if tc := m.buildFunctionCallingConfig(functionTools, opts); tc != nil {
-				body["toolConfig"] = tc
+		}
+		if len(functionTools) > 0 {
+			toolConfig = m.buildFunctionCallingConfig(functionTools, opts)
+		}
+	}
+	if rc, ok := body["_retrievalConfig"]; ok {
+		if toolConfig == nil {
+			toolConfig = map[string]interface{}{}
+		}
+		toolConfig["retrievalConfig"] = rc
+	}
+	// TS parity: streamFunctionCallArguments applies only to Vertex streaming requests.
+	if isStreaming && m.cfg.ProviderName == "google-vertex" {
+		if provOpts := m.getProviderOpts(opts); provOpts != nil {
+			if streamFCArgs, ok := provOpts["streamFunctionCallArguments"].(bool); ok && streamFCArgs {
+				if toolConfig == nil {
+					toolConfig = map[string]interface{}{}
+				}
+				fcc, _ := toolConfig["functionCallingConfig"].(map[string]interface{})
+				if fcc == nil {
+					fcc = map[string]interface{}{}
+				}
+				fcc["streamFunctionCallArguments"] = true
+				toolConfig["functionCallingConfig"] = fcc
 			}
 		}
+	}
+	if toolConfig != nil {
+		body["toolConfig"] = toolConfig
 	}
 	delete(body, "_retrievalConfig")
 

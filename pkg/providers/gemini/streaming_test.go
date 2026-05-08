@@ -432,6 +432,63 @@ func TestStream_FunctionCallWithoutArgsEmitsEmptyObject(t *testing.T) {
 	}
 }
 
+func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
+	chunk1 := mustMarshal(Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{FunctionCall: &struct {
+					Name string                 `json:"name"`
+					Args map[string]interface{} `json:"args"`
+				}{Name: "tool", Args: map[string]interface{}{"a": "hel"}}},
+			}},
+		}},
+	})
+	chunk2 := mustMarshal(Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{FunctionCall: &struct {
+					Name string                 `json:"name"`
+					Args map[string]interface{} `json:"args"`
+				}{Name: "tool", Args: map[string]interface{}{"a": "hello"}}},
+			}},
+			FinishReason: "STOP",
+		}},
+	})
+	s := newTestStream(sseStream(chunk1, chunk2))
+
+	var deltas []string
+	var final *provider.StreamChunk
+	for {
+		chunk, err := s.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeToolInputDelta {
+			deltas = append(deltas, chunk.Text)
+		}
+		if chunk.Type == provider.ChunkTypeToolCall {
+			final = chunk
+		}
+	}
+
+	if len(deltas) == 0 {
+		t.Fatal("expected at least one tool input delta")
+	}
+	if final == nil || final.ToolCall == nil {
+		t.Fatal("expected final tool call chunk")
+	}
+	got, _ := final.ToolCall.Arguments["a"].(string)
+	if got != "hello" {
+		t.Fatalf("final tool arg a = %q, want %q", got, "hello")
+	}
+}
+
 func TestStream_ReasoningChunkCarriesThoughtSignature(t *testing.T) {
 	chunkJSON := `{"candidates":[{"content":{"parts":[{"text":"reasoning...","thought":true,"thoughtSignature":"rsig-xyz"}]}}]}`
 	s := newTestStream(sseStream(chunkJSON, "[DONE]"))

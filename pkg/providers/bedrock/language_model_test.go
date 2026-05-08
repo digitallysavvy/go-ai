@@ -1,8 +1,10 @@
 package bedrock
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,6 +19,74 @@ func newTestBedrockModel() *LanguageModel {
 		Region:             "us-east-1",
 	})
 	return NewLanguageModel(p, "anthropic.claude-3-haiku-20240307-v1:0")
+}
+
+func TestResolveCredentialsEnvWins(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	p := New(Config{
+		AWSAccessKeyID:     "config-key",
+		AWSSecretAccessKey: "config-secret",
+		SessionToken:       "config-session",
+		Region:             "us-east-1",
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "env-key" || creds.SecretAccessKey != "env-secret" || creds.SessionToken != "env-session" {
+		t.Fatalf("creds = %#v, want env credentials", creds)
+	}
+}
+
+func TestResolveCredentialsConfigDoesNotUseEnvSessionToken(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	p := New(Config{
+		AWSAccessKeyID:     "config-key",
+		AWSSecretAccessKey: "config-secret",
+		Region:             "us-east-1",
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "config-key" || creds.SecretAccessKey != "config-secret" {
+		t.Fatalf("creds = %#v, want config credentials", creds)
+	}
+	if creds.SessionToken != "" {
+		t.Fatalf("SessionToken = %q, want empty", creds.SessionToken)
+	}
+}
+
+func TestResolveCredentialsSharedFile(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+
+	dir := t.TempDir()
+	credsPath := filepath.Join(dir, "credentials")
+	data := "[default]\naws_access_key_id = default-key\naws_secret_access_key = default-secret\n\n[custom]\naws_access_key_id = shared-key\naws_secret_access_key = shared-secret\naws_session_token = shared-session\n"
+	if err := os.WriteFile(credsPath, []byte(data), 0600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+
+	p := New(Config{
+		Region:                "us-east-1",
+		SharedCredentialsFile: credsPath,
+		Profile:               "custom",
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "shared-key" || creds.SecretAccessKey != "shared-secret" || creds.SessionToken != "shared-session" {
+		t.Fatalf("creds = %#v, want shared-file credentials", creds)
+	}
 }
 
 func TestAWSSignerExplicitKeysDoNotUseEnvSessionToken(t *testing.T) {

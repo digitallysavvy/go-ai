@@ -8,8 +8,8 @@ import (
 	"io"
 	"net/http"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -62,11 +62,16 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
+	creds, err := m.provider.resolveCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// Sign the request with AWS Signature V4
 	signer := NewAWSSigner(
-		m.provider.config.AWSAccessKeyID,
-		m.provider.config.AWSSecretAccessKey,
-		m.provider.config.SessionToken,
+		creds.AccessKeyID,
+		creds.SecretAccessKey,
+		creds.SessionToken,
 		m.provider.config.Region,
 	)
 
@@ -74,9 +79,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("failed to sign request: %w", err)
 	}
 
-	// Make the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Make the request using provider-scoped transport.
+	resp, err := m.provider.Client().HTTPClient().Do(req)
 	if err != nil {
 		return nil, providererrors.NewProviderError("aws-bedrock", 0, "", err.Error(), err)
 	}
@@ -125,8 +129,8 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 
 func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 	var response struct {
-		Result      string `json:"result"`
-		Artifacts   []struct {
+		Result    string `json:"result"`
+		Artifacts []struct {
 			Base64       string `json:"base64"`
 			FinishReason string `json:"finishReason"`
 		} `json:"artifacts"`

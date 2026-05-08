@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -47,14 +48,27 @@ type stream struct {
 	lastUsageMetadata      *UsageMetadata
 	// lastServiceTier accumulates serviceTier across chunks; last non-empty value wins.
 	lastServiceTier string
+
+	toolInputState map[string]*toolInputAccum
+	toolInputOrder []string
+	drainedOnDone  bool
+}
+
+type toolInputAccum struct {
+	name             string
+	lastArgumentsJSON string
+	lastArguments    map[string]interface{}
+	thoughtSignature string
+	signatureMeta    json.RawMessage
 }
 
 // newStream creates a stream with the given reader and provider configuration.
 func newStream(reader io.ReadCloser, cfg Config) *stream {
 	return &stream{
-		reader: reader,
-		parser: streaming.NewSSEParser(reader),
-		cfg:    cfg,
+		reader:         reader,
+		parser:         streaming.NewSSEParser(reader),
+		cfg:            cfg,
+		toolInputState: make(map[string]*toolInputAccum),
 	}
 }
 
@@ -88,6 +102,14 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		return nil, err
 	}
 	if streaming.IsStreamDone(event) {
+		if !s.drainedOnDone {
+			s.closeOpenBlocks()
+			s.flushToolInputs()
+			s.drainedOnDone = true
+			if len(s.chunkBuffer) > 0 {
+				return s.Next()
+			}
+		}
 		s.err = io.EOF
 		return nil, io.EOF
 	}
@@ -148,6 +170,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	// Finish reason: close open blocks, then emit the finish chunk.
 	if candidate.FinishReason != "" {
 		s.closeOpenBlocks()
+		s.flushToolInputs()
 
 		var fr types.FinishReason
 		switch candidate.FinishReason {
@@ -176,6 +199,38 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		}
 		s.chunkBuffer = append(s.chunkBuffer, finishChunk)
 	}
+}
+
+func (s *stream) flushToolInputs() {
+	for _, id := range s.toolInputOrder {
+		accum := s.toolInputState[id]
+		if accum == nil {
+			continue
+		}
+		args := accum.lastArguments
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		s.chunkBuffer = append(s.chunkBuffer,
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputEnd,
+				ToolCall:         &types.ToolCall{ID: id},
+				ProviderMetadata: accum.signatureMeta,
+			},
+			&provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               id,
+					ToolName:         accum.name,
+					Arguments:        args,
+					ThoughtSignature: accum.thoughtSignature,
+				},
+				ProviderMetadata: accum.signatureMeta,
+			},
+		)
+		delete(s.toolInputState, id)
+	}
+	s.toolInputOrder = nil
 }
 
 // closeOpenBlocks emits end chunks for any open text or reasoning block.
@@ -400,37 +455,41 @@ func (s *stream) processFuncCallPart(part Part) {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	argsJSON, _ := json.Marshal(args)
+	argsJSONBytes, _ := json.Marshal(args)
+	argsJSON := string(argsJSONBytes)
 
-	s.chunkBuffer = append(s.chunkBuffer,
-		&provider.StreamChunk{
+	accum, ok := s.toolInputState[toolCallID]
+	if !ok {
+		accum = &toolInputAccum{name: part.FunctionCall.Name}
+		s.toolInputState[toolCallID] = accum
+		s.toolInputOrder = append(s.toolInputOrder, toolCallID)
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolInputStart,
 			ToolCall: &types.ToolCall{
 				ID:       toolCallID,
 				ToolName: part.FunctionCall.Name,
 			},
 			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
+		})
+	}
+
+	delta := argsJSON
+	if strings.HasPrefix(argsJSON, accum.lastArgumentsJSON) {
+		delta = argsJSON[len(accum.lastArgumentsJSON):]
+	}
+	if delta != "" {
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeToolInputDelta,
 			ID:               toolCallID,
-			Text:             string(argsJSON),
+			Text:             delta,
 			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
-			Type:             provider.ChunkTypeToolInputEnd,
-			ToolCall:         &types.ToolCall{ID: toolCallID},
-			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               toolCallID,
-				ToolName:         part.FunctionCall.Name,
-				Arguments:        args,
-				ThoughtSignature: part.ThoughtSignature,
-			},
-			ProviderMetadata: sigMeta,
-		},
-	)
+		})
+	}
+
+	accum.lastArgumentsJSON = argsJSON
+	accum.lastArguments = args
+	if part.ThoughtSignature != "" {
+		accum.thoughtSignature = part.ThoughtSignature
+		accum.signatureMeta = sigMeta
+	}
 }

@@ -131,11 +131,16 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		}
 	}
 
+	creds, err := m.provider.resolveCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// Sign the request with AWS Signature V4
 	signer := NewAWSSigner(
-		m.provider.config.AWSAccessKeyID,
-		m.provider.config.AWSSecretAccessKey,
-		m.provider.config.SessionToken,
+		creds.AccessKeyID,
+		creds.SecretAccessKey,
+		creds.SessionToken,
 		m.provider.config.Region,
 	)
 
@@ -143,9 +148,8 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("failed to sign request: %w", err)
 	}
 
-	// Make the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Make the request using provider-scoped transport.
+	resp, err := m.provider.Client().HTTPClient().Do(req)
 	if err != nil {
 		return nil, providererrors.NewProviderError("aws-bedrock", 0, "", err.Error(), err)
 	}

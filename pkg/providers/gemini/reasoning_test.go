@@ -31,7 +31,7 @@ func makeVertexTestModel(modelID string) *LanguageModel {
 func TestReasoningNoneDisablesThinking(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
 	level := types.ReasoningNone
-	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level})
+	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level}, false)
 
 	genConfig := body["generationConfig"].(map[string]interface{})
 	tc := genConfig["thinkingConfig"].(map[string]interface{})
@@ -43,7 +43,7 @@ func TestReasoningNoneDisablesThinking(t *testing.T) {
 func TestReasoningDefaultOmitsThinking(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
 	level := types.ReasoningDefault
-	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level})
+	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level}, false)
 
 	genConfig, _ := body["generationConfig"].(map[string]interface{})
 	if _, has := genConfig["thinkingConfig"]; has {
@@ -53,7 +53,7 @@ func TestReasoningDefaultOmitsThinking(t *testing.T) {
 
 func TestReasoningNilOmitsThinking(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
-	body := m.buildRequestBody(&provider.GenerateOptions{})
+	body := m.buildRequestBody(&provider.GenerateOptions{}, false)
 
 	genConfig, _ := body["generationConfig"].(map[string]interface{})
 	if _, has := genConfig["thinkingConfig"]; has {
@@ -83,7 +83,7 @@ func TestReasoningDynamicBudget(t *testing.T) {
 			if tt.maxOut > 0 {
 				opts.MaxTokens = &tt.maxOut
 			}
-			body := m.buildRequestBody(opts)
+			body := m.buildRequestBody(opts, false)
 
 			genConfig := body["generationConfig"].(map[string]interface{})
 			tc := genConfig["thinkingConfig"].(map[string]interface{})
@@ -99,7 +99,7 @@ func TestReasoningMinIsAtLeast1024(t *testing.T) {
 	m := makeTestModel("unknown-model") // 2% of 8192 = 163 with maxOut=1 → floored to 1024
 	level := types.ReasoningMinimal
 	maxTok := 1
-	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level, MaxTokens: &maxTok})
+	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level, MaxTokens: &maxTok}, false)
 
 	genConfig := body["generationConfig"].(map[string]interface{})
 	tc := genConfig["thinkingConfig"].(map[string]interface{})
@@ -121,7 +121,7 @@ func TestProviderOptionsThinkingConfig_Google(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 
 	genConfig := body["generationConfig"].(map[string]interface{})
 	tc := genConfig["thinkingConfig"].(map[string]interface{})
@@ -146,7 +146,7 @@ func TestProviderOptionsThinkingConfig_VertexFallbackChain(t *testing.T) {
 				"thinkingConfig": map[string]interface{}{"thinkingBudget": 999},
 			},
 		},
-	})
+	}, false)
 	tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
 	if tc["thinkingBudget"] != 500 {
 		t.Errorf("expected vertex key to win, got thinkingBudget=%v", tc["thinkingBudget"])
@@ -159,7 +159,7 @@ func TestProviderOptionsThinkingConfig_VertexFallbackChain(t *testing.T) {
 				"thinkingConfig": map[string]interface{}{"thinkingBudget": 200},
 			},
 		},
-	})
+	}, false)
 	tc2 := body2["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
 	if tc2["thinkingBudget"] != 200 {
 		t.Errorf("expected googleVertex key to match, got thinkingBudget=%v", tc2["thinkingBudget"])
@@ -199,7 +199,7 @@ func TestGemini3ImageModelDoesNotUseThinkingLevel(t *testing.T) {
 	for _, id := range imageModels {
 		m := makeTestModel(id)
 		level := types.ReasoningHigh
-		body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level})
+		body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level}, false)
 		gc, _ := body["generationConfig"].(map[string]interface{})
 		tc, hasTc := gc["thinkingConfig"].(map[string]interface{})
 		if !hasTc {

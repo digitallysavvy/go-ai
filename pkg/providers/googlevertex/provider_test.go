@@ -1,7 +1,10 @@
 package googlevertex
 
 import (
+	"context"
 	"testing"
+
+	"golang.org/x/oauth2"
 )
 
 func TestNewProvider(t *testing.T) {
@@ -185,8 +188,8 @@ func TestProvider_LanguageModel(t *testing.T) {
 			if model.ModelID() != modelID {
 				t.Errorf("Expected model ID '%s', got '%s'", modelID, model.ModelID())
 			}
-			if model.SpecificationVersion() != "v3" {
-				t.Errorf("Expected spec version 'v3', got '%s'", model.SpecificationVersion())
+			if model.SpecificationVersion() != "v4" {
+				t.Errorf("Expected spec version 'v4', got '%s'", model.SpecificationVersion())
 			}
 		})
 	}
@@ -290,5 +293,47 @@ func TestLanguageModel_SupportsStructuredOutput(t *testing.T) {
 
 	if !model.SupportsStructuredOutput() {
 		t.Error("Expected SupportsStructuredOutput() to be true for Gemini models")
+	}
+}
+
+func TestNewProvider_AllowsAuthTokenCallback(t *testing.T) {
+	prov, err := New(Config{
+		Project:  "test-project",
+		Location: "us-central1",
+		AuthToken: func(context.Context) (string, error) {
+			return "dynamic-token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected provider with AuthToken callback, got error: %v", err)
+	}
+	if prov == nil {
+		t.Fatal("expected provider")
+	}
+}
+
+func TestNewProvider_AllowsTokenSource(t *testing.T) {
+	prov, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "ts-token"}),
+	})
+	if err != nil {
+		t.Fatalf("expected provider with TokenSource, got error: %v", err)
+	}
+	if prov == nil {
+		t.Fatal("expected provider")
+	}
+}
+
+func TestNewProvider_ExpressModeWithAPIKey(t *testing.T) {
+	prov, err := New(Config{
+		APIKey: "vertex-api-key",
+	})
+	if err != nil {
+		t.Fatalf("expected provider in API key express mode, got error: %v", err)
+	}
+	if prov == nil {
+		t.Fatal("expected provider")
 	}
 }

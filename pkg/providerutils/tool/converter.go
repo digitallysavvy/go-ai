@@ -225,10 +225,17 @@ func formatAnthropicConstraintValue(value interface{}) string {
 func ToGoogleFormat(tools []types.Tool) []map[string]interface{} {
 	result := make([]map[string]interface{}, len(tools))
 	for i, tool := range tools {
+		parameters := tool.Parameters
+		if parameters == nil {
+			parameters = map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			}
+		}
 		result[i] = map[string]interface{}{
 			"name":        tool.Name,
 			"description": tool.Description,
-			"parameters":  tool.Parameters,
+			"parameters":  parameters,
 		}
 	}
 	return result

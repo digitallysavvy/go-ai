@@ -37,7 +37,7 @@ func NewLanguageModel(provider *Provider, modelID string, options ...*ModelOptio
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -92,11 +92,16 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
+	creds, err := m.provider.resolveCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// Sign the request with AWS Signature V4
 	signer := NewAWSSigner(
-		m.provider.config.AWSAccessKeyID,
-		m.provider.config.AWSSecretAccessKey,
-		m.provider.config.SessionToken,
+		creds.AccessKeyID,
+		creds.SecretAccessKey,
+		creds.SessionToken,
 		m.provider.config.Region,
 	)
 
@@ -104,9 +109,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to sign request: %w", err)
 	}
 
-	// Make the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Make the request using provider-scoped transport so telemetry/patching applies.
+	httpClient := m.provider.Client().HTTPClient()
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, providererrors.NewProviderError("aws-bedrock", 0, "", err.Error(), err)
 	}

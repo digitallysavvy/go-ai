@@ -112,7 +112,7 @@ func TestConvertResponse_MetadataKeyUsed(t *testing.T) {
 
 func TestBuildRequestBody_EmptyOptsDoesNotPanic(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
-	body := m.buildRequestBody(&provider.GenerateOptions{})
+	body := m.buildRequestBody(&provider.GenerateOptions{}, false)
 	if body == nil {
 		t.Fatal("body should not be nil")
 	}
@@ -122,7 +122,7 @@ func TestBuildRequestBody_GemmaModelSkipsSystemInstruction(t *testing.T) {
 	m := makeTestModel("gemma-7b")
 	body := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{System: "You are helpful."},
-	})
+	}, false)
 	if _, has := body["systemInstruction"]; has {
 		t.Error("Gemma model should not have systemInstruction")
 	}
@@ -132,7 +132,7 @@ func TestBuildRequestBody_NonGemmaModelIncludesSystemInstruction(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
 	body := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{System: "You are helpful."},
-	})
+	}, false)
 	if _, has := body["systemInstruction"]; !has {
 		t.Error("non-Gemma model should have systemInstruction")
 	}
@@ -142,7 +142,7 @@ func TestBuildRequestBody_StrictToolsUsesValidatedMode(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
 		Tools: []types.Tool{{Name: "search", Strict: true, Parameters: map[string]interface{}{"type": "object"}}},
-	})
+	}, false)
 	toolConfig, ok := body["toolConfig"].(map[string]interface{})
 	if !ok {
 		t.Fatal("toolConfig must be present when any tool has Strict:true")
@@ -157,9 +157,86 @@ func TestBuildRequestBody_NoStrictToolsOmitsToolConfig(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
 		Tools: []types.Tool{{Name: "search", Strict: false, Parameters: map[string]interface{}{"type": "object"}}},
-	})
+	}, false)
 	if _, ok := body["toolConfig"]; ok {
 		t.Error("toolConfig must NOT be present when no tool has Strict:true")
+	}
+}
+
+func TestBuildRequestBody_NoArgToolUsesEmptyObjectSchema(t *testing.T) {
+	m := makeTestModel("gemini-3-pro-preview")
+	body := m.buildRequestBody(&provider.GenerateOptions{
+		Tools: []types.Tool{{Name: "ping", Description: "No args"}},
+	}, false)
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) == 0 {
+		t.Fatalf("tools missing: %#v", body["tools"])
+	}
+	functionDecls, ok := tools[0]["functionDeclarations"].([]map[string]interface{})
+	if !ok || len(functionDecls) == 0 {
+		t.Fatalf("functionDeclarations missing: %#v", tools[0]["functionDeclarations"])
+	}
+	params, ok := functionDecls[0]["parameters"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("parameters type = %T", functionDecls[0]["parameters"])
+	}
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %v, want object", params["type"])
+	}
+	props, ok := params["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("parameters.properties type = %T", params["properties"])
+	}
+	if len(props) != 0 {
+		t.Errorf("parameters.properties = %#v, want empty map", props)
+	}
+}
+
+func TestBuildRequestBody_Gemini3SupportsMixedNativeAndFunctionTools(t *testing.T) {
+	m := makeTestModel("gemini-3-pro-preview")
+	body := m.buildRequestBody(&provider.GenerateOptions{
+		Tools: []types.Tool{
+			{Name: "f1", Description: "function", Parameters: map[string]interface{}{"type": "object"}},
+			{Type: "provider", ProviderID: "google.google_search"},
+		},
+	}, false)
+
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("tools type = %T", body["tools"])
+	}
+	if len(tools) != 2 {
+		t.Fatalf("tools len = %d, want 2", len(tools))
+	}
+	if _, ok := tools[0]["googleSearch"]; !ok {
+		t.Fatalf("tools[0] should be native googleSearch entry: %#v", tools[0])
+	}
+	if _, ok := tools[1]["functionDeclarations"]; !ok {
+		t.Fatalf("tools[1] should contain functionDeclarations: %#v", tools[1])
+	}
+}
+
+func TestBuildRequestBody_VertexStreamFunctionCallArgumentsOnlyForStream(t *testing.T) {
+	m := makeVertexTestModel("gemini-3-pro-preview")
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{{Name: "f1", Description: "function", Parameters: map[string]interface{}{"type": "object"}}},
+		ProviderOptions: map[string]interface{}{
+			"vertex": map[string]interface{}{"streamFunctionCallArguments": true},
+		},
+	}
+
+	bodyNonStream := m.buildRequestBody(opts, false)
+	tcNonStream, _ := bodyNonStream["toolConfig"].(map[string]interface{})
+	fccNonStream, _ := tcNonStream["functionCallingConfig"].(map[string]interface{})
+	if _, ok := fccNonStream["streamFunctionCallArguments"]; ok {
+		t.Fatal("streamFunctionCallArguments must be omitted for non-streaming requests")
+	}
+
+	bodyStream := m.buildRequestBody(opts, true)
+	tcStream, _ := bodyStream["toolConfig"].(map[string]interface{})
+	fccStream, _ := tcStream["functionCallingConfig"].(map[string]interface{})
+	if got, ok := fccStream["streamFunctionCallArguments"].(bool); !ok || !got {
+		t.Fatalf("streamFunctionCallArguments = %v (%T), want true", fccStream["streamFunctionCallArguments"], fccStream["streamFunctionCallArguments"])
 	}
 }
 
@@ -209,7 +286,7 @@ func TestBuildRequestBody_Gemini3ImageToolResultMapsToFunctionResponse(t *testin
 		},
 	}
 
-	body := m.buildRequestBody(opts)
+	body := m.buildRequestBody(opts, false)
 	contents, ok := body["contents"].([]map[string]interface{})
 	if !ok {
 		t.Fatalf("contents type = %T", body["contents"])
@@ -280,7 +357,7 @@ func TestBuildRequestBody_Gemini2ImageToolResultFallsBackToText(t *testing.T) {
 		},
 	}
 
-	body := m.buildRequestBody(opts)
+	body := m.buildRequestBody(opts, false)
 	contents := body["contents"].([]map[string]interface{})
 
 	// Find the tool-result user message that has a top-level inlineData part.
@@ -474,7 +551,7 @@ func TestBuildRequestBody_ServiceTier(t *testing.T) {
 			},
 		},
 	}
-	body := m.buildRequestBody(opts)
+	body := m.buildRequestBody(opts, false)
 	if body["serviceTier"] != "SERVICE_TIER_FLEX" {
 		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "SERVICE_TIER_FLEX")
 	}
@@ -485,7 +562,7 @@ func TestBuildRequestBody_ServiceTierAbsentWhenNotSet(t *testing.T) {
 	opts := &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "Hello"},
 	}
-	body := m.buildRequestBody(opts)
+	body := m.buildRequestBody(opts, false)
 	if _, ok := body["serviceTier"]; ok {
 		t.Error("serviceTier should not be present when not provided")
 	}
