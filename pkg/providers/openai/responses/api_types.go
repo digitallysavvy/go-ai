@@ -365,9 +365,11 @@ type ResponsesAPIResponse struct {
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
 type ResponsesAPIUsage struct {
-	InputTokens        int    `json:"input_tokens"`
-	OutputTokens       int    `json:"output_tokens"`
-	CostInUsdTicks     *int64 `json:"cost_in_usd_ticks,omitempty"`
+	InputTokens        int      `json:"input_tokens"`
+	OutputTokens       int      `json:"output_tokens"`
+	CostInUsdTicks     *int64   `json:"cost_in_usd_ticks,omitempty"`
+	InputTokensCost    *float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost   *float64 `json:"output_tokens_cost,omitempty"`
 	InputTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`

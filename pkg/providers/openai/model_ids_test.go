@@ -82,6 +82,7 @@ func TestOpenAIModelIDs(t *testing.T) {
 		{"DallE3", ModelDallE3, "dall-e-3"},
 		{"DallE2", ModelDallE2, "dall-e-2"},
 		{"GPTImage1", ModelGPTImage1, "gpt-image-1"},
+		{"GPTImage2", ModelGPTImage2, "gpt-image-2"},
 		{"GPTImage1Mini", ModelGPTImage1Mini, "gpt-image-1-mini"},
 		{"GPTImage15", ModelGPTImage15, "gpt-image-1.5"},
 		{"ChatGPTImageLatest", ModelChatGPTImageLatest, "chatgpt-image-latest"},

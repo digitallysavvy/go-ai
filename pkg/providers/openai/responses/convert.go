@@ -139,12 +139,23 @@ func convertAssistantItems(msg types.Message) []interface{} {
 
 	// Each ToolCall on the message becomes a function_call item.
 	for _, tc := range msg.ToolCalls {
-		argsJSON, _ := json.Marshal(tc.Arguments)
+		args := tc.Arguments
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		argsJSON, _ := json.Marshal(args)
+		namespace := ""
+		if openaiMeta, ok := tc.ProviderMetadata["openai"].(map[string]interface{}); ok {
+			if rawNS, ok := openaiMeta["namespace"].(string); ok {
+				namespace = rawNS
+			}
+		}
 		items = append(items, FunctionCallItem{
 			Type:      "function_call",
 			ID:        tc.ID,
 			CallID:    tc.ID,
 			Name:      tc.ToolName,
+			Namespace: namespace,
 			Arguments: string(argsJSON),
 		})
 	}

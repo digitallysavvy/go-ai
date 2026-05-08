@@ -22,9 +22,10 @@ type ImageModel struct {
 	modelID  string
 }
 
-// OpenAIImageProviderOptions contains OpenAI image-generation specific options.
-type OpenAIImageProviderOptions struct {
+// OpenAIImageModelOptions contains OpenAI image-generation specific options.
+type OpenAIImageModelOptions struct {
 	Quality           string `json:"quality,omitempty"`
+	Size              string `json:"size,omitempty"`
 	Style             string `json:"style,omitempty"`
 	Background        string `json:"background,omitempty"`
 	Moderation        string `json:"moderation,omitempty"`
@@ -33,6 +34,9 @@ type OpenAIImageProviderOptions struct {
 	InputFidelity     string `json:"inputFidelity,omitempty"`
 	User              string `json:"user,omitempty"`
 }
+
+// OpenAIImageProviderOptions is kept as an alias for backward compatibility.
+type OpenAIImageProviderOptions = OpenAIImageModelOptions
 
 // NewImageModel creates a new OpenAI image generation model
 func NewImageModel(provider *Provider, modelID string) *ImageModel {
@@ -129,8 +133,8 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	if opts.N != nil {
 		body["n"] = *opts.N
 	}
-	if opts.Size != "" {
-		body["size"] = opts.Size
+	if size := firstNonEmpty(openaiOpts.Size, opts.Size); size != "" {
+		body["size"] = size
 	}
 	if quality := firstNonEmpty(openaiOpts.Quality, opts.Quality); quality != "" {
 		body["quality"] = quality
@@ -200,8 +204,8 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 					return err
 				}
 			}
-			if opts.Size != "" {
-				if err := writer.WriteField("size", opts.Size); err != nil {
+			if size := firstNonEmpty(openaiOpts.Size, opts.Size); size != "" {
+				if err := writer.WriteField("size", size); err != nil {
 					return err
 				}
 			}
@@ -307,19 +311,19 @@ func imageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 	return warnings
 }
 
-func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) OpenAIImageProviderOptions {
+func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) OpenAIImageModelOptions {
 	if providerOptions == nil {
-		return OpenAIImageProviderOptions{}
+		return OpenAIImageModelOptions{}
 	}
 	raw, ok := providerOptions["openai"]
 	if !ok {
-		return OpenAIImageProviderOptions{}
+		return OpenAIImageModelOptions{}
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
-		return OpenAIImageProviderOptions{}
+		return OpenAIImageModelOptions{}
 	}
-	var opts OpenAIImageProviderOptions
+	var opts OpenAIImageModelOptions
 	_ = json.Unmarshal(data, &opts)
 	return opts
 }

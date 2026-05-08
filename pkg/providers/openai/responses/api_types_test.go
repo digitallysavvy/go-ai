@@ -342,6 +342,53 @@ func TestFileURLInToolOutput(t *testing.T) {
 	}
 }
 
+func TestConvertAssistantItems_DefaultToolCallArgsToEmptyObject(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{
+			{ID: "call-1", ToolName: "weather", Arguments: nil},
+		},
+	}
+
+	items := convertAssistantItems(msg)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	call, ok := items[0].(FunctionCallItem)
+	if !ok {
+		t.Fatalf("expected FunctionCallItem, got %T", items[0])
+	}
+	if call.Arguments != "{}" {
+		t.Fatalf("arguments = %q, want {}", call.Arguments)
+	}
+}
+
+func TestConvertAssistantItems_PreservesToolCallNamespace(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{
+			{
+				ID:       "call-1",
+				ToolName: "weather",
+				Arguments: map[string]interface{}{
+					"location": "NYC",
+				},
+				ProviderMetadata: map[string]interface{}{
+					"openai": map[string]interface{}{
+						"namespace": "weather.tools",
+					},
+				},
+			},
+		},
+	}
+
+	items := convertAssistantItems(msg)
+	call := items[0].(FunctionCallItem)
+	if call.Namespace != "weather.tools" {
+		t.Fatalf("namespace = %q, want weather.tools", call.Namespace)
+	}
+}
+
 func TestImageDetailInToolOutput(t *testing.T) {
 	msg := types.Message{
 		Role: types.RoleTool,

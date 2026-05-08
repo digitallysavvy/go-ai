@@ -106,6 +106,7 @@ const (
 	ModelDallE3             = "dall-e-3"
 	ModelDallE2             = "dall-e-2"
 	ModelGPTImage1          = "gpt-image-1"
+	ModelGPTImage2          = "gpt-image-2"
 	ModelGPTImage1Mini      = "gpt-image-1-mini"
 	ModelGPTImage15         = "gpt-image-1.5"
 	ModelChatGPTImageLatest = "chatgpt-image-latest"
