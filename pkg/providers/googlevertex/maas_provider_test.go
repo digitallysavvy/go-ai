@@ -157,6 +157,34 @@ func TestNewMaaS_DynamicHeadersInjectedPerRequest(t *testing.T) {
 	}
 }
 
+func TestNewMaaS_ConfigAuthTokenOverride(t *testing.T) {
+	var authHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := NewMaaS(MaaSConfig{
+		BaseURL: server.URL,
+		AuthToken: func(context.Context) (string, error) {
+			return "override-token", nil
+		},
+	})
+	model, err := p.LanguageModel("xai/grok-4.1-fast-reasoning")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if authHeader != "Bearer override-token" {
+		t.Fatalf("Authorization = %q, want Bearer override-token", authHeader)
+	}
+}
+
 func TestMaaSModelIDs_NonEmpty(t *testing.T) {
 	ids := []GoogleVertexMaasModelID{
 		MaaSModelDeepSeekR1,
@@ -171,6 +199,10 @@ func TestMaaSModelIDs_NonEmpty(t *testing.T) {
 		MaaSModelQwen3Next80B,
 		MaaSModelQwen3Next80BThink,
 		MaaSModelKimiK2Thinking,
+		MaaSModelGrok420Reasoning,
+		MaaSModelGrok420NonReasoning,
+		MaaSModelGrok41FastReasoning,
+		MaaSModelGrok41FastNonReasoning,
 	}
 	for _, id := range ids {
 		if id == "" {

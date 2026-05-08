@@ -34,10 +34,11 @@ type GoogleAuthOptions struct {
 }
 
 type MaaSConfig struct {
-	Project  string
-	Location string
-	BaseURL  string
-	Headers  HeadersResolver
+	Project   string
+	Location  string
+	BaseURL   string
+	Headers   HeadersResolver
+	AuthToken func(ctx context.Context) (string, error)
 
 	// Fetch customizes the underlying HTTP transport, matching the TS fetch option.
 	Fetch *stdhttp.Client
@@ -126,7 +127,10 @@ func (p *MaaSProvider) init() error {
 		baseURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi", project, location)
 	}
 
-	authToken := p.options.authToken
+	authToken := p.config.AuthToken
+	if authToken == nil {
+		authToken = p.options.authToken
+	}
 	if authToken == nil && p.config.GoogleAuthOptions != nil && p.config.GoogleAuthOptions.TokenSource != nil {
 		authToken = func(ctx context.Context) (string, error) {
 			token, err := p.config.GoogleAuthOptions.TokenSource.Token()

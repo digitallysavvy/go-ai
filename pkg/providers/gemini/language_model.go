@@ -406,10 +406,23 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 		}
 		// Function calls.
 		if part.FunctionCall != nil {
+			args := part.FunctionCall.Args
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			var providerMetadata map[string]interface{}
+			if part.ThoughtSignature != "" {
+				providerMetadata = map[string]interface{}{
+					m.cfg.MetadataKey: map[string]interface{}{
+						"thoughtSignature": part.ThoughtSignature,
+					},
+				}
+			}
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 				ID:               part.FunctionCall.Name,
 				ToolName:         part.FunctionCall.Name,
-				Arguments:        part.FunctionCall.Args,
+				Arguments:        args,
+				ProviderMetadata: providerMetadata,
 				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
@@ -460,6 +473,9 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 	if response.UsageMetadata != nil {
 		if um, err := json.Marshal(response.UsageMetadata); err == nil {
 			meta["usageMetadata"] = um
+		}
+		if mtc, err := json.Marshal(modalityTokenCounts(response.UsageMetadata)); err == nil {
+			meta["modalityTokenCounts"] = mtc
 		}
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior:

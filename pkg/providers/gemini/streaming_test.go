@@ -405,6 +405,33 @@ func TestStream_FunctionCallChunkCarriesThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestStream_FunctionCallWithoutArgsEmitsEmptyObject(t *testing.T) {
+	chunkJSON := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool"}}]},"finishReason":"STOP"}]}`
+	s := newTestStream(sseStream(chunkJSON, "[DONE]"))
+
+	var toolCallChunk *provider.StreamChunk
+	for {
+		chunk, err := s.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeToolCall {
+			toolCallChunk = chunk
+			break
+		}
+	}
+
+	if toolCallChunk == nil {
+		t.Fatal("expected a ChunkTypeToolCall chunk")
+	}
+	if toolCallChunk.ToolCall.Arguments == nil {
+		t.Fatal("ToolCall.Arguments must be an empty object, not nil")
+	}
+	if len(toolCallChunk.ToolCall.Arguments) != 0 {
+		t.Errorf("ToolCall.Arguments = %#v, want empty object", toolCallChunk.ToolCall.Arguments)
+	}
+}
+
 func TestStream_ReasoningChunkCarriesThoughtSignature(t *testing.T) {
 	chunkJSON := `{"candidates":[{"content":{"parts":[{"text":"reasoning...","thought":true,"thoughtSignature":"rsig-xyz"}]}}]}`
 	s := newTestStream(sseStream(chunkJSON, "[DONE]"))
@@ -606,5 +633,37 @@ func TestStreamServiceTierLastValueWins(t *testing.T) {
 	json.Unmarshal(googleMeta["serviceTier"], &serviceTier)
 	if serviceTier != "SERVICE_TIER_PRIORITY" {
 		t.Errorf("serviceTier = %q, want last value %q", serviceTier, "SERVICE_TIER_PRIORITY")
+	}
+}
+
+func TestStreamModalityTokenCountsInMetadata(t *testing.T) {
+	chunk := `{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":7,"promptTokensDetails":[{"modality":"TEXT","tokenCount":4},{"modality":"IMAGE","tokenCount":6}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":7},{"modality":"AUDIO","tokenCount":2}]}}`
+
+	s := newTestStream(sseStream(chunk))
+	chunks := drainChunks(t, s)
+
+	var finishChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish {
+			finishChunk = c
+		}
+	}
+	if finishChunk == nil || finishChunk.ProviderMetadata == nil {
+		t.Fatal("no finish chunk or no metadata")
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal outer meta: %v", err)
+	}
+	var googleMeta map[string]json.RawMessage
+	if err := json.Unmarshal(meta["google"], &googleMeta); err != nil {
+		t.Fatalf("unmarshal google meta: %v", err)
+	}
+	var counts ModalityTokenCounts
+	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
+		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
+	}
+	if counts.TextTokens != 11 || counts.ImageTokens != 6 || counts.AudioTokens != 2 {
+		t.Errorf("modalityTokenCounts = %+v", counts)
 	}
 }

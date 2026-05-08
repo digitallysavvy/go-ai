@@ -221,6 +221,9 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
+		if mtc, err := json.Marshal(modalityTokenCounts(s.lastUsageMetadata)); err == nil {
+			meta["modalityTokenCounts"] = mtc
+		}
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
 	if s.lastServiceTier != "" {
@@ -393,7 +396,11 @@ func (s *stream) processFuncCallPart(part Part) {
 		})
 	}
 
-	argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+	args := part.FunctionCall.Args
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	argsJSON, _ := json.Marshal(args)
 
 	s.chunkBuffer = append(s.chunkBuffer,
 		&provider.StreamChunk{
@@ -420,7 +427,7 @@ func (s *stream) processFuncCallPart(part Part) {
 			ToolCall: &types.ToolCall{
 				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
-				Arguments:        part.FunctionCall.Args,
+				Arguments:        args,
 				ThoughtSignature: part.ThoughtSignature,
 			},
 			ProviderMetadata: sigMeta,

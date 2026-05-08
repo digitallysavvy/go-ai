@@ -13,6 +13,7 @@ import (
 // supply the provider-specific configuration (auth path, metadata key, etc.).
 type LanguageModel struct {
 	*gemini.LanguageModel
+	provider *Provider
 }
 
 // NewLanguageModel creates a Google Generative AI language model.
@@ -31,7 +32,7 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		SupportsCodeExecution: true,
 		SupportsImageInput:    googleSupportsImageInput,
 	}
-	return &LanguageModel{gemini.NewLanguageModel(cfg, modelID)}
+	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
 }
 
 // googleSupportsImageInput reports whether a Google Generative AI model accepts

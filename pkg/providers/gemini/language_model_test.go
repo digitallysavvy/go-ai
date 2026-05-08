@@ -545,3 +545,86 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 		t.Errorf("serviceTier = %s, want null", raw)
 	}
 }
+
+func TestConvertResponse_ModalityTokenCountsInMetadata(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{{Text: "Hello"}}},
+			FinishReason: "STOP",
+		}},
+		UsageMetadata: &UsageMetadata{
+			PromptTokenCount:     14,
+			CandidatesTokenCount: 9,
+			PromptTokensDetails: []struct {
+				Modality   string `json:"modality,omitempty"`
+				TokenCount int    `json:"tokenCount,omitempty"`
+			}{
+				{Modality: "TEXT", TokenCount: 5},
+				{Modality: "IMAGE", TokenCount: 7},
+				{Modality: "AUDIO", TokenCount: 2},
+			},
+			CandidatesTokensDetails: []struct {
+				Modality   string `json:"modality,omitempty"`
+				TokenCount int    `json:"tokenCount,omitempty"`
+			}{
+				{Modality: "TEXT", TokenCount: 6},
+				{Modality: "VIDEO", TokenCount: 3},
+			},
+		},
+	}
+
+	result := m.convertResponse(resp)
+	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatal("expected google providerMetadata")
+	}
+	var counts ModalityTokenCounts
+	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
+		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
+	}
+	if counts.TextTokens != 11 || counts.ImageTokens != 7 || counts.AudioTokens != 2 || counts.VideoTokens != 3 {
+		t.Errorf("modalityTokenCounts = %+v", counts)
+	}
+}
+
+func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *testing.T) {
+	m := makeTestModel("gemini-3-pro-preview")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{{
+				FunctionCall: &struct {
+					Name string                 `json:"name"`
+					Args map[string]interface{} `json:"args"`
+				}{Name: "read_screen"},
+				ThoughtSignature: "sig-no-args",
+			}}},
+			FinishReason: "STOP",
+		}},
+	}
+
+	result := m.convertResponse(resp)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(result.ToolCalls))
+	}
+	call := result.ToolCalls[0]
+	if len(call.Arguments) != 0 {
+		t.Fatalf("Arguments = %#v, want empty map", call.Arguments)
+	}
+	if call.ThoughtSignature != "sig-no-args" {
+		t.Fatalf("ThoughtSignature = %q, want sig-no-args", call.ThoughtSignature)
+	}
+	googleMeta, ok := call.ProviderMetadata["google"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing google provider metadata: %#v", call.ProviderMetadata)
+	}
+	if googleMeta["thoughtSignature"] != "sig-no-args" {
+		t.Fatalf("thoughtSignature metadata = %v", googleMeta["thoughtSignature"])
+	}
+}

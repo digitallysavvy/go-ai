@@ -13,6 +13,7 @@ import (
 // configuration (metadata key, provider options key precedence, etc.).
 type LanguageModel struct {
 	*gemini.LanguageModel
+	provider *Provider
 }
 
 // NewLanguageModel creates a Google Vertex AI language model.
@@ -33,7 +34,7 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		SupportsCodeExecution: false,
 		SupportsImageInput:    vertexSupportsImageInput,
 	}
-	return &LanguageModel{gemini.NewLanguageModel(cfg, modelID)}
+	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
 }
 
 // vertexSupportsImageInput reports whether a Vertex AI model accepts image inputs.
