@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -19,8 +18,9 @@ type MCPClient struct {
 	pending   map[interface{}]chan *MCPMessage
 
 	// Server info
-	serverInfo       ServerInfo
-	serverCapability ServerCapabilities
+	serverInfo         ServerInfo
+	serverCapability   ServerCapabilities
+	serverInstructions string
 
 	// Client info
 	clientInfo ClientInfo
@@ -133,6 +133,7 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 
 	c.serverInfo = result.ServerInfo
 	c.serverCapability = result.Capabilities
+	c.serverInstructions = result.Instructions
 
 	// Send initialized notification
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
@@ -282,6 +283,12 @@ func (c *MCPClient) ServerCapabilities() ServerCapabilities {
 	return c.serverCapability
 }
 
+// ServerInstructions returns the server-provided instructions from the
+// initialize response, if the server supplied them.
+func (c *MCPClient) ServerInstructions() string {
+	return c.serverInstructions
+}
+
 // call makes a JSON-RPC call and waits for the response
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
 	id := c.idGen.Next()
@@ -326,7 +333,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 		// Parse result
 		if result != nil && response.Result != nil {
-			if err := json.Unmarshal(response.Result, result); err != nil {
+			if err := unmarshalSafeJSON(response.Result, result); err != nil {
 				return fmt.Errorf("failed to unmarshal result: %w", err)
 			}
 		}

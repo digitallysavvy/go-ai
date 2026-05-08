@@ -11,8 +11,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // XAIResponsesProviderOptions contains XAI-specific options for the Responses API path.
@@ -283,6 +283,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	result := &types.GenerateResult{
 		Usage:       convertXAIResponsesUsage(resp.Usage),
 		RawResponse: resp,
+	}
+	if resp.Usage.CostInUsdTicks != nil {
+		result.ProviderMetadata = map[string]interface{}{
+			"xai": map[string]interface{}{
+				"costInUsdTicks": *resp.Usage.CostInUsdTicks,
+			},
+		}
 	}
 
 	// Resolve user-registered tool names for provider-executed tools.
@@ -645,6 +652,20 @@ func convertXAIResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 		}
 	}
 
+	result.Raw = map[string]interface{}{
+		"input_tokens":  u.InputTokens,
+		"output_tokens": u.OutputTokens,
+	}
+	if u.CostInUsdTicks != nil {
+		result.Raw["cost_in_usd_ticks"] = *u.CostInUsdTicks
+	}
+	if u.InputTokensDetails != nil {
+		result.Raw["input_tokens_details"] = u.InputTokensDetails
+	}
+	if u.OutputTokensDetails != nil {
+		result.Raw["output_tokens_details"] = u.OutputTokensDetails
+	}
+
 	return result
 }
 
@@ -665,12 +686,12 @@ type xaiResponsesToolAccum struct {
 // xaiResponsesStream implements provider.TextStream for the XAI Responses API SSE stream.
 // XAI's Responses API uses the same SSE event schema as the OpenAI Responses API.
 type xaiResponsesStream struct {
-	reader          io.ReadCloser
-	parser          *streaming.SSEParser
-	err             error
-	toolAccum       map[int]*xaiResponsesToolAccum
-	itemTypes       map[int]string
-	flushQueue      []*provider.StreamChunk
+	reader     io.ReadCloser
+	parser     *streaming.SSEParser
+	err        error
+	toolAccum  map[int]*xaiResponsesToolAccum
+	itemTypes  map[int]string
+	flushQueue []*provider.StreamChunk
 	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
 	// Used to emit the matching reasoning-end in output_item.done, and to avoid
 	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
@@ -913,8 +934,17 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		finishReason := mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
 
 		var meta json.RawMessage
+		metaMap := map[string]interface{}{}
 		if e.Response.ID != "" {
-			meta, _ = json.Marshal(map[string]interface{}{"responseId": e.Response.ID})
+			metaMap["responseId"] = e.Response.ID
+		}
+		if e.Response.Usage.CostInUsdTicks != nil {
+			metaMap["xai"] = map[string]interface{}{
+				"costInUsdTicks": *e.Response.Usage.CostInUsdTicks,
+			}
+		}
+		if len(metaMap) > 0 {
+			meta, _ = json.Marshal(metaMap)
 		}
 
 		s.err = io.EOF

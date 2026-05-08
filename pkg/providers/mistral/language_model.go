@@ -63,7 +63,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // supportsReasoningEffort returns true for Mistral models that accept reasoning_effort.
 func (m *LanguageModel) supportsReasoningEffort() bool {
-	return m.modelID == "mistral-small-latest" || m.modelID == "mistral-small-2603"
+	return m.modelID == ModelMistralSmallLatest ||
+		m.modelID == ModelMistralSmall2603 ||
+		m.modelID == ModelMistralMedium35
 }
 
 // checkReasoningWarnings returns a warning when reasoning is requested for a model
@@ -227,8 +229,12 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 
 	// Parse detailed token information if available
 	var cachedTokens int64
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+	if usage.NumCachedTokens != nil {
+		cachedTokens = int64(*usage.NumCachedTokens)
+	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	} else if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.CachedTokens != nil {
+		cachedTokens = int64(*usage.PromptTokenDetails.CachedTokens)
 	}
 	var textTokens *int64
 	var imageTokens *int64
@@ -285,6 +291,18 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 		"completion_tokens": usage.CompletionTokens,
 		"total_tokens":      usage.TotalTokens,
 	}
+	if usage.NumCachedTokens != nil {
+		result.Raw["num_cached_tokens"] = *usage.NumCachedTokens
+	}
+	if usage.PromptTokensDetails != nil {
+		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
+	}
+	if usage.PromptTokenDetails != nil {
+		result.Raw["prompt_token_details"] = usage.PromptTokenDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
+	}
 
 	return result
 }
@@ -324,9 +342,10 @@ type mistralResponse struct {
 
 // mistralUsage represents Mistral usage information
 type mistralUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int  `json:"prompt_tokens"`
+	CompletionTokens int  `json:"completion_tokens"`
+	TotalTokens      int  `json:"total_tokens"`
+	NumCachedTokens  *int `json:"num_cached_tokens,omitempty"`
 
 	// Detailed token breakdown (OpenAI-compatible, if supported)
 	PromptTokensDetails *struct {
@@ -335,6 +354,11 @@ type mistralUsage struct {
 		TextTokens   *int `json:"text_tokens,omitempty"`
 		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
+
+	// Legacy Mistral spelling kept for API compatibility.
+	PromptTokenDetails *struct {
+		CachedTokens *int `json:"cached_tokens,omitempty"`
+	} `json:"prompt_token_details,omitempty"`
 
 	CompletionTokensDetails *struct {
 		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`

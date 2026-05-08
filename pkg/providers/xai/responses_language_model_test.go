@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 // TestXAIResponsesLanguageModelMetadata verifies basic model metadata.
@@ -130,6 +131,48 @@ func TestXAIResponsesReasoningSummary(t *testing.T) {
 	}
 }
 
+func TestXAIResponsesBuildRequestBodyNonImageFilesUseInputFile(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.FileContent{
+						URL:       "https://example.com/report.pdf",
+						MediaType: "application/pdf",
+					},
+					types.FileContent{
+						Data:      []byte("a,b\n1,2\n"),
+						MediaType: "text/csv",
+						Filename:  "data.csv",
+					},
+				},
+			},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody error = %v", err)
+	}
+
+	input := body["input"].([]interface{})
+	message := input[0].(responses.UserMessage)
+	parts := message.Content.([]interface{})
+	urlPart := parts[0].(responses.UserFilePart)
+	if urlPart.Type != "input_file" || urlPart.FileURL != "https://example.com/report.pdf" {
+		t.Fatalf("url part = %#v", urlPart)
+	}
+	dataPart := parts[1].(map[string]interface{})
+	if dataPart["type"] != "input_file" || dataPart["filename"] != "data.csv" {
+		t.Fatalf("data part = %#v", dataPart)
+	}
+	if _, ok := dataPart["file_data"].(string); !ok {
+		t.Fatalf("data part missing file_data: %#v", dataPart)
+	}
+}
+
 // TestXAIResponsesReasoningExtractionDoGenerate is a regression test verifying
 // that reasoning output items are correctly extracted from the Responses API
 // doGenerate response. Both summaryText and encryptedContent must be preserved.
@@ -218,6 +261,44 @@ func TestXAIResponsesReasoningExtractionDoGenerate(t *testing.T) {
 	}
 	if result.Usage.OutputDetails.ReasoningTokens == nil || *result.Usage.OutputDetails.ReasoningTokens != 15 {
 		t.Errorf("ReasoningTokens = %v, want 15", result.Usage.OutputDetails.ReasoningTokens)
+	}
+}
+
+func TestXAIResponsesDoGenerateCostInUsdTicksMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id":     "resp_cost",
+			"status": "completed",
+			"output": []interface{}{},
+			"usage": map[string]interface{}{
+				"input_tokens":      10,
+				"output_tokens":     5,
+				"cost_in_usd_ticks": 113500,
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+
+	xaiMeta, ok := result.ProviderMetadata["xai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ProviderMetadata[xai] = %T, want map[string]interface{}", result.ProviderMetadata["xai"])
+	}
+	if got := xaiMeta["costInUsdTicks"]; got != int64(113500) {
+		t.Fatalf("costInUsdTicks: got %v", got)
+	}
+	if got := result.Usage.Raw["cost_in_usd_ticks"]; got != int64(113500) {
+		t.Fatalf("usage raw cost_in_usd_ticks: got %v", got)
 	}
 }
 

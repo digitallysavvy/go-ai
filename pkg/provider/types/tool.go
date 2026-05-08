@@ -89,6 +89,9 @@ type Tool struct {
 	// propagated onto tool calls and results produced for this tool.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
+	// ProviderName identifies the provider that owns a provider-defined tool.
+	ProviderName string `json:"providerName,omitempty"`
+
 	// Type is "function" (default) or "provider" for provider-defined native tools.
 	// When Type is "provider", ProviderID and ProviderArgs specify the native tool.
 	Type string `json:"type,omitempty"`

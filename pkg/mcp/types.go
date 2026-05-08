@@ -70,11 +70,11 @@ type MCPResource struct {
 
 // MCPPrompt represents a prompt template exposed via MCP
 type MCPPrompt struct {
-	Name        string                   `json:"name"`
-	Description string                   `json:"description,omitempty"`
-	Arguments   []MCPPromptArgument      `json:"arguments,omitempty"`
-	Template    string                   `json:"template,omitempty"`
-	Metadata    map[string]interface{}   `json:"metadata,omitempty"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Arguments   []MCPPromptArgument    `json:"arguments,omitempty"`
+	Template    string                 `json:"template,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // MCPPromptArgument represents an argument to a prompt template
@@ -86,16 +86,17 @@ type MCPPromptArgument struct {
 
 // InitializeParams represents parameters for the initialize request
 type InitializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    ClientCapabilities     `json:"capabilities"`
-	ClientInfo      ClientInfo             `json:"clientInfo"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ClientInfo      ClientInfo         `json:"clientInfo"`
 }
 
 // InitializeResult represents the result of an initialize request
 type InitializeResult struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    ServerCapabilities     `json:"capabilities"`
-	ServerInfo      ServerInfo             `json:"serverInfo"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ServerCapabilities `json:"capabilities"`
+	ServerInfo      ServerInfo         `json:"serverInfo"`
+	Instructions    string             `json:"instructions,omitempty"`
 }
 
 // ClientCapabilities represents capabilities of the MCP client
@@ -172,8 +173,8 @@ type CallToolParams struct {
 
 // CallToolResult represents the result of calling a tool
 type CallToolResult struct {
-	Content []ToolResultContent    `json:"content"`
-	IsError bool                   `json:"isError,omitempty"`
+	Content  []ToolResultContent    `json:"content"`
+	IsError  bool                   `json:"isError,omitempty"`
 	Metadata map[string]interface{} `json:"_meta,omitempty"`
 }
 
@@ -181,9 +182,9 @@ type CallToolResult struct {
 type ToolResultContent struct {
 	Type     string      `json:"type"` // "text", "image", "resource"
 	Text     string      `json:"text,omitempty"`
-	Data     string      `json:"data,omitempty"`     // base64 for image
+	Data     string      `json:"data,omitempty"` // base64 for image
 	MimeType string      `json:"mimeType,omitempty"`
-	URI      string      `json:"uri,omitempty"`      // for resource type
+	URI      string      `json:"uri,omitempty"` // for resource type
 	Metadata interface{} `json:"metadata,omitempty"`
 }
 
@@ -242,17 +243,17 @@ type GetPromptResult struct {
 
 // PromptMessage represents a message in a prompt
 type PromptMessage struct {
-	Role    string          `json:"role"`
-	Content PromptContent   `json:"content"`
+	Role    string        `json:"role"`
+	Content PromptContent `json:"content"`
 }
 
 // PromptContent represents content in a prompt message
 type PromptContent struct {
-	Type string `json:"type"` // "text", "image", "resource"
-	Text string `json:"text,omitempty"`
-	Data string `json:"data,omitempty"` // base64 for image
+	Type     string `json:"type"` // "text", "image", "resource"
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"` // base64 for image
 	MimeType string `json:"mimeType,omitempty"`
-	URI string `json:"uri,omitempty"` // for resource type
+	URI      string `json:"uri,omitempty"` // for resource type
 }
 
 // LoggingLevel represents the level of logging

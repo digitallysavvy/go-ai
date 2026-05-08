@@ -21,8 +21,8 @@ type HTTPTransport struct {
 	client *http.Client
 
 	// Message queue for receiving
-	receiveMu sync.Mutex
-	receiveQueue []* MCPMessage
+	receiveMu    sync.Mutex
+	receiveQueue []*MCPMessage
 
 	// State
 	connected bool
@@ -201,7 +201,7 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 
 	// Parse response
 	var responseMsg MCPMessage
-	if err := json.Unmarshal(body, &responseMsg); err != nil {
+	if err := unmarshalSafeJSON(body, &responseMsg); err != nil {
 		return NewTransportError("failed to unmarshal response", err)
 	}
 

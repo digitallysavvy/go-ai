@@ -147,3 +147,65 @@ data: [DONE]
 		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
 }
+
+func TestDeepseekV4PreservesAssistantReasoningContent(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "deepseek-v4")
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "How many r's are in strawberry?"},
+				},
+			},
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "Count each letter. "},
+					types.ReasoningContent{Text: "There are three."},
+					types.TextContent{Text: "3"},
+				},
+			},
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "No hidden reasoning here."},
+				},
+			},
+		}},
+	}, false)
+
+	messages := body["messages"].([]map[string]interface{})
+	firstAssistant := messages[1]
+	if got := firstAssistant["reasoning_content"]; got != "Count each letter. There are three." {
+		t.Fatalf("first assistant reasoning_content: got %q", got)
+	}
+	secondAssistant := messages[2]
+	if got := secondAssistant["reasoning_content"]; got != "" {
+		t.Fatalf("second assistant reasoning_content should be backfilled empty string, got %q", got)
+	}
+}
+
+func TestDeepseekNonV4OmitsAssistantReasoningContent(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "deepseek-reasoner")
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "Do not resend this to R1."},
+					types.TextContent{Text: "answer"},
+				},
+			},
+		}},
+	}, false)
+
+	messages := body["messages"].([]map[string]interface{})
+	if _, ok := messages[0]["reasoning_content"]; ok {
+		t.Fatalf("non-v4 DeepSeek messages should omit reasoning_content, got %#v", messages[0]["reasoning_content"])
+	}
+}

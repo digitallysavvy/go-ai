@@ -201,7 +201,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 
 	// Parse JSON
 	var message MCPMessage
-	if err := json.Unmarshal(line, &message); err != nil {
+	if err := unmarshalSafeJSON(line, &message); err != nil {
 		return nil, NewTransportError("failed to unmarshal message", err)
 	}
 

@@ -12,7 +12,7 @@ import (
 func TestMistralSmallReasoningSupported(t *testing.T) {
 	// Both mistral-small-latest and mistral-small-2603 support reasoning_effort.
 	// Mistral maps none → "none"; all non-default levels → "high".
-	for _, modelID := range []string{"mistral-small-latest", "mistral-small-2603"} {
+	for _, modelID := range []string{ModelMistralSmallLatest, ModelMistralSmall2603, ModelMistralMedium35} {
 		t.Run(modelID, func(t *testing.T) {
 			prov := New(Config{APIKey: "test-key"})
 			model := NewLanguageModel(prov, modelID)
@@ -47,6 +47,59 @@ func TestMistralSmallReasoningSupported(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestConvertMistralUsageCachedTokenPrecedence(t *testing.T) {
+	numCached := 7
+	promptDetailsCached := 5
+	legacyDetailsCached := 3
+	usage := convertMistralUsage(mistralUsage{
+		PromptTokens:     20,
+		CompletionTokens: 4,
+		TotalTokens:      24,
+		NumCachedTokens:  &numCached,
+		PromptTokensDetails: &struct {
+			CachedTokens *int `json:"cached_tokens,omitempty"`
+			AudioTokens  *int `json:"audio_tokens,omitempty"`
+			TextTokens   *int `json:"text_tokens,omitempty"`
+			ImageTokens  *int `json:"image_tokens,omitempty"`
+		}{CachedTokens: &promptDetailsCached},
+		PromptTokenDetails: &struct {
+			CachedTokens *int `json:"cached_tokens,omitempty"`
+		}{CachedTokens: &legacyDetailsCached},
+	})
+
+	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
+		t.Fatal("expected cache read token details")
+	}
+	if got := *usage.InputDetails.CacheReadTokens; got != int64(numCached) {
+		t.Fatalf("cache read tokens: want %d, got %d", numCached, got)
+	}
+	if got := *usage.InputDetails.NoCacheTokens; got != 13 {
+		t.Fatalf("no-cache tokens: want 13, got %d", got)
+	}
+	if got := usage.Raw["num_cached_tokens"]; got != numCached {
+		t.Fatalf("raw num_cached_tokens: want %d, got %v", numCached, got)
+	}
+}
+
+func TestConvertMistralUsageLegacyCachedTokenFallback(t *testing.T) {
+	legacyDetailsCached := 3
+	usage := convertMistralUsage(mistralUsage{
+		PromptTokens:     20,
+		CompletionTokens: 4,
+		TotalTokens:      24,
+		PromptTokenDetails: &struct {
+			CachedTokens *int `json:"cached_tokens,omitempty"`
+		}{CachedTokens: &legacyDetailsCached},
+	})
+
+	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
+		t.Fatal("expected cache read token details")
+	}
+	if got := *usage.InputDetails.CacheReadTokens; got != int64(legacyDetailsCached) {
+		t.Fatalf("cache read tokens: want %d, got %d", legacyDetailsCached, got)
 	}
 }
 

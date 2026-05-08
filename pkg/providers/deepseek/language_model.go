@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -104,7 +105,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = m.toDeepSeekMessages(opts.Prompt.Messages)
 	} else if opts.Prompt.IsSimple() {
 		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
 	}
@@ -152,6 +153,38 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 	return body
+}
+
+func (m *LanguageModel) toDeepSeekMessages(messages []types.Message) []map[string]interface{} {
+	converted := prompt.ToOpenAIMessages(messages)
+	if !strings.Contains(m.modelID, "deepseek-v4") {
+		return converted
+	}
+
+	nextConverted := 0
+	for _, msg := range messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+
+		for nextConverted < len(converted) && converted[nextConverted]["role"] != string(types.RoleAssistant) {
+			nextConverted++
+		}
+		if nextConverted >= len(converted) {
+			break
+		}
+
+		var reasoning strings.Builder
+		for _, part := range msg.Content {
+			if reasoningPart, ok := part.(types.ReasoningContent); ok {
+				reasoning.WriteString(reasoningPart.Text)
+			}
+		}
+		converted[nextConverted]["reasoning_content"] = reasoning.String()
+		nextConverted++
+	}
+
+	return converted
 }
 
 func (m *LanguageModel) convertResponse(response deepseekResponse) *types.GenerateResult {

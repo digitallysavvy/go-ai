@@ -79,6 +79,7 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 
 		result := InitializeResult{
 			ProtocolVersion: ProtocolVersion,
+			Instructions:    "Use the test tools carefully.",
 			ServerInfo: ServerInfo{
 				Name:    "test-server",
 				Version: "1.0.0",
@@ -156,6 +157,9 @@ func TestGetSerializableTools(t *testing.T) {
 	// Verify pagination cursor
 	if result.NextCursor != "next-page-cursor" {
 		t.Errorf("expected NextCursor 'next-page-cursor', got '%s'", result.NextCursor)
+	}
+	if client.ServerInstructions() != "Use the test tools carefully." {
+		t.Errorf("expected server instructions to be preserved, got %q", client.ServerInstructions())
 	}
 
 	// Test serialization

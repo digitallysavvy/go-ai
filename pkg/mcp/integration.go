@@ -39,10 +39,20 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 
 // convertTool converts a single MCP tool to a Go-AI tool
 func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
+	serverName := c.client.ServerInfo().Name
+	providerMetadata := map[string]interface{}{}
+	if serverName != "" {
+		providerMetadata["mcp"] = map[string]interface{}{
+			"serverName": serverName,
+		}
+	}
+
 	return types.Tool{
-		Name:        mcpTool.Name,
-		Description: mcpTool.Description,
-		Parameters:  mcpTool.InputSchema,
+		Name:             mcpTool.Name,
+		Description:      mcpTool.Description,
+		Parameters:       mcpTool.InputSchema,
+		ProviderName:     "mcp",
+		ProviderMetadata: providerMetadata,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			// Call MCP tool
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)

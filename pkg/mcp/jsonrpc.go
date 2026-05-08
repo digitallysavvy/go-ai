@@ -118,7 +118,7 @@ func ParseParams(msg *MCPMessage, target interface{}) error {
 		return nil
 	}
 
-	return json.Unmarshal(msg.Params, target)
+	return unmarshalSafeJSON(msg.Params, target)
 }
 
 // ParseResult parses the result from a message into the target type
@@ -127,7 +127,7 @@ func ParseResult(msg *MCPMessage, target interface{}) error {
 		return nil
 	}
 
-	return json.Unmarshal(msg.Result, target)
+	return unmarshalSafeJSON(msg.Result, target)
 }
 
 // GetError extracts the error from a message
