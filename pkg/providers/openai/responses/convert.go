@@ -66,7 +66,11 @@ func convertUserMessage(msg types.Message) UserMessage {
 					p.MimeType, base64.StdEncoding.EncodeToString(p.Image))
 			}
 			if imageURL != "" {
-				parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: imageURL})
+				parts = append(parts, UserImageURLPart{
+					Type:     "input_image",
+					ImageURL: imageURL,
+					Detail:   openAIResponsesImageDetail(p.ProviderOptions),
+				})
 			}
 		case types.FileContent:
 			mediaType := p.MediaType
@@ -75,7 +79,11 @@ func convertUserMessage(msg types.Message) UserMessage {
 			}
 			if p.URL != "" {
 				if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
-					parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: p.URL})
+					parts = append(parts, UserImageURLPart{
+						Type:     "input_image",
+						ImageURL: p.URL,
+						Detail:   openAIResponsesImageDetail(p.ProviderOptions),
+					})
 				} else {
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: p.URL})
 				}
@@ -86,7 +94,11 @@ func convertUserMessage(msg types.Message) UserMessage {
 			} else if len(p.Data) > 0 {
 				fileData := fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(p.Data))
 				if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
-					parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: fileData})
+					parts = append(parts, UserImageURLPart{
+						Type:     "input_image",
+						ImageURL: fileData,
+						Detail:   openAIResponsesImageDetail(p.ProviderOptions),
+					})
 				} else {
 					part := map[string]interface{}{"type": "input_file", "file_data": fileData}
 					if p.Filename != "" {
@@ -189,6 +201,7 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 					parts = append(parts, CustomToolCallOutputPart{
 						Type:     "input_image",
 						ImageURL: imageURL,
+						Detail:   openAIResponsesImageDetail(b.ProviderOptions),
 					})
 				case types.FileContentBlock:
 					if b.URL != "" {
@@ -232,4 +245,21 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 		return s
 	}
 	return fmt.Sprintf("%v", tr.Result)
+}
+
+func openAIResponsesImageDetail(providerOptions map[string]interface{}) string {
+	if providerOptions == nil {
+		return ""
+	}
+	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if detail, ok := openaiOpts["imageDetail"].(string); ok {
+		return detail
+	}
+	if detail, ok := openaiOpts["detail"].(string); ok {
+		return detail
+	}
+	return ""
 }

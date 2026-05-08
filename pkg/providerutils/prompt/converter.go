@@ -44,19 +44,19 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 		// Assistant messages that made tool calls must carry the tool_calls array
 		// so that the subsequent tool role messages are considered valid by OpenAI.
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
-			toolCalls := make([]map[string]interface{}, 0, len(msg.ToolCalls))
-			for _, tc := range msg.ToolCalls {
-				argsJSON, _ := json.Marshal(tc.Arguments)
-				toolCalls = append(toolCalls, map[string]interface{}{
-					"id":   tc.ID,
-					"type": "function",
-					"function": map[string]interface{}{
-						"name":      tc.ToolName,
-						"arguments": string(argsJSON),
-					},
-				})
-			}
+			toolCalls := openAIToolCalls(msg.ToolCalls)
 			openAIMsg["tool_calls"] = toolCalls
+			text := assistantTextContent(msg.Content)
+			if text == "" {
+				openAIMsg["content"] = nil
+			} else {
+				openAIMsg["content"] = text
+			}
+			if msg.Name != "" {
+				openAIMsg["name"] = msg.Name
+			}
+			result = append(result, openAIMsg)
+			continue
 		}
 
 		// Handle content parts
@@ -81,11 +81,15 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 						imageData = fmt.Sprintf("data:%s;base64,%s",
 							p.MimeType, base64.StdEncoding.EncodeToString(p.Image))
 					}
+					imageURL := map[string]interface{}{
+						"url": imageData,
+					}
+					if detail := openAIImageDetail(p.ProviderOptions); detail != "" {
+						imageURL["detail"] = detail
+					}
 					contentParts = append(contentParts, map[string]interface{}{
-						"type": "image_url",
-						"image_url": map[string]interface{}{
-							"url": imageData,
-						},
+						"type":      "image_url",
+						"image_url": imageURL,
 					})
 				case types.FileContent:
 					contentParts = append(contentParts, openAIFileContentPart(p))
@@ -107,6 +111,8 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 			if len(contentParts) > 0 {
 				openAIMsg["content"] = contentParts
 			}
+		} else if msg.Role == types.RoleAssistant {
+			openAIMsg["content"] = ""
 		}
 
 		if msg.Name != "" {
@@ -117,6 +123,40 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 	}
 
 	return result
+}
+
+func openAIToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		arguments := tc.RawArguments
+		if arguments == "" {
+			args := tc.Arguments
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			argsJSON, _ := json.Marshal(args)
+			arguments = string(argsJSON)
+		}
+		result = append(result, map[string]interface{}{
+			"id":   tc.ID,
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      tc.ToolName,
+				"arguments": arguments,
+			},
+		})
+	}
+	return result
+}
+
+func assistantTextContent(content []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range content {
+		if text, ok := part.(types.TextContent); ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return b.String()
 }
 
 // openAIToolResultText extracts a plain string from a ToolResultContent for
@@ -594,11 +634,15 @@ func openAIFileContentPart(file types.FileContent) map[string]interface{} {
 		if imageURL == "" && len(file.Data) > 0 {
 			imageURL = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
 		}
+		image := map[string]interface{}{
+			"url": imageURL,
+		}
+		if detail := openAIImageDetail(file.ProviderOptions); detail != "" {
+			image["detail"] = detail
+		}
 		return map[string]interface{}{
-			"type": "image_url",
-			"image_url": map[string]interface{}{
-				"url": imageURL,
-			},
+			"type":      "image_url",
+			"image_url": image,
 		}
 	}
 
@@ -623,6 +667,23 @@ func openAIFileContentPart(file types.FileContent) map[string]interface{} {
 		"type": "file",
 		"file": fileObject,
 	}
+}
+
+func openAIImageDetail(providerOptions map[string]interface{}) string {
+	if providerOptions == nil {
+		return ""
+	}
+	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if detail, ok := openaiOpts["imageDetail"].(string); ok {
+		return detail
+	}
+	if detail, ok := openaiOpts["detail"].(string); ok {
+		return detail
+	}
+	return ""
 }
 
 func anthropicFileContentPart(file types.FileContent) map[string]interface{} {

@@ -471,6 +471,16 @@ func isReasoningModel(modelID string) bool {
 		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
 }
 
+// supportsNonReasoningParameters reports whether a reasoning model accepts
+// standard sampling parameters when reasoning effort is disabled.
+func supportsNonReasoningParameters(modelID string) bool {
+	return strings.HasPrefix(modelID, "gpt-5.1") ||
+		strings.HasPrefix(modelID, "gpt-5.2") ||
+		strings.HasPrefix(modelID, "gpt-5.3") ||
+		strings.HasPrefix(modelID, "gpt-5.4") ||
+		strings.HasPrefix(modelID, "gpt-5.5")
+}
+
 // openAIStream implements provider.TextStream for OpenAI streaming
 type openAIStream struct {
 	reader          io.ReadCloser

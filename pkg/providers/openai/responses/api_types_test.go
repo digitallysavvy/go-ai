@@ -342,6 +342,43 @@ func TestFileURLInToolOutput(t *testing.T) {
 	}
 }
 
+func TestImageDetailInToolOutput(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID: "call-image",
+				ToolName:   "view",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.ImageContentBlock{
+							Data:      []byte{1, 2, 3},
+							MediaType: "image/png",
+							ProviderOptions: map[string]interface{}{
+								"openai": map[string]interface{}{"imageDetail": "high"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	items := convertToolItems(msg)
+	out := items[0].(FunctionCallOutputItem)
+	parts, ok := out.Output.([]CustomToolCallOutputPart)
+	if !ok {
+		t.Fatalf("expected []CustomToolCallOutputPart, got %T", out.Output)
+	}
+	if parts[0].Type != "input_image" {
+		t.Fatalf("type = %q, want input_image", parts[0].Type)
+	}
+	if parts[0].Detail != "high" {
+		t.Fatalf("detail = %q, want high", parts[0].Detail)
+	}
+}
+
 func TestMixedContentWithFileURL(t *testing.T) {
 	// Build a tool result with text + file-url mixed content.
 	msg := types.Message{

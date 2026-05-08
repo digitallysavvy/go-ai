@@ -24,8 +24,8 @@ func mockResponsesResponse(id, text string) responses.ResponsesAPIResponse {
 		},
 	})
 	return responses.ResponsesAPIResponse{
-		ID:    id,
-		Model: "gpt-4o",
+		ID:     id,
+		Model:  "gpt-4o",
 		Output: []json.RawMessage{content},
 		Usage: responses.ResponsesAPIUsage{
 			InputTokens:  5,
@@ -139,19 +139,20 @@ func TestResponsesLanguageModel_DoGenerate_SystemRole_Reasoning(t *testing.T) {
 func TestResponsesLanguageModel_DoGenerate_ToolCall(t *testing.T) {
 	callItem, _ := json.Marshal(map[string]interface{}{
 		"type":      "function_call",
-		"id":        "call_abc",
+		"id":        "fc_abc",
 		"call_id":   "call_abc",
 		"name":      "get_weather",
+		"namespace": "weather_tools",
 		"arguments": `{"location":"NYC"}`,
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(responses.ResponsesAPIResponse{
-			ID:    "resp_tool",
-			Model: "gpt-4o",
+			ID:     "resp_tool",
+			Model:  "gpt-4o",
 			Output: []json.RawMessage{callItem},
-			Usage: responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
+			Usage:  responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
 		})
 	}))
 	defer server.Close()
@@ -177,6 +178,16 @@ func TestResponsesLanguageModel_DoGenerate_ToolCall(t *testing.T) {
 	}
 	if result.ToolCalls[0].Arguments["location"] != "NYC" {
 		t.Errorf("location = %v, want NYC", result.ToolCalls[0].Arguments["location"])
+	}
+	openaiMeta, ok := result.ToolCalls[0].ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("openai provider metadata missing: %#v", result.ToolCalls[0].ProviderMetadata)
+	}
+	if openaiMeta["itemId"] != "fc_abc" {
+		t.Errorf("itemId = %v, want fc_abc", openaiMeta["itemId"])
+	}
+	if openaiMeta["namespace"] != "weather_tools" {
+		t.Errorf("namespace = %v, want weather_tools", openaiMeta["namespace"])
 	}
 	if result.FinishReason != types.FinishReasonToolCalls {
 		t.Errorf("FinishReason = %q, want tool-calls", result.FinishReason)
@@ -253,12 +264,14 @@ func TestResponsesLanguageModel_DoStream_ToolCall(t *testing.T) {
 
 		callDoneItem, _ := json.Marshal(map[string]interface{}{
 			"type":      "function_call",
+			"id":        "fc_xyz",
 			"call_id":   "call_xyz",
 			"name":      "search",
+			"namespace": "search_tools",
 			"arguments": `{"query":"go lang"}`,
 		})
 		events := []string{
-			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"call_xyz","call_id":"call_xyz","name":"search"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xyz","call_id":"call_xyz","name":"search","namespace":"search_tools"}}`,
 			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"query\":"}`,
 			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"go lang\"}"}`,
 			fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":%s}`, string(callDoneItem)),
@@ -304,6 +317,16 @@ func TestResponsesLanguageModel_DoStream_ToolCall(t *testing.T) {
 	}
 	if toolChunk.ToolCall.Arguments["query"] != "go lang" {
 		t.Errorf("query = %v, want %q", toolChunk.ToolCall.Arguments["query"], "go lang")
+	}
+	openaiMeta, ok := toolChunk.ToolCall.ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("openai provider metadata missing: %#v", toolChunk.ToolCall.ProviderMetadata)
+	}
+	if openaiMeta["itemId"] != "fc_xyz" {
+		t.Errorf("itemId = %v, want fc_xyz", openaiMeta["itemId"])
+	}
+	if openaiMeta["namespace"] != "search_tools" {
+		t.Errorf("namespace = %v, want search_tools", openaiMeta["namespace"])
 	}
 }
 

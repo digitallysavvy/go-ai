@@ -225,7 +225,7 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 // TestPromptCacheRetentionModels tests cache retention with different models
 func TestPromptCacheRetentionModels(t *testing.T) {
 	models := []struct {
-		modelID         string
+		modelID          string
 		supportsCache24h bool
 	}{
 		{"gpt-5.1", true},
@@ -245,8 +245,8 @@ func TestPromptCacheRetentionModels(t *testing.T) {
 
 				// Return success response
 				response := openAIResponse{
-					ID:     "test-id",
-					Model:  tt.modelID,
+					ID:    "test-id",
+					Model: tt.modelID,
 					Choices: []struct {
 						Index        int           `json:"index"`
 						Message      openAIMessage `json:"message"`
@@ -920,6 +920,12 @@ func TestIsReasoningModel(t *testing.T) {
 		{"gpt-5.4", true},
 		{"gpt-5.4-pro", true},
 		{"gpt-5.4-2026-03-05", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.4-nano", true},
+		{"gpt-5.4-nano-2026-03-17", true},
+		{"gpt-5.5", true},
+		{"gpt-5.5-2026-04-23", true},
 		// Non-reasoning models — expect false
 		{"gpt-5-chat-latest", false},
 		{"gpt-5.1-chat-latest", true}, // gpt-5.1-chat-latest starts with gpt-5 but NOT gpt-5-chat
@@ -941,6 +947,45 @@ func TestIsReasoningModel(t *testing.T) {
 	}
 }
 
+func TestSupportsNonReasoningParametersMatchesOpenAICapabilityTable(t *testing.T) {
+	tests := []struct {
+		modelID  string
+		expected bool
+	}{
+		{"gpt-5.1", true},
+		{"gpt-5.1-chat-latest", true},
+		{"gpt-5.1-codex-mini", true},
+		{"gpt-5.1-codex", true},
+		{"gpt-5.2", true},
+		{"gpt-5.2-pro", true},
+		{"gpt-5.2-chat-latest", true},
+		{"gpt-5.3-chat-latest", true},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.4-nano", true},
+		{"gpt-5.4-pro", true},
+		{"gpt-5.4-2026-03-05", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.4-nano-2026-03-17", true},
+		{"gpt-5.5", true},
+		{"gpt-5.5-2026-04-23", true},
+		{"gpt-5", false},
+		{"gpt-5-mini", false},
+		{"gpt-5-nano", false},
+		{"gpt-5-pro", false},
+		{"gpt-5-chat-latest", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			got := supportsNonReasoningParameters(tt.modelID)
+			if got != tt.expected {
+				t.Errorf("supportsNonReasoningParameters(%q) = %v, want %v", tt.modelID, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestSystemMessageRoleForReasoningModels verifies that the "developer" role is sent
 // for reasoning models and "system" role is sent for non-reasoning models.
 func TestSystemMessageRoleForReasoningModels(t *testing.T) {
@@ -952,6 +997,8 @@ func TestSystemMessageRoleForReasoningModels(t *testing.T) {
 		{"o4-mini", "developer"},
 		{"gpt-5.4", "developer"},
 		{"gpt-5.4-pro", "developer"},
+		{"gpt-5.5", "developer"},
+		{"gpt-5.5-2026-04-23", "developer"},
 		{"gpt-5", "developer"},
 		{"gpt-5-mini", "developer"},
 		{"gpt-5-chat-latest", "system"}, // only prefix gpt-5-chat is excluded

@@ -178,6 +178,83 @@ func TestToOpenAIMessagesCustomContentNoOptions(t *testing.T) {
 	_ = result[0]["content"] // just verify no panic
 }
 
+func TestToOpenAIMessagesAssistantToolCallsUseNullContentWhenNoText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{
+					ID:        "quux",
+					ToolName:  "thwomp",
+					Arguments: map[string]interface{}{"foo": "bar123"},
+				},
+			},
+		},
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "quux",
+					ToolName:   "thwomp",
+					Result:     map[string]interface{}{"oof": "321rab"},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIMessages(msgs)
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+	if _, ok := result[0]["content"]; !ok {
+		t.Fatal("assistant content key missing")
+	}
+	if result[0]["content"] != nil {
+		t.Fatalf("assistant content = %#v, want nil", result[0]["content"])
+	}
+	toolCalls, ok := result[0]["tool_calls"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("tool_calls should be []map[string]interface{}, got %T", result[0]["tool_calls"])
+	}
+	function := toolCalls[0]["function"].(map[string]interface{})
+	if function["arguments"] != `{"foo":"bar123"}` {
+		t.Fatalf("arguments = %q, want JSON object", function["arguments"])
+	}
+}
+
+func TestToOpenAIMessagesAssistantWithoutToolCallsUsesEmptyStringContent(t *testing.T) {
+	result := ToOpenAIMessages([]types.Message{{Role: types.RoleAssistant}})
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0]["content"] != "" {
+		t.Fatalf("assistant content = %#v, want empty string", result[0]["content"])
+	}
+	if _, ok := result[0]["tool_calls"]; ok {
+		t.Fatal("tool_calls should be omitted when assistant has no tool calls")
+	}
+}
+
+func TestToOpenAIMessagesAssistantToolCallNilArgumentsDefaultToEmptyObject(t *testing.T) {
+	result := ToOpenAIMessages([]types.Message{
+		{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{ID: "quux", ToolName: "thwomp"},
+			},
+		},
+	})
+
+	toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+	function := toolCalls[0]["function"].(map[string]interface{})
+	if function["arguments"] != "{}" {
+		t.Fatalf("arguments = %q, want {}", function["arguments"])
+	}
+	if result[0]["content"] != nil {
+		t.Fatalf("assistant content = %#v, want nil", result[0]["content"])
+	}
+}
+
 // TestToGoogleMessagesCustomContentWithOptions verifies that CustomContent
 // with Google-keyed ProviderOptions is forwarded to the parts array.
 func TestToGoogleMessagesCustomContentWithOptions(t *testing.T) {
@@ -563,5 +640,41 @@ func TestToGoogleMessagesAssistantFunctionCall(t *testing.T) {
 	args := fc["args"].(map[string]interface{})
 	if args["q"] != "go generics" {
 		t.Errorf("args[q] = %v, want go generics", args["q"])
+	}
+}
+
+func TestToOpenAIMessagesImageDetailProviderOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.ImageContent{
+					URL: "https://example.com/image.png",
+					ProviderOptions: map[string]interface{}{
+						"openai": map[string]interface{}{"imageDetail": "high"},
+					},
+				},
+				types.FileContent{
+					URL:       "https://example.com/file-image.png",
+					MediaType: "image/png",
+					ProviderOptions: map[string]interface{}{
+						"openai": map[string]interface{}{"imageDetail": "low"},
+					},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIMessages(msgs)
+	content := result[0]["content"].([]map[string]interface{})
+
+	firstImage := content[0]["image_url"].(map[string]interface{})
+	if firstImage["detail"] != "high" {
+		t.Fatalf("image detail: got %v, want high", firstImage["detail"])
+	}
+
+	secondImage := content[1]["image_url"].(map[string]interface{})
+	if secondImage["detail"] != "low" {
+		t.Fatalf("file image detail: got %v, want low", secondImage["detail"])
 	}
 }

@@ -14,6 +14,14 @@ func TestOpenAIModelIDs(t *testing.T) {
 		{"GPT54Pro", ModelGPT54Pro, "gpt-5.4-pro"},
 		{"GPT542026_03_05", ModelGPT542026_03_05, "gpt-5.4-2026-03-05"},
 		{"GPT54Pro2026_03_05", ModelGPT54Pro2026_03_05, "gpt-5.4-pro-2026-03-05"},
+		{"GPT54Mini", ModelGPT54Mini, "gpt-5.4-mini"},
+		{"GPT54Mini2026_03_17", ModelGPT54Mini2026_03_17, "gpt-5.4-mini-2026-03-17"},
+		{"GPT54Nano", ModelGPT54Nano, "gpt-5.4-nano"},
+		{"GPT54Nano2026_03_17", ModelGPT54Nano2026_03_17, "gpt-5.4-nano-2026-03-17"},
+
+		// GPT-5.5 series
+		{"GPT55", ModelGPT55, "gpt-5.5"},
+		{"GPT552026_04_23", ModelGPT552026_04_23, "gpt-5.5-2026-04-23"},
 
 		// GPT-5.3 Codex
 		{"GPT53Codex", ModelGPT53Codex, "gpt-5.3-codex"},
@@ -21,18 +29,31 @@ func TestOpenAIModelIDs(t *testing.T) {
 
 		// GPT-5 series
 		{"GPT5", ModelGPT5, "gpt-5"},
+		{"GPT5_2025_08_07", ModelGPT5_2025_08_07, "gpt-5-2025-08-07"},
+		{"GPT5Codex", ModelGPT5Codex, "gpt-5-codex"},
 		{"GPT5Mini", ModelGPT5Mini, "gpt-5-mini"},
+		{"GPT5Mini_2025_08_07", ModelGPT5Mini_2025_08_07, "gpt-5-mini-2025-08-07"},
 		{"GPT5Nano", ModelGPT5Nano, "gpt-5-nano"},
+		{"GPT5Nano_2025_08_07", ModelGPT5Nano_2025_08_07, "gpt-5-nano-2025-08-07"},
+		{"GPT5Pro", ModelGPT5Pro, "gpt-5-pro"},
+		{"GPT5Pro_2025_10_06", ModelGPT5Pro_2025_10_06, "gpt-5-pro-2025-10-06"},
 		{"GPT5ChatLatest", ModelGPT5ChatLatest, "gpt-5-chat-latest"},
 
 		// GPT-5.1 series
 		{"GPT51", ModelGPT51, "gpt-5.1"},
+		{"GPT51_2025_11_13", ModelGPT51_2025_11_13, "gpt-5.1-2025-11-13"},
 		{"GPT51ChatLatest", ModelGPT51ChatLatest, "gpt-5.1-chat-latest"},
+		{"GPT51CodexMini", ModelGPT51CodexMini, "gpt-5.1-codex-mini"},
+		{"GPT51Codex", ModelGPT51Codex, "gpt-5.1-codex"},
+		{"GPT51CodexMax", ModelGPT51CodexMax, "gpt-5.1-codex-max"},
 
 		// GPT-5.2 series
 		{"GPT52", ModelGPT52, "gpt-5.2"},
+		{"GPT52_2025_12_11", ModelGPT52_2025_12_11, "gpt-5.2-2025-12-11"},
 		{"GPT52Pro", ModelGPT52Pro, "gpt-5.2-pro"},
+		{"GPT52Pro_2025_12_11", ModelGPT52Pro_2025_12_11, "gpt-5.2-pro-2025-12-11"},
 		{"GPT52ChatLatest", ModelGPT52ChatLatest, "gpt-5.2-chat-latest"},
+		{"GPT52Codex", ModelGPT52Codex, "gpt-5.2-codex"},
 
 		// GPT-4.1 series
 		{"GPT41", ModelGPT41, "gpt-4.1"},

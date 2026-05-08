@@ -11,8 +11,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // ResponsesLanguageModel implements provider.LanguageModel using OpenAI's
@@ -196,8 +196,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		body["reasoning"] = reasoning
 	}
 
-	// Temperature and top_p: forbidden for reasoning models unless effort="none".
-	supportsNonReasoningParams := !isReasoningModel(m.modelID) || effort == "none"
+	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
+	// later families when reasoning effort is disabled.
+	supportsNonReasoningParams := !isReasoningModel(m.modelID) || (effort == "none" && supportsNonReasoningParameters(m.modelID))
 	if supportsNonReasoningParams {
 		if opts.Temperature != nil {
 			body["temperature"] = *opts.Temperature
@@ -341,9 +342,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			tc := types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: args,
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        args,
+				ProviderMetadata: openAIResponsesToolCallMetadata(item.ID, item.Namespace),
 			}
 			toolCalls = append(toolCalls, tc)
 
@@ -402,6 +404,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	}
 
 	return result, nil
+}
+
+func openAIResponsesToolCallMetadata(itemID, namespace string) map[string]interface{} {
+	openai := map[string]interface{}{}
+	if itemID != "" {
+		openai["itemId"] = itemID
+	}
+	if namespace != "" {
+		openai["namespace"] = namespace
+	}
+	if len(openai) == 0 {
+		return nil
+	}
+	return map[string]interface{}{"openai": openai}
 }
 
 // mapResponsesFinishReason maps Responses API incomplete_details to a FinishReason.
@@ -465,8 +481,10 @@ func (m *ResponsesLanguageModel) wrapErr(err error) error {
 
 // responsesToolAccum accumulates streaming tool call fragments for one output item.
 type responsesToolAccum struct {
-	id        string // call_id / item id
+	id        string // call_id
+	itemID    string
 	name      string
+	namespace string
 	arguments string
 }
 
@@ -569,8 +587,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		switch e.Item.Type {
 		case "function_call":
 			s.toolAccum[e.OutputIndex] = &responsesToolAccum{
-				id:   e.Item.CallID,
-				name: e.Item.Name,
+				id:        e.Item.CallID,
+				itemID:    e.Item.ID,
+				name:      e.Item.Name,
+				namespace: e.Item.Namespace,
 			}
 		case "reasoning":
 			s.reasoningAccum[e.OutputIndex] = &responsesReasoningAccum{}
@@ -716,12 +736,25 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if accum.arguments != "" {
 			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
 		}
+		var item responses.FunctionCallItem
+		if err := json.Unmarshal(e.Item, &item); err == nil {
+			if item.ID != "" {
+				accum.itemID = item.ID
+			}
+			if item.Namespace != "" {
+				accum.namespace = item.Namespace
+			}
+			if accum.arguments == "" && item.Arguments != "" {
+				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			}
+		}
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
+				ID:               accum.id,
+				ToolName:         accum.name,
+				Arguments:        args,
+				ProviderMetadata: openAIResponsesToolCallMetadata(accum.itemID, accum.namespace),
 			},
 		}, nil
 

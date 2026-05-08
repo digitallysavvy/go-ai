@@ -50,6 +50,10 @@ type FunctionCallItem struct {
 	// Name is the function name.
 	Name string `json:"name"`
 
+	// Namespace identifies the deferred tool namespace when a function call
+	// came from Responses API tool search.
+	Namespace string `json:"namespace,omitempty"`
+
 	// Arguments is the JSON-encoded argument string.
 	Arguments string `json:"arguments"`
 }
@@ -99,6 +103,9 @@ type CustomToolCallOutputPart struct {
 
 	// ImageURL is the image URL (input_image only).
 	ImageURL string `json:"image_url,omitempty"`
+
+	// Detail controls OpenAI image processing detail (input_image only).
+	Detail string `json:"detail,omitempty"`
 
 	// Filename is the file name (input_file with inline data only).
 	Filename string `json:"filename,omitempty"`
@@ -321,6 +328,7 @@ type UserTextPart struct {
 type UserImageURLPart struct {
 	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // UserFilePart references a file by URL in a user message.
@@ -357,8 +365,9 @@ type ResponsesAPIResponse struct {
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
 type ResponsesAPIUsage struct {
-	InputTokens        int `json:"input_tokens"`
-	OutputTokens       int `json:"output_tokens"`
+	InputTokens        int    `json:"input_tokens"`
+	OutputTokens       int    `json:"output_tokens"`
+	CostInUsdTicks     *int64 `json:"cost_in_usd_ticks,omitempty"`
 	InputTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
@@ -400,6 +409,8 @@ type OutputItemAddedEvent struct {
 		ID     string `json:"id,omitempty"`
 		CallID string `json:"call_id,omitempty"` // function_call
 		Name   string `json:"name,omitempty"`    // function_call
+		// Namespace is present for function_call items produced by tool search.
+		Namespace string `json:"namespace,omitempty"`
 	} `json:"item"`
 }
 
