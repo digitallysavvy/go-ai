@@ -1,0 +1,128 @@
+---
+title: Voyage Provider
+description: Setup and usage for Voyage embeddings and reranking models.
+---
+
+# Voyage Provider
+
+Voyage provides high-quality embedding and reranking models optimized for retrieval workflows.
+
+## Setup
+
+```go
+import (
+  goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+  "github.com/digitallysavvy/go-ai/pkg/providers/voyage"
+)
+
+voyageProvider := voyage.New(voyage.Config{
+  APIKey: os.Getenv("VOYAGE_API_KEY"),
+})
+```
+
+## Embeddings
+
+```go
+embeddingModel, _ := voyageProvider.EmbeddingModel(voyage.ModelVoyage3Large)
+result, err := embeddingModel.DoEmbedMany(ctx, []string{
+  "Go is a statically typed language",
+  "Vector search uses embeddings",
+}, nil)
+```
+
+### Embedding Options
+
+Voyage-specific options are passed under the `voyage` provider-options key and serialized to the Voyage API field names.
+
+```go
+result, err := embeddingModel.DoEmbedMany(ctx, []string{"search text"}, &goprovider.EmbedModelOptions{
+  ProviderOptions: map[string]interface{}{
+    "voyage": map[string]interface{}{
+      "inputType":       "query",
+      "truncation":      true,
+      "outputDimension": 1024,
+      "outputDtype":     "float",
+    },
+  },
+})
+```
+
+## Reranking
+
+```go
+import (
+  goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+  "github.com/digitallysavvy/go-ai/pkg/providers/voyage"
+)
+
+voyageProvider := voyage.New(voyage.Config{
+  APIKey: os.Getenv("VOYAGE_API_KEY"),
+})
+
+rerankModel, _ := voyageProvider.RerankingModel(voyage.ModelRerank25)
+topN := 3
+result, err := rerankModel.DoRerank(ctx, &goprovider.RerankOptions{
+  Query: "go concurrency",
+  Documents: []string{
+    "Goroutines are lightweight threads.",
+    "SQL joins combine rows from tables.",
+    "Channels coordinate goroutines.",
+  },
+  TopN: &topN,
+})
+```
+
+### Reranking Options
+
+```go
+result, err := rerankModel.DoRerank(ctx, &goprovider.RerankOptions{
+  Query:     "go concurrency",
+  Documents: []string{"Goroutines are lightweight.", "SQL joins tables."},
+  TopN:      &topN,
+  ProviderOptions: map[string]interface{}{
+    "voyage": map[string]interface{}{
+      "returnDocuments": true,
+      "truncation":      true,
+    },
+  },
+})
+```
+
+## Model IDs
+
+### Embeddings
+
+- `voyage.ModelVoyage4Large` (`voyage-4-large`)
+- `voyage.ModelVoyage4` (`voyage-4`)
+- `voyage.ModelVoyage4Lite` (`voyage-4-lite`)
+- `voyage.ModelVoyage4Nano` (`voyage-4-nano`)
+- `voyage.ModelVoyageCode35` (`voyage-code-3.5`)
+- `voyage.ModelVoyageCode3` (`voyage-code-3`)
+- `voyage.ModelVoyage3Large` (`voyage-3-large`)
+- `voyage.ModelVoyage35` (`voyage-3.5`)
+- `voyage.ModelVoyage35Lite` (`voyage-3.5-lite`)
+- `voyage.ModelVoyage3` (`voyage-3`)
+- `voyage.ModelVoyage3Lite` (`voyage-3-lite`)
+- `voyage.ModelVoyageFinance2` (`voyage-finance-2`)
+- `voyage.ModelVoyageLaw2` (`voyage-law-2`)
+- `voyage.ModelVoyageMultilingual2` (`voyage-multilingual-2`)
+- `voyage.ModelVoyageCode2` (`voyage-code-2`)
+- `voyage.ModelVoyage2` (`voyage-2`)
+
+### Reranking
+
+- `voyage.ModelRerank25` (`rerank-2.5`)
+- `voyage.ModelRerank25Lite` (`rerank-2.5-lite`)
+- `voyage.ModelRerank2` (`rerank-2`)
+- `voyage.ModelRerank2Lite` (`rerank-2-lite`)
+- `voyage.ModelRerank1` (`rerank-1`)
+- `voyage.ModelRerankLite1` (`rerank-lite-1`)
+
+## Notes
+
+- Default base URL: `https://api.voyageai.com/v1`
+- Auth header: `Authorization: Bearer $VOYAGE_API_KEY`
+- Embedding endpoint: `POST /embeddings`
+- Reranking endpoint: `POST /rerank`
+- Provider identities match the TypeScript SDK: `voyage.embedding` and `voyage.reranking`
+- Embedding requests are limited to 128 inputs per call to match the TypeScript SDK.
