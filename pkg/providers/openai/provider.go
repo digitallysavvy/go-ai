@@ -159,3 +159,11 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 func (p *Provider) Client() *http.Client {
 	return p.client
 }
+
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
+}
+
+func (p *Provider) Skills() provider.SkillsAPI {
+	return &SkillsAPI{provider: p}
+}

@@ -138,3 +138,7 @@ func (p *Provider) Client() *http.Client {
 func (p *Provider) APIKey() string {
 	return p.config.APIKey
 }
+
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
+}

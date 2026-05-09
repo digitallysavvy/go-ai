@@ -136,3 +136,7 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 func (p *Provider) Client() *http.Client {
 	return p.client
 }
+
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
+}

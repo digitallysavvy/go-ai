@@ -1,0 +1,55 @@
+---
+title: Upload File and Upload Skill
+description: Upload provider files and multi-file skills for later reference in model calls.
+---
+
+# Upload File and Upload Skill
+
+The Go SDK provides top-level helpers for uploading files and skills through provider upload APIs:
+
+- `core.UploadFile(...)`
+- `core.UploadSkill(...)`
+
+Both helpers accept either:
+
+1. A provider upload API directly (`provider.FilesAPI` / `provider.SkillsAPI`)
+2. A provider implementing `Files()` / `Skills()`
+
+## UploadFile
+
+```go
+result, err := core.UploadFile(ctx, openaiProvider, core.UploadFileOptions{
+    Data:      []byte("hello world"),
+    Filename:  "hello.txt",
+    MediaType: "text/plain",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{"purpose": "assistants"},
+    },
+})
+if err != nil {
+    panic(err)
+}
+
+fileID := result.ProviderReference["openai"]
+```
+
+`UploadFile` normalizes shorthand data inputs (`[]byte`, `string`) into `types.FileData`, resolves the target files API, and auto-detects media type when omitted.
+
+## UploadSkill
+
+```go
+result, err := core.UploadSkill(ctx, openaiProvider, core.UploadSkillOptions{
+    DisplayTitle: "My Skill",
+    Files: []core.UploadSkillFile{
+        {Path: "index.ts", Data: []byte("export default {}")},
+        {Path: "README.md", Data: "# Skill"},
+    },
+})
+if err != nil {
+    panic(err)
+}
+
+skillID := result.ProviderReference["openai"]
+```
+
+`UploadSkill` normalizes shorthand file data and delegates to the provider skills API.
