@@ -46,10 +46,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ## Available Models
 
-### Claude 4.5 Series (Latest)
+### Claude 4.7/4.6/4.5 Series (Latest)
 
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
+| claude-opus-4-7 | 200K | TBA | TBA | Latest Opus reasoning and coding |
+| claude-opus-4-6 | 200K | TBA | TBA | Complex tasks, fast mode |
+| claude-sonnet-4-6 | 200K | TBA | TBA | Balanced performance and capability |
 | claude-opus-4.5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
 | claude-sonnet-4.5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
 | claude-haiku-4.5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
@@ -78,6 +81,18 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | claude-3-haiku-20240307 | 200K | $0.25/1M | $1.25/1M | Legacy fast |
 
 ## Provider-Specific Features
+
+### Inference Region
+
+Set `InferenceGeo` on Anthropic model options to forward the TypeScript SDK `inferenceGeo` provider option as `inference_geo`. Supported values are `"us"` and `"global"`.
+
+```go
+model := anthropic.NewLanguageModel(provider, anthropic.ClaudeOpus4_7, &anthropic.ModelOptions{
+    InferenceGeo: "us",
+})
+```
+
+Anthropic JSON schema serialization sanitizes unsupported validation keywords before sending requests, matching the TypeScript provider behavior. This keeps structured output/tool schemas compatible with Anthropic without requiring callers to manually strip incompatible fields.
 
 ### Extended Context (200K tokens)
 

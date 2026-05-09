@@ -1,6 +1,6 @@
 # Anthropic Provider
 
-The Anthropic provider enables access to Claude models including Opus 4.6, Sonnet 4.6, and other Claude variants.
+The Anthropic provider enables access to Claude models including Opus 4.7, Opus 4.6, Sonnet 4.6, and other Claude variants.
 
 ## Features
 
@@ -76,7 +76,12 @@ import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 model, err := provider.LanguageModel(anthropic.ClaudeSonnet4_6)
 ```
 
-### Claude Opus 4.6 (latest)
+### Claude Opus 4.7 (latest)
+- Constant: `anthropic.ClaudeOpus4_7` -> `"claude-opus-4-7"`
+- Best for: Latest Opus reasoning, coding, and complex analysis
+- Supports: Extended thinking with updated Opus behavior
+
+### Claude Opus 4.6
 - Constant: `anthropic.ClaudeOpus4_6` → `"claude-opus-4-6"`
 - Best for: Complex tasks, extended thinking, fast mode
 
@@ -97,6 +102,18 @@ model, err := provider.LanguageModel(anthropic.ClaudeSonnet4_6)
 ### Claude Haiku 4.5
 - Constant: `anthropic.ClaudeHaiku4_5` → `"claude-haiku-4-5"`
 - Best for: Fast, cost-effective tasks
+
+## Inference Geo and Schema Compatibility
+
+Set `InferenceGeo` on `ModelOptions` to forward Anthropic's `inference_geo` request field. Supported values are `"us"` and `"global"`.
+
+```go
+model := anthropic.NewLanguageModel(provider, anthropic.ClaudeOpus4_7, &anthropic.ModelOptions{
+    InferenceGeo: "global",
+})
+```
+
+The provider sanitizes unsupported JSON schema validation keywords before request serialization. This mirrors the TypeScript SDK and prevents Anthropic schema validation failures for common structured-output schemas.
 
 ## Computer Use Tools
 

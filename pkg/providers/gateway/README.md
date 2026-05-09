@@ -77,11 +77,9 @@ if err != nil {
     log.Fatal(err)
 }
 
-for _, provider := range metadata.Providers {
-    fmt.Printf("Provider: %s\n", provider.Name)
-    for _, model := range provider.Models {
-        fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
-    }
+for _, model := range metadata.Models {
+    fmt.Printf("Provider: %s\n", model.Specification.Provider)
+    fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
 }
 ```
 
@@ -93,8 +91,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Available Credits: %d\n", credits.Available)
-fmt.Printf("Used Credits: %d\n", credits.Used)
+fmt.Printf("Balance: %s\n", credits.Balance)
+fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 ```
 
 ## Provider-Executed Tools

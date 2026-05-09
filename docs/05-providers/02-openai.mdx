@@ -60,6 +60,8 @@ export OPENAI_API_KEY=sk-...
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
 | gpt-5 | 200K | TBA | TBA | Next-generation reasoning |
+| gpt-5.5 | 200K | TBA | TBA | Frontier reasoning and coding |
+| gpt-5.5-2026-04-23 | 200K | TBA | TBA | Pinned GPT-5.5 release |
 
 ### o-Series (Reasoning Models)
 
@@ -88,6 +90,8 @@ export OPENAI_API_KEY=sk-...
 
 | Model ID | Quality | Speed | Price | Best For |
 |----------|---------|-------|-------|----------|
+| gpt-image-2 | Excellent | Medium | Per image | Latest image generation |
+| gpt-image-1 | Excellent | Medium | Per image | Multimodal image generation |
 | dall-e-3 | Excellent | Medium | $0.040/image | High-quality images |
 | dall-e-2 | Good | Fast | $0.020/image | Quick generations |
 
@@ -100,6 +104,25 @@ export OPENAI_API_KEY=sk-...
 | whisper-1 | STT | Excellent | $0.006/min | Transcription |
 
 ## Provider-Specific Features
+
+### Transport and Headers
+
+OpenAI provider configuration supports the same transport flexibility as the TypeScript SDK: custom base URL, custom HTTP client, custom provider name, organization/project headers, and additional headers.
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:       os.Getenv("OPENAI_API_KEY"),
+    BaseURL:      "https://proxy.example.com/v1",
+    Organization: "org_...",
+    Project:      "proj_...",
+    Headers: map[string]string{
+        "X-Trace-ID": "trace-123",
+    },
+    HTTPClient: http.DefaultClient,
+})
+```
+
+Provider-level headers are forwarded to language, Responses, embeddings, image, speech, and transcription requests. Request-level headers override provider-level headers when both are present, matching TypeScript `headers` merge behavior.
 
 ### Structured Output (JSON Mode)
 
@@ -141,6 +164,20 @@ result, err := ai.GenerateText(model,
 )
 ```
 
+For OpenAI Responses image/file parts, set the provider option `imageDetail` to forward the API `detail` field:
+
+```go
+types.FileContent{
+    URL:       "https://example.com/chart.png",
+    MediaType: "image/png",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "imageDetail": "high",
+        },
+    },
+}
+```
+
 ### Function Calling
 
 Define tools that the model can call:
@@ -178,6 +215,29 @@ if result.ToolCalls != nil {
         fmt.Printf("Tool: %s, Args: %v\n", call.Function.Name, call.Function.Arguments)
     }
 }
+```
+
+Responses API tool calls preserve OpenAI provider metadata, including `function_call.namespace`. Tool calls with no input serialize `{}` rather than `null`, and assistant messages serialize `content: null` only when tool calls are present and no text content is available. Non-tool assistant turns are not sent as null-content messages.
+
+### Image Generation Options
+
+Use `OpenAIImageModelOptions` under the `"openai"` provider key for typed image options. The struct maps camelCase Go JSON names to the OpenAI wire fields used by the TypeScript SDK.
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A studio product photo of a matte ceramic cup",
+    ProviderOptions: map[string]interface{}{
+        "openai": openai.OpenAIImageModelOptions{
+            Size:              "1024x1024",
+            Quality:           "high",
+            OutputFormat:      "png",
+            OutputCompression: ptr(80),
+            Background:        "transparent",
+            Moderation:        "auto",
+        },
+    },
+})
 ```
 
 ### Reasoning Models (o1/o3)

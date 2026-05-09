@@ -255,9 +255,26 @@ provider := openresponses.New(openresponses.Config{
 - ✅ Parallel tool calls
 - ✅ Tool result handling
 
+### Reasoning Options
+
+OpenResponses supports the TypeScript SDK `reasoningSummary` provider option. Set it under the `"open-responses"` provider key with `"auto"`, `"concise"`, or `"detailed"`.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+	Model:  model,
+	Prompt: "Explain this step by step.",
+	ProviderOptions: map[string]interface{}{
+		"open-responses": map[string]interface{}{
+			"reasoningSummary": "detailed",
+		},
+	},
+})
+```
+
 ### Content Types
 - ✅ Text content
 - ✅ Image content (URL and base64)
+- ✅ File content through `types.FileData` for URL, reference, data, and text inputs
 - ✅ Reasoning content
 - ✅ Tool results
 

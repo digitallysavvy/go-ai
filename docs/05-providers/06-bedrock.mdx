@@ -330,12 +330,30 @@ provider := bedrock.New(bedrock.Config{
 })
 ```
 
+When explicit credentials are provided, the provider uses the explicit `SessionToken` value only. It does not merge in `AWS_SESSION_TOKEN` from the environment unless credentials are being resolved from the environment, matching the TypeScript credential precedence.
+
 ### Custom Endpoint
 
 ```go
 provider := bedrock.New(bedrock.Config{
     Region:   "us-east-1",
     Endpoint: "https://bedrock-runtime.us-east-1.amazonaws.com",
+})
+```
+
+### Reasoning and Structured Output
+
+Bedrock drops reasoning blocks that belong to a foreign provider before request signing, so unsigned provider-specific reasoning is not forwarded accidentally. When top-level reasoning is set, custom reasoning configuration properties are merged into the Bedrock request instead of replacing the reasoning config.
+
+Anthropic-on-Bedrock supports native structured output when reasoning is not enabled. The SDK preserves empty text blocks that accompany reasoning content, matching the TypeScript content-shape behavior required by Claude reasoning models.
+
+```go
+model, _ := provider.LanguageModel("anthropic.claude-opus-4-7")
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Prompt: "Extract the invoice total.",
+    Schema: invoiceSchema,
 })
 ```
 

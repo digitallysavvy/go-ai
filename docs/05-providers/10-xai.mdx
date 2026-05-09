@@ -101,6 +101,43 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### File URL inputs
+
+The xAI Responses API path accepts public file URLs for non-image content, including `application/pdf` and `text/*` media types. The SDK serializes these as `input_file` with `file_url`, matching the TypeScript provider. Inline non-image bytes remain unsupported by xAI; use a public URL or provider file reference for PDFs and text files.
+
+```go
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Summarize this report."},
+            types.FileContent{
+                MediaType: "application/pdf",
+                FileData: types.FileData{
+                    Type: types.FileDataTypeURL,
+                    URL:  "https://example.com/report.pdf",
+                },
+            },
+        },
+    }},
+})
+```
+
+### Cost metadata
+
+xAI Responses usage metadata is exposed under `ProviderMetadata["xai"]`. `costInUsdTicks` is forwarded directly, and token costs are available in the nested `cost` map using TypeScript-compatible camelCase keys.
+
+```go
+meta := result.ProviderMetadata["xai"].(map[string]interface{})
+fmt.Println(meta["costInUsdTicks"])
+
+if cost, ok := meta["cost"].(map[string]interface{}); ok {
+    fmt.Println(cost["inputTokensCost"])
+    fmt.Println(cost["outputTokensCost"])
+}
+```
+
 ### Logprobs
 
 ```go

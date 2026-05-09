@@ -44,6 +44,8 @@ gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
+The Vertex provider reuses auth per provider instance. You can provide an explicit access token or token generator to override default Google credential discovery, which is useful for tests, service-account impersonation, and custom credential brokers.
+
 ## Available Models
 
 ### Gemini Models
@@ -53,6 +55,8 @@ export GOOGLE_CLOUD_PROJECT=your-project-id
 | gemini-2.0-flash | 1M | $0.075/1M (≤128K) | Fast, multimodal |
 | gemini-1.5-pro | 2M | $1.25/1M (≤128K) | Complex tasks |
 | gemini-1.5-flash | 1M | $0.075/1M (≤128K) | General purpose |
+| publishers/xai/models/grok-4 | Provider-defined | MaaS pricing | Grok via Vertex Model Garden |
+| publishers/xai/models/grok-4-latest | Provider-defined | MaaS pricing | Latest Grok alias via Vertex |
 
 ### PaLM Models (Legacy)
 
@@ -236,6 +240,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 |----------|----------------------|
 | Google AI Studio (`providers/google`) | `"google"` |
 | Google Vertex AI (`providers/googlevertex`) | `"google-vertex"` |
+
+Vertex streaming can request function-call argument deltas with `streamFunctionCallArguments`; the SDK only sends this field for streaming Vertex requests. It is omitted for non-streaming `DoGenerate` calls, matching the TypeScript provider.
+
+```go
+ProviderOptions: map[string]interface{}{
+    "google-vertex": map[string]interface{}{
+        "streamFunctionCallArguments": true,
+        "serviceTier": "standard",
+    },
+}
+```
 
 ## Examples
 

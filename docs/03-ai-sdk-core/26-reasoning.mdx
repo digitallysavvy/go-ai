@@ -147,7 +147,7 @@ Each provider translates the level to its native reasoning API. Some providers s
 | **Fireworks** | Provider-specific | Forwards reasoning configuration to supported models. |
 | **Groq** | Provider-specific | Supports reasoning on compatible models. |
 | **XAI** | `reasoning_effort` | OpenAI-compatible mapping. Reasoning deltas emitted via `OnReasoningDelta`. |
-| **Open Responses** | `reasoning_effort` | OpenAI-compatible mapping. |
+| **Open Responses** | `reasoning.effort` | OpenAI-compatible Responses object mapping; `ProviderOptions["open-responses"].reasoningSummary` maps to `reasoning.summary`. |
 
 ### Providers that warn
 

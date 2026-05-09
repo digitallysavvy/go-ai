@@ -242,6 +242,12 @@ if result.Thinking != "" {
 fmt.Println("Answer:", result.Text)
 ```
 
+Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider metadata so multi-step calls can safely round-trip model-generated reasoning and function calls. Streaming no-argument function calls are emitted with `{}` input instead of being dropped.
+
+Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
+
+Vertex-specific `serviceTier` values are formatted for Vertex API requests when shared Google request code is used; use the `"google-vertex"` provider key for Vertex options and `"google"` for AI Studio options.
+
 ## Examples
 
 ### Basic Text Generation

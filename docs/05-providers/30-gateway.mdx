@@ -189,19 +189,45 @@ Customize provider selection and behavior:
 result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
     Prompt: "Hello, world!",
     ProviderOptions: map[string]interface{}{
-        "providers": []string{"anthropic", "openai", "google"},
-        "tags":      []string{"production", "fast"},
-        "order":     "cost", // "cost", "latency", or "quality"
+        "gateway": map[string]interface{}{
+            "only":  []string{"anthropic", "openai", "google"},
+            "tags":  []string{"production", "fast"},
+            "order": []string{"openai", "anthropic"},
+            "sort":  "price",
+        },
     },
 })
 ```
 
 ### Provider Option Fields
 
-- **providers**: List of providers to consider (in priority order)
-- **tags**: Routing tags for provider selection
-- **order**: Optimization strategy ("cost", "latency", "quality")
-- **zeroDataRetention**: Override global zero data retention setting
+- **gateway.only**: Restrict candidate providers.
+- **gateway.order**: Explicit provider order.
+- **gateway.sort**: Gateway sort strategy.
+- **gateway.tags**: Routing tags.
+- **gateway.models**: Fallback model list.
+- **gateway.zeroDataRetention**: Per-call zero retention.
+- **gateway.disallowPromptTraining**: Restrict to no-prompt-training providers.
+- **gateway.hipaaCompliant**: Restrict to HIPAA-capable providers.
+- **gateway.quotaEntityId**: Quota identity for tenant/account-level tracking.
+
+## Reranking
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/provider"
+
+reranker, _ := provider.RerankingModel("cohere/rerank-v3.5")
+topN := 3
+res, err := reranker.DoRerank(ctx, &provider.RerankOptions{
+    Query: "gateway routing",
+    Documents: []string{
+        "Provider fallback order can reduce latency variance.",
+        "Embedding vectors power semantic search.",
+        "HIPAA compliance restricts provider choice.",
+    },
+    TopN: &topN,
+})
+```
 
 ## Timeout Handling
 
@@ -293,12 +319,10 @@ if err != nil {
     log.Fatal(err)
 }
 
-for _, prov := range metadata.Providers {
-    fmt.Printf("Provider: %s\n", prov.Name)
-    for _, model := range prov.Models {
-        fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
-        fmt.Printf("    Capabilities: %v\n", model.Capabilities)
-    }
+for _, model := range metadata.Models {
+    fmt.Printf("Provider: %s\n", model.Specification.Provider)
+    fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
+    fmt.Printf("    Specification: %v\n", model.Specification)
 }
 ```
 
@@ -312,8 +336,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Available: %d\n", credits.Available)
-fmt.Printf("Used: %d\n", credits.Used)
+fmt.Printf("Balance: %s\n", credits.Balance)
+fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 ```
 
 ## Error Handling

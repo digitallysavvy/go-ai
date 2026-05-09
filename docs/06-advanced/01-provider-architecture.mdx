@@ -137,6 +137,21 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 The provider's `DoGenerate` method extracts its own key from `ProviderOptions` and ignores others — so the same call can carry options for multiple providers safely.
 
+OpenAI-compatible providers use camelCase provider option keys, matching the TypeScript SDK public API. Deprecated kebab-case or snake_case keys are still accepted for migration compatibility, but they emit warnings so callers can move to camelCase.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  groqModel,
+    Prompt: "Explain tool calling.",
+    ProviderOptions: map[string]interface{}{
+        "groq": map[string]interface{}{
+            "reasoningEffort": "high", // preferred
+            "parallelToolCalls": true,
+        },
+    },
+})
+```
+
 ## Implementing a Custom Provider
 
 To add a new provider, implement the `provider.Provider` and `provider.LanguageModel` interfaces:
