@@ -1,6 +1,7 @@
 package cohere
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,11 +38,112 @@ func TestCohereNoWarningWhenReasoningNil(t *testing.T) {
 	}
 }
 
+func TestCohereImageURLMessageSerialization(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(cohereV2MockResponse))
+	}))
+	defer srv.Close()
+
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
+	model := NewLanguageModel(prov, "command-r-plus")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{
+					FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/cat.png", MediaType: "image/png"},
+				},
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error: %v", err)
+	}
+
+	msgs := got["messages"].([]interface{})
+	msg := msgs[0].(map[string]interface{})
+	content := msg["content"].([]interface{})
+	part := content[0].(map[string]interface{})
+	if part["type"] != "image_url" {
+		t.Fatalf("part.type = %v, want image_url", part["type"])
+	}
+	img := part["image_url"].(map[string]interface{})
+	if img["url"] != "https://example.com/cat.png" {
+		t.Fatalf("image_url.url = %v", img["url"])
+	}
+}
+
+func TestCohereNonImageFileBecomesDocument(t *testing.T) {
+	model := &LanguageModel{modelID: "command-r-plus"}
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Analyze: "},
+				types.FileContent{
+					FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte("This is file content"), MediaType: "text/plain"},
+					Filename: "note.txt",
+				},
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody error: %v", err)
+	}
+
+	messages := body["messages"].([]map[string]interface{})
+	if messages[0]["content"] != "Analyze: " {
+		t.Fatalf("message content = %#v", messages[0]["content"])
+	}
+	documents := body["documents"].([]map[string]interface{})
+	data := documents[0]["data"].(map[string]interface{})
+	if data["text"] != "This is file content" || data["title"] != "note.txt" {
+		t.Fatalf("unexpected document data: %#v", data)
+	}
+}
+
+func TestCohereUnsupportedFileURLReturnsError(t *testing.T) {
+	model := &LanguageModel{modelID: "command-r-plus"}
+	_, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{
+					FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/file.pdf", MediaType: "application/pdf"},
+				},
+			},
+		}}},
+	})
+	if err == nil {
+		t.Fatal("expected unsupported file URL error")
+	}
+}
+
+func TestCohereUnsupportedCapabilityErrors(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	if _, err := prov.ImageModel("x"); err == nil || err.Error() != "cohere does not support image generation" {
+		t.Fatalf("ImageModel error = %v", err)
+	}
+	if _, err := prov.SpeechModel("x"); err == nil || err.Error() != "cohere does not support speech synthesis" {
+		t.Fatalf("SpeechModel error = %v", err)
+	}
+	if _, err := prov.TranscriptionModel("x"); err == nil || err.Error() != "cohere does not support transcription" {
+		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+}
+
 func TestCohereReasoningNoneDisablesThinking(t *testing.T) {
 	model := &LanguageModel{modelID: "command-r-plus"}
 	level := types.ReasoningNone
 	opts := &provider.GenerateOptions{Reasoning: &level}
-	body := model.buildRequestBody(opts)
+	body, err := model.buildRequestBody(opts)
+	if err != nil {
+		t.Fatalf("buildRequestBody error: %v", err)
+	}
 	thinking, ok := body["thinking"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected thinking field to be a map, got: %T", body["thinking"])
@@ -55,7 +157,10 @@ func TestCohereReasoningHighBudget(t *testing.T) {
 	model := &LanguageModel{modelID: "command-r-plus"}
 	level := types.ReasoningHigh
 	opts := &provider.GenerateOptions{Reasoning: &level}
-	body := model.buildRequestBody(opts)
+	body, err := model.buildRequestBody(opts)
+	if err != nil {
+		t.Fatalf("buildRequestBody error: %v", err)
+	}
 	thinking, ok := body["thinking"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected thinking field to be a map, got: %T", body["thinking"])
@@ -72,7 +177,10 @@ func TestCohereReasoningDefaultOmitted(t *testing.T) {
 	model := &LanguageModel{modelID: "command-r-plus"}
 	level := types.ReasoningDefault
 	opts := &provider.GenerateOptions{Reasoning: &level}
-	body := model.buildRequestBody(opts)
+	body, err := model.buildRequestBody(opts)
+	if err != nil {
+		t.Fatalf("buildRequestBody error: %v", err)
+	}
 	if _, ok := body["thinking"]; ok {
 		t.Errorf("expected no thinking field when Reasoning is ReasoningDefault, got: %v", body["thinking"])
 	}

@@ -58,11 +58,14 @@ func main() {
 ```go
 provider, err := gateway.New(gateway.Config{
     APIKey:  "your-api-key",
-    BaseURL: "https://ai-gateway.vercel.sh/v3/ai", // Custom base URL
+    BaseURL: "https://ai-gateway.vercel.sh/v4/ai", // Custom base URL
     Headers: map[string]string{
         "X-Custom-Header": "value",
     },
     ZeroDataRetention: true, // Enable zero data retention
+    DisallowPromptTraining: true,
+    HIPAACompliant: true,
+    QuotaEntityID: "tenant-123",
     MetadataCacheRefreshMillis: 300000, // 5 minutes
 })
 ```
@@ -193,7 +196,7 @@ result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
             "only":  []string{"anthropic", "openai", "google"},
             "tags":  []string{"production", "fast"},
             "order": []string{"openai", "anthropic"},
-            "sort":  "price",
+            "sort":  "cost",
         },
     },
 })
@@ -214,11 +217,11 @@ result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
 ## Reranking
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/provider"
+import goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
 
-reranker, _ := provider.RerankingModel("cohere/rerank-v3.5")
+reranker, _ := gatewayProvider.RerankingModel("cohere/rerank-v3.5")
 topN := 3
-res, err := reranker.DoRerank(ctx, &provider.RerankOptions{
+res, err := reranker.DoRerank(ctx, &goprovider.RerankOptions{
     Query: "gateway routing",
     Documents: []string{
         "Provider fallback order can reduce latency variance.",
@@ -380,7 +383,7 @@ type Config struct {
     APIKey string
 
     // BaseURL is the base URL for the AI Gateway API
-    // Default: https://ai-gateway.vercel.sh/v3/ai
+    // Default: https://ai-gateway.vercel.sh/v4/ai
     BaseURL string
 
     // Headers are custom headers to include in requests
@@ -396,13 +399,21 @@ type Config struct {
     // ZeroDataRetention enables zero data retention mode
     // When true, requests are not logged or retained
     ZeroDataRetention bool
+
+    // DisallowPromptTraining filters routing to providers that do not train on prompts
+    DisallowPromptTraining bool
+
+    // HIPAACompliant filters routing to HIPAA-compliant providers
+    HIPAACompliant bool
+
+    // QuotaEntityID identifies the entity against which quota is tracked
+    QuotaEntityID string
 }
 ```
 
 ## Limitations
 
 - Speech synthesis and transcription not directly supported (use specific providers)
-- Reranking models not directly supported (use specific providers)
 - Some provider-specific features may not be available through Gateway
 
 ## Examples

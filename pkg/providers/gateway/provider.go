@@ -29,6 +29,14 @@ const (
 	DefaultMetadataCacheRefresh = 5 * time.Minute
 )
 
+var knownGatewayModelTypes = map[string]struct{}{
+	"embedding": {},
+	"image":     {},
+	"language":  {},
+	"reranking": {},
+	"video":     {},
+}
+
 // Provider implements the provider.Provider interface for AI Gateway
 type Provider struct {
 	config           Config
@@ -412,12 +420,12 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support speech synthesis models")
+	return nil, fmt.Errorf("gateway provider does not directly support speech synthesis models")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support transcription models")
+	return nil, fmt.Errorf("gateway provider does not directly support transcription models")
 }
 
 // RerankingModel returns a reranking model by ID
@@ -460,6 +468,12 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
+		if model.ModelType != "" {
+			if _, ok := knownGatewayModelTypes[model.ModelType]; !ok {
+				// TS parity: unknown modelType entries are filtered out instead of failing parsing.
+				continue
+			}
+		}
 		var pricing *ModelPricing
 		if model.Pricing != nil {
 			pricing = &ModelPricing{

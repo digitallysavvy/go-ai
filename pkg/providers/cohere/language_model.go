@@ -2,14 +2,16 @@ package cohere
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -56,14 +58,17 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 
 // SupportsImageInput returns whether the model accepts image inputs
 func (m *LanguageModel) SupportsImageInput() bool {
-	return false
+	return true
 }
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts)
+	reqBody, err := m.buildRequestBody(opts)
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 	var response cohereV2Response
-	err := m.provider.client.PostJSON(ctx, "/v2/chat", reqBody, &response)
+	err = m.provider.client.PostJSON(ctx, "/v2/chat", reqBody, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -72,7 +77,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts)
+	reqBody, err := m.buildRequestBody(opts)
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 	reqBody["stream"] = true
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -85,9 +93,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return newCohereV2Stream(httpResp.Body), nil
 }
 
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[string]interface{} {
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[string]interface{}, error) {
 	body := map[string]interface{}{"model": m.modelID}
 	var messages []map[string]interface{}
+	var documents []map[string]interface{}
 	if opts.Prompt.System != "" {
 		messages = append(messages, map[string]interface{}{
 			"role":    "system",
@@ -100,9 +109,17 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 			"content": opts.Prompt.Text,
 		})
 	} else if opts.Prompt.IsMessages() {
-		messages = append(messages, prompt.ToOpenAIMessages(opts.Prompt.Messages)...)
+		cohereMsgs, cohereDocs, err := m.toCohereMessages(opts.Prompt.Messages)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, cohereMsgs...)
+		documents = append(documents, cohereDocs...)
 	}
 	body["messages"] = messages
+	if len(documents) > 0 {
+		body["documents"] = documents
+	}
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
@@ -112,7 +129,129 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 	if thinking := m.resolveThinking(opts); thinking != nil {
 		body["thinking"] = thinking
 	}
-	return body
+	return body, nil
+}
+
+func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]interface{}, []map[string]interface{}, error) {
+	out := make([]map[string]interface{}, 0, len(src))
+	documents := []map[string]interface{}{}
+	for _, msg := range src {
+		if msg.Role != types.RoleUser {
+			out = append(out, prompt.ToOpenAIMessages([]types.Message{msg})...)
+			continue
+		}
+		content := make([]map[string]interface{}, 0, len(msg.Content))
+		hasImage := false
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.TextContent:
+				if p.Text != "" {
+					content = append(content, map[string]interface{}{"type": "text", "text": p.Text})
+				}
+			case types.ImageContent:
+				normalized, err := prompt.NormalizeImageContent(p)
+				if err != nil {
+					return nil, nil, err
+				}
+				url, err := fileDataToImageURL(normalized)
+				if err != nil {
+					return nil, nil, err
+				}
+				img := map[string]interface{}{"url": url}
+				if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+					img["detail"] = detail
+				}
+				content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
+				hasImage = true
+			case types.FileContent:
+				normalized, err := prompt.NormalizeFileContent(p)
+				if err != nil {
+					return nil, nil, err
+				}
+				if strings.HasPrefix(normalized.FileData.MediaType, "image") {
+					url, err := fileDataToImageURL(normalized)
+					if err != nil {
+						return nil, nil, err
+					}
+					img := map[string]interface{}{"url": url}
+					if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+						img["detail"] = detail
+					}
+					content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
+					hasImage = true
+				} else {
+					text, err := cohereDocumentText(normalized)
+					if err != nil {
+						return nil, nil, err
+					}
+					document := map[string]interface{}{
+						"data": map[string]interface{}{"text": text},
+					}
+					if normalized.Filename != "" {
+						document["data"].(map[string]interface{})["title"] = normalized.Filename
+					}
+					documents = append(documents, document)
+				}
+			}
+		}
+		if hasImage {
+			out = append(out, map[string]interface{}{"role": "user", "content": content})
+			continue
+		}
+		var b strings.Builder
+		for _, c := range content {
+			if c["type"] == "text" {
+				b.WriteString(c["text"].(string))
+			}
+		}
+		out = append(out, map[string]interface{}{"role": "user", "content": b.String()})
+	}
+	return out, documents, nil
+}
+
+func fileDataToImageURL(file types.FileContent) (string, error) {
+	switch file.FileData.Type {
+	case types.FileDataTypeURL:
+		return file.FileData.URL, nil
+	case types.FileDataTypeData:
+		media := file.FileData.MediaType
+		if media == "" {
+			media = "image/jpeg"
+		}
+		return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data), nil
+	default:
+		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported image file data type for cohere", nil)
+	}
+}
+
+func cohereDocumentText(file types.FileContent) (string, error) {
+	switch file.FileData.Type {
+	case types.FileDataTypeText:
+		return file.FileData.Text, nil
+	case types.FileDataTypeData:
+		return string(file.FileData.Data), nil
+	case types.FileDataTypeURL:
+		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file URL data for cohere", nil)
+	case types.FileDataTypeReference:
+		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file reference data for cohere", nil)
+	default:
+		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file data type for cohere", nil)
+	}
+}
+
+func cohereImageDetail(providerOptions map[string]interface{}) string {
+	raw, ok := providerOptions["cohere"]
+	if !ok {
+		return ""
+	}
+	asMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if d, ok := asMap["detail"].(string); ok {
+		return d
+	}
+	return ""
 }
 
 func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[string]interface{} {

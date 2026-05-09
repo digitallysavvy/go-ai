@@ -14,16 +14,15 @@ DeepSeek provides advanced reasoning models with exceptional performance at comp
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // DeepSeek uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
-    BaseURL: "https://api.deepseek.com/v1",
+provider := deepseek.New(deepseek.Config{
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
 })
 
 model, err := provider.LanguageModel("deepseek-chat")
@@ -96,13 +95,12 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
-        BaseURL: "https://api.deepseek.com/v1",
+    provider := deepseek.New(deepseek.Config{
+        APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     })
 
     model, err := provider.LanguageModel("deepseek-chat")
@@ -144,6 +142,9 @@ fmt.Println("Answer:", result.Text)
    - Significantly cheaper than GPT-4
    - Great for high-volume applications
    - Excellent price-performance ratio
+
+3. **V4 Reasoning Round-Trips**
+   - For `deepseek-v4*` multi-turn chats, include prior assistant `ReasoningContent` so `reasoning_content` is preserved across turns.
 
 ## Rate Limits & Pricing
 

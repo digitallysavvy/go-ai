@@ -95,17 +95,17 @@ func (p *Provider) EmbeddingModelWithOptions(modelID string, options EmbeddingOp
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LCohere does not support image generation")
+	return nil, fmt.Errorf("cohere does not support image generation")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LCohere does not support speech synthesis")
+	return nil, fmt.Errorf("cohere does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LCohere does not support transcription")
+	return nil, fmt.Errorf("cohere does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID

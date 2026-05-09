@@ -263,6 +263,59 @@ func TestProvider_GetAvailableModels(t *testing.T) {
 	}
 }
 
+func TestProvider_GetAvailableModels_FiltersUnknownModelTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"models": [
+				{
+					"id": "openai/gpt-4",
+					"name": "GPT-4",
+					"specification": {"specificationVersion":"v4","provider":"openai.chat","modelId":"gpt-4"},
+					"modelType": "language"
+				},
+				{
+					"id": "future/model",
+					"name": "Future",
+					"specification": {"specificationVersion":"v4","provider":"future.chat","modelId":"f1"},
+					"modelType": "hologram"
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	metadata, err := provider.GetAvailableModels(context.Background())
+	if err != nil {
+		t.Fatalf("GetAvailableModels() error = %v", err)
+	}
+	if len(metadata.Models) != 1 {
+		t.Fatalf("expected only known model types to remain, got %d models", len(metadata.Models))
+	}
+	if metadata.Models[0].ModelType != "language" {
+		t.Fatalf("modelType = %q, want language", metadata.Models[0].ModelType)
+	}
+}
+
+func TestProvider_UnsupportedCapabilityErrors(t *testing.T) {
+	provider, err := New(Config{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := provider.SpeechModel("x"); err == nil || err.Error() != "gateway provider does not directly support speech synthesis models" {
+		t.Fatalf("SpeechModel error = %v", err)
+	}
+	if _, err := provider.TranscriptionModel("x"); err == nil || err.Error() != "gateway provider does not directly support transcription models" {
+		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+}
+
 func TestProvider_GetCredits(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

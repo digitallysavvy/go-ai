@@ -62,6 +62,31 @@ export COHERE_API_KEY=...
 
 ## Provider-Specific Features
 
+### Vision Input (Image Parts)
+
+Cohere chat models support image input in user messages.
+
+```go
+prompt := types.Prompt{
+  Messages: []types.Message{
+    {
+      Role: types.RoleUser,
+      Content: []types.ContentPart{
+        types.TextContent{Text: "Describe this image"},
+        types.FileContent{
+          FileData: types.FileData{
+            Type:      types.FileDataTypeURL,
+            URL:       "https://example.com/cat.png",
+            MediaType: "image/png",
+          },
+        },
+      },
+    },
+  },
+}
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{Prompt: prompt})
+```
+
 ### RAG Optimization
 
 Cohere models are optimized for retrieval-augmented generation:

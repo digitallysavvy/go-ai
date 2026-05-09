@@ -231,10 +231,17 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 	var cachedTokens int64
 	if usage.NumCachedTokens != nil {
 		cachedTokens = int64(*usage.NumCachedTokens)
+	} else if usage.CacheReadInputTokens != nil {
+		cachedTokens = int64(*usage.CacheReadInputTokens)
 	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	} else if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokenDetails.CachedTokens)
+	}
+	var cacheWriteTokens *int64
+	if usage.CacheCreationInputTokens != nil {
+		v := int64(*usage.CacheCreationInputTokens)
+		cacheWriteTokens = &v
 	}
 	var textTokens *int64
 	var imageTokens *int64
@@ -259,7 +266,7 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
 			CacheReadTokens:  &cachedTokens,
-			CacheWriteTokens: nil,
+			CacheWriteTokens: cacheWriteTokens,
 			TextTokens:       textTokens,
 			ImageTokens:      imageTokens,
 		}
@@ -267,7 +274,7 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &promptTokens,
 			CacheReadTokens:  nil,
-			CacheWriteTokens: nil,
+			CacheWriteTokens: cacheWriteTokens,
 		}
 	}
 
@@ -293,6 +300,12 @@ func convertMistralUsage(usage mistralUsage) types.Usage {
 	}
 	if usage.NumCachedTokens != nil {
 		result.Raw["num_cached_tokens"] = *usage.NumCachedTokens
+	}
+	if usage.CacheReadInputTokens != nil {
+		result.Raw["cache_read_input_tokens"] = *usage.CacheReadInputTokens
+	}
+	if usage.CacheCreationInputTokens != nil {
+		result.Raw["cache_creation_input_tokens"] = *usage.CacheCreationInputTokens
 	}
 	if usage.PromptTokensDetails != nil {
 		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
@@ -342,10 +355,12 @@ type mistralResponse struct {
 
 // mistralUsage represents Mistral usage information
 type mistralUsage struct {
-	PromptTokens     int  `json:"prompt_tokens"`
-	CompletionTokens int  `json:"completion_tokens"`
-	TotalTokens      int  `json:"total_tokens"`
-	NumCachedTokens  *int `json:"num_cached_tokens,omitempty"`
+	PromptTokens             int  `json:"prompt_tokens"`
+	CompletionTokens         int  `json:"completion_tokens"`
+	TotalTokens              int  `json:"total_tokens"`
+	NumCachedTokens          *int `json:"num_cached_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 
 	// Detailed token breakdown (OpenAI-compatible, if supported)
 	PromptTokensDetails *struct {

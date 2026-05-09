@@ -49,6 +49,7 @@ export MISTRAL_API_KEY=...
 |----------|---------|-------------|--------------|----------|
 | mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
 | mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
+| mistral-medium-3.5 | 128K | Varies | Varies | Balanced quality/latency |
 | pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
 | codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
 | mistral-nemo | 128K | $0.30/1M | $0.30/1M | Open-source |
@@ -60,6 +61,15 @@ export MISTRAL_API_KEY=...
 | mistral-embed | 1024 | $0.10/1M | Semantic search |
 
 ## Provider-Specific Features
+
+### Cached Token Usage
+
+Mistral usage responses can include cache fields such as:
+- `num_cached_tokens`
+- `cache_read_input_tokens`
+- `cache_creation_input_tokens`
+
+These are mapped into `Usage.InputDetails.CacheReadTokens`, `Usage.InputDetails.CacheWriteTokens`, and `Usage.Raw`.
 
 ### Function Calling
 

@@ -103,6 +103,34 @@ func TestConvertMistralUsageLegacyCachedTokenFallback(t *testing.T) {
 	}
 }
 
+func TestConvertMistralUsageCacheReadAndWriteAliases(t *testing.T) {
+	cacheRead := 11
+	cacheWrite := 4
+	usage := convertMistralUsage(mistralUsage{
+		PromptTokens:             30,
+		CompletionTokens:         6,
+		TotalTokens:              36,
+		CacheReadInputTokens:     &cacheRead,
+		CacheCreationInputTokens: &cacheWrite,
+	})
+
+	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
+		t.Fatal("expected cache read tokens")
+	}
+	if got := *usage.InputDetails.CacheReadTokens; got != int64(cacheRead) {
+		t.Fatalf("cache read tokens: want %d, got %d", cacheRead, got)
+	}
+	if usage.InputDetails.CacheWriteTokens == nil || *usage.InputDetails.CacheWriteTokens != int64(cacheWrite) {
+		t.Fatalf("cache write tokens: want %d, got %#v", cacheWrite, usage.InputDetails.CacheWriteTokens)
+	}
+	if got := usage.Raw["cache_read_input_tokens"]; got != cacheRead {
+		t.Fatalf("raw cache_read_input_tokens: want %d, got %v", cacheRead, got)
+	}
+	if got := usage.Raw["cache_creation_input_tokens"]; got != cacheWrite {
+		t.Fatalf("raw cache_creation_input_tokens: want %d, got %v", cacheWrite, got)
+	}
+}
+
 func TestMistralNonSmallReasoningOmittedFromBody(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, "mistral-large-latest")

@@ -69,6 +69,31 @@ provider, err := gateway.New(gateway.Config{
 })
 ```
 
+### Routing and Compliance Options
+
+Gateway routing options can be configured globally on the provider or per call under
+`ProviderOptions["gateway"]`.
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:                  "your-api-key",
+    DisallowPromptTraining:  true,
+    HIPAACompliant:          true,
+    QuotaEntityID:           "tenant-123",
+})
+
+result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    Prompt: "Summarize the care plan",
+    ProviderOptions: map[string]interface{}{
+        "gateway": map[string]interface{}{
+            "only":  []string{"anthropic", "openai"},
+            "order": []string{"anthropic", "openai"},
+            "sort":  "cost", // "cost", "ttft", or "tps"
+        },
+    },
+})
+```
+
 ### Get Available Models
 
 ```go
@@ -93,6 +118,28 @@ if err != nil {
 
 fmt.Printf("Balance: %s\n", credits.Balance)
 fmt.Printf("Total Used: %s\n", credits.TotalUsed)
+```
+
+### Reranking
+
+```go
+import goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+
+reranker, err := provider.RerankingModel("cohere/rerank-v3.5")
+if err != nil {
+    log.Fatal(err)
+}
+
+topN := 3
+result, err := reranker.DoRerank(context.Background(), &goprovider.RerankOptions{
+    Query: "gateway routing",
+    Documents: []string{
+        "Provider fallback order can reduce latency variance.",
+        "Embedding vectors power semantic search.",
+        "HIPAA compliance restricts provider choice.",
+    },
+    TopN: &topN,
+})
 ```
 
 ## Provider-Executed Tools
@@ -271,7 +318,22 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `MetadataCacheRefreshMillis` (int64): Metadata cache refresh interval in milliseconds (default: 300000)
 - `HTTPClient` (*http.Client): Custom HTTP client
 - `ZeroDataRetention` (bool): Enable zero data retention mode
+- `DisallowPromptTraining` (bool): Restrict routing to providers that do not train on prompt data
+- `HIPAACompliant` (bool): Restrict routing to HIPAA-compliant providers
+- `QuotaEntityID` (string): Entity ID for quota tracking and tenant/account attribution
 - `ProjectID` (*string): Project identifier forwarded as `ai-o11y-project-id` for observability (or set `VERCEL_PROJECT_ID` env var)
+
+### Gateway Provider Options
+
+- `only` ([]string): Restrict candidate providers
+- `order` ([]string): Preferred provider order
+- `sort` (string): Gateway routing sort strategy: `cost`, `ttft`, or `tps`
+- `tags` ([]string): Routing tags
+- `models` ([]string): Fallback model list
+- `zeroDataRetention` (bool): Per-call zero data retention
+- `disallowPromptTraining` (bool): Per-call no-prompt-training restriction
+- `hipaaCompliant` (bool): Per-call HIPAA-capable provider restriction
+- `quotaEntityId` (string): Per-call quota identity
 
 ### Parallel Search Config
 
