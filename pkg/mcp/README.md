@@ -202,6 +202,56 @@ transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
 })
 ```
 
+### HTTP/SSE Custom Clients
+
+Use `HTTPClient` or `SSEClient` when the MCP transport needs custom TLS roots,
+proxy configuration, request-local clients, or custom dialers.
+
+```go
+httpClient := &http.Client{
+    Timeout: 30 * time.Second,
+    Transport: &http.Transport{
+        Proxy: http.ProxyFromEnvironment,
+    },
+}
+
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL:        "https://mcp.example.com",
+    HTTPClient: httpClient,
+})
+```
+
+`SSEClient` accepts any type with `Do(*http.Request) (*http.Response, error)` and is used instead of
+`HTTPClient` when supplied.
+
+### Server Info and Instructions
+
+After `Connect`, the client exposes server metadata returned by the MCP initialize handshake.
+
+```go
+info := client.ServerInfo()
+fmt.Printf("Connected to %s %s\n", info.Name, info.Version)
+
+instructions := client.ServerInstructions()
+if instructions != "" {
+    fmt.Println(instructions)
+}
+```
+
+Converted MCP tools include metadata identifying the server that supplied them, so downstream
+callers can trace which MCP server handled a tool call.
+
+### Secure JSON Parsing
+
+All MCP JSON-RPC responses are decoded through a safe parser that rejects:
+
+- Object keys that can trigger prototype-pollution style issues, such as `__proto__`
+- JSON nesting deeper than 64 levels
+- JSON payloads with more than 4096 object fields
+
+This matches the TypeScript SDK's defensive parsing posture and prevents resource-exhaustion
+payloads from being accepted.
+
 ## Testing
 
 The package includes comprehensive tests for image content conversion:

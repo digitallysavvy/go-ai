@@ -6,6 +6,11 @@ import (
 	"fmt"
 )
 
+const (
+	defaultJSONMaxDepth  = 64
+	defaultJSONMaxFields = 4096
+)
+
 var unsafeJSONKeys = map[string]struct{}{
 	"__proto__":   {},
 	"constructor": {},
@@ -23,27 +28,40 @@ func unmarshalSafeJSON(data []byte, target interface{}) error {
 	if err := decoder.Decode(&raw); err != nil {
 		return err
 	}
-	if err := rejectUnsafeJSONKeys(raw); err != nil {
+	if err := rejectUnsafeJSON(raw, defaultJSONMaxDepth, defaultJSONMaxFields); err != nil {
 		return err
 	}
 
 	return json.Unmarshal(data, target)
 }
 
-func rejectUnsafeJSONKeys(value interface{}) error {
+func rejectUnsafeJSON(value interface{}, maxDepth, maxFields int) error {
+	fields := 0
+	return rejectUnsafeJSONWalk(value, 1, maxDepth, maxFields, &fields)
+}
+
+func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fields *int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d", maxDepth)
+	}
+
 	switch v := value.(type) {
 	case map[string]interface{}:
 		for key, nested := range v {
+			*fields = *fields + 1
+			if *fields > maxFields {
+				return fmt.Errorf("JSON field count exceeds maximum %d", maxFields)
+			}
 			if _, unsafe := unsafeJSONKeys[key]; unsafe {
 				return fmt.Errorf("unsafe JSON object key %q", key)
 			}
-			if err := rejectUnsafeJSONKeys(nested); err != nil {
+			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields); err != nil {
 				return err
 			}
 		}
 	case []interface{}:
 		for _, nested := range v {
-			if err := rejectUnsafeJSONKeys(nested); err != nil {
+			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields); err != nil {
 				return err
 			}
 		}

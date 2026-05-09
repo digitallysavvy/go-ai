@@ -18,7 +18,8 @@ type HTTPTransport struct {
 	url string
 
 	// HTTP client
-	client *http.Client
+	client    *http.Client
+	sseClient SSEClient
 
 	// Message queue for receiving
 	receiveMu    sync.Mutex
@@ -48,6 +49,20 @@ type HTTPTransportConfig struct {
 
 	// Config is the base transport configuration
 	Config TransportConfig
+
+	// HTTPClient is an optional custom HTTP client used for all MCP HTTP requests.
+	// Useful for TLS customization, proxy settings, and custom dialers.
+	HTTPClient *http.Client
+
+	// SSEClient is an optional custom SSE-capable client used instead of
+	// HTTPClient when supplied. It lets callers provide custom event-stream
+	// transports, TLS settings, proxy behavior, or dialers.
+	SSEClient SSEClient
+}
+
+// SSEClient is the minimal interface needed by custom SSE-capable transports.
+type SSEClient interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 // OAuthConfig contains OAuth configuration
@@ -81,8 +96,11 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		timeout = 30 * time.Second
 	}
 
-	httpClient := &http.Client{
-		Timeout: timeout,
+	httpClient := config.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	} else if httpClient.Timeout == 0 {
+		httpClient.Timeout = timeout
 	}
 
 	// Default redirect policy: error on redirect (security-first posture for MCP).
@@ -96,6 +114,7 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	return &HTTPTransport{
 		url:          config.URL,
 		client:       httpClient,
+		sseClient:    config.SSEClient,
 		receiveQueue: make([]*MCPMessage, 0),
 		config:       config.Config,
 		oauth:        config.OAuth,
@@ -177,7 +196,11 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 	}
 
 	// Send request
-	resp, err := t.client.Do(req)
+	client := SSEClient(t.client)
+	if t.sseClient != nil {
+		client = t.sseClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return NewTransportError("failed to send request", err)
 	}

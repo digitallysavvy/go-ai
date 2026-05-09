@@ -156,7 +156,9 @@ func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
 
-	// TODO: Handle pagination with NextCursor
+	// ListTools intentionally returns the current page's tools only, matching
+	// the TypeScript SDK's listTools behavior. Use GetSerializableTools when the
+	// pagination cursor needs to be preserved by the caller.
 	return result.Tools, nil
 }
 
