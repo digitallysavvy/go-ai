@@ -7,7 +7,10 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/google/uuid"
 )
 
@@ -67,23 +70,38 @@ const (
 
 // ToolLoopAgent is an agent that loops through tool calls until task completion
 type ToolLoopAgent struct {
-	config AgentConfig
+	config   AgentConfig
+	warnings []types.Warning
 }
 
 // NewToolLoopAgent creates a new ToolLoopAgent with the given configuration
 func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
+	var warnings []types.Warning
+	if config.System == "" && config.Prompt != "" {
+		config.System = config.Prompt
+	}
+	if config.RuntimeContext == nil && config.ExperimentalContext != nil {
+		config.RuntimeContext = config.ExperimentalContext
+	}
+	if config.ExperimentalContext == nil && config.RuntimeContext != nil {
+		config.ExperimentalContext = config.RuntimeContext
+	}
 	// Resolve stop conditions (Vercel AI SDK v5 approach):
 	// MaxSteps is sugar for StopWhen{StepCountIs(N)}.
 	// All termination flows through stop conditions.
 	if len(config.StopWhen) > 0 {
-		// StopWhen takes precedence; override MaxSteps to safety ceiling
-		config.MaxSteps = 1000
+		// StopWhen takes precedence; MaxSteps is not used as a second cap.
+		config.MaxSteps = 0
 	} else if config.MaxSteps > 0 {
-		config.StopWhen = []ai.StopCondition{ai.StepCountIs(config.MaxSteps)}
-		config.MaxSteps = 1000
+		config.StopWhen = []ai.StopCondition{ai.IsStepCount(config.MaxSteps)}
+		warnings = append(warnings, types.Warning{
+			Type:    "deprecated-setting",
+			Message: fmt.Sprintf("AgentConfig.MaxSteps is deprecated; use StopWhen with ai.IsStepCount(%d) instead.", config.MaxSteps),
+		})
+		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{ai.StepCountIs(1)}
-		config.MaxSteps = 1000
+		config.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		config.MaxSteps = 0
 	}
 
 	// Initialize skills registry if not provided
@@ -97,8 +115,121 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 	}
 
 	return &ToolLoopAgent{
-		config: config,
+		config:   config,
+		warnings: warnings,
 	}
+}
+
+// ID returns the agent identifier, matching the TypeScript Agent.id accessor.
+func (a *ToolLoopAgent) ID() string {
+	return a.config.ID
+}
+
+// Version returns the agent version. TypeScript ToolLoopAgent exposes "agent-v1".
+func (a *ToolLoopAgent) Version() string {
+	if a.config.Version != "" {
+		return a.config.Version
+	}
+	return "agent-v1"
+}
+
+// Tools returns a copy of the configured tools, matching the TypeScript tools accessor.
+func (a *ToolLoopAgent) Tools() []types.Tool {
+	if len(a.config.Tools) == 0 {
+		return nil
+	}
+	tools := make([]types.Tool, len(a.config.Tools))
+	copy(tools, a.config.Tools)
+	return tools
+}
+
+// Generate runs the agent with per-call options, mirroring TypeScript
+// ToolLoopAgent.generate with an idiomatic Go options struct.
+func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error) {
+	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	callAgent := &ToolLoopAgent{
+		config:   a.config.withGenerateOptions(opts),
+		warnings: append([]types.Warning{}, a.warnings...),
+	}
+	messages := opts.Messages
+	if len(messages) == 0 {
+		if opts.Prompt != "" {
+			messages = []types.Message{{
+				Role:    types.RoleUser,
+				Content: []types.ContentPart{types.TextContent{Text: opts.Prompt}},
+			}}
+		}
+	}
+	cbs := agentCallbacks{
+		onStart:          opts.OnStart,
+		onStepStart:      opts.OnStepStart,
+		onToolCallStart:  opts.OnToolCallStart,
+		onToolCallFinish: opts.OnToolCallFinish,
+		onStepFinish:     opts.OnStepFinish,
+		onFinish:         opts.OnFinish,
+	}
+	return callAgent.executeWithMessages(ctx, messages, cbs)
+}
+
+// Stream streams an agent response using the SDK's StreamTextResult. This is
+// the Go equivalent of TypeScript ToolLoopAgent.stream.
+func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error) {
+	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	config := a.config.withGenerateOptions(opts.AgentGenerateOptions)
+	if config.Model == nil {
+		return nil, fmt.Errorf("model is required")
+	}
+	if err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions); err != nil {
+		return nil, err
+	}
+	messages := opts.Messages
+	prompt := opts.Prompt
+	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 1, messages, nil, types.Usage{}, nil)
+	cbs := mergeCallbacks(config, agentCallbacks{
+		onStart:          opts.OnStart,
+		onStepStart:      opts.OnStepStart,
+		onToolCallStart:  opts.OnToolCallStart,
+		onToolCallFinish: opts.OnToolCallFinish,
+		onStepFinish:     opts.OnStepFinish,
+		onFinish:         opts.OnFinish,
+	})
+	streamOpts := ai.StreamTextOptions{
+		Model:                config.Model,
+		Prompt:               prompt,
+		Messages:             messages,
+		System:               callConfig.System,
+		Temperature:          callConfig.Temperature,
+		MaxTokens:            callConfig.MaxTokens,
+		TopP:                 callConfig.TopP,
+		TopK:                 callConfig.TopK,
+		FrequencyPenalty:     callConfig.FrequencyPenalty,
+		PresencePenalty:      callConfig.PresencePenalty,
+		StopSequences:        callConfig.StopSequences,
+		Seed:                 callConfig.Seed,
+		Tools:                callConfig.Tools,
+		ToolChoice:           defaultToolChoice(callConfig.ToolChoice),
+		ToolApproval:         config.ToolApproval,
+		StopWhen:             config.StopWhen,
+		Timeout:              config.Timeout,
+		Reasoning:            callConfig.Reasoning,
+		SendReasoning:        callConfig.SendReasoning,
+		ProviderOptions:      callConfig.ProviderOptions,
+		RuntimeContext:       callConfig.RuntimeContext,
+		ToolsContext:         callConfig.ToolsContext,
+		ExperimentalContext:  config.ExperimentalContext,
+		OnChunk:              opts.OnChunk,
+		OnStart:              cbs.onStart,
+		OnStepStart:          cbs.onStepStart,
+		OnToolExecutionStart: cbs.onToolCallStart,
+		OnToolExecutionEnd:   cbs.onToolCallFinish,
+		OnStepFinishEvent:    cbs.onStepFinish,
+		OnFinishEvent:        cbs.onFinish,
+	}
+	return ai.StreamText(ctx, streamOpts)
 }
 
 // Execute runs the agent with a simple text prompt
@@ -117,9 +248,19 @@ func (a *ToolLoopAgent) Execute(ctx context.Context, prompt string) (*AgentResul
 
 // ExecuteWithMessages runs the agent with a message history
 func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []types.Message) (*AgentResult, error) {
+	return a.executeWithMessages(ctx, messages, agentCallbacks{})
+}
+
+func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks) (*AgentResult, error) {
 	// Validate configuration
 	if a.config.Model == nil {
 		return nil, fmt.Errorf("model is required")
+	}
+	if a.config.Model.SpecificationVersion() == "" || a.config.Model.Provider() == "" || a.config.Model.ModelID() == "" {
+		return nil, fmt.Errorf("model must implement provider.LanguageModel metadata methods")
+	}
+	if err := validateAgentCallOptions(a.config.CallOptionsSchema, a.config.CallOptions); err != nil {
+		return nil, err
 	}
 
 	// Initialize run tracking in context if not already present
@@ -132,7 +273,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	// CB-T23: Merge settings-level callbacks with no per-call overrides.
 	// Per-call callback merging is used when ToolLoopAgent is called via
 	// dedicated generate/stream wrappers that accept per-call callbacks.
-	cbs := mergeCallbacks(a.config, agentCallbacks{})
+	cbs := mergeCallbacks(a.config, callCallbacks)
 
 	// Extract input for OnChainStart callback
 	input := ""
@@ -157,9 +298,19 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		System:              a.config.System,
 		Messages:            messages,
 		Tools:               a.config.Tools,
+		ToolChoice:          a.config.ToolChoice,
 		Temperature:         a.config.Temperature,
 		MaxTokens:           a.config.MaxTokens,
+		TopP:                a.config.TopP,
+		TopK:                a.config.TopK,
+		FrequencyPenalty:    a.config.FrequencyPenalty,
+		PresencePenalty:     a.config.PresencePenalty,
+		StopSequences:       a.config.StopSequences,
+		Seed:                a.config.Seed,
+		ProviderOptions:     a.config.ProviderOptions,
 		ExperimentalContext: a.config.ExperimentalContext,
+		RuntimeContext:      a.runtimeContext(),
+		ToolsContext:        a.config.ToolsContext,
 	}, cbs.onStart)
 
 	// Apply total timeout if configured
@@ -174,6 +325,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		Steps:       []types.StepResult{},
 		ToolResults: []types.ToolResult{},
 		Delegations: []SubagentDelegation{},
+		Warnings:    append([]types.Warning{}, a.warnings...),
 	}
 
 	// Current conversation state
@@ -184,26 +336,30 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 	var customData interface{}
 
 	// Execute agent loop
-	for stepNum := 1; stepNum <= a.config.MaxSteps; stepNum++ {
-		// Call step start callback (legacy)
-		if a.config.OnStepStart != nil {
-			a.config.OnStepStart(stepNum)
-		}
+	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
+		callConfig := a.prepareStepCallConfig(ctx, stepNum, currentMessages, result.Steps, result.Usage, customData)
 
 		// CB-T23: Emit OnStepStartEvent
 		ai.Notify(ctx, ai.OnStepStartEvent{
 			StepNumber:          stepNum,
 			ModelProvider:       a.config.Model.Provider(),
 			ModelID:             a.config.Model.ModelID(),
-			System:              a.config.System,
-			Messages:            currentMessages,
-			Tools:               a.config.Tools,
+			System:              callConfig.System,
+			Messages:            callConfig.Messages,
+			Tools:               callConfig.Tools,
 			PreviousSteps:       result.Steps,
 			ExperimentalContext: a.config.ExperimentalContext,
+			RuntimeContext:      callConfig.RuntimeContext,
+			ToolsContext:        callConfig.ToolsContext,
 		}, cbs.onStepStart)
 
+		// Call step start callback (legacy)
+		if a.config.OnStepStart != nil {
+			a.config.OnStepStart(stepNum)
+		}
+
 		// Execute one step with custom data
-		stepResult, shouldContinue, newCustomData, err := a.executeStep(ctx, stepNum, currentMessages, result.Usage, customData, cbs)
+		stepResult, shouldContinue, newCustomData, activeTools, err := a.executeStep(ctx, callConfig)
 		customData = newCustomData
 		if err != nil {
 			// Call OnChainError callback
@@ -213,20 +369,10 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 			return nil, fmt.Errorf("step %d failed: %w", stepNum, err)
 		}
 
-		// Add step to results
-		result.Steps = append(result.Steps, *stepResult)
-		result.Usage = result.Usage.Add(stepResult.Usage)
-		result.Warnings = append(result.Warnings, stepResult.Warnings...)
-
-		// Update conversation with assistant response
-		assistantMsg := types.Message{
-			Role:    types.RoleAssistant,
-			Content: []types.ContentPart{},
-		}
+		responseContent := make([]types.ContentPart, 0, 1)
 		if stepResult.Text != "" {
-			assistantMsg.Content = append(assistantMsg.Content, types.TextContent{Text: stepResult.Text})
+			responseContent = append(responseContent, types.TextContent{Text: stepResult.Text})
 		}
-		currentMessages = append(currentMessages, assistantMsg)
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
@@ -250,7 +396,7 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 					a.config.OnAgentAction(action)
 				}
 			}
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, stepNum, cbs)
+			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, activeTools, currentMessages, stepNum, callConfig.RuntimeContext, callConfig.ToolsContext, cbs)
 			if err != nil {
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
@@ -260,23 +406,20 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 			}
 
 			stepToolResults = toolResults
+			stepResult.ToolResults = toolResults
 			result.ToolResults = append(result.ToolResults, toolResults...)
-
-			// Add tool results to conversation
-			for _, tr := range toolResults {
-				toolMsg := types.Message{
-					Role: types.RoleTool,
-					Content: []types.ContentPart{
-						types.ToolResultContent{
-							ToolCallID: tr.ToolCallID,
-							ToolName:   tr.ToolName,
-							Result:     tr.Result,
-						},
-					},
-				}
-				currentMessages = append(currentMessages, toolMsg)
+			if len(toolResults) == 0 {
+				shouldContinue = false
 			}
 		}
+		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
+		stepResult.ResponseMessages = responseMessages
+		currentMessages = append(currentMessages, responseMessages...)
+
+		// Add step to results after tool execution so step data mirrors TS step objects.
+		result.Steps = append(result.Steps, *stepResult)
+		result.Usage = result.Usage.Add(stepResult.Usage)
+		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 
 		// Call step finish callback (legacy)
 		if a.config.OnStepFinish != nil {
@@ -295,6 +438,8 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 			Usage:               stepResult.Usage,
 			Warnings:            stepResult.Warnings,
 			ExperimentalContext: a.config.ExperimentalContext,
+			RuntimeContext:      callConfig.RuntimeContext,
+			ToolsContext:        callConfig.ToolsContext,
 		}, cbs.onStepFinish)
 
 		// Check if we should continue
@@ -424,13 +569,168 @@ func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []type
 		TotalUsage:          result.Usage,
 		Warnings:            result.Warnings,
 		ExperimentalContext: a.config.ExperimentalContext,
+		RuntimeContext:      a.runtimeContext(),
+		ToolsContext:        a.config.ToolsContext,
 	}, cbs.onFinish)
 
 	return result, nil
 }
 
+func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+	callConfig := PrepareCallConfig{
+		StepNumber:       stepNum,
+		System:           a.config.System,
+		Messages:         messages,
+		Tools:            a.config.Tools,
+		ToolChoice:       a.config.ToolChoice,
+		Temperature:      a.config.Temperature,
+		MaxTokens:        a.config.MaxTokens,
+		TopP:             a.config.TopP,
+		TopK:             a.config.TopK,
+		FrequencyPenalty: a.config.FrequencyPenalty,
+		PresencePenalty:  a.config.PresencePenalty,
+		StopSequences:    a.config.StopSequences,
+		Seed:             a.config.Seed,
+		Headers:          a.config.Headers,
+		Reasoning:        a.config.Reasoning,
+		SendReasoning:    a.config.SendReasoning,
+		ProviderOptions:  a.config.ProviderOptions,
+		RuntimeContext:   a.runtimeContext(),
+		ToolsContext:     a.config.ToolsContext,
+		PreviousSteps:    previousSteps,
+		AccumulatedUsage: accumulatedUsage,
+		CustomData:       customData,
+		CallOptions:      a.config.CallOptions,
+	}
+
+	if a.config.PrepareCall != nil {
+		callConfig = a.config.PrepareCall(ctx, callConfig)
+	}
+	if a.config.FilterActiveTools != nil {
+		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
+	}
+	if callConfig.RuntimeContext == nil {
+		callConfig.RuntimeContext = a.runtimeContext()
+	}
+	if callConfig.ToolsContext == nil {
+		callConfig.ToolsContext = a.config.ToolsContext
+	}
+	return callConfig
+}
+
+func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig {
+	if opts.System != "" {
+		c.System = opts.System
+	}
+	if opts.Prompt != "" {
+		c.Prompt = opts.Prompt
+	}
+	if opts.RuntimeContext != nil {
+		c.RuntimeContext = opts.RuntimeContext
+		c.ExperimentalContext = opts.RuntimeContext
+	}
+	if opts.ToolsContext != nil {
+		c.ToolsContext = opts.ToolsContext
+	}
+	if opts.CallOptions != nil {
+		c.CallOptions = opts.CallOptions
+	}
+	if opts.Tools != nil {
+		c.Tools = opts.Tools
+	}
+	if opts.ToolChoice.Type != "" {
+		c.ToolChoice = opts.ToolChoice
+	}
+	if len(opts.StopWhen) > 0 {
+		c.StopWhen = opts.StopWhen
+		c.MaxSteps = 0
+	} else if opts.MaxSteps > 0 {
+		c.StopWhen = []ai.StopCondition{ai.IsStepCount(opts.MaxSteps)}
+		c.MaxSteps = 0
+	}
+	if opts.Temperature != nil {
+		c.Temperature = opts.Temperature
+	}
+	if opts.MaxTokens != nil {
+		c.MaxTokens = opts.MaxTokens
+	}
+	if opts.TopP != nil {
+		c.TopP = opts.TopP
+	}
+	if opts.TopK != nil {
+		c.TopK = opts.TopK
+	}
+	if opts.FrequencyPenalty != nil {
+		c.FrequencyPenalty = opts.FrequencyPenalty
+	}
+	if opts.PresencePenalty != nil {
+		c.PresencePenalty = opts.PresencePenalty
+	}
+	if opts.StopSequences != nil {
+		c.StopSequences = opts.StopSequences
+	}
+	if opts.Seed != nil {
+		c.Seed = opts.Seed
+	}
+	if opts.Headers != nil {
+		c.Headers = opts.Headers
+	}
+	if opts.Reasoning != nil {
+		c.Reasoning = opts.Reasoning
+	}
+	if opts.SendReasoning != nil {
+		c.SendReasoning = opts.SendReasoning
+	}
+	if opts.ProviderOptions != nil {
+		c.ProviderOptions = opts.ProviderOptions
+	}
+	return c
+}
+
+func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions interface{}) error {
+	if callOptionsSchema == nil || callOptions == nil {
+		return nil
+	}
+	if err := callOptionsSchema.Validator().Validate(callOptions); err != nil {
+		return providererrors.NewValidationErrorWithContext(
+			callOptions,
+			fmt.Sprintf("invalid call options at schema path options: %v", err),
+			err,
+			&providererrors.ValidationContext{Field: "options", EntityName: "callOptions"},
+		)
+	}
+	return nil
+}
+
+func validateAgentPromptOptions(prompt string, messages []types.Message) error {
+	if prompt != "" && len(messages) > 0 {
+		return providererrors.NewValidationErrorWithContext(
+			map[string]interface{}{"prompt": prompt, "messages": messages},
+			"agent call requires either prompt or messages, not both",
+			nil,
+			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
+		)
+	}
+	if prompt == "" && len(messages) == 0 {
+		return providererrors.NewValidationErrorWithContext(
+			nil,
+			"agent call requires either prompt or messages",
+			nil,
+			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
+		)
+	}
+	return nil
+}
+
+func defaultToolChoice(choice types.ToolChoice) types.ToolChoice {
+	if choice.Type == "" {
+		return types.AutoToolChoice()
+	}
+	return choice
+}
+
 // executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages []types.Message, accumulatedUsage types.Usage, customData interface{}, cbs agentCallbacks) (*types.StepResult, bool, interface{}, error) {
+func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig) (*types.StepResult, bool, interface{}, []types.Tool, error) {
 	// Apply per-step timeout if configured
 	stepCtx := ctx
 	var stepCancel context.CancelFunc
@@ -439,21 +739,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 		defer stepCancel()
 	}
 
-	// Prepare call configuration
-	callConfig := PrepareCallConfig{
-		StepNumber:       stepNum,
-		System:           a.config.System,
-		Messages:         messages,
-		Tools:            a.config.Tools,
-		Temperature:      a.config.Temperature,
-		MaxTokens:        a.config.MaxTokens,
-		AccumulatedUsage: accumulatedUsage,
-		CustomData:       customData,
-	}
-
-	// Call PrepareCall hook if configured
-	if a.config.PrepareCall != nil {
-		callConfig = a.config.PrepareCall(ctx, callConfig)
+	toolChoice := callConfig.ToolChoice
+	if toolChoice.Type == "" {
+		toolChoice = types.AutoToolChoice()
 	}
 
 	// Build generate options using potentially modified config
@@ -462,25 +750,28 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 			Messages: callConfig.Messages,
 			System:   callConfig.System,
 		},
-		Temperature: callConfig.Temperature,
-		MaxTokens:   callConfig.MaxTokens,
-		Tools:       callConfig.Tools,
-		ToolChoice:  types.AutoToolChoice(),
+		Temperature:      callConfig.Temperature,
+		MaxTokens:        callConfig.MaxTokens,
+		TopP:             callConfig.TopP,
+		TopK:             callConfig.TopK,
+		FrequencyPenalty: callConfig.FrequencyPenalty,
+		PresencePenalty:  callConfig.PresencePenalty,
+		StopSequences:    callConfig.StopSequences,
+		Tools:            callConfig.Tools,
+		ToolChoice:       toolChoice,
+		RuntimeContext:   callConfig.RuntimeContext,
+		ToolsContext:     callConfig.ToolsContext,
+		Seed:             callConfig.Seed,
+		Headers:          callConfig.Headers,
+		Reasoning:        callConfig.Reasoning,
+		SendReasoning:    callConfig.SendReasoning,
+		ProviderOptions:  callConfig.ProviderOptions,
 	}
 
 	// Call the model with step context
 	genResult, err := a.config.Model.DoGenerate(stepCtx, genOpts)
 	if err != nil {
-		return nil, false, callConfig.CustomData, err
-	}
-
-	// Build response message for this step
-	responseMsg := types.Message{
-		Role:    types.RoleAssistant,
-		Content: []types.ContentPart{},
-	}
-	if genResult.Text != "" {
-		responseMsg.Content = append(responseMsg.Content, types.TextContent{Text: genResult.Text})
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
 	// Extract raw finish reason if available
@@ -495,7 +786,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 
 	// Create step result
 	stepResult := &types.StepResult{
-		StepNumber:       stepNum,
+		StepNumber:       callConfig.StepNumber,
 		Text:             genResult.Text,
 		ToolCalls:        genResult.ToolCalls,
 		ToolResults:      []types.ToolResult{},
@@ -503,64 +794,63 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, stepNum int, messages [
 		RawFinishReason:  rawFinishReason,
 		Usage:            genResult.Usage,
 		Warnings:         genResult.Warnings,
-		ResponseMessages: []types.Message{responseMsg},
+		ProviderMetadata: genResult.ProviderMetadata,
 	}
 
 	// Determine if we should continue
 	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(genResult.ToolCalls) > 0
 
-	return stepResult, shouldContinue, callConfig.CustomData, nil
+	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
 }
 
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, stepNum int, cbs agentCallbacks) ([]types.ToolResult, error) {
-	results := make([]types.ToolResult, len(toolCalls))
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, cbs agentCallbacks) ([]types.ToolResult, error) {
+	results := make([]types.ToolResult, 0, len(toolCalls))
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
 
-	for i, call := range toolCalls {
+	for _, call := range toolCalls {
 		// Call tool call callback
 		if a.config.OnToolCall != nil {
 			a.config.OnToolCall(call)
 		}
 
-		// Check if approval is required
-		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil {
-			approved := a.config.ToolApprover(call)
-			if !approved {
-				rejectionErr := fmt.Errorf("tool call rejected by user")
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Error:            rejectionErr,
-					ProviderExecuted: false,
-				}
-
-				// Call OnToolError for rejected tools
-				if a.config.OnToolError != nil {
-					a.config.OnToolError(call, rejectionErr)
-				}
-				continue
+		if call.Invalid {
+			invalidErr := call.Error
+			if invalidErr == nil {
+				invalidErr = fmt.Errorf("invalid tool call for %s", call.ToolName)
 			}
+			results = append(results, types.ToolResult{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Input:      call.Arguments,
+				Error:      invalidErr,
+				Result:     types.ToolResultOutput{Type: types.ToolResultOutputError, Value: invalidErr.Error()},
+			})
+			continue
 		}
 
 		// Find the tool
 		var tool *types.Tool
-		for j := range a.config.Tools {
-			if a.config.Tools[j].Name == call.ToolName {
-				tool = &a.config.Tools[j]
+		for j := range tools {
+			if tools[j].Name == call.ToolName {
+				tool = &tools[j]
 				break
 			}
 		}
 
 		if tool == nil {
 			notFoundErr := fmt.Errorf("tool not found: %s", call.ToolName)
-			results[i] = types.ToolResult{
+			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Input:            call.Arguments,
 				Error:            notFoundErr,
 				ProviderExecuted: false,
-			}
+			})
 
 			// Call OnToolError for tool not found
 			if a.config.OnToolError != nil {
@@ -569,8 +859,8 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			continue
 		}
 
-		// Check if this is a provider-executed tool
-		providerExecuted := isProviderExecutedTool(tool)
+		providerExecuted := tool.ProviderExecuted
+		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
@@ -579,24 +869,82 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				a.config.OnToolStart(call)
 			}
 
-			results[i] = types.ToolResult{
+			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Input:            call.Arguments,
 				Result:           nil,
 				Error:            nil,
 				ProviderExecuted: true,
+				ProviderMetadata: providerMetadata,
 			}
+			results = append(results, result)
 
 			// Call tool result callback with pending result
 			if a.config.OnToolResult != nil {
-				a.config.OnToolResult(results[i])
+				a.config.OnToolResult(result)
 			}
 
 			// Call OnToolEnd for provider-executed tools (they're deferred but considered started)
 			if a.config.OnToolEnd != nil {
-				a.config.OnToolEnd(results[i])
+				a.config.OnToolEnd(result)
 			}
 		} else {
+			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
+			if err != nil {
+				results = append(results, types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Error:            err,
+					ProviderMetadata: providerMetadata,
+				})
+				continue
+			}
+
+			approval := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext)
+			if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
+				if !a.config.ToolApprover(call) {
+					approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+				}
+			}
+			switch approval.Status {
+			case types.ToolApprovalStatusDenied:
+				reason := approval.Reason
+				if reason == nil {
+					reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+				}
+				rejectionErr := fmt.Errorf("%s", *reason)
+				results = append(results, types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Error:            rejectionErr,
+					Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+					ApprovalStatus:   types.ToolApprovalStatusDenied,
+					ApprovalReason:   reason,
+					ProviderMetadata: providerMetadata,
+				})
+				if a.config.OnToolError != nil {
+					a.config.OnToolError(call, rejectionErr)
+				}
+				continue
+			case types.ToolApprovalStatusUserApproval:
+				results = append(results, types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+					ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+					ProviderMetadata: providerMetadata,
+				})
+				continue
+			}
+
+			if tool.Execute == nil {
+				continue
+			}
+
 			// Locally-executed tool: execute now
 			// Call OnToolStart before execution (legacy)
 			if a.config.OnToolStart != nil {
@@ -612,22 +960,30 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ModelProvider:       a.config.Model.Provider(),
 				ModelID:             a.config.Model.ModelID(),
 				ExperimentalContext: a.config.ExperimentalContext,
+				RuntimeContext:      runtimeContext,
+				ToolsContext:        toolsContext,
 			}, cbs.onToolCallStart)
 
 			execOptions := types.ToolExecutionOptions{
-				ToolCallID: call.ID,
+				ToolCallID:     call.ID,
+				UserContext:    runtimeContext,
+				RuntimeContext: runtimeContext,
+				ToolContext:    toolContext,
 			}
 			startMs := time.Now().UnixMilli()
 			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
 			durationMs := time.Now().UnixMilli() - startMs
 
-			results[i] = types.ToolResult{
+			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,
 				ProviderExecuted: false,
+				ProviderMetadata: providerMetadata,
 			}
+			results = append(results, result)
 
 			// CB-T23: Emit OnToolCallFinishEvent
 			ai.Notify(ctx, ai.OnToolCallFinishEvent{
@@ -641,11 +997,13 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ModelProvider:       a.config.Model.Provider(),
 				ModelID:             a.config.Model.ModelID(),
 				ExperimentalContext: a.config.ExperimentalContext,
+				RuntimeContext:      runtimeContext,
+				ToolsContext:        toolsContext,
 			}, cbs.onToolCallFinish)
 
 			// Call tool result callback (legacy)
 			if a.config.OnToolResult != nil {
-				a.config.OnToolResult(results[i])
+				a.config.OnToolResult(result)
 			}
 
 			// Call OnToolEnd or OnToolError based on execution result (legacy)
@@ -655,7 +1013,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				}
 			} else {
 				if a.config.OnToolEnd != nil {
-					a.config.OnToolEnd(results[i])
+					a.config.OnToolEnd(result)
 				}
 			}
 		}
@@ -664,26 +1022,127 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 	return results, nil
 }
 
-// isProviderExecutedTool determines if a tool is executed by the provider
-// Provider-executed tools include:
-// - Anthropic: tool-search-bm25, tool-search-regex, web-search, web-fetch, code-execution
-// - xAI: file-search, mcp-server
-// - OpenAI: MCP tools (with approval)
-func isProviderExecutedTool(tool *types.Tool) bool {
-	// Check for common provider-executed tool names
-	providerTools := map[string]bool{
-		// Anthropic built-in tools
-		"tool-search-bm25":  true,
-		"tool-search-regex": true,
-		"web-search":        true,
-		"web-fetch":         true,
-		"code-execution":    true,
-		// xAI tools
-		"file-search": true,
-		"mcp-server":  true,
+func (a *ToolLoopAgent) runtimeContext() interface{} {
+	if a.config.RuntimeContext != nil {
+		return a.config.RuntimeContext
 	}
+	return a.config.ExperimentalContext
+}
 
-	return providerTools[tool.Name]
+func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}) types.ToolApprovalResult {
+	approval := normalizeAgentToolApproval(call, tools, messages, a.config.ToolApproval, runtimeContext, toolsContext)
+	if approval.Status != types.ToolApprovalStatusNotApplicable {
+		return approval
+	}
+	for i := range tools {
+		tool := &tools[i]
+		if tool.Name != call.ToolName {
+			continue
+		}
+		switch v := tool.NeedsApproval.(type) {
+		case nil:
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		case bool:
+			if v {
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		case types.NeedsApprovalFunc:
+			if v(ctx, call.Arguments) {
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		case types.ToolApprovalStatus:
+			return normalizeAgentApprovalValue(v)
+		case string:
+			return normalizeAgentApprovalValue(types.ToolApprovalStatus(v))
+		}
+	}
+	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+}
+
+func normalizeAgentToolApproval(call types.ToolCall, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+	switch v := cfg.(type) {
+	case nil:
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	case types.ToolApprovalFunc:
+		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx))
+	case map[string]interface{}:
+		return normalizeAgentToolApprovalValue(call, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
+	case map[string]types.ToolApprovalValue:
+		return normalizeAgentToolApprovalValue(call, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
+	default:
+		return normalizeAgentApprovalValue(v)
+	}
+}
+
+func normalizeAgentToolApprovalValue(call types.ToolCall, tools []types.Tool, messages []types.Message, value interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+	if fn, ok := value.(types.ToolApprovalFunc); ok {
+		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx))
+	}
+	return normalizeAgentApprovalValue(value)
+}
+
+func normalizeAgentApprovalValue(value interface{}) types.ToolApprovalResult {
+	switch v := value.(type) {
+	case nil:
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	case types.ToolApprovalResult:
+		if v.Status == "" {
+			v.Status = types.ToolApprovalStatusNotApplicable
+		}
+		return v
+	case *types.ToolApprovalResult:
+		if v == nil {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		}
+		return normalizeAgentApprovalValue(*v)
+	case types.ToolApprovalStatus:
+		if v == "" {
+			v = types.ToolApprovalStatusNotApplicable
+		}
+		return types.ToolApprovalResult{Status: v}
+	case string:
+		if v == "" {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatus(v)}
+	default:
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	}
+}
+
+func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
+	if tool == nil || tool.ContextSchema == nil {
+		return ctxValue, nil
+	}
+	if err := tool.ContextSchema.Validator().Validate(ctxValue); err != nil {
+		return nil, providererrors.NewValidationErrorWithContext(
+			ctxValue,
+			fmt.Sprintf("invalid tool context for %s at schema path toolsContext.%s: %v", toolName, toolName, err),
+			err,
+			&providererrors.ValidationContext{Field: "toolsContext." + toolName, EntityName: "toolContext", EntityID: toolName},
+		)
+	}
+	return ctxValue, nil
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+func mergeProviderMetadataMaps(primary, fallback map[string]interface{}) map[string]interface{} {
+	if len(primary) == 0 && len(fallback) == 0 {
+		return nil
+	}
+	merged := make(map[string]interface{}, len(primary)+len(fallback))
+	for k, v := range fallback {
+		merged[k] = v
+	}
+	for k, v := range primary {
+		merged[k] = v
+	}
+	return merged
 }
 
 // SetSystem updates the system prompt
@@ -708,12 +1167,21 @@ func (a *ToolLoopAgent) RemoveTool(toolName string) {
 
 // SetMaxSteps updates the maximum number of steps.
 func (a *ToolLoopAgent) SetMaxSteps(maxSteps int) {
-	a.config.MaxSteps = maxSteps
+	a.config.MaxSteps = 0
+	a.config.StopWhen = []ai.StopCondition{ai.IsStepCount(maxSteps)}
+	a.warnings = append(a.warnings, types.Warning{
+		Type:    "deprecated-setting",
+		Message: fmt.Sprintf("ToolLoopAgent.SetMaxSteps is deprecated; use SetStopConditions([]ai.StopCondition{ai.IsStepCount(%d)}) instead.", maxSteps),
+	})
 }
 
 // SetStopConditions replaces the agent's stop conditions.
 func (a *ToolLoopAgent) SetStopConditions(conditions []ai.StopCondition) {
+	if len(conditions) == 0 {
+		conditions = []ai.StopCondition{ai.IsStepCount(20)}
+	}
 	a.config.StopWhen = conditions
+	a.config.MaxSteps = 0
 }
 
 // ========================================================================

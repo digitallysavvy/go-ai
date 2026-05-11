@@ -2,12 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // Helper function to create int64 pointers
@@ -19,9 +23,11 @@ func intPtr(i int64) *int64 {
 type mockLanguageModel struct {
 	responses []types.GenerateResult
 	callCount int
+	options   []*provider.GenerateOptions
 }
 
 func (m *mockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.options = append(m.options, opts)
 	if m.callCount >= len(m.responses) {
 		return &types.GenerateResult{
 			Text:         "Final response",
@@ -41,15 +47,15 @@ func (m *mockLanguageModel) DoStream(ctx context.Context, opts *provider.Generat
 	return nil, fmt.Errorf("streaming not implemented in mock")
 }
 
-func (m *mockLanguageModel) SpecificationVersion() string { return "v3" }
-func (m *mockLanguageModel) Provider() string              { return "mock" }
-func (m *mockLanguageModel) ModelID() string               { return "mock-model" }
-func (m *mockLanguageModel) SupportsTools() bool           { return true }
-func (m *mockLanguageModel) SupportsStructuredOutput() bool { return false }
+func (m *mockLanguageModel) SpecificationVersion() string        { return "v3" }
+func (m *mockLanguageModel) Provider() string                    { return "mock" }
+func (m *mockLanguageModel) ModelID() string                     { return "mock-model" }
+func (m *mockLanguageModel) SupportsTools() bool                 { return true }
+func (m *mockLanguageModel) SupportsStructuredOutput() bool      { return false }
 func (m *mockLanguageModel) DefaultObjectGenerationMode() string { return "" }
-func (m *mockLanguageModel) SupportsImageUrls() bool       { return false }
-func (m *mockLanguageModel) SupportsImageInput() bool      { return false }
-func (m *mockLanguageModel) SupportsParallelToolCalls() bool { return true }
+func (m *mockLanguageModel) SupportsImageUrls() bool             { return false }
+func (m *mockLanguageModel) SupportsImageInput() bool            { return false }
+func (m *mockLanguageModel) SupportsParallelToolCalls() bool     { return true }
 
 // Test that OnStepFinish callback is called at constructor level
 func TestOnStepFinish_ConstructorLevel(t *testing.T) {
@@ -127,8 +133,8 @@ func TestOnStepFinish_MultiStep(t *testing.T) {
 				FinishReason: types.FinishReasonToolCalls,
 				ToolCalls: []types.ToolCall{
 					{
-						ID:       "call_1",
-						ToolName: "test_tool",
+						ID:        "call_1",
+						ToolName:  "test_tool",
 						Arguments: map[string]interface{}{},
 					},
 				},
@@ -190,8 +196,8 @@ func TestOnStepFinish_ErrorHandling(t *testing.T) {
 				FinishReason: types.FinishReasonToolCalls,
 				ToolCalls: []types.ToolCall{
 					{
-						ID:       "call_1",
-						ToolName: "test_tool",
+						ID:        "call_1",
+						ToolName:  "test_tool",
 						Arguments: map[string]interface{}{},
 					},
 				},
@@ -202,8 +208,8 @@ func TestOnStepFinish_ErrorHandling(t *testing.T) {
 				FinishReason: types.FinishReasonToolCalls,
 				ToolCalls: []types.ToolCall{
 					{
-						ID:       "call_2",
-						ToolName: "test_tool",
+						ID:        "call_2",
+						ToolName:  "test_tool",
 						Arguments: map[string]interface{}{},
 					},
 				},
@@ -269,8 +275,8 @@ func TestStepResult_Structure(t *testing.T) {
 				FinishReason: types.FinishReasonToolCalls,
 				ToolCalls: []types.ToolCall{
 					{
-						ID:       "call_1",
-						ToolName: "test_tool",
+						ID:        "call_1",
+						ToolName:  "test_tool",
 						Arguments: map[string]interface{}{},
 					},
 				},
@@ -450,6 +456,7 @@ func TestOnStepFinish_ResponseMessages(t *testing.T) {
 		t.Error("Expected text content to match generated text")
 	}
 }
+
 // =============================================================================
 // LangChain-Style Callbacks Tests (v6.0.60+)
 // =============================================================================
@@ -555,7 +562,7 @@ func (m *mockErrorModel) DoStream(ctx context.Context, opts *provider.GenerateOp
 	return nil, fmt.Errorf("streaming not implemented")
 }
 
-func (m *mockErrorModel) SpecificationVersion() string       { return "v3" }
+func (m *mockErrorModel) SpecificationVersion() string        { return "v3" }
 func (m *mockErrorModel) Provider() string                    { return "mock-error" }
 func (m *mockErrorModel) ModelID() string                     { return "error-model" }
 func (m *mockErrorModel) SupportsTools() bool                 { return true }
@@ -1581,8 +1588,8 @@ func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 		},
 	}
 
-	// 15 responses all requesting tool calls
-	responses := make([]types.GenerateResult, 15)
+	// TypeScript parity: neither MaxSteps nor StopWhen set defaults to isStepCount(20).
+	responses := make([]types.GenerateResult, 25)
 	for i := range responses {
 		responses[i] = types.GenerateResult{
 			Text:         fmt.Sprintf("Step %d", i+1),
@@ -1594,7 +1601,6 @@ func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 
 	mock := &mockLanguageModel{responses: responses}
 
-	// Neither MaxSteps nor StopWhen set: should default to 1
 	agent := NewToolLoopAgent(AgentConfig{
 		Model: mock,
 		Tools: []types.Tool{testTool},
@@ -1605,7 +1611,474 @@ func TestToolLoopAgent_StopWhen_Default(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if len(result.Steps) != 1 {
-		t.Errorf("expected 1 step (default), got %d", len(result.Steps))
+	if len(result.Steps) != 20 {
+		t.Errorf("expected 20 steps (default), got %d", len(result.Steps))
+	}
+	if result.StopReason != "maximum number of steps (20) reached" {
+		t.Errorf("expected default stop reason, got %q", result.StopReason)
+	}
+}
+
+func TestToolLoopAgent_RuntimeAndToolsContext(t *testing.T) {
+	toolCtx := map[string]interface{}{"tenant": "acme"}
+	runtimeCtx := map[string]interface{}{"requestID": "req-1"}
+	var gotOptions types.ToolExecutionOptions
+
+	testTool := types.Tool{
+		Name:          "ctx_tool",
+		Description:   "uses context",
+		Parameters:    map[string]interface{}{"type": "object"},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"tenant"}}),
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			gotOptions = opts
+			return "ok", nil
+		},
+	}
+
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{
+			Text:         "call",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "ctx_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(1)},
+		},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:          mock,
+		Tools:          []types.Tool{testTool},
+		RuntimeContext: runtimeCtx,
+		ToolsContext:   map[string]interface{}{"ctx_tool": toolCtx},
+		MaxSteps:       3,
+	})
+
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !reflect.DeepEqual(gotOptions.RuntimeContext, runtimeCtx) {
+		t.Fatalf("RuntimeContext not forwarded")
+	}
+	if !reflect.DeepEqual(gotOptions.ToolContext, toolCtx) {
+		t.Fatalf("ToolContext not forwarded")
+	}
+}
+
+func TestToolLoopAgent_InvalidToolContextReturnsValidationResult(t *testing.T) {
+	testTool := types.Tool{
+		Name:          "ctx_tool",
+		Description:   "uses context",
+		Parameters:    map[string]interface{}{"type": "object"},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"tenant"}}),
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("tool should not execute with invalid context")
+			return nil, nil
+		},
+	}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{
+			Text:         "call",
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "ctx_tool", Arguments: map[string]interface{}{}}},
+			Usage:        types.Usage{TotalTokens: intPtr(1)},
+		},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:        mock,
+		Tools:        []types.Tool{testTool},
+		ToolsContext: map[string]interface{}{"ctx_tool": map[string]interface{}{}},
+		MaxSteps:     2,
+	})
+
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result.ToolResults) == 0 || result.ToolResults[0].Error == nil {
+		t.Fatalf("expected validation error result")
+	}
+	if !strings.Contains(result.ToolResults[0].Error.Error(), "toolsContext.ctx_tool") {
+		t.Fatalf("expected schema path in error, got %v", result.ToolResults[0].Error)
+	}
+}
+
+func TestToolLoopAgent_CallOptionsSchemaBeforeModel(t *testing.T) {
+	mock := &mockLanguageModel{}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:             mock,
+		CallOptions:       map[string]interface{}{"mode": "bad"},
+		CallOptionsSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"ok"}}),
+	})
+
+	_, err := agent.Execute(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected call options validation error")
+	}
+	if mock.callCount != 0 {
+		t.Fatal("model was called before call options validation")
+	}
+	if !strings.Contains(err.Error(), "options") {
+		t.Fatalf("expected options path in error, got %v", err)
+	}
+}
+
+func TestToolLoopAgent_ApprovalNilAndDenied(t *testing.T) {
+	called := false
+	testTool := types.Tool{
+		Name:        "delete",
+		Description: "delete",
+		Parameters:  map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			called = true
+			return "deleted", nil
+		},
+	}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "delete", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{testTool},
+		ToolApproval: types.ToolApprovalFunc(func(types.ToolCall, []types.Tool, []types.Message, interface{}, map[string]interface{}) types.ToolApprovalResult {
+			return types.ToolApprovalResult{}
+		}),
+		MaxSteps: 2,
+	})
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !called {
+		t.Fatal("zero-value approval should be not-applicable and execute")
+	}
+
+	mock = &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "delete", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	reason := "policy"
+	agent = NewToolLoopAgent(AgentConfig{
+		Model:        mock,
+		Tools:        []types.Tool{testTool},
+		ToolApproval: map[string]types.ToolApprovalValue{"delete": types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &reason}},
+		MaxSteps:     1,
+	})
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied || *result.ToolResults[0].ApprovalReason != "policy" {
+		t.Fatalf("denial not preserved: %+v", result.ToolResults[0])
+	}
+}
+
+func TestToolLoopAgent_FilterActiveToolsAndPrompt(t *testing.T) {
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}}}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:  mock,
+		Prompt: "system from prompt",
+		Tools: []types.Tool{
+			{Name: "keep", Description: "keep", Parameters: map[string]interface{}{"type": "object"}},
+			{Name: "drop", Description: "drop", Parameters: map[string]interface{}{"type": "object"}},
+		},
+		FilterActiveTools: func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool {
+			return []types.Tool{tools[0]}
+		},
+	})
+
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if got := mock.options[0].Prompt.System; got != "system from prompt" {
+		t.Fatalf("Prompt alias not used as system prompt: %q", got)
+	}
+	if len(mock.options[0].Tools) != 1 || mock.options[0].Tools[0].Name != "keep" {
+		t.Fatalf("FilterActiveTools not applied: %+v", mock.options[0].Tools)
+	}
+}
+
+func TestToolLoopAgent_InvalidToolCallPreserved(t *testing.T) {
+	invalidErr := errors.New("Invalid input for tool test_tool")
+	testTool := types.Tool{Name: "test_tool", Description: "test", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		t.Fatal("invalid tool call should not execute")
+		return nil, nil
+	}}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "bad call",
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "bad-1", ToolName: "test_tool", Invalid: true, Error: invalidErr}},
+		Usage:        types.Usage{TotalTokens: intPtr(1)},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock, Tools: []types.Tool{testTool}, MaxSteps: 1})
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result.ToolResults) != 1 || !errors.Is(result.ToolResults[0].Error, invalidErr) {
+		t.Fatalf("invalid tool call error not preserved: %+v", result.ToolResults)
+	}
+}
+
+func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
+	baseTemp := 0.1
+	callTemp := 0.7
+	maxTokens := 42
+	seed := 9
+	runtimeCtx := map[string]interface{}{"requestID": "call"}
+	providerOpts := map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "low"}}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock, Temperature: &baseTemp})
+
+	started := false
+	result, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Prompt:          "hello",
+		System:          "per-call system",
+		Temperature:     &callTemp,
+		MaxTokens:       &maxTokens,
+		Seed:            &seed,
+		RuntimeContext:  runtimeCtx,
+		ToolsContext:    map[string]interface{}{"tool": map[string]interface{}{"tenant": "acme"}},
+		ToolChoice:      types.RequiredToolChoice(),
+		ProviderOptions: providerOpts,
+		OnStart: func(ctx context.Context, e ai.OnStartEvent) {
+			started = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("unexpected result text: %q", result.Text)
+	}
+	if !started {
+		t.Fatal("per-call OnStart callback was not invoked")
+	}
+	got := mock.options[0]
+	if got.Prompt.System != "per-call system" {
+		t.Fatalf("system override not forwarded: %q", got.Prompt.System)
+	}
+	if got.Temperature == nil || *got.Temperature != callTemp {
+		t.Fatalf("temperature override not forwarded: %v", got.Temperature)
+	}
+	if got.MaxTokens == nil || *got.MaxTokens != maxTokens {
+		t.Fatalf("max tokens override not forwarded: %v", got.MaxTokens)
+	}
+	if got.Seed == nil || *got.Seed != seed {
+		t.Fatalf("seed override not forwarded: %v", got.Seed)
+	}
+	if got.ToolChoice.Type != types.ToolChoiceRequired {
+		t.Fatalf("tool choice override not forwarded: %+v", got.ToolChoice)
+	}
+	if !reflect.DeepEqual(got.RuntimeContext, runtimeCtx) {
+		t.Fatalf("runtime context override not forwarded: %+v", got.RuntimeContext)
+	}
+	if !reflect.DeepEqual(got.ProviderOptions, providerOpts) {
+		t.Fatalf("provider options override not forwarded: %+v", got.ProviderOptions)
+	}
+}
+
+func TestToolLoopAgent_OnStepStartReceivesFilteredTools(t *testing.T) {
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}}}}
+	var eventTools []types.Tool
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{
+			{Name: "keep", Parameters: map[string]interface{}{"type": "object"}},
+			{Name: "drop", Parameters: map[string]interface{}{"type": "object"}},
+		},
+		FilterActiveTools: func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool {
+			return []types.Tool{tools[0]}
+		},
+		OnStepStartEvent: func(ctx context.Context, e ai.OnStepStartEvent) {
+			eventTools = e.Tools
+		},
+	})
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(eventTools) != 1 || eventTools[0].Name != "keep" {
+		t.Fatalf("OnStepStart tools were not filtered: %+v", eventTools)
+	}
+}
+
+func TestToolLoopAgent_FilteredToolsUsedForExecution(t *testing.T) {
+	blockedExecuted := false
+	blocked := types.Tool{Name: "blocked", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		blockedExecuted = true
+		return "blocked", nil
+	}}
+	allowed := types.Tool{Name: "allowed", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "allowed", nil
+	}}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "call",
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "blocked", Arguments: map[string]interface{}{"x": 1}}},
+		Usage:        types.Usage{TotalTokens: intPtr(1)},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{allowed, blocked},
+		FilterActiveTools: func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool {
+			return []types.Tool{allowed}
+		},
+	})
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if blockedExecuted {
+		t.Fatal("filtered-out tool executed")
+	}
+	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil || !strings.Contains(result.ToolResults[0].Error.Error(), "tool not found") {
+		t.Fatalf("expected not-found result for inactive tool, got %+v", result.ToolResults)
+	}
+}
+
+func TestToolLoopAgent_ResponseMessagesPreserveAssistantToolCalls(t *testing.T) {
+	tool := types.Tool{Name: "lookup", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "calling", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock, Tools: []types.Tool{tool}, MaxSteps: 2})
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result.Steps[0].ResponseMessages) == 0 || len(result.Steps[0].ResponseMessages[0].ToolCalls) != 1 {
+		t.Fatalf("step response messages did not preserve tool calls: %+v", result.Steps[0].ResponseMessages)
+	}
+	secondCallMessages := mock.options[1].Prompt.Messages
+	if len(secondCallMessages) < 2 || len(secondCallMessages[1].ToolCalls) != 1 {
+		t.Fatalf("follow-up prompt did not preserve assistant tool calls: %+v", secondCallMessages)
+	}
+}
+
+func TestToolLoopAgent_NilExecuteToolDoesNotPanicOrContinue(t *testing.T) {
+	mock := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "call client tool",
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "client_tool", Arguments: map[string]interface{}{}}},
+		Usage:        types.Usage{TotalTokens: intPtr(1)},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock, Tools: []types.Tool{{Name: "client_tool", Parameters: map[string]interface{}{"type": "object"}}}})
+	result, err := agent.Execute(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if mock.callCount != 1 {
+		t.Fatalf("expected one model call, got %d", mock.callCount)
+	}
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("nil Execute tool should not synthesize local results: %+v", result.ToolResults)
+	}
+}
+
+func TestToolLoopAgent_ToolApprovalReceivesActiveToolsAndMessages(t *testing.T) {
+	tool := types.Tool{Name: "allowed", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "allowed", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	var gotToolNames []string
+	gotMessages := 0
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{tool, types.Tool{Name: "inactive", Parameters: map[string]interface{}{"type": "object"}}},
+		FilterActiveTools: func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool {
+			return []types.Tool{tool}
+		},
+		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			for _, tool := range tools {
+				gotToolNames = append(gotToolNames, tool.Name)
+			}
+			gotMessages = len(messages)
+			return types.ToolApprovalResult{}
+		}),
+		MaxSteps: 2,
+	})
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !reflect.DeepEqual(gotToolNames, []string{"allowed"}) {
+		t.Fatalf("approval did not receive active tools: %+v", gotToolNames)
+	}
+	if gotMessages == 0 {
+		t.Fatal("approval did not receive current messages")
+	}
+}
+
+func TestToolLoopAgent_PrepareCallContextForwardedToApprovalAndExecution(t *testing.T) {
+	initialCtx := map[string]interface{}{"tenant": "initial"}
+	preparedCtx := map[string]interface{}{"tenant": "prepared"}
+	runtimeCtx := map[string]interface{}{"requestID": "prepared"}
+	var approvalToolsCtx map[string]interface{}
+	var approvalRuntime interface{}
+	var execRuntime interface{}
+	var execToolCtx interface{}
+
+	tool := types.Tool{
+		Name:          "ctx_tool",
+		Parameters:    map[string]interface{}{"type": "object"},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"tenant"}}),
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			execRuntime = opts.RuntimeContext
+			execToolCtx = opts.ToolContext
+			return "ok", nil
+		},
+	}
+	mock := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "ctx_tool", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:        mock,
+		Tools:        []types.Tool{tool},
+		ToolsContext: map[string]interface{}{"ctx_tool": initialCtx},
+		PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+			config.RuntimeContext = runtimeCtx
+			config.ToolsContext = map[string]interface{}{"ctx_tool": preparedCtx}
+			return config
+		},
+		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			approvalRuntime = runtimeCtx
+			approvalToolsCtx = toolsCtx
+			return types.ToolApprovalResult{}
+		}),
+		MaxSteps: 2,
+	})
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !reflect.DeepEqual(approvalRuntime, runtimeCtx) {
+		t.Fatalf("approval runtime context not from PrepareCall: %+v", approvalRuntime)
+	}
+	if !reflect.DeepEqual(approvalToolsCtx["ctx_tool"], preparedCtx) {
+		t.Fatalf("approval tools context not from PrepareCall: %+v", approvalToolsCtx)
+	}
+	if !reflect.DeepEqual(execRuntime, runtimeCtx) {
+		t.Fatalf("execution runtime context not from PrepareCall: %+v", execRuntime)
+	}
+	if !reflect.DeepEqual(execToolCtx, preparedCtx) {
+		t.Fatalf("execution tool context not from PrepareCall: %+v", execToolCtx)
+	}
+}
+
+func TestToolLoopAgent_GeneratePromptMessagesValidation(t *testing.T) {
+	mock := &mockLanguageModel{}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock})
+
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{}); err == nil {
+		t.Fatal("expected error when neither prompt nor messages are provided")
+	}
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Prompt:   "test",
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}},
+	}); err == nil {
+		t.Fatal("expected error when both prompt and messages are provided")
 	}
 }

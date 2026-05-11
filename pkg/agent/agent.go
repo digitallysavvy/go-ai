@@ -6,10 +6,26 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // Agent represents an autonomous agent that can use tools to accomplish tasks
 type Agent interface {
+	// Version returns the agent interface specification version.
+	Version() string
+
+	// ID returns the optional agent identifier.
+	ID() string
+
+	// Tools returns the tools that the agent can use.
+	Tools() []types.Tool
+
+	// Generate runs the agent with per-call options and returns the final result.
+	Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error)
+
+	// Stream streams the agent with per-call options.
+	Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
+
 	// Execute runs the agent with the given prompt and returns the final result
 	Execute(ctx context.Context, prompt string) (*AgentResult, error)
 
@@ -43,6 +59,53 @@ type AgentResult struct {
 
 	// Warnings from any step
 	Warnings []types.Warning
+}
+
+// AgentGenerateOptions contains per-call options for ToolLoopAgent.Generate.
+// It mirrors the TypeScript agent.generate call shape using Go option structs
+// instead of overloaded positional arguments.
+type AgentGenerateOptions struct {
+	Prompt   string
+	Messages []types.Message
+	System   string
+
+	RuntimeContext interface{}
+	ToolsContext   map[string]interface{}
+	CallOptions    interface{}
+
+	Tools      []types.Tool
+	ToolChoice types.ToolChoice
+	StopWhen   []ai.StopCondition
+	MaxSteps   int
+
+	Temperature      *float64
+	MaxTokens        *int
+	TopP             *float64
+	TopK             *int
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	StopSequences    []string
+	Seed             *int
+	Headers          map[string]string
+	Reasoning        *types.ReasoningLevel
+	SendReasoning    *bool
+	ProviderOptions  map[string]interface{}
+
+	OnStart          func(ctx context.Context, e ai.OnStartEvent)
+	OnStepStart      func(ctx context.Context, e ai.OnStepStartEvent)
+	OnToolCallStart  func(ctx context.Context, e ai.OnToolCallStartEvent)
+	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
+	OnStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
+	OnFinish         func(ctx context.Context, e ai.OnFinishEvent)
+}
+
+// AgentStreamOptions contains per-call options for ToolLoopAgent.Stream.
+// It maps to TypeScript agent.stream while returning the SDK's idiomatic
+// StreamTextResult.
+type AgentStreamOptions struct {
+	AgentGenerateOptions
+
+	OnChunk func(chunk provider.StreamChunk)
 }
 
 // AgentAction represents an action the agent has decided to take
@@ -124,6 +187,10 @@ type AgentConfig struct {
 	// System prompt for the agent
 	System string
 
+	// Prompt is a TypeScript-compatible alias for System/instructions.
+	// When System is empty, Prompt is used as the system prompt for each step.
+	Prompt string
+
 	// Tools available to the agent
 	Tools []types.Tool
 
@@ -137,11 +204,13 @@ type AgentConfig struct {
 
 	// Maximum number of steps (iterations) the agent can take.
 	// If both MaxSteps and StopWhen are set, StopWhen takes precedence.
+	//
+	// Deprecated: use StopWhen with ai.IsStepCount instead.
 	MaxSteps int
 
 	// StopWhen defines conditions that terminate the agent's tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
-	// If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition{ai.StepCountIs(1)}.
+	// If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition{ai.IsStepCount(20)}.
 	StopWhen []ai.StopCondition
 
 	// Temperature for generation
@@ -149,6 +218,39 @@ type AgentConfig struct {
 
 	// MaxTokens per generation
 	MaxTokens *int
+
+	// TopP controls nucleus sampling.
+	TopP *float64
+
+	// TopK controls top-k sampling for providers that support it.
+	TopK *int
+
+	// FrequencyPenalty reduces repetition.
+	FrequencyPenalty *float64
+
+	// PresencePenalty encourages topic diversity.
+	PresencePenalty *float64
+
+	// StopSequences halt generation when encountered.
+	StopSequences []string
+
+	// ToolChoice controls how the model may call tools.
+	ToolChoice types.ToolChoice
+
+	// Seed enables deterministic generation when supported by the provider.
+	Seed *int
+
+	// Headers are custom request headers forwarded to the provider.
+	Headers map[string]string
+
+	// Reasoning configures provider reasoning effort.
+	Reasoning *types.ReasoningLevel
+
+	// SendReasoning controls whether reasoning stream/content parts are exposed.
+	SendReasoning *bool
+
+	// ProviderOptions are provider-specific options keyed by provider name.
+	ProviderOptions map[string]interface{}
 
 	// Timeout provides granular timeout controls
 	// Supports total timeout, per-step timeout, and per-chunk timeout
@@ -185,6 +287,27 @@ type AgentConfig struct {
 	// It is passed as-is to every event — useful for correlating events with
 	// application-level state (e.g. request IDs, session objects).
 	ExperimentalContext interface{}
+
+	// RuntimeContext is user-defined context that flows through callbacks,
+	// approval hooks, and tool execution. ExperimentalContext is a deprecated
+	// alias and is used only when RuntimeContext is nil.
+	RuntimeContext interface{}
+
+	// ToolsContext contains per-tool context keyed by tool name. Each value is
+	// validated against the matching tool's ContextSchema before approval
+	// callbacks and execution.
+	ToolsContext map[string]interface{}
+
+	// CallOptions contains agent-level call options passed through PrepareCall.
+	// When CallOptionsSchema is set, this value is validated before model calls.
+	CallOptions interface{}
+
+	// CallOptionsSchema validates CallOptions before any generate/stream call.
+	CallOptionsSchema schema.Schema
+
+	// FilterActiveTools can restrict the available tools for each step.
+	// It mirrors the TypeScript filterActiveTools/activeTools behavior.
+	FilterActiveTools func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool
 
 	// ExperimentalDownload enables file download support in agents
 	// When enabled, agents can download files from URLs and process them
@@ -274,6 +397,11 @@ type AgentConfig struct {
 	// ToolApprover is called when a tool needs approval (if ToolApprovalRequired is true)
 	// Should return true to approve, false to reject
 	ToolApprover func(toolCall types.ToolCall) bool
+
+	// ToolApproval configures automatic approval handling. Supported values are
+	// types.ToolApprovalFunc and maps keyed by tool name. Nil or zero-valued
+	// results are treated as not-applicable.
+	ToolApproval types.ToolApprovalConfig
 }
 
 // PrepareCallConfig contains configuration that can be modified before each call
@@ -290,11 +418,56 @@ type PrepareCallConfig struct {
 	// Tools available for this call
 	Tools []types.Tool
 
+	// ToolChoice controls how the model may call tools for this call.
+	ToolChoice types.ToolChoice
+
+	// CallOptions are validated and passed through from AgentConfig.
+	CallOptions interface{}
+
 	// Temperature for this call
 	Temperature *float64
 
 	// MaxTokens for this call
 	MaxTokens *int
+
+	// TopP controls nucleus sampling.
+	TopP *float64
+
+	// TopK controls top-k sampling for providers that support it.
+	TopK *int
+
+	// FrequencyPenalty reduces repetition.
+	FrequencyPenalty *float64
+
+	// PresencePenalty encourages topic diversity.
+	PresencePenalty *float64
+
+	// StopSequences halt generation when encountered.
+	StopSequences []string
+
+	// Seed enables deterministic generation when supported by the provider.
+	Seed *int
+
+	// Headers are custom request headers forwarded to the provider.
+	Headers map[string]string
+
+	// Reasoning configures provider reasoning effort.
+	Reasoning *types.ReasoningLevel
+
+	// SendReasoning controls whether reasoning stream/content parts are exposed.
+	SendReasoning *bool
+
+	// ProviderOptions are provider-specific options keyed by provider name.
+	ProviderOptions map[string]interface{}
+
+	// RuntimeContext is user-defined runtime data for this call.
+	RuntimeContext interface{}
+
+	// ToolsContext contains per-tool execution context keyed by tool name.
+	ToolsContext map[string]interface{}
+
+	// PreviousSteps contains completed step results before this call.
+	PreviousSteps []types.StepResult
 
 	// AccumulatedUsage is the total usage so far
 	AccumulatedUsage types.Usage

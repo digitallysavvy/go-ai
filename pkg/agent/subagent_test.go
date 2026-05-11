@@ -5,13 +5,52 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // mockAgent is a simple mock implementation of the Agent interface
 type mockAgent struct {
-	executeFunc            func(ctx context.Context, prompt string) (*AgentResult, error)
+	executeFunc             func(ctx context.Context, prompt string) (*AgentResult, error)
 	executeWithMessagesFunc func(ctx context.Context, messages []types.Message) (*AgentResult, error)
+	generateFunc            func(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error)
+	streamFunc              func(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
+	id                      string
+	tools                   []types.Tool
+}
+
+func (m *mockAgent) Version() string {
+	return "agent-v1"
+}
+
+func (m *mockAgent) ID() string {
+	return m.id
+}
+
+func (m *mockAgent) Tools() []types.Tool {
+	if len(m.tools) == 0 {
+		return nil
+	}
+	tools := make([]types.Tool, len(m.tools))
+	copy(tools, m.tools)
+	return tools
+}
+
+func (m *mockAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error) {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, opts)
+	}
+	if len(opts.Messages) > 0 {
+		return m.ExecuteWithMessages(ctx, opts.Messages)
+	}
+	return m.Execute(ctx, opts.Prompt)
+}
+
+func (m *mockAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error) {
+	if m.streamFunc != nil {
+		return m.streamFunc(ctx, opts)
+	}
+	return nil, fmt.Errorf("streaming not implemented")
 }
 
 func (m *mockAgent) Execute(ctx context.Context, prompt string) (*AgentResult, error) {

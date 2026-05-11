@@ -61,7 +61,6 @@ func TestJSONSchemaValidator_Validate(t *testing.T) {
 
 	validator := NewJSONSchema(schema)
 
-	// Validate returns nil for now (placeholder implementation)
 	err := validator.Validate(map[string]interface{}{"name": "John"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -96,7 +95,6 @@ func TestStructValidator_JSONSchema(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil JSON schema")
 	}
-	// Placeholder implementation returns basic object type
 	if result["type"] != "object" {
 		t.Errorf("expected type 'object', got %v", result["type"])
 	}
@@ -111,7 +109,6 @@ func TestStructValidator_Validate(t *testing.T) {
 
 	validator := NewStructSchema(reflect.TypeOf(TestStruct{}))
 
-	// Validate returns nil for now (placeholder implementation)
 	err := validator.Validate(TestStruct{Name: "John"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -367,12 +364,25 @@ func TestStructValidator_NestedStruct(t *testing.T) {
 		t.Fatal("expected non-nil validator")
 	}
 
-	// Validate returns nil for now (placeholder)
 	err := validator.Validate(Person{
 		Name:    "John",
 		Address: Address{City: "NYC"},
 	})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestJSONSchemaValidator_NullTypeAndNullableUnion(t *testing.T) {
+	t.Parallel()
+
+	if err := NewJSONSchema(map[string]interface{}{"type": "null"}).Validate(nil); err != nil {
+		t.Fatalf("null type should accept nil: %v", err)
+	}
+	if err := NewJSONSchema(map[string]interface{}{"type": []interface{}{"string", "null"}}).Validate(nil); err != nil {
+		t.Fatalf("nullable union should accept nil: %v", err)
+	}
+	if err := NewJSONSchema(map[string]interface{}{"items": map[string]interface{}{"type": "string"}}).Validate(nil); err != nil {
+		t.Fatalf("items without array type should ignore nil instead of panicking: %v", err)
 	}
 }

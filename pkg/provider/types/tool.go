@@ -230,6 +230,13 @@ type ToolCall struct {
 	// forwarded verbatim when re-sending the assistant message in multi-turn
 	// conversations so the API can verify the reasoning chain was not modified.
 	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+
+	// Invalid marks a tool call whose input could not be parsed or validated.
+	// Invalid calls are preserved as error tool results instead of being dropped.
+	Invalid bool `json:"invalid,omitempty"`
+
+	// Error is the validation/parsing error associated with an invalid tool call.
+	Error error `json:"-"`
 }
 
 // ToolResult represents the result of executing a tool
