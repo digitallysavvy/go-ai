@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -256,6 +257,71 @@ func TestParseModelString_Invalid(t *testing.T) {
 		if err == nil {
 			t.Errorf("parseModelString(%q) expected error, got nil", input)
 		}
+	}
+}
+
+type registryVideoModel struct{}
+
+func (registryVideoModel) SpecificationVersion() string { return "v3" }
+func (registryVideoModel) Provider() string             { return "custom" }
+func (registryVideoModel) ModelID() string              { return "video-a" }
+func (registryVideoModel) MaxVideosPerCall() *int       { return nil }
+func (registryVideoModel) DoGenerate(context.Context, *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	return &provider.VideoModelV3Response{}, nil
+}
+
+func TestRegistry_CustomProviderAllModelFamilies(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	r.RegisterProvider("custom", NewCustomProvider(CustomProviderOptions{
+		LanguageModels:      map[string]provider.LanguageModel{"language-a": &testutil.MockLanguageModel{ModelName: "language-a"}},
+		EmbeddingModels:     map[string]provider.EmbeddingModel{"embedding-a": &testutil.MockEmbeddingModel{ModelName: "embedding-a"}},
+		ImageModels:         map[string]provider.ImageModel{"image-a": &testutil.MockImageModel{ModelName: "image-a"}},
+		SpeechModels:        map[string]provider.SpeechModel{"speech-a": &testutil.MockSpeechModel{ModelName: "speech-a"}},
+		TranscriptionModels: map[string]provider.TranscriptionModel{"transcription-a": &testutil.MockTranscriptionModel{ModelName: "transcription-a"}},
+		RerankingModels:     map[string]provider.RerankingModel{"rerank-a": &testutil.MockRerankingModel{ModelName: "rerank-a"}},
+		VideoModels:         map[string]provider.VideoModelV3{"video-a": registryVideoModel{}},
+	}))
+
+	checks := []struct {
+		name string
+		fn   func() (interface{}, error)
+	}{
+		{"language", func() (interface{}, error) { return r.ResolveLanguageModel("custom:language-a") }},
+		{"embedding", func() (interface{}, error) { return r.ResolveEmbeddingModel("custom:embedding-a") }},
+		{"image", func() (interface{}, error) { return r.ResolveImageModel("custom:image-a") }},
+		{"speech", func() (interface{}, error) { return r.ResolveSpeechModel("custom:speech-a") }},
+		{"transcription", func() (interface{}, error) { return r.ResolveTranscriptionModel("custom:transcription-a") }},
+		{"rerank", func() (interface{}, error) { return r.ResolveRerankingModel("custom:rerank-a") }},
+		{"video", func() (interface{}, error) { return r.ResolveVideoModel("custom:video-a") }},
+	}
+	for _, check := range checks {
+		got, err := check.fn()
+		if err != nil {
+			t.Fatalf("%s lookup err = %v", check.name, err)
+		}
+		if got == nil {
+			t.Fatalf("%s lookup returned nil", check.name)
+		}
+	}
+}
+
+func TestRegistry_FilesAndSkillsErrors(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	r.RegisterProvider("plain", &testutil.MockProvider{ProviderName: "plain"})
+
+	if _, err := r.Files("missing"); err == nil {
+		t.Fatal("expected missing files provider error")
+	} else if _, ok := err.(*NoSuchProviderError); !ok {
+		t.Fatalf("error = %T, want *NoSuchProviderError", err)
+	}
+	if _, err := r.Skills("plain"); err == nil {
+		t.Fatal("expected unsupported skills provider error")
+	} else if _, ok := err.(*NoSuchProviderError); ok {
+		t.Fatalf("unsupported capability error = %#v, want plain unsupported error", err)
 	}
 }
 
