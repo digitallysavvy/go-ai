@@ -236,6 +236,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		OperationType:  "ai.rerank",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       opts.ExperimentalTelemetry,
+		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, map[string]interface{}{"query": opts.Query, "documents": opts.Documents}),
+		RuntimeContext: map[string]interface{}{},
+		ToolsContext:   map[string]interface{}{},
+	})
 
 	// Build rerank options — thread caller-supplied headers and provider options to the provider.
 	rerankOpts := &provider.RerankOptions{
@@ -247,10 +256,33 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	}
 
 	// Call the model
+	documentsType := rerankDocumentsType(opts.Documents)
+	telemetry.FireOnRerankStart(ctx, telemetry.RerankingModelCallStartEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		OperationID:   "ai.rerank.doRerank",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Documents:     opts.Documents,
+		DocumentsType: documentsType,
+		Query:         opts.Query,
+		TopN:          opts.TopN,
+	})
 	modelResult, err := opts.Model.DoRerank(ctx, rerankOpts)
 	if err != nil {
-		return nil, fmt.Errorf("reranking failed: %w", err)
+		wrappedErr := fmt.Errorf("reranking failed: %w", err)
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
+		return nil, wrappedErr
 	}
+	telemetry.FireOnRerankFinish(ctx, telemetry.RerankingModelCallEndEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		OperationID:   "ai.rerank.doRerank",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		DocumentsType: documentsType,
+		Ranking:       modelResult.Ranking,
+	})
 
 	// Build result
 	ranking := make([]RerankItem, len(modelResult.Ranking))
@@ -309,8 +341,24 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)
 	}
+	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		FinishReason:  string(types.FinishReasonStop),
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Usage:         telemetry.TelemetryUsage{},
+	})
 
 	return result, nil
+}
+
+func rerankDocumentsType(documents interface{}) string {
+	switch documents.(type) {
+	case []string:
+		return "text"
+	default:
+		return "object"
+	}
 }
 
 // Helper to get current time (makes testing easier)

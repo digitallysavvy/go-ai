@@ -31,6 +31,8 @@ type TelemetryStartEvent struct {
 	// Prompt and System are only populated when Settings.RecordInputs is true.
 	Prompt string
 	System string
+	// ValueCount is populated for batch value operations such as embedMany.
+	ValueCount int
 	// RuntimeContext and ToolsContext contain only keys explicitly included by
 	// Settings.IncludeRuntimeContext and Settings.IncludeToolsContext.
 	RuntimeContext map[string]interface{}
@@ -71,6 +73,54 @@ type LanguageModelCallEndEvent struct {
 	Usage         TelemetryUsage
 	Content       interface{}
 	ResponseID    string
+}
+
+// EmbeddingModelCallStartEvent is emitted immediately before an embedding model call.
+type EmbeddingModelCallStartEvent struct {
+	Settings      *Settings
+	CallID        string
+	EmbedCallID   string
+	OperationID   string
+	ModelProvider string
+	ModelID       string
+	Values        []string
+}
+
+// EmbeddingModelCallEndEvent is emitted after an embedding model call completes.
+type EmbeddingModelCallEndEvent struct {
+	Settings      *Settings
+	CallID        string
+	EmbedCallID   string
+	OperationID   string
+	ModelProvider string
+	ModelID       string
+	Values        []string
+	Embeddings    [][]float64
+	Usage         types.EmbeddingUsage
+}
+
+// RerankingModelCallStartEvent is emitted immediately before a reranking model call.
+type RerankingModelCallStartEvent struct {
+	Settings      *Settings
+	CallID        string
+	OperationID   string
+	ModelProvider string
+	ModelID       string
+	Documents     interface{}
+	DocumentsType string
+	Query         string
+	TopN          *int
+}
+
+// RerankingModelCallEndEvent is emitted after a reranking model call completes.
+type RerankingModelCallEndEvent struct {
+	Settings      *Settings
+	CallID        string
+	OperationID   string
+	ModelProvider string
+	ModelID       string
+	DocumentsType string
+	Ranking       []types.RerankItem
 }
 
 // TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolCallStart.
@@ -145,8 +195,10 @@ type TelemetryStepFinishEvent struct {
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
 type TelemetryFinishEvent struct {
-	FinishReason string
-	Usage        TelemetryUsage
+	FinishReason  string
+	Usage         TelemetryUsage
+	ModelProvider string
+	ModelID       string
 	// Text is the full generated text. Integrations should check
 	// Settings.RecordOutputs before recording this value.
 	Text string
@@ -249,6 +301,22 @@ type languageModelCallEndHandler interface {
 	OnLanguageModelCallEnd(context.Context, LanguageModelCallEndEvent)
 }
 
+type embedStartHandler interface {
+	OnEmbedStart(context.Context, EmbeddingModelCallStartEvent)
+}
+
+type embedFinishHandler interface {
+	OnEmbedFinish(context.Context, EmbeddingModelCallEndEvent)
+}
+
+type rerankStartHandler interface {
+	OnRerankStart(context.Context, RerankingModelCallStartEvent)
+}
+
+type rerankFinishHandler interface {
+	OnRerankFinish(context.Context, RerankingModelCallEndEvent)
+}
+
 // ---------------------------------------------------------------------------
 // NoopTelemetryIntegration
 // ---------------------------------------------------------------------------
@@ -314,6 +382,12 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 	}
 	if (e.Settings == nil || e.Settings.RecordInputs) && e.Prompt != "" {
 		span.SetAttributes(attribute.String("ai.prompt", e.Prompt))
+		if e.OperationType == "ai.embed" {
+			span.SetAttributes(attribute.String("ai.value", e.Prompt))
+		}
+	}
+	if e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
+		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
 	}
 	return ctx // span is embedded via OTel context propagation
 }
@@ -516,6 +590,12 @@ func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishE
 		}
 	}
 	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if e.ModelProvider != "" {
+		span.SetAttributes(attribute.String("gen_ai.system", e.ModelProvider))
+	}
+	if e.ModelID != "" {
+		span.SetAttributes(attribute.String("gen_ai.request.model", e.ModelID))
+	}
 	// Gen AI semantic convention attributes (OpenTelemetry Gen AI spec).
 	if e.Usage.InputTokens != nil {
 		span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
@@ -533,6 +613,9 @@ func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishE
 	}
 	if e.Usage.TotalTokens != nil {
 		span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *e.Usage.TotalTokens))
+		if e.Usage.InputTokens == nil && e.Usage.OutputTokens == nil {
+			span.SetAttributes(attribute.Int64("ai.usage.tokens", *e.Usage.TotalTokens))
+		}
 	}
 	if e.Usage.ReasoningTokens != nil {
 		span.SetAttributes(attribute.Int64("ai.usage.reasoningTokens", *e.Usage.ReasoningTokens))
@@ -712,6 +795,58 @@ func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallEndHandler); ok {
 			handler.OnLanguageModelCallEnd(ctx, e)
+		}
+	}
+}
+
+// FireOnEmbedStart publishes and fans out an embedding model-call start event.
+func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnEmbedStart, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(embedStartHandler); ok {
+			handler.OnEmbedStart(ctx, e)
+		}
+	}
+}
+
+// FireOnEmbedFinish publishes and fans out an embedding model-call finish event.
+func FireOnEmbedFinish(ctx context.Context, e EmbeddingModelCallEndEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnEmbedFinish, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(embedFinishHandler); ok {
+			handler.OnEmbedFinish(ctx, e)
+		}
+	}
+}
+
+// FireOnRerankStart publishes and fans out a reranking model-call start event.
+func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnRerankStart, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(rerankStartHandler); ok {
+			handler.OnRerankStart(ctx, e)
+		}
+	}
+}
+
+// FireOnRerankFinish publishes and fans out a reranking model-call finish event.
+func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnRerankFinish, e)
+	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(rerankFinishHandler); ok {
+			handler.OnRerankFinish(ctx, e)
 		}
 	}
 }

@@ -525,7 +525,9 @@ Telemetry has a small performance cost. Monitor and adjust:
 criticalOp, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:     model,
     Prompt:    prompt,
-    Telemetry: nil, // Disabled
+    Telemetry: &telemetry.Options{
+        IsEnabled: telemetry.Bool(false),
+    },
 })
 
 // Enable telemetry for monitored paths

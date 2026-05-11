@@ -257,20 +257,18 @@ Built-in OpenTelemetry support for observability:
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/telemetry"
 
-// Configure telemetry
-telemetry.Configure(telemetry.Config{
-    ServiceName: "my-ai-app",
-    Enabled:     true,
-})
+// Register an OpenTelemetry-backed integration once at startup.
+telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
 
-// All AI SDK calls are automatically traced
+// Calls are traced when telemetry is enabled or an integration is registered.
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Hello",
+    Model:     model,
+    Prompt:    "Hello",
+    Telemetry: &telemetry.Options{},
 })
 ```
 
-See [Telemetry](./15-telemetry.md) for configuration options.
+See [Telemetry](./60-telemetry.mdx) for configuration options.
 
 ## Go-Specific Features
 

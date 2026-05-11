@@ -216,7 +216,7 @@ func main() {
 }
 ```
 
-If you were not passing a custom `Tracer` and relied on the default global tracer, no changes are needed. The `OTelTelemetryIntegration` is registered globally by default and uses `otel.Tracer("ai-sdk")` when no custom tracer is provided.
+If you were not passing a custom `Tracer` and relied on the default global tracer, register `telemetry.OTelTelemetryIntegration{}` once at startup. `OTelTelemetryIntegration` uses `otel.Tracer("ai-sdk")` when no custom tracer is provided.
 
 The global registry supports multiple integrations via `AddTelemetryIntegration()` for fan-out to multiple backends. Use `ClearTelemetryIntegrations()` to reset, or pass `telemetry.NoopTelemetryIntegration{}` to `RegisterTelemetryIntegration()` to disable telemetry.
 

@@ -932,6 +932,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason:   string(r.finishReason),
 		Usage:          streamTelUsage,
+		ModelProvider:  r.cbModelProvider,
+		ModelID:        r.cbModelID,
 		Text:           r.text,
 		Files:          streamFiles,
 		Settings:       r.telemetrySettings,
@@ -1293,6 +1295,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason:   string(r.finishReason),
 		Usage:          readAllTelUsage,
+		ModelProvider:  r.cbModelProvider,
+		ModelID:        r.cbModelID,
 		Text:           r.text,
 		Files:          readAllFiles,
 		Settings:       r.telemetrySettings,

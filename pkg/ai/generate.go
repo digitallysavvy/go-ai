@@ -848,6 +848,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
 		FinishReason:   string(result.FinishReason),
 		Usage:          telUsage,
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
 		Text:           result.Text,
 		Files:          result.Files,
 		Settings:       telemetrySettings,

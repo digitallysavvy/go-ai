@@ -218,6 +218,15 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		OperationType:  "ai.embed",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       opts.ExperimentalTelemetry,
+		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Input),
+		RuntimeContext: map[string]interface{}{},
+		ToolsContext:   map[string]interface{}{},
+	})
 
 	// Build provider-level options.
 	embedModelOpts := &provider.EmbedModelOptions{
@@ -226,9 +235,21 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 
 	// Call the model
+	embedCallID := newCallID()
+	telemetry.FireOnEmbedStart(ctx, telemetry.EmbeddingModelCallStartEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		EmbedCallID:   embedCallID,
+		OperationID:   "ai.embed.doEmbed",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Values:        []string{opts.Input},
+	})
 	result, err := opts.Model.DoEmbed(ctx, opts.Input, embedModelOpts)
 	if err != nil {
-		return nil, fmt.Errorf("embedding failed: %w", err)
+		wrappedErr := fmt.Errorf("embedding failed: %w", err)
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
+		return nil, wrappedErr
 	}
 
 	embedResult := &EmbedResult{
@@ -242,6 +263,17 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
+	telemetry.FireOnEmbedFinish(ctx, telemetry.EmbeddingModelCallEndEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		EmbedCallID:   embedCallID,
+		OperationID:   "ai.embed.doEmbed",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Values:        []string{opts.Input},
+		Embeddings:    [][]float64{embedResult.Embedding},
+		Usage:         embedResult.Usage,
+	})
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
@@ -265,6 +297,14 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)
 	}
+	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		FinishReason:  string(types.FinishReasonStop),
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Text:          "",
+		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+	})
 
 	return embedResult, nil
 }
@@ -392,6 +432,16 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		OperationType:  "ai.embedMany",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       opts.ExperimentalTelemetry,
+		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Inputs),
+		ValueCount:     len(opts.Inputs),
+		RuntimeContext: map[string]interface{}{},
+		ToolsContext:   map[string]interface{}{},
+	})
 
 	// Build provider-level options.
 	embedModelOpts := &provider.EmbedModelOptions{
@@ -400,9 +450,21 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	}
 
 	// Call the model
+	embedCallID := newCallID()
+	telemetry.FireOnEmbedStart(ctx, telemetry.EmbeddingModelCallStartEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		EmbedCallID:   embedCallID,
+		OperationID:   "ai.embedMany.doEmbed",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Values:        opts.Inputs,
+	})
 	result, err := opts.Model.DoEmbedMany(ctx, opts.Inputs, embedModelOpts)
 	if err != nil {
-		return nil, fmt.Errorf("batch embedding failed: %w", err)
+		wrappedErr := fmt.Errorf("batch embedding failed: %w", err)
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
+		return nil, wrappedErr
 	}
 
 	embedResult := &EmbedManyResult{
@@ -416,6 +478,17 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
+	telemetry.FireOnEmbedFinish(ctx, telemetry.EmbeddingModelCallEndEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		CallID:        callID,
+		EmbedCallID:   embedCallID,
+		OperationID:   "ai.embedMany.doEmbed",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Values:        opts.Inputs,
+		Embeddings:    embedResult.Embeddings,
+		Usage:         embedResult.Usage,
+	})
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
@@ -439,8 +512,35 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)
 	}
+	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		Settings:      opts.ExperimentalTelemetry,
+		FinishReason:  string(types.FinishReasonStop),
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Text:          "",
+		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+	})
 
 	return embedResult, nil
+}
+
+func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.TelemetryUsage {
+	total := int64(usage.TotalTokens)
+	return telemetry.TelemetryUsage{TotalTokens: &total}
+}
+
+func telemetryInputValue(settings *TelemetrySettings, value interface{}) string {
+	if settings != nil && !settings.RecordInputs {
+		return ""
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // CosineSimilarity calculates the cosine similarity between two embeddings
