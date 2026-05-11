@@ -67,7 +67,7 @@ func doWrapLanguageModel(model provider.LanguageModel, middleware *LanguageModel
 
 // SpecificationVersion returns the specification version
 func (w *wrappedLanguageModel) SpecificationVersion() string {
-	return "v3"
+	return w.model.SpecificationVersion()
 }
 
 // Provider returns the provider name

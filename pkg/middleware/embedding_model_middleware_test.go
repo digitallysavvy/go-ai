@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -329,5 +330,43 @@ func TestWrapEmbeddingModel_TransformInputError(t *testing.T) {
 	_, err := wrapped.DoEmbed(context.Background(), "test", nil)
 	if err == nil {
 		t.Error("expected error from TransformInput")
+	}
+}
+
+func TestWrapEmbeddingModel_OverrideCapabilities(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockEmbeddingModel{MaxEmbeddings: 10, ParallelSupport: false}
+	middleware := &EmbeddingModelMiddleware{
+		OverrideMaxEmbeddingsPerCall:  func(model provider.EmbeddingModel) int { return 25 },
+		OverrideSupportsParallelCalls: func(model provider.EmbeddingModel) bool { return true },
+	}
+	wrapped := WrapEmbeddingModel(model, []*EmbeddingModelMiddleware{middleware}, nil, nil)
+
+	if wrapped.MaxEmbeddingsPerCall() != 25 {
+		t.Fatalf("expected overridden max embeddings, got %d", wrapped.MaxEmbeddingsPerCall())
+	}
+	if !wrapped.SupportsParallelCalls() {
+		t.Fatal("expected overridden parallel-call support")
+	}
+}
+
+func TestWrapEmbeddingModel_TransformInputAppliesToEmbedMany(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockEmbeddingModel{}
+	middleware := &EmbeddingModelMiddleware{
+		TransformInput: func(ctx context.Context, input string, model provider.EmbeddingModel) (string, error) {
+			return "x:" + input, nil
+		},
+	}
+	wrapped := WrapEmbeddingModel(model, []*EmbeddingModelMiddleware{middleware}, nil, nil)
+
+	_, err := wrapped.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(model.EmbedManyCalls[0], []string{"x:a", "x:b"}) {
+		t.Fatalf("embedMany inputs were not transformed: %+v", model.EmbedManyCalls)
 	}
 }

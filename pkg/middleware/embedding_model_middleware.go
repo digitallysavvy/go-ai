@@ -10,7 +10,7 @@ import (
 // EmbeddingModelMiddleware defines middleware that can be applied to embedding models
 // to transform parameters and wrap embedding operations.
 type EmbeddingModelMiddleware struct {
-	// SpecificationVersion should be "v3" for the current version
+	// SpecificationVersion documents the middleware's expected provider spec version.
 	SpecificationVersion string
 
 	// OverrideProvider allows overriding the provider name
@@ -18,6 +18,12 @@ type EmbeddingModelMiddleware struct {
 
 	// OverrideModelID allows overriding the model ID
 	OverrideModelID func(model provider.EmbeddingModel) string
+
+	// OverrideMaxEmbeddingsPerCall allows overriding the maximum batch size.
+	OverrideMaxEmbeddingsPerCall func(model provider.EmbeddingModel) int
+
+	// OverrideSupportsParallelCalls allows overriding parallel-call support.
+	OverrideSupportsParallelCalls func(model provider.EmbeddingModel) bool
 
 	// TransformInput transforms the input before it is passed to the embedding model
 	TransformInput func(ctx context.Context, input string, model provider.EmbeddingModel) (string, error)
@@ -67,7 +73,7 @@ func doWrapEmbeddingModel(model provider.EmbeddingModel, middleware *EmbeddingMo
 
 // SpecificationVersion returns the specification version
 func (w *wrappedEmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return w.model.SpecificationVersion()
 }
 
 // Provider returns the provider name
@@ -94,11 +100,17 @@ func (w *wrappedEmbeddingModel) ModelID() string {
 
 // MaxEmbeddingsPerCall returns the maximum number of embeddings per call
 func (w *wrappedEmbeddingModel) MaxEmbeddingsPerCall() int {
+	if w.middleware.OverrideMaxEmbeddingsPerCall != nil {
+		return w.middleware.OverrideMaxEmbeddingsPerCall(w.model)
+	}
 	return w.model.MaxEmbeddingsPerCall()
 }
 
 // SupportsParallelCalls returns whether parallel calls are supported
 func (w *wrappedEmbeddingModel) SupportsParallelCalls() bool {
+	if w.middleware.OverrideSupportsParallelCalls != nil {
+		return w.middleware.OverrideSupportsParallelCalls(w.model)
+	}
 	return w.model.SupportsParallelCalls()
 }
 
@@ -129,14 +141,26 @@ func (w *wrappedEmbeddingModel) DoEmbed(ctx context.Context, input string, opts 
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (w *wrappedEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	transformedInputs := inputs
+	if w.middleware.TransformInput != nil {
+		transformedInputs = make([]string, len(inputs))
+		for i, input := range inputs {
+			transformed, err := w.middleware.TransformInput(ctx, input, w.model)
+			if err != nil {
+				return nil, err
+			}
+			transformedInputs[i] = transformed
+		}
+	}
+
 	// Create the doEmbedMany function
 	doEmbedMany := func() (*types.EmbeddingsResult, error) {
-		return w.model.DoEmbedMany(ctx, inputs, opts)
+		return w.model.DoEmbedMany(ctx, transformedInputs, opts)
 	}
 
 	// Wrap embed many if middleware provides wrapEmbedMany
 	if w.middleware.WrapEmbedMany != nil {
-		return w.middleware.WrapEmbedMany(ctx, doEmbedMany, inputs, w.model)
+		return w.middleware.WrapEmbedMany(ctx, doEmbedMany, transformedInputs, w.model)
 	}
 
 	return doEmbedMany()

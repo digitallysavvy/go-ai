@@ -384,3 +384,47 @@ func TestWrapProvider_EmptyMiddlewareSlices(t *testing.T) {
 	}
 }
 
+func TestWrapProvider_DoesNotAdvertiseUnsupportedFilesOrSkills(t *testing.T) {
+	t.Parallel()
+
+	wrapped := WrapProvider(&testutil.MockProvider{ProviderName: "plain"}, nil, nil)
+
+	if _, ok := wrapped.(provider.FilesProvider); ok {
+		t.Fatal("wrapped provider should not implement FilesProvider when underlying provider does not")
+	}
+	if _, ok := wrapped.(provider.SkillsProvider); ok {
+		t.Fatal("wrapped provider should not implement SkillsProvider when underlying provider does not")
+	}
+}
+
+func TestWrapProvider_PreservesSupportedFilesAndSkills(t *testing.T) {
+	t.Parallel()
+
+	base := registryBackedProvider{Provider: &testutil.MockProvider{ProviderName: "upload"}}
+	wrapped := WrapProvider(base, nil, nil)
+
+	if _, ok := wrapped.(provider.FilesProvider); !ok {
+		t.Fatal("wrapped provider should preserve FilesProvider support")
+	}
+	if _, ok := wrapped.(provider.SkillsProvider); !ok {
+		t.Fatal("wrapped provider should preserve SkillsProvider support")
+	}
+}
+
+type registryBackedProvider struct {
+	provider.Provider
+}
+
+func (registryBackedProvider) Files() provider.FilesAPI   { return testFilesAPI{} }
+func (registryBackedProvider) Skills() provider.SkillsAPI { return testSkillsAPI{} }
+
+type testFilesAPI struct{}
+type testSkillsAPI struct{}
+
+func (testFilesAPI) UploadFile(context.Context, types.UploadFileOptions) (*types.UploadFileResult, error) {
+	return &types.UploadFileResult{}, nil
+}
+
+func (testSkillsAPI) UploadSkill(context.Context, types.UploadSkillOptions) (*types.UploadSkillResult, error) {
+	return &types.UploadSkillResult{}, nil
+}

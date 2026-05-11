@@ -6,19 +6,31 @@ import (
 
 // wrappedProvider wraps a Provider with middleware
 type wrappedProvider struct {
-	provider                  provider.Provider
-	languageModelMiddleware   []*LanguageModelMiddleware
-	embeddingModelMiddleware  []*EmbeddingModelMiddleware
+	provider                 provider.Provider
+	languageModelMiddleware  []*LanguageModelMiddleware
+	embeddingModelMiddleware []*EmbeddingModelMiddleware
 }
 
 // WrapProvider wraps a Provider instance with middleware functionality.
 // This function allows you to apply middleware to all language models and
 // embedding models from the provider.
 func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware) provider.Provider {
-	return &wrappedProvider{
+	wrapped := &wrappedProvider{
 		provider:                 p,
 		languageModelMiddleware:  languageModelMiddleware,
 		embeddingModelMiddleware: embeddingModelMiddleware,
+	}
+	_, hasFiles := p.(provider.FilesProvider)
+	_, hasSkills := p.(provider.SkillsProvider)
+	switch {
+	case hasFiles && hasSkills:
+		return &wrappedProviderWithFilesAndSkills{wrappedProvider: wrapped}
+	case hasFiles:
+		return &wrappedProviderWithFiles{wrappedProvider: wrapped}
+	case hasSkills:
+		return &wrappedProviderWithSkills{wrappedProvider: wrapped}
+	default:
+		return wrapped
 	}
 }
 
@@ -73,4 +85,44 @@ func (w *wrappedProvider) TranscriptionModel(modelID string) (provider.Transcrip
 // RerankingModel returns a reranking model by ID (no middleware applied)
 func (w *wrappedProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	return w.provider.RerankingModel(modelID)
+}
+
+type wrappedProviderWithFiles struct {
+	*wrappedProvider
+}
+
+func (w *wrappedProviderWithFiles) Files() provider.FilesAPI {
+	if fp, ok := w.provider.(provider.FilesProvider); ok {
+		return fp.Files()
+	}
+	return nil
+}
+
+type wrappedProviderWithSkills struct {
+	*wrappedProvider
+}
+
+func (w *wrappedProviderWithSkills) Skills() provider.SkillsAPI {
+	if sp, ok := w.provider.(provider.SkillsProvider); ok {
+		return sp.Skills()
+	}
+	return nil
+}
+
+type wrappedProviderWithFilesAndSkills struct {
+	*wrappedProvider
+}
+
+func (w *wrappedProviderWithFilesAndSkills) Files() provider.FilesAPI {
+	if fp, ok := w.provider.(provider.FilesProvider); ok {
+		return fp.Files()
+	}
+	return nil
+}
+
+func (w *wrappedProviderWithFilesAndSkills) Skills() provider.SkillsAPI {
+	if sp, ok := w.provider.(provider.SkillsProvider); ok {
+		return sp.Skills()
+	}
+	return nil
 }

@@ -240,6 +240,24 @@ func TestWrappedModel_SpecificationVersion(t *testing.T) {
 	}
 }
 
+type specLanguageModel struct {
+	testutil.MockLanguageModel
+	spec string
+}
+
+func (m *specLanguageModel) SpecificationVersion() string { return m.spec }
+
+func TestWrappedModel_PreservesSpecificationVersion(t *testing.T) {
+	t.Parallel()
+
+	model := &specLanguageModel{spec: "v4"}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	if wrapped.SpecificationVersion() != "v4" {
+		t.Errorf("expected wrapped model to preserve 'v4', got %s", wrapped.SpecificationVersion())
+	}
+}
+
 func TestWrapLanguageModel_ProviderIDParam(t *testing.T) {
 	t.Parallel()
 
