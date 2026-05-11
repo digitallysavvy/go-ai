@@ -75,6 +75,18 @@ func TestUploadFile_StringShorthandMatchesTypeScriptDataString(t *testing.T) {
 	}
 }
 
+func TestUploadFile_InvalidBase64StringWithoutMediaTypeFails(t *testing.T) {
+	api := &mockUploadFilesAPI{res: &types.UploadFileResult{ProviderReference: map[string]string{"openai": "file_1"}}}
+
+	_, err := UploadFile(context.Background(), UploadFileOptions{
+		API:  api,
+		Data: "not base64!!!",
+	})
+	if err == nil {
+		t.Fatal("expected invalid base64 error")
+	}
+}
+
 func TestUploadFile_UnsupportedAPI(t *testing.T) {
 	_, err := UploadFile(context.Background(), UploadFileOptions{API: struct{}{}, Data: []byte{1}})
 	if !errors.Is(err, ErrFilesAPINotSupported) {

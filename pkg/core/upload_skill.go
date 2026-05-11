@@ -51,7 +51,11 @@ func resolveSkillsAPI(api interface{}) (provider.SkillsAPI, error) {
 	case provider.SkillsAPI:
 		return v, nil
 	case provider.SkillsProvider:
-		return v.Skills(), nil
+		skills := v.Skills()
+		if skills == nil {
+			return nil, ErrSkillsAPINotSupported
+		}
+		return skills, nil
 	default:
 		return nil, ErrSkillsAPINotSupported
 	}

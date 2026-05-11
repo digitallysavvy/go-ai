@@ -23,7 +23,7 @@ type UploadSkillOptions struct {
 
 // UploadFileResult is returned by provider Files API implementations.
 type UploadFileResult struct {
-	ProviderReference map[string]string      `json:"providerReference"`
+	ProviderReference ProviderReference      `json:"providerReference"`
 	MediaType         string                 `json:"mediaType,omitempty"`
 	Filename          string                 `json:"filename,omitempty"`
 	ProviderMetadata  map[string]interface{} `json:"providerMetadata,omitempty"`
@@ -32,7 +32,7 @@ type UploadFileResult struct {
 
 // UploadSkillResult is returned by provider Skills API implementations.
 type UploadSkillResult struct {
-	ProviderReference map[string]string      `json:"providerReference"`
+	ProviderReference ProviderReference      `json:"providerReference"`
 	DisplayTitle      string                 `json:"displayTitle,omitempty"`
 	Name              string                 `json:"name,omitempty"`
 	Description       string                 `json:"description,omitempty"`

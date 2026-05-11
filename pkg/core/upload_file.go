@@ -36,7 +36,11 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*
 		if normalized.Type == types.FileDataTypeText {
 			mediaType = "text/plain"
 		} else if normalized.Type == types.FileDataTypeData {
-			mediaType = detectUploadMediaType(normalized.Data)
+			dataBytes, derr := uploadDataBytes(normalized)
+			if derr != nil {
+				return nil, derr
+			}
+			mediaType = detectUploadMediaType(dataBytes)
 		}
 	}
 	if mediaType == "" {
@@ -49,6 +53,17 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*
 		Filename:        opts.Filename,
 		ProviderOptions: opts.ProviderOptions,
 	})
+}
+
+func uploadDataBytes(data types.FileData) ([]byte, error) {
+	if len(data.Data) > 0 || data.DataString == "" {
+		return data.Data, nil
+	}
+	decoded, err := types.DecodeFileDataString(data.DataString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64 file data")
+	}
+	return decoded, nil
 }
 
 func detectUploadMediaType(data []byte) string {
@@ -88,7 +103,11 @@ func resolveFilesAPI(api interface{}) (provider.FilesAPI, error) {
 	case provider.FilesAPI:
 		return v, nil
 	case provider.FilesProvider:
-		return v.Files(), nil
+		files := v.Files()
+		if files == nil {
+			return nil, ErrFilesAPINotSupported
+		}
+		return files, nil
 	default:
 		return nil, ErrFilesAPINotSupported
 	}

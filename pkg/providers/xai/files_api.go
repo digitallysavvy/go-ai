@@ -3,7 +3,6 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -100,7 +99,7 @@ func inlineFileBytes(data types.FileData) ([]byte, error) {
 	switch data.Type {
 	case types.FileDataTypeData:
 		if data.DataString != "" {
-			return base64.StdEncoding.DecodeString(data.DataString)
+			return types.DecodeFileDataString(data.DataString)
 		}
 		return data.Data, nil
 	case types.FileDataTypeText:

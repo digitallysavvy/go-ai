@@ -12,14 +12,20 @@ func (e *NoSuchUploadAPIError) Error() string {
 
 func ResolveFilesAPI(p Provider) (FilesAPI, error) {
 	if fp, ok := p.(FilesProvider); ok {
-		return fp.Files(), nil
+		files := fp.Files()
+		if files != nil {
+			return files, nil
+		}
 	}
 	return nil, &NoSuchUploadAPIError{API: "files"}
 }
 
 func ResolveSkillsAPI(p Provider) (SkillsAPI, error) {
 	if sp, ok := p.(SkillsProvider); ok {
-		return sp.Skills(), nil
+		skills := sp.Skills()
+		if skills != nil {
+			return skills, nil
+		}
 	}
 	return nil, &NoSuchUploadAPIError{API: "skills"}
 }
