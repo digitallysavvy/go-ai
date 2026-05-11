@@ -15,7 +15,7 @@ Go AI SDK v0.5.0 aligns the public API with the May 2026 TypeScript AI SDK chang
 4. Replace per-tool approval defaults with call-level `ToolApproval`.
 5. Normalize file and image inputs to `types.FileContent` plus `types.FileData`.
 6. Move multi-step limits from `MaxSteps` to `StopWhen`.
-7. Rebuild examples with `go build -tags ignore ./examples/...` and run provider integration tests that your app depends on.
+7. Run `go test ./...` for packages. For examples that use `//go:build ignore`, compile the specific example file you changed, for example `go build ./examples/upload-file/provider-reference/main.go`.
 
 ## Breaking changes
 
@@ -143,17 +143,7 @@ Execute: func(ctx context.Context, input map[string]interface{}, opts types.Tool
 
 **Impact:** breaking
 
-Use stable names for output, active tools, and step preparation. Replace `experimental_output` with `Output`, `experimental_activeTools` with `FilterActiveTools` or provider `ToolChoice`, and `experimental_prepareStep` with `PrepareStep`.
-
-**Before:**
-
-```go
-opts := ai.GenerateTextOptions{
-    Model: model,
-    Prompt: "Return JSON.",
-    Output: ai.JSONOutput(),
-}
-```
+Use stable names for output, active tools, and step preparation. If your code or wrappers still expose TypeScript-style experimental option names, map `experimental_output` to `Output`, `experimental_activeTools` to `FilterActiveTools` or provider `ToolChoice`, and `experimental_prepareStep` to `PrepareStep`.
 
 **After:**
 
@@ -284,6 +274,8 @@ file := types.FileContent{
 **Impact:** medium
 
 Models that implement `provider.SerializableModel` can cross workflow boundaries. Use `provider.SerializeModel` and `provider.DeserializeModel`; provider deserializers must be registered before deserialization.
+
+Static JSON-compatible provider headers are preserved during serialization, matching the TypeScript SDK workflow behavior. API keys, HTTP clients, functions, and other non-serializable values are omitted; pass replacement auth through the provider factory or environment when restoring a workflow.
 
 **Before:**
 

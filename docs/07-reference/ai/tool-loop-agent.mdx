@@ -22,7 +22,8 @@ func ToolLoopAgent(ctx context.Context, opts ToolLoopAgentOptions) (*ToolLoopAge
 | Model | provider.LanguageModel | Yes | Language model for the agent |
 | Task | string | Yes | Task description |
 | Tools | []types.Tool | Yes | Available tools |
-| MaxSteps | *int | No | Maximum tool-use steps (default: 10) |
+| StopWhen | []ai.StopCondition | No | Stable multi-step stop conditions, for example `[]ai.StopCondition{ai.IsStepCount(10)}` |
+| MaxSteps | int | No | Deprecated compatibility shorthand for `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
 | SystemPrompt | string | No | Custom system instructions |
 | StopCondition | func(AgentState) bool | No | Custom stop condition |
 | OnToolCall | func(ToolCallEvent) | No | Called before each tool call |

@@ -273,12 +273,12 @@ Limit subagent steps to prevent runaway execution:
 ```go
 subagentConfig := agent.AgentConfig{
     Model:    model,
-    MaxSteps: 3,  // Limit subagent steps
+    StopWhen: []ai.StopCondition{ai.IsStepCount(3)}, // Limit subagent steps
 }
 
 mainConfig := agent.AgentConfig{
     Model:    model,
-    MaxSteps: 10, // Main agent can take more steps
+    StopWhen: []ai.StopCondition{ai.IsStepCount(10)}, // Main agent can take more steps
 }
 ```
 

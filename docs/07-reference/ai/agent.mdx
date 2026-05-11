@@ -22,7 +22,8 @@ func Agent(ctx context.Context, opts AgentOptions) (*AgentResult, error)
 | Model | provider.LanguageModel | Yes | Language model for the agent |
 | Task | string | Yes | Task description for the agent |
 | Tools | []types.Tool | Yes | Tools available to the agent |
-| MaxSteps | *int | No | Maximum steps (default: 10) |
+| StopWhen | []ai.StopCondition | No | Stable multi-step stop conditions, for example `[]ai.StopCondition{ai.IsStepCount(10)}` |
+| MaxSteps | int | No | Deprecated compatibility shorthand for `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
 | SystemPrompt | string | No | Custom system instructions |
 | InitialMessages | []types.Message | No | Initial conversation context |
 | OnStep | func(AgentStep) | No | Called after each step |

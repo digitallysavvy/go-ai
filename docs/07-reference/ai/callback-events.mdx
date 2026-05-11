@@ -226,7 +226,7 @@ Callbacks on `AgentConfig` fire for every call to `Execute`. They are merged wit
 agent := agent.NewToolLoopAgent(agent.AgentConfig{
     Model:    model,
     Tools:    tools,
-    MaxSteps: 10,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(10)},
     OnStart: func(ctx context.Context, e ai.OnStartEvent) {
         log.Printf("Agent starting: model=%s", e.ModelID)
     },
