@@ -181,7 +181,7 @@ func normalizeFileContentData(file types.FileContent) types.FileContent {
 	case types.FileDataTypeURL:
 		file.URL = file.FileData.URL
 	case types.FileDataTypeReference:
-		file.Reference = file.FileData.Reference
+		file.Reference = types.ProviderReferenceString(file.FileData.Reference)
 	case types.FileDataTypeText:
 		file.Text = file.FileData.Text
 	}
@@ -401,7 +401,7 @@ func normalizeFileContentBlockData(block types.FileContentBlock) types.FileConte
 	case types.FileDataTypeURL:
 		block.URL = block.FileData.URL
 	case types.FileDataTypeReference:
-		block.Reference = block.FileData.Reference
+		block.Reference = types.ProviderReferenceString(block.FileData.Reference)
 	case types.FileDataTypeText:
 		block.Text = block.FileData.Text
 	}

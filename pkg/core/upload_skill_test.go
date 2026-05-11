@@ -30,6 +30,12 @@ func TestUploadSkill_NormalizesShorthand(t *testing.T) {
 	if got := api.last.Files[0].Data.Type; got != types.FileDataTypeData {
 		t.Fatalf("Data.Type = %q", got)
 	}
+	if got := api.last.Files[0].Data.DataString; got != "hello" {
+		t.Fatalf("DataString = %q", got)
+	}
+	if len(api.last.Files[0].Data.Data) != 0 {
+		t.Fatalf("Data bytes should be empty for string shorthand")
+	}
 }
 
 func TestUploadSkill_MissingAPI(t *testing.T) {

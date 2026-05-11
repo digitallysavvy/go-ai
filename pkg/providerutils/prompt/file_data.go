@@ -175,7 +175,7 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 		}
 		return data, nil
 	case types.FileDataTypeReference:
-		if data.Reference == "" {
+		if len(data.Reference) == 0 {
 			return types.FileData{}, fmt.Errorf("file reference is required")
 		}
 		if err := validateMediaType(data.MediaType); err != nil {
@@ -204,7 +204,7 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 		case part.URL != "":
 			data = types.FileData{Type: types.FileDataTypeURL, URL: part.URL, MediaType: mediaType}
 		case part.Reference != "":
-			data = types.FileData{Type: types.FileDataTypeReference, Reference: part.Reference, MediaType: mediaType}
+			data = types.FileData{Type: types.FileDataTypeReference, Reference: map[string]string{"": part.Reference}, MediaType: mediaType}
 		case part.Text != "":
 			data = types.FileData{Type: types.FileDataTypeText, Text: part.Text, MediaType: mediaType}
 		}
@@ -229,7 +229,7 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 	case types.FileDataTypeURL:
 		part.URL = normalized.URL
 	case types.FileDataTypeReference:
-		part.Reference = normalized.Reference
+		part.Reference = types.ProviderReferenceString(normalized.Reference)
 	case types.FileDataTypeText:
 		part.Text = normalized.Text
 	}
@@ -266,7 +266,7 @@ func NormalizeToolResultFileContent(block types.FileContentBlock) (types.FileCon
 		case block.URL != "":
 			data = types.FileData{Type: types.FileDataTypeURL, URL: block.URL, MediaType: mediaType}
 		case block.Reference != "":
-			data = types.FileData{Type: types.FileDataTypeReference, Reference: block.Reference, MediaType: mediaType}
+			data = types.FileData{Type: types.FileDataTypeReference, Reference: map[string]string{"": block.Reference}, MediaType: mediaType}
 		case block.Text != "":
 			data = types.FileData{Type: types.FileDataTypeText, Text: block.Text, MediaType: mediaType}
 		}
@@ -290,7 +290,7 @@ func NormalizeToolResultFileContent(block types.FileContentBlock) (types.FileCon
 	case types.FileDataTypeURL:
 		block.URL = normalized.URL
 	case types.FileDataTypeReference:
-		block.Reference = normalized.Reference
+		block.Reference = types.ProviderReferenceString(normalized.Reference)
 	case types.FileDataTypeText:
 		block.Text = normalized.Text
 	}

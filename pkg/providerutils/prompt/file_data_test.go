@@ -70,7 +70,7 @@ func TestNormalizeFileContentReferenceAndText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NormalizeFileContent(reference) error = %v", err)
 	}
-	if ref.FileData.Type != types.FileDataTypeReference || ref.FileData.Reference != "file-123" {
+	if ref.FileData.Type != types.FileDataTypeReference || types.ProviderReferenceString(ref.FileData.Reference) != "file-123" {
 		t.Fatalf("reference FileData = %+v", ref.FileData)
 	}
 
@@ -102,7 +102,7 @@ func TestNormalizeImageContentShim(t *testing.T) {
 func TestNormalizeReasoningFileContentRejectsReferenceAndText(t *testing.T) {
 	for _, dataType := range []types.FileDataType{types.FileDataTypeReference, types.FileDataTypeText} {
 		_, err := NormalizeReasoningFileContent(types.ReasoningFileContent{
-			FileData: types.FileData{Type: dataType, Reference: "file-123", Text: "inline"},
+			FileData: types.FileData{Type: dataType, Reference: map[string]string{"openai": "file-123"}, Text: "inline"},
 		})
 		var constraintErr *ReasoningFileConstraintError
 		if !errors.As(err, &constraintErr) {

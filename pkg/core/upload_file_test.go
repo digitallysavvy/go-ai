@@ -27,7 +27,7 @@ func TestUploadFile_DetectMediaType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadFile() error = %v", err)
 	}
-	if api.last.MediaType != "text/plain; charset=utf-8" {
+	if api.last.MediaType != "text/plain" {
 		t.Fatalf("MediaType = %q", api.last.MediaType)
 	}
 }

@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -114,6 +115,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 func inlineFileBytes(data types.FileData) ([]byte, error) {
 	switch data.Type {
 	case types.FileDataTypeData:
+		if data.DataString != "" {
+			return base64.StdEncoding.DecodeString(data.DataString)
+		}
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil

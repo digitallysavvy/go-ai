@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -124,6 +125,9 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 func inlineFileBytes(data types.FileData) ([]byte, error) {
 	switch data.Type {
 	case types.FileDataTypeData:
+		if data.DataString != "" {
+			return base64.StdEncoding.DecodeString(data.DataString)
+		}
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil

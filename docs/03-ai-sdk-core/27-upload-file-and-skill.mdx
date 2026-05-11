@@ -7,8 +7,8 @@ description: Upload provider files and multi-file skills for later reference in 
 
 The Go SDK provides top-level helpers for uploading files and skills through provider upload APIs:
 
-- `core.UploadFile(...)`
-- `core.UploadSkill(...)`
+- `ai.UploadFile(...)`
+- `ai.UploadSkill(...)`
 
 Both helpers accept either:
 
@@ -18,7 +18,8 @@ Both helpers accept either:
 ## UploadFile
 
 ```go
-result, err := core.UploadFile(ctx, openaiProvider, core.UploadFileOptions{
+result, err := ai.UploadFile(ctx, ai.UploadFileOptions{
+    API:       openaiProvider,
     Data:      []byte("hello world"),
     Filename:  "hello.txt",
     MediaType: "text/plain",
@@ -33,14 +34,15 @@ if err != nil {
 fileID := result.ProviderReference["openai"]
 ```
 
-`UploadFile` normalizes shorthand data inputs (`[]byte`, `string`) into `types.FileData`, resolves the target files API, and auto-detects media type when omitted.
+`UploadFile` normalizes shorthand data inputs (`[]byte`, `string`) into `types.FileData`, resolves the target files API, and auto-detects media type when omitted. String data is treated as a TypeScript-compatible base64 data string and decoded by the provider upload implementation.
 
 ## UploadSkill
 
 ```go
-result, err := core.UploadSkill(ctx, openaiProvider, core.UploadSkillOptions{
+result, err := ai.UploadSkill(ctx, ai.UploadSkillOptions{
+    API:          openaiProvider,
     DisplayTitle: "My Skill",
-    Files: []core.UploadSkillFile{
+    Files: []ai.UploadSkillFile{
         {Path: "index.ts", Data: []byte("export default {}")},
         {Path: "README.md", Data: "# Skill"},
     },

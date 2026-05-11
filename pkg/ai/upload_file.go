@@ -1,4 +1,4 @@
-package core
+package ai
 
 import (
 	"context"
@@ -14,19 +14,20 @@ import (
 var ErrFilesAPINotSupported = errors.New("the provider does not support file uploads. Make sure it exposes a Files() method")
 
 type UploadFileOptions struct {
+	API             interface{}
 	Data            interface{}
 	MediaType       string
 	Filename        string
 	ProviderOptions map[string]interface{}
 }
 
-func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*types.UploadFileResult, error) {
-	filesAPI, err := resolveFilesAPI(api)
+func UploadFile(ctx context.Context, opts UploadFileOptions) (*types.UploadFileResult, error) {
+	filesAPI, err := resolveFilesAPI(opts.API)
 	if err != nil {
 		return nil, err
 	}
 
-	normalized, err := normalizeFileData(opts.Data)
+	normalized, err := normalizeUploadFileData(opts.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +52,33 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*
 	})
 }
 
+func resolveFilesAPI(api interface{}) (provider.FilesAPI, error) {
+	switch v := api.(type) {
+	case provider.FilesAPI:
+		return v, nil
+	case provider.FilesProvider:
+		return v.Files(), nil
+	default:
+		return nil, ErrFilesAPINotSupported
+	}
+}
+
+func normalizeUploadFileData(data interface{}) (types.FileData, error) {
+	switch v := data.(type) {
+	case []byte:
+		return types.FileData{Type: types.FileDataTypeData, Data: v}, nil
+	case string:
+		return types.FileData{Type: types.FileDataTypeData, DataString: v}, nil
+	case types.FileData:
+		if v.Type == "" {
+			return types.FileData{}, fmt.Errorf("file data type is required")
+		}
+		return v, nil
+	default:
+		return types.FileData{}, fmt.Errorf("unsupported file data type %T", data)
+	}
+}
+
 func detectUploadMediaType(data []byte) string {
 	detected := http.DetectContentType(data)
 	if strings.HasPrefix(detected, "text/plain") {
@@ -59,13 +87,13 @@ func detectUploadMediaType(data []byte) string {
 	if detected != "" && detected != "application/octet-stream" {
 		return detected
 	}
-	if isLikelyText(data) {
+	if isLikelyUploadText(data) {
 		return "text/plain"
 	}
 	return "application/octet-stream"
 }
 
-func isLikelyText(data []byte) bool {
+func isLikelyUploadText(data []byte) bool {
 	const checkLength = 512
 	if len(data) == 0 {
 		return false
@@ -81,31 +109,4 @@ func isLikelyText(data []byte) bool {
 		}
 	}
 	return true
-}
-
-func resolveFilesAPI(api interface{}) (provider.FilesAPI, error) {
-	switch v := api.(type) {
-	case provider.FilesAPI:
-		return v, nil
-	case provider.FilesProvider:
-		return v.Files(), nil
-	default:
-		return nil, ErrFilesAPINotSupported
-	}
-}
-
-func normalizeFileData(data interface{}) (types.FileData, error) {
-	switch v := data.(type) {
-	case []byte:
-		return types.FileData{Type: types.FileDataTypeData, Data: v}, nil
-	case string:
-		return types.FileData{Type: types.FileDataTypeData, DataString: v}, nil
-	case types.FileData:
-		if v.Type == "" {
-			return types.FileData{}, fmt.Errorf("file data type is required")
-		}
-		return v, nil
-	default:
-		return types.FileData{}, fmt.Errorf("unsupported file data type %T", data)
-	}
 }
