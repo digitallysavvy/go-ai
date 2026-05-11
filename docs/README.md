@@ -45,35 +45,35 @@ func main() {
 
 ## Documentation Sections
 
-### [Foundations](./foundations/01-overview.md)
+### [Foundations](./02-foundations/01-overview.mdx)
 
 Core concepts for understanding the Go AI SDK:
 
-- [**Overview**](./foundations/01-overview.md) - Introduction to AI concepts
-- [**Providers and Models**](./foundations/02-providers-and-models.md) - Available providers and model capabilities
-- [**Prompts**](./foundations/03-prompts.md) - Text, message, and system prompts
-- [**Tools**](./foundations/04-tools.md) - Function calling and tool usage
-- [**Streaming**](./foundations/05-streaming.md) - Why and how to use streaming
+- [**Overview**](./02-foundations/01-overview.mdx) - Introduction to AI concepts
+- [**Providers and Models**](./02-foundations/02-providers-and-models.mdx) - Available providers and model capabilities
+- [**Prompts**](./02-foundations/03-prompts.mdx) - Text, message, and system prompts
+- [**Tools**](./02-foundations/04-tools.mdx) - Function calling and tool usage
+- [**Streaming**](./02-foundations/05-streaming.mdx) - Why and how to use streaming
 
-### [Core API](./core/01-overview.md)
+### [Core API](./03-ai-sdk-core/01-overview.mdx)
 
 Main SDK functionality for building AI applications:
 
-- [**Overview**](./core/01-overview.md) - Core API introduction
-- [**Generating Text**](./core/02-generating-text.md) - `GenerateText` and `StreamText`
-- [**Generating Structured Data**](./core/03-generating-structured-data.md) - `GenerateObject` and `StreamObject`
-- [**Tools and Tool Calling**](./core/04-tools-and-tool-calling.md) - Multi-step tool execution
-- [**Embeddings**](./core/05-embeddings.md) - `Embed` and `EmbedMany` with similarity functions
-- [**Reranking**](./core/06-reranking.md) - Document reranking
-- [**Image Generation**](./core/07-image-generation.md) - Text-to-image generation
-- [**Speech Generation**](./core/08-speech-generation.md) - Text-to-speech
-- [**Transcription**](./core/09-transcription.md) - Speech-to-text
-- [**Settings**](./core/10-settings.md) - Model parameters and configuration
-- [**Middleware**](./core/11-middleware.md) - Model wrapping and middleware
-- [**Provider Management**](./core/12-provider-management.md) - Registry and dynamic model selection
-- [**Error Handling**](./core/13-error-handling.md) - Error types and handling patterns
-- [**Testing**](./core/14-testing.md) - Testing strategies
-- [**Telemetry**](./core/15-telemetry.md) - OpenTelemetry integration
+- [**Overview**](./03-ai-sdk-core/01-overview.mdx) - Core API introduction
+- [**Generating Text**](./03-ai-sdk-core/05-generating-text.mdx) - `GenerateText` and `StreamText`
+- [**Generating Structured Data**](./03-ai-sdk-core/10-generating-structured-data.mdx) - `GenerateObject` and `StreamObject`
+- [**Tools and Tool Calling**](./03-ai-sdk-core/15-tools-and-tool-calling.mdx) - Multi-step tool execution
+- [**Embeddings**](./03-ai-sdk-core/30-embeddings.mdx) - `Embed` and `EmbedMany` with similarity functions
+- [**Reranking**](./03-ai-sdk-core/31-reranking.mdx) - Document reranking
+- [**Image Generation**](./03-ai-sdk-core/35-image-generation.mdx) - Text-to-image generation
+- [**Speech Generation**](./03-ai-sdk-core/37-speech.mdx) - Text-to-speech
+- [**Transcription**](./03-ai-sdk-core/36-transcription.mdx) - Speech-to-text
+- [**Settings**](./03-ai-sdk-core/25-settings.mdx) - Model parameters and configuration
+- [**Middleware**](./03-ai-sdk-core/40-middleware.mdx) - Model wrapping and middleware
+- [**Provider Management**](./03-ai-sdk-core/45-provider-management.mdx) - Registry and dynamic model selection
+- [**Error Handling**](./03-ai-sdk-core/50-error-handling.mdx) - Error types and handling patterns
+- [**Testing**](./03-ai-sdk-core/55-testing.mdx) - Testing strategies
+- [**Telemetry**](./03-ai-sdk-core/60-telemetry.mdx) - OpenTelemetry integration
 
 ### [Agents](./agents/01-overview.md)
 
@@ -209,7 +209,7 @@ Apache 2.0 - See [LICENSE](../LICENSE) for details.
 
 ## Navigation
 
-- **New to AI development?** Start with [Foundations](./foundations/01-overview.md)
-- **Ready to build?** Jump to [Core API](./core/01-overview.md)
+- **New to AI development?** Start with [Foundations](./02-foundations/01-overview.mdx)
+- **Ready to build?** Jump to [Core API](./03-ai-sdk-core/01-overview.mdx)
 - **Coming from TypeScript?** Check the [Migration Guide](./migration/from-typescript.md)
 - **Need specific functionality?** Browse the [API Reference](./reference/)
