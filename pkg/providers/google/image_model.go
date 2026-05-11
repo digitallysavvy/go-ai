@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -71,7 +71,10 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "google"
+	if m.prov == nil {
+		return "google.generative-ai"
+	}
+	return m.prov.Name()
 }
 
 // ModelID returns the model ID
@@ -125,7 +128,7 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 	}
 
 	// Build URL with API key
-	path := fmt.Sprintf("/v1beta/models/%s:predict?key=%s", m.modelID, m.prov.APIKey())
+	path := fmt.Sprintf("/models/%s:predict", m.modelID)
 
 	// Make request
 	resp, err := m.prov.client.Post(ctx, path, reqBody)
@@ -212,7 +215,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	}
 
 	// Build URL with API key
-	path := fmt.Sprintf("/v1beta/models/%s:generateContent?key=%s", m.modelID, m.prov.APIKey())
+	path := fmt.Sprintf("/models/%s:generateContent", m.modelID)
 
 	// Make request
 	resp, err := m.prov.client.Post(ctx, path, reqBody)

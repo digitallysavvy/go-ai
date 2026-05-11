@@ -19,8 +19,8 @@ func TestVideoModel_Provider(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, "gemini-2.0-flash")
 
-	if model.Provider() != "google" {
-		t.Errorf("Expected provider 'google', got %s", model.Provider())
+	if model.Provider() != "google.generative-ai" {
+		t.Errorf("Expected provider 'google.generative-ai', got %s", model.Provider())
 	}
 }
 
@@ -144,14 +144,14 @@ func TestVideoModel_GetPollOptions(t *testing.T) {
 	model := NewVideoModel(prov, "gemini-2.0-flash")
 
 	tests := []struct {
-		name           string
-		providerOpts   map[string]interface{}
+		name             string
+		providerOpts     map[string]interface{}
 		expectedInterval int
 		expectedTimeout  int
 	}{
 		{
-			name:           "default options",
-			providerOpts:   nil,
+			name:             "default options",
+			providerOpts:     nil,
 			expectedInterval: 2000,   // default
 			expectedTimeout:  300000, // default
 		},

@@ -34,7 +34,7 @@ func (m *VideoModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "google"
+	return m.prov.Name()
 }
 
 // ModelID returns the model ID
@@ -53,26 +53,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	reqBody := m.buildRequestBody(opts)
 
 	// Submit generation request
-	path := fmt.Sprintf("/v1beta/models/%s:generateVideo", m.modelID)
-
-	// Add API key to query parameters
-	queryParams := map[string]string{
-		"key": m.prov.APIKey(),
-	}
-
-	// Build full URL with query parameters
-	fullPath := path
-	if len(queryParams) > 0 {
-		fullPath += "?"
-		first := true
-		for k, v := range queryParams {
-			if !first {
-				fullPath += "&"
-			}
-			fullPath += fmt.Sprintf("%s=%s", k, v)
-			first = false
-		}
-	}
+	fullPath := fmt.Sprintf("/models/%s:generateVideo", m.modelID)
 
 	submitResp, err := m.prov.client.Post(ctx, fullPath, reqBody)
 	if err != nil {
@@ -204,7 +185,7 @@ func (m *VideoModel) pollForCompletion(ctx context.Context, operationName string
 
 	statusChecker := func(ctx context.Context) (*polling.JobResult, error) {
 		// Get operation status
-		path := fmt.Sprintf("/v1beta/%s?key=%s", operationName, m.prov.APIKey())
+		path := fmt.Sprintf("/%s", operationName)
 
 		resp, err := m.prov.client.Get(ctx, path)
 		if err != nil {

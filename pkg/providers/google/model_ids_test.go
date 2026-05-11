@@ -50,7 +50,7 @@ func TestProvider_LanguageModel_Gemini31ProPreview(t *testing.T) {
 	model, err := prov.LanguageModel(ModelGemini31ProPreview)
 	require.NoError(t, err)
 	assert.Equal(t, ModelGemini31ProPreview, model.ModelID())
-	assert.Equal(t, "google", model.Provider())
+	assert.Equal(t, "google.generative-ai", model.Provider())
 }
 
 func TestProvider_LanguageModel_AllMissingModelIDs(t *testing.T) {
@@ -125,7 +125,7 @@ func TestProvider_ImageModel_Gemini31FlashImagePreview(t *testing.T) {
 	model, err := prov.ImageModel(ModelGemini31FlashImagePreview)
 	require.NoError(t, err)
 	assert.Equal(t, ModelGemini31FlashImagePreview, model.ModelID())
-	assert.Equal(t, "google", model.Provider())
+	assert.Equal(t, "google.generative-ai", model.Provider())
 }
 
 // TestIntegration_Gemini31ProPreview tests text generation with the new model ID.

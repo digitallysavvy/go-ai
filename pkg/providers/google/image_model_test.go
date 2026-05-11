@@ -20,7 +20,7 @@ func TestImageModel_SpecificationVersion(t *testing.T) {
 
 func TestImageModel_Provider(t *testing.T) {
 	model := NewImageModel(nil, "imagen-4.0-generate-001")
-	assert.Equal(t, "google", model.Provider())
+	assert.Equal(t, "google.generative-ai", model.Provider())
 }
 
 func TestImageModel_ModelID(t *testing.T) {
@@ -127,7 +127,8 @@ func TestImageModel_DoGenerate_Imagen(t *testing.T) {
 		// Verify request
 		assert.Equal(t, "POST", r.Method)
 		assert.Contains(t, r.URL.Path, "imagen-4.0-generate-001:predict")
-		assert.Contains(t, r.URL.RawQuery, "key=test-api-key")
+		assert.Empty(t, r.URL.RawQuery)
+		assert.Equal(t, "test-api-key", r.Header.Get("x-goog-api-key"))
 
 		// Parse request body
 		var reqBody map[string]interface{}
@@ -196,7 +197,8 @@ func TestImageModel_DoGenerate_Gemini(t *testing.T) {
 		// Verify request
 		assert.Equal(t, "POST", r.Method)
 		assert.Contains(t, r.URL.Path, "gemini-2.5-flash-image:generateContent")
-		assert.Contains(t, r.URL.RawQuery, "key=test-api-key")
+		assert.Empty(t, r.URL.RawQuery)
+		assert.Equal(t, "test-api-key", r.Header.Get("x-goog-api-key"))
 
 		// Parse request body
 		var reqBody map[string]interface{}
@@ -335,7 +337,8 @@ func TestImageModel_DoGenerate_Gemini31FlashImagePreview(t *testing.T) {
 		// Must use generateContent endpoint, not predict
 		assert.Contains(t, r.URL.Path, "gemini-3.1-flash-image-preview:generateContent",
 			"expected generateContent endpoint for Gemini image model")
-		assert.Contains(t, r.URL.RawQuery, "key=test-api-key")
+		assert.Empty(t, r.URL.RawQuery)
+		assert.Equal(t, "test-api-key", r.Header.Get("x-goog-api-key"))
 
 		var reqBody map[string]interface{}
 		err := json.NewDecoder(r.Body).Decode(&reqBody)
@@ -880,4 +883,3 @@ func TestExtractGoogleStringOption(t *testing.T) {
 		})
 	}
 }
-

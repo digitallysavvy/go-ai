@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -64,7 +64,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "google"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -93,7 +93,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			},
 		},
 	}
-	path := fmt.Sprintf("/v1beta/models/%s:embedContent?key=%s", m.modelID, m.provider.APIKey())
+	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -164,7 +164,7 @@ func (m *EmbeddingModel) DoEmbedParts(ctx context.Context, text string, parts []
 			"parts": apiParts,
 		},
 	}
-	path := fmt.Sprintf("/v1beta/models/%s:embedContent?key=%s", m.modelID, m.provider.APIKey())
+	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{

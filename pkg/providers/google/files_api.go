@@ -3,12 +3,15 @@ package google
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -26,7 +29,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	apiKey := f.provider.APIKey()
+	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
+	headers := internalhttp.MergeHeaders(map[string]string{
+		"x-goog-api-key": f.provider.APIKey(),
+	}, f.provider.config.Headers)
 
 	displayName := ""
 	pollIntervalMs := int64(2000)
@@ -48,7 +54,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		initBody["file"] = map[string]interface{}{"display_name": displayName}
 	}
 	payload, _ := json.Marshal(initBody)
-	initReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/upload/v1beta/files?key="+apiKey, bytes.NewReader(payload))
+	initReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
+	for k, v := range headers {
+		initReq.Header.Set(k, v)
+	}
 	initReq.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	initReq.Header.Set("X-Goog-Upload-Command", "start")
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Length", fmt.Sprintf("%d", len(content)))
@@ -96,7 +105,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
 
-		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1beta/"+file.Name+"?key="+apiKey, nil)
+		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+file.Name, nil)
+		for k, v := range headers {
+			pollReq.Header.Set(k, v)
+		}
 		pollResp, err := f.provider.client.HTTPClient().Do(pollReq)
 		if err != nil {
 			return nil, err
@@ -168,6 +180,9 @@ type googleFileResource struct {
 func inlineFileBytes(data types.FileData) ([]byte, error) {
 	switch data.Type {
 	case types.FileDataTypeData:
+		if data.DataString != "" {
+			return base64.StdEncoding.DecodeString(data.DataString)
+		}
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil

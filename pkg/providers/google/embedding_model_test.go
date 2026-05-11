@@ -18,8 +18,8 @@ func TestGeminiEmbedding2PreviewModel(t *testing.T) {
 	if m.ModelID() != "gemini-embedding-2-preview" {
 		t.Errorf("ModelID() = %q, want %q", m.ModelID(), "gemini-embedding-2-preview")
 	}
-	if m.Provider() != "google" {
-		t.Errorf("Provider() = %q, want %q", m.Provider(), "google")
+	if m.Provider() != "google.generative-ai" {
+		t.Errorf("Provider() = %q, want %q", m.Provider(), "google.generative-ai")
 	}
 }
 

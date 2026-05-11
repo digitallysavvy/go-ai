@@ -19,14 +19,14 @@ type LanguageModel struct {
 // NewLanguageModel creates a Google Generative AI language model.
 func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 	cfg := gemini.Config{
-		ProviderName:        "google",
+		ProviderName:        p.Name(),
 		MetadataKey:         "google",
 		ProviderOptionsKeys: []string{"google"},
 		GeneratePath: func(id string) string {
-			return fmt.Sprintf("/v1beta/models/%s:generateContent?key=%s", id, p.config.APIKey)
+			return fmt.Sprintf("/models/%s:generateContent", id)
 		},
 		StreamPath: func(id string) string {
-			return fmt.Sprintf("/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s", id, p.config.APIKey)
+			return fmt.Sprintf("/models/%s:streamGenerateContent?alt=sse", id)
 		},
 		Client:                p.client,
 		SupportsCodeExecution: true,

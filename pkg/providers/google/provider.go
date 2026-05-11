@@ -2,20 +2,22 @@ package google
 
 import (
 	"fmt"
+	"net/http"
+	"os"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/http"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 const (
-	// DefaultBaseURL is the default Google Generative AI API base URL
-	DefaultBaseURL = "https://generativelanguage.googleapis.com"
+	// DefaultBaseURL is the default Google Generative AI API base URL prefix.
+	DefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 )
 
 // Provider implements the provider.Provider interface for Google (Gemini)
 type Provider struct {
 	config Config
-	client *http.Client
+	client *internalhttp.Client
 }
 
 // Config contains configuration for the Google provider
@@ -28,6 +30,13 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Name overrides the provider name returned by Provider.Name().
+	// Defaults to "google.generative-ai".
+	Name string
+
+	// HTTPClient overrides the HTTP client used for requests.
+	HTTPClient *http.Client
 }
 
 // New creates a new Google provider with the given configuration
@@ -37,12 +46,18 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
-	// Google uses API key in query parameter, not header
-	client := http.NewClient(http.Config{
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+	}
+
+	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
-			"Content-Type": "application/json",
+		Headers: internalhttp.MergeHeaders(map[string]string{
+			"Content-Type":   "application/json",
+			"x-goog-api-key": apiKey,
 		}, cfg.Headers),
+		HTTPClient: cfg.HTTPClient,
 	})
 
 	return &Provider{
@@ -68,7 +83,10 @@ func CreateGoogleGenerativeAI(cfg Config) *Provider {
 
 // Name returns the provider name
 func (p *Provider) Name() string {
-	return "google"
+	if p.config.Name != "" {
+		return p.config.Name
+	}
+	return "google.generative-ai"
 }
 
 // LanguageModel returns a language model by ID
@@ -130,13 +148,16 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 }
 
 // Client returns the HTTP client for making API requests
-func (p *Provider) Client() *http.Client {
+func (p *Provider) Client() *internalhttp.Client {
 	return p.client
 }
 
 // APIKey returns the API key
 func (p *Provider) APIKey() string {
-	return p.config.APIKey
+	if p.config.APIKey != "" {
+		return p.config.APIKey
+	}
+	return os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
 }
 
 func (p *Provider) Files() provider.FilesAPI {
