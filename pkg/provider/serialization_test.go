@@ -7,7 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func TestSerializableConfigDropsAuthHeadersAndHTTPClient(t *testing.T) {
+func TestSerializableConfigDropsAuthAndHTTPClientButPreservesSerializableHeaders(t *testing.T) {
 	type nested struct {
 		Value string
 	}
@@ -44,7 +44,11 @@ func TestSerializableConfigDropsAuthHeadersAndHTTPClient(t *testing.T) {
 	if plain, ok := got["Plain"].(map[string]interface{}); !ok || plain["ok"] != true {
 		t.Fatalf("Plain not preserved: %#v", got)
 	}
-	for _, key := range []string{"APIKey", "Headers", "HTTPClient", "GenerateID", "Nested", "BadPlain"} {
+	headers, ok := got["Headers"].(map[string]interface{})
+	if !ok || headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("Headers not preserved: %#v", got)
+	}
+	for _, key := range []string{"APIKey", "HTTPClient", "GenerateID", "Nested", "BadPlain"} {
 		if _, ok := got[key]; ok {
 			t.Fatalf("%s should be removed from serialized config: %#v", key, got)
 		}

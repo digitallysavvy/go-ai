@@ -33,8 +33,8 @@ func TestOpenAIModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("APIKey should not be serialized: %#v", serialized.Config)
 	}
-	if _, ok := serialized.Config["Headers"]; ok {
-		t.Fatalf("Headers should not be serialized: %#v", serialized.Config)
+	if headers, ok := serialized.Config["headers"].(map[string]interface{}); !ok || headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("Headers should be serialized when JSON-compatible: %#v", serialized.Config)
 	}
 
 	restored, err := provider.DeserializeModel(serialized)
@@ -77,8 +77,8 @@ func TestAnthropicModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("APIKey should not be serialized: %#v", serialized.Config)
 	}
-	if _, ok := serialized.Config["Headers"]; ok {
-		t.Fatalf("Headers should not be serialized: %#v", serialized.Config)
+	if headers, ok := serialized.Config["headers"].(map[string]interface{}); !ok || headers["x-api-key"] != "secret" {
+		t.Fatalf("Headers should be serialized when JSON-compatible: %#v", serialized.Config)
 	}
 
 	restored, err := providerutils.DeserializeModel(serialized.Provider, serialized.ModelID, serialized.Config)

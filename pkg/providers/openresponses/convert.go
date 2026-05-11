@@ -7,13 +7,29 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// ConvertToOpenResponsesInput converts AI SDK messages to Open Responses format
+// ConvertToOpenResponsesInput converts AI SDK messages to Open Responses
+// format using the OpenAI provider-reference key. Provider request paths should
+// call ConvertToOpenResponsesInputForProvider so missing provider references
+// can be returned as errors instead of ignored for compatibility.
 func ConvertToOpenResponsesInput(messages []types.Message, system string) (interface{}, string, []types.Warning) {
+	input, instructions, warnings, _ := ConvertToOpenResponsesInputForProvider(messages, system, "openai")
+	return input, instructions, warnings
+}
+
+// ConvertToOpenResponsesInputForProvider converts messages and resolves
+// provider references using the active provider key. It mirrors the TypeScript
+// SDK provider adapters, which throw NoSuchProviderReferenceError when a file
+// reference does not contain an ID for the current provider.
+func ConvertToOpenResponsesInputForProvider(messages []types.Message, system string, providerName string) (interface{}, string, []types.Warning, error) {
 	var input []interface{}
 	var warnings []types.Warning
 	var systemMessages []string
+	if providerName == "" {
+		providerName = "openai"
+	}
 
 	// Collect system messages
 	if system != "" {
@@ -32,7 +48,10 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 			}
 
 		case types.RoleUser:
-			userContent := convertUserContent(msg.Content, &warnings)
+			userContent, err := convertUserContent(msg.Content, &warnings, providerName)
+			if err != nil {
+				return nil, "", warnings, err
+			}
 			input = append(input, MessageItem{
 				Type:    "message",
 				Role:    "user",
@@ -56,7 +75,10 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 
 		case types.RoleTool:
 			// Convert tool results
-			toolResults := convertToolResults(msg.Content, &warnings)
+			toolResults, err := convertToolResults(msg.Content, &warnings, providerName)
+			if err != nil {
+				return nil, "", warnings, err
+			}
 			input = append(input, toolResults...)
 		}
 	}
@@ -67,11 +89,11 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 		instructions = strings.Join(systemMessages, "\n")
 	}
 
-	return input, instructions, warnings
+	return input, instructions, warnings, nil
 }
 
 // convertUserContent converts user message content to Open Responses format
-func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) []interface{} {
+func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, providerName string) ([]interface{}, error) {
 	var result []interface{}
 
 	for _, part := range content {
@@ -92,7 +114,10 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) 
 			}
 
 		case types.FileContent:
-			file := normalizeFileContentData(p)
+			file, err := normalizeFileContentData(p, providerName)
+			if err != nil {
+				return nil, err
+			}
 			mediaType := file.MediaType
 			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 				imageURL := convertFileToImageURL(file, warnings)
@@ -118,7 +143,7 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning) 
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // convertImageContentToURL converts ImageContent to a data URL or returns the URL
@@ -171,9 +196,9 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 	return ""
 }
 
-func normalizeFileContentData(file types.FileContent) types.FileContent {
+func normalizeFileContentData(file types.FileContent, providerName string) (types.FileContent, error) {
 	if file.FileData.IsZero() {
-		return file
+		return file, nil
 	}
 	switch file.FileData.Type {
 	case types.FileDataTypeData:
@@ -181,14 +206,18 @@ func normalizeFileContentData(file types.FileContent) types.FileContent {
 	case types.FileDataTypeURL:
 		file.URL = file.FileData.URL
 	case types.FileDataTypeReference:
-		file.Reference = types.ProviderReferenceString(file.FileData.Reference)
+		ref, err := providerutils.ResolveProviderReference(file.FileData.Reference, providerName)
+		if err != nil {
+			return types.FileContent{}, err
+		}
+		file.Reference = ref
 	case types.FileDataTypeText:
 		file.Text = file.FileData.Text
 	}
 	if file.FileData.MediaType != "" && file.MediaType == "" {
 		file.MediaType = file.FileData.MediaType
 	}
-	return file
+	return file, nil
 }
 
 func mediaTypeOrDefault(mediaType string) string {
@@ -240,13 +269,16 @@ func convertAssistantContent(content []types.ContentPart) ([]interface{}, []inte
 }
 
 // convertToolResults converts tool results to Open Responses format
-func convertToolResults(content []types.ContentPart, warnings *[]types.Warning) []interface{} {
+func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, providerName string) ([]interface{}, error) {
 	var results []interface{}
 
 	for _, part := range content {
 		if part.ContentType() == "tool-result" {
 			if toolResult, ok := part.(types.ToolResultContent); ok {
-				output := convertToolResultOutput(toolResult, warnings)
+				output, err := convertToolResultOutput(toolResult, warnings, providerName)
+				if err != nil {
+					return nil, err
+				}
 
 				results = append(results, FunctionCallOutputItem{
 					Type:   "function_call_output",
@@ -257,56 +289,56 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning) 
 		}
 	}
 
-	return results
+	return results, nil
 }
 
 // convertToolResultOutput converts tool result output to appropriate format
-func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]types.Warning) interface{} {
+func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]types.Warning, providerName string) (interface{}, error) {
 	if toolResult.Output != nil {
-		return convertStructuredToolResultOutput(*toolResult.Output, warnings)
+		return convertStructuredToolResultOutput(*toolResult.Output, warnings, providerName)
 	}
 
 	// If there's an error, return the error message
 	if toolResult.Error != "" {
-		return toolResult.Error
+		return toolResult.Error, nil
 	}
 
 	// If result is nil, return empty string
 	if toolResult.Result == nil {
-		return ""
+		return "", nil
 	}
 
 	// Try to convert result to string if it's a simple type
 	switch v := toolResult.Result.(type) {
 	case string:
-		return v
+		return v, nil
 	case int, int32, int64, float32, float64, bool:
-		return fmt.Sprintf("%v", v)
+		return fmt.Sprintf("%v", v), nil
 	default:
 		// For complex types, JSON encode
 		jsonBytes, _ := json.Marshal(v)
-		return string(jsonBytes)
+		return string(jsonBytes), nil
 	}
 }
 
-func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning) interface{} {
+func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning, providerName string) (interface{}, error) {
 	switch output.Type {
 	case types.ToolResultOutputText, types.ToolResultOutputError:
 		if output.Value == nil {
-			return ""
+			return "", nil
 		}
 		if value, ok := output.Value.(string); ok {
-			return value
+			return value, nil
 		}
-		return fmt.Sprintf("%v", output.Value)
+		return fmt.Sprintf("%v", output.Value), nil
 	case types.ToolResultOutputExecutionDenied:
 		if output.Reason != "" {
-			return output.Reason
+			return output.Reason, nil
 		}
-		return "Tool call execution denied."
+		return "Tool call execution denied.", nil
 	case types.ToolResultOutputJSON:
 		jsonBytes, _ := json.Marshal(output.Value)
-		return string(jsonBytes)
+		return string(jsonBytes), nil
 	case types.ToolResultOutputContent:
 		parts := make([]interface{}, 0, len(output.Content))
 		for _, block := range output.Content {
@@ -323,7 +355,11 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 					ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(item.Data)),
 				})
 			case types.FileContentBlock:
-				if converted, ok := convertToolFileContentBlock(item, warnings); ok {
+				converted, ok, err := convertToolFileContentBlock(item, warnings, providerName)
+				if err != nil {
+					return nil, err
+				}
+				if ok {
 					parts = append(parts, converted)
 				}
 			default:
@@ -333,46 +369,49 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 				})
 			}
 		}
-		return parts
+		return parts, nil
 	default:
 		if output.Value == nil {
-			return ""
+			return "", nil
 		}
 		jsonBytes, _ := json.Marshal(output.Value)
-		return string(jsonBytes)
+		return string(jsonBytes), nil
 	}
 }
 
-func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types.Warning) (interface{}, bool) {
-	file := normalizeFileContentBlockData(block)
+func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types.Warning, providerName string) (interface{}, bool, error) {
+	file, err := normalizeFileContentBlockData(block, providerName)
+	if err != nil {
+		return nil, false, err
+	}
 	mediaType := mediaTypeOrDefault(file.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		switch {
 		case file.URL != "":
-			return InputImageContent{Type: "input_image", ImageURL: file.URL}, true
+			return InputImageContent{Type: "input_image", ImageURL: file.URL}, true, nil
 		case file.Reference != "":
-			return InputImageContent{Type: "input_image", ImageURL: file.Reference}, true
+			return InputImageContent{Type: "input_image", ImageURL: file.Reference}, true, nil
 		case len(file.Data) > 0:
 			return InputImageContent{
 				Type:     "input_image",
 				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
-			}, true
+			}, true, nil
 		case file.Text != "":
 			return InputImageContent{
 				Type:     "input_image",
 				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text))),
-			}, true
+			}, true, nil
 		default:
 			*warnings = append(*warnings, types.Warning{Type: "other", Message: "unsupported tool content part type: file"})
-			return nil, false
+			return nil, false, nil
 		}
 	}
 
 	switch {
 	case file.URL != "":
-		return InputFileContent{Type: "input_file", FileURL: file.URL}, true
+		return InputFileContent{Type: "input_file", FileURL: file.URL}, true, nil
 	case file.Reference != "":
-		return InputFileContent{Type: "input_file", FileID: file.Reference}, true
+		return InputFileContent{Type: "input_file", FileID: file.Reference}, true, nil
 	case len(file.Data) > 0:
 		filename := file.Filename
 		if filename == "" {
@@ -382,18 +421,18 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 			Type:     "input_file",
 			Filename: filename,
 			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
-		}, true
+		}, true, nil
 	case file.Text != "":
-		return InputTextContent{Type: "input_text", Text: file.Text}, true
+		return InputTextContent{Type: "input_text", Text: file.Text}, true, nil
 	default:
 		*warnings = append(*warnings, types.Warning{Type: "other", Message: "unsupported tool content part type: file"})
-		return nil, false
+		return nil, false, nil
 	}
 }
 
-func normalizeFileContentBlockData(block types.FileContentBlock) types.FileContentBlock {
+func normalizeFileContentBlockData(block types.FileContentBlock, providerName string) (types.FileContentBlock, error) {
 	if block.FileData.IsZero() {
-		return block
+		return block, nil
 	}
 	switch block.FileData.Type {
 	case types.FileDataTypeData:
@@ -401,12 +440,16 @@ func normalizeFileContentBlockData(block types.FileContentBlock) types.FileConte
 	case types.FileDataTypeURL:
 		block.URL = block.FileData.URL
 	case types.FileDataTypeReference:
-		block.Reference = types.ProviderReferenceString(block.FileData.Reference)
+		ref, err := providerutils.ResolveProviderReference(block.FileData.Reference, providerName)
+		if err != nil {
+			return types.FileContentBlock{}, err
+		}
+		block.Reference = ref
 	case types.FileDataTypeText:
 		block.Text = block.FileData.Text
 	}
 	if block.FileData.MediaType != "" && block.MediaType == "" {
 		block.MediaType = block.FileData.MediaType
 	}
-	return block
+	return block, nil
 }

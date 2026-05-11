@@ -2,8 +2,10 @@ package openresponses
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -209,5 +211,104 @@ func TestConvertToOpenResponsesInput_ToolResultContentFileParts(t *testing.T) {
 	dataFile := parts[2].(InputFileContent)
 	if dataFile.Type != "input_file" || dataFile.Filename != "data.csv" || dataFile.FileData == "" {
 		t.Fatalf("data file part = %#v", dataFile)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ReferenceResolvesProviderKey(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{
+					MediaType: "application/pdf",
+					FileData: types.FileData{
+						Type: types.FileDataTypeReference,
+						Reference: types.ProviderReference{
+							"openai":         "file-openai",
+							"open-responses": "file-openresponses",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInput() error = %v", err)
+	}
+	items := input.([]interface{})
+	msg := items[0].(MessageItem)
+	parts := msg.Content.([]interface{})
+	file := parts[0].(InputFileContent)
+	if file.FileID != "file-openresponses" {
+		t.Fatalf("FileID = %q, want provider-specific reference", file.FileID)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ReferenceMissingProviderReturnsError(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{
+					MediaType: "application/pdf",
+					FileData: types.FileData{
+						Type:      types.FileDataTypeReference,
+						Reference: types.ProviderReference{"openai": "file-openai"},
+					},
+				},
+			},
+		},
+	}
+
+	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
+	var refErr *providererrors.NoSuchProviderReferenceError
+	if !errors.As(err, &refErr) {
+		t.Fatalf("error = %T, want NoSuchProviderReferenceError", err)
+	}
+	if refErr.Provider != "open-responses" {
+		t.Fatalf("Provider = %q, want open-responses", refErr.Provider)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ToolResultReferenceResolvesProviderKey(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call_123",
+					ToolName:   "read_files",
+					Output: &types.ToolResultOutput{
+						Type: types.ToolResultOutputContent,
+						Content: []types.ToolResultContentBlock{
+							types.FileContentBlock{
+								MediaType: "application/pdf",
+								FileData: types.FileData{
+									Type: types.FileDataTypeReference,
+									Reference: types.ProviderReference{
+										"openai":         "file-openai",
+										"open-responses": "file-openresponses",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
+	}
+	items := input.([]interface{})
+	output := items[0].(FunctionCallOutputItem)
+	parts := output.Output.([]interface{})
+	file := parts[0].(InputFileContent)
+	if file.FileID != "file-openresponses" {
+		t.Fatalf("FileID = %q, want provider-specific reference", file.FileID)
 	}
 }

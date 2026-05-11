@@ -63,8 +63,10 @@ func SerializeModel(model LanguageModel) (SerializedModel, error) {
 	return serialized, nil
 }
 
-// SerializableConfig returns a JSON-compatible copy of config with auth-bearing
-// fields removed. Workflow deserialization supplies auth separately.
+// SerializableConfig returns a JSON-compatible copy of config for workflow
+// boundaries. It mirrors the TypeScript SDK's serializeModelOptions behavior:
+// JSON-serializable values, including static headers, are preserved while
+// functions and other non-serializable values are omitted.
 func SerializableConfig(config interface{}) map[string]interface{} {
 	sanitized, ok := sanitizeSerializableValue(reflect.ValueOf(config), "", true)
 	if !ok || sanitized == nil {
@@ -183,7 +185,7 @@ func isSensitiveConfigField(key string) bool {
 	switch key {
 	case "APIKey", "apiKey", "AccessToken", "accessToken", "AWSAccessKeyID", "awsAccessKeyID",
 		"AWSSecretAccessKey", "awsSecretAccessKey", "SessionToken", "sessionToken",
-		"Headers", "headers", "HTTPClient", "httpClient":
+		"HTTPClient", "httpClient":
 		return true
 	default:
 		return false

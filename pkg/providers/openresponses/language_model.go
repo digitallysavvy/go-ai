@@ -69,11 +69,14 @@ func (m *LanguageModel) SupportsImageInput() bool {
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
-	reqBody, warnings := m.buildRequestBody(opts, false)
+	reqBody, warnings, err := m.buildRequestBody(opts, false)
+	if err != nil {
+		return nil, err
+	}
 
 	// Make API request
 	var response OpenResponsesResponse
-	err := m.provider.client.PostJSON(ctx, "", reqBody, &response)
+	err = m.provider.client.PostJSON(ctx, "", reqBody, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -93,7 +96,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody, warnings := m.buildRequestBody(opts, true)
+	reqBody, warnings, err := m.buildRequestBody(opts, true)
+	if err != nil {
+		return nil, err
+	}
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -113,11 +119,14 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 }
 
 // buildRequestBody builds the Open Responses API request body
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 
 	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings := ConvertToOpenResponsesInput(opts.Prompt.Messages, opts.Prompt.System)
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProvider(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name)
+	if err != nil {
+		return nil, warnings, err
+	}
 	warnings = append(warnings, conversionWarnings...)
 
 	body := map[string]interface{}{
@@ -225,7 +234,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning"] = reasoning
 	}
 
-	return body, warnings
+	return body, warnings, nil
 }
 
 func extractOpenResponsesProviderOptions(providerOptions map[string]interface{}, providerName string) OpenResponsesProviderOptions {

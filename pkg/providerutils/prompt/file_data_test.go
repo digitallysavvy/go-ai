@@ -83,6 +83,28 @@ func TestNormalizeFileContentReferenceAndText(t *testing.T) {
 	}
 }
 
+func TestNormalizeFileContentPreservesProviderReferenceMap(t *testing.T) {
+	got, err := NormalizeFileContent(types.FileContent{
+		MediaType: "application/pdf",
+		FileData: types.FileData{
+			Type: types.FileDataTypeReference,
+			Reference: types.ProviderReference{
+				"openai": "file-openai",
+				"xai":    "file-xai",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeFileContent() error = %v", err)
+	}
+	if got.Reference != "" {
+		t.Fatalf("legacy Reference = %q, want empty so provider-specific resolution is not lost", got.Reference)
+	}
+	if got.FileData.Reference["openai"] != "file-openai" || got.FileData.Reference["xai"] != "file-xai" {
+		t.Fatalf("FileData.Reference not preserved: %#v", got.FileData.Reference)
+	}
+}
+
 func TestNormalizeImageContentShim(t *testing.T) {
 	got, err := NormalizeImageContent(types.ImageContent{
 		Image:    []byte{1, 2, 3},

@@ -156,7 +156,7 @@ func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
 	m := NewLanguageModel(p, "lmstudio")
 	reasoning := types.ReasoningMedium
 
-	body, _ := m.buildRequestBody(&provider.GenerateOptions{
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt:    types.Prompt{Text: "hello"},
 		Reasoning: &reasoning,
 		ProviderOptions: map[string]interface{}{
@@ -165,6 +165,9 @@ func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
 			},
 		},
 	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
 
 	reasoningBody, ok := body["reasoning"].(map[string]interface{})
 	if !ok {
@@ -183,20 +186,26 @@ func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	m := NewLanguageModel(p, "lmstudio")
 
 	high := types.ReasoningHigh
-	bodyHigh, _ := m.buildRequestBody(&provider.GenerateOptions{
+	bodyHigh, _, err := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt:    types.Prompt{Text: "hello"},
 		Reasoning: &high,
 	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody(high) error = %v", err)
+	}
 	reasoningHigh := bodyHigh["reasoning"].(map[string]interface{})
 	if reasoningHigh["effort"] != "high" {
 		t.Fatalf("high effort = %v, want high", reasoningHigh["effort"])
 	}
 
 	xhigh := types.ReasoningXHigh
-	bodyXHigh, _ := m.buildRequestBody(&provider.GenerateOptions{
+	bodyXHigh, _, err := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt:    types.Prompt{Text: "hello"},
 		Reasoning: &xhigh,
 	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody(xhigh) error = %v", err)
+	}
 	reasoningXHigh := bodyXHigh["reasoning"].(map[string]interface{})
 	if reasoningXHigh["effort"] != "xhigh" {
 		t.Fatalf("xhigh effort = %v, want xhigh", reasoningXHigh["effort"])

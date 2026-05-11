@@ -229,7 +229,9 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 	case types.FileDataTypeURL:
 		part.URL = normalized.URL
 	case types.FileDataTypeReference:
-		part.Reference = types.ProviderReferenceString(normalized.Reference)
+		if ref := normalized.Reference[""]; ref != "" {
+			part.Reference = ref
+		}
 	case types.FileDataTypeText:
 		part.Text = normalized.Text
 	}
@@ -290,7 +292,9 @@ func NormalizeToolResultFileContent(block types.FileContentBlock) (types.FileCon
 	case types.FileDataTypeURL:
 		block.URL = normalized.URL
 	case types.FileDataTypeReference:
-		block.Reference = types.ProviderReferenceString(normalized.Reference)
+		if ref := normalized.Reference[""]; ref != "" {
+			block.Reference = ref
+		}
 	case types.FileDataTypeText:
 		block.Text = normalized.Text
 	}
