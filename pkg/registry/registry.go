@@ -207,7 +207,12 @@ func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
 	}
 	api, err := provider.ResolveFilesAPI(p)
 	if err != nil {
-		return nil, fmt.Errorf("the provider %q does not support file uploads. Make sure it exposes a Files() method", providerID)
+		return nil, &NoSuchProviderError{
+			ProviderID:         providerID,
+			ModelType:          "files",
+			AvailableProviders: r.listProvidersLocked(),
+			Reason:             fmt.Sprintf("provider %q does not support file uploads; make sure it exposes a Files() method", providerID),
+		}
 	}
 	return api, nil
 }
@@ -221,7 +226,12 @@ func (r *Registry) Skills(providerID string) (provider.SkillsAPI, error) {
 	}
 	api, err := provider.ResolveSkillsAPI(p)
 	if err != nil {
-		return nil, fmt.Errorf("the provider %q does not support skills. Make sure it exposes a Skills() method", providerID)
+		return nil, &NoSuchProviderError{
+			ProviderID:         providerID,
+			ModelType:          "skills",
+			AvailableProviders: r.listProvidersLocked(),
+			Reason:             fmt.Sprintf("provider %q does not support skills; make sure it exposes a Skills() method", providerID),
+		}
 	}
 	return api, nil
 }

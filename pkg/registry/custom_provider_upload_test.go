@@ -100,4 +100,7 @@ func TestRegistryResolveFilesAPIUnsupported(t *testing.T) {
 	if !strings.Contains(err.Error(), `provider "custom" does not support file uploads`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if _, ok := err.(*NoSuchProviderError); !ok {
+		t.Fatalf("error = %T, want *NoSuchProviderError", err)
+	}
 }

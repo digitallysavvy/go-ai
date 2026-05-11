@@ -320,8 +320,10 @@ func TestRegistry_FilesAndSkillsErrors(t *testing.T) {
 	}
 	if _, err := r.Skills("plain"); err == nil {
 		t.Fatal("expected unsupported skills provider error")
-	} else if _, ok := err.(*NoSuchProviderError); ok {
-		t.Fatalf("unsupported capability error = %#v, want plain unsupported error", err)
+	} else {
+		if _, ok := err.(*NoSuchProviderError); !ok {
+			t.Fatalf("unsupported capability error = %T, want *NoSuchProviderError", err)
+		}
 	}
 }
 
