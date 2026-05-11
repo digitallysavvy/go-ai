@@ -36,6 +36,34 @@ fileID := result.ProviderReference["openai"]
 
 `UploadFile` normalizes shorthand data inputs (`[]byte`, `string`) into `types.FileData`, resolves the target files API, and auto-detects media type when omitted. String data is treated as a TypeScript-compatible base64 data string and decoded by the provider upload implementation.
 
+Use the returned provider reference in later prompts without downloading or
+inlining the file:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Summarize this file."},
+                types.FileContent{
+                    MediaType: upload.MediaType,
+                    Filename:  upload.Filename,
+                    FileData: types.FileData{
+                        Type:      types.FileDataTypeReference,
+                        Reference: upload.ProviderReference,
+                        MediaType: upload.MediaType,
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+See `examples/upload-file/provider-reference` for a complete upload-then-reference flow.
+
 ## UploadSkill
 
 ```go

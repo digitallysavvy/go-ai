@@ -1,0 +1,360 @@
+---
+title: Migrating from v0.4.x to v0.5.0
+description: Guide for upgrading Go AI SDK applications from v0.4.x to v0.5.0
+---
+
+# Migrate Go AI SDK v0.4.x to v0.5.0
+
+Go AI SDK v0.5.0 aligns the public API with the May 2026 TypeScript AI SDK changes. The main work is renaming formerly experimental options, splitting runtime context from tool context, adopting call-level tool approval, and using the provider v4 file data shape.
+
+## Recommended migration process
+
+1. Upgrade on a clean branch and run `go test ./...` before editing.
+2. Replace deprecated names with the stable names listed below.
+3. Move shared request state into `RuntimeContext` and per-tool state into `ToolsContext`.
+4. Replace per-tool approval defaults with call-level `ToolApproval`.
+5. Normalize file and image inputs to `types.FileContent` plus `types.FileData`.
+6. Move multi-step limits from `MaxSteps` to `StopWhen`.
+7. Rebuild examples with `go build -tags ignore ./examples/...` and run provider integration tests that your app depends on.
+
+## Breaking changes
+
+### Telemetry names are stable
+
+**Impact:** low
+
+`ExperimentalTelemetry` is deprecated. Use `Telemetry`. `telemetry.Settings` remains as a compatibility alias for `telemetry.Options`, but new code should use `telemetry.Options`. Telemetry is active by default when at least one global or local integration is registered; set `IsEnabled: telemetry.Bool(false)` to disable a call.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the changelog.",
+    ExperimentalTelemetry: &telemetry.Settings{
+        IsEnabled: telemetry.Bool(true),
+    },
+})
+```
+
+**After:**
+
+```go
+telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the changelog.",
+    Telemetry: &telemetry.Options{
+        FunctionID: "release-summary",
+    },
+})
+```
+
+### Runtime and tool context are split
+
+**Impact:** breaking
+
+`ExperimentalContext` and generic `Context` style values are replaced by `RuntimeContext`. Per-tool state belongs in `ToolsContext`, keyed by tool name. Tool execution receives `ToolExecutionOptions.RuntimeContext` and `ToolExecutionOptions.ToolContext`.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:               model,
+    Prompt:              "Check the weather.",
+    ExperimentalContext: map[string]interface{}{"user_id": "u_123", "city": "Paris"},
+    Tools:               []types.Tool{weatherTool},
+})
+```
+
+**After:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:          model,
+    Prompt:         "Check the weather.",
+    RuntimeContext: map[string]interface{}{"user_id": "u_123"},
+    ToolsContext: map[string]interface{}{
+        "weather": map[string]interface{}{"city": "Paris"},
+    },
+    Tools: []types.Tool{weatherTool},
+})
+```
+
+### Tool approval is call-level
+
+**Impact:** breaking
+
+`ToolNeedsApproval` was renamed to `ToolApproval`. Per-tool `NeedsApproval` is deprecated and is only used when no call-level approval is configured. `ToolApproval` can be a single function or a per-tool map with `approved`, `denied`, or `user-approval`.
+
+**Before:**
+
+```go
+deleteTool := types.Tool{
+    Name:          "delete_account",
+    Description:   "Delete an account.",
+    Parameters:    schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+    NeedsApproval: true,
+    Execute:       deleteAccount,
+}
+```
+
+**After:**
+
+```go
+reason := "account deletion requires review"
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Delete account acct_123.",
+    Tools:  []types.Tool{deleteTool},
+    ToolApproval: map[string]ai.ToolApprovalValue{
+        "delete_account": ai.ToolApprovalResult{
+            Status: ai.ToolApprovalStatusUserApproval,
+            Reason: &reason,
+        },
+    },
+})
+```
+
+### Tool execution options replace tool call options
+
+**Impact:** medium
+
+Tool executors receive `types.ToolExecutionOptions`. Use `ToolCallID`, `RuntimeContext`, and `ToolContext` from that struct. Do not depend on removed `ToolCallOptions` naming in examples or wrappers.
+
+**Before:**
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    return lookup(input, opts.UserContext), nil
+}
+```
+
+**After:**
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    return lookup(input, opts.RuntimeContext, opts.ToolContext), nil
+}
+```
+
+### Experimental generation options were removed
+
+**Impact:** breaking
+
+Use stable names for output, active tools, and step preparation. Replace `experimental_output` with `Output`, `experimental_activeTools` with `FilterActiveTools` or provider `ToolChoice`, and `experimental_prepareStep` with `PrepareStep`.
+
+**Before:**
+
+```go
+opts := ai.GenerateTextOptions{
+    Model: model,
+    Prompt: "Return JSON.",
+    Output: ai.JSONOutput(),
+}
+```
+
+**After:**
+
+```go
+opts := ai.GenerateTextOptions{
+    Model: model,
+    Prompt: "Return JSON.",
+    Output: ai.JSONOutput(),
+    PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+        return step
+    },
+}
+```
+
+### File data is a tagged union
+
+**Impact:** breaking
+
+Provider v4 file parts use `types.FileData` with a `Type` discriminator. `types.ImageContent` still works as a compatibility input, but new multimodal code should use `types.FileContent` with `FileDataTypeData`, `FileDataTypeURL`, `FileDataTypeReference`, or `FileDataTypeText`.
+
+**Before:**
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.ImageContent{
+            URL:      "https://example.com/chart.png",
+            MimeType: "image/png",
+        },
+    },
+}}
+```
+
+**After:**
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "Explain this chart."},
+        types.FileContent{
+            FileData: types.FileData{
+                Type:      types.FileDataTypeURL,
+                URL:       "https://example.com/chart.png",
+                MediaType: "image/png",
+            },
+        },
+    },
+}}
+```
+
+### System messages in Messages are rejected by default
+
+**Impact:** breaking
+
+Put system instructions in `GenerateTextOptions.System` or `StreamTextOptions.System`. If you intentionally need provider-native system-role messages in `Messages`, opt in with `AllowSystemMessages` or the TypeScript-compatible alias `AllowSystemInMessages`.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "Be brief."}}},
+        {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
+    },
+})
+```
+
+**After:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "Be brief.",
+    Messages: []types.Message{
+        {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
+    },
+})
+```
+
+**Opt-in:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:               model,
+    AllowSystemMessages: true,
+    Messages:            providerNativeMessages,
+})
+```
+
+### Upload APIs use provider capabilities
+
+**Impact:** medium
+
+Use `ai.UploadFile` and `ai.UploadSkill` with a provider that exposes `Files()` or `Skills()`. Upload results return `ProviderReference`, which can be passed back as `types.FileDataTypeReference`.
+
+**Before:**
+
+```go
+// Provider-specific upload helper or manual HTTP request.
+```
+
+**After:**
+
+```go
+uploaded, err := ai.UploadFile(ctx, ai.UploadFileOptions{
+    API:       openaiProvider,
+    Data:      []byte("hello"),
+    Filename:  "hello.txt",
+    MediaType: "text/plain",
+})
+if err != nil {
+    return err
+}
+
+file := types.FileContent{
+    FileData: types.FileData{
+        Type:      types.FileDataTypeReference,
+        Reference: uploaded.ProviderReference,
+    },
+}
+```
+
+### Models can be serialized for workflows
+
+**Impact:** medium
+
+Models that implement `provider.SerializableModel` can cross workflow boundaries. Use `provider.SerializeModel` and `provider.DeserializeModel`; provider deserializers must be registered before deserialization.
+
+**Before:**
+
+```go
+workflowState.Model = model
+```
+
+**After:**
+
+```go
+serialized, err := provider.SerializeModel(model)
+if err != nil {
+    return err
+}
+
+restored, err := provider.DeserializeModel(serialized)
+```
+
+### FilterActiveTools is the stable helper
+
+**Impact:** low
+
+`ExperimentalFilterActiveTools` remains only as a compatibility alias. Use `FilterActiveTools` in new code.
+
+**Before:**
+
+```go
+active := ai.ExperimentalFilterActiveTools(tools, []string{"search"})
+```
+
+**After:**
+
+```go
+active := ai.FilterActiveTools(tools, []string{"search"})
+```
+
+### MaxSteps is deprecated
+
+**Impact:** medium
+
+`MaxSteps` is still accepted as a compatibility shorthand, but `StopWhen` is the stable multi-step control. If both are set, `StopWhen` wins.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "Use tools if needed.",
+    Tools:    tools,
+    MaxSteps: intPtr(5),
+})
+```
+
+**After:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "Use tools if needed.",
+    Tools:    tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+})
+```
+
+## Provider updates to review
+
+- OpenAI: GPT-5.5 chat IDs, `gpt-image-2`, function-call namespace preservation, image detail forwarding, null assistant content only for tool-call messages, custom headers, and Responses metadata.
+- Anthropic: Claude Opus 4.7, `InferenceGeo`, `TaskBudget`, schema sanitization, and obsolete beta header removal.
+- Google and Vertex: model refresh, per-modality token usage, thought signatures, no-arg tool calls, auth reuse, MaaS auth overrides, and Vertex MaaS Grok models.
+- Bedrock: explicit credential precedence, reasoning block filtering, Opus 4.7 behavior, native structured output, and the Go-specific note that TypeScript lazy `fetch` resolution has no direct runtime equivalent.
+- XAI: non-image file URLs in Responses, cost metadata, ZDR encrypted reasoning, and file uploads.
+- Gateway: reranking, routing sort, quota entity ID, HIPAA filtering, and unknown model type resilience.
+- MCP: secure JSON parsing, server instructions, server name propagation, and custom transports.
+- Voyage, Cohere, Mistral, and DeepSeek: new provider or model-feature parity updates.

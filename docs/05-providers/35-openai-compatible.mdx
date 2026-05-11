@@ -1,0 +1,30 @@
+---
+title: OpenAI-compatible providers
+description: Configure OpenAI-compatible endpoints with Go AI SDK provider options and warnings.
+---
+
+# OpenAI-compatible providers
+
+Go does not expose a separate `openai-compatible` provider package. OpenAI-compatible request behavior is shared by provider implementations such as Groq, Together, Moonshot, Alibaba, and DeepSeek; use each provider's package and provider-specific option key.
+
+## Setup
+
+Configure the provider package that matches the target API. Providers that use the OpenAI-compatible option resolver accept camelCase provider options and keep deprecated fallback keys only for compatibility warnings.
+
+## May 2026 parity updates
+
+Provider options should use camelCase keys to match the TypeScript SDK. Prefer the concrete provider key, for example `"deepseek"` or `"groq"`, rather than a generic `"openai-compatible"` key.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a short status update.",
+    ProviderOptions: map[string]interface{}{
+        "deepseek": map[string]interface{}{
+            "reasoningEffort": "low",
+        },
+    },
+})
+```
+
+Assistant messages with tool calls use null content only for tool-call assistant turns, matching OpenAI-compatible APIs that require this shape.

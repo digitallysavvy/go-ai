@@ -189,3 +189,18 @@ func main() {
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Mistral AI Documentation](https://docs.mistral.ai)
+
+## May 2026 parity updates
+
+### Mistral Medium 3.5
+
+Use `mistral.ModelMistralMedium35` for `mistral-medium-3.5`.
+
+```go
+p := mistral.New(mistral.Config{APIKey: os.Getenv("MISTRAL_API_KEY")})
+model, err := p.LanguageModel(mistral.ModelMistralMedium35)
+```
+
+### Cached token usage
+
+Mistral cached token counts map into `types.Usage.InputDetails.CacheReadTokens` when returned by the provider.

@@ -608,3 +608,61 @@ func estimateCost(promptTokens, completionTokens int, model string) float64 {
 - [Core Concepts: Language Models](../02-core-concepts/language-models.mdx)
 - [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
 - [Azure OpenAI Provider](05-azure.mdx) - For enterprise deployment
+
+## May 2026 parity updates
+
+### Model IDs
+
+The OpenAI provider includes GPT-5.5 chat model constants and `gpt-image-2` image generation support.
+
+| Capability | Go constant | Model ID |
+| --- | --- | --- |
+| Chat | `openai.ModelGPT55` | `gpt-5.5` |
+| Chat | `openai.ModelGPT552026_04_23` | `gpt-5.5-2026-04-23` |
+| Image | `openai.ModelGPTImage2` | `gpt-image-2` |
+
+```go
+p := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    Headers: map[string]string{
+        "OpenAI-Beta": "example",
+    },
+})
+
+model, err := p.LanguageModel(openai.ModelGPT55)
+```
+
+### Responses API metadata
+
+Use `ResponsesModel` when you need OpenAI Responses API behavior. The provider preserves response IDs, headers, provider metadata, encrypted reasoning, function-call namespace values, and generated files in the standard result fields.
+
+```go
+model, err := p.ResponsesModel(openai.ModelGPT55)
+```
+
+### Image detail and file content
+
+Image detail provider options are forwarded on image parts, including tool-result image content. Prefer `types.FileContent` with tagged `types.FileData` for new multimodal code. `types.ImageContent` remains available for compatibility.
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "Describe the image."},
+        types.FileContent{
+            FileData: types.FileData{
+                Type:      types.FileDataTypeURL,
+                URL:       "https://example.com/chart.png",
+                MediaType: "image/png",
+            },
+            ProviderOptions: map[string]interface{}{
+                "openai": map[string]interface{}{"imageDetail": "high"},
+            },
+        },
+    },
+}}
+```
+
+### Assistant null content behavior
+
+Assistant messages with tool calls serialize `content: null` only when the target OpenAI-compatible API requires it for tool-call assistant turns. Plain assistant messages keep their text content.

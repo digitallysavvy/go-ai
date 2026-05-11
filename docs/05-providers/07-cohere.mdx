@@ -242,3 +242,28 @@ bestMatch := findMostSimilar(queryEmbedding[0], docEmbeddings)
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Cohere API Documentation](https://docs.cohere.com)
+
+## May 2026 parity updates
+
+### Image input
+
+Cohere chat models support image input. Use `types.FileContent` for new code, or `types.ImageContent` for compatibility. Provider option `imageDetail` is forwarded when present under the `cohere` key.
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "What is in this image?"},
+        types.FileContent{
+            FileData: types.FileData{
+                Type:      types.FileDataTypeURL,
+                URL:       "https://example.com/image.png",
+                MediaType: "image/png",
+            },
+            ProviderOptions: map[string]interface{}{
+                "cohere": map[string]interface{}{"imageDetail": "auto"},
+            },
+        },
+    },
+}}
+```

@@ -194,3 +194,31 @@ Returns `ModerationError` if content is filtered. `CostInUsdTicks` available in 
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [xAI Documentation](https://docs.x.ai)
+
+## May 2026 parity updates
+
+### Non-image file URLs
+
+The xAI Responses provider accepts non-image file URLs by serializing URL file parts as `input_file` with `file_url`.
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "Summarize this report."},
+        types.FileContent{FileData: types.FileData{
+            Type:      types.FileDataTypeURL,
+            URL:       "https://example.com/report.pdf",
+            MediaType: "application/pdf",
+        }},
+    },
+}}
+```
+
+### Cost and ZDR metadata
+
+xAI response, image, and video calls surface `costInUsdTicks` under provider metadata when the API returns it. Encrypted reasoning is preserved for zero-data-retention follow-up turns.
+
+### File uploads
+
+Use `ai.UploadFile` with `xai.New(...)`. The returned `ProviderReference` is `map[string]string{"xai": fileID}`.

@@ -476,3 +476,28 @@ func compareCosts(promptTokens, completionTokens int) {
 - [Anthropic Provider](03-anthropic.mdx) - Direct Anthropic access
 - [AWS Bedrock Documentation](https://docs.aws.amazon.com/bedrock/)
 - [Bedrock Model Access](https://console.aws.amazon.com/bedrock/home#/modelaccess)
+
+## May 2026 parity updates
+
+### Credential precedence
+
+Explicit credentials in `bedrock.Config` take precedence over environment and shared credential file values. When `AWSAccessKeyID` and `AWSSecretAccessKey` are set, `AWS_SESSION_TOKEN` is not used unless `SessionToken` is also explicitly configured.
+
+### Reasoning and structured output
+
+`bedrock.ModelOptions.ReasoningConfig` mirrors the TypeScript `amazonBedrock.reasoningConfig` option. Partial provider configs merge with top-level `Reasoning`. Foreign-provider reasoning blocks are dropped rather than sent unsigned.
+
+```go
+budget := 4096
+model, err := p.LanguageModelWithOptions("anthropic.claude-opus-4-7-v1:0", &bedrock.ModelOptions{
+    ReasoningConfig: &bedrock.ReasoningConfig{
+        Type:         "enabled",
+        BudgetTokens: &budget,
+    },
+    ServiceTier: "priority",
+})
+```
+
+### Transport behavior
+
+The TypeScript lazy fetch resolution change has no direct Go runtime equivalent. The Go provider uses its AWS signing request path and explicit configuration fields; no application migration is required for JavaScript `fetch` patching behavior.

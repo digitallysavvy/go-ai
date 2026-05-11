@@ -126,3 +126,7 @@ result, err := rerankModel.DoRerank(ctx, &goprovider.RerankOptions{
 - Reranking endpoint: `POST /rerank`
 - Provider identities match the TypeScript SDK: `voyage.embedding` and `voyage.reranking`
 - Embedding requests are limited to 128 inputs per call to match the TypeScript SDK.
+
+## May 2026 parity updates
+
+Voyage is a full provider in this release with embedding and reranking support. Provider-specific options live under the `voyage` provider-options key. Embedding options include `inputType`, `truncation`, `outputDimension`, and `outputDtype`; reranking options include `returnDocuments` and `truncation`.

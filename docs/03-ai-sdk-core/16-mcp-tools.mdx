@@ -785,3 +785,18 @@ for _, content := range result.Content {
 - [Tools](../02-foundations/04-tools.mdx)
 - [Error Handling](./50-error-handling.mdx)
 - [Advanced: Tool Calling](../06-advanced/07-tool-calling.mdx)
+
+## May 2026 parity updates
+
+MCP JSON parsing uses secure parsing to avoid prototype-pollution style payloads when consuming remote server data. MCP clients expose server instructions and propagate the server name through dynamic tool parts so tool calls and telemetry can identify the originating server.
+
+Custom transports remain supported through the transport interfaces in `pkg/mcp`. Use explicit redirect handling for HTTP transports and prefer the default redirect error mode unless the server is trusted.
+
+```go
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL: "https://mcp.example.com",
+    Config: mcp.TransportConfig{
+        Redirect: mcp.MCPRedirectError,
+    },
+})
+```

@@ -651,3 +651,34 @@ Process large volumes at 50% discount with 24-hour turnaround.
 - [Core Concepts: Language Models](../02-core-concepts/language-models.mdx)
 - [Anthropic API Documentation](https://docs.anthropic.com/claude/reference)
 - [Prompt Engineering Guide](https://docs.anthropic.com/claude/docs/prompt-engineering)
+
+## May 2026 parity updates
+
+### Claude Opus 4.7
+
+Use `anthropic.ClaudeOpus4_7` for Claude Opus 4.7. The provider maps top-level `Reasoning` to Anthropic thinking settings and supports x-high effort on the newest Opus models.
+
+```go
+p := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+model, err := p.LanguageModel(anthropic.ClaudeOpus4_7)
+```
+
+### Inference geography and task budget
+
+`ModelOptions` includes `InferenceGeo` and `TaskBudget`, matching the TypeScript provider options.
+
+```go
+remaining := 12000
+model, err := p.LanguageModelWithOptions(anthropic.ClaudeOpus4_7, &anthropic.ModelOptions{
+    InferenceGeo: "us",
+    TaskBudget: &anthropic.TaskBudget{
+        Type:      "tokens",
+        Total:     32000,
+        Remaining: &remaining,
+    },
+})
+```
+
+### Schema and beta header behavior
+
+The provider sanitizes unsupported JSON Schema validation properties before sending tools or structured output requests to Anthropic. The obsolete fine-grained tool streaming beta header is no longer injected.

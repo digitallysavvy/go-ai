@@ -436,6 +436,35 @@ type Config struct {
 - [Video Generation Guide](https://vercel.com/docs/ai-gateway/capabilities/video-generation)
 - [Gateway API Reference](https://vercel.com/docs/ai-gateway/api-reference)
 
-function ptr[T any](v T) *T {
-    return &v
+## May 2026 parity updates
+
+### Reranking
+
+Gateway supports reranking through `provider.RerankingModel` and the `/reranking-model` endpoint.
+
+```go
+ranker, err := gatewayProvider.RerankingModel("cohere/rerank-v3.5")
+topN := 3
+result, err := ranker.DoRerank(ctx, &provider.RerankOptions{
+    Query:     "go concurrency",
+    Documents: []string{"Goroutines are lightweight.", "SQL joins tables."},
+    TopN:      &topN,
+})
+```
+
+### Routing, quota, and compliance
+
+`gateway.GatewayProviderOptions` includes `Sort`, `QuotaEntityID`, `HIPAACompliant`, `DisallowPromptTraining`, `ZeroDataRetention`, provider order, model filters, and BYOK options.
+
+```go
+opts := gateway.GatewayProviderOptions{
+    Sort:          "price",
+    QuotaEntityID: "tenant_123",
 }
+hipaa := true
+opts.HIPAACompliant = &hipaa
+```
+
+### Unknown model types
+
+Gateway metadata parsing is resilient to unknown model types and recognizes `reranking` as a valid model type.

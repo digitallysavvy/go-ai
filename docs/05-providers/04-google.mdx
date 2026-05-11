@@ -246,7 +246,7 @@ Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider 
 
 Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
 
-Vertex-specific `serviceTier` values are formatted for Vertex API requests when shared Google request code is used; use the `"google-vertex"` provider key for Vertex options and `"google"` for AI Studio options.
+Use the `"google-vertex"` provider key for Vertex options and `"google"` for AI Studio options. Provider option keys are scoped to the model's provider name.
 
 ## Examples
 
@@ -624,3 +624,32 @@ func calculateGeminiCost(inputTokens, outputTokens int, model string) float64 {
 - [Google Vertex AI Provider](18-google-vertex.mdx) - Enterprise deployment
 - [Google AI Studio Documentation](https://ai.google.dev/docs)
 - [Gemini API Reference](https://ai.google.dev/api/rest)
+
+## May 2026 parity updates
+
+### Model refresh and token usage
+
+The Google provider tracks the refreshed Gemini model IDs in `pkg/providers/google/model_ids.go`. Usage details include per-modality token fields through `types.Usage.InputDetails.TextTokens` and `types.Usage.InputDetails.ImageTokens` when Google returns modality-specific counts.
+
+### Thought signatures and no-arg tool calls
+
+The provider preserves Google `thoughtSignature` metadata on text and tool-call parts so multi-turn requests can forward model reasoning state. Streaming tool calls with no arguments are emitted with an empty argument object, matching the TypeScript SDK.
+
+### Provider options
+
+Use the standard `ProviderOptions` map for Google-specific options such as thinking configuration. The current Go provider accepts the same nested `thinkingConfig` request shape that the TypeScript provider sends to Gemini.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Use Google search if useful.",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "thinkingConfig": map[string]interface{}{
+                "thinkingBudget": 512,
+                "includeThoughts": true,
+            },
+        },
+    },
+})
+```

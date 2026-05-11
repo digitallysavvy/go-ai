@@ -247,7 +247,6 @@ Vertex streaming can request function-call argument deltas with `streamFunctionC
 ProviderOptions: map[string]interface{}{
     "google-vertex": map[string]interface{}{
         "streamFunctionCallArguments": true,
-        "serviceTier": "standard",
     },
 }
 ```
@@ -346,3 +345,26 @@ Request quota increases through Cloud Console.
 - [Google Provider](04-google.mdx) - Google AI Studio
 - [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
 - [Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)
+
+## May 2026 parity updates
+
+### Auth reuse
+
+Vertex providers reuse Google authentication per provider instance. Configure `googlevertex.New` once and reuse it for language, embedding, and image models instead of creating a new provider for every call.
+
+### Vertex MaaS and Grok
+
+Use `googlevertex.NewMaaS` for Vertex Model-as-a-Service models. Grok MaaS constants include `MaaSModelGrok420Reasoning`, `MaaSModelGrok420NonReasoning`, `MaaSModelGrok41FastReasoning`, and `MaaSModelGrok41FastNonReasoning`.
+
+```go
+maas := googlevertex.NewMaaS(googlevertex.MaaSConfig{
+    Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location: "us-central1",
+})
+
+model, err := maas.LanguageModel(string(googlevertex.MaaSModelGrok420Reasoning))
+```
+
+### Auth token overrides
+
+Vertex Anthropic auth token generation can be overridden through MaaS configuration when a custom token source is required.

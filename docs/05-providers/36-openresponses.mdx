@@ -1,0 +1,37 @@
+---
+title: OpenResponses Provider
+description: Use the OpenResponses provider for Responses-compatible model APIs.
+---
+
+# OpenResponses Provider
+
+The OpenResponses provider targets APIs that implement the OpenAI Responses wire shape. Use it when a provider exposes `/responses` semantics instead of chat completions.
+
+## May 2026 parity updates
+
+### Reasoning summary
+
+OpenResponses supports the `reasoningSummary` provider option. The provider serializes it to the Responses `reasoning.summary` request field for APIs that accept `auto`, `concise`, or `detailed` summaries.
+
+```go
+p := openresponses.New(openresponses.Config{
+    APIKey:  os.Getenv("OPENRESPONSES_API_KEY"),
+    BaseURL: "https://api.example.com/v1",
+})
+
+model, err := p.LanguageModel("responses-model")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the reasoning at a high level.",
+    ProviderOptions: map[string]interface{}{
+        "openresponses": map[string]interface{}{
+            "reasoningSummary": "concise",
+        },
+    },
+})
+```
+
+### System messages
+
+System messages are converted to the Responses instructions shape by the provider. At the core SDK layer, system-role messages inside `Messages` are rejected by default; use the top-level `System` field or opt in with `AllowSystemMessages`.

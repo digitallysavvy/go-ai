@@ -159,3 +159,14 @@ fmt.Println("Answer:", result.Text)
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [DeepSeek Documentation](https://platform.deepseek.com/docs)
+
+## May 2026 parity updates
+
+### DeepSeek v4 reasoning
+
+The DeepSeek provider preserves `reasoning_content` for DeepSeek v4-style multi-turn requests. Reasoning output maps to `types.ReasoningContent` and is forwarded when the result is reused as message history.
+
+```go
+p := deepseek.New(deepseek.Config{APIKey: os.Getenv("DEEPSEEK_API_KEY")})
+model, err := p.LanguageModel("deepseek-reasoner")
+```
