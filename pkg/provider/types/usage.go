@@ -23,6 +23,12 @@ type Usage struct {
 	// Raw provider-specific usage data
 	// Contains any additional usage information specific to the provider
 	Raw map[string]interface{} `json:"raw,omitempty"`
+
+	// Deprecated: Use OutputDetails.ReasoningTokens instead.
+	ReasoningTokens *int64 `json:"reasoningTokens,omitempty"`
+
+	// Deprecated: Use InputDetails.CacheReadTokens instead.
+	CachedInputTokens *int64 `json:"cachedInputTokens,omitempty"`
 }
 
 // InputTokenDetails provides a detailed breakdown of input token usage
@@ -58,9 +64,11 @@ type OutputTokenDetails struct {
 // Add adds another Usage to this one and returns a new Usage
 func (u Usage) Add(other Usage) Usage {
 	result := Usage{
-		InputTokens:  addInt64Ptr(u.InputTokens, other.InputTokens),
-		OutputTokens: addInt64Ptr(u.OutputTokens, other.OutputTokens),
-		TotalTokens:  addInt64Ptr(u.TotalTokens, other.TotalTokens),
+		InputTokens:       addInt64Ptr(u.InputTokens, other.InputTokens),
+		OutputTokens:      addInt64Ptr(u.OutputTokens, other.OutputTokens),
+		TotalTokens:       addInt64Ptr(u.TotalTokens, other.TotalTokens),
+		ReasoningTokens:   addInt64Ptr(u.ReasoningTokens, other.ReasoningTokens),
+		CachedInputTokens: addInt64Ptr(u.CachedInputTokens, other.CachedInputTokens),
 	}
 
 	// Merge input details
@@ -208,7 +216,6 @@ type VideoUsage struct {
 }
 
 // Warning represents a warning message from the provider.
-// Mirrors the TS SDK SharedV4Warning shape: { type, feature, details }.
 type Warning struct {
 	// Type of warning (e.g. "unsupported")
 	Type string `json:"type"`

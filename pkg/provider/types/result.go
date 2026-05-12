@@ -1,5 +1,40 @@
 package types
 
+import "time"
+
+// StepModel identifies the model that produced a generation step.
+type StepModel struct {
+	Provider string `json:"provider"`
+	ModelID  string `json:"modelId"`
+}
+
+// StepRequest contains metadata about the HTTP request sent to the provider.
+type StepRequest struct {
+	// Body is the raw request body sent to the provider (for debugging).
+	Body interface{} `json:"body,omitempty"`
+}
+
+// StepResponse contains metadata about the response received from the provider.
+type StepResponse struct {
+	// ID is the provider-assigned response identifier.
+	ID string `json:"id,omitempty"`
+
+	// Timestamp is when the provider started generating the response.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+
+	// ModelID is the model that handled the request.
+	ModelID string `json:"modelId,omitempty"`
+
+	// Headers are the raw HTTP response headers from the provider.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Messages are the response messages generated in this step (assistant + tool messages).
+	Messages []Message `json:"messages,omitempty"`
+
+	// Body is the raw response body from the provider (for debugging).
+	Body interface{} `json:"body,omitempty"`
+}
+
 // GenerateResult contains the result of a text generation operation
 type GenerateResult struct {
 	// Generated text content
@@ -38,7 +73,6 @@ type GenerateResult struct {
 
 	// ResponseHeaders are the raw HTTP response headers from the provider.
 	// Populated for HTTP-based providers; nil for others.
-	// Mirrors result.response?.headers in the TypeScript SDK.
 	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 
 	// ResponseMetadata contains normalized response metadata when the provider
@@ -174,20 +208,46 @@ type GeneratedFile struct {
 	MediaType string `json:"mediaType"`
 }
 
-// StepResult represents the result of a single step in multi-step generation
-// Used for tool calling loops and agent workflows
+// StepResult represents the result of a single step in multi-step generation.
 type StepResult struct {
-	// Step number (1-indexed)
+	// CallID uniquely identifies the generateText/streamText call this step belongs to.
+	CallID string `json:"callId,omitempty"`
+
+	// Step number (1-indexed). Note: TypeScript SDK uses 0-based indexing.
 	StepNumber int `json:"stepNumber"`
+
+	// Model identifies the provider and model ID that produced this step.
+	Model StepModel `json:"model"`
 
 	// Text generated in this step
 	Text string `json:"text"`
 
+	// Reasoning holds the reasoning/thinking content parts produced in this step.
+	Reasoning []ReasoningContent `json:"reasoning,omitempty"`
+
+	// ReasoningText is the concatenated text of all reasoning parts in this step.
+	ReasoningText string `json:"reasoningText,omitempty"`
+
+	// Files contains model-generated output files from this step.
+	Files []GeneratedFileContent `json:"files,omitempty"`
+
 	// Tool calls made in this step
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools.
+	StaticToolCalls []ToolCall `json:"staticToolCalls,omitempty"`
+
+	// DynamicToolCalls are tool calls from dynamically registered tools.
+	DynamicToolCalls []ToolCall `json:"dynamicToolCalls,omitempty"`
+
 	// Tool results from this step
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
+
+	// StaticToolResults are results from non-dynamic (typed) tools.
+	StaticToolResults []ToolResult `json:"staticToolResults,omitempty"`
+
+	// DynamicToolResults are results from dynamically registered tools.
+	DynamicToolResults []ToolResult `json:"dynamicToolResults,omitempty"`
 
 	// Finish reason for this step
 	FinishReason FinishReason `json:"finishReason"`
@@ -199,21 +259,30 @@ type StepResult struct {
 	Usage Usage `json:"usage"`
 
 	// Context management information (Anthropic-specific)
-	// Contains statistics about automatic conversation history cleanup
 	ContextManagement interface{} `json:"contextManagement,omitempty"`
 
 	// Warnings from this step
 	Warnings []Warning `json:"warnings,omitempty"`
 
 	// Sources contains citation or grounding references for this step.
-	// Populated by filtering SourceContent parts from the provider response.
 	Sources []SourceContent `json:"sources,omitempty"`
 
-	// Response messages generated in this step
-	// Contains the assistant message with any text and tool calls
+	// Request contains metadata about the request sent to the provider.
+	Request StepRequest `json:"request,omitempty"`
+
+	// Response contains metadata about the response from the provider.
+	Response StepResponse `json:"response,omitempty"`
+
+	// ResponseMessages contains the assistant and tool messages generated in this step.
+	// Deprecated: use Response.Messages instead.
 	ResponseMessages []Message `json:"responseMessages,omitempty"`
 
 	// ProviderMetadata holds provider-specific metadata for this step.
-	// Mirrors StepResult.providerMetadata in the TypeScript SDK.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ToolsContext is the per-tool context map in effect for this step.
+	ToolsContext map[string]interface{} `json:"toolsContext,omitempty"`
+
+	// RuntimeContext is the user-defined context in effect for this step.
+	RuntimeContext interface{} `json:"runtimeContext,omitempty"`
 }

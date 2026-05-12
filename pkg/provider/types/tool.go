@@ -231,6 +231,10 @@ type ToolCall struct {
 	// conversations so the API can verify the reasoning chain was not modified.
 	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 
+	// Dynamic indicates this tool call came from a dynamically registered (untyped) tool.
+	// Mirrors the dynamic/static tool call split in the TypeScript SDK.
+	Dynamic bool `json:"dynamic,omitempty"`
+
 	// Invalid marks a tool call whose input could not be parsed or validated.
 	// Invalid calls are preserved as error tool results instead of being dropped.
 	Invalid bool `json:"invalid,omitempty"`
@@ -263,6 +267,10 @@ type ToolResult struct {
 	// ApprovalReason contains the optional approval reason for denied or
 	// approved tool calls.
 	ApprovalReason *string `json:"approvalReason,omitempty"`
+
+	// Dynamic indicates this tool result came from a dynamically registered (untyped) tool.
+	// Mirrors the dynamic/static tool result split in the TypeScript SDK.
+	Dynamic bool `json:"dynamic,omitempty"`
 
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally)
 	// When true, the tool was executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
