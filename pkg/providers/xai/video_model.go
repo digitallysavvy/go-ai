@@ -19,6 +19,13 @@ type VideoModel struct {
 	modelID  string
 }
 
+type VideoExtendOptions struct {
+	Video    string
+	Prompt   string
+	Duration *float64
+	Headers  map[string]string
+}
+
 // NewVideoModel creates a new XAI video generation model
 func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 	return &VideoModel{
@@ -48,6 +55,22 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 	return &maxVideos
 }
 
+// Extend extends an existing video using xAI extension mode.
+func (m *VideoModel) Extend(ctx context.Context, opts VideoExtendOptions) (*provider.VideoModelV3Response, error) {
+	providerOptions := map[string]interface{}{
+		"xai": map[string]interface{}{
+			"mode":     "extend-video",
+			"videoUrl": opts.Video,
+		},
+	}
+	return m.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+		Prompt:          opts.Prompt,
+		Duration:        opts.Duration,
+		ProviderOptions: providerOptions,
+		Headers:         opts.Headers,
+	})
+}
+
 // XAIVideoProviderOptions contains provider-specific options for XAI video generation
 type XAIVideoProviderOptions struct {
 	// PollIntervalMs is the interval between status checks in milliseconds (default: 5000)
@@ -61,6 +84,12 @@ type XAIVideoProviderOptions struct {
 
 	// VideoURL is the source video URL for video editing
 	VideoURL *string `json:"videoUrl,omitempty"`
+
+	// Mode selects the operation: edit-video, extend-video, reference-to-video
+	Mode *string `json:"mode,omitempty"`
+
+	// ReferenceImageURLs are reference image URLs for reference-to-video mode
+	ReferenceImageURLs []string `json:"referenceImageUrls,omitempty"`
 }
 
 // DoGenerate performs video generation with polling
@@ -73,19 +102,23 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, err
 	}
 
-	// Check for unsupported options and add warnings
-	warnings = append(warnings, m.checkUnsupportedOptions(opts, provOpts)...)
+	mode := resolveMode(provOpts)
+	isEdit := mode == "edit-video"
+	isExtension := mode == "extend-video"
+	hasReferenceImages := mode == "reference-to-video"
 
-	// Determine if this is video editing or generation
-	isEdit := provOpts.VideoURL != nil && *provOpts.VideoURL != ""
+	// Check for unsupported options and add warnings
+	warnings = append(warnings, m.checkUnsupportedOptions(opts, provOpts, mode)...)
 
 	// Build request body
-	body := m.buildRequestBody(opts, provOpts, extra, isEdit)
+	body := m.buildRequestBody(opts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
 
 	// Determine endpoint
 	endpoint := "/v1/videos/generations"
 	if isEdit {
 		endpoint = "/v1/videos/edits"
+	} else if isExtension {
+		endpoint = "/v1/videos/extensions"
 	}
 
 	// Submit video generation/edit request
@@ -142,9 +175,11 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 				Status:    polling.JobStatusCompleted,
 				OutputURL: status.Video.URL,
 				Metadata: map[string]interface{}{
-					"video": status.Video,
-					"model": status.Model,
-					"usage": status.Usage,
+					"video":    status.Video,
+					"model":    status.Model,
+					"usage":    status.Usage,
+					"warnings": status.Warnings,
+					"progress": status.Progress,
 				},
 			}, nil
 		}
@@ -154,6 +189,13 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			return &polling.JobResult{
 				Status: polling.JobStatusFailed,
 				Error:  "Video generation request expired",
+			}, nil
+		}
+
+		if status.Status == "failed" {
+			return &polling.JobResult{
+				Status: polling.JobStatusFailed,
+				Error:  "Video generation failed",
 			}, nil
 		}
 
@@ -171,6 +213,21 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	// Extract video data from metadata
 	videoData := jobResult.Metadata["video"].(*xaiVideoData)
+	if warningItems, ok := jobResult.Metadata["warnings"].([]xaiWarning); ok {
+		for _, w := range warningItems {
+			msg := w.Message
+			if msg == "" {
+				msg = w.Code
+			}
+			if msg != "" {
+				warnings = append(warnings, types.Warning{
+					Type:    "provider-warning",
+					Details: msg,
+					Message: msg,
+				})
+			}
+		}
+	}
 
 	// Build xai-scoped metadata.
 	xaiMeta := map[string]interface{}{
@@ -185,6 +242,9 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if usageData.CostInUsdTicks != nil {
 			xaiMeta["costInUsdTicks"] = *usageData.CostInUsdTicks
 		}
+	}
+	if progress, ok := jobResult.Metadata["progress"].(*int); ok && progress != nil {
+		xaiMeta["progress"] = *progress
 	}
 
 	// Build response
@@ -211,7 +271,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 }
 
 // buildRequestBody constructs the API request body
-func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions, extra map[string]interface{}, isEdit bool) map[string]interface{} {
+func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions, extra map[string]interface{}, isEdit bool, isExtension bool, hasReferenceImages bool) map[string]interface{} {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"prompt": opts.Prompt,
@@ -223,14 +283,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 	}
 
 	// Add aspect ratio (not for edits)
-	if !isEdit && opts.AspectRatio != "" {
+	if !isEdit && !isExtension && opts.AspectRatio != "" {
 		body["aspect_ratio"] = opts.AspectRatio
 	}
 
 	// Add resolution (not for edits)
-	if !isEdit && provOpts.Resolution != nil {
+	if !isEdit && !isExtension && provOpts.Resolution != nil {
 		body["resolution"] = *provOpts.Resolution
-	} else if !isEdit && opts.Resolution != "" {
+	} else if !isEdit && !isExtension && opts.Resolution != "" {
 		// Map standard resolution to XAI format
 		mapped := mapResolution(opts.Resolution)
 		if mapped != "" {
@@ -239,10 +299,18 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 	}
 
 	// Video editing: add source video URL
-	if isEdit && provOpts.VideoURL != nil {
+	if (isEdit || isExtension) && provOpts.VideoURL != nil {
 		body["video"] = map[string]interface{}{
 			"url": *provOpts.VideoURL,
 		}
+	}
+
+	if hasReferenceImages {
+		items := make([]map[string]interface{}, 0, len(provOpts.ReferenceImageURLs))
+		for _, u := range provOpts.ReferenceImageURLs {
+			items = append(items, map[string]interface{}{"url": u})
+		}
+		body["reference_images"] = items
 	}
 
 	// Image-to-video: add source image
@@ -280,53 +348,73 @@ func (m *VideoModel) convertImageToXAIFormat(img *provider.VideoModelV3File) map
 }
 
 // checkUnsupportedOptions checks for unsupported options and generates warnings
-func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions) []types.Warning {
+func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions, mode string) []types.Warning {
 	warnings := []types.Warning{}
-	isEdit := provOpts.VideoURL != nil && *provOpts.VideoURL != ""
+	isEdit := mode == "edit-video"
+	isExtension := mode == "extend-video"
 
 	if opts.FPS != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video models do not support custom FPS",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("fps", "xAI video models do not support custom FPS."))
 	}
 
 	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video models do not support seed",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("seed", "xAI video models do not support seed."))
 	}
 
 	if opts.N > 1 {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video models do not support generating multiple videos per call. Only 1 video will be generated.",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("n", "xAI video models do not support generating multiple videos per call. Only 1 video will be generated."))
 	}
 
 	if isEdit && opts.Duration != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video editing does not support custom duration",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("duration", "xAI video editing does not support custom duration."))
 	}
 
 	if isEdit && opts.AspectRatio != "" {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video editing does not support custom aspect ratio",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("aspectRatio", "xAI video editing does not support custom aspect ratio."))
 	}
 
 	if isEdit && (provOpts.Resolution != nil || opts.Resolution != "") {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "xAI video editing does not support custom resolution",
-		})
+		warnings = append(warnings, unsupportedVideoWarning("resolution", "xAI video editing does not support custom resolution."))
+	}
+
+	if isExtension && opts.AspectRatio != "" {
+		warnings = append(warnings, unsupportedVideoWarning("aspectRatio", "xAI video extension does not support custom aspect ratio."))
+	}
+
+	if isExtension && (provOpts.Resolution != nil || opts.Resolution != "") {
+		warnings = append(warnings, unsupportedVideoWarning("resolution", "xAI video extension does not support custom resolution."))
+	}
+
+	if !isEdit && !isExtension && provOpts.Resolution == nil && opts.Resolution != "" && mapResolution(opts.Resolution) == "" {
+		warnings = append(warnings, unsupportedVideoWarning(
+			"resolution",
+			fmt.Sprintf("Unrecognized resolution %q. Use providerOptions.xai.resolution with \"480p\" or \"720p\" instead.", opts.Resolution),
+		))
 	}
 
 	return warnings
+}
+
+func unsupportedVideoWarning(feature, details string) types.Warning {
+	return types.Warning{
+		Type:    "unsupported",
+		Feature: feature,
+		Details: details,
+		Message: details,
+	}
+}
+
+func resolveMode(provOpts *XAIVideoProviderOptions) string {
+	if provOpts.Mode != nil && *provOpts.Mode != "" {
+		return *provOpts.Mode
+	}
+	if provOpts.VideoURL != nil && *provOpts.VideoURL != "" {
+		return "edit-video"
+	}
+	if len(provOpts.ReferenceImageURLs) > 0 {
+		return "reference-to-video"
+	}
+	return ""
 }
 
 // mapResolution maps standard resolution strings to XAI format
@@ -367,21 +455,53 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 		return nil, nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
 	}
 
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal provider options map: %w", err)
+	}
+	if err := validateVideoProviderOptions(rawMap, &provOpts); err != nil {
+		return nil, nil, err
+	}
+
 	// Collect any unrecognized keys for passthrough to the API.
 	known := map[string]bool{
 		"pollIntervalMs": true, "pollTimeoutMs": true,
 		"resolution": true, "videoUrl": true,
+		"mode": true, "referenceImageUrls": true,
 	}
 	extra := make(map[string]interface{})
-	if rawMap, ok := xaiRaw.(map[string]interface{}); ok {
-		for k, v := range rawMap {
-			if !known[k] {
-				extra[k] = v
-			}
+	for k, v := range rawMap {
+		if !known[k] {
+			extra[k] = v
 		}
 	}
 
 	return &provOpts, extra, nil
+}
+
+func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVideoProviderOptions) error {
+	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs <= 0 {
+		return fmt.Errorf("xai provider option pollIntervalMs must be positive")
+	}
+	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs <= 0 {
+		return fmt.Errorf("xai provider option pollTimeoutMs must be positive")
+	}
+
+	if _, ok := rawMap["referenceImageUrls"]; !ok {
+		return nil
+	}
+	if len(provOpts.ReferenceImageURLs) == 0 {
+		return fmt.Errorf("xai provider option referenceImageUrls must contain at least 1 image")
+	}
+	if len(provOpts.ReferenceImageURLs) > 7 {
+		return fmt.Errorf("xai provider option referenceImageUrls must contain at most 7 images")
+	}
+	for _, url := range provOpts.ReferenceImageURLs {
+		if url == "" {
+			return fmt.Errorf("xai provider option referenceImageUrls must not contain empty URLs")
+		}
+	}
+	return nil
 }
 
 // handleError converts provider errors
@@ -399,10 +519,12 @@ type xaiVideoCreateResponse struct {
 
 // xaiVideoStatusResponse represents the video status API response
 type xaiVideoStatusResponse struct {
-	Status string         `json:"status"`
-	Video  *xaiVideoData  `json:"video,omitempty"`
-	Model  string         `json:"model,omitempty"`
-	Usage  *xaiVideoUsage `json:"usage,omitempty"`
+	Status   string         `json:"status"`
+	Video    *xaiVideoData  `json:"video,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Usage    *xaiVideoUsage `json:"usage,omitempty"`
+	Progress *int           `json:"progress,omitempty"`
+	Warnings []xaiWarning   `json:"warnings,omitempty"`
 }
 
 // xaiVideoUsage holds top-level usage data from the video status response.
@@ -415,4 +537,9 @@ type xaiVideoData struct {
 	URL               string   `json:"url"`
 	Duration          *float64 `json:"duration,omitempty"`
 	RespectModeration *bool    `json:"respect_moderation,omitempty"`
+}
+
+type xaiWarning struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }

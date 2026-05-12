@@ -50,6 +50,8 @@ Generate and edit videos with the `grok-imagine-video` model.
 - **Text-to-Video**: Generate videos from text prompts
 - **Image-to-Video**: Animate static images
 - **Video Editing**: Modify existing videos
+- **Video Extension**: Continue a source video with `mode: "extend-video"`
+- **Reference-to-Video**: Guide generation with 1-7 reference image URLs
 - **Duration & Resolution Control**: 480p/720p output, custom duration
 - **Async Polling**: Automatic status polling with configurable timeouts
 
@@ -89,6 +91,40 @@ resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
     ProviderOptions: map[string]interface{}{
         "xai": map[string]interface{}{
             "videoUrl": videoURL,
+        },
+    },
+})
+```
+
+### Video Extension
+
+```go
+videoURL := "https://example.com/source-video.mp4"
+duration := 6.0
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:   "Continue the scene naturally",
+    Duration: &duration,
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "mode":     "extend-video",
+            "videoUrl": videoURL,
+        },
+    },
+})
+```
+
+### Reference-to-Video
+
+```go
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "Create a video using these visual references",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "mode": "reference-to-video",
+            "referenceImageUrls": []string{
+                "https://example.com/ref-1.jpg",
+                "https://example.com/ref-2.jpg",
+            },
         },
     },
 })
