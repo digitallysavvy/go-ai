@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("bedrock", deserializeModel)
+	provider.RegisterModelDeserializer("aws-bedrock", deserializeModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

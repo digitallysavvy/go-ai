@@ -1,4 +1,4 @@
-package google
+package azure
 
 import (
 	"encoding/json"
@@ -7,8 +7,7 @@ import (
 )
 
 func init() {
-	provider.RegisterModelDeserializer("google", deserializeModel)
-	provider.RegisterModelDeserializer("google.generative-ai", deserializeModel)
+	provider.RegisterModelDeserializer("azure-openai", deserializeModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

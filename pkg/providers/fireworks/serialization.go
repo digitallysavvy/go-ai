@@ -1,4 +1,4 @@
-package google
+package fireworks
 
 import (
 	"encoding/json"
@@ -7,8 +7,7 @@ import (
 )
 
 func init() {
-	provider.RegisterModelDeserializer("google", deserializeModel)
-	provider.RegisterModelDeserializer("google.generative-ai", deserializeModel)
+	provider.RegisterModelDeserializer("fireworks", deserializeModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {
