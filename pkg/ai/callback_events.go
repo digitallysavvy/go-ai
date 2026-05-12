@@ -43,9 +43,8 @@ type GenerateStepResponse struct {
 // OnStartEvent is emitted once when GenerateText or StreamText begins,
 // before any LLM call is made.
 //
-// Note on cancellation: the TypeScript SDK includes an abortSignal field on this
-// event. In Go, the ctx parameter passed to the callback serves this role —
-// pass ctx to any operations that should respect cancellation.
+// Cancellation is handled via the ctx parameter — pass ctx to any operations
+// that should respect cancellation.
 type OnStartEvent struct {
 	// CallID uniquely identifies this generation call. Use it to correlate
 	// OnStart, OnStepStart, OnStepFinish, and OnFinish events for the same call.
@@ -64,8 +63,20 @@ type OnStartEvent struct {
 	Messages []types.Message
 	Tools    []types.Tool
 
+	// ActiveTools limits which tool names are available in this generation.
+	ActiveTools []string
+
 	// Tool choice strategy for this generation.
 	ToolChoice types.ToolChoice
+
+	// MaxRetries is the maximum number of retries for failed requests.
+	MaxRetries int
+
+	// Headers are the additional HTTP headers sent with requests.
+	Headers map[string]string
+
+	// Output is the output specification for structured outputs, if configured.
+	Output interface{}
 
 	// Additional provider-specific options.
 	ProviderOptions map[string]interface{}
@@ -94,9 +105,8 @@ type OnStartEvent struct {
 // OnStepStartEvent is emitted at the beginning of each LLM step (before
 // calling the provider). StepNumber is 1-indexed.
 //
-// Note on cancellation: the TypeScript SDK includes an abortSignal field on this
-// event. In Go, the ctx parameter passed to the callback serves this role —
-// pass ctx to any operations that should respect cancellation.
+// Cancellation is handled via the ctx parameter — pass ctx to any operations
+// that should respect cancellation.
 type OnStepStartEvent struct {
 	// CallID correlates this event with the other events for this call.
 	CallID string
@@ -117,8 +127,17 @@ type OnStepStartEvent struct {
 	// Tools available in this step
 	Tools []types.Tool
 
-	// PreviousSteps contains results from all completed steps before this one.
-	// Empty for the first step.
+	// ActiveTools limits which tool names are available in this step.
+	ActiveTools []string
+
+	// Output is the output specification for structured outputs, if configured.
+	Output interface{}
+
+	// Steps contains results from all completed steps before this one. Empty for the first step.
+	Steps []types.StepResult
+
+	// PreviousSteps is an alias for Steps kept for backward compatibility.
+	// Deprecated: use Steps instead.
 	PreviousSteps []types.StepResult
 
 	// User-defined context flowing through the generation lifecycle.
@@ -130,9 +149,8 @@ type OnStepStartEvent struct {
 // OnToolCallStartEvent is emitted just before a tool's Execute function is
 // invoked. It fires once per tool call.
 //
-// Note on cancellation: the TypeScript SDK includes an abortSignal field on this
-// event. In Go, the ctx parameter passed to the callback serves this role —
-// pass ctx to any operations that should respect cancellation.
+// Cancellation is handled via the ctx parameter — pass ctx to any operations
+// that should respect cancellation.
 type OnToolCallStartEvent struct {
 	// CallID correlates this event with the generation call that triggered it.
 	CallID string
@@ -215,18 +233,40 @@ type OnStepFinishEvent struct {
 	// StepNumber is 1-indexed
 	StepNumber int
 
-	// Model provider and ID for this step
+	// Model identifies the provider and model that produced this step.
+	Model types.StepModel
+
+	// ModelProvider is the provider name. Deprecated: use Model.Provider.
 	ModelProvider string
-	ModelID       string
+	// ModelID is the model identifier. Deprecated: use Model.ModelID.
+	ModelID string
 
 	// Text produced by the model in this step
 	Text string
 
+	// Reasoning holds reasoning/thinking content parts from this step.
+	Reasoning []types.ReasoningContent
+
+	// ReasoningText is the concatenated reasoning text from this step.
+	ReasoningText string
+
 	// ToolCalls made by the model in this step
 	ToolCalls []types.ToolCall
 
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools.
+	StaticToolCalls []types.ToolCall
+
+	// DynamicToolCalls are tool calls from dynamically registered tools.
+	DynamicToolCalls []types.ToolCall
+
 	// ToolResults collected for this step
 	ToolResults []types.ToolResult
+
+	// StaticToolResults are results from non-dynamic (typed) tools.
+	StaticToolResults []types.ToolResult
+
+	// DynamicToolResults are results from dynamically registered tools.
+	DynamicToolResults []types.ToolResult
 
 	// FinishReason explains why the step ended
 	FinishReason types.FinishReason
@@ -238,33 +278,25 @@ type OnStepFinishEvent struct {
 	Warnings []types.Warning
 
 	// RawFinishReason is the raw finish reason string from the provider.
-	// Mirrors StepResult.rawFinishReason in the TypeScript SDK.
 	RawFinishReason string
 
 	// Sources contains citation or grounding references from this step.
-	// Mirrors StepResult.sources in the TypeScript SDK.
 	Sources []types.SourceContent
 
 	// Files contains model-generated output files from this step.
-	// Mirrors StepResult.files in the TypeScript SDK.
 	Files []types.GeneratedFileContent
 
 	// ProviderMetadata holds provider-specific metadata for this step.
-	// Mirrors StepResult.providerMetadata in the TypeScript SDK.
 	ProviderMetadata map[string]interface{}
 
-	// ResponseHeaders are the raw HTTP response headers from the provider for
-	// this step. Mirrors StepResult.response.headers in the TypeScript SDK.
-	// Nil for non-HTTP providers or when the provider did not emit headers.
+	// ResponseHeaders are the raw HTTP response headers.
 	// Deprecated: use Response.Headers instead.
 	ResponseHeaders map[string]string
 
 	// Request contains additional information about the request sent to the provider.
-	// Mirrors StepResult.request in the TypeScript SDK.
 	Request GenerateStepRequest
 
 	// Response contains additional information about the response from the provider.
-	// Mirrors StepResult.response in the TypeScript SDK.
 	Response GenerateStepResponse
 
 	// User-defined context flowing through the generation lifecycle.
@@ -279,60 +311,80 @@ type OnFinishEvent struct {
 	// CallID correlates this event with the other events for this call.
 	CallID string
 
+	// StepNumber is the step number of the final step.
+	StepNumber int
+
+	// Model identifies the provider and model that produced the final step.
+	Model types.StepModel
+
+	// ModelProvider is the provider name. Deprecated: use Model.Provider.
+	ModelProvider string
+	// ModelID is the model identifier. Deprecated: use Model.ModelID.
+	ModelID string
+
 	// Text is the final generated text
 	Text string
 
-	// ToolCalls aggregated across all steps
+	// Reasoning holds reasoning/thinking content parts from the final step.
+	Reasoning []types.ReasoningContent
+
+	// ReasoningText is the concatenated reasoning text from the final step.
+	ReasoningText string
+
+	// ToolCalls from the final step
 	ToolCalls []types.ToolCall
 
-	// ToolResults aggregated across all steps
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools in the final step.
+	StaticToolCalls []types.ToolCall
+
+	// DynamicToolCalls are tool calls from dynamically registered tools in the final step.
+	DynamicToolCalls []types.ToolCall
+
+	// ToolResults from the final step
 	ToolResults []types.ToolResult
+
+	// StaticToolResults are results from non-dynamic (typed) tools in the final step.
+	StaticToolResults []types.ToolResult
+
+	// DynamicToolResults are results from dynamically registered tools in the final step.
+	DynamicToolResults []types.ToolResult
 
 	// FinishReason of the last step
 	FinishReason types.FinishReason
 
 	// Usage is the token usage of the final (last) step.
-	// Mirrors OnFinishEvent.usage (inherited from StepResult) in the TypeScript SDK.
 	// For single-step generation, Usage == TotalUsage.
 	Usage types.Usage
 
-	// Steps contains the full result of every step
+	// Steps contains the full result of every step.
 	Steps []types.StepResult
 
-	// TotalUsage is the sum of token usage across all steps
+	// TotalUsage is the sum of token usage across all steps.
 	TotalUsage types.Usage
 
 	// RawFinishReason is the raw finish reason string from the provider.
-	// Mirrors OnFinishEvent.rawFinishReason in the TypeScript SDK.
 	RawFinishReason string
 
 	// Sources contains citation or grounding references from the final step.
-	// Mirrors OnFinishEvent.sources in the TypeScript SDK.
 	Sources []types.SourceContent
 
 	// Files contains model-generated output files from the final step.
-	// Mirrors OnFinishEvent.files in the TypeScript SDK.
 	Files []types.GeneratedFileContent
 
 	// ProviderMetadata holds provider-specific metadata from the final step.
-	// Mirrors OnFinishEvent.providerMetadata in the TypeScript SDK.
 	ProviderMetadata map[string]interface{}
 
 	// Warnings aggregated across all steps
 	Warnings []types.Warning
 
-	// ResponseHeaders are the raw HTTP response headers from the last provider
-	// call. Mirrors OnFinishEvent.response.headers in the TypeScript SDK.
-	// Nil for non-HTTP providers or when the provider did not emit headers.
+	// ResponseHeaders are the raw HTTP response headers from the last provider call.
 	// Deprecated: use Response.Headers instead.
 	ResponseHeaders map[string]string
 
 	// Request contains additional information about the last request sent.
-	// Mirrors OnFinishEvent.request in the TypeScript SDK.
 	Request GenerateStepRequest
 
 	// Response contains additional information about the last provider response.
-	// Mirrors OnFinishEvent.response in the TypeScript SDK.
 	Response GenerateStepResponse
 
 	// User-defined context in its final state after all steps.
@@ -340,3 +392,17 @@ type OnFinishEvent struct {
 	RuntimeContext      interface{}
 	ToolsContext        map[string]interface{}
 }
+
+// Canonical event type name aliases. The deprecated On* names remain for backward compatibility.
+
+// GenerateTextStartEvent is the canonical name for OnStartEvent.
+type GenerateTextStartEvent = OnStartEvent
+
+// GenerateTextStepStartEvent is the canonical name for OnStepStartEvent.
+type GenerateTextStepStartEvent = OnStepStartEvent
+
+// GenerateTextStepEndEvent is the canonical name for OnStepFinishEvent.
+type GenerateTextStepEndEvent = OnStepFinishEvent
+
+// GenerateTextEndEvent is the canonical name for OnFinishEvent.
+type GenerateTextEndEvent = OnFinishEvent
