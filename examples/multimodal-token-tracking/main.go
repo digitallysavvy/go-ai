@@ -32,7 +32,8 @@ func main() {
 		log.Fatalf("Failed to get model: %v", err)
 	}
 
-	fmt.Println("=== Multimodal Token Tracking Example ===\n")
+	fmt.Println("=== Multimodal Token Tracking Example ===")
+	fmt.Println()
 
 	// Example 1: Text-only request
 	fmt.Println("1. Text-only request:")
