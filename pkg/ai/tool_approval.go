@@ -68,23 +68,62 @@ func resolveToolApproval(
 ) types.ToolApprovalResult {
 	if toolApproval != nil {
 		switch v := toolApproval.(type) {
+		case types.GenericToolApprovalFunc:
+			return normalizeToolApprovalResult(v(types.ToolApprovalOptions{
+				ToolCall:       call,
+				Tools:          tools,
+				ToolsContext:   toolsCtx,
+				RuntimeContext: runtimeCtx,
+				Messages:       messages,
+			}))
 		case types.ToolApprovalFunc:
 			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx))
 		case map[string]interface{}:
 			if value, ok := v[call.ToolName]; ok {
-				if fn, ok := value.(types.ToolApprovalFunc); ok {
+				switch fn := value.(type) {
+				case types.SingleToolApprovalFunc:
+					toolCtx := toolsCtx[call.ToolName]
+					return normalizeToolApprovalResult(fn(call.Arguments, types.SingleToolApprovalOptions{
+						ToolContext:    toolCtx,
+						RuntimeContext: runtimeCtx,
+						ToolCallID:     call.ID,
+						Messages:       messages,
+					}))
+				case types.GenericToolApprovalFunc:
+					return normalizeToolApprovalResult(fn(types.ToolApprovalOptions{
+						ToolCall:       call,
+						Tools:          tools,
+						ToolsContext:   toolsCtx,
+						RuntimeContext: runtimeCtx,
+						Messages:       messages,
+					}))
+				case types.ToolApprovalFunc:
 					return normalizeToolApprovalResult(fn(call, tools, messages, runtimeCtx, toolsCtx))
-				}
-				if status, ok := value.(types.ToolApprovalStatus); ok {
-					return normalizeToolApprovalResult(status)
-				}
-				if status, ok := value.(string); ok {
-					return normalizeToolApprovalResult(types.ToolApprovalStatus(status))
+				case types.ToolApprovalStatus:
+					return normalizeToolApprovalResult(fn)
+				case string:
+					return normalizeToolApprovalResult(types.ToolApprovalStatus(fn))
 				}
 			}
 		case map[string]types.ToolApprovalValue:
 			if value, ok := v[call.ToolName]; ok {
 				switch x := value.(type) {
+				case types.SingleToolApprovalFunc:
+					toolCtx := toolsCtx[call.ToolName]
+					return normalizeToolApprovalResult(x(call.Arguments, types.SingleToolApprovalOptions{
+						ToolContext:    toolCtx,
+						RuntimeContext: runtimeCtx,
+						ToolCallID:     call.ID,
+						Messages:       messages,
+					}))
+				case types.GenericToolApprovalFunc:
+					return normalizeToolApprovalResult(x(types.ToolApprovalOptions{
+						ToolCall:       call,
+						Tools:          tools,
+						ToolsContext:   toolsCtx,
+						RuntimeContext: runtimeCtx,
+						Messages:       messages,
+					}))
 				case types.ToolApprovalFunc:
 					return normalizeToolApprovalResult(x(call, tools, messages, runtimeCtx, toolsCtx))
 				case types.ToolApprovalStatus:
