@@ -38,6 +38,9 @@ type AgentResult struct {
 	// Final text output
 	Text string
 
+	// Output is the parsed/structured final output when an output strategy is configured.
+	Output interface{}
+
 	// All steps taken by the agent
 	Steps []types.StepResult
 
@@ -90,6 +93,8 @@ type AgentGenerateOptions struct {
 	Reasoning        *types.ReasoningLevel
 	SendReasoning    *bool
 	ProviderOptions  map[string]interface{}
+	Output           interface{}
+	Telemetry        *ai.TelemetrySettings
 
 	OnStart          func(ctx context.Context, e ai.OnStartEvent)
 	OnStepStart      func(ctx context.Context, e ai.OnStepStartEvent)
@@ -251,6 +256,12 @@ type AgentConfig struct {
 
 	// ProviderOptions are provider-specific options keyed by provider name.
 	ProviderOptions map[string]interface{}
+
+	// Output specifies how to handle and parse model output during streaming.
+	Output interface{}
+
+	// Telemetry configures observability for this agent.
+	Telemetry *ai.TelemetrySettings
 
 	// Timeout provides granular timeout controls
 	// Supports total timeout, per-step timeout, and per-chunk timeout

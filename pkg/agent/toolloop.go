@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -221,6 +222,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		RuntimeContext:       callConfig.RuntimeContext,
 		ToolsContext:         callConfig.ToolsContext,
 		ExperimentalContext:  config.ExperimentalContext,
+		Output:               config.Output,
+		Telemetry:            config.Telemetry,
 		OnChunk:              opts.OnChunk,
 		OnStart:              cbs.onStart,
 		OnStepStart:          cbs.onStepStart,
@@ -547,6 +550,16 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if a.config.OnChainEnd != nil {
 		a.config.OnChainEnd(result)
 	}
+	if result.Output == nil {
+		output, err := parseAgentOutput(ctx, a.config.Output, result)
+		if err != nil {
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(err)
+			}
+			return nil, err
+		}
+		result.Output = output
+	}
 
 	// Call finish callback (legacy)
 	if a.config.OnFinish != nil {
@@ -684,6 +697,12 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.ProviderOptions != nil {
 		c.ProviderOptions = opts.ProviderOptions
 	}
+	if opts.Output != nil {
+		c.Output = opts.Output
+	}
+	if opts.Telemetry != nil {
+		c.Telemetry = opts.Telemetry
+	}
 	return c
 }
 
@@ -729,6 +748,48 @@ func defaultToolChoice(choice types.ToolChoice) types.ToolChoice {
 	return choice
 }
 
+type responseFormatProvider interface {
+	ResponseFormat(context.Context) (*provider.ResponseFormat, error)
+}
+
+func responseFormatForOutput(ctx context.Context, output interface{}) (*provider.ResponseFormat, error) {
+	if output == nil {
+		return nil, nil
+	}
+	if p, ok := output.(responseFormatProvider); ok {
+		return p.ResponseFormat(ctx)
+	}
+	return nil, nil
+}
+
+func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResult) (interface{}, error) {
+	if output == nil {
+		return result.Text, nil
+	}
+	method := reflect.ValueOf(output).MethodByName("ParseCompleteOutput")
+	if !method.IsValid() {
+		return result.Text, nil
+	}
+	args := []reflect.Value{
+		reflect.ValueOf(ctx),
+		reflect.ValueOf(ai.ParseCompleteOutputOptions{
+			Text:         result.Text,
+			Usage:        &result.Usage,
+			FinishReason: result.FinishReason,
+		}),
+	}
+	values := method.Call(args)
+	if len(values) != 2 {
+		return result.Text, nil
+	}
+	if !values[1].IsNil() {
+		if err, ok := values[1].Interface().(error); ok {
+			return nil, err
+		}
+	}
+	return values[0].Interface(), nil
+}
+
 // executeStep executes a single agent step
 func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig) (*types.StepResult, bool, interface{}, []types.Tool, error) {
 	// Apply per-step timeout if configured
@@ -742,6 +803,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	toolChoice := callConfig.ToolChoice
 	if toolChoice.Type == "" {
 		toolChoice = types.AutoToolChoice()
+	}
+
+	responseFormat, err := responseFormatForOutput(stepCtx, a.config.Output)
+	if err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
 	// Build generate options using potentially modified config
@@ -766,6 +832,8 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Reasoning:        callConfig.Reasoning,
 		SendReasoning:    callConfig.SendReasoning,
 		ProviderOptions:  callConfig.ProviderOptions,
+		Telemetry:        a.config.Telemetry,
+		ResponseFormat:   responseFormat,
 	}
 
 	// Call the model with step context
