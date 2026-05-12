@@ -260,21 +260,39 @@ type PrepareStepOptions struct {
 	AccumulatedUsage types.Usage
 }
 
-// GenerateTextResult contains the result of text generation
+// GenerateTextResult contains the result of text generation.
 type GenerateTextResult struct {
 	// Generated text content
 	Text string
+
+	// Reasoning holds the reasoning/thinking content from the final step.
+	Reasoning []types.ReasoningContent
+
+	// ReasoningText is the concatenated reasoning text from the final step.
+	ReasoningText string
 
 	// Output contains the parsed output when a WithOutput option was provided.
 	// Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
 	// Nil when no Output option was set.
 	Output any
 
-	// Tool calls made during generation
+	// Tool calls made during the final step
 	ToolCalls []types.ToolCall
 
-	// Tool results from executed tools
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools in the final step.
+	StaticToolCalls []types.ToolCall
+
+	// DynamicToolCalls are tool calls from dynamically registered tools in the final step.
+	DynamicToolCalls []types.ToolCall
+
+	// Tool results from the final step
 	ToolResults []types.ToolResult
+
+	// StaticToolResults are results from non-dynamic (typed) tools in the final step.
+	StaticToolResults []types.ToolResult
+
+	// DynamicToolResults are results from dynamically registered tools in the final step.
+	DynamicToolResults []types.ToolResult
 
 	// Steps taken during generation (for multi-step tool calling)
 	Steps []types.StepResult
@@ -282,15 +300,17 @@ type GenerateTextResult struct {
 	// Reason why generation finished
 	FinishReason types.FinishReason
 
+	// RawFinishReason is the raw finish reason string from the provider.
+	RawFinishReason string
+
 	// StopReason is the reason string from the StopCondition that stopped the loop.
 	// Empty if the loop ended naturally (model stopped calling tools).
 	StopReason string
 
-	// Token usage information
+	// Token usage information (last step)
 	Usage types.Usage
 
 	// Context management information (Anthropic-specific)
-	// Contains statistics about automatic conversation history cleanup
 	ContextManagement interface{}
 
 	// Warnings from the provider
@@ -300,25 +320,27 @@ type GenerateTextResult struct {
 	ProviderMetadata map[string]interface{}
 
 	// Sources contains citation or grounding references from the final generation step.
-	// Populated by providers such as Perplexity and Google Generative AI.
 	Sources []types.SourceContent
 
 	// Files contains model-generated output files (e.g. images, audio) from the final step.
 	Files []types.GeneratedFileContent
 
 	// TotalUsage is the sum of token usage across all steps.
-	// Mirrors GenerateTextResult.totalUsage in the TypeScript SDK.
 	// For single-step generation, TotalUsage == Usage.
-	// Use Steps[len-1].Usage to get the last step's usage independently.
 	TotalUsage types.Usage
 
-	// Raw request/response (for debugging)
+	// Request contains metadata about the last request sent to the provider.
+	Request types.StepRequest
+
+	// Response contains metadata about the last response from the provider.
+	Response types.StepResponse
+
+	// Raw request/response (for debugging). Deprecated: use Request.Body and Response.Body.
 	RawRequest  interface{}
 	RawResponse interface{}
 
 	// ResponseHeaders are the raw HTTP response headers from the provider.
-	// Populated for HTTP-based providers; nil for others.
-	// Mirrors result.response?.headers in the TypeScript SDK.
+	// Deprecated: use Response.Headers instead.
 	ResponseHeaders map[string]string
 }
 
@@ -392,6 +414,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
 		ToolChoice:          opts.ToolChoice,
+		Output:              opts.Output,
 		ProviderOptions:     opts.ProviderOptions,
 		Temperature:         opts.Temperature,
 		MaxTokens:           opts.MaxTokens,
@@ -445,7 +468,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			System:              opts.System,
 			Messages:            currentMessages,
 			Tools:               opts.Tools,
-			PreviousSteps:       result.Steps, // steps completed before this one
+			Steps:               result.Steps,
+			PreviousSteps:       result.Steps, // deprecated alias
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
@@ -540,19 +564,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ResponseID:    responseID,
 		})
 
-		// Extract sources and files from content parts
+		// Extract sources, files, and reasoning from content parts
 		var stepSources []types.SourceContent
 		var stepFiles []types.GeneratedFileContent
+		var stepReasoning []types.ReasoningContent
 		for _, part := range genResult.Content {
 			switch v := part.(type) {
 			case types.SourceContent:
 				stepSources = append(stepSources, v)
 			case types.GeneratedFileContent:
 				stepFiles = append(stepFiles, v)
+			case types.ReasoningContent:
+				stepReasoning = append(stepReasoning, v)
 			}
 		}
+		stepReasoningText := buildReasoningText(stepReasoning)
 
-		// Extract raw finish reason pragmatically from RawResponse (mirrors agent/toolloop.go).
+		// Extract raw finish reason from RawResponse.
 		var stepRawFinishReason string
 		if genResult.RawResponse != nil {
 			if respMap, ok := genResult.RawResponse.(map[string]interface{}); ok {
@@ -562,18 +590,38 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 
+		// Build response metadata for this step.
+		stepResp := generateStepResponseFromGenerateResult(opts.Model, genResult)
+
 		// Create step result
 		stepResult := types.StepResult{
-			StepNumber:       stepNum,
-			Text:             genResult.Text,
-			ToolCalls:        genResult.ToolCalls,
-			ToolResults:      []types.ToolResult{},
-			FinishReason:     genResult.FinishReason,
-			RawFinishReason:  stepRawFinishReason,
-			Usage:            genResult.Usage,
-			Warnings:         genResult.Warnings,
-			Sources:          stepSources,
+			CallID:          callID,
+			StepNumber:      stepNum,
+			Model:           types.StepModel{Provider: opts.Model.Provider(), ModelID: opts.Model.ModelID()},
+			Text:            genResult.Text,
+			Reasoning:       stepReasoning,
+			ReasoningText:   stepReasoningText,
+			Files:           stepFiles,
+			ToolCalls:       genResult.ToolCalls,
+			StaticToolCalls: filterStaticToolCalls(genResult.ToolCalls),
+			DynamicToolCalls: filterDynamicToolCalls(genResult.ToolCalls),
+			ToolResults:     []types.ToolResult{},
+			FinishReason:    genResult.FinishReason,
+			RawFinishReason: stepRawFinishReason,
+			Usage:           genResult.Usage,
+			Warnings:        genResult.Warnings,
+			Sources:         stepSources,
+			Request:         types.StepRequest{Body: genResult.RawRequest},
+			Response: types.StepResponse{
+				ID:        stepResp.ID,
+				Timestamp: stepResp.Timestamp,
+				ModelID:   stepResp.ModelID,
+				Headers:   stepResp.Headers,
+				Body:      stepResp.Body,
+			},
 			ProviderMetadata: genResult.ProviderMetadata,
+			ToolsContext:     toolsContext,
+			RuntimeContext:   runtimeContext,
 		}
 
 		// Update accumulated usage
@@ -617,6 +665,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 
 			stepResult.ToolResults = toolResults
+			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			for _, tr := range toolResults {
 				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
@@ -634,7 +684,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			)
 
 			// Build response messages: assistant + tool results.
-			// Mirrors StepResult.response.messages in the TypeScript SDK.
 			stepResponseMsgs := providerutils.ConvertToResponseMessages(
 				genResult.ToolCalls,
 				assistantMsg.Content,
@@ -642,11 +691,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			)
 			currentMessages = append(currentMessages, stepResponseMsgs...)
 			stepResult.ResponseMessages = stepResponseMsgs
+			stepResult.Response.Messages = stepResponseMsgs
 		} else {
 			// No more tool calls, we're done
 			result.Text = genResult.Text
+			result.Reasoning = stepReasoning
+			result.ReasoningText = stepReasoningText
 			result.FinishReason = genResult.FinishReason
+			result.RawFinishReason = stepRawFinishReason
 			result.ToolCalls = genResult.ToolCalls
+			result.StaticToolCalls = filterStaticToolCalls(genResult.ToolCalls)
+			result.DynamicToolCalls = filterDynamicToolCalls(genResult.ToolCalls)
 			result.Sources = stepSources
 			result.Files = stepFiles
 			result.ContextManagement = genResult.ContextManagement
@@ -655,14 +710,24 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.RawResponse = genResult.RawResponse
 			result.ResponseHeaders = genResult.ResponseHeaders
 			result.ProviderMetadata = genResult.ProviderMetadata
+			result.Request = types.StepRequest{Body: genResult.RawRequest}
+			result.Response = types.StepResponse{
+				ID:        stepResp.ID,
+				Timestamp: stepResp.Timestamp,
+				ModelID:   stepResp.ModelID,
+				Headers:   stepResp.Headers,
+				Body:      stepResp.Body,
+			}
 
-			// Build response message for this (final) step.
-			// Mirrors StepResult.response.messages in the TypeScript SDK.
-			stepResult.ResponseMessages = providerutils.ConvertToResponseMessages(
+			// Build response messages for this (final) step.
+			finalMsgs := providerutils.ConvertToResponseMessages(
 				genResult.ToolCalls,
 				[]types.ContentPart{types.TextContent{Text: genResult.Text}},
 				nil,
 			)
+			stepResult.ResponseMessages = finalMsgs
+			stepResult.Response.Messages = finalMsgs
+			result.Response.Messages = finalMsgs
 
 			// Parse typed output if an Output spec was provided.
 			// Only parse when generation finished cleanly; a 'length' finish means
@@ -719,24 +784,32 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Emit structured OnStepFinishEvent.
 		Notify(ctx, OnStepFinishEvent{
-			CallID:           callID,
-			StepNumber:       stepResult.StepNumber,
-			ModelProvider:    opts.Model.Provider(),
-			ModelID:          opts.Model.ModelID(),
-			Text:             stepResult.Text,
-			ToolCalls:        stepResult.ToolCalls,
-			ToolResults:      stepResult.ToolResults,
-			FinishReason:     stepResult.FinishReason,
-			RawFinishReason:  stepResult.RawFinishReason,
-			Usage:            stepResult.Usage,
-			Warnings:         stepResult.Warnings,
-			Sources:          stepResult.Sources,
-			Files:            stepFiles,
-			ProviderMetadata: stepResult.ProviderMetadata,
-			ResponseHeaders:  genResult.ResponseHeaders,
-			Request:          GenerateStepRequest{Body: genResult.RawRequest},
+			CallID:             callID,
+			StepNumber:         stepResult.StepNumber,
+			Model:              stepResult.Model,
+			ModelProvider:      opts.Model.Provider(),
+			ModelID:            opts.Model.ModelID(),
+			Text:               stepResult.Text,
+			Reasoning:          stepResult.Reasoning,
+			ReasoningText:      stepResult.ReasoningText,
+			ToolCalls:          stepResult.ToolCalls,
+			StaticToolCalls:    stepResult.StaticToolCalls,
+			DynamicToolCalls:   stepResult.DynamicToolCalls,
+			ToolResults:        stepResult.ToolResults,
+			StaticToolResults:  stepResult.StaticToolResults,
+			DynamicToolResults: stepResult.DynamicToolResults,
+			FinishReason:       stepResult.FinishReason,
+			RawFinishReason:    stepResult.RawFinishReason,
+			Usage:              stepResult.Usage,
+			Warnings:           stepResult.Warnings,
+			Sources:            stepResult.Sources,
+			Files:              stepResult.Files,
+			ProviderMetadata:   stepResult.ProviderMetadata,
+			ResponseHeaders:    genResult.ResponseHeaders,
+			Request:            GenerateStepRequest{Body: genResult.RawRequest},
 			Response: GenerateStepResponse{
-				Headers:  genResult.ResponseHeaders,
+				ID:       stepResult.Response.ID,
+				Headers:  stepResult.Response.Headers,
 				Messages: stepResult.ResponseMessages,
 				Body:     genResult.RawResponse,
 			},
@@ -862,38 +935,63 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		opts.OnFinish(ctx, result, runtimeContext)
 	}
 
-	// Populate TotalUsage (same as Usage for now; Usage = accumulated total).
-	// Mirrors GenerateTextResult.totalUsage in the TypeScript SDK.
+	// Populate TotalUsage: Usage accumulates across all steps so they are equal.
 	result.TotalUsage = result.Usage
 
 	// Emit structured OnFinishEvent.
 	// Usage = last step's usage; TotalUsage = sum across all steps.
 	var finishUsage types.Usage
 	var finishRawReason string
+	var lastModel types.StepModel
+	var lastStepNum int
+	var lastReasoning []types.ReasoningContent
+	var lastReasoningText string
+	var lastStaticCalls, lastDynamicCalls []types.ToolCall
+	var lastStaticResults, lastDynamicResults []types.ToolResult
 	if len(result.Steps) > 0 {
 		last := result.Steps[len(result.Steps)-1]
 		finishUsage = last.Usage
 		finishRawReason = last.RawFinishReason
+		lastModel = last.Model
+		lastStepNum = last.StepNumber
+		lastReasoning = last.Reasoning
+		lastReasoningText = last.ReasoningText
+		lastStaticCalls = last.StaticToolCalls
+		lastDynamicCalls = last.DynamicToolCalls
+		lastStaticResults = last.StaticToolResults
+		lastDynamicResults = last.DynamicToolResults
 	}
 	Notify(ctx, OnFinishEvent{
-		CallID:           callID,
-		Text:             result.Text,
-		ToolCalls:        result.ToolCalls,
-		ToolResults:      result.ToolResults,
-		FinishReason:     result.FinishReason,
-		RawFinishReason:  finishRawReason,
-		Usage:            finishUsage,
-		Steps:            result.Steps,
-		TotalUsage:       result.Usage,
-		Warnings:         result.Warnings,
-		Sources:          result.Sources,
-		Files:            result.Files,
-		ProviderMetadata: result.ProviderMetadata,
-		ResponseHeaders:  result.ResponseHeaders,
-		Request:          GenerateStepRequest{Body: result.RawRequest},
+		CallID:             callID,
+		StepNumber:         lastStepNum,
+		Model:              lastModel,
+		ModelProvider:      opts.Model.Provider(),
+		ModelID:            opts.Model.ModelID(),
+		Text:               result.Text,
+		Reasoning:          lastReasoning,
+		ReasoningText:      lastReasoningText,
+		ToolCalls:          result.ToolCalls,
+		StaticToolCalls:    lastStaticCalls,
+		DynamicToolCalls:   lastDynamicCalls,
+		ToolResults:        result.ToolResults,
+		StaticToolResults:  lastStaticResults,
+		DynamicToolResults: lastDynamicResults,
+		FinishReason:       result.FinishReason,
+		RawFinishReason:    finishRawReason,
+		Usage:              finishUsage,
+		Steps:              result.Steps,
+		TotalUsage:         result.Usage,
+		Warnings:           result.Warnings,
+		Sources:            result.Sources,
+		Files:              result.Files,
+		ProviderMetadata:   result.ProviderMetadata,
+		ResponseHeaders:    result.ResponseHeaders,
+		Request:            GenerateStepRequest{Body: result.RawRequest},
 		Response: GenerateStepResponse{
-			Headers: result.ResponseHeaders,
-			Body:    result.RawResponse,
+			ID:       result.Response.ID,
+			Headers:  result.ResponseHeaders,
+			Messages: result.Response.Messages,
+			Body:     result.RawResponse,
 		},
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
@@ -1218,4 +1316,62 @@ func buildPrompt(promptText string, messages []types.Message, system string) typ
 	}
 
 	return types.Prompt{}
+}
+
+// buildReasoningText concatenates the text from reasoning content parts.
+func buildReasoningText(parts []types.ReasoningContent) string {
+	var sb strings.Builder
+	for _, p := range parts {
+		if p.Text != "" {
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
+}
+
+// filterStaticToolCalls returns tool calls where Dynamic is false.
+func filterStaticToolCalls(calls []types.ToolCall) []types.ToolCall {
+	var out []types.ToolCall
+	for _, c := range calls {
+		if !c.Dynamic {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterDynamicToolCalls returns tool calls where Dynamic is true.
+func filterDynamicToolCalls(calls []types.ToolCall) []types.ToolCall {
+	var out []types.ToolCall
+	for _, c := range calls {
+		if c.Dynamic {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterStaticToolResults returns tool results where Dynamic is false.
+func filterStaticToolResults(results []types.ToolResult) []types.ToolResult {
+	var out []types.ToolResult
+	for _, r := range results {
+		if !r.Dynamic {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// filterDynamicToolResults returns tool results where Dynamic is true.
+func filterDynamicToolResults(results []types.ToolResult) []types.ToolResult {
+	var out []types.ToolResult
+	for _, r := range results {
+		if r.Dynamic {
+			out = append(out, r)
+		}
+	}
+	return out
 }

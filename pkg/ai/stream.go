@@ -241,8 +241,16 @@ type StreamTextResult struct {
 	files []types.GeneratedFileContent
 
 	// responseHeaders accumulated from ChunkTypeResponseMetadata chunks.
-	// Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
 	responseHeaders map[string]string
+
+	// rawFinishReason is the raw finish reason string from the provider.
+	rawFinishReason string
+
+	// stepRequest holds the last request metadata for the Request() accessor.
+	stepRequest types.StepRequest
+
+	// stepResponse holds the last response metadata for the Response() accessor.
+	stepResponse types.StepResponse
 
 	// Structured event callbacks (v6.1)
 	// Stored here so processStream can fire them when the stream completes.
@@ -338,6 +346,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
 		ToolChoice:          opts.ToolChoice,
+		Output:              opts.Output,
 		ProviderOptions:     opts.ProviderOptions,
 		Temperature:         opts.Temperature,
 		MaxTokens:           opts.MaxTokens,
@@ -511,6 +520,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// All Execute() calls happen after the stream loop ends.
 		var stepTextParts []string
 		var stepToolCalls []types.ToolCall
+		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
 		// result inline in this step's stream (used for the deferred hasResult check).
@@ -574,6 +584,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						}
 					}
 				}
+			}
+
+			// Accumulate reasoning text from reasoning chunks.
+			if chunk.Type == provider.ChunkTypeReasoning && chunk.Text != "" {
+				stepReasoningBuilder.WriteString(chunk.Text)
 			}
 
 			// Accumulate tool call chunks without executing until the stream is consumed.
@@ -741,17 +756,45 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		r.mu.Unlock()
 
+		// Build reasoning content from deltas accumulated during this step.
+		var stepReasoning []types.ReasoningContent
+		if stepReasoningBuilder.Len() > 0 {
+			stepReasoning = []types.ReasoningContent{{Text: stepReasoningBuilder.String()}}
+		}
+
+		stepRawFinishReason := ""
+
+		// Build response headers snapshot.
+		r.mu.Lock()
+		stepHeaders := make(map[string]string, len(r.responseHeaders))
+		for k, v := range r.responseHeaders {
+			stepHeaders[k] = v
+		}
+		r.mu.Unlock()
+
 		// Record this step. For multi-step streaming, r.text accumulates across steps;
 		// use the current snapshot as the step's text.
 		stepResult := types.StepResult{
-			StepNumber:       stepNum,
-			Text:             stepText,
-			ToolCalls:        stepToolCalls,
-			ToolResults:      stepToolResults,
-			FinishReason:     r.finishReason,
-			Usage:            r.usage,
-			Sources:          r.sources,
-			ProviderMetadata: stepProviderMeta,
+			CallID:             r.cbCallID,
+			StepNumber:         stepNum,
+			Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
+			Text:               stepText,
+			Reasoning:          stepReasoning,
+			ReasoningText:      buildReasoningText(stepReasoning),
+			ToolCalls:          stepToolCalls,
+			StaticToolCalls:    filterStaticToolCalls(stepToolCalls),
+			DynamicToolCalls:   filterDynamicToolCalls(stepToolCalls),
+			ToolResults:        stepToolResults,
+			StaticToolResults:  filterStaticToolResults(stepToolResults),
+			DynamicToolResults: filterDynamicToolResults(stepToolResults),
+			FinishReason:       r.finishReason,
+			RawFinishReason:    stepRawFinishReason,
+			Usage:              r.usage,
+			Sources:            r.sources,
+			Response:           types.StepResponse{Headers: stepHeaders},
+			ProviderMetadata:   stepProviderMeta,
+			ToolsContext:       r.cbToolsCtx,
+			RuntimeContext:     r.cbRuntimeCtx,
 		}
 		allSteps = append(allSteps, stepResult)
 
@@ -791,7 +834,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Populate ResponseMessages on the step that just completed.
-		// Mirrors StepResult.response.messages in the TypeScript SDK.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
 			stepToolCalls,
 			[]types.ContentPart{types.TextContent{Text: stepText}},
@@ -799,6 +841,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		)
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
+		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
 
 		if hasUserApproval {
 			break
@@ -970,13 +1013,24 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	// Emit per-step finish events and use the last step for the single-step path.
 	lastStep := types.StepResult{
-		StepNumber:       1,
-		Text:             r.text,
-		ToolCalls:        finalToolCalls,
-		ToolResults:      finalToolResults,
-		FinishReason:     r.finishReason,
-		Usage:            r.usage,
-		ProviderMetadata: finalProviderMeta,
+		CallID:             r.cbCallID,
+		StepNumber:         1,
+		Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
+		Text:               r.text,
+		ToolCalls:          finalToolCalls,
+		StaticToolCalls:    filterStaticToolCalls(finalToolCalls),
+		DynamicToolCalls:   filterDynamicToolCalls(finalToolCalls),
+		ToolResults:        finalToolResults,
+		StaticToolResults:  filterStaticToolResults(finalToolResults),
+		DynamicToolResults: filterDynamicToolResults(finalToolResults),
+		FinishReason:       r.finishReason,
+		RawFinishReason:    r.rawFinishReason,
+		Usage:              r.usage,
+		Sources:            r.sources,
+		ProviderMetadata:   finalProviderMeta,
+		Response:           types.StepResponse{Headers: r.responseHeaders},
+		ToolsContext:       r.cbToolsCtx,
+		RuntimeContext:     r.cbRuntimeCtx,
 		ResponseMessages: providerutils.ConvertToResponseMessages(
 			finalToolCalls,
 			[]types.ContentPart{types.TextContent{Text: r.text}},
@@ -987,21 +1041,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		lastStep = allSteps[len(allSteps)-1]
 	}
 	Notify(ctx, OnStepFinishEvent{
-		CallID:           r.cbCallID,
-		StepNumber:       lastStep.StepNumber,
-		ModelProvider:    r.cbModelProvider,
-		ModelID:          r.cbModelID,
-		Text:             lastStep.Text,
-		ToolCalls:        lastStep.ToolCalls,
-		ToolResults:      lastStep.ToolResults,
-		FinishReason:     lastStep.FinishReason,
-		RawFinishReason:  lastStep.RawFinishReason,
-		Usage:            lastStep.Usage,
-		Warnings:         streamWarnings,
-		Sources:          lastStep.Sources,
-		Files:            streamFiles,
-		ProviderMetadata: lastStep.ProviderMetadata,
-		ResponseHeaders:  r.responseHeaders,
+		CallID:             r.cbCallID,
+		StepNumber:         lastStep.StepNumber,
+		Model:              lastStep.Model,
+		ModelProvider:      r.cbModelProvider,
+		ModelID:            r.cbModelID,
+		Text:               lastStep.Text,
+		Reasoning:          lastStep.Reasoning,
+		ReasoningText:      lastStep.ReasoningText,
+		ToolCalls:          lastStep.ToolCalls,
+		StaticToolCalls:    lastStep.StaticToolCalls,
+		DynamicToolCalls:   lastStep.DynamicToolCalls,
+		ToolResults:        lastStep.ToolResults,
+		StaticToolResults:  lastStep.StaticToolResults,
+		DynamicToolResults: lastStep.DynamicToolResults,
+		FinishReason:       lastStep.FinishReason,
+		RawFinishReason:    lastStep.RawFinishReason,
+		Usage:              lastStep.Usage,
+		Warnings:           streamWarnings,
+		Sources:            lastStep.Sources,
+		Files:              streamFiles,
+		ProviderMetadata:   lastStep.ProviderMetadata,
+		ResponseHeaders:    r.responseHeaders,
 		Response: GenerateStepResponse{
 			Headers:  r.responseHeaders,
 			Messages: lastStep.ResponseMessages,
@@ -1016,20 +1077,30 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepsForEvent = []types.StepResult{lastStep}
 	}
 	Notify(ctx, OnFinishEvent{
-		CallID:           r.cbCallID,
-		Text:             r.text,
-		ToolCalls:        finalToolCalls,
-		ToolResults:      finalToolResults,
-		FinishReason:     r.finishReason,
-		RawFinishReason:  lastStep.RawFinishReason,
-		Usage:            lastStep.Usage,
-		Steps:            stepsForEvent,
-		TotalUsage:       r.usage,
-		Warnings:         streamWarnings,
-		Sources:          streamSources,
-		Files:            streamFiles,
-		ProviderMetadata: lastStep.ProviderMetadata,
-		ResponseHeaders:  r.responseHeaders,
+		CallID:             r.cbCallID,
+		StepNumber:         lastStep.StepNumber,
+		Model:              lastStep.Model,
+		ModelProvider:      r.cbModelProvider,
+		ModelID:            r.cbModelID,
+		Text:               r.text,
+		Reasoning:          lastStep.Reasoning,
+		ReasoningText:      lastStep.ReasoningText,
+		ToolCalls:          finalToolCalls,
+		StaticToolCalls:    filterStaticToolCalls(finalToolCalls),
+		DynamicToolCalls:   filterDynamicToolCalls(finalToolCalls),
+		ToolResults:        finalToolResults,
+		StaticToolResults:  filterStaticToolResults(finalToolResults),
+		DynamicToolResults: filterDynamicToolResults(finalToolResults),
+		FinishReason:       r.finishReason,
+		RawFinishReason:    lastStep.RawFinishReason,
+		Usage:              lastStep.Usage,
+		Steps:              stepsForEvent,
+		TotalUsage:         r.usage,
+		Warnings:           streamWarnings,
+		Sources:            streamSources,
+		Files:              streamFiles,
+		ProviderMetadata:   lastStep.ProviderMetadata,
+		ResponseHeaders:    r.responseHeaders,
 		Response: GenerateStepResponse{
 			Headers:  r.responseHeaders,
 			Messages: lastStep.ResponseMessages,
@@ -1132,6 +1203,68 @@ func (r *StreamTextResult) PartialOutput() any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.partialOutput
+}
+
+// StaticToolCalls returns tool calls from non-dynamic (typed) tools.
+// Only populated after stream completes.
+func (r *StreamTextResult) StaticToolCalls() []types.ToolCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return filterStaticToolCalls(r.toolCalls)
+}
+
+// DynamicToolCalls returns tool calls from dynamically registered tools.
+// Only populated after stream completes.
+func (r *StreamTextResult) DynamicToolCalls() []types.ToolCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return filterDynamicToolCalls(r.toolCalls)
+}
+
+// StaticToolResults returns results from non-dynamic (typed) tools.
+// Only populated after stream completes.
+func (r *StreamTextResult) StaticToolResults() []types.ToolResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return filterStaticToolResults(r.toolResults)
+}
+
+// DynamicToolResults returns results from dynamically registered tools.
+// Only populated after stream completes.
+func (r *StreamTextResult) DynamicToolResults() []types.ToolResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return filterDynamicToolResults(r.toolResults)
+}
+
+// RawFinishReason returns the raw finish reason string from the provider.
+// Only available after stream completes.
+func (r *StreamTextResult) RawFinishReason() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rawFinishReason
+}
+
+// ResponseHeaders returns the raw HTTP response headers from the provider.
+// Only available after stream completes.
+func (r *StreamTextResult) ResponseHeadersMap() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.responseHeaders
+}
+
+// Request returns metadata about the last request sent to the provider.
+func (r *StreamTextResult) Request() types.StepRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stepRequest
+}
+
+// Response returns metadata about the last response from the provider.
+func (r *StreamTextResult) Response() types.StepResponse {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stepResponse
 }
 
 // Status returns the current lifecycle state of the stream.
@@ -1376,7 +1509,6 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 
 // ResponseHeaders returns the raw HTTP response headers received from the provider.
 // Populated once a ChunkTypeResponseMetadata chunk has been processed.
-// Mirrors LanguageModelResponseMetadata.headers in the TypeScript SDK.
 func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	return r.responseHeaders
 }
