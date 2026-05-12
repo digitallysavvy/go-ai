@@ -1,0 +1,123 @@
+---
+title: WorkflowAgent
+description: Durable, serializable workflow execution with run-scoped streaming.
+---
+
+# WorkflowAgent
+
+`pkg/workflow` provides a workflow-oriented agent surface for durable execution scenarios.
+It mirrors the TypeScript `@ai-sdk/workflow` package with Go option structs instead of
+JavaScript overloads.
+
+## Key Types
+
+- `workflow.WorkflowAgent`
+- `workflow.WorkflowResult`
+- `workflow.WorkflowStreamResult`
+- `workflow.WorkflowChatTransport`
+- `workflow.StreamTextIterator`
+- `workflow.SerializableToolDef`
+
+## Constructor
+
+```go
+agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
+  ID: "support-agent",
+  Model: model,
+  Instructions: "You are a support assistant.",
+  Tools: []types.Tool{...},
+  StopWhen: []ai.StopCondition{ai.IsStepCount(20)},
+  ActiveTools: []string{"search"},
+  Telemetry: &ai.TelemetrySettings{FunctionID: "support-agent"},
+})
+```
+
+`System` is still accepted for compatibility, but `Instructions` is the preferred name.
+`Instructions` accepts a string, a system `types.Message`, or a slice of system messages.
+Tools can be supplied as either a `[]types.Tool` or a TypeScript-style keyed `ToolSet`
+using `map[string]types.Tool`; missing tool names are filled from the map key.
+`MaxSteps` is intentionally not part of `WorkflowAgent`; use `StopWhen` with
+`ai.IsStepCount(n)`.
+
+## Generate
+
+```go
+result, err := agent.GenerateWithOptions(ctx, workflow.WorkflowGenerateOptions{
+  Prompt: "Help me debug this issue",
+  OnError: func(ctx context.Context, err error) {
+    log.Printf("workflow error: %v", err)
+  },
+})
+if err != nil {
+  return err
+}
+_ = result.IsLoopFinished()
+_ = result.Output
+```
+
+When `Output` is an `ai.Output` specification, `GenerateWithOptions` forwards its
+response format to the model and parses the final text into `WorkflowResult.Output`.
+
+## Stream
+
+```go
+streamResult, err := agent.StreamWithOptions(ctx, workflow.WorkflowStreamOptions{
+  Prompt: "Walk me through this fix",
+  ActiveTools: []string{"search", "final_answer"},
+  OnAbort: func(ctx context.Context, steps []types.StepResult) {
+    log.Printf("aborted after %d steps", len(steps))
+  },
+})
+if err != nil {
+  return err
+}
+```
+
+## Chat Transport
+
+`WorkflowChatTransport` is an `http.Handler` that emits run-scoped SSE and supports reattaching to a run:
+
+```go
+transport := &workflow.WorkflowChatTransport{}
+http.Handle("/api/workflow", transport)
+http.Handle("/api/workflow/resume", transport.Resume(runID))
+```
+
+`Resume` supports `startIndex` query parameter (including negative tail-relative offsets).
+
+The same transport can act as the Go client-side equivalent of the TypeScript
+`WorkflowChatTransport`:
+
+```go
+transport := workflow.NewWorkflowChatTransport(workflow.WorkflowChatTransportOptions{
+  API: "https://example.com/api/chat",
+})
+
+events, err := transport.SendMessages(ctx, workflow.SendMessagesOptions{
+  ChatID: "chat-1",
+  Trigger: "submit-message",
+  Messages: messages,
+})
+
+events, err = transport.ReconnectToStream(ctx, workflow.ReconnectToStreamOptions{
+  RunID: "run-1",
+  ChatID: "chat-1",
+  StartIndex: -10,
+})
+```
+
+## Serializable Schemas And Tools
+
+Use `workflow.MarshalSchema` and `workflow.UnmarshalSchema` for JSON Schema round trips.
+Use `workflow.SerializeToolSet` to strip function fields from tool definitions before
+crossing a workflow boundary, then `workflow.ResolveSerializableTools` to restore
+non-executable tool descriptors in the resumed step.
+Use `workflow.ValidateSerializableToolInput` to validate reconstructed tool inputs
+against the serialized JSON Schema before executing an attached Go function.
+
+## Provider Serialization
+
+`providerutils.SerializeModel` returns a JSON-safe map containing `provider`, `modelId`,
+and `config`. Provider auth fields and function-valued fields are omitted. Use
+`providerutils.DeserializeModel(providerID, modelID, config)` after importing the target
+provider package so its deserializer is registered.
