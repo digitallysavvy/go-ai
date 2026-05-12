@@ -334,6 +334,71 @@ func TestGoogleVertexFinishMessageInMetadata(t *testing.T) {
 	}
 }
 
+func TestGoogleVertexServiceTierForwarding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if reqBody["serviceTier"] != "SERVICE_TIER_FLEX" {
+			t.Fatalf("serviceTier = %#v, want SERVICE_TIER_FLEX", reqBody["serviceTier"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"serviceTier": "SERVICE_TIER_FLEX",
+			"candidates": [{
+				"content": {"parts": [{"text": "ok"}], "role": "model"},
+				"finishReason": "STOP",
+				"index": 0
+			}],
+			"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+		}`))
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "test-token",
+		BaseURL:     server.URL,
+	})
+	if err != nil {
+		t.Fatalf("provider init: %v", err)
+	}
+
+	model, err := prov.LanguageModel("gemini-1.5-flash")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"vertex": map[string]interface{}{
+				"serviceTier": "SERVICE_TIER_FLEX",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	meta, ok := result.ProviderMetadata["vertex"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatalf("provider metadata vertex missing: %#v", result.ProviderMetadata)
+	}
+	var tier string
+	if err := json.Unmarshal(meta["serviceTier"], &tier); err != nil {
+		t.Fatalf("unmarshal metadata serviceTier: %v", err)
+	}
+	if tier != "SERVICE_TIER_FLEX" {
+		t.Fatalf("metadata serviceTier = %q", tier)
+	}
+}
+
 // Integration tests with real Vertex AI API (requires credentials).
 
 func TestVertexLanguageModel_GenerateText_Integration(t *testing.T) {

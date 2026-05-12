@@ -37,6 +37,11 @@ type Config struct {
 
 // New creates a new Azure OpenAI provider with the given configuration
 func New(cfg Config) *Provider {
+	apiVersion := cfg.APIVersion
+	if apiVersion == "" {
+		apiVersion = "2024-02-15-preview"
+	}
+
 	// Build base URL if not provided
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -55,7 +60,14 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
+		config: Config{
+			APIKey:       cfg.APIKey,
+			ResourceName: cfg.ResourceName,
+			DeploymentID: cfg.DeploymentID,
+			APIVersion:   apiVersion,
+			BaseURL:      cfg.BaseURL,
+			Headers:      cfg.Headers,
+		},
 		client: client,
 	}
 }
