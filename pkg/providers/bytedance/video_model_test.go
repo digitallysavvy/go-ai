@@ -15,8 +15,8 @@ import (
 
 // testServer holds a mock HTTP server and request tracking
 type testServer struct {
-	server       *httptest.Server
-	requests     []*recordedRequest
+	server     *httptest.Server
+	requests   []*recordedRequest
 	createBody map[string]interface{}
 }
 
@@ -580,6 +580,62 @@ func TestProviderOptions_ReferenceImages(t *testing.T) {
 		if imgURL["url"] != refURL {
 			t.Errorf("item %d: expected URL %s, got %v", i+1, refURL, imgURL["url"])
 		}
+	}
+}
+
+func TestProviderOptions_ReferenceVideos(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "dreamina-seedance-2-0-260128")
+
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test prompt",
+		N:      1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{
+				"referenceVideos": []string{"https://example.com/ref1.mp4", "https://example.com/ref2.mp4"},
+				"pollIntervalMs":  10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := ts.createBody["content"].([]interface{})
+	last := content[len(content)-1].(map[string]interface{})
+	if last["role"] != "reference_video" {
+		t.Fatalf("expected reference_video role, got %v", last["role"])
+	}
+}
+
+func TestProviderOptions_ReferenceAudio(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "dreamina-seedance-2-0-260128")
+
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test prompt",
+		N:      1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{
+				"referenceAudio": []string{"https://example.com/audio1.mp3"},
+				"pollIntervalMs": 10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := ts.createBody["content"].([]interface{})
+	last := content[len(content)-1].(map[string]interface{})
+	if last["role"] != "reference_audio" {
+		t.Fatalf("expected reference_audio role, got %v", last["role"])
 	}
 }
 

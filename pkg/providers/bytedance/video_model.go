@@ -212,6 +212,28 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		})
 	}
 
+	// Add reference videos if provided
+	for _, refURL := range provOpts.ReferenceVideos {
+		content = append(content, map[string]interface{}{
+			"type": "video_url",
+			"video_url": map[string]interface{}{
+				"url": refURL,
+			},
+			"role": "reference_video",
+		})
+	}
+
+	// Add reference audio if provided
+	for _, refURL := range provOpts.ReferenceAudio {
+		content = append(content, map[string]interface{}{
+			"type": "audio_url",
+			"audio_url": map[string]interface{}{
+				"url": refURL,
+			},
+			"role": "reference_audio",
+		})
+	}
+
 	body := map[string]interface{}{
 		"model":   m.modelID,
 		"content": content,
@@ -419,6 +441,8 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 		"draft":           true,
 		"lastFrameImage":  true,
 		"referenceImages": true,
+		"referenceVideos": true,
+		"referenceAudio":  true,
 		"pollIntervalMs":  true,
 		"pollTimeoutMs":   true,
 	}
@@ -454,11 +478,11 @@ type taskCreateResponse struct {
 
 // taskStatusResponse is the response from task status polling
 type taskStatusResponse struct {
-	ID      string              `json:"id"`
-	Model   string              `json:"model"`
-	Status  string              `json:"status"`
-	Content *taskContentField   `json:"content"`
-	Usage   *taskUsageField     `json:"usage"`
+	ID      string            `json:"id"`
+	Model   string            `json:"model"`
+	Status  string            `json:"status"`
+	Content *taskContentField `json:"content"`
+	Usage   *taskUsageField   `json:"usage"`
 }
 
 // taskContentField holds the video URL in the status response

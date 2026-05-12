@@ -4,6 +4,12 @@ package bytedance
 type ByteDanceVideoModelID string
 
 const (
+	// ModelDreaminaSeedance20Fast is the Dreamina Seedance 2.0 Fast model
+	ModelDreaminaSeedance20Fast ByteDanceVideoModelID = "dreamina-seedance-2-0-fast-260128"
+
+	// ModelDreaminaSeedance20 is the Dreamina Seedance 2.0 model
+	ModelDreaminaSeedance20 ByteDanceVideoModelID = "dreamina-seedance-2-0-260128"
+
 	// ModelSeedance15Pro is the Seedance 1.5 Pro model (latest)
 	ModelSeedance15Pro ByteDanceVideoModelID = "seedance-1-5-pro-251215"
 
@@ -45,6 +51,12 @@ type ProviderOptions struct {
 
 	// ReferenceImages are URLs for reference images
 	ReferenceImages []string `json:"referenceImages,omitempty"`
+
+	// ReferenceVideos are URLs for reference videos
+	ReferenceVideos []string `json:"referenceVideos,omitempty"`
+
+	// ReferenceAudio are URLs for reference audio inputs
+	ReferenceAudio []string `json:"referenceAudio,omitempty"`
 
 	// PollIntervalMs is the polling interval in milliseconds (default: 3000)
 	PollIntervalMs *int `json:"pollIntervalMs,omitempty"`
