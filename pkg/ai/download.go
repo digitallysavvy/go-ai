@@ -6,6 +6,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 )
 
+var downloadURLValidator = validateDownloadURL
+
 // DownloadFunction is a function that downloads a file from a URL.
 type DownloadFunction func(ctx context.Context, url string) ([]byte, error)
 
@@ -54,7 +56,7 @@ func CreateDownload(options *DownloadOptions) DownloadFunction {
 			opts.Headers = options.Headers
 		}
 
-		opts.URLValidator = validateDownloadURL
+		opts.URLValidator = downloadURLValidator
 
 		return fileutil.Download(ctx, url, opts)
 	}

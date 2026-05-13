@@ -2,6 +2,9 @@ package ai
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -46,4 +49,64 @@ func TestDefaultDownloadUsesCreateDownloadBehavior(t *testing.T) {
 	if !strings.Contains(err.Error(), "localhost") && !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
+	restore := downloadURLValidator
+	downloadURLValidator = func(string) error { return nil }
+	t.Cleanup(func() { downloadURLValidator = restore })
+
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Test-Header"); got != "value" {
+			t.Fatalf("X-Test-Header = %q, want value", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	download := CreateDownload(&DownloadOptions{
+		Headers: map[string]string{"X-Test-Header": "value"},
+	})
+
+	data, err := download(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("download error = %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("download data = %q, want ok", string(data))
+	}
+}
+
+func TestCreateDownloadHonorsMaxBytes(t *testing.T) {
+	restore := downloadURLValidator
+	downloadURLValidator = func(string) error { return nil }
+	t.Cleanup(func() { downloadURLValidator = restore })
+
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("x", 20)))
+	}))
+	defer server.Close()
+
+	download := CreateDownload(&DownloadOptions{MaxBytes: 10})
+	_, err := download(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("expected max-bytes error")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum size") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewUnstartedServer(handler)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen tcp4 error = %v", err)
+	}
+	server.Listener = listener
+	server.Start()
+	return server
 }
