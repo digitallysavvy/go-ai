@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -86,5 +87,38 @@ func TestUploadFile_MissingAPI(t *testing.T) {
 	_, err := UploadFile(context.Background(), struct{}{}, UploadFileOptions{Data: []byte{1}})
 	if !errors.Is(err, ErrFilesAPINotSupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type mockFilesProvider struct {
+	files provider.FilesAPI
+}
+
+func (m mockFilesProvider) Files() provider.FilesAPI { return m.files }
+
+func TestResolveFilesAPIAndTypeDetectionHelpers(t *testing.T) {
+	api := &mockFilesAPI{res: &types.UploadFileResult{ProviderReference: types.ProviderReference{"mock": "file_1"}}}
+	resolved, err := resolveFilesAPI(mockFilesProvider{files: api})
+	if err != nil {
+		t.Fatalf("resolveFilesAPI(FilesProvider) error = %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("resolveFilesAPI(FilesProvider) should return FilesAPI")
+	}
+	if _, err := resolveFilesAPI(mockFilesProvider{files: nil}); !errors.Is(err, ErrFilesAPINotSupported) {
+		t.Fatalf("resolveFilesAPI(nil Files()) error = %v", err)
+	}
+
+	if got := detectUploadMediaType([]byte("plain text")); got != "text/plain" {
+		t.Fatalf("detectUploadMediaType(text) = %q", got)
+	}
+	if got := detectUploadMediaType([]byte{0x00, 0xFF, 0x10, 0x00}); got != "application/octet-stream" {
+		t.Fatalf("detectUploadMediaType(binary) = %q", got)
+	}
+	if !isLikelyText([]byte("hello\tworld\n")) {
+		t.Fatal("isLikelyText(printable) = false, want true")
+	}
+	if isLikelyText([]byte{0x00, 0x01}) {
+		t.Fatal("isLikelyText(binary) = true, want false")
 	}
 }

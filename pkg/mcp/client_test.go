@@ -70,6 +70,82 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 		}
 	}
 
+	if msg.Method == "tools/call" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := CallToolResult{
+			Content: []ToolResultContent{
+				{Type: "text", Text: "tool-ok"},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
+	if msg.Method == "resources/list" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := ListResourcesResult{
+			Resources: []MCPResource{
+				{Name: "r1", URI: "file://r1.txt"},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
+	if msg.Method == "resources/read" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := ReadResourceResult{
+			Contents: []ResourceContent{
+				{URI: "file://r1.txt", Text: "hello"},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
+	if msg.Method == "prompts/list" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := ListPromptsResult{
+			Prompts: []MCPPrompt{
+				{Name: "p1", Description: "prompt one"},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
+	if msg.Method == "prompts/get" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := GetPromptResult{
+			Description: "prompt one",
+			Messages: []PromptMessage{
+				{Role: "user", Content: PromptContent{Type: "text", Text: "hello"}},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
 	// Simulate initialize response
 	if msg.Method == "initialize" {
 		response := &MCPMessage{
@@ -99,6 +175,64 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	}
 
 	return nil
+}
+
+func TestMCPClient_CallToolResourcesAndPrompts(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{
+		ClientName:    "test-client",
+		ClientVersion: "1.0.0",
+	})
+
+	ctx := context.Background()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	toolRes, err := client.CallTool(ctx, "test-tool", map[string]interface{}{"input": "x"})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	if len(toolRes.Content) != 1 || toolRes.Content[0].Text != "tool-ok" {
+		t.Fatalf("CallTool content = %#v", toolRes.Content)
+	}
+
+	resources, err := client.ListResources(ctx)
+	if err != nil {
+		t.Fatalf("ListResources failed: %v", err)
+	}
+	if len(resources) != 1 || resources[0].Name != "r1" {
+		t.Fatalf("ListResources = %#v", resources)
+	}
+
+	resource, err := client.ReadResource(ctx, "file://r1.txt")
+	if err != nil {
+		t.Fatalf("ReadResource failed: %v", err)
+	}
+	if len(resource.Contents) != 1 || resource.Contents[0].Text != "hello" {
+		t.Fatalf("ReadResource contents = %#v", resource.Contents)
+	}
+
+	prompts, err := client.ListPrompts(ctx)
+	if err != nil {
+		t.Fatalf("ListPrompts failed: %v", err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "p1" {
+		t.Fatalf("ListPrompts = %#v", prompts)
+	}
+
+	prompt, err := client.GetPrompt(ctx, "p1", nil)
+	if err != nil {
+		t.Fatalf("GetPrompt failed: %v", err)
+	}
+	if len(prompt.Messages) != 1 || prompt.Messages[0].Content.Text != "hello" {
+		t.Fatalf("GetPrompt messages = %#v", prompt.Messages)
+	}
+
+	if client.ServerCapabilities().Tools == nil {
+		t.Fatalf("ServerCapabilities() not populated: %#v", client.ServerCapabilities())
+	}
 }
 
 func (m *mockTransport) Receive(ctx context.Context) (*MCPMessage, error) {

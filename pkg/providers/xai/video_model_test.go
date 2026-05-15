@@ -1135,6 +1135,12 @@ func TestXAIVideoCostMetadata(t *testing.T) {
 
 	opts := &provider.VideoModelV3CallOptions{
 		Prompt: "A sunset timelapse",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"pollIntervalMs": 10,
+				"pollTimeoutMs":  500,
+			},
+		},
 	}
 
 	ctx := context.Background()

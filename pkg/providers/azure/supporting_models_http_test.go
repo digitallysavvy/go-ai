@@ -3,42 +3,36 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
-	var seenPath string
+	var seenURI string
 	var seenBody map[string]interface{}
-	serverURL, closeServer := newAzureIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenPath = r.URL.String()
+	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		seenURI = r.URL.RequestURI()
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
-		w.Header().Set("X-Req", "r1")
-		w.Header().Set("Content-Type", "application/json")
 		if _, ok := seenBody["input"].([]interface{}); ok {
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`))
-			return
+			return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`, map[string]string{"X-Req": "r1"}), nil
 		}
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`))
-	}))
-	defer closeServer()
+		return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, map[string]string{"X-Req": "r1"}), nil
+	})
 
-	p := New(Config{APIKey: "k", BaseURL: serverURL, DeploymentID: "dep", APIVersion: "2024-10-21"})
 	m := NewEmbeddingModel(p, "dep")
 	one, err := m.DoEmbed(context.Background(), "hello", &provider.EmbedModelOptions{Headers: map[string]string{"X-Test": "yes"}})
 	if err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if !strings.HasPrefix(seenPath, "/openai/deployments/dep/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" {
-		t.Fatalf("request mismatch path=%q body=%#v", seenPath, seenBody)
+	if !strings.HasPrefix(seenURI, "/openai/deployments/dep/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" {
+		t.Fatalf("request mismatch uri=%q body=%#v", seenURI, seenBody)
 	}
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"][0] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
@@ -54,24 +48,21 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 }
 
 func TestAzureLanguageModelDoGenerateHTTP(t *testing.T) {
-	var seenPath string
+	var seenURI string
 	var seenBody map[string]interface{}
-	serverURL, closeServer := newAzureIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenPath = r.URL.String()
+	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		seenURI = r.URL.RequestURI()
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok","tool_calls":[]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
-	}))
-	defer closeServer()
+		return azureJSONResponse(200, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok","tool_calls":[]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, nil), nil
+	})
 
-	p := New(Config{APIKey: "k", BaseURL: serverURL, DeploymentID: "dep", APIVersion: "2024-10-21"})
 	m := NewLanguageModel(p, "dep")
 	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
-	if !strings.HasPrefix(seenPath, "/openai/deployments/dep/chat/completions?api-version=2024-10-21") {
-		t.Fatalf("path = %q", seenPath)
+	if !strings.HasPrefix(seenURI, "/openai/deployments/dep/chat/completions?api-version=2024-10-21") {
+		t.Fatalf("path = %q", seenURI)
 	}
 	if seenBody["stream"] != false {
 		t.Fatalf("stream flag mismatch: %#v", seenBody)
@@ -82,14 +73,12 @@ func TestAzureLanguageModelDoGenerateHTTP(t *testing.T) {
 }
 
 func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
-	imageServerURL, closeImage := newAzureIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.String(), "/openai/deployments/img/images/generations?api-version=2024-10-21") {
-			t.Fatalf("image path = %q", r.URL.String())
+	pImage := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/img/images/generations?api-version=2024-10-21") {
+			t.Fatalf("image path = %q", r.URL.RequestURI())
 		}
-		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/image.png"}]}`))
-	}))
-	defer closeImage()
-	pImage := New(Config{APIKey: "k", BaseURL: imageServerURL, DeploymentID: "img", APIVersion: "2024-10-21"})
+		return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+	})
 	im := NewImageModel(pImage, "img")
 	img, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 	if err != nil {
@@ -99,14 +88,12 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 		t.Fatalf("expected URL image result: %#v", img)
 	}
 
-	speechServerURL, closeSpeech := newAzureIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.String(), "/openai/deployments/tts/audio/speech?api-version=2024-10-21") {
-			t.Fatalf("speech path = %q", r.URL.String())
+	pSpeech := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/tts/audio/speech?api-version=2024-10-21") {
+			t.Fatalf("speech path = %q", r.URL.RequestURI())
 		}
-		_, _ = w.Write([]byte("AUDIO"))
-	}))
-	defer closeSpeech()
-	pSpeech := New(Config{APIKey: "k", BaseURL: speechServerURL, DeploymentID: "tts", APIVersion: "2024-10-21"})
+		return azureTextResponse(200, "AUDIO"), nil
+	})
 	sm := NewSpeechModel(pSpeech, "tts")
 	speech, err := sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hello"})
 	if err != nil {
@@ -119,17 +106,15 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 
 func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	var seenBody string
-	serverURL, closeServer := newAzureIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.String(), "/openai/deployments/whisper/audio/transcriptions?api-version=2024-10-21") {
-			t.Fatalf("transcription path = %q", r.URL.String())
+	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/whisper/audio/transcriptions?api-version=2024-10-21") {
+			t.Fatalf("transcription path = %q", r.URL.RequestURI())
 		}
 		body, _ := io.ReadAll(r.Body)
 		seenBody = string(body)
-		_, _ = w.Write([]byte(`{"text":"hello","duration":1.5,"segments":[{"text":"hello","start":0.0,"end":1.5}]}`))
-	}))
-	defer closeServer()
+		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"text":"hello","start":0.0,"end":1.5}]}`, nil), nil
+	})
 
-	p := New(Config{APIKey: "k", BaseURL: serverURL, DeploymentID: "whisper", APIVersion: "2024-10-21"})
 	tm := NewTranscriptionModel(p, "whisper")
 	res, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio:      []byte("audio"),
@@ -161,19 +146,54 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	}
 }
 
-func newAzureIPv4TestServer(t *testing.T, handler http.Handler) (string, func()) {
+func TestAzureModelErrorPaths(t *testing.T) {
+	p := newAzureProviderWithTransport(t, func(_ *http.Request) (*http.Response, error) {
+		return nil, errors.New("boom")
+	})
+	if _, err := NewImageModel(p, "img").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"}); err == nil {
+		t.Fatal("expected image error")
+	}
+	if _, err := NewSpeechModel(p, "tts").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err == nil {
+		t.Fatal("expected speech error")
+	}
+	if _, err := NewTranscriptionModel(p, "whisper").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"}); err == nil {
+		t.Fatal("expected transcription error")
+	}
+}
+
+type azureRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f azureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func newAzureProviderWithTransport(t *testing.T, rt azureRoundTripper) *Provider {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen tcp4 error = %v", err)
+	p := New(Config{APIKey: "k", BaseURL: "https://azure.example", DeploymentID: "dep", APIVersion: "2024-10-21"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL:    "https://azure.example",
+		Headers:    map[string]string{"api-key": "k"},
+		HTTPClient: &http.Client{Transport: rt},
+	})
+	return p
+}
+
+func azureJSONResponse(status int, body string, headers map[string]string) *http.Response {
+	h := http.Header{"Content-Type": []string{"application/json"}}
+	for k, v := range headers {
+		h.Set(k, v)
 	}
-	srv := &http.Server{Handler: handler}
-	go func() { _ = srv.Serve(listener) }()
-	baseURL := "http://127.0.0.1:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-	closeFn := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
+	return &http.Response{
+		StatusCode: status,
+		Header:     h,
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
-	return baseURL, closeFn
+}
+
+func azureTextResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }
