@@ -99,6 +99,22 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
+// Interactions returns a language model backed by the Gemini Interactions API.
+func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewInteractionsLanguageModel(p, modelID), nil
+}
+
+// InteractionsAgent returns an Interactions API model for a Gemini agent preset.
+func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, error) {
+	if agent == "" {
+		return nil, fmt.Errorf("agent cannot be empty")
+	}
+	return NewInteractionsAgentModel(p, agent), nil
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	// Validate model ID

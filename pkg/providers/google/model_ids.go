@@ -5,17 +5,17 @@ package google
 // Updated to include all models from commit #12819 and #12695.
 const (
 	// Gemini 1.5 series
-	ModelGemini15Flash          = "gemini-1.5-flash"
-	ModelGemini15FlashLatest    = "gemini-1.5-flash-latest"
-	ModelGemini15Flash001       = "gemini-1.5-flash-001"
-	ModelGemini15Flash002       = "gemini-1.5-flash-002"
-	ModelGemini15Flash8B        = "gemini-1.5-flash-8b"
-	ModelGemini15Flash8BLatest  = "gemini-1.5-flash-8b-latest"
-	ModelGemini15Flash8B001     = "gemini-1.5-flash-8b-001"
-	ModelGemini15Pro            = "gemini-1.5-pro"
-	ModelGemini15ProLatest      = "gemini-1.5-pro-latest"
-	ModelGemini15Pro001         = "gemini-1.5-pro-001"
-	ModelGemini15Pro002         = "gemini-1.5-pro-002"
+	ModelGemini15Flash         = "gemini-1.5-flash"
+	ModelGemini15FlashLatest   = "gemini-1.5-flash-latest"
+	ModelGemini15Flash001      = "gemini-1.5-flash-001"
+	ModelGemini15Flash002      = "gemini-1.5-flash-002"
+	ModelGemini15Flash8B       = "gemini-1.5-flash-8b"
+	ModelGemini15Flash8BLatest = "gemini-1.5-flash-8b-latest"
+	ModelGemini15Flash8B001    = "gemini-1.5-flash-8b-001"
+	ModelGemini15Pro           = "gemini-1.5-pro"
+	ModelGemini15ProLatest     = "gemini-1.5-pro-latest"
+	ModelGemini15Pro001        = "gemini-1.5-pro-001"
+	ModelGemini15Pro002        = "gemini-1.5-pro-002"
 
 	// Gemini 2.0 series
 	ModelGemini20Flash            = "gemini-2.0-flash"
@@ -28,19 +28,19 @@ const (
 	ModelGemini20ProExp           = "gemini-2.0-pro-exp-02-05"
 
 	// Gemini 2.5 series
-	ModelGemini25Pro                      = "gemini-2.5-pro"
-	ModelGemini25Flash                    = "gemini-2.5-flash"
-	ModelGemini25FlashImage               = "gemini-2.5-flash-image"
-	ModelGemini25FlashLite                = "gemini-2.5-flash-lite"
-	ModelGemini25FlashLitePreview0925     = "gemini-2.5-flash-lite-preview-09-2025"
-	ModelGemini25FlashPreview0417         = "gemini-2.5-flash-preview-04-17"
-	ModelGemini25FlashPreview0925         = "gemini-2.5-flash-preview-09-2025"
-	ModelGemini25FlashPreviewTTS          = "gemini-2.5-flash-preview-tts"
-	ModelGemini25ProPreviewTTS            = "gemini-2.5-pro-preview-tts"
-	ModelGemini25FlashNativeAudioLatest   = "gemini-2.5-flash-native-audio-latest"
-	ModelGemini25FlashNativeAudio0925     = "gemini-2.5-flash-native-audio-preview-09-2025"
-	ModelGemini25FlashNativeAudio1225     = "gemini-2.5-flash-native-audio-preview-12-2025"
-	ModelGemini25ComputerUsePreview       = "gemini-2.5-computer-use-preview-10-2025"
+	ModelGemini25Pro                    = "gemini-2.5-pro"
+	ModelGemini25Flash                  = "gemini-2.5-flash"
+	ModelGemini25FlashImage             = "gemini-2.5-flash-image"
+	ModelGemini25FlashLite              = "gemini-2.5-flash-lite"
+	ModelGemini25FlashLitePreview0925   = "gemini-2.5-flash-lite-preview-09-2025"
+	ModelGemini25FlashPreview0417       = "gemini-2.5-flash-preview-04-17"
+	ModelGemini25FlashPreview0925       = "gemini-2.5-flash-preview-09-2025"
+	ModelGemini25FlashPreviewTTS        = "gemini-2.5-flash-preview-tts"
+	ModelGemini25ProPreviewTTS          = "gemini-2.5-pro-preview-tts"
+	ModelGemini25FlashNativeAudioLatest = "gemini-2.5-flash-native-audio-latest"
+	ModelGemini25FlashNativeAudio0925   = "gemini-2.5-flash-native-audio-preview-09-2025"
+	ModelGemini25FlashNativeAudio1225   = "gemini-2.5-flash-native-audio-preview-12-2025"
+	ModelGemini25ComputerUsePreview     = "gemini-2.5-computer-use-preview-10-2025"
 
 	// Gemini 3 series — added in #12819
 	ModelGemini3ProPreview      = "gemini-3-pro-preview"
@@ -48,10 +48,10 @@ const (
 	ModelGemini3FlashPreview    = "gemini-3-flash-preview"
 
 	// Gemini 3.1 series — added in #12695 and #12883
-	ModelGemini31ProPreview        = "gemini-3.1-pro-preview"              // language model (#12695)
-	ModelGemini31ProPreviewCustom  = "gemini-3.1-pro-preview-customtools"  // (#12819)
-	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"       // (#12883)
-	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"      // image model (#12883)
+	ModelGemini31ProPreview        = "gemini-3.1-pro-preview"             // language model (#12695)
+	ModelGemini31ProPreviewCustom  = "gemini-3.1-pro-preview-customtools" // (#12819)
+	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"      // (#12883)
+	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"     // image model (#12883)
 
 	// Latest alias models — added in #12819
 	ModelGeminiProLatest       = "gemini-pro-latest"
@@ -61,16 +61,16 @@ const (
 	// Specialized models — added in #12819
 	ModelDeepResearchProPreview = "deep-research-pro-preview-12-2025"
 	ModelNanaBananaProPreview   = "nano-banana-pro-preview"
-	ModelAQA                   = "aqa"
+	ModelAQA                    = "aqa"
 
 	// Experimental models — added in #12819
-	ModelGemini25ProExp0325          = "gemini-2.5-pro-exp-03-25"
-	ModelGeminiExp1206               = "gemini-exp-1206"
-	ModelGeminiRoboticsER15Preview   = "gemini-robotics-er-1.5-preview"
+	ModelGemini25ProExp0325        = "gemini-2.5-pro-exp-03-25"
+	ModelGeminiExp1206             = "gemini-exp-1206"
+	ModelGeminiRoboticsER15Preview = "gemini-robotics-er-1.5-preview"
 
 	// Gemma open models — added in #12819
-	ModelGemma31BIt  = "gemma-3-1b-it"
-	ModelGemma34BIt  = "gemma-3-4b-it"
+	ModelGemma31BIt   = "gemma-3-1b-it"
+	ModelGemma34BIt   = "gemma-3-4b-it"
 	ModelGemma3NE4BIt = "gemma-3n-e4b-it"
 	ModelGemma3NE2BIt = "gemma-3n-e2b-it"
 	ModelGemma312BIt  = "gemma-3-12b-it"
@@ -81,6 +81,20 @@ const (
 const (
 	EmbeddingModelGeminiEmbedding001      = "gemini-embedding-001"
 	EmbeddingModelGeminiEmbedding2Preview = "gemini-embedding-2-preview"
+)
+
+// Interactions API model IDs.
+const (
+	InteractionsModelGemini25Flash             = "gemini-2.5-flash"
+	InteractionsModelGemini25Pro               = "gemini-2.5-pro"
+	InteractionsModelGemini3ProImage           = "gemini-3-pro-image-preview"
+	InteractionsAgentDeepResearchProPreview    = "deep-research-pro-preview-12-2025"
+	InteractionsAgentDeepResearchPreview042026 = "deep-research-preview-04-2026"
+	InteractionsAgentDeepResearchMax042026     = "deep-research-max-preview-04-2026"
+
+	// InteractionsAgentDeepResearch is kept for source compatibility and maps to
+	// the current TS SDK deep-research pro preview agent name.
+	InteractionsAgentDeepResearch = InteractionsAgentDeepResearchProPreview
 )
 
 // Imagen model IDs for Google Generative AI image generation (use :predict API)

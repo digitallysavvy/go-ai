@@ -516,11 +516,11 @@ func TestSourceContentURL(t *testing.T) {
 // TestSourceContentDocument verifies SourceContent for a document source.
 func TestSourceContentDocument(t *testing.T) {
 	s := SourceContent{
-		SourceType: "document",
-		ID:         "doc-1",
-		MediaType:  "application/pdf",
-		Title:      "Research Paper",
-		Filename:   "paper.pdf",
+		SourceType:       "document",
+		ID:               "doc-1",
+		MediaType:        "application/pdf",
+		Title:            "Research Paper",
+		Filename:         "paper.pdf",
 		ProviderMetadata: json.RawMessage(`{"pages":42}`),
 	}
 
@@ -565,13 +565,23 @@ func TestGeneratedFileContent(t *testing.T) {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
 
-	// data field must be a base64 JSON string
+	// data field must use the TypeScript tagged file-data shape.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &raw); err != nil {
 		t.Fatalf("failed to parse marshaled JSON: %v", err)
 	}
-	if raw["data"][0] != '"' {
-		t.Errorf("data field should be base64 string, got: %s", raw["data"])
+	if raw["data"][0] != '{' {
+		t.Errorf("data field should be tagged file-data object, got: %s", raw["data"])
+	}
+	var tagged struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(raw["data"], &tagged); err != nil {
+		t.Fatalf("failed to parse tagged data: %v", err)
+	}
+	if tagged.Type != "data" || tagged.Data == "" {
+		t.Fatalf("tagged data = %#v, want type=data with base64 data", tagged)
 	}
 
 	var got GeneratedFileContent
@@ -585,6 +595,38 @@ func TestGeneratedFileContent(t *testing.T) {
 		if got.Data[i] != b {
 			t.Errorf("Data[%d] = %02x, want %02x", i, got.Data[i], b)
 		}
+	}
+}
+
+func TestGeneratedFileContentURLUsesTaggedDataShape(t *testing.T) {
+	f := GeneratedFileContent{
+		MediaType: "image/png",
+		FileData:  FileData{Type: FileDataTypeURL, URL: "https://example.com/out.png", MediaType: "image/png"},
+		URL:       "https://example.com/out.png",
+	}
+	encoded, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+	if _, ok := raw["url"]; ok {
+		t.Fatalf("top-level url should not be emitted in TS file shape: %s", encoded)
+	}
+	if _, ok := raw["fileData"]; ok {
+		t.Fatalf("top-level fileData should not be emitted in TS file shape: %s", encoded)
+	}
+	var data struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if err := json.Unmarshal(raw["data"], &data); err != nil {
+		t.Fatalf("failed to parse tagged data: %v", err)
+	}
+	if data.Type != "url" || data.URL != "https://example.com/out.png" {
+		t.Fatalf("tagged data = %#v", data)
 	}
 }
 
