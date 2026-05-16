@@ -38,6 +38,27 @@ type StepResponse struct {
 	Body interface{} `json:"body,omitempty"`
 }
 
+// StepPerformance contains deterministic performance statistics for a model step.
+// It mirrors the TypeScript AI SDK StepResult.performance shape.
+type StepPerformance struct {
+	// StepTimeMs is total wall-clock time spent on the step, including client-side tool execution.
+	StepTimeMs int64 `json:"stepTimeMs"`
+
+	// ResponseTimeMs is the wall-clock duration of the model response in milliseconds.
+	ResponseTimeMs int64 `json:"responseTimeMs"`
+
+	// ToolExecutionMs contains client-side tool execution durations keyed by tool call ID.
+	ToolExecutionMs map[string]int64 `json:"toolExecutionMs"`
+
+	// TokensPerSecond is average output tokens per second. It is 0 when the
+	// value cannot be represented as a finite number.
+	TokensPerSecond float64 `json:"tokensPerSecond"`
+
+	// TimeToFirstTokenMs is populated for streaming steps when the first content
+	// token/chunk timing is known.
+	TimeToFirstTokenMs *int64 `json:"timeToFirstTokenMs,omitempty"`
+}
+
 // GenerateResult contains the result of a text generation operation
 type GenerateResult struct {
 	// Generated text content
@@ -263,6 +284,9 @@ type StepResult struct {
 
 	// Usage for this step
 	Usage Usage `json:"usage"`
+
+	// Performance contains deterministic timing and token-rate statistics for this step.
+	Performance StepPerformance `json:"performance"`
 
 	// Context management information (Anthropic-specific)
 	ContextManagement interface{} `json:"contextManagement,omitempty"`

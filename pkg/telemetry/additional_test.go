@@ -117,6 +117,17 @@ func (s *eventSpy) OnRerankFinish(_ context.Context, _ RerankingModelCallEndEven
 	s.mu.Unlock()
 }
 
+type onEndSpy struct {
+	eventSpy
+	ends int
+}
+
+func (s *onEndSpy) OnEnd(_ context.Context, _ TelemetryFinishEvent) {
+	s.mu.Lock()
+	s.ends++
+	s.mu.Unlock()
+}
+
 func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 	ClearTelemetryIntegrations()
 	defer RegisterTelemetryIntegration(NoopTelemetryIntegration{})
@@ -159,7 +170,7 @@ func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 	if spy.starts != 1 || spy.stepStarts != 1 || spy.toolStarts != 1 || spy.toolFinishes != 1 {
 		t.Fatalf("unexpected basic counters: %#v", spy)
 	}
-	if spy.chunks != 1 || spy.stepFinishes != 1 || spy.finishes != 1 || spy.errs != 1 {
+	if spy.chunks != 0 || spy.stepFinishes != 1 || spy.finishes != 1 || spy.errs != 1 {
 		t.Fatalf("unexpected finish counters: %#v", spy)
 	}
 	if spy.lmCallStarts != 1 || spy.lmCallEnds != 1 || spy.embedStarts != 1 || spy.embedFinishes != 1 {
@@ -167,6 +178,56 @@ func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 	}
 	if spy.rerankStarts != 1 || spy.rerankFinishes != 1 {
 		t.Fatalf("unexpected rerank counters: %#v", spy)
+	}
+}
+
+func TestFireOnEndPrefersOnEndAndKeepsOnFinishFallback(t *testing.T) {
+	ClearTelemetryIntegrations()
+	defer RegisterTelemetryIntegration(NoopTelemetryIntegration{})
+
+	newSpy := &onEndSpy{}
+	oldSpy := &eventSpy{}
+	RegisterTelemetryIntegration(newSpy, oldSpy)
+
+	FireOnEnd(context.Background(), TelemetryFinishEvent{Settings: &Settings{IsEnabled: Bool(true)}})
+
+	newSpy.mu.Lock()
+	newEnds, newFinishes := newSpy.ends, newSpy.finishes
+	newSpy.mu.Unlock()
+	oldSpy.mu.Lock()
+	oldFinishes := oldSpy.finishes
+	oldSpy.mu.Unlock()
+
+	if newEnds != 1 || newFinishes != 0 {
+		t.Fatalf("new integration ends/finishes = %d/%d, want 1/0", newEnds, newFinishes)
+	}
+	if oldFinishes != 1 {
+		t.Fatalf("old integration finishes = %d, want 1", oldFinishes)
+	}
+}
+
+func TestFireOnChunkNoLongerEmitsTelemetry(t *testing.T) {
+	ClearTelemetryIntegrations()
+	defer RegisterTelemetryIntegration(NoopTelemetryIntegration{})
+
+	spy := &eventSpy{}
+	RegisterTelemetryIntegration(spy)
+	var diagnostics int
+	unsub := SubscribeDiagnostic(func(_ context.Context, msg DiagnosticMessage) error {
+		if msg.Type == DiagnosticEventOnChunk {
+			diagnostics++
+		}
+		return nil
+	})
+	defer unsub()
+
+	FireOnChunk(context.Background(), TelemetryChunkEvent{Settings: &Settings{IsEnabled: Bool(true)}, ChunkType: "text"})
+
+	spy.mu.Lock()
+	chunks := spy.chunks
+	spy.mu.Unlock()
+	if chunks != 0 || diagnostics != 0 {
+		t.Fatalf("chunk telemetry = %d diagnostics = %d, want 0/0", chunks, diagnostics)
 	}
 }
 

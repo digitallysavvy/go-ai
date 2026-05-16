@@ -4,8 +4,34 @@
 package telemetry
 
 import (
+	"context"
+
 	"go.opentelemetry.io/otel/trace"
 )
+
+// SpanType identifies the OTel span being created for custom enrichment.
+type SpanType string
+
+const (
+	SpanTypeOperation     SpanType = "operation"
+	SpanTypeStep          SpanType = "step"
+	SpanTypeLanguageModel SpanType = "languageModel"
+	SpanTypeTool          SpanType = "tool"
+	SpanTypeEmbedding     SpanType = "embedding"
+	SpanTypeReranking     SpanType = "reranking"
+)
+
+// EnrichSpanOptions describes a span that is about to be created.
+type EnrichSpanOptions struct {
+	SpanType       SpanType
+	OperationType  string
+	CallID         string
+	RuntimeContext map[string]interface{}
+}
+
+// EnrichSpanFunc returns custom attributes for a span when it is created.
+// SDK-managed attributes win if a custom key overlaps with an SDK key.
+type EnrichSpanFunc func(context.Context, EnrichSpanOptions) map[string]interface{}
 
 // Options configures telemetry for AI operations.
 // Telemetry is active by default when integrations are registered. Set
@@ -30,6 +56,10 @@ type Options struct {
 
 	// Tracer is a custom OpenTelemetry tracer. If nil, the global tracer will be used.
 	Tracer trace.Tracer
+
+	// EnrichSpan adds custom attributes to OTel spans as they are created.
+	// SDK-managed attributes override custom attributes on key collisions.
+	EnrichSpan EnrichSpanFunc
 
 	// IncludeRuntimeContext lists top-level runtime context keys that should be
 	// included in telemetry. Context is excluded by default.

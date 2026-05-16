@@ -117,6 +117,135 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	}
 }
 
+func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("telemetry-test")
+
+	integration := OTelTelemetryIntegration{}
+	settings := &Settings{
+		IsEnabled: Bool(true),
+		Tracer:    tracer,
+		EnrichSpan: func(_ context.Context, opts EnrichSpanOptions) map[string]interface{} {
+			return map[string]interface{}{
+				"custom.span_type":       string(opts.SpanType),
+				"gen_ai.request.model":   "custom-should-not-win",
+				"custom.runtime_present": opts.RuntimeContext["user"] == "alice",
+				"custom.call_id":         opts.CallID,
+			}
+		},
+	}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType:  "ai.generateText",
+		ModelProvider:  "openai",
+		ModelID:        "gpt-5",
+		Settings:       settings,
+		RuntimeContext: map[string]interface{}{"user": "alice"},
+	})
+	stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{
+		Settings:       settings,
+		OperationType:  "ai.generateText",
+		StepNumber:     0,
+		ModelProvider:  "openai",
+		ModelID:        "gpt-5",
+		RuntimeContext: map[string]interface{}{"user": "alice"},
+	})
+	integration.OnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{
+		Settings:      settings,
+		CallID:        "lm-1",
+		ModelProvider: "openai",
+		ModelID:       "gpt-5",
+	})
+	integration.OnLanguageModelCallEnd(stepCtx, LanguageModelCallEndEvent{
+		Settings:     settings,
+		CallID:       "lm-1",
+		FinishReason: "stop",
+		Performance: LanguageModelCallPerformance{
+			ResponseTimeMs:  10,
+			TokensPerSecond: 20,
+		},
+	})
+	toolCtx := integration.OnToolCallStart(stepCtx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+	})
+	integration.OnToolCallFinish(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		DurationMs: 1,
+	})
+	integration.OnStepFinish(stepCtx, TelemetryStepFinishEvent{
+		Settings:     settings,
+		StepNumber:   0,
+		FinishReason: "tool-calls",
+	})
+	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{
+		Settings:      settings,
+		CallID:        "embed-1",
+		OperationID:   "ai.embed",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+	})
+	integration.OnEmbedEnd(ctx, EmbeddingModelCallEndEvent{
+		Settings:    settings,
+		CallID:      "embed-1",
+		OperationID: "ai.embed",
+		Embeddings:  [][]float64{{1, 2}},
+		Usage:       types.EmbeddingUsage{InputTokens: 3, TotalTokens: 3},
+	})
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{
+		Settings:      settings,
+		CallID:        "rerank-1",
+		OperationID:   "ai.rerank",
+		ModelProvider: "cohere",
+		ModelID:       "rerank-v3.5",
+	})
+	integration.OnRerankEnd(ctx, RerankingModelCallEndEvent{
+		Settings:    settings,
+		CallID:      "rerank-1",
+		OperationID: "ai.rerank",
+		Ranking:     []types.RerankItem{{Index: 0, RelevanceScore: 0.9}},
+	})
+	integration.OnEnd(ctx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
+
+	ended := rec.Ended()
+	if len(ended) != 6 {
+		t.Fatalf("ended spans = %d, want 6", len(ended))
+	}
+
+	spansByType := map[string]map[string]interface{}{}
+	for _, span := range ended {
+		attrs := map[string]interface{}{}
+		for _, attr := range span.Attributes() {
+			attrs[string(attr.Key)] = attr.Value.AsInterface()
+		}
+		if spanType, ok := attrs["custom.span_type"].(string); ok {
+			spansByType[spanType] = attrs
+		}
+	}
+	for _, spanType := range []string{"operation", "step", "languageModel", "tool", "embedding", "reranking"} {
+		if spansByType[spanType] == nil {
+			t.Fatalf("missing custom attributes for %s span: %#v", spanType, spansByType)
+		}
+	}
+	if spansByType["operation"]["custom.runtime_present"] != true || spansByType["step"]["custom.runtime_present"] != true {
+		t.Fatalf("runtime context was not passed to operation and step enrichers: %#v", spansByType)
+	}
+	if spansByType["tool"]["custom.call_id"] != "call-1" {
+		t.Fatalf("tool call id was not passed to tool enricher: %#v", spansByType["tool"])
+	}
+	if spansByType["languageModel"]["custom.call_id"] != "lm-1" || spansByType["embedding"]["custom.call_id"] != "embed-1" || spansByType["reranking"]["custom.call_id"] != "rerank-1" {
+		t.Fatalf("model call ids were not passed to enrichers: %#v", spansByType)
+	}
+	if spansByType["operation"]["gen_ai.request.model"] != "gpt-5" || spansByType["step"]["gen_ai.request.model"] != "gpt-5" {
+		t.Fatalf("SDK attributes were not allowed to override custom attributes: %#v", spansByType)
+	}
+}
+
 func TestGetTracerPaths(t *testing.T) {
 	custom := trace.NewNoopTracerProvider().Tracer("custom")
 	if GetTracer(&Settings{IsEnabled: Bool(false)}) == nil {

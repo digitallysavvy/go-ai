@@ -116,7 +116,12 @@ type RerankOptions struct {
 	// ExperimentalOnStart is called before the reranking model is invoked.
 	ExperimentalOnStart func(event RerankOnStartEvent)
 
+	// ExperimentalOnEnd is called after the reranking model returns.
+	ExperimentalOnEnd func(event RerankOnFinishEvent)
+
 	// ExperimentalOnFinish is called after the reranking model returns.
+	//
+	// Deprecated: use ExperimentalOnEnd.
 	ExperimentalOnFinish func(event RerankOnFinishEvent)
 }
 
@@ -274,7 +279,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
 		return nil, wrappedErr
 	}
-	telemetry.FireOnRerankFinish(ctx, telemetry.RerankingModelCallEndEvent{
+	telemetry.FireOnRerankEnd(ctx, telemetry.RerankingModelCallEndEvent{
 		Settings:      opts.ExperimentalTelemetry,
 		CallID:        callID,
 		OperationID:   "ai.rerank.doRerank",
@@ -336,7 +341,10 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankFinish, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, finishEvent)
+	}
+	if opts.ExperimentalOnEnd != nil {
+		opts.ExperimentalOnEnd(finishEvent)
 	}
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)

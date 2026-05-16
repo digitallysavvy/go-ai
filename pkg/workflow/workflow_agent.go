@@ -132,6 +132,7 @@ type WorkflowGenerateOptions struct {
 	Tools                       []types.Tool
 	ToolSet                     map[string]types.Tool
 	StopWhen                    []ai.StopCondition
+	Telemetry                   *ai.TelemetrySettings
 	RuntimeContext              interface{}
 	ToolsContext                map[string]interface{}
 	Include                     *ai.IncludeOptions
@@ -157,6 +158,7 @@ type WorkflowStreamOptions struct {
 	Tools        []types.Tool
 	ToolSet      map[string]types.Tool
 	StopWhen     []ai.StopCondition
+	Telemetry    *ai.TelemetrySettings
 
 	ActiveTools                 []string
 	RuntimeContext              interface{}
@@ -431,6 +433,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ExperimentalRefineToolInput != nil {
 		refineToolInput = ovr.ExperimentalRefineToolInput
 	}
+	telemetry := w.Telemetry
+	if govr.Telemetry != nil {
+		telemetry = govr.Telemetry
+	}
+	if ovr.Telemetry != nil {
+		telemetry = ovr.Telemetry
+	}
 	tools := orderedTools(w.Tools, w.ToolSet)
 	if govr.Tools != nil || govr.ToolSet != nil {
 		tools = orderedTools(govr.Tools, govr.ToolSet)
@@ -446,7 +455,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
 		ToolChoice:                  w.ToolChoice,
 		Output:                      w.Output,
-		Telemetry:                   w.Telemetry,
+		Telemetry:                   telemetry,
 		Include:                     include,
 		ExperimentalSandbox:         sandbox,
 		ExperimentalRefineToolInput: refineToolInput,
@@ -509,7 +518,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: w.Telemetry}
+	telemetry := w.Telemetry
+	if opts.Telemetry != nil {
+		telemetry = opts.Telemetry
+	}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry}
 	result, err := a.GenerateAgent(ctx, call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil && onAbort != nil {
@@ -564,8 +577,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 			system = normalized
 		}
 	}
+	telemetry := w.Telemetry
+	if opts.Telemetry != nil {
+		telemetry = opts.Telemetry
+	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: w.Telemetry},
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry},
 		OnChunk:              opts.OnChunk,
 	}
 	stream, err := a.Stream(ctx, call)

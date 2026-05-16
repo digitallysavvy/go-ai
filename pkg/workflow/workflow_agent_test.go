@@ -31,7 +31,8 @@ func (m *wfMockModel) DoGenerate(_ context.Context, opts *provider.GenerateOptio
 	}
 	return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
 }
-func (m *wfMockModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+func (m *wfMockModel) DoStream(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	m.opts = append(m.opts, opts)
 	chunks := []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "ok"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}
 	return testutil.NewMockTextStream(chunks), nil
 }
@@ -146,6 +147,41 @@ func TestWorkflowInstructionsTelemetryAndOutputForwarding(t *testing.T) {
 	}
 	if model.opts[0].Telemetry != telemetry {
 		t.Fatalf("telemetry was not forwarded")
+	}
+}
+
+func TestWorkflowTelemetryOptionsOverrideConstructor(t *testing.T) {
+	constructorTelemetry := &ai.TelemetrySettings{FunctionID: "constructor"}
+	generateTelemetry := &ai.TelemetrySettings{FunctionID: "generate"}
+	streamTelemetry := &ai.TelemetrySettings{FunctionID: "stream"}
+
+	generateModel := &wfMockModel{}
+	agent, _ := NewWorkflowAgent(WorkflowAgent{
+		Model:     generateModel,
+		Telemetry: constructorTelemetry,
+		Tools: []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+	})
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello", Telemetry: generateTelemetry}); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	if generateModel.opts[0].Telemetry != generateTelemetry {
+		t.Fatalf("generate telemetry = %p, want override %p", generateModel.opts[0].Telemetry, generateTelemetry)
+	}
+
+	streamModel := &wfMockModel{}
+	streamAgent, _ := NewWorkflowAgent(WorkflowAgent{Model: streamModel, Telemetry: constructorTelemetry})
+	stream, err := streamAgent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hello", Telemetry: streamTelemetry})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if _, err := stream.ReadAll(); err != nil {
+		t.Fatalf("stream ReadAll error: %v", err)
+	}
+	if streamModel.opts[0].Telemetry != streamTelemetry {
+		t.Fatalf("stream telemetry = %p, want override %p", streamModel.opts[0].Telemetry, streamTelemetry)
 	}
 }
 

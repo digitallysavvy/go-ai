@@ -537,6 +537,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
+		stepStart := time.Now()
 		stepIndex := stepNum - 1
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
@@ -697,6 +698,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		})
 
 		// Call the model with step context
+		modelCallStart := time.Now()
 		genResult, err := stepModel.DoGenerate(stepCtx, genOpts)
 		if err != nil {
 			if opts.Timeout != nil {
@@ -710,6 +712,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
+		performance := stepPerformance(modelCallStart, genResult.Usage, nil)
 		responseID := ""
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {
 			responseID = meta.ID
@@ -723,6 +726,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Usage:         modelCallUsage,
 			Content:       genResult.Content,
 			ResponseID:    responseID,
+			Performance:   languageModelCallPerformance(performance),
 		})
 
 		// Extract sources, files, and reasoning from content parts
@@ -783,6 +787,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			FinishReason:     genResult.FinishReason,
 			RawFinishReason:  stepRawFinishReason,
 			Usage:            genResult.Usage,
+			Performance:      performance,
 			Warnings:         genResult.Warnings,
 			Sources:          stepSources,
 			Request:          stepRequest,
@@ -836,6 +841,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				timeout:             opts.Timeout,
 				telemetrySettings:   telemetrySettings,
 				experimentalSandbox: stepSandbox,
+				toolExecutionMs:     map[string]int64{},
 			}
 			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
@@ -854,6 +860,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
+			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
 			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
@@ -882,6 +889,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ResponseMessages = stepResponseMsgs
 			stepResult.Response.Messages = stepResponseMsgs
 		} else {
+			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, nil)
 			// No more tool calls, we're done
 			result.Text = genResult.Text
 			result.Reasoning = stepReasoning
@@ -1228,6 +1236,7 @@ type toolCallEventCallbacks struct {
 	timeout             *TimeoutConfig
 	telemetrySettings   *TelemetrySettings
 	experimentalSandbox interface{}
+	toolExecutionMs     map[string]int64
 }
 
 func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
@@ -1423,6 +1432,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				},
 			)
 			durationMs := now() - startTime
+			if callbacks.toolExecutionMs != nil {
+				callbacks.toolExecutionMs[call.ID] = durationMs
+			}
 			timedOut := execCtx.Err() != nil
 			execCancel() // release timeout resources immediately after execution
 			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {

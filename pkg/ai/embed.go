@@ -121,7 +121,12 @@ type EmbedOptions struct {
 	// ExperimentalOnStart is called before the embedding model is invoked.
 	ExperimentalOnStart func(event EmbedOnStartEvent)
 
+	// ExperimentalOnEnd is called after the embedding model returns.
+	ExperimentalOnEnd func(event EmbedOnFinishEvent)
+
 	// ExperimentalOnFinish is called after the embedding model returns.
+	//
+	// Deprecated: use ExperimentalOnEnd.
 	ExperimentalOnFinish func(event EmbedOnFinishEvent)
 }
 
@@ -263,7 +268,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
-	telemetry.FireOnEmbedFinish(ctx, telemetry.EmbeddingModelCallEndEvent{
+	telemetry.FireOnEmbedEnd(ctx, telemetry.EmbeddingModelCallEndEvent{
 		Settings:      opts.ExperimentalTelemetry,
 		CallID:        callID,
 		EmbedCallID:   embedCallID,
@@ -292,7 +297,10 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		FunctionID:    telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedFinish, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
+	}
+	if opts.ExperimentalOnEnd != nil {
+		opts.ExperimentalOnEnd(finishEvent)
 	}
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)
@@ -339,7 +347,12 @@ type EmbedManyOptions struct {
 	// ExperimentalOnStart is called before the embedding model is invoked.
 	ExperimentalOnStart func(event EmbedOnStartEvent)
 
+	// ExperimentalOnEnd is called after the embedding model returns.
+	ExperimentalOnEnd func(event EmbedOnFinishEvent)
+
 	// ExperimentalOnFinish is called after the embedding model returns.
+	//
+	// Deprecated: use ExperimentalOnEnd.
 	ExperimentalOnFinish func(event EmbedOnFinishEvent)
 }
 
@@ -478,7 +491,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
-	telemetry.FireOnEmbedFinish(ctx, telemetry.EmbeddingModelCallEndEvent{
+	telemetry.FireOnEmbedEnd(ctx, telemetry.EmbeddingModelCallEndEvent{
 		Settings:      opts.ExperimentalTelemetry,
 		CallID:        callID,
 		EmbedCallID:   embedCallID,
@@ -507,7 +520,10 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		FunctionID:    telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedFinish, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
+	}
+	if opts.ExperimentalOnEnd != nil {
+		opts.ExperimentalOnEnd(finishEvent)
 	}
 	if opts.ExperimentalOnFinish != nil {
 		opts.ExperimentalOnFinish(finishEvent)

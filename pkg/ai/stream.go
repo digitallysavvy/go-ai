@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -622,6 +623,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
+		stepStart := time.Now()
+		var firstTokenAt *time.Time
 		stepProvider := r.cbModel.Provider()
 		stepModelID := r.cbModel.ModelID()
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -671,6 +674,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Transition from Submitted to Streaming on the first content chunk.
 			// Metadata and stream lifecycle chunks are forwarded before this
 			// marker, matching the TypeScript stream part order.
+			if firstTokenAt == nil && forwardChunk && isFirstChunkContent(chunk.Type) {
+				now := time.Now()
+				firstTokenAt = &now
+			}
 			if firstChunkEver && forwardChunk && isFirstChunkContent(chunk.Type) {
 				firstChunkEver = false
 				r.mu.Lock()
@@ -745,6 +752,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				if !modelCallEndFired {
 					modelCallEndFired = true
+					performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
 						Settings:      r.telemetrySettings,
 						CallID:        r.cbCallID,
@@ -753,6 +761,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						FinishReason:  string(chunk.FinishReason),
 						Usage:         telemetryUsageFromUsage(stepUsage),
 						ResponseID:    responseIDFromMetadata(chunk.ResponseMetadata),
+						Performance:   languageModelCallPerformance(performance),
 					})
 				}
 			}
@@ -810,7 +819,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
+		var toolExecutionMs map[string]int64
 		if len(stepToolCalls) > 0 && len(stepTools) > 0 {
+			toolExecutionMs = map[string]int64{}
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              r.cbCallID,
 				onStart:             r.cbOnToolCallStart,
@@ -829,6 +840,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				timeout:             r.timeout,
 				telemetrySettings:   r.telemetrySettings,
 				experimentalSandbox: opts.ExperimentalSandbox,
+				toolExecutionMs:     toolExecutionMs,
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolResults, _ = executeTools(ctx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
@@ -914,6 +926,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Record this step. For multi-step streaming, r.text accumulates across steps;
 		// use the current snapshot as the step's text.
+		performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
+		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
 		stepResult := types.StepResult{
 			CallID:             r.cbCallID,
 			StepNumber:         stepIndex,
@@ -930,6 +944,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			FinishReason:       r.finishReason,
 			RawFinishReason:    stepRawFinishReason,
 			Usage:              stepUsage,
+			Performance:        performance,
 			Sources:            r.sources,
 			Request: types.StepRequest{
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
@@ -1579,6 +1594,8 @@ func (r *StreamTextResult) Close() error {
 // called — use StreamText with callbacks for tool execution.
 func (r *StreamTextResult) ReadAll() (string, error) {
 	ctx := context.Background()
+	stepStart := time.Now()
+	var firstTokenAt *time.Time
 	firstChunk := true
 	var pendingToolCalls []types.ToolCall
 
@@ -1592,6 +1609,10 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		}
 
 		// Transition Submitted to Streaming on the first content chunk.
+		if firstTokenAt == nil && isFirstChunkContent(chunk.Type) {
+			now := time.Now()
+			firstTokenAt = &now
+		}
 		if firstChunk && isFirstChunkContent(chunk.Type) {
 			firstChunk = false
 			r.mu.Lock()
@@ -1697,6 +1718,7 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		DynamicToolCalls: filterDynamicToolCalls(pendingToolCalls),
 		FinishReason:     r.finishReason,
 		Usage:            r.usage,
+		Performance:      stepPerformance(stepStart, r.usage, firstTokenAt),
 		Sources:          r.sources,
 		Files:            r.files,
 		Request: types.StepRequest{

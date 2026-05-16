@@ -23,11 +23,16 @@ const (
 	DiagnosticEventOnObjectStepStart        DiagnosticEventType = "onObjectStepStart"
 	DiagnosticEventOnObjectStepFinish       DiagnosticEventType = "onObjectStepFinish"
 	DiagnosticEventOnEmbedStart             DiagnosticEventType = "onEmbedStart"
-	DiagnosticEventOnEmbedFinish            DiagnosticEventType = "onEmbedFinish"
+	DiagnosticEventOnEmbedEnd               DiagnosticEventType = "onEmbedEnd"
 	DiagnosticEventOnRerankStart            DiagnosticEventType = "onRerankStart"
-	DiagnosticEventOnRerankFinish           DiagnosticEventType = "onRerankFinish"
-	DiagnosticEventOnFinish                 DiagnosticEventType = "onFinish"
+	DiagnosticEventOnRerankEnd              DiagnosticEventType = "onRerankEnd"
+	DiagnosticEventOnEnd                    DiagnosticEventType = "onEnd"
 	DiagnosticEventOnError                  DiagnosticEventType = "onError"
+
+	// Deprecated compatibility aliases.
+	DiagnosticEventOnEmbedFinish  DiagnosticEventType = DiagnosticEventOnEmbedEnd
+	DiagnosticEventOnRerankFinish DiagnosticEventType = DiagnosticEventOnRerankEnd
+	DiagnosticEventOnFinish       DiagnosticEventType = DiagnosticEventOnEnd
 )
 
 // DiagnosticMessage is published to diagnostic subscribers for every telemetry

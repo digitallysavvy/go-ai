@@ -73,6 +73,14 @@ type LanguageModelCallEndEvent struct {
 	Usage         TelemetryUsage
 	Content       interface{}
 	ResponseID    string
+	Performance   LanguageModelCallPerformance
+}
+
+// LanguageModelCallPerformance contains timing statistics for provider model work.
+type LanguageModelCallPerformance struct {
+	ResponseTimeMs     int64   `json:"responseTimeMs"`
+	TokensPerSecond    float64 `json:"tokensPerSecond"`
+	TimeToFirstTokenMs *int64  `json:"timeToFirstTokenMs,omitempty"`
 }
 
 // EmbeddingModelCallStartEvent is emitted immediately before an embedding model call.
@@ -264,7 +272,10 @@ type TelemetryIntegration interface {
 	// whether the execution succeeded or failed.
 	OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent)
 
-	// OnChunk is called for each stream chunk during streaming generation.
+	// OnChunk is retained for source compatibility with older integrations.
+	// New telemetry dispatchers do not emit chunk events.
+	//
+	// Deprecated: use OnStepFinish, OnLanguageModelCallEnd, and OnEnd.
 	OnChunk(ctx context.Context, e TelemetryChunkEvent)
 
 	// OnStepFinish is called after each LLM step completes.
@@ -272,6 +283,8 @@ type TelemetryIntegration interface {
 
 	// OnFinish is called once when the AI operation completes successfully.
 	// OTel implementations should end the root span here.
+	//
+	// Deprecated: implement OnEnd instead.
 	OnFinish(ctx context.Context, e TelemetryFinishEvent)
 
 	// OnError is called when the AI operation fails with an error.
@@ -301,6 +314,10 @@ type languageModelCallEndHandler interface {
 	OnLanguageModelCallEnd(context.Context, LanguageModelCallEndEvent)
 }
 
+type endHandler interface {
+	OnEnd(context.Context, TelemetryFinishEvent)
+}
+
 type embedStartHandler interface {
 	OnEmbedStart(context.Context, EmbeddingModelCallStartEvent)
 }
@@ -309,12 +326,20 @@ type embedFinishHandler interface {
 	OnEmbedFinish(context.Context, EmbeddingModelCallEndEvent)
 }
 
+type embedEndHandler interface {
+	OnEmbedEnd(context.Context, EmbeddingModelCallEndEvent)
+}
+
 type rerankStartHandler interface {
 	OnRerankStart(context.Context, RerankingModelCallStartEvent)
 }
 
 type rerankFinishHandler interface {
 	OnRerankFinish(context.Context, RerankingModelCallEndEvent)
+}
+
+type rerankEndHandler interface {
+	OnRerankEnd(context.Context, RerankingModelCallEndEvent)
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +385,68 @@ func (NoopTelemetryIntegration) ExecuteTool(
 //	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
 type OTelTelemetryIntegration struct{}
 
+type otelSpanEntry struct {
+	span trace.Span
+}
+
+var otelModelCallSpans sync.Map
+
+func otelSpanKey(kind, callID string) string {
+	return kind + ":" + callID
+}
+
+func modelCallID(parts ...string) string {
+	for _, part := range parts {
+		if part != "" {
+			return part
+		}
+	}
+	return ""
+}
+
+func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSpanOptions) []attribute.KeyValue {
+	if settings == nil || settings.EnrichSpan == nil {
+		return nil
+	}
+	defer func() {
+		_ = recover()
+	}()
+	attrs := settings.EnrichSpan(ctx, opts)
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make([]attribute.KeyValue, 0, len(attrs))
+	for key, value := range attrs {
+		switch v := value.(type) {
+		case string:
+			out = append(out, attribute.String(key, v))
+		case bool:
+			out = append(out, attribute.Bool(key, v))
+		case int:
+			out = append(out, attribute.Int(key, v))
+		case int64:
+			out = append(out, attribute.Int64(key, v))
+		case float64:
+			out = append(out, attribute.Float64(key, v))
+		case []string:
+			out = append(out, attribute.StringSlice(key, v))
+		case []bool:
+			out = append(out, attribute.BoolSlice(key, v))
+		case []int:
+			out = append(out, attribute.IntSlice(key, v))
+		case []int64:
+			out = append(out, attribute.Int64Slice(key, v))
+		case []float64:
+			out = append(out, attribute.Float64Slice(key, v))
+		default:
+			if b, err := json.Marshal(v); err == nil {
+				out = append(out, attribute.String(key, string(b)))
+			}
+		}
+	}
+	return out
+}
+
 // OnStart starts the root OTel span and embeds it in the returned context.
 // Returns ctx unchanged when settings explicitly disables telemetry.
 func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
@@ -372,6 +459,13 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 		spanName += "." + e.Settings.FunctionID
 	}
 	ctx, span := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:       SpanTypeOperation,
+		OperationType:  e.OperationType,
+		RuntimeContext: e.RuntimeContext,
+	}); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 	span.SetAttributes(
 		attribute.String("ai.operationId", e.OperationType),
 		attribute.String("gen_ai.system", e.ModelProvider),
@@ -411,11 +505,167 @@ func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStep
 	}
 	spanName := fmt.Sprintf("%s step %d", opType, e.StepNumber)
 	ctx, stepSpan := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:       SpanTypeStep,
+		OperationType:  opType,
+		RuntimeContext: e.RuntimeContext,
+	}); len(attrs) > 0 {
+		stepSpan.SetAttributes(attrs...)
+	}
 	stepSpan.SetAttributes(
 		attribute.String("gen_ai.request.model", e.ModelID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 	)
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
+}
+
+// OnLanguageModelCallStart creates a child span for provider model inference.
+func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+	parent := trace.SpanFromContext(ctx)
+	if !parent.IsRecording() {
+		return
+	}
+	tracer := parent.TracerProvider().Tracer("go-ai")
+	spanName := "chat"
+	if e.ModelID != "" {
+		spanName += " " + e.ModelID
+	}
+	_, span := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:      SpanTypeLanguageModel,
+		OperationType: "ai.generateText",
+		CallID:        e.CallID,
+	}); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	span.SetAttributes(
+		attribute.String("gen_ai.operation.name", "chat"),
+		attribute.String("gen_ai.system", e.ModelProvider),
+		attribute.String("gen_ai.request.model", e.ModelID),
+	)
+	if e.CallID != "" {
+		otelModelCallSpans.Store(otelSpanKey("languageModel", e.CallID), otelSpanEntry{span: span})
+	}
+}
+
+// OnLanguageModelCallEnd records model-call attributes and ends the inference span.
+func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e LanguageModelCallEndEvent) {
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID))
+	if !ok {
+		return
+	}
+	entry, ok := value.(otelSpanEntry)
+	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	entry.span.SetAttributes(
+		attribute.String("ai.response.finishReason", e.FinishReason),
+		attribute.Int64("ai.response.responseTimeMs", e.Performance.ResponseTimeMs),
+		attribute.Float64("ai.response.tokensPerSecond", e.Performance.TokensPerSecond),
+	)
+	if e.Performance.TimeToFirstTokenMs != nil {
+		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstTokenMs", *e.Performance.TimeToFirstTokenMs))
+	}
+	if e.Usage.InputTokens != nil {
+		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
+	}
+	if e.Usage.OutputTokens != nil {
+		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
+	}
+	entry.span.End()
+}
+
+// OnEmbedStart creates a child span for embedding model inference.
+func (OTelTelemetryIntegration) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
+	parent := trace.SpanFromContext(ctx)
+	if !parent.IsRecording() {
+		return
+	}
+	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
+	tracer := parent.TracerProvider().Tracer("go-ai")
+	spanName := "embeddings"
+	if e.ModelID != "" {
+		spanName += " " + e.ModelID
+	}
+	_, span := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:      SpanTypeEmbedding,
+		OperationType: e.OperationID,
+		CallID:        callID,
+	}); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	span.SetAttributes(
+		attribute.String("gen_ai.operation.name", "embeddings"),
+		attribute.String("gen_ai.system", e.ModelProvider),
+		attribute.String("gen_ai.request.model", e.ModelID),
+	)
+	if callID != "" {
+		otelModelCallSpans.Store(otelSpanKey("embedding", callID), otelSpanEntry{span: span})
+	}
+}
+
+// OnEmbedEnd records embedding attributes and ends the embedding span.
+func (OTelTelemetryIntegration) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
+	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
+	if !ok {
+		return
+	}
+	entry, ok := value.(otelSpanEntry)
+	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	entry.span.SetAttributes(attribute.Int("ai.embeddings.count", len(e.Embeddings)))
+	if e.Usage.InputTokens > 0 {
+		entry.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", e.Usage.InputTokens))
+	}
+	entry.span.End()
+}
+
+// OnRerankStart creates a child span for reranking model inference.
+func (OTelTelemetryIntegration) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
+	parent := trace.SpanFromContext(ctx)
+	if !parent.IsRecording() {
+		return
+	}
+	callID := modelCallID(e.CallID, e.OperationID)
+	tracer := parent.TracerProvider().Tracer("go-ai")
+	spanName := "reranking"
+	if e.ModelID != "" {
+		spanName += " " + e.ModelID
+	}
+	_, span := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:      SpanTypeReranking,
+		OperationType: e.OperationID,
+		CallID:        callID,
+	}); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	span.SetAttributes(
+		attribute.String("gen_ai.operation.name", "reranking"),
+		attribute.String("gen_ai.system", e.ModelProvider),
+		attribute.String("gen_ai.request.model", e.ModelID),
+	)
+	if callID != "" {
+		otelModelCallSpans.Store(otelSpanKey("reranking", callID), otelSpanEntry{span: span})
+	}
+}
+
+// OnRerankEnd records reranking attributes and ends the reranking span.
+func (OTelTelemetryIntegration) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
+	callID := modelCallID(e.CallID, e.OperationID)
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", callID))
+	if !ok {
+		return
+	}
+	entry, ok := value.(otelSpanEntry)
+	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))
+	entry.span.End()
 }
 
 // OnToolCallStart starts a child span for tool execution and embeds it.
@@ -426,6 +676,12 @@ func (OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e Telemetry
 	}
 	tracer := span.TracerProvider().Tracer("go-ai")
 	ctx, child := tracer.Start(ctx, "ai.toolCall."+e.ToolName)
+	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+		SpanType: SpanTypeTool,
+		CallID:   e.ToolCallID,
+	}); len(attrs) > 0 {
+		child.SetAttributes(attrs...)
+	}
 	child.SetAttributes(
 		attribute.String("ai.toolCall.id", e.ToolCallID),
 		attribute.String("ai.toolCall.name", e.ToolName),
@@ -562,8 +818,8 @@ func (OTelTelemetryIntegration) OnStepFinish(ctx context.Context, e TelemetrySte
 	stepSpan.End()
 }
 
-// OnFinish sets output attributes on the root span and ends it.
-func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishEvent) {
+// OnEnd sets output attributes on the root span and ends it.
+func (OTelTelemetryIntegration) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
@@ -640,6 +896,11 @@ func (OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishE
 		span.SetAttributes(attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *e.Usage.ReasoningTokens))
 	}
 	span.End()
+}
+
+// OnFinish is a deprecated compatibility alias for OnEnd.
+func (i OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishEvent) {
+	i.OnEnd(ctx, e)
 }
 
 // OnError records the error on the root span and ends it.
@@ -812,17 +1073,28 @@ func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	}
 }
 
-// FireOnEmbedFinish publishes and fans out an embedding model-call finish event.
-func FireOnEmbedFinish(ctx context.Context, e EmbeddingModelCallEndEvent) {
+// FireOnEmbedEnd publishes and fans out an embedding model-call end event.
+func FireOnEmbedEnd(ctx context.Context, e EmbeddingModelCallEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnEmbedFinish, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnEmbedEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(embedEndHandler); ok {
+			handler.OnEmbedEnd(ctx, e)
+			continue
+		}
 		if handler, ok := integration.(embedFinishHandler); ok {
 			handler.OnEmbedFinish(ctx, e)
 		}
 	}
+}
+
+// FireOnEmbedFinish publishes and fans out an embedding model-call finish event.
+//
+// Deprecated: use FireOnEmbedEnd.
+func FireOnEmbedFinish(ctx context.Context, e EmbeddingModelCallEndEvent) {
+	FireOnEmbedEnd(ctx, e)
 }
 
 // FireOnRerankStart publishes and fans out a reranking model-call start event.
@@ -838,17 +1110,28 @@ func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	}
 }
 
-// FireOnRerankFinish publishes and fans out a reranking model-call finish event.
-func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
+// FireOnRerankEnd publishes and fans out a reranking model-call end event.
+func FireOnRerankEnd(ctx context.Context, e RerankingModelCallEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnRerankFinish, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnRerankEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
+		if handler, ok := integration.(rerankEndHandler); ok {
+			handler.OnRerankEnd(ctx, e)
+			continue
+		}
 		if handler, ok := integration.(rerankFinishHandler); ok {
 			handler.OnRerankFinish(ctx, e)
 		}
 	}
+}
+
+// FireOnRerankFinish publishes and fans out a reranking model-call finish event.
+//
+// Deprecated: use FireOnRerankEnd.
+func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
+	FireOnRerankEnd(ctx, e)
 }
 
 // FireOnToolCallStart calls OnToolCallStart on every registered integration,
@@ -875,15 +1158,12 @@ func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	}
 }
 
-// FireOnChunk calls OnChunk on every registered integration.
+// FireOnChunk is retained for source compatibility with older integrations.
+// The current TypeScript AI SDK no longer emits telemetry chunk events, so this
+// function intentionally does not publish diagnostics or call integrations.
+//
+// Deprecated: chunk telemetry has been removed.
 func FireOnChunk(ctx context.Context, e TelemetryChunkEvent) {
-	if telemetryDisabled(e.Settings) {
-		return
-	}
-	PublishDiagnostic(ctx, DiagnosticEventOnChunk, e)
-	for _, i := range snapshotFor(e.Settings) {
-		i.OnChunk(ctx, e)
-	}
 }
 
 // FireOnStepFinish calls OnStepFinish on every registered integration.
@@ -897,15 +1177,27 @@ func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
 	}
 }
 
-// FireOnFinish calls OnFinish on every registered integration.
-func FireOnFinish(ctx context.Context, e TelemetryFinishEvent) {
+// FireOnEnd calls OnEnd on every registered integration, falling back to the
+// deprecated OnFinish method for older integrations.
+func FireOnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnFinish, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
+		if handler, ok := i.(endHandler); ok {
+			handler.OnEnd(ctx, e)
+			continue
+		}
 		i.OnFinish(ctx, e)
 	}
+}
+
+// FireOnFinish calls OnFinish on every registered integration.
+//
+// Deprecated: use FireOnEnd.
+func FireOnFinish(ctx context.Context, e TelemetryFinishEvent) {
+	FireOnEnd(ctx, e)
 }
 
 // FireOnError calls OnError on every registered integration.
