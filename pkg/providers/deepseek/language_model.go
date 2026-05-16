@@ -104,6 +104,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
@@ -147,25 +148,61 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			"type": opts.ResponseFormat.Type,
 		}
 	}
-	// Map top-level Reasoning to DeepSeek thinking object.
-	// DeepSeek uses { thinking: { type: "enabled" | "disabled" } }, not reasoning_effort.
-	// provider-default → omit (let DeepSeek use its own default).
+	deepseekOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("deepseek", opts.ProviderOptions)
+	warnings = append(warnings, optionWarnings...)
+	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
+	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			body["thinking"] = map[string]interface{}{"type": "disabled"}
-		case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh:
+		case types.ReasoningMinimal:
 			body["thinking"] = map[string]interface{}{"type": "enabled"}
-			// ReasoningDefault: omit
+			body["reasoning_effort"] = "low"
+			if !hasProviderReasoningEffort {
+				warnings = append(warnings, reasoningCompatibilityWarning("minimal", "low"))
+			}
+		case types.ReasoningLow:
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			body["reasoning_effort"] = "low"
+		case types.ReasoningMedium:
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			body["reasoning_effort"] = "medium"
+		case types.ReasoningHigh:
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			body["reasoning_effort"] = "high"
+		case types.ReasoningXHigh:
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			body["reasoning_effort"] = "max"
+			if !hasProviderReasoningEffort {
+				warnings = append(warnings, reasoningCompatibilityWarning("xhigh", "max"))
+			}
 		}
 	}
-	deepseekOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("deepseek", opts.ProviderOptions)
 	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
 			body["thinking"] = map[string]interface{}{"type": thinkingType}
 		}
 	}
+	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
+		body["reasoning_effort"] = effort
+	}
+	if thinking, ok := body["thinking"].(map[string]interface{}); ok {
+		if thinking["type"] == "disabled" {
+			delete(body, "reasoning_effort")
+		}
+	}
 	return body, warnings
+}
+
+func reasoningCompatibilityWarning(reasoning, effort string) types.Warning {
+	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", reasoning, effort)
+	return types.Warning{
+		Type:    "compatibility",
+		Feature: "reasoning",
+		Details: details,
+		Message: details,
+	}
 }
 
 func (m *LanguageModel) toDeepSeekMessages(messages []types.Message) []map[string]interface{} {

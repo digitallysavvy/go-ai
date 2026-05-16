@@ -209,7 +209,7 @@ func TestXAIChatReasoningEffortProviderOption(t *testing.T) {
 }
 
 // TestXAIChatReasoningEffortTopLevelMedium verifies that opts.Reasoning=Medium maps
-// to reasoning_effort:"low" for the Chat API (which only supports low/high).
+// to reasoning_effort:"medium".
 func TestXAIChatReasoningEffortTopLevelMedium(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, "grok-3")
@@ -219,8 +219,40 @@ func TestXAIChatReasoningEffortTopLevelMedium(t *testing.T) {
 		Reasoning: &reasoning,
 	}
 	body := model.buildRequestBody(opts, false)
-	if body["reasoning_effort"] != "low" {
-		t.Errorf("reasoning_effort = %v, want %q (medium maps to low for chat)", body["reasoning_effort"], "low")
+	if body["reasoning_effort"] != "medium" {
+		t.Errorf("reasoning_effort = %v, want %q", body["reasoning_effort"], "medium")
+	}
+}
+
+func TestXAIChatReasoningEffortProviderOptionNone(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "grok-4.3")
+	effort := "none"
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"reasoningEffort": effort,
+			},
+		},
+	}
+	body := model.buildRequestBody(opts, false)
+	if body["reasoning_effort"] != "none" {
+		t.Errorf("reasoning_effort = %v, want %q", body["reasoning_effort"], "none")
+	}
+}
+
+func TestXAIChatReasoningEffortTopLevelNoneOmitted(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "grok-4.3")
+	reasoning := types.ReasoningNone
+	opts := &provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &reasoning,
+	}
+	body := model.buildRequestBody(opts, false)
+	if _, ok := body["reasoning_effort"]; ok {
+		t.Errorf("reasoning_effort must be omitted for top-level none, got %v", body["reasoning_effort"])
 	}
 }
 
@@ -271,6 +303,55 @@ func TestXAIChatParallelFunctionCalling(t *testing.T) {
 	}
 }
 
+func TestXAIChatParallelFunctionCallingSnakeCaseProviderOption(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "grok-3")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"parallel_function_calling": false,
+			},
+		},
+	}
+	body := model.buildRequestBody(opts, false)
+	if body["parallel_function_calling"] != false {
+		t.Errorf("parallel_function_calling = %v, want false", body["parallel_function_calling"])
+	}
+}
+
+func TestXAIChatToolsDoNotEmitAdditionalPropertiesFalse(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "grok-3")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		Tools: []types.Tool{
+			{
+				Name:        "lookup",
+				Description: "lookup tool",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"q": map[string]interface{}{"type": "string"},
+					},
+					"required":             []string{"q"},
+					"additionalProperties": false,
+				},
+			},
+		},
+	}
+	body := model.buildRequestBody(opts, false)
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	fn := tools[0]["function"].(map[string]interface{})
+	params := fn["parameters"].(map[string]interface{})
+	if _, exists := params["additionalProperties"]; exists {
+		t.Fatalf("unexpected additionalProperties in xAI tool schema: %#v", params)
+	}
+}
+
 // TestXAIChatSearchParametersBasic verifies that searchParameters with mode:"auto"
 // is serialized as search_parameters:{mode:"auto"} in the request body.
 func TestXAIChatSearchParametersBasic(t *testing.T) {
@@ -282,8 +363,8 @@ func TestXAIChatSearchParametersBasic(t *testing.T) {
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
 				"searchParameters": map[string]interface{}{
-					"mode":             "auto",
-					"returnCitations":  &returnCitations,
+					"mode":            "auto",
+					"returnCitations": &returnCitations,
 				},
 			},
 		},

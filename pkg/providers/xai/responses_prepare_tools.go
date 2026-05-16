@@ -102,7 +102,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
-			"parameters":  t.Parameters,
+			"parameters":  stripAdditionalPropertiesFalse(t.Parameters),
 		}
 	}
 }

@@ -64,6 +64,12 @@ const (
 
 	// ModelGrok4200309Reasoning — Grok 4.20 reasoning dated release (2025-03-09)
 	ModelGrok4200309Reasoning = "grok-4.20-0309-reasoning"
+
+	// ModelGrok43 — Grok 4.3 language model
+	ModelGrok43 = "grok-4.3"
+
+	// ModelGrokLatest — latest Grok language model alias
+	ModelGrokLatest = "grok-latest"
 )
 
 // Image model ID constants for xAI Grok image generation models.

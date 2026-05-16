@@ -7,8 +7,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// DeepSeek uses { thinking: { type: "enabled" | "disabled" } }, not reasoning_effort.
-
 func TestDeepSeekReasoningAllLevels(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")
@@ -16,15 +14,16 @@ func TestDeepSeekReasoningAllLevels(t *testing.T) {
 	tests := []struct {
 		level       types.ReasoningLevel
 		wantType    string
+		wantEffort  string
 		hasThinking bool
 	}{
-		{types.ReasoningNone, "disabled", true},
-		{types.ReasoningMinimal, "enabled", true},
-		{types.ReasoningLow, "enabled", true},
-		{types.ReasoningMedium, "enabled", true},
-		{types.ReasoningHigh, "enabled", true},
-		{types.ReasoningXHigh, "enabled", true},
-		{types.ReasoningDefault, "", false},
+		{types.ReasoningNone, "disabled", "", true},
+		{types.ReasoningMinimal, "enabled", "low", true},
+		{types.ReasoningLow, "enabled", "low", true},
+		{types.ReasoningMedium, "enabled", "medium", true},
+		{types.ReasoningHigh, "enabled", "high", true},
+		{types.ReasoningXHigh, "enabled", "max", true},
+		{types.ReasoningDefault, "", "", false},
 	}
 
 	for _, tt := range tests {
@@ -46,8 +45,12 @@ func TestDeepSeekReasoningAllLevels(t *testing.T) {
 					t.Errorf("thinking.type: want %q, got %v", tt.wantType, thinking["type"])
 				}
 			}
-			if _, ok := body["reasoning_effort"]; ok {
-				t.Error("DeepSeek should not set reasoning_effort; it uses thinking object")
+			if tt.wantEffort == "" {
+				if _, ok := body["reasoning_effort"]; ok {
+					t.Error("reasoning_effort should be omitted")
+				}
+			} else if body["reasoning_effort"] != tt.wantEffort {
+				t.Errorf("reasoning_effort: want %q, got %v", tt.wantEffort, body["reasoning_effort"])
 			}
 		})
 	}
@@ -110,5 +113,79 @@ func TestDeepSeekProviderOptionsOverrideReasoning(t *testing.T) {
 	thinking := body["thinking"].(map[string]interface{})
 	if thinking["type"] != "disabled" {
 		t.Errorf("provider options should override top-level Reasoning; got thinking.type=%v", thinking["type"])
+	}
+	if _, ok := body["reasoning_effort"]; ok {
+		t.Errorf("reasoning_effort must be omitted when thinking is disabled: %v", body["reasoning_effort"])
+	}
+}
+
+func TestDeepSeekProviderOptionsReasoningEffort(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "deepseek-reasoner")
+
+	level := types.ReasoningHigh
+	opts := &provider.GenerateOptions{
+		Reasoning: &level,
+		ProviderOptions: map[string]interface{}{
+			"deepseek": map[string]interface{}{
+				"reasoningEffort": "max",
+			},
+		},
+	}
+	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for reasoningEffort option, got %#v", warnings)
+	}
+	if body["reasoning_effort"] != "max" {
+		t.Fatalf("reasoning_effort = %v, want max", body["reasoning_effort"])
+	}
+}
+
+func TestDeepSeekReasoningCompatibilityWarnings(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "deepseek-reasoner")
+
+	tests := []struct {
+		name       string
+		level      types.ReasoningLevel
+		wantDetail string
+	}{
+		{
+			name:       "minimal",
+			level:      types.ReasoningMinimal,
+			wantDetail: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`,
+		},
+		{
+			name:       "xhigh",
+			level:      types.ReasoningXHigh,
+			wantDetail: `reasoning "xhigh" is not directly supported by this model. mapped to effort "max".`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &tt.level}, false)
+			if len(warnings) != 1 {
+				t.Fatalf("warnings = %#v, want one compatibility warning", warnings)
+			}
+			if warnings[0].Type != "compatibility" || warnings[0].Feature != "reasoning" || warnings[0].Details != tt.wantDetail {
+				t.Fatalf("warning = %#v, want compatibility reasoning detail %q", warnings[0], tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestDeepSeekProviderReasoningEffortSuppressesMappingWarning(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "deepseek-reasoner")
+	level := types.ReasoningXHigh
+	_, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Reasoning: &level,
+		ProviderOptions: map[string]interface{}{
+			"deepseek": map[string]interface{}{"reasoningEffort": "max"},
+		},
+	}, false)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none when provider reasoningEffort is explicit", warnings)
 	}
 }

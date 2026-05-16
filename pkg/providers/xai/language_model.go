@@ -143,8 +143,7 @@ type XAIChatProviderOptions struct {
 	TopLogprobs *int `json:"topLogprobs,omitempty"`
 
 	// ReasoningEffort controls the reasoning depth for Grok reasoning models.
-	// Valid values: "low", "high". Overrides the top-level opts.Reasoning.
-	// Note: Chat API does not support "medium" — use Responses API for that.
+	// Valid values: "none", "low", "medium", "high". Overrides the top-level opts.Reasoning.
 	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 
 	// ParallelFunctionCalling controls whether the model may call multiple tools
@@ -220,6 +219,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			if jsonData, err := json.Marshal(raw); err == nil {
 				json.Unmarshal(jsonData, &xaiOpts) //nolint:errcheck
 			}
+			if rawMap, ok := raw.(map[string]interface{}); ok {
+				if v, ok := rawMap["parallel_function_calling"].(bool); ok {
+					xaiOpts.ParallelFunctionCalling = &v
+				}
+			}
 		}
 	}
 
@@ -250,7 +254,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["top_p"] = *opts.TopP
 	}
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		body["tools"] = xaiToolsWithoutAdditionalPropertiesFalse(tool.ToOpenAIFormat(opts.Tools))
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -292,14 +296,15 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Reasoning effort: provider option takes precedence over top-level opts.Reasoning.
-	// Chat API only supports "low"|"high" (medium maps to "low").
 	var effort string
 	if xaiOpts.ReasoningEffort != nil {
 		effort = *xaiOpts.ReasoningEffort
 	} else if opts.Reasoning != nil {
 		switch *opts.Reasoning {
-		case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium:
+		case types.ReasoningMinimal, types.ReasoningLow:
 			effort = "low"
+		case types.ReasoningMedium:
+			effort = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			effort = "high"
 			// ReasoningNone → omit (no reasoning_effort field)
@@ -609,6 +614,42 @@ func convertXaiUsage(usage xaiUsage) types.Usage {
 	}
 
 	return result
+}
+
+func xaiToolsWithoutAdditionalPropertiesFalse(in []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(in))
+	for _, t := range in {
+		cp := map[string]interface{}{}
+		for k, v := range t {
+			cp[k] = stripAdditionalPropertiesFalse(v)
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
+func stripAdditionalPropertiesFalse(v interface{}) interface{} {
+	switch vv := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(vv))
+		for k, child := range vv {
+			if k == "additionalProperties" {
+				if b, ok := child.(bool); ok && !b {
+					continue
+				}
+			}
+			out[k] = stripAdditionalPropertiesFalse(child)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(vv))
+		for i := range vv {
+			out[i] = stripAdditionalPropertiesFalse(vv[i])
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // xaiChoice represents a single choice in an XAI chat completion response.

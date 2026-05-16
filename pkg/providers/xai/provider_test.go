@@ -109,3 +109,23 @@ func TestRemovedModelsNotInList(t *testing.T) {
 		}
 	}
 }
+
+func TestCurrentChatModelIDConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"Grok420NonReasoning", ModelGrok420NonReasoning, "grok-4.20-non-reasoning"},
+		{"Grok420Reasoning", ModelGrok420Reasoning, "grok-4.20-reasoning"},
+		{"Grok43", ModelGrok43, "grok-4.3"},
+		{"GrokLatest", ModelGrokLatest, "grok-latest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("model ID = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}

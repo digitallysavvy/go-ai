@@ -39,6 +39,50 @@ func TestXAIResponsesLanguageModelMetadata(t *testing.T) {
 	}
 }
 
+func TestXAIResponsesToolsDoNotEmitAdditionalPropertiesFalse(t *testing.T) {
+	tools := prepareXAIResponsesTools([]types.Tool{
+		{
+			Name:        "saveContactWithAddress",
+			Description: "Save a contact with an address.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"address": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"city":    map[string]interface{}{"type": "string"},
+							"country": map[string]interface{}{"type": "string"},
+						},
+						"required":             []string{"city", "country"},
+						"additionalProperties": false,
+					},
+				},
+				"required":             []string{"address"},
+				"additionalProperties": false,
+			},
+		},
+	})
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", tools)
+	}
+	tool, ok := tools[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool type = %T, want map[string]interface{}", tools[0])
+	}
+	params, ok := tool["parameters"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("parameters = %#v, want map[string]interface{}", tool["parameters"])
+	}
+	if _, exists := params["additionalProperties"]; exists {
+		t.Fatalf("unexpected root additionalProperties in xAI Responses tool schema: %#v", params)
+	}
+	props := params["properties"].(map[string]interface{})
+	address := props["address"].(map[string]interface{})
+	if _, exists := address["additionalProperties"]; exists {
+		t.Fatalf("unexpected nested additionalProperties in xAI Responses tool schema: %#v", address)
+	}
+}
+
 // TestXAIResponsesReasoningSummary verifies that the reasoningSummary provider option
 // is serialized as reasoning.summary in the Responses API request body.
 func TestXAIResponsesReasoningSummary(t *testing.T) {
