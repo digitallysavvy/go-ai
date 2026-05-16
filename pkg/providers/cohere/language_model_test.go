@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -183,5 +184,33 @@ func TestCohereReasoningDefaultOmitted(t *testing.T) {
 	}
 	if _, ok := body["thinking"]; ok {
 		t.Errorf("expected no thinking field when Reasoning is ReasoningDefault, got: %v", body["thinking"])
+	}
+}
+
+func TestCohereMalformedToolArgumentsReturnsValidationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"generation_id":"test",
+			"message":{
+				"role":"assistant",
+				"content":[{"type":"text","text":"hello"}],
+				"tool_calls":[{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"a\":"}}]
+			},
+			"finish_reason":"TOOL_CALL",
+			"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}
+		}`))
+	}))
+	defer server.Close()
+
+	prov := New(Config{BaseURL: server.URL, APIKey: "test-key"})
+	model := NewLanguageModel(prov, "command-r-plus")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("error type = %T, want validation error", err)
 	}
 }

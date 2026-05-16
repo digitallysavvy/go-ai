@@ -72,7 +72,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertV2Response(response), nil
+	return m.convertV2Response(response)
 }
 
 // DoStream performs streaming text generation
@@ -201,7 +201,9 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 		var b strings.Builder
 		for _, c := range content {
 			if c["type"] == "text" {
-				b.WriteString(c["text"].(string))
+				if text, ok := c["text"].(string); ok {
+					b.WriteString(text)
+				}
 			}
 		}
 		out = append(out, map[string]interface{}{"role": "user", "content": b.String()})
@@ -276,7 +278,7 @@ func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[stri
 	}
 }
 
-func (m *LanguageModel) convertV2Response(resp cohereV2Response) *types.GenerateResult {
+func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.GenerateResult, error) {
 	result := &types.GenerateResult{
 		FinishReason: mapCohereV2FinishReason(resp.FinishReason),
 		RawResponse:  resp,
@@ -306,15 +308,17 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) *types.Generate
 		}
 	}
 	for _, tc := range resp.Message.ToolCalls {
-		var args map[string]interface{}
-		json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+		args, err := parseCohereToolArguments(tc.Function.Arguments)
+		if err != nil {
+			return nil, err
+		}
 		result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 			ID:        tc.ID,
 			ToolName:  tc.Function.Name,
 			Arguments: args,
 		})
 	}
-	return result
+	return result, nil
 }
 
 func (m *LanguageModel) handleError(err error) error {
@@ -378,6 +382,32 @@ type cohereV2PendingTool struct {
 	name      string
 	arguments string
 	finished  bool
+}
+
+func parseCohereToolArguments(raw string) (map[string]interface{}, error) {
+	if raw == "" || raw == "null" {
+		return map[string]interface{}{}, nil
+	}
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, providererrors.NewValidationError(
+			"tool_calls[].function.arguments",
+			fmt.Sprintf("invalid JSON arguments in Cohere tool call: %v", err),
+			err,
+		)
+	}
+	if parsed == nil {
+		return map[string]interface{}{}, nil
+	}
+	obj, ok := parsed.(map[string]interface{})
+	if !ok {
+		return nil, providererrors.NewValidationError(
+			"tool_calls[].function.arguments",
+			"Cohere tool call arguments must decode to a JSON object",
+			nil,
+		)
+	}
+	return obj, nil
 }
 
 func newCohereV2Stream(reader io.ReadCloser) *cohereV2Stream {
@@ -543,9 +573,11 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		for id, tc := range s.pendingTools {
 			if !tc.finished {
 				tc.finished = true
-				var args map[string]interface{}
-				if tc.arguments != "" {
-					json.Unmarshal([]byte(tc.arguments), &args) //nolint:errcheck
+				args, err := parseCohereToolArguments(tc.arguments)
+				if err != nil {
+					// Streaming parity: keep the stream alive on malformed incremental
+					// tool JSON and emit an empty-args tool call.
+					args = map[string]interface{}{}
 				}
 				delete(s.pendingTools, id)
 				return &provider.StreamChunk{
