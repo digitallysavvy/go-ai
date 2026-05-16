@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/google/uuid"
 )
@@ -81,6 +82,9 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 	if config.System == "" && config.Prompt != "" {
 		config.System = config.Prompt
 	}
+	if config.Instructions != nil {
+		config.System = *config.Instructions
+	}
 	if config.RuntimeContext == nil && config.ExperimentalContext != nil {
 		config.RuntimeContext = config.ExperimentalContext
 	}
@@ -146,7 +150,82 @@ func (a *ToolLoopAgent) Tools() []types.Tool {
 
 // Generate runs the agent with per-call options, mirroring TypeScript
 // ToolLoopAgent.generate with an idiomatic Go options struct.
-func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error) {
+func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error) {
+	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	config := a.config.withGenerateOptions(opts)
+	if config.Model == nil {
+		return nil, fmt.Errorf("model is required")
+	}
+	if err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions); err != nil {
+		return nil, err
+	}
+
+	messages := opts.Messages
+	prompt := opts.Prompt
+	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	if len(callConfig.Messages) > 0 {
+		messages = callConfig.Messages
+		prompt = ""
+	} else {
+		prompt = callConfig.Prompt
+	}
+	cbs := mergeCallbacks(config, agentCallbacks{
+		onStart:          opts.OnStart,
+		onStepStart:      opts.OnStepStart,
+		onToolCallStart:  opts.OnToolCallStart,
+		onToolCallFinish: opts.OnToolCallFinish,
+		onStepFinish:     opts.OnStepFinish,
+		onFinish:         opts.OnFinish,
+	})
+	return ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:                       callConfig.Model,
+		Prompt:                      prompt,
+		Messages:                    messages,
+		System:                      callConfig.System,
+		Instructions:                &callConfig.System,
+		Temperature:                 callConfig.Temperature,
+		MaxTokens:                   callConfig.MaxTokens,
+		TopP:                        callConfig.TopP,
+		TopK:                        callConfig.TopK,
+		FrequencyPenalty:            callConfig.FrequencyPenalty,
+		PresencePenalty:             callConfig.PresencePenalty,
+		StopSequences:               callConfig.StopSequences,
+		Seed:                        callConfig.Seed,
+		Headers:                     callConfig.Headers,
+		Tools:                       callConfig.Tools,
+		ActiveTools:                 callConfig.ActiveTools,
+		ToolChoice:                  defaultToolChoice(callConfig.ToolChoice),
+		ToolApproval:                callConfig.ToolApproval,
+		StopWhen:                    callConfig.StopWhen,
+		Timeout:                     config.Timeout,
+		Reasoning:                   callConfig.Reasoning,
+		SendReasoning:               callConfig.SendReasoning,
+		ProviderOptions:             callConfig.ProviderOptions,
+		Include:                     callConfig.Include,
+		ExperimentalSandbox:         callConfig.ExperimentalSandbox,
+		ExperimentalRefineToolInput: callConfig.ExperimentalRefineToolInput,
+		ExperimentalDownload:        callConfig.ExperimentalDownload,
+		RuntimeContext:              callConfig.RuntimeContext,
+		ToolsContext:                callConfig.ToolsContext,
+		ExperimentalContext:         config.ExperimentalContext,
+		Output:                      callConfig.Output,
+		Telemetry:                   callConfig.Telemetry,
+		ExperimentalTelemetry:       callConfig.ExperimentalTelemetry,
+		Internal:                    callConfig.Internal,
+		OnStart:                     cbs.onStart,
+		OnStepStart:                 cbs.onStepStart,
+		OnToolExecutionStart:        cbs.onToolCallStart,
+		OnToolExecutionEnd:          cbs.onToolCallFinish,
+		OnStepFinishEvent:           cbs.onStepFinish,
+		OnFinishEvent:               cbs.onFinish,
+	})
+}
+
+// GenerateAgent preserves the Go-specific AgentResult loop shape. Prefer
+// Generate when matching TypeScript ToolLoopAgent.generate.
+func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error) {
 	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
@@ -155,13 +234,11 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		warnings: append([]types.Warning{}, a.warnings...),
 	}
 	messages := opts.Messages
-	if len(messages) == 0 {
-		if opts.Prompt != "" {
-			messages = []types.Message{{
-				Role:    types.RoleUser,
-				Content: []types.ContentPart{types.TextContent{Text: opts.Prompt}},
-			}}
-		}
+	if len(messages) == 0 && opts.Prompt != "" {
+		messages = []types.Message{{
+			Role:    types.RoleUser,
+			Content: []types.ContentPart{types.TextContent{Text: opts.Prompt}},
+		}}
 	}
 	cbs := agentCallbacks{
 		onStart:          opts.OnStart,
@@ -189,7 +266,13 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	}
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 1, messages, nil, types.Usage{}, nil)
+	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	if len(callConfig.Messages) > 0 {
+		messages = callConfig.Messages
+		prompt = ""
+	} else {
+		prompt = callConfig.Prompt
+	}
 	cbs := mergeCallbacks(config, agentCallbacks{
 		onStart:          opts.OnStart,
 		onStepStart:      opts.OnStepStart,
@@ -199,38 +282,47 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		onFinish:         opts.OnFinish,
 	})
 	streamOpts := ai.StreamTextOptions{
-		Model:                config.Model,
-		Prompt:               prompt,
-		Messages:             messages,
-		System:               callConfig.System,
-		Temperature:          callConfig.Temperature,
-		MaxTokens:            callConfig.MaxTokens,
-		TopP:                 callConfig.TopP,
-		TopK:                 callConfig.TopK,
-		FrequencyPenalty:     callConfig.FrequencyPenalty,
-		PresencePenalty:      callConfig.PresencePenalty,
-		StopSequences:        callConfig.StopSequences,
-		Seed:                 callConfig.Seed,
-		Tools:                callConfig.Tools,
-		ToolChoice:           defaultToolChoice(callConfig.ToolChoice),
-		ToolApproval:         config.ToolApproval,
-		StopWhen:             config.StopWhen,
-		Timeout:              config.Timeout,
-		Reasoning:            callConfig.Reasoning,
-		SendReasoning:        callConfig.SendReasoning,
-		ProviderOptions:      callConfig.ProviderOptions,
-		RuntimeContext:       callConfig.RuntimeContext,
-		ToolsContext:         callConfig.ToolsContext,
-		ExperimentalContext:  config.ExperimentalContext,
-		Output:               config.Output,
-		Telemetry:            config.Telemetry,
-		OnChunk:              opts.OnChunk,
-		OnStart:              cbs.onStart,
-		OnStepStart:          cbs.onStepStart,
-		OnToolExecutionStart: cbs.onToolCallStart,
-		OnToolExecutionEnd:   cbs.onToolCallFinish,
-		OnStepFinishEvent:    cbs.onStepFinish,
-		OnFinishEvent:        cbs.onFinish,
+		Model:                       callConfig.Model,
+		Prompt:                      prompt,
+		Messages:                    messages,
+		System:                      callConfig.System,
+		Instructions:                &callConfig.System,
+		Temperature:                 callConfig.Temperature,
+		MaxTokens:                   callConfig.MaxTokens,
+		TopP:                        callConfig.TopP,
+		TopK:                        callConfig.TopK,
+		FrequencyPenalty:            callConfig.FrequencyPenalty,
+		PresencePenalty:             callConfig.PresencePenalty,
+		StopSequences:               callConfig.StopSequences,
+		Seed:                        callConfig.Seed,
+		Headers:                     callConfig.Headers,
+		Tools:                       callConfig.Tools,
+		ActiveTools:                 callConfig.ActiveTools,
+		ToolChoice:                  defaultToolChoice(callConfig.ToolChoice),
+		ToolApproval:                callConfig.ToolApproval,
+		StopWhen:                    callConfig.StopWhen,
+		Timeout:                     config.Timeout,
+		Reasoning:                   callConfig.Reasoning,
+		SendReasoning:               callConfig.SendReasoning,
+		ProviderOptions:             callConfig.ProviderOptions,
+		Include:                     callConfig.Include,
+		ExperimentalSandbox:         callConfig.ExperimentalSandbox,
+		ExperimentalRefineToolInput: callConfig.ExperimentalRefineToolInput,
+		ExperimentalDownload:        callConfig.ExperimentalDownload,
+		RuntimeContext:              callConfig.RuntimeContext,
+		ToolsContext:                callConfig.ToolsContext,
+		ExperimentalContext:         config.ExperimentalContext,
+		Output:                      callConfig.Output,
+		Telemetry:                   callConfig.Telemetry,
+		ExperimentalTelemetry:       callConfig.ExperimentalTelemetry,
+		Internal:                    callConfig.Internal,
+		OnChunk:                     opts.OnChunk,
+		OnStart:                     cbs.onStart,
+		OnStepStart:                 cbs.onStepStart,
+		OnToolExecutionStart:        cbs.onToolCallStart,
+		OnToolExecutionEnd:          cbs.onToolCallFinish,
+		OnStepFinishEvent:           cbs.onStepFinish,
+		OnFinishEvent:               cbs.onFinish,
 	}
 	return ai.StreamText(ctx, streamOpts)
 }
@@ -340,13 +432,14 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
-		callConfig := a.prepareStepCallConfig(ctx, stepNum, currentMessages, result.Steps, result.Usage, customData)
+		stepIndex := stepNum - 1
+		callConfig := a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
 
 		// CB-T23: Emit OnStepStartEvent
 		ai.Notify(ctx, ai.OnStepStartEvent{
-			StepNumber:          stepNum,
-			ModelProvider:       a.config.Model.Provider(),
-			ModelID:             a.config.Model.ModelID(),
+			StepNumber:          stepIndex,
+			ModelProvider:       callConfig.Model.Provider(),
+			ModelID:             callConfig.Model.ModelID(),
 			System:              callConfig.System,
 			Messages:            callConfig.Messages,
 			Tools:               callConfig.Tools,
@@ -358,7 +451,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 		// Call step start callback (legacy)
 		if a.config.OnStepStart != nil {
-			a.config.OnStepStart(stepNum)
+			a.config.OnStepStart(stepIndex)
 		}
 
 		// Execute one step with custom data
@@ -390,7 +483,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 				for _, toolCall := range stepResult.ToolCalls {
 					action := AgentAction{
 						ToolCall:    toolCall,
-						StepNumber:  stepNum,
+						StepNumber:  stepIndex,
 						Reasoning:   stepResult.Text, // Include any reasoning text from the step
 						RunID:       runID,
 						ParentRunID: parentRunID,
@@ -399,7 +492,14 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 					a.config.OnAgentAction(action)
 				}
 			}
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, activeTools, currentMessages, stepNum, callConfig.RuntimeContext, callConfig.ToolsContext, cbs)
+			if len(callConfig.ExperimentalRefineToolInput) > 0 {
+				refined, refineErr := ai.RefineToolCalls(ctx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
+				if refineErr != nil {
+					return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepIndex, refineErr)
+				}
+				stepResult.ToolCalls = refined
+			}
+			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, activeTools, currentMessages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
 			if err != nil {
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
@@ -410,6 +510,8 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 			stepToolResults = toolResults
 			stepResult.ToolResults = toolResults
+			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			if len(toolResults) == 0 {
 				shouldContinue = false
@@ -417,6 +519,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		}
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
+		stepResult.Response.Messages = responseMessages
 		currentMessages = append(currentMessages, responseMessages...)
 
 		// Add step to results after tool execution so step data mirrors TS step objects.
@@ -459,7 +562,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 				finish := AgentFinish{
 					Output:       stepResult.Text,
-					StepNumber:   stepNum,
+					StepNumber:   stepIndex,
 					FinishReason: stepResult.FinishReason,
 					Metadata: map[string]interface{}{
 						"total_steps": stepNum,
@@ -475,13 +578,13 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		}
 
 		// Evaluate stop conditions
-		if len(a.config.StopWhen) > 0 {
+		if len(callConfig.StopWhen) > 0 {
 			state := ai.StopConditionState{
 				Steps:    result.Steps,
 				Messages: currentMessages,
 				Usage:    result.Usage,
 			}
-			if reason := ai.EvaluateStopConditions(a.config.StopWhen, state); reason != "" {
+			if reason := ai.EvaluateStopConditions(callConfig.StopWhen, state); reason != "" {
 				result.StopReason = reason
 				result.Text = stepResult.Text
 				result.FinishReason = stepResult.FinishReason
@@ -494,7 +597,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 					finish := AgentFinish{
 						Output:       stepResult.Text,
-						StepNumber:   stepNum,
+						StepNumber:   stepIndex,
 						FinishReason: stepResult.FinishReason,
 						Metadata: map[string]interface{}{
 							"total_steps": stepNum,
@@ -529,7 +632,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 				finish := AgentFinish{
 					Output:       stepResult.Text,
-					StepNumber:   stepNum,
+					StepNumber:   stepIndex,
 					FinishReason: types.FinishReasonLength,
 					Metadata: map[string]interface{}{
 						"total_steps":   stepNum,
@@ -589,35 +692,54 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	return result, nil
 }
 
-func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
 	callConfig := PrepareCallConfig{
-		StepNumber:       stepNum,
-		System:           a.config.System,
-		Messages:         messages,
-		Tools:            a.config.Tools,
-		ToolChoice:       a.config.ToolChoice,
-		Temperature:      a.config.Temperature,
-		MaxTokens:        a.config.MaxTokens,
-		TopP:             a.config.TopP,
-		TopK:             a.config.TopK,
-		FrequencyPenalty: a.config.FrequencyPenalty,
-		PresencePenalty:  a.config.PresencePenalty,
-		StopSequences:    a.config.StopSequences,
-		Seed:             a.config.Seed,
-		Headers:          a.config.Headers,
-		Reasoning:        a.config.Reasoning,
-		SendReasoning:    a.config.SendReasoning,
-		ProviderOptions:  a.config.ProviderOptions,
-		RuntimeContext:   a.runtimeContext(),
-		ToolsContext:     a.config.ToolsContext,
-		PreviousSteps:    previousSteps,
-		AccumulatedUsage: accumulatedUsage,
-		CustomData:       customData,
-		CallOptions:      a.config.CallOptions,
+		StepNumber:                  stepNum,
+		Model:                       a.config.Model,
+		System:                      a.config.System,
+		Prompt:                      prompt,
+		Messages:                    messages,
+		Tools:                       a.config.Tools,
+		ActiveTools:                 a.config.ActiveTools,
+		ToolChoice:                  a.config.ToolChoice,
+		ToolApproval:                a.config.ToolApproval,
+		Temperature:                 a.config.Temperature,
+		MaxTokens:                   a.config.MaxTokens,
+		TopP:                        a.config.TopP,
+		TopK:                        a.config.TopK,
+		FrequencyPenalty:            a.config.FrequencyPenalty,
+		PresencePenalty:             a.config.PresencePenalty,
+		StopSequences:               a.config.StopSequences,
+		Seed:                        a.config.Seed,
+		Headers:                     a.config.Headers,
+		Reasoning:                   a.config.Reasoning,
+		SendReasoning:               a.config.SendReasoning,
+		ProviderOptions:             a.config.ProviderOptions,
+		StopWhen:                    a.config.StopWhen,
+		Output:                      a.config.Output,
+		Telemetry:                   a.config.Telemetry,
+		ExperimentalTelemetry:       a.config.ExperimentalTelemetry,
+		Include:                     a.config.Include,
+		Internal:                    a.config.Internal,
+		ExperimentalSandbox:         a.config.ExperimentalSandbox,
+		ExperimentalRefineToolInput: a.config.ExperimentalRefineToolInput,
+		ExperimentalDownload:        a.config.ExperimentalDownload,
+		RuntimeContext:              a.runtimeContext(),
+		ToolsContext:                a.config.ToolsContext,
+		PreviousSteps:               previousSteps,
+		AccumulatedUsage:            accumulatedUsage,
+		CustomData:                  customData,
+		CallOptions:                 a.config.CallOptions,
 	}
 
 	if a.config.PrepareCall != nil {
 		callConfig = a.config.PrepareCall(ctx, callConfig)
+	}
+	if callConfig.Model == nil {
+		callConfig.Model = a.config.Model
+	}
+	if len(callConfig.ActiveTools) > 0 {
+		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
 	}
 	if a.config.FilterActiveTools != nil {
 		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
@@ -632,8 +754,15 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 }
 
 func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig {
+	if opts.Model != nil {
+		c.Model = opts.Model
+	}
 	if opts.System != "" {
 		c.System = opts.System
+	}
+	if opts.Instructions != nil {
+		c.Instructions = opts.Instructions
+		c.System = *opts.Instructions
 	}
 	if opts.Prompt != "" {
 		c.Prompt = opts.Prompt
@@ -650,6 +779,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if opts.Tools != nil {
 		c.Tools = opts.Tools
+	}
+	if opts.ActiveTools != nil {
+		c.ActiveTools = opts.ActiveTools
 	}
 	if opts.ToolChoice.Type != "" {
 		c.ToolChoice = opts.ToolChoice
@@ -702,6 +834,28 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if opts.Telemetry != nil {
 		c.Telemetry = opts.Telemetry
+	}
+	if opts.ExperimentalTelemetry != nil {
+		c.ExperimentalTelemetry = opts.ExperimentalTelemetry
+	}
+	if opts.Include != nil {
+		c.Include = opts.Include
+	}
+	if opts.Internal != nil {
+		// Internal is per-call only and flows through PrepareCall.
+		c.Internal = opts.Internal
+	}
+	if opts.ToolApproval != nil {
+		c.ToolApproval = opts.ToolApproval
+	}
+	if opts.ExperimentalSandbox != nil {
+		c.ExperimentalSandbox = opts.ExperimentalSandbox
+	}
+	if opts.ExperimentalRefineToolInput != nil {
+		c.ExperimentalRefineToolInput = opts.ExperimentalRefineToolInput
+	}
+	if opts.ExperimentalDownload != nil {
+		c.ExperimentalDownload = opts.ExperimentalDownload
 	}
 	return c
 }
@@ -805,17 +959,26 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		toolChoice = types.AutoToolChoice()
 	}
 
-	responseFormat, err := responseFormatForOutput(stepCtx, a.config.Output)
+	responseFormat, err := responseFormatForOutput(stepCtx, callConfig.Output)
+	if err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	stepModel := callConfig.Model
+	if stepModel == nil {
+		stepModel = a.config.Model
+	}
+
+	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
+		Messages: callConfig.Messages,
+		System:   callConfig.System,
+	}, true, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
 	// Build generate options using potentially modified config
 	genOpts := &provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Messages: callConfig.Messages,
-			System:   callConfig.System,
-		},
+		Prompt:           prompt,
 		Temperature:      callConfig.Temperature,
 		MaxTokens:        callConfig.MaxTokens,
 		TopP:             callConfig.TopP,
@@ -832,12 +995,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Reasoning:        callConfig.Reasoning,
 		SendReasoning:    callConfig.SendReasoning,
 		ProviderOptions:  callConfig.ProviderOptions,
-		Telemetry:        a.config.Telemetry,
+		Telemetry:        callConfig.Telemetry,
 		ResponseFormat:   responseFormat,
 	}
 
 	// Call the model with step context
-	genResult, err := a.config.Model.DoGenerate(stepCtx, genOpts)
+	genResult, err := stepModel.DoGenerate(stepCtx, genOpts)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
@@ -853,16 +1016,35 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	// Create step result
+	include := ai.IncludeOptions{}
+	if callConfig.Include != nil {
+		include = *callConfig.Include
+	}
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
+		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,
+		Content:          contentFromGenerateResult(genResult),
 		ToolCalls:        genResult.ToolCalls,
+		StaticToolCalls:  filterAgentStaticToolCalls(genResult.ToolCalls),
+		DynamicToolCalls: filterAgentDynamicToolCalls(genResult.ToolCalls),
 		ToolResults:      []types.ToolResult{},
 		FinishReason:     genResult.FinishReason,
 		RawFinishReason:  rawFinishReason,
 		Usage:            genResult.Usage,
 		Warnings:         genResult.Warnings,
 		ProviderMetadata: genResult.ProviderMetadata,
+		Request: types.StepRequest{
+			Body:     includeValue(include.RequestBody, genResult.RawRequest),
+			Messages: includeAgentRequestMessages(include.RequestMessages, prompt.Messages),
+		},
+		Response: types.StepResponse{
+			Headers:  genResult.ResponseHeaders,
+			Messages: nil,
+			Body:     includeValue(include.ResponseBody, genResult.RawResponse),
+		},
+		ToolsContext:   callConfig.ToolsContext,
+		RuntimeContext: callConfig.RuntimeContext,
 	}
 
 	// Determine if we should continue
@@ -874,7 +1056,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, cbs agentCallbacks) ([]types.ToolResult, error) {
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, 0, len(toolCalls))
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
@@ -892,11 +1074,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				invalidErr = fmt.Errorf("invalid tool call for %s", call.ToolName)
 			}
 			results = append(results, types.ToolResult{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Input:      call.Arguments,
-				Error:      invalidErr,
-				Result:     types.ToolResultOutput{Type: types.ToolResultOutputError, Value: invalidErr.Error()},
+				ToolCallID:   call.ID,
+				ToolName:     call.ToolName,
+				Input:        call.Arguments,
+				Error:        invalidErr,
+				Result:       types.ToolResultOutput{Type: types.ToolResultOutputError, Value: invalidErr.Error()},
+				ToolMetadata: call.ToolMetadata,
 			})
 			continue
 		}
@@ -918,6 +1101,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Input:            call.Arguments,
 				Error:            notFoundErr,
 				ProviderExecuted: false,
+				ToolMetadata:     call.ToolMetadata,
 			})
 
 			// Call OnToolError for tool not found
@@ -945,6 +1129,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Error:            nil,
 				ProviderExecuted: true,
 				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
 			}
 			results = append(results, result)
 
@@ -966,11 +1151,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					Input:            call.Arguments,
 					Error:            err,
 					ProviderMetadata: providerMetadata,
+					ToolMetadata:     call.ToolMetadata,
 				})
 				continue
 			}
 
-			approval := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext)
+			approval := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 			if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 				if !a.config.ToolApprover(call) {
 					approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
@@ -992,6 +1178,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					ApprovalStatus:   types.ToolApprovalStatusDenied,
 					ApprovalReason:   reason,
 					ProviderMetadata: providerMetadata,
+					ToolMetadata:     call.ToolMetadata,
 				})
 				if a.config.OnToolError != nil {
 					a.config.OnToolError(call, rejectionErr)
@@ -1005,6 +1192,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
 					ApprovalStatus:   types.ToolApprovalStatusUserApproval,
 					ProviderMetadata: providerMetadata,
+					ToolMetadata:     call.ToolMetadata,
 				})
 				continue
 			}
@@ -1033,10 +1221,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}, cbs.onToolCallStart)
 
 			execOptions := types.ToolExecutionOptions{
-				ToolCallID:     call.ID,
-				UserContext:    runtimeContext,
-				RuntimeContext: runtimeContext,
-				ToolContext:    toolContext,
+				ToolCallID:          call.ID,
+				UserContext:         runtimeContext,
+				RuntimeContext:      runtimeContext,
+				ToolContext:         toolContext,
+				ToolMetadata:        call.ToolMetadata,
+				ExperimentalSandbox: experimentalSandbox,
 			}
 			startMs := time.Now().UnixMilli()
 			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
@@ -1050,6 +1240,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Error:            toolErr,
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
 			}
 			results = append(results, result)
 
@@ -1097,8 +1288,79 @@ func (a *ToolLoopAgent) runtimeContext() interface{} {
 	return a.config.ExperimentalContext
 }
 
-func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}) types.ToolApprovalResult {
-	approval := normalizeAgentToolApproval(call, tools, messages, a.config.ToolApproval, runtimeContext, toolsContext)
+func effectiveAgentDownload(download ai.DownloadFunction) ai.DownloadFunction {
+	if download != nil {
+		return download
+	}
+	return ai.DefaultDownload
+}
+
+func includeValue(include bool, value interface{}) interface{} {
+	if !include {
+		return nil
+	}
+	return value
+}
+
+func includeAgentRequestMessages(include bool, messages []types.Message) []types.Message {
+	if !include {
+		return nil
+	}
+	return append([]types.Message(nil), messages...)
+}
+
+func contentFromGenerateResult(result *types.GenerateResult) []types.ContentPart {
+	if len(result.Content) > 0 {
+		return append([]types.ContentPart(nil), result.Content...)
+	}
+	if result.Text == "" {
+		return nil
+	}
+	return []types.ContentPart{types.TextContent{Text: result.Text}}
+}
+
+func filterAgentStaticToolCalls(calls []types.ToolCall) []types.ToolCall {
+	out := make([]types.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if !call.Dynamic {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func filterAgentDynamicToolCalls(calls []types.ToolCall) []types.ToolCall {
+	out := make([]types.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if call.Dynamic {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func filterAgentStaticToolResults(results []types.ToolResult) []types.ToolResult {
+	out := make([]types.ToolResult, 0, len(results))
+	for _, result := range results {
+		if !result.Dynamic {
+			out = append(out, result)
+		}
+	}
+	return out
+}
+
+func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResult {
+	out := make([]types.ToolResult, 0, len(results))
+	for _, result := range results {
+		if result.Dynamic {
+			out = append(out, result)
+		}
+	}
+	return out
+}
+
+func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) types.ToolApprovalResult {
+	approval := normalizeAgentToolApproval(call, tools, messages, toolApproval, runtimeContext, toolsContext)
 	if approval.Status != types.ToolApprovalStatusNotApplicable {
 		return approval
 	}

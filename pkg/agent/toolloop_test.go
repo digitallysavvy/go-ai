@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // Helper function to create int64 pointers
@@ -98,8 +99,8 @@ func TestOnStepFinish_ConstructorLevel(t *testing.T) {
 
 	// Verify step result structure
 	step := capturedSteps[0]
-	if step.StepNumber != 1 {
-		t.Errorf("Expected step number 1, got %d", step.StepNumber)
+	if step.StepNumber != 0 {
+		t.Errorf("Expected step number 0, got %d", step.StepNumber)
 	}
 	if step.Text != "Step 1" {
 		t.Errorf("Expected text 'Step 1', got '%s'", step.Text)
@@ -178,7 +179,7 @@ func TestOnStepFinish_MultiStep(t *testing.T) {
 
 	// Verify step numbers are sequential
 	for i, step := range steps {
-		expectedStepNum := i + 1
+		expectedStepNum := i
 		if step.StepNumber != expectedStepNum {
 			t.Errorf("Step %d: expected step number %d, got %d", i, expectedStepNum, step.StepNumber)
 		}
@@ -302,7 +303,7 @@ func TestStepResult_Structure(t *testing.T) {
 		Model: mock,
 		Tools: []types.Tool{testTool},
 		OnStepFinish: func(step types.StepResult) {
-			if step.StepNumber == 1 {
+			if step.StepNumber == 0 {
 				capturedStep = step
 			}
 		},
@@ -315,8 +316,8 @@ func TestStepResult_Structure(t *testing.T) {
 	}
 
 	// Verify all fields are present
-	if capturedStep.StepNumber != 1 {
-		t.Errorf("Expected step number 1, got %d", capturedStep.StepNumber)
+	if capturedStep.StepNumber != 0 {
+		t.Errorf("Expected step number 0, got %d", capturedStep.StepNumber)
 	}
 
 	if capturedStep.Text == "" {
@@ -668,8 +669,8 @@ func TestOnAgentAction(t *testing.T) {
 		t.Errorf("Expected tool name 'test_tool', got '%s'", action.ToolCall.ToolName)
 	}
 
-	if action.StepNumber != 1 {
-		t.Errorf("Expected step number 1, got %d", action.StepNumber)
+	if action.StepNumber != 0 {
+		t.Errorf("Expected step number 0, got %d", action.StepNumber)
 	}
 
 	if action.Reasoning != "Using tool" {
@@ -714,8 +715,8 @@ func TestOnAgentFinish(t *testing.T) {
 		t.Errorf("Expected output 'Final answer', got '%s'", capturedFinish.Output)
 	}
 
-	if capturedFinish.StepNumber != 1 {
-		t.Errorf("Expected step number 1, got %d", capturedFinish.StepNumber)
+	if capturedFinish.StepNumber != 0 {
+		t.Errorf("Expected step number 0, got %d", capturedFinish.StepNumber)
 	}
 
 	if capturedFinish.FinishReason != types.FinishReasonStop {
@@ -2080,5 +2081,285 @@ func TestToolLoopAgent_GeneratePromptMessagesValidation(t *testing.T) {
 		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}},
 	}); err == nil {
 		t.Fatal("expected error when both prompt and messages are provided")
+	}
+}
+
+func TestToolLoopAgentGenerateReturnsCoreGenerateTextResult(t *testing.T) {
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+				Usage:        types.Usage{TotalTokens: intPtr(3)},
+			}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{Model: model})
+	result, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if result.FinalStep.Text != "ok" || result.TotalUsage.TotalTokens == nil || *result.TotalUsage.TotalTokens != 3 {
+		t.Fatalf("result = %#v, want core GenerateTextResult final step and total usage", result)
+	}
+}
+
+func TestToolLoopAgentPrepareCallCanOverrideModelAndInclude(t *testing.T) {
+	baseModel := &functionalAgentLanguageModel{
+		modelID: "base",
+		doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			t.Fatal("base model should not be called after PrepareCall override")
+			return nil, nil
+		},
+	}
+	overrideModel := &functionalAgentLanguageModel{
+		modelID: "override",
+		doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "override",
+				FinishReason: types.FinishReasonStop,
+				RawRequest:   map[string]interface{}{"body": true},
+			}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: baseModel,
+		PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+			config.Model = overrideModel
+			config.Include = &ai.IncludeOptions{RequestBody: true}
+			return config
+		},
+	})
+	result, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if result.FinalStep.Model.ModelID != "override" {
+		t.Fatalf("final step model = %#v, want override", result.FinalStep.Model)
+	}
+	if result.Request.Body == nil {
+		t.Fatal("PrepareCall include override did not retain request body")
+	}
+}
+
+func TestToolLoopAgentGenerateForwardsHeadersTelemetryAndInternalFromPrepareCall(t *testing.T) {
+	var generateOpts *provider.GenerateOptions
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			generateOpts = opts
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	telemetrySettings := &ai.TelemetrySettings{}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+			config.Headers = map[string]string{"x-agent": "generate"}
+			config.ExperimentalTelemetry = telemetrySettings
+			config.Internal = &ai.InternalOptions{
+				GenerateID:     func() string { return "agent-response-id" },
+				GenerateCallID: func() string { return "agent-call-id" },
+			}
+			return config
+		},
+	})
+	var startCallID string
+	result, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Prompt: "test",
+		OnStart: func(ctx context.Context, e ai.OnStartEvent) {
+			startCallID = e.CallID
+			if e.Headers["x-agent"] != "generate" {
+				t.Fatalf("start headers = %#v", e.Headers)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if generateOpts == nil {
+		t.Fatal("model was not called")
+	}
+	if generateOpts.Headers["x-agent"] != "generate" {
+		t.Fatalf("model headers = %#v", generateOpts.Headers)
+	}
+	if startCallID != "agent-call-id" {
+		t.Fatalf("start call id = %q, want agent-call-id", startCallID)
+	}
+	if result.Response.ID != "agent-response-id" {
+		t.Fatalf("response id = %q, want agent-response-id", result.Response.ID)
+	}
+}
+
+func TestToolLoopAgentStreamForwardsHeadersAndInternalFromPrepareCall(t *testing.T) {
+	var gotHeaders map[string]string
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "unused", FinishReason: types.FinishReasonStop}, nil
+		},
+		doStream: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			gotHeaders = opts.Headers
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+			config.Headers = map[string]string{"x-agent": "stream"}
+			config.Internal = &ai.InternalOptions{
+				GenerateCallID: func() string { return "agent-stream-call-id" },
+			}
+			return config
+		},
+	})
+	var startCallID string
+	result, err := agent.Stream(context.Background(), AgentStreamOptions{
+		AgentGenerateOptions: AgentGenerateOptions{
+			Prompt: "test",
+			OnStart: func(ctx context.Context, e ai.OnStartEvent) {
+				startCallID = e.CallID
+				if e.Headers["x-agent"] != "stream" {
+					t.Fatalf("start headers = %#v", e.Headers)
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	_ = result.Steps()
+	if gotHeaders["x-agent"] != "stream" {
+		t.Fatalf("model headers = %#v", gotHeaders)
+	}
+	if startCallID != "agent-stream-call-id" {
+		t.Fatalf("start call id = %q, want agent-stream-call-id", startCallID)
+	}
+}
+
+type functionalAgentLanguageModel struct {
+	doGenerate func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error)
+	doStream   func(context.Context, *provider.GenerateOptions) (provider.TextStream, error)
+	modelID    string
+}
+
+func (m *functionalAgentLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	return m.doGenerate(ctx, opts)
+}
+
+func (m *functionalAgentLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if m.doStream != nil {
+		return m.doStream(ctx, opts)
+	}
+	return nil, fmt.Errorf("streaming not implemented in functionalAgentLanguageModel")
+}
+
+func (m *functionalAgentLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *functionalAgentLanguageModel) Provider() string             { return "mock" }
+func (m *functionalAgentLanguageModel) ModelID() string {
+	if m.modelID != "" {
+		return m.modelID
+	}
+	return "mock-model"
+}
+func (m *functionalAgentLanguageModel) SupportsTools() bool            { return true }
+func (m *functionalAgentLanguageModel) SupportsStructuredOutput() bool { return false }
+func (m *functionalAgentLanguageModel) SupportsImageInput() bool       { return false }
+
+func TestToolLoopAgentExperimentalDownloadFunctionDownloadsBeforeNextStep(t *testing.T) {
+	var call int
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			call++
+			if call == 1 {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "file", Arguments: map[string]interface{}{}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			}
+			var fileBlock types.FileContentBlock
+			for _, message := range opts.Prompt.Messages {
+				if message.Role != types.RoleTool {
+					continue
+				}
+				for _, part := range message.Content {
+					toolResult, ok := part.(types.ToolResultContent)
+					if !ok || toolResult.Output == nil {
+						continue
+					}
+					for _, block := range toolResult.Output.Content {
+						if file, ok := block.(types.FileContentBlock); ok {
+							fileBlock = file
+						}
+					}
+				}
+			}
+			if string(fileBlock.Data) != "agent-downloaded" || fileBlock.URL != "" || fileBlock.FileData.Type != types.FileDataTypeData {
+				t.Fatalf("agent tool result file was not downloaded before next step: %+v", fileBlock)
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "file",
+			Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+				return types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{types.FileContentBlock{
+						FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.test/agent.txt", MediaType: "text/plain"},
+						MediaType: "text/plain",
+					}},
+				}, nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(2)},
+		ExperimentalDownload: func(ctx context.Context, requests []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
+			if len(requests) != 1 || requests[0].URL != "https://example.test/agent.txt" {
+				t.Fatalf("download requests = %#v", requests)
+			}
+			return []*ai.DownloadResult{{Data: []byte("agent-downloaded")}}, nil
+		},
+	})
+	if _, err := agent.Execute(context.Background(), "start"); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls: []types.ToolCall{{
+					ID:           "tc",
+					ToolName:     "lookup",
+					Arguments:    map[string]interface{}{"q": "x"},
+					ToolMetadata: map[string]interface{}{"trace": "agent"},
+				}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "lookup",
+			Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+				if options.ToolMetadata["trace"] != "agent" {
+					t.Fatalf("execution metadata = %+v, want agent", options.ToolMetadata)
+				}
+				return "ok", nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+	})
+	result, err := agent.Execute(context.Background(), "start")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.ToolResults) != 1 || result.ToolResults[0].ToolMetadata["trace"] != "agent" {
+		t.Fatalf("tool result metadata = %+v, want agent", result.ToolResults)
 	}
 }

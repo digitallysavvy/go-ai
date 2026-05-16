@@ -13,7 +13,7 @@ import (
 type mockAgent struct {
 	executeFunc             func(ctx context.Context, prompt string) (*AgentResult, error)
 	executeWithMessagesFunc func(ctx context.Context, messages []types.Message) (*AgentResult, error)
-	generateFunc            func(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error)
+	generateFunc            func(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error)
 	streamFunc              func(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
 	id                      string
 	tools                   []types.Tool
@@ -36,14 +36,28 @@ func (m *mockAgent) Tools() []types.Tool {
 	return tools
 }
 
-func (m *mockAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error) {
+func (m *mockAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error) {
 	if m.generateFunc != nil {
 		return m.generateFunc(ctx, opts)
 	}
+	result := &AgentResult{}
+	var err error
 	if len(opts.Messages) > 0 {
-		return m.ExecuteWithMessages(ctx, opts.Messages)
+		result, err = m.ExecuteWithMessages(ctx, opts.Messages)
+	} else {
+		result, err = m.Execute(ctx, opts.Prompt)
 	}
-	return m.Execute(ctx, opts.Prompt)
+	if err != nil {
+		return nil, err
+	}
+	return &ai.GenerateTextResult{
+		Text:         result.Text,
+		Steps:        result.Steps,
+		ToolResults:  result.ToolResults,
+		FinishReason: result.FinishReason,
+		Usage:        result.Usage,
+		Warnings:     result.Warnings,
+	}, nil
 }
 
 func (m *mockAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error) {

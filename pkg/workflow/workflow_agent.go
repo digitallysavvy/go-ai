@@ -47,29 +47,30 @@ type FilterActiveToolsHook func(ctx context.Context, stepNumber int, tools []typ
 
 // LanguageModelCallOptions mirrors the per-step call config used by ToolLoopAgent.
 type LanguageModelCallOptions struct {
-	StepNumber       int
-	System           string
-	Messages         []types.Message
-	Tools            []types.Tool
-	ToolChoice       types.ToolChoice
-	CallOptions      interface{}
-	Temperature      *float64
-	MaxTokens        *int
-	TopP             *float64
-	TopK             *int
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	StopSequences    []string
-	Seed             *int
-	Headers          map[string]string
-	Reasoning        *types.ReasoningLevel
-	SendReasoning    *bool
-	ProviderOptions  map[string]interface{}
-	RuntimeContext   interface{}
-	ToolsContext     map[string]interface{}
-	PreviousSteps    []types.StepResult
-	AccumulatedUsage types.Usage
-	CustomData       interface{}
+	StepNumber          int
+	System              string
+	Messages            []types.Message
+	Tools               []types.Tool
+	ToolChoice          types.ToolChoice
+	CallOptions         interface{}
+	Temperature         *float64
+	MaxTokens           *int
+	TopP                *float64
+	TopK                *int
+	FrequencyPenalty    *float64
+	PresencePenalty     *float64
+	StopSequences       []string
+	Seed                *int
+	Headers             map[string]string
+	Reasoning           *types.ReasoningLevel
+	SendReasoning       *bool
+	ProviderOptions     map[string]interface{}
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
+	ExperimentalSandbox interface{}
+	PreviousSteps       []types.StepResult
+	AccumulatedUsage    types.Usage
+	CustomData          interface{}
 }
 
 // WorkflowAgent is a serializable-friendly wrapper around the SDK tool loop.
@@ -102,32 +103,40 @@ type WorkflowAgent struct {
 	CallOptions       interface{}
 	ActiveTools       []string
 
-	Temperature      *float64
-	MaxTokens        *int
-	TopP             *float64
-	TopK             *int
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	StopSequences    []string
-	Seed             *int
-	Headers          map[string]string
-	Reasoning        *types.ReasoningLevel
-	SendReasoning    *bool
-	ProviderOptions  map[string]interface{}
-	RuntimeContext   interface{}
-	ToolsContext     map[string]interface{}
-	ToolChoice       types.ToolChoice
+	Temperature                 *float64
+	MaxTokens                   *int
+	TopP                        *float64
+	TopK                        *int
+	FrequencyPenalty            *float64
+	PresencePenalty             *float64
+	StopSequences               []string
+	Seed                        *int
+	Headers                     map[string]string
+	Reasoning                   *types.ReasoningLevel
+	SendReasoning               *bool
+	ProviderOptions             map[string]interface{}
+	RuntimeContext              interface{}
+	ToolsContext                map[string]interface{}
+	ToolChoice                  types.ToolChoice
+	Include                     *ai.IncludeOptions
+	ExperimentalSandbox         interface{}
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 }
 
 // WorkflowGenerateOptions configures a single generate invocation.
 type WorkflowGenerateOptions struct {
-	Prompt       string
-	Messages     []types.Message
-	System       string
-	Instructions interface{}
-	Tools        []types.Tool
-	ToolSet      map[string]types.Tool
-	StopWhen     []ai.StopCondition
+	Prompt                      string
+	Messages                    []types.Message
+	System                      string
+	Instructions                interface{}
+	Tools                       []types.Tool
+	ToolSet                     map[string]types.Tool
+	StopWhen                    []ai.StopCondition
+	RuntimeContext              interface{}
+	ToolsContext                map[string]interface{}
+	Include                     *ai.IncludeOptions
+	ExperimentalSandbox         interface{}
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -149,7 +158,12 @@ type WorkflowStreamOptions struct {
 	ToolSet      map[string]types.Tool
 	StopWhen     []ai.StopCondition
 
-	ActiveTools []string
+	ActiveTools                 []string
+	RuntimeContext              interface{}
+	ToolsContext                map[string]interface{}
+	Include                     *ai.IncludeOptions
+	ExperimentalSandbox         interface{}
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 
 	OnChunk              func(chunk provider.StreamChunk)
 	OnStart              StartCallback
@@ -322,7 +336,7 @@ func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.C
 		return nil
 	}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-		opts := LanguageModelCallOptions{StepNumber: c.StepNumber, System: c.System, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions, Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed, Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions, RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData}
+		opts := LanguageModelCallOptions{StepNumber: c.StepNumber, System: c.System, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions, Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed, Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions, RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox, PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData}
 		if w.PrepareStep != nil {
 			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
 				opts = mutated
@@ -337,7 +351,7 @@ func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.C
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
 		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
-		c.RuntimeContext, c.ToolsContext, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.CustomData
+		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		if w.FilterActiveTools != nil {
 			c.Tools = w.FilterActiveTools(ctx, c.StepNumber, c.Tools)
 		}
@@ -382,6 +396,41 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if len(ovr.StopWhen) > 0 {
 		stopWhen = ovr.StopWhen
 	}
+	runtimeContext := w.RuntimeContext
+	if govr.RuntimeContext != nil {
+		runtimeContext = govr.RuntimeContext
+	}
+	if ovr.RuntimeContext != nil {
+		runtimeContext = ovr.RuntimeContext
+	}
+	toolsContext := w.ToolsContext
+	if govr.ToolsContext != nil {
+		toolsContext = govr.ToolsContext
+	}
+	if ovr.ToolsContext != nil {
+		toolsContext = ovr.ToolsContext
+	}
+	include := w.Include
+	if govr.Include != nil {
+		include = govr.Include
+	}
+	if ovr.Include != nil {
+		include = ovr.Include
+	}
+	sandbox := w.ExperimentalSandbox
+	if govr.ExperimentalSandbox != nil {
+		sandbox = govr.ExperimentalSandbox
+	}
+	if ovr.ExperimentalSandbox != nil {
+		sandbox = ovr.ExperimentalSandbox
+	}
+	refineToolInput := w.ExperimentalRefineToolInput
+	if govr.ExperimentalRefineToolInput != nil {
+		refineToolInput = govr.ExperimentalRefineToolInput
+	}
+	if ovr.ExperimentalRefineToolInput != nil {
+		refineToolInput = ovr.ExperimentalRefineToolInput
+	}
 	tools := orderedTools(w.Tools, w.ToolSet)
 	if govr.Tools != nil || govr.ToolSet != nil {
 		tools = orderedTools(govr.Tools, govr.ToolSet)
@@ -394,16 +443,19 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		CallOptionsSchema: w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(ovr.ActiveTools),
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: w.Headers, Reasoning: w.Reasoning,
-		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: w.RuntimeContext, ToolsContext: w.ToolsContext,
-		ToolChoice:        w.ToolChoice,
-		Output:            w.Output,
-		Telemetry:         w.Telemetry,
-		OnStart:           mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
-		OnStepStartEvent:  mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
-		OnToolCallStart:   mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
-		OnToolCallFinish:  mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
-		OnStepFinishEvent: mergeStepFinish(w.OnStepFinish, mergeStepFinish(govr.OnStepFinish, ovr.OnStepFinish)),
-		OnFinishEvent:     mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
+		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
+		ToolChoice:                  w.ToolChoice,
+		Output:                      w.Output,
+		Telemetry:                   w.Telemetry,
+		Include:                     include,
+		ExperimentalSandbox:         sandbox,
+		ExperimentalRefineToolInput: refineToolInput,
+		OnStart:                     mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
+		OnStepStartEvent:            mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
+		OnToolCallStart:             mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
+		OnToolCallFinish:            mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
+		OnStepFinishEvent:           mergeStepFinish(w.OnStepFinish, mergeStepFinish(govr.OnStepFinish, ovr.OnStepFinish)),
+		OnFinishEvent:               mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
 	})
 }
 
@@ -458,7 +510,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 	}
 	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: w.Telemetry}
-	result, err := a.Generate(ctx, call)
+	result, err := a.GenerateAgent(ctx, call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil && onAbort != nil {
 			onAbort(ctx, nil)

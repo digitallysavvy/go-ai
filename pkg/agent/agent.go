@@ -20,8 +20,9 @@ type Agent interface {
 	// Tools returns the tools that the agent can use.
 	Tools() []types.Tool
 
-	// Generate runs the agent with per-call options and returns the final result.
-	Generate(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error)
+	// Generate runs the agent with per-call options and returns the core
+	// GenerateText result, matching TypeScript ToolLoopAgent.generate.
+	Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error)
 
 	// Stream streams the agent with per-call options.
 	Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
@@ -68,33 +69,45 @@ type AgentResult struct {
 // It mirrors the TypeScript agent.generate call shape using Go option structs
 // instead of overloaded positional arguments.
 type AgentGenerateOptions struct {
-	Prompt   string
-	Messages []types.Message
-	System   string
+	Prompt       string
+	Messages     []types.Message
+	System       string
+	Instructions *string
 
 	RuntimeContext interface{}
 	ToolsContext   map[string]interface{}
 	CallOptions    interface{}
 
-	Tools      []types.Tool
-	ToolChoice types.ToolChoice
-	StopWhen   []ai.StopCondition
-	MaxSteps   int
+	Model provider.LanguageModel
 
-	Temperature      *float64
-	MaxTokens        *int
-	TopP             *float64
-	TopK             *int
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	StopSequences    []string
-	Seed             *int
-	Headers          map[string]string
-	Reasoning        *types.ReasoningLevel
-	SendReasoning    *bool
-	ProviderOptions  map[string]interface{}
-	Output           interface{}
-	Telemetry        *ai.TelemetrySettings
+	Tools       []types.Tool
+	ToolChoice  types.ToolChoice
+	ActiveTools []string
+	StopWhen    []ai.StopCondition
+	MaxSteps    int
+
+	Temperature           *float64
+	MaxTokens             *int
+	TopP                  *float64
+	TopK                  *int
+	FrequencyPenalty      *float64
+	PresencePenalty       *float64
+	StopSequences         []string
+	Seed                  *int
+	Headers               map[string]string
+	Reasoning             *types.ReasoningLevel
+	SendReasoning         *bool
+	ProviderOptions       map[string]interface{}
+	Output                interface{}
+	Telemetry             *ai.TelemetrySettings
+	ExperimentalTelemetry *ai.TelemetrySettings
+	Include               *ai.IncludeOptions
+	ToolApproval          types.ToolApprovalConfig
+	Internal              *ai.InternalOptions
+
+	ExperimentalSandbox         interface{}
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	ExperimentalDownload        ai.DownloadFunction
 
 	OnStart          func(ctx context.Context, e ai.OnStartEvent)
 	OnStepStart      func(ctx context.Context, e ai.OnStepStartEvent)
@@ -196,8 +209,15 @@ type AgentConfig struct {
 	// When System is empty, Prompt is used as the system prompt for each step.
 	Prompt string
 
+	// Instructions is the canonical TypeScript-compatible name for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
+
 	// Tools available to the agent
 	Tools []types.Tool
+
+	// ActiveTools restricts the available tools by name before model calls.
+	ActiveTools []string
 
 	// Skills are reusable agent behaviors
 	// Skills can be registered and executed by the agent
@@ -263,6 +283,16 @@ type AgentConfig struct {
 	// Telemetry configures observability for this agent.
 	Telemetry *ai.TelemetrySettings
 
+	// ExperimentalTelemetry is a deprecated alias for Telemetry, included for
+	// parity with TypeScript prepareCall.
+	ExperimentalTelemetry *ai.TelemetrySettings
+
+	// Include forwards stable include options to core stream/generate behavior.
+	Include *ai.IncludeOptions
+
+	// Internal contains test-only ID generators matching TypeScript _internal.
+	Internal *ai.InternalOptions
+
 	// Timeout provides granular timeout controls
 	// Supports total timeout, per-step timeout, and per-chunk timeout
 	Timeout *ai.TimeoutConfig
@@ -309,6 +339,12 @@ type AgentConfig struct {
 	// callbacks and execution.
 	ToolsContext map[string]interface{}
 
+	// ExperimentalSandbox is passed to tool execution and prepare-step hooks.
+	ExperimentalSandbox interface{}
+
+	// ExperimentalRefineToolInput refines parsed tool input before execution.
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
 	// CallOptions contains agent-level call options passed through PrepareCall.
 	// When CallOptionsSchema is set, this value is validated before model calls.
 	CallOptions interface{}
@@ -320,9 +356,9 @@ type AgentConfig struct {
 	// It mirrors the TypeScript filterActiveTools/activeTools behavior.
 	FilterActiveTools func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool
 
-	// ExperimentalDownload enables file download support in agents
-	// When enabled, agents can download files from URLs and process them
-	ExperimentalDownload bool
+	// ExperimentalDownload customizes remote file URL downloads before model
+	// calls. When nil, the core default downloader is used for unsupported URLs.
+	ExperimentalDownload ai.DownloadFunction
 
 	// ========================================================================
 	// Callbacks
@@ -420,8 +456,15 @@ type PrepareCallConfig struct {
 	// StepNumber is the current step number
 	StepNumber int
 
+	// Model is the language model for this call.
+	Model provider.LanguageModel
+
 	// System prompt for this call
 	System string
+
+	// Prompt is the per-call user prompt when the caller used Prompt instead
+	// of Messages.
+	Prompt string
 
 	// Messages for this call
 	Messages []types.Message
@@ -429,8 +472,14 @@ type PrepareCallConfig struct {
 	// Tools available for this call
 	Tools []types.Tool
 
+	// ActiveTools restricts Tools by name before calling the model.
+	ActiveTools []string
+
 	// ToolChoice controls how the model may call tools for this call.
 	ToolChoice types.ToolChoice
+
+	// ToolApproval configures automatic approval handling for this call.
+	ToolApproval types.ToolApprovalConfig
 
 	// CallOptions are validated and passed through from AgentConfig.
 	CallOptions interface{}
@@ -470,6 +519,33 @@ type PrepareCallConfig struct {
 
 	// ProviderOptions are provider-specific options keyed by provider name.
 	ProviderOptions map[string]interface{}
+
+	// StopWhen defines conditions that can terminate the tool loop.
+	StopWhen []ai.StopCondition
+
+	// Output specifies how to handle and parse model output.
+	Output interface{}
+
+	// Telemetry configures observability for this call.
+	Telemetry *ai.TelemetrySettings
+
+	// ExperimentalTelemetry is a deprecated alias for Telemetry.
+	ExperimentalTelemetry *ai.TelemetrySettings
+
+	// Include controls retained request/response details.
+	Include *ai.IncludeOptions
+
+	// Internal contains test-only ID generators matching TypeScript _internal.
+	Internal *ai.InternalOptions
+
+	// ExperimentalSandbox is the sandbox environment for this step.
+	ExperimentalSandbox interface{}
+
+	// ExperimentalRefineToolInput refines parsed tool input before execution.
+	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
+	// ExperimentalDownload customizes prompt URL download handling.
+	ExperimentalDownload ai.DownloadFunction
 
 	// RuntimeContext is user-defined runtime data for this call.
 	RuntimeContext interface{}
