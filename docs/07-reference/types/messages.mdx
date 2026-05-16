@@ -92,13 +92,50 @@ Image content in a message.
 
 ```go
 type FileContent struct {
-    Data     []byte `json:"data"`
-    MimeType string `json:"mimeType"`
-    Filename string `json:"filename,omitempty"`
+    FileData         FileData        `json:"fileData,omitempty"`
+    Data             []byte          `json:"data,omitempty"`
+    MimeType         string          `json:"mimeType,omitempty"`
+    MediaType        string          `json:"mediaType,omitempty"`
+    Filename         string          `json:"filename,omitempty"`
+    URL              string          `json:"url,omitempty"`
+    Reference        string          `json:"reference,omitempty"`
+    Text             string          `json:"text,omitempty"`
+    ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+    ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
 }
 ```
 
 File attachment in a message.
+
+## GeneratedFileContent
+
+```go
+type GeneratedFileContent struct {
+    MediaType        string          `json:"mediaType"`
+    FileData         FileData        `json:"fileData,omitempty"`
+    Data             []byte          `json:"data,omitempty"`
+    URL              string          `json:"url,omitempty"`
+    ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+}
+```
+
+Generated file output from providers that return files or file URLs. Custom JSON encoding follows the AI SDK file-data shape: the emitted `data` field is a tagged object with `type: "data"` and base64 `data`, or `type: "url"` and `url`.
+
+## ToolCallContent
+
+```go
+type ToolCallContent struct {
+    ToolCallID       string          `json:"toolCallId"`
+    ToolName         string          `json:"toolName"`
+    Input            string          `json:"input,omitempty"`
+    Arguments        map[string]interface{} `json:"arguments,omitempty"`
+    ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+    ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+    ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
+}
+```
+
+Assistant tool-call content preserves ordered model output, including provider-executed tool calls and Google `thoughtSignature` metadata for round trips.
 
 ## ToolResultContent
 
@@ -212,6 +249,22 @@ message := types.Message{
                 "temperature": 72,
                 "condition":   "sunny",
             },
+        },
+    },
+}
+```
+
+### Assistant Tool Call Message
+
+```go
+message := types.Message{
+    Role: types.RoleAssistant,
+    Content: []types.ContentPart{
+        types.ToolCallContent{
+            ToolCallID: "call_abc123",
+            ToolName:   "get_weather",
+            Input:      `{"location":"Tokyo"}`,
+            Arguments: map[string]interface{}{"location": "Tokyo"},
         },
     },
 }

@@ -481,11 +481,12 @@ import (
 
 // MockEmbeddingModel implements provider.EmbeddingModel for testing
 type MockEmbeddingModel struct {
-    EmbedFunc func(ctx context.Context, opts *provider.EmbedOptions) (*types.EmbedResult, error)
+    EmbedFunc     func(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error)
+    EmbedManyFunc func(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error)
 }
 
 func (m *MockEmbeddingModel) SpecificationVersion() string {
-    return "v3"
+    return "v4"
 }
 
 func (m *MockEmbeddingModel) Provider() string {
@@ -504,19 +505,30 @@ func (m *MockEmbeddingModel) SupportsParallelCalls() bool {
     return true
 }
 
-func (m *MockEmbeddingModel) DoEmbed(ctx context.Context, opts *provider.EmbedOptions) (*types.EmbedResult, error) {
+func (m *MockEmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
     if m.EmbedFunc != nil {
-        return m.EmbedFunc(ctx, opts)
+        return m.EmbedFunc(ctx, input, opts)
     }
-    // Return mock embeddings
-    embeddings := make([][]float64, len(opts.Values))
-    for i := range opts.Values {
-        embeddings[i] = []float64{0.1, 0.2, 0.3} // Mock 3-dimensional embedding
+    return &types.EmbeddingResult{
+        Embedding: []float64{0.1, 0.2, 0.3},
+        Usage: types.EmbeddingUsage{
+            TotalTokens: 10,
+        },
+    }, nil
+}
+
+func (m *MockEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+    if m.EmbedManyFunc != nil {
+        return m.EmbedManyFunc(ctx, inputs, opts)
     }
-    return &types.EmbedResult{
+    embeddings := make([][]float64, len(inputs))
+    for i := range inputs {
+        embeddings[i] = []float64{0.1, 0.2, 0.3}
+    }
+    return &types.EmbeddingsResult{
         Embeddings: embeddings,
         Usage: types.EmbeddingUsage{
-            Tokens: 10,
+            TotalTokens: 10 * len(inputs),
         },
     }, nil
 }
@@ -534,12 +546,8 @@ func TestEmbed(t *testing.T) {
         t.Fatalf("unexpected error: %v", err)
     }
 
-    if len(result.Embeddings) == 0 {
-        t.Errorf("expected embeddings, got none")
-    }
-
-    if len(result.Embeddings[0]) != 3 {
-        t.Errorf("expected 3-dimensional embedding, got %d", len(result.Embeddings[0]))
+    if len(result.Embedding) != 3 {
+        t.Errorf("expected 3-dimensional embedding, got %d", len(result.Embedding))
     }
 }
 ```

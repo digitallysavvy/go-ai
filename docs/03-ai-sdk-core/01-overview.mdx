@@ -38,7 +38,7 @@ func main() {
     claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
 
     // Google
-    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
     gemini, _ := googleProvider.LanguageModel("gemini-pro")
 
     // Same API for all providers

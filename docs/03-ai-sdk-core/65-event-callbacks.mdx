@@ -401,7 +401,7 @@ func main() {
 		},
 		ExperimentalOnFinish: func(event ai.EmbedOnFinishEvent) {
 			fmt.Printf("Embedding complete (%s): tokens=%d vectors=%d\n",
-				event.OperationID, event.Usage.Tokens, len(event.Embeddings))
+				event.OperationID, event.Usage.TotalTokens, len(event.Embeddings))
 		},
 	})
 	if err != nil {

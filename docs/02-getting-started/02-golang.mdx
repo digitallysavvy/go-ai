@@ -57,7 +57,7 @@ OPENAI_API_KEY=sk-...
 # or
 ANTHROPIC_API_KEY=sk-ant-...
 # or
-GOOGLE_API_KEY=...
+GOOGLE_GENERATIVE_AI_API_KEY=...
 ```
 
 Replace the placeholder with your actual API key.
@@ -206,7 +206,7 @@ model, _ := provider.LanguageModel("claude-sonnet-4-5")
 import "github.com/digitallysavvy/go-ai/pkg/providers/google"
 
 provider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
 model, _ := provider.LanguageModel("gemini-pro")
 ```

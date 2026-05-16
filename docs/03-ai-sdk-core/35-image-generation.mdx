@@ -84,7 +84,7 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 The aspect ratio is specified as a string in the format `{width}:{height}`. Models only support specific aspect ratios, which vary by model and provider.
 
 ```go
-provider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+provider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
 imageModel, _ := provider.ImageModel("imagen-4.0-generate-001")
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
@@ -382,7 +382,7 @@ func generateImageWithRetry(ctx context.Context, model ai.ImageModel, prompt str
 ```go
 // High-quality image generation with Imagen 4.0
 googleProvider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
 
 imagenModel, _ := googleProvider.ImageModel("imagen-4.0-generate-001")
@@ -514,7 +514,7 @@ openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
 dalleModel, _ := openaiProvider.ImageModel("dall-e-3")
 
 // Google Generative AI - Imagen 4.0
-googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
 imagenModel, _ := googleProvider.ImageModel("imagen-4.0-generate-001")
 
 // Google Generative AI - Gemini Image

@@ -72,7 +72,7 @@ anthropicProvider := anthropic.New(anthropic.Config{
 
 // Google debug mode
 googleProvider := google.New(google.Config{
-    APIKey:    os.Getenv("GOOGLE_API_KEY"),
+    APIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     DebugMode: true,
 })
 

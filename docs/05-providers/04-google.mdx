@@ -23,11 +23,11 @@ import (
 ### Configuration
 
 ```go
-provider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+googleProvider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
 
-model, err := provider.LanguageModel("gemini-2.0-flash")
+model, err := googleProvider.LanguageModel("gemini-2.0-flash")
 if err != nil {
     log.Fatal(err)
 }
@@ -40,12 +40,24 @@ if err != nil {
 3. Set environment variable:
 
 ```bash
-export GOOGLE_API_KEY=AI...
+export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 ```
 
 ## Available Models
 
-### Gemini 2.0 Series (Latest)
+### Gemini 3 / 2.5 Series
+
+| Model ID | Best For |
+|----------|----------|
+| gemini-3.1-pro-preview | Advanced text generation |
+| gemini-3.1-pro-preview-customtools | Advanced text generation with custom tools |
+| gemini-3-flash-preview | Fast preview generation |
+| gemini-3-pro-preview | Advanced preview generation |
+| gemini-2.5-pro | Complex reasoning and multimodal tasks |
+| gemini-2.5-flash | Fast multimodal tasks |
+| gemini-2.5-flash-lite | Cost-effective high-volume tasks |
+
+### Gemini 2.0 Series
 
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
@@ -80,8 +92,8 @@ export GOOGLE_API_KEY=AI...
 
 | Model ID | Dimensions | Price | Best For |
 |----------|-----------|-------|----------|
-| text-embedding-004 | 768 | Free | Semantic search |
-| textembedding-gecko@003 | 768 | Free | Legacy embeddings |
+| gemini-embedding-001 | 3072 | See Google pricing | Multimodal semantic search |
+| gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
 
 ## Provider-Specific Features
 
@@ -168,6 +180,54 @@ for _, call := range result.ToolCalls {
 }
 ```
 
+### Interactions API
+
+The Google provider exposes the Gemini Interactions API through `Provider.Interactions(modelID)` and agent presets through `Provider.InteractionsAgent(agent)`. Interactions models implement the standard `provider.LanguageModel` interface, so they can be used with `DoGenerate`, `DoStream`, and higher-level AI SDK helpers.
+
+```go
+store := false
+interactionsModel, err := googleProvider.Interactions(google.InteractionsModelGemini25Flash)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := interactionsModel.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Give a concise answer."},
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleInteractionsProviderOptions{
+            Store:              &store,
+            ResponseModalities: []string{"text"},
+            ThinkingLevel:      "low",
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait.
+
+```go
+agentModel, err := googleProvider.InteractionsAgent(google.InteractionsAgentDeepResearchProPreview)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := agentModel.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Research the main tradeoffs in retrieval augmented generation."},
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleInteractionsProviderOptions{
+            PollingTimeoutMs: 120000,
+        },
+    },
+})
+```
+
+Interactions responses preserve ordered text, reasoning, files, sources, and tool-call content. Google metadata is available under `ProviderMetadata["google"]`, including the `interactionId` when returned by the API.
+
 ### Grounding with Google Search
 
 Connect Gemini to real-time web information:
@@ -230,14 +290,16 @@ for chunk := range stream.TextChannel() {
 Gemini 2.0 Flash Thinking uses extended reasoning:
 
 ```go
-model, err := provider.LanguageModel("gemini-2.0-flash-thinking")
+model, err := googleProvider.LanguageModel(google.ModelGemini20FlashThinkingExp)
 
 result, err := ai.GenerateText(model,
     "Solve this logic puzzle: Three friends...")
 
-// Response includes reasoning steps
-if result.Thinking != "" {
-    fmt.Println("Reasoning:", result.Thinking)
+// Reasoning content is preserved in ordered content parts when returned.
+for _, part := range result.Content {
+    if reasoning, ok := part.(types.ReasoningContent); ok {
+        fmt.Println("Reasoning:", reasoning.Text)
+    }
 }
 fmt.Println("Answer:", result.Text)
 ```
@@ -265,11 +327,11 @@ import (
 )
 
 func main() {
-    provider := google.New(google.Config{
-        APIKey: os.Getenv("GOOGLE_API_KEY"),
+    googleProvider := google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("gemini-2.0-flash")
+    model, err := googleProvider.LanguageModel("gemini-2.0-flash")
     if err != nil {
         log.Fatal(err)
     }
@@ -366,25 +428,48 @@ for _, citation := range result.Citations {
 ### Text Embeddings
 
 ```go
-embeddingModel, err := provider.EmbeddingModel("text-embedding-004")
+embeddingModel, err := googleProvider.EmbeddingModel(google.EmbeddingModelGeminiEmbedding001)
 if err != nil {
     log.Fatal(err)
 }
 
-texts := []string{
-    "Go is a programming language",
-    "Python is popular for AI",
-    "JavaScript runs in browsers",
-}
-
-embeddings, err := ai.Embed(embeddingModel, texts...)
+dimensions := 768
+result, err := embeddingModel.DoEmbed(ctx, "Go is a programming language", &provider.EmbedModelOptions{
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType:             "RETRIEVAL_DOCUMENT",
+            OutputDimensionality: &dimensions,
+        },
+    },
+})
 if err != nil {
     log.Fatal(err)
 }
 
-// Calculate similarity
-similarity := cosineSimilarity(embeddings[0], embeddings[1])
-fmt.Printf("Similarity: %.2f\n", similarity)
+fmt.Printf("Dimensions: %d\n", len(result.Embedding))
+```
+
+Google embeddings also support multimodal content and provider-hosted files through `fileData`:
+
+```go
+result, err := embeddingModel.DoEmbed(ctx, "Summarize this document for retrieval.", &provider.EmbedModelOptions{
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType: "RETRIEVAL_DOCUMENT",
+            Content: [][]google.EmbeddingPart{
+                {
+                    google.FileDataEmbeddingPart{
+                        MimeType: "application/pdf",
+                        FileURI:  "files/abc123",
+                    },
+                },
+            },
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Multi-Turn Conversation
@@ -475,8 +560,8 @@ os.WriteFile("gemini_output.png", result.Image, 0644)
 ### Custom HTTP Client
 
 ```go
-provider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+googleProvider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     HTTPClient: &http.Client{
         Timeout: time.Minute * 5,
         Transport: &http.Transport{

@@ -178,7 +178,7 @@ func setupProviders(config map[string]string) error {
 config := map[string]string{
     "openai_key":    os.Getenv("OPENAI_API_KEY"),
     "anthropic_key": os.Getenv("ANTHROPIC_API_KEY"),
-    "google_key":    os.Getenv("GOOGLE_API_KEY"),
+    "google_key":    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 }
 
 if err := setupProviders(config); err != nil {
