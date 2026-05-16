@@ -5,6 +5,15 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **Core SDK** `IncludeOptions.RawChunks` is now `*bool` instead of `bool` so
+  unset can be distinguished from explicit `false`. This matches the TypeScript
+  SDK resolution order: `include.rawChunks ?? includeRawChunks ?? false`.
+  Existing callers should replace `RawChunks: true` with a bool pointer.
+
 ## [0.4.0] - 2026-03-29
 
 TS SDK parity — fully compatible with TS AI SDK v6.0.137.

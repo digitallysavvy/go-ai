@@ -523,7 +523,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Headers:               opts.Headers,
 		Tools:                 stepTools,
 		ToolChoice:            stepToolChoice,
-		IncludeRawChunks:      include.RawChunks,
+		IncludeRawChunks:      includeRawChunksValue(include),
 		RuntimeContext:        runtimeContext,
 		ToolsContext:          toolsContext,
 		ResponseFormat:        responseFormat,
@@ -664,7 +664,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
-			if chunk.Type == provider.ChunkTypeRaw && !r.cbInclude.RawChunks {
+			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
 			}
 
@@ -1117,7 +1117,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Headers:               opts.Headers,
 			Tools:                 nextTools,
 			ToolChoice:            nextToolChoice,
-			IncludeRawChunks:      r.cbInclude.RawChunks,
+			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
 			RuntimeContext:        r.cbRuntimeCtx,
 			ToolsContext:          r.cbToolsCtx,
 			ResponseFormat:        responseFormat,

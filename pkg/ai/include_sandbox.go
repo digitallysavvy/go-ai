@@ -16,7 +16,9 @@ type IncludeOptions struct {
 	RequestBody     bool
 	RequestMessages bool
 	ResponseBody    bool
-	RawChunks       bool
+	// RawChunks controls whether raw provider stream chunks are forwarded.
+	// Nil preserves the deprecated IncludeRawChunks fallback.
+	RawChunks *bool
 }
 
 func effectiveInclude(include, experimental *IncludeOptions, includeRawChunks bool) IncludeOptions {
@@ -24,10 +26,21 @@ func effectiveInclude(include, experimental *IncludeOptions, includeRawChunks bo
 		include = experimental
 	}
 	if include == nil {
-		return IncludeOptions{RawChunks: includeRawChunks}
+		return IncludeOptions{RawChunks: includeBoolPtr(includeRawChunks)}
 	}
 	resolved := *include
+	if resolved.RawChunks == nil {
+		resolved.RawChunks = includeBoolPtr(includeRawChunks)
+	}
 	return resolved
+}
+
+func includeRawChunksValue(include IncludeOptions) bool {
+	return include.RawChunks != nil && *include.RawChunks
+}
+
+func includeBoolPtr(v bool) *bool {
+	return &v
 }
 
 func effectiveDownload(download DownloadFunction) DownloadFunction {

@@ -277,7 +277,7 @@ func TestStreamTextIncludeRawChunksRequestsProviderRawChunks(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Include: &IncludeOptions{RawChunks: true},
+		Include: &IncludeOptions{RawChunks: boolPtr(true)},
 		OnChunk: func(chunk provider.StreamChunk) {
 			if chunk.Type == provider.ChunkTypeRaw {
 				sawRaw = true
@@ -300,6 +300,90 @@ func TestStreamTextIncludeRawChunksRequestsProviderRawChunks(t *testing.T) {
 	}
 	if !sawRaw {
 		t.Fatal("raw chunk was not forwarded to OnChunk")
+	}
+}
+
+func TestStreamTextDeprecatedIncludeRawChunksFallbackWithInclude(t *testing.T) {
+	var includeRawChunks bool
+	done := make(chan struct{})
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			includeRawChunks = opts.IncludeRawChunks
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{"provider": "chunk"}},
+				{Type: provider.ChunkTypeText, Text: "hello"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var sawRaw bool
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:            model,
+		Prompt:           "hi",
+		Include:          &IncludeOptions{RequestMessages: true},
+		IncludeRawChunks: true,
+		OnChunk: func(chunk provider.StreamChunk) {
+			if chunk.Type == provider.ChunkTypeRaw {
+				sawRaw = true
+			}
+		},
+		OnFinish: func(result *StreamTextResult) { close(done) },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish")
+	}
+	if !includeRawChunks {
+		t.Fatal("deprecated IncludeRawChunks fallback was not applied when Include.RawChunks was unset")
+	}
+	if !sawRaw {
+		t.Fatal("raw chunk was not forwarded when deprecated fallback enabled it")
+	}
+}
+
+func TestStreamTextIncludeRawChunksOverridesDeprecatedFallback(t *testing.T) {
+	var includeRawChunks bool
+	done := make(chan struct{})
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			includeRawChunks = opts.IncludeRawChunks
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{"provider": "chunk"}},
+				{Type: provider.ChunkTypeText, Text: "hello"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var sawRaw bool
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:            model,
+		Prompt:           "hi",
+		Include:          &IncludeOptions{RawChunks: boolPtr(false)},
+		IncludeRawChunks: true,
+		OnChunk: func(chunk provider.StreamChunk) {
+			if chunk.Type == provider.ChunkTypeRaw {
+				sawRaw = true
+			}
+		},
+		OnFinish: func(result *StreamTextResult) { close(done) },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish")
+	}
+	if includeRawChunks {
+		t.Fatal("Include.RawChunks=false did not override deprecated IncludeRawChunks=true")
+	}
+	if sawRaw {
+		t.Fatal("raw chunk was forwarded when Include.RawChunks=false")
 	}
 }
 
@@ -429,7 +513,7 @@ func TestStreamTextSuppressesRawChunksWhenIncludeRawChunksFalse(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Include: &IncludeOptions{RawChunks: false},
+		Include: &IncludeOptions{RawChunks: boolPtr(false)},
 		OnChunk: func(chunk provider.StreamChunk) {
 			if chunk.Type == provider.ChunkTypeRaw {
 				sawRaw = true
