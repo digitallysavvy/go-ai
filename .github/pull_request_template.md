@@ -1,9 +1,9 @@
 <!--
-Welcome to contributing to AI SDK! We're excited to see your changes.
+Welcome to contributing to Go-AI! We're excited to see your changes.
 
 We suggest you read the following contributing guide we've created before submitting:
 
-https://github.com/vercel/ai/blob/main/CONTRIBUTING.md
+https://github.com/digitallysavvy/go-ai/blob/main/CONTRIBUTING.md
 -->
 
 ## Background
@@ -32,7 +32,7 @@ Please check if the PR fulfills the following requirements:
 
 - [ ] Tests have been added / updated (for bug fixes / features)
 - [ ] Documentation has been added / updated (for bug fixes / features)
-- [ ] A _patch_ changeset for relevant packages has been added (for bug fixes / features - run `pnpm changeset` in the project root)
+- [ ] Any required release notes / changelog updates are included for this change
 - [ ] I have reviewed this pull request (self-review)
 
 ## Future Work
