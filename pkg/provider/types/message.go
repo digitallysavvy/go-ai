@@ -1,6 +1,9 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/base64"
+	"encoding/json"
+)
 
 // MessageRole represents the role of a message sender in a conversation
 type MessageRole string
@@ -140,6 +143,10 @@ type FileContent struct {
 
 	// ProviderOptions holds provider-specific options for the input direction.
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+
+	// ProviderMetadata holds optional raw JSON metadata from the provider when
+	// this file appears in model output.
+	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -195,9 +202,16 @@ type GeneratedFileContent struct {
 	// MediaType is the IANA media type of the generated file (e.g., "image/png").
 	MediaType string `json:"mediaType"`
 
+	// FileData holds the TypeScript-compatible tagged file-data shape when the
+	// provider returns a URL or another non-inline file representation.
+	FileData FileData `json:"fileData,omitempty"`
+
 	// Data holds the raw file bytes.
 	// encoding/json marshals []byte as base64 and unmarshals base64 to []byte.
-	Data []byte `json:"data"`
+	Data []byte `json:"data,omitempty"`
+
+	// URL is a convenience mirror for FileData.URL when FileData.Type is "url".
+	URL string `json:"url,omitempty"`
 
 	// ProviderMetadata holds optional raw JSON metadata from the provider.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
@@ -206,6 +220,113 @@ type GeneratedFileContent struct {
 // ContentType implements ContentPart interface
 func (f GeneratedFileContent) ContentType() string {
 	return "file"
+}
+
+// MarshalJSON emits the TypeScript SDK file shape:
+// { mediaType, data: { type: "data"|"url", ... }, providerMetadata? }.
+func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
+	type generatedFileJSON struct {
+		MediaType        string          `json:"mediaType"`
+		Data             interface{}     `json:"data"`
+		ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+	}
+	var data interface{}
+	switch {
+	case f.FileData.Type == FileDataTypeURL || f.URL != "":
+		data = map[string]interface{}{
+			"type": "url",
+			"url":  firstNonEmptyString(f.FileData.URL, f.URL),
+		}
+	case f.FileData.Type == FileDataTypeData && f.FileData.DataString != "":
+		data = map[string]interface{}{"type": "data", "data": f.FileData.DataString}
+	case f.FileData.Type == FileDataTypeData && len(f.FileData.Data) > 0:
+		data = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.FileData.Data)}
+	default:
+		data = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.Data)}
+	}
+	return json.Marshal(generatedFileJSON{
+		MediaType:        f.MediaType,
+		Data:             data,
+		ProviderMetadata: f.ProviderMetadata,
+	})
+}
+
+// UnmarshalJSON accepts both the TypeScript tagged data union and the older Go
+// base64-string data shape for backward compatibility.
+func (f *GeneratedFileContent) UnmarshalJSON(data []byte) error {
+	type generatedFileJSON struct {
+		MediaType        string          `json:"mediaType"`
+		Data             json.RawMessage `json:"data"`
+		URL              string          `json:"url,omitempty"`
+		FileData         FileData        `json:"fileData,omitempty"`
+		ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+	}
+	var raw generatedFileJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	f.MediaType = raw.MediaType
+	f.URL = raw.URL
+	f.FileData = raw.FileData
+	f.ProviderMetadata = raw.ProviderMetadata
+	if len(raw.Data) == 0 || string(raw.Data) == "null" {
+		return nil
+	}
+	if raw.Data[0] == '"' {
+		return json.Unmarshal(raw.Data, &f.Data)
+	}
+	var tagged struct {
+		Type string `json:"type"`
+		Data string `json:"data,omitempty"`
+		URL  string `json:"url,omitempty"`
+	}
+	if err := json.Unmarshal(raw.Data, &tagged); err != nil {
+		return err
+	}
+	switch tagged.Type {
+	case "url":
+		f.URL = tagged.URL
+		f.FileData = FileData{Type: FileDataTypeURL, URL: tagged.URL, MediaType: raw.MediaType}
+	case "data", "":
+		f.FileData = FileData{Type: FileDataTypeData, DataString: tagged.Data, MediaType: raw.MediaType}
+		decoded, err := DecodeFileDataString(tagged.Data)
+		if err == nil {
+			f.Data = decoded
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// ToolCallContent represents a tool call in ordered model output content.
+// It mirrors the TypeScript SDK's `type: "tool-call"` content part while the
+// top-level GenerateResult.ToolCalls field remains available for callers that
+// consume tool calls separately.
+type ToolCallContent struct {
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+
+	// Input preserves the raw JSON-string tool input used by the TypeScript SDK.
+	Input string `json:"input,omitempty"`
+
+	// Arguments is the decoded form of Input for idiomatic Go callers.
+	Arguments map[string]interface{} `json:"arguments,omitempty"`
+
+	ProviderExecuted bool            `json:"providerExecuted,omitempty"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
+}
+
+func (t ToolCallContent) ContentType() string {
+	return "tool-call"
 }
 
 // CustomContent is a provider-specific content block with no standard mapping.

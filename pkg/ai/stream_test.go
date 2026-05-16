@@ -112,6 +112,70 @@ func TestStreamText_AllowsSystemMessagesWithOptIn(t *testing.T) {
 	}
 }
 
+func TestStreamText_InstructionsAlias(t *testing.T) {
+	t.Parallel()
+
+	instructions := "Use instructions alias"
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			if opts.Prompt.System != instructions {
+				t.Fatalf("expected instructions as system, got %q", opts.Prompt.System)
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:        model,
+		Prompt:       "hello",
+		Instructions: &instructions,
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("text = %q, want ok", text)
+	}
+}
+
+func TestStreamText_InstructionsTakesPrecedenceOverSystem(t *testing.T) {
+	t.Parallel()
+
+	instructions := "instructions"
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			if opts.Prompt.System != instructions {
+				t.Fatalf("expected instructions precedence, got %q", opts.Prompt.System)
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:        model,
+		Prompt:       "hello",
+		System:       "system",
+		Instructions: &instructions,
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	_, err = result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+}
+
 func TestStreamText_NilModel(t *testing.T) {
 	t.Parallel()
 

@@ -48,11 +48,20 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 		if result.ProviderExecuted {
 			continue
 		}
-		parts = append(parts, types.ToolResultContent{
+		part := types.ToolResultContent{
 			ToolCallID: result.ToolCallID,
 			ToolName:   result.ToolName,
 			Result:     result.Result,
-		})
+		}
+		switch output := result.Result.(type) {
+		case types.ToolResultOutput:
+			part.Output = &output
+			part.Result = nil
+		case *types.ToolResultOutput:
+			part.Output = output
+			part.Result = nil
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) > 0 {
 		messages = append(messages, types.Message{

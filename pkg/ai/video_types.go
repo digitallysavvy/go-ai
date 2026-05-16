@@ -45,9 +45,9 @@ type GenerateVideoOptions struct {
 	Headers map[string]string
 
 	// Download is a custom download function for fetching images from URLs.
-	// Use CreateDownload() to create a download function with custom size limits.
+	// Use CreateURLDownload() to create a download function with custom size limits.
 	// Default: 2 GiB limit
-	Download DownloadFunction
+	Download URLDownloadFunction
 }
 
 // VideoPrompt represents text or image+text prompt

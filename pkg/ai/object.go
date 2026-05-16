@@ -122,14 +122,21 @@ func normalizeObjectMaxRetries(maxRetries int) (int, error) {
 }
 
 func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
+	return responseMetadataFromGenerateResultWithID(model, result, newCallID)
+}
+
+func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) *types.ResponseMetadata {
 	if result == nil {
 		return nil
 	}
 	if result.ResponseMetadata != nil {
 		return result.ResponseMetadata
 	}
+	if generateID == nil {
+		generateID = newCallID
+	}
 	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        newCallID(),
+		ID:        generateID(),
 		Timestamp: time.Now(),
 		ModelID:   model.ModelID(),
 		Headers:   result.ResponseHeaders,
@@ -138,7 +145,11 @@ func responseMetadataFromGenerateResult(model provider.LanguageModel, result *ty
 }
 
 func generateStepResponseFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) GenerateStepResponse {
-	meta := responseMetadataFromGenerateResult(model, result)
+	return generateStepResponseFromGenerateResultWithID(model, result, newCallID)
+}
+
+func generateStepResponseFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) GenerateStepResponse {
+	meta := responseMetadataFromGenerateResultWithID(model, result, generateID)
 	if meta == nil {
 		return GenerateStepResponse{Body: result.RawResponse}
 	}

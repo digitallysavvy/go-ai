@@ -236,6 +236,62 @@ func TestGenerateText_SystemMessage(t *testing.T) {
 	}
 }
 
+func TestGenerateText_InstructionsAlias(t *testing.T) {
+	t.Parallel()
+
+	instructions := "Use instructions alias"
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if opts.Prompt.System != instructions {
+				t.Errorf("expected instructions as system, got: %q", opts.Prompt.System)
+			}
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:        model,
+		Prompt:       "Hello",
+		Instructions: &instructions,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("unexpected text: %q", result.Text)
+	}
+}
+
+func TestGenerateText_InstructionsTakesPrecedenceOverSystem(t *testing.T) {
+	t.Parallel()
+
+	instructions := "instructions"
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if opts.Prompt.System != instructions {
+				t.Errorf("expected instructions to take precedence, got: %q", opts.Prompt.System)
+			}
+			return &types.GenerateResult{
+				Text:         "ok",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:        model,
+		Prompt:       "Hello",
+		System:       "system",
+		Instructions: &instructions,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGenerateText_NilModel(t *testing.T) {
 	t.Parallel()
 

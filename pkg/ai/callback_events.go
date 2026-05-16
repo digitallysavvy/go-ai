@@ -103,7 +103,7 @@ type OnStartEvent struct {
 }
 
 // OnStepStartEvent is emitted at the beginning of each LLM step (before
-// calling the provider). StepNumber is 1-indexed.
+// calling the provider). StepNumber is 0-indexed.
 //
 // Cancellation is handled via the ctx parameter — pass ctx to any operations
 // that should respect cancellation.
@@ -111,7 +111,7 @@ type OnStepStartEvent struct {
 	// CallID correlates this event with the other events for this call.
 	CallID string
 
-	// StepNumber is 1-indexed
+	// StepNumber is 0-indexed
 	StepNumber int
 
 	// Model provider and ID for this step
@@ -164,7 +164,7 @@ type OnToolCallStartEvent struct {
 	// Args contains the arguments the model passed to the tool
 	Args map[string]any
 
-	// StepNumber is the 1-indexed step in which this tool call occurs
+	// StepNumber is the 0-indexed step in which this tool call occurs
 	StepNumber int
 
 	// Model provider and ID for the step that produced this tool call
@@ -208,7 +208,7 @@ type OnToolCallFinishEvent struct {
 	// DurationMs is the wall-clock execution time of the tool in milliseconds
 	DurationMs int64
 
-	// StepNumber is the 1-indexed step in which this tool call occurred
+	// StepNumber is the 0-indexed step in which this tool call occurred
 	StepNumber int
 
 	// Model provider and ID for the step that produced this tool call
@@ -230,7 +230,7 @@ type OnStepFinishEvent struct {
 	// CallID correlates this event with the other events for this call.
 	CallID string
 
-	// StepNumber is 1-indexed
+	// StepNumber is 0-indexed
 	StepNumber int
 
 	// Model identifies the provider and model that produced this step.

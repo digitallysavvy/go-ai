@@ -15,7 +15,7 @@ func TestCreateDownloadWithNilOptionsRejectsUnsafeURL(t *testing.T) {
 		t.Fatal("CreateDownload(nil) returned nil")
 	}
 
-	_, err := download(context.Background(), "http://127.0.0.1/private")
+	_, err := download(context.Background(), []DownloadRequest{{URL: "http://127.0.0.1/private"}})
 	if err == nil {
 		t.Fatal("expected unsafe URL validation error")
 	}
@@ -32,7 +32,7 @@ func TestCreateDownloadWithCustomOptionsAndHeadersPath(t *testing.T) {
 		},
 	})
 
-	_, err := download(context.Background(), "file:///etc/passwd")
+	_, err := download(context.Background(), []DownloadRequest{{URL: "file:///etc/passwd"}})
 	if err == nil {
 		t.Fatal("expected blocked file:// URL")
 	}
@@ -42,7 +42,7 @@ func TestCreateDownloadWithCustomOptionsAndHeadersPath(t *testing.T) {
 }
 
 func TestDefaultDownloadUsesCreateDownloadBehavior(t *testing.T) {
-	_, err := DefaultDownload(context.Background(), "http://localhost:8080/file")
+	_, err := DefaultDownload(context.Background(), []DownloadRequest{{URL: "http://localhost:8080/file"}})
 	if err == nil {
 		t.Fatal("expected localhost to be blocked")
 	}
@@ -69,12 +69,12 @@ func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
 		Headers: map[string]string{"X-Test-Header": "value"},
 	})
 
-	data, err := download(context.Background(), server.URL)
+	results, err := download(context.Background(), []DownloadRequest{{URL: server.URL}})
 	if err != nil {
 		t.Fatalf("download error = %v", err)
 	}
-	if string(data) != "ok" {
-		t.Fatalf("download data = %q, want ok", string(data))
+	if len(results) != 1 || results[0] == nil || string(results[0].Data) != "ok" {
+		t.Fatalf("download results = %#v, want ok data", results)
 	}
 }
 
@@ -90,12 +90,26 @@ func TestCreateDownloadHonorsMaxBytes(t *testing.T) {
 	defer server.Close()
 
 	download := CreateDownload(&DownloadOptions{MaxBytes: 10})
-	_, err := download(context.Background(), server.URL)
+	_, err := download(context.Background(), []DownloadRequest{{URL: server.URL}})
 	if err == nil {
 		t.Fatal("expected max-bytes error")
 	}
 	if !strings.Contains(err.Error(), "exceeded maximum size") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateDownloadLeavesSupportedURLAsNilResult(t *testing.T) {
+	download := CreateDownload(nil)
+	results, err := download(context.Background(), []DownloadRequest{{
+		URL:                   "http://127.0.0.1/private",
+		IsURLSupportedByModel: true,
+	}})
+	if err != nil {
+		t.Fatalf("download error = %v", err)
+	}
+	if len(results) != 1 || results[0] != nil {
+		t.Fatalf("results = %#v, want single nil pass-through result", results)
 	}
 }
 

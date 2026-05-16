@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"mime"
@@ -59,6 +60,81 @@ func NormalizePrompt(prompt types.Prompt, allowSystemMessages bool) (types.Promp
 	return prompt, nil
 }
 
+// URLSupportChecker reports whether a model supports passing the URL directly
+// for the given media type.
+type URLSupportChecker func(mediaType, url string) bool
+
+// DownloadRequest describes a URL that the prompt conversion path is planning
+// to hand to experimental_download.
+type DownloadRequest struct {
+	URL                   string
+	IsURLSupportedByModel bool
+}
+
+// DownloadResult is the optional replacement data returned for a planned
+// download. A nil result leaves the original URL untouched.
+type DownloadResult struct {
+	Data      []byte
+	MediaType string
+}
+
+// DownloadFunction mirrors the TypeScript SDK experimental_download contract:
+// one batch of planned URL downloads in prompt order, with nil results meaning
+// pass-through.
+type DownloadFunction func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error)
+
+// URLDownloadFunction is the legacy single-URL download shape.
+type URLDownloadFunction func(context.Context, string) ([]byte, error)
+
+// AdaptURLDownload converts the legacy single-URL shape into the planned batch
+// contract. Supported URLs are left untouched.
+func AdaptURLDownload(download URLDownloadFunction) DownloadFunction {
+	if download == nil {
+		return nil
+	}
+	return func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+		results := make([]*DownloadResult, len(requests))
+		for i, request := range requests {
+			if request.IsURLSupportedByModel {
+				continue
+			}
+			data, err := download(ctx, request.URL)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = &DownloadResult{Data: data}
+		}
+		return results, nil
+	}
+}
+
+// NormalizePromptWithDownloads applies the same prompt conversion rules as
+// NormalizePrompt and downloads remote file URLs that the model cannot consume
+// directly. This mirrors the TypeScript SDK's prompt conversion path for user
+// files and tool-result file URLs before messages are sent to a model.
+func NormalizePromptWithDownloads(ctx context.Context, prompt types.Prompt, allowSystemMessages bool, download URLDownloadFunction) (types.Prompt, error) {
+	return NormalizePromptWithDownloadSupport(ctx, prompt, allowSystemMessages, AdaptURLDownload(download), nil)
+}
+
+// NormalizePromptWithDownloadSupport is NormalizePromptWithDownloads plus
+// TypeScript-compatible URL support planning. Supported URLs are left as URLs;
+// unsupported URLs are converted to inline data via download.
+func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt, allowSystemMessages bool, download DownloadFunction, isURLSupported URLSupportChecker) (types.Prompt, error) {
+	normalized, err := NormalizePrompt(prompt, allowSystemMessages)
+	if err != nil {
+		return types.Prompt{}, err
+	}
+	if download == nil {
+		return normalized, nil
+	}
+	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
+	if err != nil {
+		return types.Prompt{}, err
+	}
+	normalized.Messages = messages
+	return normalized, nil
+}
+
 // NormalizeMessages rewrites message content into provider-facing v4 content.
 func NormalizeMessages(messages []types.Message, allowSystemMessages bool) ([]types.Message, error) {
 	if len(messages) == 0 {
@@ -80,6 +156,230 @@ func NormalizeMessages(messages []types.Message, allowSystemMessages bool) ([]ty
 		normalizedMessages[i] = normalizedMessage
 	}
 	return normalizedMessages, nil
+}
+
+// DownloadToolResultFiles returns a copy of messages where unsupported
+// tool-result file URL blocks have been converted to inline data blocks using
+// download. It is kept for compatibility with earlier Go-AI callers.
+func DownloadToolResultFiles(ctx context.Context, messages []types.Message, download func(context.Context, string) ([]byte, error)) ([]types.Message, error) {
+	return DownloadUnsupportedFileURLs(ctx, messages, AdaptURLDownload(download), nil)
+}
+
+// DownloadUnsupportedFileURLs returns a copy of messages where unsupported user
+// file URLs and tool-result file URLs have been converted to inline data blocks.
+func DownloadUnsupportedFileURLs(ctx context.Context, messages []types.Message, download DownloadFunction, isURLSupported URLSupportChecker) ([]types.Message, error) {
+	if len(messages) == 0 || download == nil {
+		return messages, nil
+	}
+	requests := collectDownloadRequests(messages, isURLSupported)
+	if len(requests) == 0 {
+		return messages, nil
+	}
+	results, err := download(ctx, requests)
+	if err != nil {
+		return nil, err
+	}
+	if results == nil {
+		return messages, nil
+	}
+	if len(results) != len(requests) {
+		return nil, fmt.Errorf("download returned %d results for %d requests", len(results), len(requests))
+	}
+	downloaded := make(map[string]*DownloadResult, len(results))
+	for i, result := range results {
+		if result != nil {
+			downloaded[requests[i].URL] = result
+		}
+	}
+	if len(downloaded) == 0 {
+		return messages, nil
+	}
+	out := applyDownloadedFiles(messages, downloaded)
+	return out, nil
+}
+
+func collectDownloadRequests(messages []types.Message, isURLSupported URLSupportChecker) []DownloadRequest {
+	var requests []DownloadRequest
+	for _, message := range messages {
+		for _, part := range message.Content {
+			collectContentPartDownloadRequests(part, isURLSupported, &requests)
+		}
+	}
+	return requests
+}
+
+func collectContentPartDownloadRequests(part types.ContentPart, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
+	switch typed := part.(type) {
+	case types.FileContent:
+		appendFileDownloadRequest(typed.FileData, typed.URL, firstNonEmpty(typed.MediaType, typed.MimeType), isURLSupported, requests)
+	case *types.FileContent:
+		if typed != nil {
+			appendFileDownloadRequest(typed.FileData, typed.URL, firstNonEmpty(typed.MediaType, typed.MimeType), isURLSupported, requests)
+		}
+	case types.ToolResultContent:
+		collectToolResultDownloadRequests(typed, isURLSupported, requests)
+	case *types.ToolResultContent:
+		if typed != nil {
+			collectToolResultDownloadRequests(*typed, isURLSupported, requests)
+		}
+	}
+}
+
+func collectToolResultDownloadRequests(part types.ToolResultContent, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
+	if part.Output == nil || part.Output.Type != types.ToolResultOutputContent {
+		return
+	}
+	for _, block := range part.Output.Content {
+		switch typed := block.(type) {
+		case types.FileContentBlock:
+			appendFileDownloadRequest(typed.FileData, typed.URL, typed.MediaType, isURLSupported, requests)
+		case *types.FileContentBlock:
+			if typed != nil {
+				appendFileDownloadRequest(typed.FileData, typed.URL, typed.MediaType, isURLSupported, requests)
+			}
+		}
+	}
+}
+
+func appendFileDownloadRequest(fileData types.FileData, fallbackURL, fallbackMediaType string, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
+	url := fallbackURL
+	mediaType := fallbackMediaType
+	if fileData.Type == types.FileDataTypeURL {
+		url = fileData.URL
+		mediaType = firstNonEmpty(mediaType, fileData.MediaType)
+	}
+	if url == "" {
+		return
+	}
+	*requests = append(*requests, DownloadRequest{
+		URL:                   url,
+		IsURLSupportedByModel: mediaType != "" && isURLSupported != nil && isURLSupported(mediaType, url),
+	})
+}
+
+func applyDownloadedFiles(messages []types.Message, downloaded map[string]*DownloadResult) []types.Message {
+	out := make([]types.Message, len(messages))
+	for i, message := range messages {
+		converted := message
+		if len(message.Content) > 0 {
+			converted.Content = applyDownloadedContent(message.Content, downloaded)
+		}
+		out[i] = converted
+	}
+	return out
+}
+
+func applyDownloadedContent(parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
+	out := make([]types.ContentPart, len(parts))
+	for i, part := range parts {
+		switch typed := part.(type) {
+		case types.FileContent:
+			converted := applyDownloadedFileContent(typed, downloaded)
+			out[i] = converted
+		case *types.FileContent:
+			if typed == nil {
+				out[i] = part
+				continue
+			}
+			converted := applyDownloadedFileContent(*typed, downloaded)
+			out[i] = &converted
+		case types.ToolResultContent:
+			converted := applyDownloadedToolResultPart(typed, downloaded)
+			out[i] = converted
+		case *types.ToolResultContent:
+			if typed == nil {
+				out[i] = part
+				continue
+			}
+			converted := applyDownloadedToolResultPart(*typed, downloaded)
+			out[i] = &converted
+		default:
+			out[i] = part
+		}
+	}
+	return out
+}
+
+func applyDownloadedToolResultPart(part types.ToolResultContent, downloaded map[string]*DownloadResult) types.ToolResultContent {
+	if part.Output == nil || part.Output.Type != types.ToolResultOutputContent {
+		return part
+	}
+	blocks := make([]types.ToolResultContentBlock, 0, len(part.Output.Content))
+	for _, block := range part.Output.Content {
+		converted := applyDownloadedToolResultBlock(block, downloaded)
+		blocks = append(blocks, converted)
+	}
+	output := *part.Output
+	output.Content = blocks
+	part.Output = &output
+	return part
+}
+
+func applyDownloadedToolResultBlock(block types.ToolResultContentBlock, downloaded map[string]*DownloadResult) types.ToolResultContentBlock {
+	switch typed := block.(type) {
+	case types.FileContentBlock:
+		return applyDownloadedFileContentBlock(typed, downloaded)
+	case *types.FileContentBlock:
+		if typed == nil {
+			return block
+		}
+		converted := applyDownloadedFileContentBlock(*typed, downloaded)
+		return &converted
+	default:
+		return block
+	}
+}
+
+func applyDownloadedFileContent(file types.FileContent, downloaded map[string]*DownloadResult) types.FileContent {
+	url := file.URL
+	mediaType := firstNonEmpty(file.MediaType, file.MimeType)
+	if file.FileData.Type == types.FileDataTypeURL {
+		url = file.FileData.URL
+		mediaType = firstNonEmpty(mediaType, file.FileData.MediaType)
+	}
+	result := downloaded[url]
+	if result == nil {
+		return file
+	}
+	if result.MediaType != "" && (mediaType == "" || !isFullMediaType(mediaType)) {
+		mediaType = result.MediaType
+	}
+	file.FileData = types.FileData{Type: types.FileDataTypeData, Data: result.Data, MediaType: mediaType}
+	file.Data = result.Data
+	file.URL = ""
+	file.Reference = ""
+	file.Text = ""
+	file.MediaType = mediaType
+	file.MimeType = ""
+	return file
+}
+
+func applyDownloadedFileContentBlock(block types.FileContentBlock, downloaded map[string]*DownloadResult) types.FileContentBlock {
+	url := block.URL
+	mediaType := block.MediaType
+	if block.FileData.Type == types.FileDataTypeURL {
+		url = block.FileData.URL
+		mediaType = firstNonEmpty(mediaType, block.FileData.MediaType)
+	}
+	result := downloaded[url]
+	if result == nil {
+		return block
+	}
+	if result.MediaType != "" && (mediaType == "" || !isFullMediaType(mediaType)) {
+		mediaType = result.MediaType
+	}
+	block.FileData = types.FileData{Type: types.FileDataTypeData, Data: result.Data, MediaType: mediaType}
+	block.Data = result.Data
+	block.URL = ""
+	block.Reference = ""
+	block.Text = ""
+	block.MediaType = mediaType
+	return block
+}
+
+func isFullMediaType(mediaType string) bool {
+	parts := strings.Split(mediaType, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
 // NormalizeContentParts rewrites content parts into provider-facing v4 content.

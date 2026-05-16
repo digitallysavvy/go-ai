@@ -64,6 +64,9 @@ type GenerateOptions struct {
 	// Tools available for the model to call
 	Tools []types.Tool
 
+	// IncludeRawChunks requests provider raw chunks in streams when supported.
+	IncludeRawChunks bool
+
 	// Tool choice strategy
 	ToolChoice types.ToolChoice
 
@@ -194,6 +197,10 @@ type StreamChunk struct {
 	// Reasoning content (when Type is ChunkTypeReasoning).
 	// ChunkTypeReasoningStart and ChunkTypeReasoningEnd carry only an ID, no text.
 	Reasoning string
+
+	// Raw carries an unmodified provider chunk when Type is ChunkTypeRaw and the
+	// caller requested Include.RawChunks / IncludeRawChunks.
+	Raw interface{}
 
 	// Tool call (when Type is ChunkTypeToolCall)
 	ToolCall *types.ToolCall
@@ -334,6 +341,11 @@ const (
 	// or audio clip produced by the model).  The chunk carries a
 	// GeneratedFileContent part.
 	ChunkTypeFile ChunkType = "file"
+
+	// ChunkTypeRaw carries the unmodified provider chunk requested by
+	// Include.RawChunks. Providers should only emit this when GenerateOptions
+	// IncludeRawChunks is true.
+	ChunkTypeRaw ChunkType = "raw"
 
 	// ChunkTypeToolInputStart marks the beginning of streaming tool input for a
 	// custom function tool call.  The ToolCall field contains the tool call ID and

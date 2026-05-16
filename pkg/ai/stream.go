@@ -24,6 +24,9 @@ type StreamTextOptions struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+	// Instructions is a TypeScript-compatible alias for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
 
 	// AllowSystemMessages permits system-role messages in Messages.
 	// Defaults to false; use System for system instructions unless you are
@@ -43,10 +46,12 @@ type StreamTextOptions struct {
 	PresencePenalty  *float64
 	StopSequences    []string
 	Seed             *int
+	Headers          map[string]string
 
 	// Tools available for the model to call
-	Tools      []types.Tool
-	ToolChoice types.ToolChoice
+	Tools       []types.Tool
+	ToolChoice  types.ToolChoice
+	ActiveTools []string
 
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
@@ -80,6 +85,17 @@ type StreamTextOptions struct {
 	// Default (nil) retains everything for backwards compatibility.
 	ExperimentalRetention *types.RetentionSettings
 
+	// Include controls which large request/response details are retained in step
+	// results and whether raw provider chunks are requested. Defaults match the
+	// TypeScript SDK.
+	Include *IncludeOptions
+
+	// ExperimentalInclude is a deprecated alias for Include.
+	ExperimentalInclude *IncludeOptions
+
+	// IncludeRawChunks is a deprecated alias for Include.RawChunks.
+	IncludeRawChunks bool
+
 	// Reasoning controls how much thinking effort the model applies.
 	// nil means unset (use provider default). Set to types.ReasoningDefault to
 	// explicitly omit from the API request.
@@ -93,6 +109,19 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
+	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
+	// override it for an individual step.
+	ExperimentalSandbox interface{}
+
+	// ExperimentalRefineToolInput refines parsed tool inputs by tool name before
+	// approval, callbacks, telemetry, execution, and response messages.
+	ExperimentalRefineToolInput map[string]ToolInputRefiner
+
+	// ExperimentalDownload downloads remote file URLs that need inline data
+	// before sending tool-result messages back to the model. Defaults to
+	// DefaultDownload, matching the TypeScript SDK's default download behavior.
+	ExperimentalDownload DownloadFunction
+
 	// RuntimeContext is user-defined context that flows through callbacks.
 	// It is passed as-is to all structured event callbacks.
 	RuntimeContext interface{}
@@ -103,6 +132,9 @@ type StreamTextOptions struct {
 	// ExperimentalContext is a deprecated alias for RuntimeContext.
 	ExperimentalContext interface{}
 
+	// PrepareStep is called before each model step.
+	PrepareStep func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions
+
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
 	Telemetry *TelemetrySettings
@@ -111,6 +143,10 @@ type StreamTextOptions struct {
 	//
 	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
+
+	// Internal contains test-only ID generators matching the TypeScript
+	// _internal option.
+	Internal *InternalOptions
 
 	// Callbacks
 	OnChunk  func(chunk provider.StreamChunk)
@@ -254,18 +290,22 @@ type StreamTextResult struct {
 
 	// Structured event callbacks (v6.1)
 	// Stored here so processStream can fire them when the stream completes.
-	cbCallID            string
-	cbOnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
-	cbOnFinishEvent     func(ctx context.Context, e OnFinishEvent)
-	cbOnToolCallStart   func(ctx context.Context, e OnToolCallStartEvent)
-	cbOnToolCallFinish  func(ctx context.Context, e OnToolCallFinishEvent)
-	cbFuncID            string
-	cbMeta              map[string]any
-	cbModelProvider     string
-	cbModelID           string
-	cbExperimentalCtx   interface{}
-	cbRuntimeCtx        interface{}
-	cbToolsCtx          map[string]interface{}
+	cbCallID              string
+	cbOnStepFinishEvent   func(ctx context.Context, e OnStepFinishEvent)
+	cbOnFinishEvent       func(ctx context.Context, e OnFinishEvent)
+	cbOnToolCallStart     func(ctx context.Context, e OnToolCallStartEvent)
+	cbOnToolCallFinish    func(ctx context.Context, e OnToolCallFinishEvent)
+	cbFuncID              string
+	cbMeta                map[string]any
+	cbModelProvider       string
+	cbModelID             string
+	cbExperimentalCtx     interface{}
+	cbRuntimeCtx          interface{}
+	cbToolsCtx            map[string]interface{}
+	cbInclude             IncludeOptions
+	cbSteps               []types.StepResult
+	cbResponseMessages    []types.Message
+	cbExperimentalSandbox interface{}
 	// Snapshot of the initial messages and tools for event population
 	cbMessages []types.Message
 	cbTools    []types.Tool
@@ -275,6 +315,8 @@ type StreamTextResult struct {
 	// additional streaming steps when deferred provider tool results are pending.
 	cbModel      provider.LanguageModel
 	cbStreamOpts StreamTextOptions
+
+	processingDone chan struct{}
 }
 
 // StreamText performs streaming text generation
@@ -285,6 +327,12 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
+	system := effectiveSystem(opts.System, opts.Instructions)
+	include := effectiveInclude(opts.Include, opts.ExperimentalInclude, opts.IncludeRawChunks)
+	if opts.Include == nil && opts.ExperimentalInclude == nil && opts.ExperimentalRetention != nil {
+		include.RequestBody = opts.ExperimentalRetention.ShouldRetainRequestBody()
+		include.ResponseBody = opts.ExperimentalRetention.ShouldRetainResponseBody()
+	}
 	toolsContext := opts.ToolsContext
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
@@ -297,7 +345,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	telSystem := ""
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
-		telSystem = opts.System
+		telSystem = system
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		OperationType:  "ai.streamText",
@@ -319,7 +367,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 
 	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
 	if normErr != nil {
@@ -330,10 +378,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	opts.RuntimeContext = runtimeContext
 	opts.ExperimentalContext = runtimeContext
 	opts.ToolsContext = toolsContext
+	opts.Include = &include
 
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
-	callID := newCallID()
+	callID := internalGenerateCallID(opts.Internal)()
 
 	// Emit OnStartEvent before streaming begins.
 	Notify(ctx, OnStartEvent{
@@ -341,13 +390,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		OperationID:         "ai.streamText",
 		ModelProvider:       opts.Model.Provider(),
 		ModelID:             opts.Model.ModelID(),
-		System:              opts.System,
+		System:              system,
 		Prompt:              opts.Prompt,
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
 		ToolChoice:          opts.ToolChoice,
 		Output:              opts.Output,
 		ProviderOptions:     opts.ProviderOptions,
+		Headers:             opts.Headers,
 		Temperature:         opts.Temperature,
 		MaxTokens:           opts.MaxTokens,
 		TopP:                opts.TopP,
@@ -361,15 +411,75 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		ToolsContext:        toolsContext,
 	}, opts.OnStart)
 
+	stepModel := opts.Model
+	stepSystem := system
+	stepMessages := prompt.Messages
+	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+	stepToolChoice := opts.ToolChoice
+	stepProviderOptions := opts.ProviderOptions
+	stepSandbox := opts.ExperimentalSandbox
+	if opts.PrepareStep != nil {
+		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
+			Model:               stepModel,
+			System:              stepSystem,
+			Instructions:        &stepSystem,
+			InitialInstructions: &system,
+			Messages:            append([]types.Message(nil), stepMessages...),
+			InitialMessages:     append([]types.Message(nil), prompt.Messages...),
+			ResponseMessages:    nil,
+			UserContext:         runtimeContext,
+			RuntimeContext:      runtimeContext,
+			ToolsContext:        toolsContext,
+			StepNumber:          0,
+			Steps:               nil,
+			Tools:               stepTools,
+			ToolChoice:          stepToolChoice,
+			ActiveTools:         opts.ActiveTools,
+			ProviderOptions:     stepProviderOptions,
+			ExperimentalSandbox: stepSandbox,
+		})
+		if prepared.Model != nil {
+			stepModel = prepared.Model
+		}
+		if prepared.Instructions != nil {
+			stepSystem = *prepared.Instructions
+		} else if prepared.System != "" {
+			stepSystem = prepared.System
+		}
+		if prepared.Messages != nil {
+			stepMessages = prepared.Messages
+		}
+		if prepared.Tools != nil {
+			stepTools = prepared.Tools
+		}
+		if prepared.ToolChoice.Type != "" {
+			stepToolChoice = prepared.ToolChoice
+		}
+		if prepared.ProviderOptions != nil {
+			stepProviderOptions = prepared.ProviderOptions
+		}
+		if prepared.RuntimeContext != nil {
+			runtimeContext = prepared.RuntimeContext
+		}
+		if prepared.ToolsContext != nil {
+			toolsContext = prepared.ToolsContext
+		}
+		if prepared.ExperimentalSandbox != nil {
+			stepSandbox = prepared.ExperimentalSandbox
+		}
+	}
+	opts.ExperimentalSandbox = stepSandbox
+
 	// Emit OnStepStartEvent for the first stream step.
 	Notify(ctx, OnStepStartEvent{
 		CallID:              callID,
-		StepNumber:          1,
-		ModelProvider:       opts.Model.Provider(),
-		ModelID:             opts.Model.ModelID(),
-		System:              opts.System,
-		Messages:            prompt.Messages,
-		Tools:               opts.Tools,
+		StepNumber:          0,
+		ModelProvider:       stepModel.Provider(),
+		ModelID:             stepModel.ModelID(),
+		System:              stepSystem,
+		Messages:            stepMessages,
+		Tools:               stepTools,
+		ActiveTools:         opts.ActiveTools,
 		PreviousSteps:       nil, // first (and only) step
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
@@ -391,9 +501,15 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 	}
 
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{System: stepSystem, Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	if normErr != nil {
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
+		return nil, fmt.Errorf("prompt normalization failed: %w", normErr)
+	}
+
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
-		Prompt:                prompt,
+		Prompt:                stepPrompt,
 		AllowSystemMessages:   allowSystem,
 		AllowSystemInMessages: allowSystem,
 		Temperature:           opts.Temperature,
@@ -404,28 +520,30 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		PresencePenalty:       opts.PresencePenalty,
 		StopSequences:         opts.StopSequences,
 		Seed:                  opts.Seed,
-		Tools:                 opts.Tools,
-		ToolChoice:            opts.ToolChoice,
+		Headers:               opts.Headers,
+		Tools:                 stepTools,
+		ToolChoice:            stepToolChoice,
+		IncludeRawChunks:      include.RawChunks,
 		RuntimeContext:        runtimeContext,
 		ToolsContext:          toolsContext,
 		ResponseFormat:        responseFormat,
 		Reasoning:             opts.Reasoning,
 		SendReasoning:         opts.SendReasoning,
-		ProviderOptions:       opts.ProviderOptions,
+		ProviderOptions:       stepProviderOptions,
 		Telemetry:             telemetrySettings,
 	}
 
 	telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
 		Settings:      telemetrySettings,
 		CallID:        callID,
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
+		ModelProvider: stepModel.Provider(),
+		ModelID:       stepModel.ModelID(),
 		Prompt:        genOpts.Prompt,
 		Tools:         genOpts.Tools,
 	})
 
 	// Start streaming
-	stream, err := opts.Model.DoStream(ctx, genOpts)
+	stream, err := stepModel.DoStream(ctx, genOpts)
 	if err != nil {
 		if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
@@ -443,29 +561,32 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		telemetrySettings: telemetrySettings,
 		outputSpec:        outputSpec,
 		// Structured event callbacks
-		cbCallID:            callID,
-		cbOnStepFinishEvent: opts.OnStepFinishEvent,
-		cbOnFinishEvent:     opts.OnFinishEvent,
-		cbOnToolCallStart:   opts.OnToolExecutionStart,
-		cbOnToolCallFinish:  opts.OnToolExecutionEnd,
-		cbFuncID:            cbFuncID,
-		cbMeta:              cbMeta,
-		cbModelProvider:     opts.Model.Provider(),
-		cbModelID:           opts.Model.ModelID(),
-		cbExperimentalCtx:   runtimeContext,
-		cbRuntimeCtx:        runtimeContext,
-		cbToolsCtx:          toolsContext,
-		cbMessages:          prompt.Messages,
-		cbTools:             opts.Tools,
-		cbSystem:            opts.System,
+		cbCallID:              callID,
+		cbOnStepFinishEvent:   opts.OnStepFinishEvent,
+		cbOnFinishEvent:       opts.OnFinishEvent,
+		cbOnToolCallStart:     opts.OnToolExecutionStart,
+		cbOnToolCallFinish:    opts.OnToolExecutionEnd,
+		cbFuncID:              cbFuncID,
+		cbMeta:                cbMeta,
+		cbModelProvider:       stepModel.Provider(),
+		cbModelID:             stepModel.ModelID(),
+		cbExperimentalCtx:     runtimeContext,
+		cbRuntimeCtx:          runtimeContext,
+		cbToolsCtx:            toolsContext,
+		cbInclude:             include,
+		cbMessages:            stepMessages,
+		cbTools:               stepTools,
+		cbSystem:              stepSystem,
+		cbExperimentalSandbox: stepSandbox,
 		// Retained for deferred provider tool continuation.
-		cbModel:      opts.Model,
+		cbModel:      stepModel,
 		cbStreamOpts: opts,
 	}
 
 	// Start goroutine to process chunks and call callbacks
 	if opts.OnChunk != nil || opts.OnFinish != nil ||
 		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil {
+		result.processingDone = make(chan struct{})
 		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
 	}
 
@@ -483,15 +604,13 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 // Supports multi-step continuation for provider tools with SupportsDeferredResults.
 // When such tools are pending, processStream starts a new DoStream call and loops.
 func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
+	if r.processingDone != nil {
+		defer close(r.processingDone)
+	}
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
+	currentTools := append([]types.Tool(nil), r.cbTools...)
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
-
-	// Build tool name → pointer map for deferred provider tool tracking.
-	toolsByName := make(map[string]*types.Tool, len(opts.Tools))
-	for i := range opts.Tools {
-		toolsByName[opts.Tools[i].Name] = &opts.Tools[i]
-	}
 	// pendingDeferredToolCalls tracks provider tools (SupportsDeferredResults=true) whose
 	// results haven't arrived yet. Key = toolCallID, value = toolName.
 	pendingDeferredToolCalls := make(map[string]string)
@@ -502,13 +621,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var accumulatedTextParts []string
 
 	for stepNum := 1; ; stepNum++ {
+		stepIndex := stepNum - 1
+		stepProvider := r.cbModel.Provider()
+		stepModelID := r.cbModel.ModelID()
+		stepTools := append([]types.Tool(nil), currentTools...)
+		toolsByName := make(map[string]*types.Tool, len(stepTools))
+		for i := range stepTools {
+			toolsByName[stepTools[i].Name] = &stepTools[i]
+		}
 		// Fire step-start telemetry. OTel implementations create a child step span.
 		stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
-			StepNumber:     stepNum,
-			ModelProvider:  r.cbModelProvider,
-			ModelID:        r.cbModelID,
+			StepNumber:     stepIndex,
+			ModelProvider:  stepProvider,
+			ModelID:        stepModelID,
 			RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
@@ -522,6 +649,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepToolCalls []types.ToolCall
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
+		var stepUsage types.Usage
 		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
 		// result inline in this step's stream (used for the deferred hasResult check).
 		streamedToolResultIDs := make(map[string]bool)
@@ -536,6 +664,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
+			if chunk.Type == provider.ChunkTypeRaw && !r.cbInclude.RawChunks {
+				forwardChunk = false
+			}
 
 			// Transition from Submitted to Streaming on the first content chunk.
 			// Metadata and stream lifecycle chunks are forwarded before this
@@ -603,7 +734,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			if chunk.Usage != nil {
-				r.usage = *chunk.Usage
+				stepUsage = *chunk.Usage
 			}
 
 			// Update finish reason and context management
@@ -617,10 +748,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
 						Settings:      r.telemetrySettings,
 						CallID:        r.cbCallID,
-						ModelProvider: r.cbModelProvider,
-						ModelID:       r.cbModelID,
+						ModelProvider: stepProvider,
+						ModelID:       stepModelID,
 						FinishReason:  string(chunk.FinishReason),
-						Usage:         telemetryUsageFromUsage(r.usage),
+						Usage:         telemetryUsageFromUsage(stepUsage),
 						ResponseID:    responseIDFromMetadata(chunk.ResponseMetadata),
 					})
 				}
@@ -669,20 +800,26 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		stepText := strings.Join(stepTextParts, "")
 		r.text = strings.Join(accumulatedTextParts, "")
+		var refineErr error
+		stepToolCalls, refineErr = RefineToolCalls(ctx, stepToolCalls, stepTools, opts.ExperimentalRefineToolInput, r.cbRuntimeCtx, r.cbToolsCtx)
+		if refineErr != nil {
+			r.err = fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
+			break
+		}
 
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
-		if len(stepToolCalls) > 0 && len(opts.Tools) > 0 {
+		if len(stepToolCalls) > 0 && len(stepTools) > 0 {
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              r.cbCallID,
 				onStart:             r.cbOnToolCallStart,
 				onFinish:            r.cbOnToolCallFinish,
 				fallbackStart:       opts.OnToolCallStart,
 				fallbackFinish:      opts.OnToolCallFinish,
-				stepNum:             stepNum,
-				modelProvider:       r.cbModelProvider,
-				modelID:             r.cbModelID,
+				stepNum:             stepIndex,
+				modelProvider:       stepProvider,
+				modelID:             stepModelID,
 				messages:            currentMessages,
 				experimentalContext: r.cbExperimentalCtx,
 				runtimeContext:      r.cbRuntimeCtx,
@@ -691,8 +828,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				metadata:            r.cbMeta,
 				timeout:             r.timeout,
 				telemetrySettings:   r.telemetrySettings,
+				experimentalSandbox: opts.ExperimentalSandbox,
 			}
-			stepToolResults, _ = executeTools(ctx, stepToolCalls, opts.Tools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &r.usage, toolCallbacks)
+			usageForTools := r.usage.Add(stepUsage)
+			stepToolResults, _ = executeTools(ctx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
 		}
 		hasUserApproval := false
 		for _, tr := range stepToolResults {
@@ -747,6 +886,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.mu.Lock()
 		r.toolCalls = append(r.toolCalls, stepToolCalls...)
 		r.toolResults = append(r.toolResults, stepToolResults...)
+		r.usage = r.usage.Add(stepUsage)
 		r.mu.Unlock()
 		// Decode provider metadata for this step.
 		r.mu.Lock()
@@ -776,8 +916,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// use the current snapshot as the step's text.
 		stepResult := types.StepResult{
 			CallID:             r.cbCallID,
-			StepNumber:         stepNum,
-			Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
+			StepNumber:         stepIndex,
+			Model:              types.StepModel{Provider: stepProvider, ModelID: stepModelID},
 			Text:               stepText,
 			Reasoning:          stepReasoning,
 			ReasoningText:      buildReasoningText(stepReasoning),
@@ -789,12 +929,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			DynamicToolResults: filterDynamicToolResults(stepToolResults),
 			FinishReason:       r.finishReason,
 			RawFinishReason:    stepRawFinishReason,
-			Usage:              r.usage,
+			Usage:              stepUsage,
 			Sources:            r.sources,
-			Response:           types.StepResponse{Headers: stepHeaders},
-			ProviderMetadata:   stepProviderMeta,
-			ToolsContext:       r.cbToolsCtx,
-			RuntimeContext:     r.cbRuntimeCtx,
+			Request: types.StepRequest{
+				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
+			},
+			Response:         types.StepResponse{Headers: stepHeaders},
+			ProviderMetadata: stepProviderMeta,
+			ToolsContext:     r.cbToolsCtx,
+			RuntimeContext:   r.cbRuntimeCtx,
 		}
 		allSteps = append(allSteps, stepResult)
 
@@ -821,7 +964,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
-				StepNumber:     stepNum,
+				StepNumber:     stepIndex,
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
 				Text:           stepText,
@@ -842,6 +985,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
+		r.mu.Lock()
+		r.cbSteps = append([]types.StepResult(nil), allSteps...)
+		r.cbResponseMessages = responseMessagesFromSteps(allSteps)
+		r.mu.Unlock()
 
 		if hasUserApproval {
 			break
@@ -882,11 +1029,81 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Start a new stream for the next step.
+		nextModel := r.cbModel
+		nextSystem := r.cbSystem
+		nextMessages := currentMessages
+		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		nextToolChoice := opts.ToolChoice
+		nextProviderOptions := opts.ProviderOptions
+		nextSandbox := opts.ExperimentalSandbox
+		if opts.PrepareStep != nil {
+			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
+				Model:               nextModel,
+				System:              nextSystem,
+				Instructions:        &nextSystem,
+				InitialInstructions: &r.cbSystem,
+				Messages:            append([]types.Message(nil), nextMessages...),
+				InitialMessages:     append([]types.Message(nil), r.cbMessages...),
+				ResponseMessages:    responseMessagesFromSteps(allSteps),
+				UserContext:         r.cbRuntimeCtx,
+				RuntimeContext:      r.cbRuntimeCtx,
+				ToolsContext:        r.cbToolsCtx,
+				StepNumber:          stepNum,
+				Steps:               append([]types.StepResult(nil), allSteps...),
+				Tools:               nextTools,
+				ToolChoice:          nextToolChoice,
+				ActiveTools:         opts.ActiveTools,
+				ProviderOptions:     nextProviderOptions,
+				ExperimentalSandbox: nextSandbox,
+				AccumulatedUsage:    r.usage,
+			})
+			if prepared.Model != nil {
+				nextModel = prepared.Model
+			}
+			if prepared.Instructions != nil {
+				nextSystem = *prepared.Instructions
+			} else if prepared.System != "" {
+				nextSystem = prepared.System
+			}
+			if prepared.Messages != nil {
+				nextMessages = prepared.Messages
+				currentMessages = prepared.Messages
+			}
+			if prepared.Tools != nil {
+				nextTools = prepared.Tools
+			}
+			if prepared.ToolChoice.Type != "" {
+				nextToolChoice = prepared.ToolChoice
+			}
+			if prepared.ProviderOptions != nil {
+				nextProviderOptions = prepared.ProviderOptions
+			}
+			if prepared.RuntimeContext != nil {
+				r.cbRuntimeCtx = prepared.RuntimeContext
+			}
+			if prepared.ToolsContext != nil {
+				r.cbToolsCtx = prepared.ToolsContext
+			}
+			if prepared.ExperimentalSandbox != nil {
+				nextSandbox = prepared.ExperimentalSandbox
+			}
+		}
+		r.cbModel = nextModel
+		r.cbModelProvider = nextModel.Provider()
+		r.cbModelID = nextModel.ModelID()
+		r.cbSystem = nextSystem
+		currentTools = append([]types.Tool(nil), nextTools...)
+		opts.ExperimentalSandbox = nextSandbox
+		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{
+			Messages: nextMessages,
+			System:   nextSystem,
+		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
+		if normErr != nil {
+			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
+			break
+		}
 		nextGenOpts := &provider.GenerateOptions{
-			Prompt: types.Prompt{
-				Messages: currentMessages,
-				System:   opts.System,
-			},
+			Prompt:                nextPrompt,
 			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
 			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
 			Temperature:           opts.Temperature,
@@ -897,25 +1114,27 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			PresencePenalty:       opts.PresencePenalty,
 			StopSequences:         opts.StopSequences,
 			Seed:                  opts.Seed,
-			Tools:                 opts.Tools,
-			ToolChoice:            opts.ToolChoice,
+			Headers:               opts.Headers,
+			Tools:                 nextTools,
+			ToolChoice:            nextToolChoice,
+			IncludeRawChunks:      r.cbInclude.RawChunks,
 			RuntimeContext:        r.cbRuntimeCtx,
 			ToolsContext:          r.cbToolsCtx,
 			ResponseFormat:        responseFormat,
 			Reasoning:             opts.Reasoning,
 			SendReasoning:         opts.SendReasoning,
-			ProviderOptions:       opts.ProviderOptions,
+			ProviderOptions:       nextProviderOptions,
 			Telemetry:             r.telemetrySettings,
 		}
 		telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
 			Settings:      r.telemetrySettings,
 			CallID:        r.cbCallID,
-			ModelProvider: r.cbModelProvider,
-			ModelID:       r.cbModelID,
+			ModelProvider: nextModel.Provider(),
+			ModelID:       nextModel.ModelID(),
 			Prompt:        nextGenOpts.Prompt,
 			Tools:         nextGenOpts.Tools,
 		})
-		newStream, err := r.cbModel.DoStream(ctx, nextGenOpts)
+		newStream, err := nextModel.DoStream(ctx, nextGenOpts)
 		if err != nil {
 			if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
@@ -1014,7 +1233,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// Emit per-step finish events and use the last step for the single-step path.
 	lastStep := types.StepResult{
 		CallID:             r.cbCallID,
-		StepNumber:         1,
+		StepNumber:         0,
 		Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
 		Text:               r.text,
 		ToolCalls:          finalToolCalls,
@@ -1044,8 +1263,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		CallID:             r.cbCallID,
 		StepNumber:         lastStep.StepNumber,
 		Model:              lastStep.Model,
-		ModelProvider:      r.cbModelProvider,
-		ModelID:            r.cbModelID,
+		ModelProvider:      lastStep.Model.Provider,
+		ModelID:            lastStep.Model.ModelID,
 		Text:               lastStep.Text,
 		Reasoning:          lastStep.Reasoning,
 		ReasoningText:      lastStep.ReasoningText,
@@ -1080,8 +1299,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		CallID:             r.cbCallID,
 		StepNumber:         lastStep.StepNumber,
 		Model:              lastStep.Model,
-		ModelProvider:      r.cbModelProvider,
-		ModelID:            r.cbModelID,
+		ModelProvider:      lastStep.Model.Provider,
+		ModelID:            lastStep.Model.ModelID,
 		Text:               r.text,
 		Reasoning:          lastStep.Reasoning,
 		ReasoningText:      lastStep.ReasoningText,
@@ -1134,7 +1353,13 @@ func (r *StreamTextResult) StopReason() string {
 
 // Usage returns the usage information (only available after stream completes)
 func (r *StreamTextResult) Usage() types.Usage {
+	_ = r.ensureConsumed()
 	return r.usage
+}
+
+// TotalUsage returns aggregate token usage across all steps.
+func (r *StreamTextResult) TotalUsage() types.Usage {
+	return r.Usage()
 }
 
 // ContextManagement returns context management statistics (Anthropic-specific)
@@ -1147,6 +1372,7 @@ func (r *StreamTextResult) ContextManagement() interface{} {
 // Only populated after stream completes (processStream or ReadAll).
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) ToolCalls() []types.ToolCall {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.toolCalls
@@ -1156,6 +1382,7 @@ func (r *StreamTextResult) ToolCalls() []types.ToolCall {
 // Only populated when StreamText was called with callbacks and tool definitions.
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) ToolResults() []types.ToolResult {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.toolResults
@@ -1165,6 +1392,7 @@ func (r *StreamTextResult) ToolResults() []types.ToolResult {
 // Populated by providers such as Perplexity and Google Generative AI.
 // Only populated after stream completes.
 func (r *StreamTextResult) Sources() []types.SourceContent {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.sources
@@ -1208,6 +1436,7 @@ func (r *StreamTextResult) PartialOutput() any {
 // StaticToolCalls returns tool calls from non-dynamic (typed) tools.
 // Only populated after stream completes.
 func (r *StreamTextResult) StaticToolCalls() []types.ToolCall {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return filterStaticToolCalls(r.toolCalls)
@@ -1216,6 +1445,7 @@ func (r *StreamTextResult) StaticToolCalls() []types.ToolCall {
 // DynamicToolCalls returns tool calls from dynamically registered tools.
 // Only populated after stream completes.
 func (r *StreamTextResult) DynamicToolCalls() []types.ToolCall {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return filterDynamicToolCalls(r.toolCalls)
@@ -1224,6 +1454,7 @@ func (r *StreamTextResult) DynamicToolCalls() []types.ToolCall {
 // StaticToolResults returns results from non-dynamic (typed) tools.
 // Only populated after stream completes.
 func (r *StreamTextResult) StaticToolResults() []types.ToolResult {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return filterStaticToolResults(r.toolResults)
@@ -1232,6 +1463,7 @@ func (r *StreamTextResult) StaticToolResults() []types.ToolResult {
 // DynamicToolResults returns results from dynamically registered tools.
 // Only populated after stream completes.
 func (r *StreamTextResult) DynamicToolResults() []types.ToolResult {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return filterDynamicToolResults(r.toolResults)
@@ -1240,6 +1472,7 @@ func (r *StreamTextResult) DynamicToolResults() []types.ToolResult {
 // RawFinishReason returns the raw finish reason string from the provider.
 // Only available after stream completes.
 func (r *StreamTextResult) RawFinishReason() string {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.rawFinishReason
@@ -1255,6 +1488,7 @@ func (r *StreamTextResult) ResponseHeadersMap() map[string]string {
 
 // Request returns metadata about the last request sent to the provider.
 func (r *StreamTextResult) Request() types.StepRequest {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stepRequest
@@ -1262,6 +1496,7 @@ func (r *StreamTextResult) Request() types.StepRequest {
 
 // Response returns metadata about the last response from the provider.
 func (r *StreamTextResult) Response() types.StepResponse {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stepResponse
@@ -1291,6 +1526,47 @@ func (r *StreamTextResult) Resume(ctx context.Context) error {
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
 	return r.err
+}
+
+// Steps returns all completed stream steps, consuming the stream if needed.
+func (r *StreamTextResult) Steps() []types.StepResult {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]types.StepResult(nil), r.cbSteps...)
+}
+
+// FinalStep returns the final completed stream step, consuming the stream if needed.
+func (r *StreamTextResult) FinalStep() types.StepResult {
+	steps := r.Steps()
+	if len(steps) == 0 {
+		return types.StepResult{}
+	}
+	return steps[len(steps)-1]
+}
+
+// ResponseMessages returns accumulated assistant/tool response messages.
+func (r *StreamTextResult) ResponseMessages() []types.Message {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]types.Message(nil), r.cbResponseMessages...)
+}
+
+func (r *StreamTextResult) ensureConsumed() error {
+	r.mu.Lock()
+	done := r.status == StreamStatusDone
+	processingDone := r.processingDone
+	r.mu.Unlock()
+	if done {
+		return nil
+	}
+	if processingDone != nil {
+		<-processingDone
+		return r.err
+	}
+	_, err := r.ReadAll()
+	return err
 }
 
 // Close closes the stream
@@ -1379,6 +1655,18 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
 			r.files = append(r.files, *chunk.GeneratedFileContent)
 		}
+		if chunk.Type == provider.ChunkTypeSource && chunk.SourceContent != nil {
+			r.sources = append(r.sources, *chunk.SourceContent)
+		}
+		if chunk.Type == provider.ChunkTypeResponseMetadata && chunk.ResponseMetadata != nil {
+			r.responseHeaders = chunk.ResponseMetadata.Headers
+			r.stepResponse = types.StepResponse{
+				ID:        chunk.ResponseMetadata.ID,
+				Timestamp: chunk.ResponseMetadata.Timestamp,
+				ModelID:   chunk.ResponseMetadata.ModelID,
+				Headers:   chunk.ResponseMetadata.Headers,
+			}
+		}
 	}
 
 	// Store collected tool calls.
@@ -1393,6 +1681,44 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		r.toolCalls = pendingToolCalls
 		r.mu.Unlock()
 	}
+	responseMessages := providerutils.ConvertToResponseMessages(
+		pendingToolCalls,
+		[]types.ContentPart{types.TextContent{Text: r.text}},
+		nil,
+	)
+	step := types.StepResult{
+		CallID:           r.cbCallID,
+		StepNumber:       0,
+		Model:            types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
+		Text:             r.text,
+		Content:          []types.ContentPart{types.TextContent{Text: r.text}},
+		ToolCalls:        pendingToolCalls,
+		StaticToolCalls:  filterStaticToolCalls(pendingToolCalls),
+		DynamicToolCalls: filterDynamicToolCalls(pendingToolCalls),
+		FinishReason:     r.finishReason,
+		Usage:            r.usage,
+		Sources:          r.sources,
+		Files:            r.files,
+		Request: types.StepRequest{
+			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
+		},
+		Response: types.StepResponse{
+			ID:        r.stepResponse.ID,
+			Timestamp: r.stepResponse.Timestamp,
+			ModelID:   r.stepResponse.ModelID,
+			Headers:   r.responseHeaders,
+			Messages:  responseMessages,
+		},
+		ResponseMessages: responseMessages,
+		ToolsContext:     r.cbToolsCtx,
+		RuntimeContext:   r.cbRuntimeCtx,
+	}
+	r.mu.Lock()
+	r.cbSteps = []types.StepResult{step}
+	r.cbResponseMessages = responseMessages
+	r.stepRequest = step.Request
+	r.stepResponse = step.Response
+	r.mu.Unlock()
 
 	// Resolve final typed output if spec was provided and stream completed cleanly.
 	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
@@ -1463,6 +1789,13 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
 	return sendReasoning == nil || !*sendReasoning
+}
+
+func includedRequestMessages(include bool, messages []types.Message) []types.Message {
+	if !include {
+		return nil
+	}
+	return append([]types.Message(nil), messages...)
 }
 
 // nextChunk reads the next chunk with optional per-chunk timeout

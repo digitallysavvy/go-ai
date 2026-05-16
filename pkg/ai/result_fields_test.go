@@ -86,6 +86,10 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "hello",
+		Include: &IncludeOptions{
+			RequestBody:  true,
+			ResponseBody: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("GenerateText() error = %v", err)
@@ -132,6 +136,7 @@ func TestStreamTextResultAccessorFields(t *testing.T) {
 	}
 	r := &StreamTextResult{
 		stream: testutil.NewMockTextStream(nil),
+		status: StreamStatusDone,
 		toolCalls: []types.ToolCall{
 			{ID: "a", Dynamic: false},
 			{ID: "b", Dynamic: true},

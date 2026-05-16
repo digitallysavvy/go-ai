@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -33,6 +34,62 @@ func TestFileDataErrorTypesAndParsing(t *testing.T) {
 	}
 	if _, err := ParseDataURL("data:text/plain,abc"); err == nil {
 		t.Fatal("ParseDataURL(non-base64 marker) should fail")
+	}
+}
+
+func TestNormalizePromptWithDownloadSupportPlansSupportedURLsAndNilPassThrough(t *testing.T) {
+	messages := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://assets.example/cat.png", MediaType: "image/png"},
+		}},
+	}}
+
+	normalized, err := NormalizePromptWithDownloadSupport(context.Background(), types.Prompt{Messages: messages}, false,
+		func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+			if len(requests) != 1 || requests[0].URL != "https://assets.example/cat.png" || !requests[0].IsURLSupportedByModel {
+				t.Fatalf("requests = %#v, want one supported URL request", requests)
+			}
+			return nil, nil
+		},
+		func(mediaType, rawURL string) bool {
+			return mediaType == "image/png" && rawURL == "https://assets.example/cat.png"
+		},
+	)
+	if err != nil {
+		t.Fatalf("NormalizePromptWithDownloadSupport() error = %v", err)
+	}
+	file := normalized.Messages[0].Content[0].(types.FileContent)
+	if file.FileData.Type != types.FileDataTypeURL || file.FileData.URL != "https://assets.example/cat.png" {
+		t.Fatalf("file = %#v, want original URL pass-through", file)
+	}
+}
+
+func TestNormalizePromptWithDownloadSupportAppliesMediaTypeFromDownload(t *testing.T) {
+	messages := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://assets.example/cat", MediaType: "image"},
+		}},
+	}}
+
+	normalized, err := NormalizePromptWithDownloadSupport(context.Background(), types.Prompt{Messages: messages}, false,
+		func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+			if len(requests) != 1 || requests[0].IsURLSupportedByModel {
+				t.Fatalf("requests = %#v, want one unsupported URL request", requests)
+			}
+			return []*DownloadResult{{Data: []byte("cat"), MediaType: "image/png"}}, nil
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NormalizePromptWithDownloadSupport() error = %v", err)
+	}
+	file := normalized.Messages[0].Content[0].(types.FileContent)
+	if file.FileData.Type != types.FileDataTypeData || string(file.FileData.Data) != "cat" || file.FileData.MediaType != "image/png" {
+		t.Fatalf("file = %#v, want inline data with downloaded media type", file)
 	}
 }
 

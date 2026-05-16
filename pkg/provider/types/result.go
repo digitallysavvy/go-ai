@@ -12,6 +12,9 @@ type StepModel struct {
 type StepRequest struct {
 	// Body is the raw request body sent to the provider (for debugging).
 	Body interface{} `json:"body,omitempty"`
+
+	// Messages are the model messages sent in this step when explicitly included.
+	Messages []Message `json:"messages,omitempty"`
 }
 
 // StepResponse contains metadata about the response received from the provider.
@@ -213,7 +216,7 @@ type StepResult struct {
 	// CallID uniquely identifies the generateText/streamText call this step belongs to.
 	CallID string `json:"callId,omitempty"`
 
-	// Step number (1-indexed). Note: TypeScript SDK uses 0-based indexing.
+	// Step number (0-indexed), matching the TypeScript SDK.
 	StepNumber int `json:"stepNumber"`
 
 	// Model identifies the provider and model ID that produced this step.
@@ -221,6 +224,9 @@ type StepResult struct {
 
 	// Text generated in this step
 	Text string `json:"text"`
+
+	// Content contains all standardized content parts generated in this step.
+	Content []ContentPart `json:"content,omitempty"`
 
 	// Reasoning holds the reasoning/thinking content parts produced in this step.
 	Reasoning []ReasoningContent `json:"reasoning,omitempty"`

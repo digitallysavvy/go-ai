@@ -143,6 +143,14 @@ type ToolExecutionOptions struct {
 
 	// Metadata contains additional metadata
 	Metadata map[string]interface{}
+
+	// ToolMetadata contains metadata attached to the tool call by the provider.
+	ToolMetadata map[string]interface{}
+
+	// ExperimentalSandbox is the sandbox environment for this tool execution.
+	// It is intentionally typed as interface{} so applications can provide their
+	// own sandbox implementation while core APIs preserve TypeScript parity.
+	ExperimentalSandbox interface{}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
@@ -224,6 +232,9 @@ type ToolCall struct {
 	// ProviderMetadata carries provider-specific metadata associated with this tool call.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
+	// ToolMetadata carries tool-specific metadata associated with this tool call.
+	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
+
 	// ThoughtSignature is Google's cryptographic token that seals the model's
 	// thinking chain across tool calls. Populated by the Google/Vertex providers
 	// when the API returns a thoughtSignature on a functionCall part. Must be
@@ -280,6 +291,9 @@ type ToolResult struct {
 
 	// ProviderMetadata carries provider-specific metadata associated with this tool result.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ToolMetadata carries tool-specific metadata associated with this tool result.
+	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
 }
 
 // ToolChoice specifies how the model should choose tools
