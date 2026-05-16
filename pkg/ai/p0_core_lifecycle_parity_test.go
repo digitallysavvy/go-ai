@@ -277,7 +277,7 @@ func TestStreamTextIncludeRawChunksRequestsProviderRawChunks(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Include: &IncludeOptions{RawChunks: boolPtr(true)},
+		Include: &IncludeOptions{RawChunks: includeBoolPtr(true)},
 		OnChunk: func(chunk provider.StreamChunk) {
 			if chunk.Type == provider.ChunkTypeRaw {
 				sawRaw = true
@@ -362,7 +362,7 @@ func TestStreamTextIncludeRawChunksOverridesDeprecatedFallback(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:            model,
 		Prompt:           "hi",
-		Include:          &IncludeOptions{RawChunks: boolPtr(false)},
+		Include:          &IncludeOptions{RawChunks: includeBoolPtr(false)},
 		IncludeRawChunks: true,
 		OnChunk: func(chunk provider.StreamChunk) {
 			if chunk.Type == provider.ChunkTypeRaw {
@@ -513,7 +513,7 @@ func TestStreamTextSuppressesRawChunksWhenIncludeRawChunksFalse(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Include: &IncludeOptions{RawChunks: boolPtr(false)},
+		Include: &IncludeOptions{RawChunks: includeBoolPtr(false)},
 		OnChunk: func(chunk provider.StreamChunk) {
 			if chunk.Type == provider.ChunkTypeRaw {
 				sawRaw = true

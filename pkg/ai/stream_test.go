@@ -15,8 +15,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-func boolPtr(v bool) *bool { return &v }
-
 func TestStreamText_BasicStream(t *testing.T) {
 	t.Parallel()
 
@@ -375,7 +373,7 @@ func TestStreamText_SuppressesReasoningBoundariesWhenSendReasoningFalse(t *testi
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:         model,
 		Prompt:        "Hello",
-		SendReasoning: boolPtr(false),
+		SendReasoning: includeBoolPtr(false),
 		OnChunk: func(chunk provider.StreamChunk) {
 			mu.Lock()
 			got = append(got, chunk.Type)
@@ -1818,7 +1816,7 @@ func TestStreamEmitsReasoningBlockBoundaries(t *testing.T) {
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:         model,
 		Prompt:        "Think then answer",
-		SendReasoning: boolPtr(true),
+		SendReasoning: includeBoolPtr(true),
 		OnChunk: func(chunk provider.StreamChunk) {
 			mu.Lock()
 			receivedChunks = append(receivedChunks, chunk)
