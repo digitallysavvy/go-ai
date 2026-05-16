@@ -132,6 +132,20 @@ agent.NewToolLoopAgent(agent.AgentConfig{
 })
 ```
 
+## Telemetry Event Names
+
+Telemetry integrations should use the stable end-event names from the May 2026 TypeScript SDK cycle:
+
+| Previous Go name | New Go name |
+| --- | --- |
+| `OnFinish` / `FireOnFinish` | `OnEnd` / `FireOnEnd` |
+| `OnEmbedFinish` / `FireOnEmbedFinish` | `OnEmbedEnd` / `FireOnEmbedEnd` |
+| `OnRerankFinish` / `FireOnRerankFinish` | `OnRerankEnd` / `FireOnRerankEnd` |
+
+The older names remain as deprecated compatibility fallbacks. Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should continue using `StreamTextOptions.OnChunk` for application-level chunk handling.
+
+`types.StepResult` now includes `Performance` statistics matching the TypeScript SDK: `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `TokensPerSecond`, and streaming-only `TimeToFirstTokenMs`. Use `FinalStep.Performance.TokensPerSecond` for final-step throughput and `Steps[i].Performance` for multi-step workflows.
+
 ## CallOptionsSchema
 
 `CallOptionsSchema` is enforced before any model call. Validation errors include the `options` schema path and are returned as provider validation errors.

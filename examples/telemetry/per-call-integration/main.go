@@ -17,7 +17,7 @@ type printTelemetry struct {
 	telemetry.NoopTelemetryIntegration
 }
 
-func (printTelemetry) OnFinish(ctx context.Context, e telemetry.TelemetryFinishEvent) {
+func (printTelemetry) OnEnd(ctx context.Context, e telemetry.TelemetryFinishEvent) {
 	fmt.Printf("finish reason: %s\n", e.FinishReason)
 }
 
@@ -41,4 +41,5 @@ func main() {
 	}
 
 	fmt.Println(result.Text)
+	fmt.Printf("tokens/sec: %.2f\n", result.FinalStep.Performance.TokensPerSecond)
 }
