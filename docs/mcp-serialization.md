@@ -21,11 +21,20 @@ type ListToolsResult struct {
 }
 
 type MCPTool struct {
-    Name        string                 `json:"name"`
-    Description string                 `json:"description"`
-    InputSchema map[string]interface{} `json:"inputSchema"`
+    Name         string                 `json:"name"`
+    Title        string                 `json:"title,omitempty"`
+    Description  string                 `json:"description,omitempty"`
+    InputSchema  map[string]interface{} `json:"inputSchema"`
+    OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
+    Annotations  map[string]interface{} `json:"annotations,omitempty"`
+    Meta         map[string]interface{} `json:"_meta,omitempty"`
 }
 ```
+
+`MCPTool` preserves the current MCP tool JSON shape, including `title`,
+`outputSchema`, `annotations`, and `_meta`. MCP Apps metadata is stored in
+`_meta.ui` or the legacy flat `_meta["ui/resourceUri"]` field and can be
+normalized with `mcp.GetMCPAppToolMeta`.
 
 ## Basic Usage
 

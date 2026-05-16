@@ -292,6 +292,9 @@ Wire format:
 ## PrepareTools
 
 `PrepareTools` converts a `[]types.Tool` slice into the `[]interface{}` slice expected as the `"tools"` field in a Responses API request body.
+Function tools with nil or implicit object parameters serialize with an
+explicit `{"type":"object","properties":{}}` schema when needed, matching the
+TypeScript SDK request shape.
 
 ```go
 import (
@@ -316,6 +319,48 @@ tools := responses.PrepareTools([]types.Tool{
 })
 
 // tools is ready to be marshaled into a Responses API request
+```
+
+### Restricting Callable Tools
+
+Use the OpenAI Responses `allowedTools` provider option when you want to keep
+the full tools list in the request for prompt caching, but restrict which
+function tools may be called in this step. This overrides request-level
+`ToolChoice` and serializes `tool_choice` as `allowed_tools`.
+
+```go
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: prompt,
+    Tools: []types.Tool{
+        {Name: "weather", Description: "Get weather"},
+        {Name: "cityAttractions", Description: "Find city attractions"},
+    },
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "allowedTools": map[string]interface{}{
+                "toolNames": []string{"weather"},
+                // Optional: "auto" (default) or "required".
+                "mode": "auto",
+            },
+        },
+    },
+})
+```
+
+Wire shape:
+
+```json
+{
+  "tools": [
+    {"type": "function", "name": "weather"},
+    {"type": "function", "name": "cityAttractions"}
+  ],
+  "tool_choice": {
+    "type": "allowed_tools",
+    "mode": "auto",
+    "tools": [{"type": "function", "name": "weather"}]
+  }
+}
 ```
 
 ---

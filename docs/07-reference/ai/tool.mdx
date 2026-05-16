@@ -47,6 +47,11 @@ type Tool struct {
 | OnInputDelta | OnInputDeltaFunc | No | Called for each input delta |
 | OnInputAvailable | OnInputAvailableFunc | No | Called when input is complete |
 
+When a function tool is serialized for provider requests, nil parameters or a
+schema with `properties` but no `type` are normalized to an explicit object
+schema. For example, an empty tool schema is sent as
+`{"type":"object","properties":{}}`, matching the TypeScript SDK request shape.
+
 ## ToolExecutor Signature
 
 ```go

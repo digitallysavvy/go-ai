@@ -219,6 +219,26 @@ if result.ToolCalls != nil {
 
 Responses API tool calls preserve OpenAI provider metadata, including `function_call.namespace`. Tool calls with no input serialize `{}` rather than `null`, and assistant messages serialize `content: null` only when tool calls are present and no text content is available. Non-tool assistant turns are not sent as null-content messages.
 
+For Responses API calls, use `ProviderOptions["openai"]["allowedTools"]` to
+restrict callable function tools while keeping the full `tools` array in the
+request. This preserves prompt caching behavior across different allowlists and
+overrides request-level `ToolChoice`, matching the TypeScript SDK.
+
+```go
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: prompt,
+    Tools:  tools,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "allowedTools": map[string]interface{}{
+                "toolNames": []string{"weather"},
+                "mode":      "auto", // optional: "auto" or "required"
+            },
+        },
+    },
+})
+```
+
 ### Image Generation Options
 
 Use `OpenAIImageModelOptions` under the `"openai"` provider key for typed image options. The struct maps camelCase Go JSON names to the OpenAI wire fields used by the TypeScript SDK.

@@ -788,7 +788,9 @@ for _, content := range result.Content {
 
 ## May 2026 parity updates
 
-MCP JSON parsing uses secure parsing to avoid prototype-pollution style payloads when consuming remote server data. MCP clients expose server instructions and propagate the server name through dynamic tool parts so tool calls and telemetry can identify the originating server.
+MCP JSON parsing uses secure parsing to avoid prototype-pollution style payloads when consuming remote server data. MCP clients expose server instructions and attach TypeScript-compatible MCP provider metadata to converted tools under the `"mcp"` key: `clientName`, `toolName`, optional `title`, and optional MCP Apps `app` metadata. The default client name is `ai-sdk-mcp-client`; `ClientName` overrides it, and `Name` remains as a deprecated alias.
+
+MCP Apps hosts can advertise app-rendering support with `mcp.MCPAppClientCapabilities()`, inspect `_meta.ui` using `GetMCPAppToolMeta`, split tools with `SplitMCPAppTools`, and read `ui://` app resources with `ReadMCPAppResource`. MCP tool and prompt content also accept `resource_link` parts, matching the current MCP schema.
 
 Custom transports remain supported through the transport interfaces in `pkg/mcp`. Use explicit redirect handling for HTTP transports and prefer the default redirect error mode unless the server is trusted.
 

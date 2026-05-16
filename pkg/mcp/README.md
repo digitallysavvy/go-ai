@@ -238,8 +238,64 @@ if instructions != "" {
 }
 ```
 
-Converted MCP tools include metadata identifying the server that supplied them, so downstream
-callers can trace which MCP server handled a tool call.
+Converted MCP tools include TypeScript-compatible MCP provider metadata under the
+`"mcp"` key. The metadata includes `clientName`, `toolName`, optional `title`,
+and optional MCP Apps `app` metadata when the tool advertises a `ui://` resource.
+
+The default client name is `ai-sdk-mcp-client`, matching the TypeScript SDK. Use
+`ClientName` to override it; `Name` remains as a deprecated compatibility alias.
+
+```go
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName: "my-mcp-host",
+})
+```
+
+HTTP transports send the negotiated MCP protocol version in the
+`mcp-protocol-version` request header after initialization.
+
+### MCP Apps
+
+Hosts that can render MCP Apps can advertise the MCP Apps client capability:
+
+```go
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:   "my-mcp-host",
+    Capabilities: mcp.MCPAppClientCapabilities(),
+})
+```
+
+Use the MCP Apps helpers to inspect app metadata, split model-visible and
+app-visible tools, and read app HTML resources:
+
+```go
+definitions, err := client.GetSerializableTools(ctx)
+if err != nil {
+    return err
+}
+
+modelVisible, appVisible, err := mcp.SplitMCPAppTools(*definitions)
+if err != nil {
+    return err
+}
+
+uris, err := mcp.GetMCPAppResourceURIs(appVisible)
+if err != nil {
+    return err
+}
+for _, uri := range uris {
+    resource, err := mcp.ReadMCPAppResource(ctx, client, uri)
+    if err != nil {
+        return err
+    }
+    fmt.Println(resource.HTML)
+}
+
+_ = modelVisible
+```
+
+MCP tool results and prompt content accept `resource_link` content parts. Unknown
+tool result content still falls back to text for compatibility.
 
 ### Secure JSON Parsing
 
