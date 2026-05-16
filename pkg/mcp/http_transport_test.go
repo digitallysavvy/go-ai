@@ -20,11 +20,13 @@ func TestNewHTTPTransportUsesCustomHTTPClient(t *testing.T) {
 }
 
 type recordingSSEClient struct {
-	called bool
+	called         bool
+	protocolHeader string
 }
 
 func (c *recordingSSEClient) Do(req *http.Request) (*http.Response, error) {
 	c.called = true
+	c.protocolHeader = req.Header.Get("mcp-protocol-version")
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -49,5 +51,26 @@ func TestHTTPTransportUsesCustomSSEClient(t *testing.T) {
 	}
 	if !sse.called {
 		t.Fatal("expected custom SSE client to be used")
+	}
+}
+
+func TestHTTPTransportUsesNegotiatedProtocolVersionHeader(t *testing.T) {
+	sse := &recordingSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+	})
+	transport.connected = true
+	transport.SetProtocolVersion("2025-06-18")
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if sse.protocolHeader != "2025-06-18" {
+		t.Fatalf("mcp-protocol-version = %q", sse.protocolHeader)
 	}
 }

@@ -24,6 +24,13 @@ type Transport interface {
 	IsConnected() bool
 }
 
+// ProtocolVersionTransport is implemented by transports that need the MCP
+// protocol version negotiated during initialize when constructing subsequent
+// requests.
+type ProtocolVersionTransport interface {
+	SetProtocolVersion(version string)
+}
+
 // MCPRedirectMode controls how the HTTP transport handles HTTP redirects from
 // MCP servers. The default is MCPRedirectError (fail on redirect) — MCP servers
 // should not silently redirect clients to other endpoints, as this can mask

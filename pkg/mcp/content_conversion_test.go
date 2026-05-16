@@ -206,6 +206,21 @@ func TestConvertMCPResourceToAISDK_URIOnly(t *testing.T) {
 	assert.Equal(t, "https://example.com/document.pdf", textContent.Text)
 }
 
+func TestConvertMCPResourceLinkToAISDK(t *testing.T) {
+	results, err := ConvertMCPContentToAISDK([]ToolResultContent{{
+		Type:        "resource_link",
+		URI:         "file:///report.pdf",
+		Name:        "Quarterly report",
+		Description: "PDF report",
+		MimeType:    "application/pdf",
+	}})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	textContent, ok := results[0].(types.TextContent)
+	require.True(t, ok)
+	assert.Equal(t, "Quarterly report: file:///report.pdf\nPDF report", textContent.Text)
+}
+
 // Test converting mixed content (text + image)
 func TestConvertMCPContentToAISDK_MixedContent(t *testing.T) {
 	imageData := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="

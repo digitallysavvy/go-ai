@@ -38,8 +38,16 @@ type MCPClientConfig struct {
 	// ClientName is the name of the client
 	ClientName string
 
+	// Name is a deprecated alias for ClientName.
+	//
+	// Deprecated: use ClientName.
+	Name string
+
 	// ClientVersion is the version of the client
 	ClientVersion string
+
+	// Capabilities are optional client capabilities advertised during initialize.
+	Capabilities ClientCapabilities
 
 	// RequestTimeoutMS is the timeout for individual requests in milliseconds
 	// Default: 30000 (30 seconds)
@@ -53,7 +61,10 @@ type MCPClientConfig struct {
 func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	// Set defaults
 	if config.ClientName == "" {
-		config.ClientName = "go-ai-mcp-client"
+		config.ClientName = config.Name
+	}
+	if config.ClientName == "" {
+		config.ClientName = "ai-sdk-mcp-client"
 	}
 	if config.ClientVersion == "" {
 		config.ClientVersion = "1.0.0"
@@ -116,24 +127,24 @@ func (c *MCPClient) Close() error {
 func (c *MCPClient) initialize(ctx context.Context) error {
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersion,
-		Capabilities: ClientCapabilities{
-			Experimental: make(map[string]interface{}),
-			Roots: &RootsCapability{
-				ListChanged: false,
-			},
-			Sampling: &SamplingCapability{},
-		},
-		ClientInfo: c.clientInfo,
+		Capabilities:    c.config.Capabilities,
+		ClientInfo:      c.clientInfo,
 	}
 
 	var result InitializeResult
 	if err := c.call(ctx, "initialize", params, &result); err != nil {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
+	if !isSupportedProtocolVersion(result.ProtocolVersion) {
+		return fmt.Errorf("server's protocol version is not supported: %s", result.ProtocolVersion)
+	}
 
 	c.serverInfo = result.ServerInfo
 	c.serverCapability = result.Capabilities
 	c.serverInstructions = result.Instructions
+	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
+		versionTransport.SetProtocolVersion(result.ProtocolVersion)
+	}
 
 	// Send initialized notification
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
@@ -420,4 +431,13 @@ func (c *MCPClient) handleRequest(msg *MCPMessage) {
 	// For now, respond with method not found
 	response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, "Method not found", nil)
 	_ = c.transport.Send(c.ctx, response)
+}
+
+func isSupportedProtocolVersion(version string) bool {
+	for _, supported := range SupportedProtocolVersions {
+		if version == supported {
+			return true
+		}
+	}
+	return false
 }

@@ -8,18 +8,21 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func TestMCPToolConverterPropagatesServerNameMetadata(t *testing.T) {
+func TestMCPToolConverterPropagatesMcpProviderMetadata(t *testing.T) {
 	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
 	client.serverInfo = ServerInfo{Name: "filesystem", Version: "1.0.0"}
 
 	converter := NewMCPToolConverter(client)
-	tool := converter.convertTool(MCPTool{
+	tool, err := converter.convertTool(MCPTool{
 		Name:        "read_file",
 		Description: "Read a file",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 		},
 	})
+	if err != nil {
+		t.Fatalf("convertTool error: %v", err)
+	}
 
 	if tool.ProviderName != "mcp" {
 		t.Fatalf("ProviderName = %q, want mcp", tool.ProviderName)
@@ -28,8 +31,11 @@ func TestMCPToolConverterPropagatesServerNameMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing mcp provider metadata: %#v", tool.ProviderMetadata)
 	}
-	if mcpMeta["serverName"] != "filesystem" {
-		t.Fatalf("serverName = %v, want filesystem", mcpMeta["serverName"])
+	if mcpMeta["clientName"] != "ai-sdk-mcp-client" || mcpMeta["toolName"] != "read_file" {
+		t.Fatalf("mcp metadata = %#v", mcpMeta)
+	}
+	if _, ok := mcpMeta["serverName"]; ok {
+		t.Fatalf("serverName should not be present in TS-parity McpProviderMetadata: %#v", mcpMeta)
 	}
 }
 
@@ -66,6 +72,22 @@ func TestMCPToolConverterModelOutputFallbackAndFactoryHelpers(t *testing.T) {
 	}
 }
 
+func TestMCPToolConverterInvalidAppMetadataReturnsError(t *testing.T) {
+	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
+	converter := NewMCPToolConverter(client)
+
+	_, err := converter.convertTool(MCPTool{
+		Name:        "bad_app",
+		InputSchema: map[string]interface{}{"type": "object"},
+		Meta: map[string]interface{}{"ui": map[string]interface{}{
+			"resourceUri": "https://example.com/app.html",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid MCP App resource URI error")
+	}
+}
+
 type listToolErrorClient struct{}
 
 func (listToolErrorClient) ListTools(context.Context) ([]MCPTool, error) {
@@ -79,13 +101,16 @@ func TestConvertToGoAIToolsErrorPath(t *testing.T) {
 
 	// Force conversion execution path by setting a non-empty tool and calling Execute.
 	client.serverInfo = ServerInfo{Name: "server"}
-	tool := converter.convertTool(MCPTool{
+	tool, err := converter.convertTool(MCPTool{
 		Name:        "echo",
 		Description: "echo",
 		InputSchema: map[string]interface{}{"type": "object"},
 	})
+	if err != nil {
+		t.Fatalf("convertTool error: %v", err)
+	}
 
-	_, err := tool.Execute(context.Background(), map[string]interface{}{}, types.ToolExecutionOptions{})
+	_, err = tool.Execute(context.Background(), map[string]interface{}{}, types.ToolExecutionOptions{})
 	if err == nil {
 		t.Fatal("expected Execute to fail when mock transport isn't connected")
 	}

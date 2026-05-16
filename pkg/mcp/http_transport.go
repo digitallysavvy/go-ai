@@ -26,8 +26,9 @@ type HTTPTransport struct {
 	receiveQueue []*MCPMessage
 
 	// State
-	connected bool
-	mu        sync.Mutex
+	connected       bool
+	protocolVersion string
+	mu              sync.Mutex
 
 	// Configuration
 	config TransportConfig
@@ -180,6 +181,7 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
@@ -266,6 +268,25 @@ func (t *HTTPTransport) IsConnected() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.connected
+}
+
+// SetProtocolVersion stores the negotiated MCP protocol version for outbound
+// transport request headers.
+func (t *HTTPTransport) SetProtocolVersion(version string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.protocolVersion = version
+}
+
+// ProtocolVersion returns the negotiated protocol version, or the latest
+// supported version before initialization completes.
+func (t *HTTPTransport) ProtocolVersion() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.protocolVersion != "" {
+		return t.protocolVersion
+	}
+	return ProtocolVersion
 }
 
 // refreshOAuthToken refreshes the OAuth access token

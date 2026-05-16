@@ -39,12 +39,25 @@ func convertSingleContent(item ToolResultContent) (types.ContentPart, error) {
 		return convertMCPImageToAISDK(item)
 	case "resource":
 		return convertMCPResourceToAISDK(item), nil
+	case "resource_link":
+		return convertMCPResourceLinkToAISDK(item), nil
 	default:
 		// Unknown type, treat as text
 		return types.TextContent{
 			Text: fmt.Sprintf("Unknown content type: %s", item.Type),
 		}, nil
 	}
+}
+
+func convertMCPResourceLinkToAISDK(item ToolResultContent) types.ContentPart {
+	text := item.URI
+	if item.Name != "" {
+		text = item.Name + ": " + item.URI
+	}
+	if item.Description != "" {
+		text += "\n" + item.Description
+	}
+	return types.TextContent{Text: text}
 }
 
 // convertMCPTextToAISDK converts MCP text content to AI SDK TextContent

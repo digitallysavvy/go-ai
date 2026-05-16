@@ -31,25 +31,42 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 	// Convert each MCP tool to Go-AI tool
 	goaiTools := make([]types.Tool, len(mcpTools))
 	for i, mcpTool := range mcpTools {
-		goaiTools[i] = c.convertTool(mcpTool)
+		tool, err := c.convertTool(mcpTool)
+		if err != nil {
+			return nil, err
+		}
+		goaiTools[i] = tool
 	}
 
 	return goaiTools, nil
 }
 
 // convertTool converts a single MCP tool to a Go-AI tool
-func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
-	serverName := c.client.ServerInfo().Name
-	providerMetadata := map[string]interface{}{}
-	if serverName != "" {
-		providerMetadata["mcp"] = map[string]interface{}{
-			"serverName": serverName,
-		}
+func (c *MCPToolConverter) convertTool(mcpTool MCPTool) (types.Tool, error) {
+	mcpMetadata := map[string]interface{}{
+		"clientName": c.client.clientInfo.Name,
+		"toolName":   mcpTool.Name,
 	}
+	if title := mcpTool.Title; title != "" {
+		mcpMetadata["title"] = title
+	} else if annotationsTitle, ok := mcpTool.Annotations["title"].(string); ok && annotationsTitle != "" {
+		mcpMetadata["title"] = annotationsTitle
+	}
+	appMeta, err := GetMCPAppToolMeta(mcpTool)
+	if err != nil {
+		return types.Tool{}, err
+	}
+	if appMeta != nil && appMeta.ResourceURI != "" {
+		app := copyMap(appMeta.Extra)
+		app["mimeType"] = MCPAppMimeType
+		mcpMetadata["app"] = app
+	}
+	providerMetadata := map[string]interface{}{"mcp": mcpMetadata}
 
 	return types.Tool{
 		Name:             mcpTool.Name,
 		Description:      mcpTool.Description,
+		Title:            firstNonEmpty(mcpTool.Title, stringFromMap(mcpTool.Annotations, "title")),
 		Parameters:       mcpTool.InputSchema,
 		ProviderName:     "mcp",
 		ProviderMetadata: providerMetadata,
@@ -80,7 +97,24 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool) types.Tool {
 			output := c.convertToModelOutput(options.Result)
 			return &output, nil
 		},
+	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
 	}
+	return ""
+}
+
+func stringFromMap(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return value
 }
 
 // convertToModelOutput converts a tool result to model-readable output

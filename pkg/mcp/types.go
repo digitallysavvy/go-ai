@@ -54,23 +54,31 @@ const (
 
 // MCPTool represents a tool exposed via MCP
 type MCPTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
+	Name         string                 `json:"name"`
+	Title        string                 `json:"title,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	InputSchema  map[string]interface{} `json:"inputSchema"`
+	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
+	Annotations  map[string]interface{} `json:"annotations,omitempty"`
+	Meta         map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // MCPResource represents a resource exposed via MCP
 type MCPResource struct {
-	URI         string      `json:"uri"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	MimeType    string      `json:"mimeType,omitempty"`
-	Metadata    interface{} `json:"metadata,omitempty"`
+	URI         string                 `json:"uri"`
+	Name        string                 `json:"name"`
+	Title       string                 `json:"title,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	MimeType    string                 `json:"mimeType,omitempty"`
+	Size        *int64                 `json:"size,omitempty"`
+	Metadata    interface{}            `json:"metadata,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // MCPPrompt represents a prompt template exposed via MCP
 type MCPPrompt struct {
 	Name        string                 `json:"name"`
+	Title       string                 `json:"title,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	Arguments   []MCPPromptArgument    `json:"arguments,omitempty"`
 	Template    string                 `json:"template,omitempty"`
@@ -102,8 +110,10 @@ type InitializeResult struct {
 // ClientCapabilities represents capabilities of the MCP client
 type ClientCapabilities struct {
 	Experimental map[string]interface{} `json:"experimental,omitempty"`
+	Extensions   map[string]interface{} `json:"extensions,omitempty"`
 	Roots        *RootsCapability       `json:"roots,omitempty"`
 	Sampling     *SamplingCapability    `json:"sampling,omitempty"`
+	Elicitation  map[string]interface{} `json:"elicitation,omitempty"`
 }
 
 // ServerCapabilities represents capabilities of the MCP server
@@ -173,19 +183,26 @@ type CallToolParams struct {
 
 // CallToolResult represents the result of calling a tool
 type CallToolResult struct {
-	Content  []ToolResultContent    `json:"content"`
-	IsError  bool                   `json:"isError,omitempty"`
-	Metadata map[string]interface{} `json:"_meta,omitempty"`
+	Content           []ToolResultContent    `json:"content,omitempty"`
+	StructuredContent interface{}            `json:"structuredContent,omitempty"`
+	ToolResult        interface{}            `json:"toolResult,omitempty"`
+	IsError           bool                   `json:"isError,omitempty"`
+	Metadata          map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ToolResultContent represents content in a tool result
 type ToolResultContent struct {
-	Type     string      `json:"type"` // "text", "image", "resource"
-	Text     string      `json:"text,omitempty"`
-	Data     string      `json:"data,omitempty"` // base64 for image
-	MimeType string      `json:"mimeType,omitempty"`
-	URI      string      `json:"uri,omitempty"` // for resource type
-	Metadata interface{} `json:"metadata,omitempty"`
+	Type        string                 `json:"type"` // "text", "image", "resource", "resource_link"
+	Text        string                 `json:"text,omitempty"`
+	Data        string                 `json:"data,omitempty"` // base64 for image
+	MimeType    string                 `json:"mimeType,omitempty"`
+	URI         string                 `json:"uri,omitempty"` // for resource/resource_link
+	Name        string                 `json:"name,omitempty"`
+	Title       string                 `json:"title,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Resource    *ResourceContent       `json:"resource,omitempty"`
+	Metadata    interface{}            `json:"metadata,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ListResourcesParams represents parameters for listing resources
@@ -211,10 +228,13 @@ type ReadResourceResult struct {
 
 // ResourceContent represents content of a resource
 type ResourceContent struct {
-	URI      string `json:"uri"`
-	MimeType string `json:"mimeType,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     string `json:"blob,omitempty"` // base64 encoded
+	URI      string                 `json:"uri"`
+	Name     string                 `json:"name,omitempty"`
+	Title    string                 `json:"title,omitempty"`
+	MimeType string                 `json:"mimeType,omitempty"`
+	Text     string                 `json:"text,omitempty"`
+	Blob     string                 `json:"blob,omitempty"` // base64 encoded
+	Meta     map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ListPromptsParams represents parameters for listing prompts
@@ -249,11 +269,24 @@ type PromptMessage struct {
 
 // PromptContent represents content in a prompt message
 type PromptContent struct {
-	Type     string `json:"type"` // "text", "image", "resource"
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"` // base64 for image
-	MimeType string `json:"mimeType,omitempty"`
-	URI      string `json:"uri,omitempty"` // for resource type
+	Type        string           `json:"type"` // "text", "image", "resource", "resource_link"
+	Text        string           `json:"text,omitempty"`
+	Data        string           `json:"data,omitempty"` // base64 for image
+	MimeType    string           `json:"mimeType,omitempty"`
+	URI         string           `json:"uri,omitempty"` // for resource/resource_link
+	Name        string           `json:"name,omitempty"`
+	Title       string           `json:"title,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Resource    *ResourceContent `json:"resource,omitempty"`
+}
+
+// McpProviderMetadata is attached to converted MCP tools and propagated through
+// tool calls/results under the "mcp" provider metadata key.
+type McpProviderMetadata struct {
+	ClientName string                 `json:"clientName,omitempty"`
+	Title      string                 `json:"title,omitempty"`
+	ToolName   string                 `json:"toolName,omitempty"`
+	App        map[string]interface{} `json:"app,omitempty"`
 }
 
 // LoggingLevel represents the level of logging

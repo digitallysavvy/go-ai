@@ -8,8 +8,10 @@ import (
 
 // mockTransport implements Transport interface for testing
 type mockTransport struct {
-	messages  chan *MCPMessage
-	connected bool
+	messages         chan *MCPMessage
+	connected        bool
+	protocolVersion  string
+	initializeParams InitializeParams
 }
 
 func newMockTransport() *mockTransport {
@@ -33,6 +35,10 @@ func (m *mockTransport) Close() error {
 
 func (m *mockTransport) IsConnected() bool {
 	return m.connected
+}
+
+func (m *mockTransport) SetProtocolVersion(version string) {
+	m.protocolVersion = version
 }
 
 func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
@@ -148,6 +154,7 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 
 	// Simulate initialize response
 	if msg.Method == "initialize" {
+		_ = json.Unmarshal(msg.Params, &m.initializeParams)
 		response := &MCPMessage{
 			JSONRpc: "2.0",
 			ID:      msg.ID,
@@ -175,6 +182,77 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	}
 
 	return nil
+}
+
+func TestMCPClientDefaultCapabilitiesMatchTypeScriptEmptyObject(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	if transport.initializeParams.Capabilities.Experimental != nil ||
+		transport.initializeParams.Capabilities.Extensions != nil ||
+		transport.initializeParams.Capabilities.Roots != nil ||
+		transport.initializeParams.Capabilities.Sampling != nil ||
+		transport.initializeParams.Capabilities.Elicitation != nil {
+		t.Fatalf("default capabilities = %#v, want empty object", transport.initializeParams.Capabilities)
+	}
+}
+
+func TestMCPClientClientNameFallbacksAndNegotiatedProtocol(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{Name: "DeprecatedMCPServer"})
+
+	if client.clientInfo.Name != "DeprecatedMCPServer" {
+		t.Fatalf("client name = %q", client.clientInfo.Name)
+	}
+
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	if transport.protocolVersion != ProtocolVersion {
+		t.Fatalf("negotiated protocolVersion = %q, want %q", transport.protocolVersion, ProtocolVersion)
+	}
+}
+
+func TestMCPToolConverterMetadataIncludesClientNameAndApp(t *testing.T) {
+	client := NewMCPClient(newMockTransport(), MCPClientConfig{ClientName: "MyMCPClient"})
+	client.serverInfo = ServerInfo{Name: "test-server", Version: "1.0.0"}
+
+	converter := NewMCPToolConverter(client)
+	tool, err := converter.convertTool(MCPTool{
+		Name:        "showDashboard",
+		Title:       "Show Dashboard",
+		Description: "Show dashboard",
+		InputSchema: map[string]interface{}{"type": "object"},
+		Meta: map[string]interface{}{"ui": map[string]interface{}{
+			"resourceUri": "ui://ai-sdk-e2e/dashboard",
+			"visibility":  []interface{}{"model", "app"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertTool error: %v", err)
+	}
+
+	mcpMeta, ok := tool.ProviderMetadata["mcp"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing mcp metadata: %#v", tool.ProviderMetadata)
+	}
+	if mcpMeta["clientName"] != "MyMCPClient" || mcpMeta["toolName"] != "showDashboard" || mcpMeta["title"] != "Show Dashboard" {
+		t.Fatalf("metadata = %#v", mcpMeta)
+	}
+	app, ok := mcpMeta["app"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing app metadata: %#v", mcpMeta)
+	}
+	if app["resourceUri"] != "ui://ai-sdk-e2e/dashboard" || app["mimeType"] != MCPAppMimeType {
+		t.Fatalf("app metadata = %#v", app)
+	}
 }
 
 func TestMCPClient_CallToolResourcesAndPrompts(t *testing.T) {
