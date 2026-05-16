@@ -10,7 +10,6 @@ func TestLegacyTools_ConstructorsAndExecutionGuards(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
-		Bash20241022(),
 		CodeExecution20250522(),
 		Memory20250818(),
 		TextEditor20241022(),
@@ -34,6 +33,29 @@ func TestLegacyTools_ConstructorsAndExecutionGuards(t *testing.T) {
 				t.Fatalf("%s execute must return provider-executed error", tool.Name)
 			}
 		})
+	}
+}
+
+func TestBash20241022_UsesExperimentalSandboxWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	tool := Bash20241022()
+	sandbox := &mockExperimentalSandbox{result: map[string]interface{}{"stdout": "hi\n"}}
+
+	if tool.ProviderExecuted {
+		t.Fatal("bash_20241022 should be locally executable with a sandbox")
+	}
+	out, err := tool.Execute(t.Context(), map[string]interface{}{"command": "echo hi"}, types.ToolExecutionOptions{
+		ExperimentalSandbox: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if sandbox.command != "echo hi" {
+		t.Fatalf("sandbox command = %q, want echo hi", sandbox.command)
+	}
+	if got, want := out, (map[string]interface{}{"stdout": "hi\n"}); got.(map[string]interface{})["stdout"] != want["stdout"] {
+		t.Fatalf("Execute() = %#v, want %#v", got, want)
 	}
 }
 

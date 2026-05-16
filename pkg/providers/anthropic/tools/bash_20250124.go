@@ -3,9 +3,42 @@ package tools
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+type bashCommandSandbox interface {
+	ExecuteCommand(ctx context.Context, command string, restart bool) (interface{}, error)
+}
+
+func executeWithSandbox(ctx context.Context, sandbox interface{}, command string) (interface{}, bool, error) {
+	if sandbox == nil {
+		return nil, false, nil
+	}
+	method := reflect.ValueOf(sandbox).MethodByName("Execute")
+	if !method.IsValid() {
+		return nil, false, nil
+	}
+	mt := method.Type()
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	contextType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	if mt.NumIn() != 3 || mt.NumOut() != 2 ||
+		!mt.In(0).Implements(contextType) ||
+		mt.In(1).Kind() != reflect.String ||
+		!mt.Out(1).Implements(errorType) {
+		return nil, false, nil
+	}
+	out := method.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		reflect.ValueOf(command),
+		reflect.Zero(mt.In(2)),
+	})
+	if !out[1].IsNil() {
+		return nil, true, out[1].Interface().(error)
+	}
+	return out[0].Interface(), true, nil
+}
 
 // Bash20250124Input represents the input parameters for the bash tool
 type Bash20250124Input struct {
@@ -59,12 +92,25 @@ The bash session persists across multiple tool calls, allowing for stateful oper
 
 Image results are supported - commands that generate images can return them as part of the result.
 
-Important: This tool must be executed by the Anthropic API, not locally.`,
-		Parameters:       parameters,
+By default this tool executes through the configured ExperimentalSandbox.`,
+		Parameters: parameters,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("bash tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
+			command, _ := input["command"].(string)
+			if command == "" {
+				return nil, fmt.Errorf("command is required")
+			}
+			if result, ok, err := executeWithSandbox(ctx, options.ExperimentalSandbox, command); ok {
+				return result, err
+			}
+			if sandbox, ok := options.RuntimeContext.(bashCommandSandbox); ok {
+				restart := false
+				if v, ok := input["restart"].(bool); ok {
+					restart = v
+				}
+				return sandbox.ExecuteCommand(ctx, command, restart)
+			}
+			return nil, fmt.Errorf("Sandbox is not available")
 		},
-		ProviderExecuted: true,
 	}
 
 	return tool

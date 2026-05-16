@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	anthropicTools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
 
 // --- output_config.format tests (ANT-T04) ---
@@ -427,8 +428,8 @@ func TestTopLevelReasoningXHighUsesAdaptiveEffortForOpus47(t *testing.T) {
 	if oc["effort"] != "xhigh" {
 		t.Fatalf("output_config.effort = %v, want xhigh", oc["effort"])
 	}
-	if headers := model.combineBetaHeaders(&provider.GenerateOptions{Reasoning: &reasoning}, false); !strings.Contains(headers, BetaHeaderEffort) {
-		t.Fatalf("anthropic-beta = %q, want %q", headers, BetaHeaderEffort)
+	if headers := model.combineBetaHeaders(&provider.GenerateOptions{Reasoning: &reasoning}, false); strings.Contains(headers, "effort-") {
+		t.Fatalf("anthropic-beta = %q, stale effort header must not be present", headers)
 	}
 }
 
@@ -536,7 +537,7 @@ func TestCompactionDeltaEmitsContent(t *testing.T) {
 
 // --- Effort option tests ---
 
-// TestEffortBetaHeader verifies the effort-2025-11-24 beta header is added when Effort is set.
+// TestEffortBetaHeader verifies effort does not add a stale effort beta header.
 func TestEffortBetaHeader(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -557,9 +558,9 @@ func TestEffortBetaHeader(t *testing.T) {
 				Effort: tt.effort,
 			})
 			h := model.getBetaHeaders()
-			has := strings.Contains(h, BetaHeaderEffort)
-			if has != tt.wantHeader {
-				t.Errorf("effort header presence = %v, want %v (headers=%q)", has, tt.wantHeader, h)
+			has := strings.Contains(h, "effort-")
+			if has {
+				t.Errorf("effort header presence = true, want false (headers=%q)", h)
 			}
 		})
 	}
@@ -598,6 +599,23 @@ func TestXHighEffortInOutputConfig(t *testing.T) {
 	}
 	if oc["effort"] != "xhigh" {
 		t.Errorf("output_config.effort = %v, want %q", oc["effort"], "xhigh")
+	}
+}
+
+func TestAdvisorToolAddsAdvisorBetaHeader(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	maxUses := 2
+	headers := model.combineBetaHeaders(&provider.GenerateOptions{
+		Tools: []types.Tool{
+			anthropicTools.Advisor20260301(anthropicTools.Advisor20260301Args{
+				Model:   ClaudeOpus4_7,
+				MaxUses: &maxUses,
+			}),
+		},
+	}, false)
+	if !strings.Contains(headers, BetaHeaderAdvisorTool) {
+		t.Fatalf("anthropic-beta = %q, want %q", headers, BetaHeaderAdvisorTool)
 	}
 }
 

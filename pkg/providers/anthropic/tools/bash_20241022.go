@@ -33,7 +33,7 @@ This enables:
 
 The bash session persists across multiple tool calls. Image results are supported.
 
-Important: This tool must be executed by the Anthropic API, not locally.`,
+By default this tool executes through the configured ExperimentalSandbox.`,
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -49,8 +49,21 @@ Important: This tool must be executed by the Anthropic API, not locally.`,
 			"required": []string{"command"},
 		},
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("bash tool must be executed by the provider (Anthropic)")
+			command, _ := input["command"].(string)
+			if command == "" {
+				return nil, fmt.Errorf("command is required")
+			}
+			if result, ok, err := executeWithSandbox(ctx, options.ExperimentalSandbox, command); ok {
+				return result, err
+			}
+			if sandbox, ok := options.RuntimeContext.(bashCommandSandbox); ok {
+				restart := false
+				if v, ok := input["restart"].(bool); ok {
+					restart = v
+				}
+				return sandbox.ExecuteCommand(ctx, command, restart)
+			}
+			return nil, fmt.Errorf("Sandbox is not available")
 		},
-		ProviderExecuted: true,
 	}
 }

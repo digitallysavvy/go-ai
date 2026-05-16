@@ -33,6 +33,9 @@ var anthropicBuiltinToolTypes = map[string]builtinToolDef{
 
 	// memory
 	"anthropic.memory_20250818": {apiType: "memory_20250818", name: "memory"},
+
+	// advisor
+	"anthropic.advisor_20260301": {apiType: "advisor_20260301", name: "advisor"},
 }
 
 // anthropicAPIMapper is satisfied by ProviderOptions types that produce their own

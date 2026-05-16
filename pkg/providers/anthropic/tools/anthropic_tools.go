@@ -11,8 +11,9 @@
 //   - Search the web for current information (WebSearch)
 //   - Fetch and read content from URLs (WebFetch)
 //
-// All tools in this package are executed by the Anthropic API, not locally.
-// They must have ProviderExecuted set to true.
+// Most tools in this package are executed by the Anthropic API. Bash tools are
+// provider-defined but can execute locally through the configured sandbox, matching
+// the TypeScript SDK default behavior.
 package tools
 
 import "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -71,6 +72,10 @@ var AnthropicTools = struct {
 	// Enables Claude to fetch and read content from URLs, returning either base64-encoded
 	// PDF or plain text content.
 	WebFetch20260209 func(WebFetch20260209Config) types.Tool
+
+	// Advisor20260301 creates an Anthropic advisor tool.
+	// Requires beta header: advisor-tool-2026-03-01 (injected automatically).
+	Advisor20260301 func(Advisor20260301Args) types.Tool
 
 	// Legacy versions
 
@@ -131,6 +136,7 @@ var AnthropicTools = struct {
 	ToolSearchRegex20251119: ToolSearchRegex20251119,
 	WebSearch20260209:       WebSearch20260209,
 	WebFetch20260209:        WebFetch20260209,
+	Advisor20260301:         Advisor20260301,
 	Computer20241022:        Computer20241022,
 	Computer20250124:        Computer20250124,
 	Bash20241022:            Bash20241022,

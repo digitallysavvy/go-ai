@@ -118,10 +118,10 @@ searchTool := tools.ToolSearchRegex20251119()
 ## Important Notes
 
 ### Provider Execution
-All tools in this package are executed by the Anthropic API, not locally:
-- `ProviderExecuted: true` is set on all tools
-- Tool implementations return errors if called locally
-- Actual execution happens server-side at Anthropic
+Most tools in this package are executed by the Anthropic API, not locally:
+- Server-executed tools set `ProviderExecuted: true`
+- Bash tools are provider-defined and can execute locally through `ExperimentalSandbox`
+- Server-executed tool implementations return errors if called locally
 
 ### Tool Search and Deferred Loading
 When using tool search:

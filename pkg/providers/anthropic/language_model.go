@@ -130,7 +130,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Convert response to GenerateResult and attach HTTP headers.
-	result := m.convertResponse(response, usesJsonResponseTool)
+	result := m.convertResponse(response, usesJsonResponseTool, opts.Tools)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	if w := m.detectSkillsWarning(opts); w != nil {
 		result.Warnings = append(result.Warnings, *w)
@@ -168,7 +168,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
 	// events and route json tool input_json_delta as text chunks.
 	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool), httpResp.Header, m.ModelID()), nil
+	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool, opts.Tools), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Anthropic API request body
@@ -464,11 +464,16 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 // structured output strategy (a synthetic 'json' tool was injected). This gates
 // the json-tool-as-text extraction so a real user tool named "json" is never
 // misidentified as the structured output tool.
-func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResponseTool bool) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResponseTool bool, toolsOpt ...[]types.Tool) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertAnthropicUsage(response.Usage),
 		RawResponse: response,
 	}
+	var tools []types.Tool
+	if len(toolsOpt) > 0 {
+		tools = toolsOpt[0]
+	}
+	toolNameMap := anthropicProviderToolNameMap(tools)
 
 	// Extract text and reasoning content from content blocks.
 	// When jsonTool mode is active the model responds via a synthetic tool, not
@@ -524,7 +529,7 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 			} else {
 				result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 					ID:        content.ID,
-					ToolName:  content.Name,
+					ToolName:  mapAnthropicToolName(content.Name, toolNameMap),
 					Arguments: content.Input,
 				})
 			}
@@ -577,6 +582,7 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 			result.Content = append(result.Content, trc)
 		case "code_execution_tool_result", "bash_code_execution_tool_result",
 			"text_editor_code_execution_tool_result", "tool_search_tool_result",
+			"advisor_tool_result",
 			"mcp_tool_result":
 			// Deferred provider tool results: the provider executed the tool in a
 			// previous step and delivers the result inline here. Surface as
@@ -644,9 +650,58 @@ func providerToolResultName(resultType string) string {
 		return "code_execution"
 	case "tool_search_tool_result":
 		return "tool_search"
+	case "advisor_tool_result":
+		return "advisor"
 	default:
 		return resultType
 	}
+}
+
+func anthropicProviderToolNameMap(tools []types.Tool) map[string]string {
+	if len(tools) == 0 {
+		return nil
+	}
+	providerNames := map[string]string{
+		"anthropic.code_execution_20250522":    "code_execution",
+		"anthropic.code_execution_20250825":    "code_execution",
+		"anthropic.code_execution_20260120":    "code_execution",
+		"anthropic.computer_20241022":          "computer",
+		"anthropic.computer_20250124":          "computer",
+		"anthropic.text_editor_20241022":       "str_replace_editor",
+		"anthropic.text_editor_20250124":       "str_replace_editor",
+		"anthropic.text_editor_20250429":       "str_replace_based_edit_tool",
+		"anthropic.text_editor_20250728":       "str_replace_based_edit_tool",
+		"anthropic.bash_20241022":              "bash",
+		"anthropic.bash_20250124":              "bash",
+		"anthropic.memory_20250818":            "memory",
+		"anthropic.web_search_20250305":        "web_search",
+		"anthropic.web_search_20260209":        "web_search",
+		"anthropic.web_fetch_20250910":         "web_fetch",
+		"anthropic.web_fetch_20260209":         "web_fetch",
+		"anthropic.tool_search_regex_20251119": "tool_search_tool_regex",
+		"anthropic.tool_search_bm25_20251119":  "tool_search_tool_bm25",
+		"anthropic.advisor_20260301":           "advisor",
+	}
+	out := map[string]string{}
+	for _, t := range tools {
+		if providerName, ok := providerNames[t.Name]; ok {
+			out[providerName] = t.Name
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mapAnthropicToolName(name string, providerToSDK map[string]string) string {
+	if providerToSDK == nil {
+		return name
+	}
+	if mapped, ok := providerToSDK[name]; ok {
+		return mapped
+	}
+	return name
 }
 
 // convertAnthropicUsage converts Anthropic usage to detailed Usage struct
@@ -727,16 +782,6 @@ func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, strea
 	base := m.getBetaHeaders()
 
 	if opts != nil {
-		if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault &&
-			*opts.Reasoning != types.ReasoningNone && anthropicSupportsAdaptiveThinking(m.modelID) &&
-			!strings.Contains(base, BetaHeaderEffort) {
-			if base != "" {
-				base += "," + BetaHeaderEffort
-			} else {
-				base = BetaHeaderEffort
-			}
-		}
-
 		// Collect which beta headers are needed based on the tool list.
 		needed := map[string]bool{}
 
@@ -761,6 +806,8 @@ func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, strea
 				needed[BetaHeaderComputerUse20251124] = true
 			case "anthropic.memory_20250818":
 				needed[BetaHeaderContextManagement] = true
+			case "anthropic.advisor_20260301":
+				needed[BetaHeaderAdvisorTool] = true
 			}
 			// advanced-tool-use: AllowedCallers or InputExamples on any tool
 			if !needed[BetaHeaderAdvancedToolUse] {
@@ -785,6 +832,7 @@ func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, strea
 			BetaHeaderComputerUse20251124,
 			BetaHeaderContextManagement,
 			BetaHeaderAdvancedToolUse,
+			BetaHeaderAdvisorTool,
 		} {
 			if needed[h] {
 				if base != "" {
@@ -837,11 +885,6 @@ func (m *LanguageModel) getBetaHeaders() string {
 	// Add automatic caching beta header when automatic caching is enabled
 	if m.options.AutomaticCaching {
 		headers = append(headers, BetaHeaderPromptCaching)
-	}
-
-	// Add effort beta header when effort level is set
-	if m.options.Effort != "" {
-		headers = append(headers, BetaHeaderEffort)
 	}
 
 	if m.options.TaskBudget != nil {
@@ -1145,17 +1188,23 @@ type anthropicStream struct {
 	// (server_tool_use and mcp_tool_use blocks). Used to look up the tool name when
 	// the corresponding *_tool_result block arrives (potentially in a later step).
 	serverToolCallNames map[string]string
+	toolNameMap         map[string]string
 }
 
 // newAnthropicStream creates a new Anthropic stream.
 // usesJsonResponseTool must match the value computed in DoStream from isJsonToolMode.
-func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool) *anthropicStream {
+func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool, toolsOpt ...[]types.Tool) *anthropicStream {
+	var tools []types.Tool
+	if len(toolsOpt) > 0 {
+		tools = toolsOpt[0]
+	}
 	return &anthropicStream{
 		reader:               reader,
 		parser:               streaming.NewSSEParser(reader),
 		contentBlocks:        make(map[int]*streamContentBlock),
 		serverToolCallNames:  make(map[string]string),
 		usesJsonResponseTool: usesJsonResponseTool,
+		toolNameMap:          anthropicProviderToolNameMap(tools),
 	}
 }
 
@@ -1244,7 +1293,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			block := &streamContentBlock{
 				blockType:    "tool-call",
 				toolCallID:   start.ContentBlock.ID,
-				toolName:     start.ContentBlock.Name,
+				toolName:     mapAnthropicToolName(start.ContentBlock.Name, s.toolNameMap),
 				firstDelta:   initialInput == "", // expect deltas only when no initial input
 				isCustomTool: true,               // user-defined function tool
 			}
@@ -1415,7 +1464,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							Type: provider.ChunkTypeToolCall,
 							ToolCall: &types.ToolCall{
 								ID:        part.ID,
-								ToolName:  part.Name,
+								ToolName:  mapAnthropicToolName(part.Name, s.toolNameMap),
 								Arguments: args,
 							},
 						})
@@ -1478,6 +1527,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					})
 				case "code_execution_tool_result", "bash_code_execution_tool_result",
 					"text_editor_code_execution_tool_result", "tool_search_tool_result",
+					"advisor_tool_result",
 					"mcp_tool_result":
 					// Deferred provider tool results pre-populated in message_start.
 					// Emit as ChunkTypeToolResult so the SDK can clear pendingDeferredToolCalls.

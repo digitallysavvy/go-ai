@@ -173,9 +173,6 @@ const (
 	// It is automatically injected when the code execution tool is present in the tool list.
 	BetaHeaderCodeExecution = "code-execution-20260120"
 
-	// BetaHeaderEffort is required when the Effort model option is set.
-	BetaHeaderEffort = "effort-2025-11-24"
-
 	// BetaHeaderFineGrainedToolStreaming is obsolete and retained only for
 	// source compatibility with older callers.
 	//
@@ -229,6 +226,10 @@ const (
 	// BetaHeaderAdvancedToolUse is required when tools use AllowedCallers or InputExamples.
 	// Automatically injected when any tool in the list has either field set.
 	BetaHeaderAdvancedToolUse = "advanced-tool-use-2025-11-20"
+
+	// BetaHeaderAdvisorTool is required for advisor_20260301.
+	// Automatically injected when that tool is present in the tool list.
+	BetaHeaderAdvisorTool = "advisor-tool-2026-03-01"
 )
 
 // Helper functions for creating edit configurations
