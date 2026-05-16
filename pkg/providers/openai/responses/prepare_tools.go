@@ -140,7 +140,7 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		Type:        "function",
 		Name:        t.Name,
 		Description: t.Description,
-		Parameters:  t.Parameters,
+		Parameters:  defaultFunctionParameters(t.Parameters),
 	}
 
 	if t.Strict {
@@ -149,4 +149,24 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 	}
 
 	return def
+}
+
+func defaultFunctionParameters(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
+	}
+	if schema, ok := parameters.(map[string]interface{}); ok {
+		if _, hasType := schema["type"]; !hasType {
+			copied := make(map[string]interface{}, len(schema)+1)
+			for key, value := range schema {
+				copied[key] = value
+			}
+			copied["type"] = "object"
+			return copied
+		}
+	}
+	return parameters
 }

@@ -108,6 +108,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	parallelToolCalls := (*bool)(nil)
 	truncation := ""
 	includeFields := []string(nil)
+	var allowedTools *responses.AllowedToolsToolChoice
 
 	if opts.ProviderOptions != nil {
 		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
@@ -148,6 +149,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 			if v, ok := openaiOpts["include"].([]string); ok {
 				includeFields = v
 			}
+			allowedTools = parseAllowedTools(openaiOpts["allowedTools"])
 		}
 	}
 
@@ -234,7 +236,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	// Tools.
 	if len(opts.Tools) > 0 {
 		body["tools"] = responses.PrepareTools(opts.Tools)
-		if opts.ToolChoice.Type != "" {
+		if allowedTools != nil {
+			body["tool_choice"] = *allowedTools
+		} else if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice)
 		}
 	}
@@ -276,6 +280,47 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	}
 
 	return body, store, nil
+}
+
+func parseAllowedTools(value interface{}) *responses.AllowedToolsToolChoice {
+	raw, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	names := stringSliceFromInterface(raw["toolNames"])
+	if len(names) == 0 {
+		return nil
+	}
+	mode, _ := raw["mode"].(string)
+	if mode == "" {
+		mode = "auto"
+	}
+	tools := make([]responses.AllowedToolsToolEntry, len(names))
+	for i, name := range names {
+		tools[i] = responses.AllowedToolsToolEntry{Type: "function", Name: name}
+	}
+	return &responses.AllowedToolsToolChoice{
+		Type:  "allowed_tools",
+		Mode:  mode,
+		Tools: tools,
+	}
+}
+
+func stringSliceFromInterface(value interface{}) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // convertResponsesToolChoice maps a types.ToolChoice to the Responses API format.

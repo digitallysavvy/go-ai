@@ -16,10 +16,7 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 		"description": tool.Description,
 	}
 
-	// Add parameters if present
-	if tool.Parameters != nil {
-		functionDef["parameters"] = tool.Parameters
-	}
+	functionDef["parameters"] = defaultObjectSchema(tool.Parameters)
 
 	// Pass strict mode when requested (#12893)
 	if tool.Strict {
@@ -32,6 +29,26 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 	}
 
 	return schema
+}
+
+func defaultObjectSchema(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
+	}
+	if schema, ok := parameters.(map[string]interface{}); ok {
+		if _, hasType := schema["type"]; !hasType {
+			copied := make(map[string]interface{}, len(schema)+1)
+			for key, value := range schema {
+				copied[key] = value
+			}
+			copied["type"] = "object"
+			return copied
+		}
+	}
+	return parameters
 }
 
 // ToOpenAIFormat converts tools to OpenAI's tool format

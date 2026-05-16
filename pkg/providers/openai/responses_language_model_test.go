@@ -194,6 +194,70 @@ func TestResponsesLanguageModel_DoGenerate_ToolCall(t *testing.T) {
 	}
 }
 
+func TestResponsesLanguageModel_AllowedToolsProviderOption(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Weather?"}}},
+		}},
+		Tools: []types.Tool{
+			{Name: "weather", Description: "Get weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+			{Name: "cityAttractions", Description: "Find attractions", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+		},
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []interface{}{"weather"},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+
+	if tools, ok := body["tools"].([]interface{}); !ok || len(tools) != 2 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	choice, ok := body["tool_choice"].(responses.AllowedToolsToolChoice)
+	if !ok {
+		t.Fatalf("tool_choice = %T %#v", body["tool_choice"], body["tool_choice"])
+	}
+	if choice.Type != "allowed_tools" || choice.Mode != "auto" || len(choice.Tools) != 1 || choice.Tools[0].Name != "weather" {
+		t.Fatalf("tool_choice = %#v", choice)
+	}
+}
+
+func TestResponsesLanguageModel_AllowedToolsRequiredMode(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Weather?"}}},
+		}},
+		Tools: []types.Tool{{Name: "weather"}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"weather"},
+					"mode":      "required",
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
+	if choice.Mode != "required" {
+		t.Fatalf("mode = %q", choice.Mode)
+	}
+}
+
 // TestResponsesLanguageModel_DoStream_Text verifies text streaming via SSE.
 func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

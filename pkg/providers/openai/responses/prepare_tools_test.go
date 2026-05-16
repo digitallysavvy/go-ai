@@ -68,6 +68,38 @@ func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_FunctionTool_DefaultParametersIncludeObjectType(t *testing.T) {
+	result := PrepareTools([]types.Tool{{Name: "empty_tool"}})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	params, ok := def.Parameters.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Parameters = %T %#v", def.Parameters, def.Parameters)
+	}
+	if params["type"] != "object" {
+		t.Fatalf("parameters.type = %v, want object", params["type"])
+	}
+	if _, ok := params["properties"].(map[string]interface{}); !ok {
+		t.Fatalf("parameters.properties = %#v", params["properties"])
+	}
+}
+
+func TestPrepareTools_FunctionTool_ImplicitObjectSchemaGetsType(t *testing.T) {
+	result := PrepareTools([]types.Tool{{
+		Name: "implicit",
+		Parameters: map[string]interface{}{
+			"properties": map[string]interface{}{},
+		},
+	}})
+	def := result[0].(FunctionToolDef)
+	params := def.Parameters.(map[string]interface{})
+	if params["type"] != "object" {
+		t.Fatalf("parameters.type = %v, want object", params["type"])
+	}
+}
+
 func TestPrepareTools_LocalShell(t *testing.T) {
 	tool := NewLocalShellTool()
 	result := PrepareTools([]types.Tool{tool})

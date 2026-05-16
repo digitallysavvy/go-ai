@@ -116,3 +116,29 @@ func TestToOpenAIFormat_StrictModeForwarded(t *testing.T) {
 		t.Errorf("formatted[1] strict should not be set when Strict=false")
 	}
 }
+
+func TestToJSONSchema_DefaultParametersIncludeObjectType(t *testing.T) {
+	schema := ToJSONSchema(types.Tool{Name: "lookup"})
+	fn := schema["function"].(map[string]interface{})
+	params := fn["parameters"].(map[string]interface{})
+	if params["type"] != "object" {
+		t.Fatalf("parameters.type = %v, want object", params["type"])
+	}
+	if _, ok := params["properties"].(map[string]interface{}); !ok {
+		t.Fatalf("parameters.properties = %#v", params["properties"])
+	}
+}
+
+func TestToJSONSchema_ImplicitObjectSchemaGetsType(t *testing.T) {
+	schema := ToJSONSchema(types.Tool{
+		Name: "lookup",
+		Parameters: map[string]interface{}{
+			"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+		},
+	})
+	fn := schema["function"].(map[string]interface{})
+	params := fn["parameters"].(map[string]interface{})
+	if params["type"] != "object" {
+		t.Fatalf("parameters.type = %v, want object", params["type"])
+	}
+}

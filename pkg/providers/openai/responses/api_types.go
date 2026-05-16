@@ -299,6 +299,19 @@ type ToolSearchToolDef struct {
 	Parameters map[string]interface{} `json:"parameters,omitempty"`
 }
 
+// AllowedToolsToolChoice restricts callable tools while preserving the full
+// tools list in the request for prompt caching parity with the TS SDK.
+type AllowedToolsToolChoice struct {
+	Type  string                  `json:"type"`
+	Mode  string                  `json:"mode"`
+	Tools []AllowedToolsToolEntry `json:"tools"`
+}
+
+type AllowedToolsToolEntry struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Responses API input types (sent in requests to /v1/responses)
 // ─────────────────────────────────────────────────────────────────────────────
