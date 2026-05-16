@@ -81,9 +81,15 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file conversion error = %v", err)
 	}
-	encodedFile := filePart["data"].(string)
-	if !strings.HasPrefix(encodedFile, "data:application/pdf;base64,") {
-		t.Fatalf("file data prefix = %q", encodedFile)
+	dataPart, ok := filePart["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("file data type = %T", filePart["data"])
+	}
+	if dataPart["type"] != "data" {
+		t.Fatalf("file data.type = %v", dataPart["type"])
+	}
+	if dataPart["data"] != base64.StdEncoding.EncodeToString(fileBytes) {
+		t.Fatalf("file data.data mismatch = %v", dataPart["data"])
 	}
 	if filePart["mimeType"] != "application/pdf" {
 		t.Fatalf("file mimeType = %#v", filePart["mimeType"])

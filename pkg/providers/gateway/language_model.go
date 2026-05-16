@@ -531,14 +531,14 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 			"type": "file",
 		}
 
-		// Handle file data - encode as base64 data URL
+		// Handle file data as typed data payload (TS parity):
+		// { type: "data", data: "<base64>" } instead of a data: URL string.
 		if len(v.Data) > 0 {
-			mediaType := v.MimeType
-			if mediaType == "" {
-				mediaType = "application/octet-stream"
-			}
 			encoded := base64.StdEncoding.EncodeToString(v.Data)
-			result["data"] = fmt.Sprintf("data:%s;base64,%s", mediaType, encoded)
+			result["data"] = map[string]interface{}{
+				"type": "data",
+				"data": encoded,
+			}
 		}
 
 		if v.MimeType != "" {

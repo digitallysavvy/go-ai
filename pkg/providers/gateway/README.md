@@ -363,12 +363,23 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 
 ## Model IDs
 
-Model IDs use the format `provider/model`. Examples:
+Model IDs use the format `provider/model`. The package exports refreshed
+model ID constants and catalog slices that mirror the TypeScript AI SDK gateway
+settings unions:
 
-- `openai/gpt-4`
-- `anthropic/claude-3-opus-20240229`
-- `google/gemini-pro`
-- `mistral/mistral-large-latest`
+- `GatewayLanguageModelID` / `GatewayLanguageModelIDs`
+- `GatewayEmbeddingModelID` / `GatewayEmbeddingModelIDs`
+- `GatewayImageModelID` / `GatewayImageModelIDs`
+- `GatewayVideoModelID` / `GatewayVideoModelIDs`
+- `GatewayRerankingModelID` / `GatewayRerankingModelIDs`
+
+Examples:
+
+- `gateway.GatewayLanguageModelOpenaiGpt55`
+- `gateway.GatewayLanguageModelAnthropicClaudeOpus47`
+- `gateway.GatewayEmbeddingModelGoogleGeminiEmbedding2`
+- `gateway.GatewayVideoModelXaiGrokImagineVideo`
+- `gateway.GatewayRerankingModelCohereRerankV4Pro`
 
 Check available models using `provider.GetAvailableModels()`.
 

@@ -86,7 +86,7 @@ provider, _ := gateway.New(gateway.Config{
 
 // Create language model
 // Gateway routes to the best available provider
-model, _ := provider.LanguageModel("anthropic/claude-3.5-sonnet")
+model, _ := provider.LanguageModel(string(gateway.GatewayLanguageModelAnthropicClaudeSonnet45))
 
 // Generate text
 result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
@@ -161,7 +161,7 @@ for _, video := range result.Videos {
 ## Image Generation
 
 ```go
-imageModel, _ := provider.ImageModel("openai/dall-e-3")
+imageModel, _ := provider.ImageModel(string(gateway.GatewayImageModelOpenaiGptImage2))
 
 result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
     Model:  imageModel,
@@ -174,7 +174,7 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
 ## Embeddings
 
 ```go
-embeddingModel, _ := provider.EmbeddingModel("openai/text-embedding-3-small")
+embeddingModel, _ := provider.EmbeddingModel(string(gateway.GatewayEmbeddingModelOpenaiTextEmbedding3Small))
 
 result, err := ai.Embed(context.Background(), embeddingModel, ai.EmbedOptions{
     Values: []string{
