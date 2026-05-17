@@ -62,9 +62,22 @@ agent.NewToolLoopAgent(agent.AgentConfig{
 })
 ```
 
+Dynamic tool descriptions receive the same per-tool context used by the TypeScript SDK:
+
+```go
+types.Tool{
+    Name: "lookup",
+    DescriptionFunc: func(ctx context.Context, opts types.ToolDescriptionOptions) string {
+        return fmt.Sprintf("Lookup data for %v", opts.Context)
+    },
+}
+```
+
 ## Tool Approval
 
-Tool approval callbacks can now return a zero-value `types.ToolApprovalResult{}` to mean `not-applicable`. Denials preserve the approval status and reason in `types.ToolResult` and use a default message that includes the tool name.
+Tool approval callbacks can now return a zero-value `types.ToolApprovalResult{}` to mean `not-applicable`. Denials preserve the approval status and reason in `types.ToolResult` and use a default message that includes the tool name. Per-tool approval callbacks run only after the matching `ContextSchema` validates successfully; validated JSON-schema defaults are applied before `ToolContext` is passed to approval or execution callbacks.
+
+Tool-defined approval callbacks can use the options-based `types.ToolNeedsApprovalFunc` to receive the same data as the TypeScript SDK: tool call ID, pre-call messages, and validated tool context. The older `types.NeedsApprovalFunc` remains available as a deprecated input-only compatibility path.
 
 Before:
 
