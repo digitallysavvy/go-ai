@@ -101,9 +101,11 @@ type AgentGenerateOptions struct {
 	Output                interface{}
 	Telemetry             *ai.TelemetrySettings
 	ExperimentalTelemetry *ai.TelemetrySettings
-	Include               *ai.IncludeOptions
-	ToolApproval          types.ToolApprovalConfig
-	Internal              *ai.InternalOptions
+	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
+	SensitiveRuntimeContext bool
+	Include                 *ai.IncludeOptions
+	ToolApproval            types.ToolApprovalConfig
+	Internal                *ai.InternalOptions
 
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
@@ -286,6 +288,9 @@ type AgentConfig struct {
 	// ExperimentalTelemetry is a deprecated alias for Telemetry, included for
 	// parity with TypeScript prepareCall.
 	ExperimentalTelemetry *ai.TelemetrySettings
+
+	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
+	SensitiveRuntimeContext bool
 
 	// Include forwards stable include options to core stream/generate behavior.
 	Include *ai.IncludeOptions
@@ -480,6 +485,9 @@ type PrepareCallConfig struct {
 
 	// ToolApproval configures automatic approval handling for this call.
 	ToolApproval types.ToolApprovalConfig
+
+	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
+	SensitiveRuntimeContext bool
 
 	// CallOptions are validated and passed through from AgentConfig.
 	CallOptions interface{}

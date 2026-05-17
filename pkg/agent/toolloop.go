@@ -209,6 +209,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ExperimentalDownload:        callConfig.ExperimentalDownload,
 		RuntimeContext:              callConfig.RuntimeContext,
 		ToolsContext:                callConfig.ToolsContext,
+		SensitiveRuntimeContext:     callConfig.SensitiveRuntimeContext,
 		ExperimentalContext:         config.ExperimentalContext,
 		Output:                      callConfig.Output,
 		Telemetry:                   callConfig.Telemetry,
@@ -311,6 +312,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ExperimentalDownload:        callConfig.ExperimentalDownload,
 		RuntimeContext:              callConfig.RuntimeContext,
 		ToolsContext:                callConfig.ToolsContext,
+		SensitiveRuntimeContext:     callConfig.SensitiveRuntimeContext,
 		ExperimentalContext:         config.ExperimentalContext,
 		Output:                      callConfig.Output,
 		Telemetry:                   callConfig.Telemetry,
@@ -703,6 +705,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ActiveTools:                 a.config.ActiveTools,
 		ToolChoice:                  a.config.ToolChoice,
 		ToolApproval:                a.config.ToolApproval,
+		SensitiveRuntimeContext:     a.config.SensitiveRuntimeContext,
 		Temperature:                 a.config.Temperature,
 		MaxTokens:                   a.config.MaxTokens,
 		TopP:                        a.config.TopP,
@@ -750,6 +753,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 	if callConfig.ToolsContext == nil {
 		callConfig.ToolsContext = a.config.ToolsContext
 	}
+	callConfig.Tools = resolveAgentStepTools(ctx, callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
 	return callConfig
 }
 
@@ -838,6 +842,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.ExperimentalTelemetry != nil {
 		c.ExperimentalTelemetry = opts.ExperimentalTelemetry
 	}
+	if opts.SensitiveRuntimeContext {
+		c.SensitiveRuntimeContext = true
+	}
 	if opts.Include != nil {
 		c.Include = opts.Include
 	}
@@ -865,14 +872,62 @@ func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions inter
 		return nil
 	}
 	if err := callOptionsSchema.Validator().Validate(callOptions); err != nil {
-		return providererrors.NewValidationErrorWithContext(
-			callOptions,
-			fmt.Sprintf("invalid call options at schema path options: %v", err),
-			err,
-			&providererrors.ValidationContext{Field: "options", EntityName: "callOptions"},
-		)
+		return &providererrors.InvalidArgumentError{
+			Field:   "options",
+			Message: fmt.Sprintf("call options failed schema validation: %v", err),
+			Cause:   err,
+		}
 	}
 	return nil
+}
+
+func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext map[string]interface{}, sandbox interface{}) []types.Tool {
+	if len(tools) == 0 {
+		return tools
+	}
+	resolved := make([]types.Tool, len(tools))
+	copy(resolved, tools)
+	for i := range resolved {
+		if resolved[i].DescriptionFunc != nil {
+			resolved[i].Description = resolved[i].DescriptionFunc(ctx, types.ToolDescriptionOptions{
+				Context:             toolsContext[resolved[i].Name],
+				ExperimentalSandbox: sandbox,
+			})
+			resolved[i].DescriptionFunc = nil
+		}
+	}
+	return resolved
+}
+
+func enrichAgentToolCallMetadata(calls []types.ToolCall, tools []types.Tool) []types.ToolCall {
+	if len(calls) == 0 || len(tools) == 0 {
+		return calls
+	}
+	byName := make(map[string]types.Tool, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+	out := make([]types.ToolCall, len(calls))
+	copy(out, calls)
+	for i := range out {
+		if out[i].ToolMetadata == nil {
+			if tool, ok := byName[out[i].ToolName]; ok && tool.Metadata != nil {
+				out[i].ToolMetadata = cloneAgentStringAnyMap(tool.Metadata)
+			}
+		}
+	}
+	return out
+}
+
+func cloneAgentStringAnyMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func validateAgentPromptOptions(prompt string, messages []types.Message) error {
@@ -1020,14 +1075,15 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
+	toolCalls := enrichAgentToolCallMetadata(genResult.ToolCalls, callConfig.Tools)
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,
 		Content:          contentFromGenerateResult(genResult),
-		ToolCalls:        genResult.ToolCalls,
-		StaticToolCalls:  filterAgentStaticToolCalls(genResult.ToolCalls),
-		DynamicToolCalls: filterAgentDynamicToolCalls(genResult.ToolCalls),
+		ToolCalls:        toolCalls,
+		StaticToolCalls:  filterAgentStaticToolCalls(toolCalls),
+		DynamicToolCalls: filterAgentDynamicToolCalls(toolCalls),
 		ToolResults:      []types.ToolResult{},
 		FinishReason:     genResult.FinishReason,
 		RawFinishReason:  rawFinishReason,
@@ -1048,7 +1104,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	// Determine if we should continue
-	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(genResult.ToolCalls) > 0
+	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(toolCalls) > 0
 
 	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
 }
@@ -1143,20 +1199,18 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				a.config.OnToolEnd(result)
 			}
 		} else {
-			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
-			if err != nil {
+			approval, approvalErr := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+			if approvalErr != nil {
 				results = append(results, types.ToolResult{
 					ToolCallID:       call.ID,
 					ToolName:         call.ToolName,
 					Input:            call.Arguments,
-					Error:            err,
+					Error:            approvalErr,
 					ProviderMetadata: providerMetadata,
 					ToolMetadata:     call.ToolMetadata,
 				})
 				continue
 			}
-
-			approval := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 			if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 				if !a.config.ToolApprover(call) {
 					approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
@@ -1198,6 +1252,19 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 
 			if tool.Execute == nil {
+				continue
+			}
+
+			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
+			if err != nil {
+				results = append(results, types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Error:            err,
+					ProviderMetadata: providerMetadata,
+					ToolMetadata:     call.ToolMetadata,
+				})
 				continue
 			}
 
@@ -1359,58 +1426,116 @@ func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResul
 	return out
 }
 
-func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) types.ToolApprovalResult {
-	approval := normalizeAgentToolApproval(call, tools, messages, toolApproval, runtimeContext, toolsContext)
+func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
+	tool := findAgentTool(call.ToolName, tools)
+	approval, err := normalizeAgentToolApproval(call, tool, tools, messages, toolApproval, runtimeContext, toolsContext)
+	if err != nil {
+		return types.ToolApprovalResult{}, err
+	}
 	if approval.Status != types.ToolApprovalStatusNotApplicable {
-		return approval
+		return approval, nil
 	}
-	for i := range tools {
-		tool := &tools[i]
-		if tool.Name != call.ToolName {
-			continue
-		}
-		switch v := tool.NeedsApproval.(type) {
-		case nil:
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		case bool:
-			if v {
-				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
-			}
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		case types.NeedsApprovalFunc:
-			if v(ctx, call.Arguments) {
-				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
-			}
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		case types.ToolApprovalStatus:
-			return normalizeAgentApprovalValue(v)
-		case string:
-			return normalizeAgentApprovalValue(types.ToolApprovalStatus(v))
-		}
+	if tool == nil {
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	}
-	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	setting := tool.ToolApproval
+	if setting == nil {
+		setting = tool.NeedsApproval
+	}
+	switch v := setting.(type) {
+	case nil:
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case bool:
+		if v {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case types.ToolNeedsApprovalFunc:
+		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name])
+		if err != nil {
+			return types.ToolApprovalResult{}, err
+		}
+		if v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolCtx,
+		}) {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case types.NeedsApprovalFunc:
+		if _, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name]); err != nil {
+			return types.ToolApprovalResult{}, err
+		}
+		if v(ctx, call.Arguments) {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case types.ToolApprovalStatus:
+		return normalizeAgentApprovalValue(v), nil
+	case string:
+		return normalizeAgentApprovalValue(types.ToolApprovalStatus(v)), nil
+	}
+	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 }
 
-func normalizeAgentToolApproval(call types.ToolCall, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
 	switch v := cfg.(type) {
 	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case types.GenericToolApprovalFunc:
+		return normalizeAgentApprovalValue(v(types.ToolApprovalOptions{
+			ToolCall:       call,
+			Tools:          tools,
+			ToolsContext:   toolsCtx,
+			RuntimeContext: runtimeCtx,
+			Messages:       messages,
+		})), nil
 	case types.ToolApprovalFunc:
-		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx))
+		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	case map[string]interface{}:
-		return normalizeAgentToolApprovalValue(call, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
+		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
 	case map[string]types.ToolApprovalValue:
-		return normalizeAgentToolApprovalValue(call, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
+		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
 	default:
-		return normalizeAgentApprovalValue(v)
+		return normalizeAgentApprovalValue(v), nil
 	}
 }
 
-func normalizeAgentToolApprovalValue(call types.ToolCall, tools []types.Tool, messages []types.Message, value interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
-	if fn, ok := value.(types.ToolApprovalFunc); ok {
-		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx))
+func normalizeAgentToolApprovalValue(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, value interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
+	switch fn := value.(type) {
+	case types.SingleToolApprovalFunc:
+		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsCtx[call.ToolName])
+		if err != nil {
+			return types.ToolApprovalResult{}, err
+		}
+		return normalizeAgentApprovalValue(fn(call.Arguments, types.SingleToolApprovalOptions{
+			ToolContext:    toolCtx,
+			RuntimeContext: runtimeCtx,
+			ToolCallID:     call.ID,
+			Messages:       messages,
+		})), nil
+	case types.GenericToolApprovalFunc:
+		return normalizeAgentApprovalValue(fn(types.ToolApprovalOptions{
+			ToolCall:       call,
+			Tools:          tools,
+			ToolsContext:   toolsCtx,
+			RuntimeContext: runtimeCtx,
+			Messages:       messages,
+		})), nil
+	case types.ToolApprovalFunc:
+		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	}
-	return normalizeAgentApprovalValue(value)
+	return normalizeAgentApprovalValue(value), nil
+}
+
+func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
+	for i := range tools {
+		if tools[i].Name == toolName {
+			return &tools[i]
+		}
+	}
+	return nil
 }
 
 func normalizeAgentApprovalValue(value interface{}) types.ToolApprovalResult {
@@ -1446,15 +1571,16 @@ func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interf
 	if tool == nil || tool.ContextSchema == nil {
 		return ctxValue, nil
 	}
-	if err := tool.ContextSchema.Validator().Validate(ctxValue); err != nil {
+	normalized := schema.ApplyDefaults(ctxValue, tool.ContextSchema)
+	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
 		return nil, providererrors.NewValidationErrorWithContext(
-			ctxValue,
-			fmt.Sprintf("invalid tool context for %s at schema path toolsContext.%s: %v", toolName, toolName, err),
+			normalized,
+			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
 			err,
-			&providererrors.ValidationContext{Field: "toolsContext." + toolName, EntityName: "toolContext", EntityID: toolName},
+			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
 		)
 	}
-	return ctxValue, nil
+	return normalized, nil
 }
 
 func strPtr(s string) *string {

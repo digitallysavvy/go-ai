@@ -10,8 +10,10 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -57,6 +59,16 @@ func (m *mockLanguageModel) DefaultObjectGenerationMode() string { return "" }
 func (m *mockLanguageModel) SupportsImageUrls() bool             { return false }
 func (m *mockLanguageModel) SupportsImageInput() bool            { return false }
 func (m *mockLanguageModel) SupportsParallelToolCalls() bool     { return true }
+
+type agentContextCaptureTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	starts []telemetry.TelemetryStartEvent
+}
+
+func (c *agentContextCaptureTelemetry) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	c.starts = append(c.starts, e)
+	return ctx
+}
 
 // Test that OnStepFinish callback is called at constructor level
 func TestOnStepFinish_ConstructorLevel(t *testing.T) {
@@ -1698,8 +1710,12 @@ func TestToolLoopAgent_InvalidToolContextReturnsValidationResult(t *testing.T) {
 	if len(result.ToolResults) == 0 || result.ToolResults[0].Error == nil {
 		t.Fatalf("expected validation error result")
 	}
-	if !strings.Contains(result.ToolResults[0].Error.Error(), "toolsContext.ctx_tool") {
-		t.Fatalf("expected schema path in error, got %v", result.ToolResults[0].Error)
+	var validationErr *providererrors.ValidationError
+	if !errors.As(result.ToolResults[0].Error, &validationErr) {
+		t.Fatalf("expected validation error, got %T: %v", result.ToolResults[0].Error, result.ToolResults[0].Error)
+	}
+	if validationErr.Context == nil || validationErr.Context.Field != "tool context" || validationErr.Context.EntityName != "ctx_tool" {
+		t.Fatalf("validation context = %+v, want field tool context and entity ctx_tool", validationErr.Context)
 	}
 }
 
@@ -2361,5 +2377,320 @@ func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
 	}
 	if len(result.ToolResults) != 1 || result.ToolResults[0].ToolMetadata["trace"] != "agent" {
 		t.Fatalf("tool result metadata = %+v, want agent", result.ToolResults)
+	}
+}
+
+func TestToolLoopAgentResolvesDescriptionFuncBeforeNativeModelCall(t *testing.T) {
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if len(opts.Tools) != 1 {
+				t.Fatalf("tools count = %d, want 1", len(opts.Tools))
+			}
+			if got, want := opts.Tools[0].Description, "ctx=agent-tool,sbx=agent-sandbox"; got != want {
+				t.Fatalf("description = %q, want %q", got, want)
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:               model,
+		RuntimeContext:      "agent-runtime",
+		ToolsContext:        map[string]interface{}{"lookup": "agent-tool"},
+		ExperimentalSandbox: "agent-sandbox",
+		Tools: []types.Tool{{
+			Name:       "lookup",
+			Parameters: map[string]interface{}{"type": "object"},
+			DescriptionFunc: func(_ context.Context, options types.ToolDescriptionOptions) string {
+				return fmt.Sprintf("ctx=%v,sbx=%v", options.Context, options.ExperimentalSandbox)
+			},
+		}},
+	})
+	if _, err := agent.Execute(context.Background(), "start"); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestToolLoopAgentAddsToolDefinitionMetadataToNativeCalls(t *testing.T) {
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:     "lookup",
+			Metadata: map[string]interface{}{"source": "mcp", "server": "test"},
+			Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+				if options.ToolMetadata["source"] != "mcp" {
+					t.Fatalf("execution metadata = %+v, want source=mcp", options.ToolMetadata)
+				}
+				return "ok", nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+	})
+	result, err := agent.Execute(context.Background(), "start")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Steps) != 1 || result.Steps[0].ToolCalls[0].ToolMetadata["source"] != "mcp" {
+		t.Fatalf("step tool metadata = %+v, want propagated metadata", result.Steps)
+	}
+	if result.ToolResults[0].ToolMetadata["server"] != "test" {
+		t.Fatalf("tool result metadata = %+v, want server=test", result.ToolResults[0].ToolMetadata)
+	}
+	if agent.config.Tools[0].Metadata["source"] != "mcp" {
+		t.Fatalf("tool definition metadata mutated = %+v", agent.config.Tools[0].Metadata)
+	}
+}
+
+func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) {
+	t.Run("generic", func(t *testing.T) {
+		model := &functionalAgentLanguageModel{
+			doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			},
+		}
+		agent := NewToolLoopAgent(AgentConfig{
+			Model: model,
+			Tools: []types.Tool{{
+				Name: "lookup",
+				Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("execute should not run when generic approval denies")
+					return nil, nil
+				},
+			}},
+			ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
+				if opts.ToolCall.ToolName != "lookup" {
+					t.Fatalf("tool name = %q, want lookup", opts.ToolCall.ToolName)
+				}
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+			}),
+			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		})
+		result, err := agent.Execute(context.Background(), "start")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
+			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		}
+	})
+
+	t.Run("single map", func(t *testing.T) {
+		model := &functionalAgentLanguageModel{
+			doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			},
+		}
+		agent := NewToolLoopAgent(AgentConfig{
+			Model:        model,
+			ToolsContext: map[string]interface{}{"lookup": map[string]interface{}{"tenant": "acme"}},
+			Tools: []types.Tool{{
+				Name: "lookup",
+				ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+					"type":     "object",
+					"required": []string{"tenant", "region"},
+					"properties": map[string]interface{}{
+						"tenant": map[string]interface{}{"type": "string"},
+						"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+					},
+				}),
+				Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+					if options.ToolContext.(map[string]interface{})["region"] != "us-east-1" {
+						t.Fatalf("execution tool context = %+v, want defaulted region", options.ToolContext)
+					}
+					return "ok", nil
+				},
+			}},
+			ToolApproval: map[string]types.ToolApprovalValue{
+				"lookup": types.SingleToolApprovalFunc(func(args map[string]interface{}, opts types.SingleToolApprovalOptions) types.ToolApprovalResult {
+					toolCtx := opts.ToolContext.(map[string]interface{})
+					if args["q"] != "x" || toolCtx["tenant"] != "acme" || toolCtx["region"] != "us-east-1" {
+						t.Fatalf("single approval args/context = %+v %+v", args, opts.ToolContext)
+					}
+					return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
+				}),
+			},
+			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		})
+		result, err := agent.Execute(context.Background(), "start")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if len(result.ToolResults) != 1 || result.ToolResults[0].Error != nil {
+			t.Fatalf("tool results = %+v, want successful execution", result.ToolResults)
+		}
+	})
+
+	t.Run("generic receives raw context before execution validation", func(t *testing.T) {
+		model := &functionalAgentLanguageModel{
+			doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			},
+		}
+		called := false
+		agent := NewToolLoopAgent(AgentConfig{
+			Model:        model,
+			ToolsContext: map[string]interface{}{"lookup": map[string]interface{}{}},
+			Tools: []types.Tool{{
+				Name:          "lookup",
+				ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []string{"tenant"}}),
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("execute should not run when generic approval denies")
+					return nil, nil
+				},
+			}},
+			ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
+				called = true
+				if opts.ToolsContext["lookup"] == nil {
+					t.Fatalf("tools context not forwarded: %+v", opts.ToolsContext)
+				}
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+			}),
+			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		})
+		result, err := agent.Execute(context.Background(), "start")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if !called {
+			t.Fatal("generic approval callback should run before per-tool context validation")
+		}
+		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
+			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		}
+	})
+
+	t.Run("single map validates context before callback", func(t *testing.T) {
+		model := &functionalAgentLanguageModel{
+			doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			},
+		}
+		called := false
+		agent := NewToolLoopAgent(AgentConfig{
+			Model:        model,
+			ToolsContext: map[string]interface{}{"lookup": map[string]interface{}{}},
+			Tools: []types.Tool{{
+				Name:          "lookup",
+				ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []string{"tenant"}}),
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("execute should not run when context validation fails")
+					return nil, nil
+				},
+			}},
+			ToolApproval: map[string]types.ToolApprovalValue{
+				"lookup": types.SingleToolApprovalFunc(func(map[string]interface{}, types.SingleToolApprovalOptions) types.ToolApprovalResult {
+					called = true
+					return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
+				}),
+			},
+			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		})
+		result, err := agent.Execute(context.Background(), "start")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if called {
+			t.Fatal("single approval callback should not run when context validation fails")
+		}
+		if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil {
+			t.Fatalf("tool results = %+v, want validation error", result.ToolResults)
+		}
+	})
+
+	t.Run("tool-defined approval receives options", func(t *testing.T) {
+		model := &functionalAgentLanguageModel{
+			doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			},
+		}
+		called := false
+		agent := NewToolLoopAgent(AgentConfig{
+			Model:        model,
+			ToolsContext: map[string]interface{}{"lookup": map[string]interface{}{"tenant": "acme"}},
+			Tools: []types.Tool{{
+				Name: "lookup",
+				ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+					"type":     "object",
+					"required": []string{"tenant", "region"},
+					"properties": map[string]interface{}{
+						"tenant": map[string]interface{}{"type": "string"},
+						"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+					},
+				}),
+				ToolApproval: types.ToolNeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}, opts types.ToolNeedsApprovalOptions) bool {
+					called = true
+					toolCtx := opts.Context.(map[string]interface{})
+					if ctx == nil || input["q"] != "x" || opts.ToolCallID != "tc" || len(opts.Messages) != 1 || toolCtx["tenant"] != "acme" || toolCtx["region"] != "us-east-1" {
+						t.Fatalf("tool approval input/options = %+v %+v", input, opts)
+					}
+					return true
+				}),
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("execute should not run when tool-defined approval requests user approval")
+					return nil, nil
+				},
+			}},
+			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		})
+		result, err := agent.Execute(context.Background(), "start")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if !called {
+			t.Fatal("tool-defined approval callback was not called")
+		}
+		if len(result.ToolResults) != 1 || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusUserApproval {
+			t.Fatalf("tool results = %+v, want user-approval", result.ToolResults)
+		}
+	})
+}
+
+func TestToolLoopAgentGenerateForwardsSensitiveRuntimeContext(t *testing.T) {
+	capture := &agentContextCaptureTelemetry{}
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{Model: model})
+	_, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Prompt:                  "start",
+		RuntimeContext:          map[string]interface{}{"requestId": "req-1"},
+		SensitiveRuntimeContext: true,
+		Telemetry: &ai.TelemetrySettings{
+			IncludeRuntimeContext: map[string]bool{"requestId": true},
+			Integrations:          []telemetry.TelemetryIntegration{capture},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(capture.starts) != 1 {
+		t.Fatalf("telemetry starts = %d, want 1", len(capture.starts))
+	}
+	if len(capture.starts[0].RuntimeContext) != 0 {
+		t.Fatalf("runtime context telemetry = %+v, want omitted", capture.starts[0].RuntimeContext)
 	}
 }
