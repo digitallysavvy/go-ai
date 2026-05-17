@@ -31,6 +31,10 @@ type Tool struct {
 	// Description of what the tool does (helps the model decide when to use it)
 	Description string `json:"description"`
 
+	// DescriptionFunc resolves the tool description dynamically at call-prep
+	// time using the active per-tool context and sandbox.
+	DescriptionFunc func(ctx context.Context, options ToolDescriptionOptions) string `json:"-"`
+
 	// Title is a short, human-readable title for the tool (optional)
 	Title string `json:"title,omitempty"`
 
@@ -62,9 +66,15 @@ type Tool struct {
 	// tool execution and approval callbacks.
 	ContextSchema schema.Schema `json:"-"`
 
-	// NeedsApproval indicates whether tool execution requires user approval
-	// Can be a boolean or a function that determines approval based on input
-	NeedsApproval interface{} `json:"-"` // bool or NeedsApprovalFunc
+	// ToolApproval indicates whether tool execution requires user approval.
+	// Can be a boolean, ToolApprovalStatus string, ToolNeedsApprovalFunc, or
+	// deprecated NeedsApprovalFunc.
+	ToolApproval interface{} `json:"-"`
+
+	// NeedsApproval is a deprecated alias for ToolApproval.
+	// Can be a boolean or a function that determines approval based on input.
+	// Deprecated: use ToolApproval.
+	NeedsApproval interface{} `json:"-"`
 
 	// ProviderExecuted indicates whether this tool is executed by the provider (not locally)
 	// When true, the tool is executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
@@ -88,6 +98,10 @@ type Tool struct {
 	// ProviderMetadata carries provider-specific metadata for the tool and is
 	// propagated onto tool calls and results produced for this tool.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Metadata carries tool-specific metadata that is not sent to models and is
+	// propagated via ToolCall.ToolMetadata and ToolResult.ToolMetadata.
+	Metadata map[string]interface{} `json:"-"`
 
 	// ProviderName identifies the provider that owns a provider-defined tool.
 	ProviderName string `json:"providerName,omitempty"`
@@ -122,6 +136,16 @@ type Tool struct {
 // It receives the input arguments and returns the result or an error
 // Updated in v6.0 to include options with ToolCallID
 type ToolExecutor func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) (interface{}, error)
+
+// ToolDescriptionOptions contains context for dynamic tool descriptions.
+// It mirrors the TypeScript SDK's description options object.
+type ToolDescriptionOptions struct {
+	// Context is the per-tool context value from ToolsContext[toolName].
+	Context interface{}
+
+	// ExperimentalSandbox is the sandbox environment for this call.
+	ExperimentalSandbox interface{}
+}
 
 // ToolExecutionOptions contains options passed to tool execution
 type ToolExecutionOptions struct {
@@ -182,7 +206,27 @@ type ToolInputExample struct {
 	Description string
 }
 
-// NeedsApprovalFunc determines if a tool call needs approval based on input
+// ToolNeedsApprovalOptions contains the callback options for tool-defined
+// approval, matching the TypeScript ToolNeedsApprovalFunction options object.
+type ToolNeedsApprovalOptions struct {
+	// ToolCallID is the unique identifier for this tool call.
+	ToolCallID string
+
+	// Messages are the messages sent to the model before the assistant response
+	// that contained this tool call.
+	Messages []Message
+
+	// Context is the per-tool context validated against the tool's ContextSchema.
+	Context interface{}
+}
+
+// ToolNeedsApprovalFunc determines if a tool call needs approval based on input
+// and the validated tool context.
+type ToolNeedsApprovalFunc func(ctx context.Context, input map[string]interface{}, options ToolNeedsApprovalOptions) bool
+
+// NeedsApprovalFunc determines if a tool call needs approval based on input.
+//
+// Deprecated: use ToolNeedsApprovalFunc.
 type NeedsApprovalFunc func(ctx context.Context, input map[string]interface{}) bool
 
 // OnInputStartFunc is called when tool input streaming starts

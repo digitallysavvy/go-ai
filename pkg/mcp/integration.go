@@ -70,6 +70,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool) (types.Tool, error) {
 		Parameters:       mcpTool.InputSchema,
 		ProviderName:     "mcp",
 		ProviderMetadata: providerMetadata,
+		Metadata:         mcpMetadata,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			// Call MCP tool
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)

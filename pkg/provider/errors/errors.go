@@ -106,6 +106,25 @@ type ValidationError struct {
 	Value interface{}
 }
 
+// TypeValidationError is a compatibility alias used by TS parity docs.
+type TypeValidationError = ValidationError
+
+// InvalidArgumentError signals invalid caller-provided arguments/options.
+type InvalidArgumentError struct {
+	Field   string
+	Message string
+	Cause   error
+}
+
+func (e *InvalidArgumentError) Error() string {
+	if e.Field == "" {
+		return "invalid argument: " + e.Message
+	}
+	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+}
+
+func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
+
 // Error implements the error interface
 func (e *ValidationError) Error() string {
 	var contextPrefix string

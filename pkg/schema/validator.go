@@ -26,6 +26,18 @@ type Schema interface {
 	Validator() Validator
 }
 
+// ApplyDefaults returns a copy of value with JSON Schema object defaults applied.
+// It is intentionally conservative: unsupported schema constructs leave the
+// original value unchanged, while object properties and array items are handled
+// recursively. This mirrors TypeScript schema parsers that can normalize context
+// before callbacks receive it.
+func ApplyDefaults(value interface{}, schema Schema) interface{} {
+	if schema == nil {
+		return value
+	}
+	return applyJSONSchemaDefaults(value, schema.Validator().JSONSchema())
+}
+
 // JSONSchemaValidator validates using JSON Schema
 type JSONSchemaValidator struct {
 	schema map[string]interface{}
@@ -155,6 +167,69 @@ func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, p
 		}
 	}
 	return nil
+}
+
+func applyJSONSchemaDefaults(value interface{}, schema map[string]interface{}) interface{} {
+	if schema == nil {
+		return value
+	}
+
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		obj, ok := asMap(value)
+		if !ok {
+			return value
+		}
+		out := make(map[string]interface{}, len(obj)+len(props))
+		for k, v := range obj {
+			out[k] = v
+		}
+		for key, rawPropSchema := range props {
+			propSchema, ok := rawPropSchema.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if existing, exists := out[key]; exists {
+				out[key] = applyJSONSchemaDefaults(existing, propSchema)
+				continue
+			}
+			if def, ok := propSchema["default"]; ok {
+				out[key] = cloneJSONValue(def)
+			}
+		}
+		return out
+	}
+
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		rv := reflect.ValueOf(value)
+		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+			out := make([]interface{}, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				out[i] = applyJSONSchemaDefaults(rv.Index(i).Interface(), items)
+			}
+			return out
+		}
+	}
+
+	return value
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			out[key] = cloneJSONValue(val)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, val := range v {
+			out[i] = cloneJSONValue(val)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func schemaTypes(value interface{}) ([]string, bool) {

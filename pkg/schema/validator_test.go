@@ -67,6 +67,51 @@ func TestJSONSchemaValidator_Validate(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults(t *testing.T) {
+	t.Parallel()
+
+	s := NewSimpleJSONSchema(map[string]interface{}{
+		"type":     "object",
+		"required": []string{"apiKey", "region"},
+		"properties": map[string]interface{}{
+			"apiKey": map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{
+				"type":    "string",
+				"default": "us-east-1",
+			},
+			"nested": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"enabled": map[string]interface{}{
+						"type":    "boolean",
+						"default": true,
+					},
+				},
+			},
+		},
+	})
+
+	original := map[string]interface{}{"apiKey": "secret", "nested": map[string]interface{}{}}
+	got := ApplyDefaults(original, s)
+	obj, ok := got.(map[string]interface{})
+	if !ok {
+		t.Fatalf("ApplyDefaults() = %T, want map", got)
+	}
+	if obj["region"] != "us-east-1" {
+		t.Fatalf("region default = %v, want us-east-1", obj["region"])
+	}
+	nested, ok := obj["nested"].(map[string]interface{})
+	if !ok || nested["enabled"] != true {
+		t.Fatalf("nested default = %+v, want enabled=true", obj["nested"])
+	}
+	if _, exists := original["region"]; exists {
+		t.Fatal("ApplyDefaults mutated original context")
+	}
+	if err := s.Validator().Validate(got); err != nil {
+		t.Fatalf("defaulted context should validate: %v", err)
+	}
+}
+
 func TestNewStructSchema(t *testing.T) {
 	t.Parallel()
 

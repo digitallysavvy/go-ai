@@ -37,6 +37,9 @@ func TestMCPToolConverterPropagatesMcpProviderMetadata(t *testing.T) {
 	if _, ok := mcpMeta["serverName"]; ok {
 		t.Fatalf("serverName should not be present in TS-parity McpProviderMetadata: %#v", mcpMeta)
 	}
+	if tool.Metadata["toolName"] != "read_file" {
+		t.Fatalf("tool metadata = %#v, want toolName=read_file", tool.Metadata)
+	}
 }
 
 func TestMCPToolConverterModelOutputFallbackAndFactoryHelpers(t *testing.T) {
