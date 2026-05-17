@@ -6,6 +6,13 @@ func telemetryRuntimeContext(settings *TelemetrySettings, contextValue interface
 	return filterIncludedContext(contextValue, settingsIncludeRuntime(settings))
 }
 
+func telemetryRuntimeContextWithSensitivity(settings *TelemetrySettings, contextValue interface{}, sensitive bool) map[string]interface{} {
+	if sensitive {
+		return map[string]interface{}{}
+	}
+	return telemetryRuntimeContext(settings, contextValue)
+}
+
 func telemetryToolsContext(settings *TelemetrySettings, toolsContext map[string]interface{}) map[string]interface{} {
 	if settings == nil || len(settings.IncludeToolsContext) == 0 || len(toolsContext) == 0 {
 		return map[string]interface{}{}

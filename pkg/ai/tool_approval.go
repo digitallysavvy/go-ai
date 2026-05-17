@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type ToolApprovalStatus = types.ToolApprovalStatus
@@ -65,7 +67,8 @@ func resolveToolApproval(
 	runtimeCtx interface{},
 	toolsCtx map[string]interface{},
 	toolApproval interface{},
-) types.ToolApprovalResult {
+) (types.ToolApprovalResult, error) {
+	tool := findToolForCall(call, tools)
 	if toolApproval != nil {
 		switch v := toolApproval.(type) {
 		case types.GenericToolApprovalFunc:
@@ -75,113 +78,129 @@ func resolveToolApproval(
 				ToolsContext:   toolsCtx,
 				RuntimeContext: runtimeCtx,
 				Messages:       messages,
-			}))
+			})), nil
 		case types.ToolApprovalFunc:
-			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx))
+			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 		case map[string]interface{}:
 			if value, ok := v[call.ToolName]; ok {
-				switch fn := value.(type) {
-				case types.SingleToolApprovalFunc:
-					toolCtx := toolsCtx[call.ToolName]
-					return normalizeToolApprovalResult(fn(call.Arguments, types.SingleToolApprovalOptions{
-						ToolContext:    toolCtx,
-						RuntimeContext: runtimeCtx,
-						ToolCallID:     call.ID,
-						Messages:       messages,
-					}))
-				case types.GenericToolApprovalFunc:
-					return normalizeToolApprovalResult(fn(types.ToolApprovalOptions{
-						ToolCall:       call,
-						Tools:          tools,
-						ToolsContext:   toolsCtx,
-						RuntimeContext: runtimeCtx,
-						Messages:       messages,
-					}))
-				case types.ToolApprovalFunc:
-					return normalizeToolApprovalResult(fn(call, tools, messages, runtimeCtx, toolsCtx))
-				case types.ToolApprovalStatus:
-					return normalizeToolApprovalResult(fn)
-				case string:
-					return normalizeToolApprovalResult(types.ToolApprovalStatus(fn))
-				}
+				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		case map[string]types.ToolApprovalValue:
 			if value, ok := v[call.ToolName]; ok {
-				switch x := value.(type) {
-				case types.SingleToolApprovalFunc:
-					toolCtx := toolsCtx[call.ToolName]
-					return normalizeToolApprovalResult(x(call.Arguments, types.SingleToolApprovalOptions{
-						ToolContext:    toolCtx,
-						RuntimeContext: runtimeCtx,
-						ToolCallID:     call.ID,
-						Messages:       messages,
-					}))
-				case types.GenericToolApprovalFunc:
-					return normalizeToolApprovalResult(x(types.ToolApprovalOptions{
-						ToolCall:       call,
-						Tools:          tools,
-						ToolsContext:   toolsCtx,
-						RuntimeContext: runtimeCtx,
-						Messages:       messages,
-					}))
-				case types.ToolApprovalFunc:
-					return normalizeToolApprovalResult(x(call, tools, messages, runtimeCtx, toolsCtx))
-				case types.ToolApprovalStatus:
-					return normalizeToolApprovalResult(x)
-				case string:
-					return normalizeToolApprovalResult(types.ToolApprovalStatus(x))
-				}
+				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		}
 	}
 
-	var tool *types.Tool
-	for i := range tools {
-		if tools[i].Name == call.ToolName {
-			tool = &tools[i]
-			break
-		}
-	}
 	if tool == nil {
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	}
 
-	switch v := tool.NeedsApproval.(type) {
+	setting := tool.ToolApproval
+	if setting == nil {
+		setting = tool.NeedsApproval
+	}
+	switch v := setting.(type) {
 	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	case bool:
 		if v {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
 		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	case types.ToolNeedsApprovalFunc:
+		toolCtx, err := validateToolContextFor(tool, call.ToolName, toolsCtx[tool.Name])
+		if err != nil {
+			return types.ToolApprovalResult{}, err
+		}
+		if v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolCtx,
+		}) {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	case types.NeedsApprovalFunc:
-		ctxValue := toolsCtx[tool.Name]
-		if tool.ContextSchema != nil && ctxValue != nil {
-			if err := tool.ContextSchema.Validator().Validate(ctxValue); err != nil {
-				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: strPtr(err.Error())}
-			}
+		if _, err := validateToolContextFor(tool, call.ToolName, toolsCtx[tool.Name]); err != nil {
+			return types.ToolApprovalResult{}, err
 		}
 		if v(ctx, call.Arguments) {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
 		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	case types.ToolApprovalStatus:
-		return normalizeToolApprovalStatus(v)
+		return normalizeToolApprovalStatus(v), nil
 	case string:
-		return normalizeToolApprovalStatus(types.ToolApprovalStatus(v))
+		return normalizeToolApprovalStatus(types.ToolApprovalStatus(v)), nil
 	}
 
-	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+}
+
+func findToolForCall(call types.ToolCall, tools []types.Tool) *types.Tool {
+	for i := range tools {
+		if tools[i].Name == call.ToolName {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func normalizePerToolApprovalValue(
+	call types.ToolCall,
+	tool *types.Tool,
+	tools []types.Tool,
+	messages []types.Message,
+	value interface{},
+	runtimeCtx interface{},
+	toolsCtx map[string]interface{},
+) (types.ToolApprovalResult, error) {
+	switch fn := value.(type) {
+	case types.SingleToolApprovalFunc:
+		toolCtx, err := validateToolContextFor(tool, call.ToolName, toolsCtx[call.ToolName])
+		if err != nil {
+			return types.ToolApprovalResult{}, err
+		}
+		return normalizeToolApprovalResult(fn(call.Arguments, types.SingleToolApprovalOptions{
+			ToolContext:    toolCtx,
+			RuntimeContext: runtimeCtx,
+			ToolCallID:     call.ID,
+			Messages:       messages,
+		})), nil
+	case types.GenericToolApprovalFunc:
+		return normalizeToolApprovalResult(fn(types.ToolApprovalOptions{
+			ToolCall:       call,
+			Tools:          tools,
+			ToolsContext:   toolsCtx,
+			RuntimeContext: runtimeCtx,
+			Messages:       messages,
+		})), nil
+	case types.ToolApprovalFunc:
+		return normalizeToolApprovalResult(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
+	case types.ToolApprovalStatus:
+		return normalizeToolApprovalResult(fn), nil
+	case string:
+		return normalizeToolApprovalResult(types.ToolApprovalStatus(fn)), nil
+	default:
+		return normalizeToolApprovalResult(value), nil
+	}
 }
 
 func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
 	if tool == nil || tool.ContextSchema == nil {
 		return ctxValue, nil
 	}
-	if err := tool.ContextSchema.Validator().Validate(ctxValue); err != nil {
-		return nil, fmt.Errorf("invalid tool context for %s: %w", toolName, err)
+	normalized := schema.ApplyDefaults(ctxValue, tool.ContextSchema)
+	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
+		return nil, providererrors.NewValidationErrorWithContext(
+			normalized,
+			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
+			err,
+			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
+		)
 	}
-	return ctxValue, nil
+	return normalized, nil
 }
 
 func strPtr(s string) *string {

@@ -127,6 +127,9 @@ type StreamTextOptions struct {
 	// It is passed as-is to all structured event callbacks.
 	RuntimeContext interface{}
 
+	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
+	SensitiveRuntimeContext bool
+
 	// ToolsContext is the per-tool context map passed to approval and execution hooks.
 	ToolsContext map[string]interface{}
 
@@ -302,6 +305,7 @@ type StreamTextResult struct {
 	cbModelID             string
 	cbExperimentalCtx     interface{}
 	cbRuntimeCtx          interface{}
+	cbSensitiveRuntimeCtx bool
 	cbToolsCtx            map[string]interface{}
 	cbInclude             IncludeOptions
 	cbSteps               []types.StepResult
@@ -355,7 +359,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Settings:       telemetrySettings,
 		Prompt:         telPrompt,
 		System:         telSystem,
-		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
@@ -469,6 +473,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 			stepSandbox = prepared.ExperimentalSandbox
 		}
 	}
+	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 	opts.ExperimentalSandbox = stepSandbox
 
 	// Emit OnStepStartEvent for the first stream step.
@@ -573,6 +578,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cbModelID:             stepModel.ModelID(),
 		cbExperimentalCtx:     runtimeContext,
 		cbRuntimeCtx:          runtimeContext,
+		cbSensitiveRuntimeCtx: opts.SensitiveRuntimeContext,
 		cbToolsCtx:            toolsContext,
 		cbInclude:             include,
 		cbMessages:            stepMessages,
@@ -584,9 +590,13 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cbStreamOpts: opts,
 	}
 
-	// Start goroutine to process chunks and call callbacks
+	// Start the processing loop when any callback depends on post-stream tool
+	// execution or multi-step continuation.
 	if opts.OnChunk != nil || opts.OnFinish != nil ||
-		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil {
+		opts.OnStepStart != nil ||
+		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
+		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
+		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil {
 		result.processingDone = make(chan struct{})
 		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
 	}
@@ -639,12 +649,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StepNumber:     stepIndex,
 			ModelProvider:  stepProvider,
 			ModelID:        stepModelID,
-			RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
 
+		// Track per-step slices before we accumulate more stream data.
+		stepSourcesStart := len(r.sources)
 		// Track how many files existed before this step so we can slice per-step files.
 		stepFilesStart := len(r.files)
+		stepWarningsStart := len(r.warnings)
 
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends.
@@ -815,6 +828,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			r.err = fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
 			break
 		}
+		stepToolCalls = enrichToolCallMetadata(stepToolCalls, stepTools)
 
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
@@ -928,6 +942,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// use the current snapshot as the step's text.
 		performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
+		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepResult := types.StepResult{
 			CallID:             r.cbCallID,
 			StepNumber:         stepIndex,
@@ -945,7 +960,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RawFinishReason:    stepRawFinishReason,
 			Usage:              stepUsage,
 			Performance:        performance,
-			Sources:            r.sources,
+			Sources:            stepSources,
 			Request: types.StepRequest{
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
@@ -986,7 +1001,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				ToolCalls:      stepToolCalls,
 				Files:          stepFiles,
 				Settings:       r.telemetrySettings,
-				RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 			})
 		}
@@ -1000,10 +1015,44 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
+		stepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
+		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
+		stepResult = allSteps[len(allSteps)-1]
 		r.mu.Lock()
 		r.cbSteps = append([]types.StepResult(nil), allSteps...)
 		r.cbResponseMessages = responseMessagesFromSteps(allSteps)
 		r.mu.Unlock()
+		Notify(ctx, OnStepFinishEvent{
+			CallID:             r.cbCallID,
+			StepNumber:         stepResult.StepNumber,
+			Model:              stepResult.Model,
+			ModelProvider:      stepResult.Model.Provider,
+			ModelID:            stepResult.Model.ModelID,
+			Text:               stepResult.Text,
+			Reasoning:          stepResult.Reasoning,
+			ReasoningText:      stepResult.ReasoningText,
+			ToolCalls:          stepResult.ToolCalls,
+			StaticToolCalls:    stepResult.StaticToolCalls,
+			DynamicToolCalls:   stepResult.DynamicToolCalls,
+			ToolResults:        stepResult.ToolResults,
+			StaticToolResults:  stepResult.StaticToolResults,
+			DynamicToolResults: stepResult.DynamicToolResults,
+			FinishReason:       stepResult.FinishReason,
+			RawFinishReason:    stepResult.RawFinishReason,
+			Usage:              stepResult.Usage,
+			Warnings:           stepWarnings,
+			Sources:            stepResult.Sources,
+			Files:              stepFiles,
+			ProviderMetadata:   stepResult.ProviderMetadata,
+			ResponseHeaders:    stepHeaders,
+			Response: GenerateStepResponse{
+				Headers:  stepHeaders,
+				Messages: stepResult.ResponseMessages,
+			},
+			ExperimentalContext: r.cbExperimentalCtx,
+			RuntimeContext:      r.cbRuntimeCtx,
+			ToolsContext:        r.cbToolsCtx,
+		}, r.cbOnStepFinishEvent)
 
 		if hasUserApproval {
 			break
@@ -1103,12 +1152,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextSandbox = prepared.ExperimentalSandbox
 			}
 		}
+		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		r.cbModel = nextModel
 		r.cbModelProvider = nextModel.Provider()
 		r.cbModelID = nextModel.ModelID()
 		r.cbSystem = nextSystem
 		currentTools = append([]types.Tool(nil), nextTools...)
 		opts.ExperimentalSandbox = nextSandbox
+		Notify(ctx, OnStepStartEvent{
+			CallID:              r.cbCallID,
+			StepNumber:          stepNum,
+			ModelProvider:       nextModel.Provider(),
+			ModelID:             nextModel.ModelID(),
+			System:              nextSystem,
+			Messages:            nextMessages,
+			Tools:               nextTools,
+			ActiveTools:         opts.ActiveTools,
+			Steps:               allSteps,
+			PreviousSteps:       allSteps,
+			ExperimentalContext: r.cbExperimentalCtx,
+			RuntimeContext:      r.cbRuntimeCtx,
+			ToolsContext:        r.cbToolsCtx,
+		}, opts.OnStepStart)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{
 			Messages: nextMessages,
 			System:   nextSystem,
@@ -1214,7 +1279,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Text:           r.text,
 		Files:          streamFiles,
 		Settings:       r.telemetrySettings,
-		RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 
@@ -1245,7 +1310,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 
-	// Emit per-step finish events and use the last step for the single-step path.
+	// Use the last step for the single-step path.
 	lastStep := types.StepResult{
 		CallID:             r.cbCallID,
 		StepNumber:         0,
@@ -1274,38 +1339,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if len(allSteps) > 0 {
 		lastStep = allSteps[len(allSteps)-1]
 	}
-	Notify(ctx, OnStepFinishEvent{
-		CallID:             r.cbCallID,
-		StepNumber:         lastStep.StepNumber,
-		Model:              lastStep.Model,
-		ModelProvider:      lastStep.Model.Provider,
-		ModelID:            lastStep.Model.ModelID,
-		Text:               lastStep.Text,
-		Reasoning:          lastStep.Reasoning,
-		ReasoningText:      lastStep.ReasoningText,
-		ToolCalls:          lastStep.ToolCalls,
-		StaticToolCalls:    lastStep.StaticToolCalls,
-		DynamicToolCalls:   lastStep.DynamicToolCalls,
-		ToolResults:        lastStep.ToolResults,
-		StaticToolResults:  lastStep.StaticToolResults,
-		DynamicToolResults: lastStep.DynamicToolResults,
-		FinishReason:       lastStep.FinishReason,
-		RawFinishReason:    lastStep.RawFinishReason,
-		Usage:              lastStep.Usage,
-		Warnings:           streamWarnings,
-		Sources:            lastStep.Sources,
-		Files:              streamFiles,
-		ProviderMetadata:   lastStep.ProviderMetadata,
-		ResponseHeaders:    r.responseHeaders,
-		Response: GenerateStepResponse{
-			Headers:  r.responseHeaders,
-			Messages: lastStep.ResponseMessages,
-		},
-		ExperimentalContext: r.cbExperimentalCtx,
-		RuntimeContext:      r.cbRuntimeCtx,
-		ToolsContext:        r.cbToolsCtx,
-	}, r.cbOnStepFinishEvent)
-
 	stepsForEvent := allSteps
 	if len(stepsForEvent) == 0 {
 		stepsForEvent = []types.StepResult{lastStep}
@@ -1781,7 +1814,7 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		Text:           r.text,
 		Files:          readAllFiles,
 		Settings:       r.telemetrySettings,
-		RuntimeContext: telemetryRuntimeContext(r.telemetrySettings, r.cbRuntimeCtx),
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 

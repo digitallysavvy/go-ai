@@ -76,4 +76,18 @@ func TestSettingsIncludeRuntimeNilSafe(t *testing.T) {
 	}
 }
 
+func TestTelemetryRuntimeContextWithSensitivity(t *testing.T) {
+	settings := &TelemetrySettings{
+		IncludeRuntimeContext: map[string]bool{"tenant": true},
+	}
+	got := telemetryRuntimeContextWithSensitivity(settings, map[string]interface{}{"tenant": "acme"}, true)
+	if len(got) != 0 {
+		t.Fatalf("sensitive runtime context should be excluded, got %#v", got)
+	}
+	got = telemetryRuntimeContextWithSensitivity(settings, map[string]interface{}{"tenant": "acme"}, false)
+	if got["tenant"] != "acme" {
+		t.Fatalf("runtime context should be present when not sensitive, got %#v", got)
+	}
+}
+
 var _ = telemetry.Bool

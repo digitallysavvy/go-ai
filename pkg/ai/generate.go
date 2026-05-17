@@ -102,6 +102,9 @@ type GenerateTextOptions struct {
 	// This context is passed to tool execution functions, callbacks, and approval hooks.
 	RuntimeContext interface{}
 
+	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
+	SensitiveRuntimeContext bool
+
 	// ToolsContext is the per-tool context map passed to approval and execution hooks.
 	ToolsContext map[string]interface{}
 
@@ -459,7 +462,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Settings:       telemetrySettings,
 		Prompt:         telPrompt,
 		System:         telSystem,
-		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
@@ -542,10 +545,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
 		stepMessages := currentMessages
+		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 		stepToolChoice := opts.ToolChoice
 		stepProviderOptions := opts.ProviderOptions
-		stepSandbox := opts.ExperimentalSandbox
 
 		accumulatedResponseMessages := responseMessagesFromSteps(result.Steps)
 		if opts.PrepareStep != nil {
@@ -600,6 +603,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepSandbox = prepared.ExperimentalSandbox
 			}
 		}
+		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		instructionsForNextStep = stepSystem
 		toolsByName := make(map[string]*types.Tool, len(stepTools))
 		for i := range stepTools {
@@ -684,7 +688,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			StepNumber:     stepIndex,
 			ModelProvider:  stepModel.Provider(),
 			ModelID:        stepModel.ModelID(),
-			RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
 
@@ -813,11 +817,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if refineErr != nil {
 			return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
 		}
-		genResult.ToolCalls = refinedToolCalls
-		stepResult.ToolCalls = refinedToolCalls
-		stepResult.StaticToolCalls = filterStaticToolCalls(refinedToolCalls)
-		stepResult.DynamicToolCalls = filterDynamicToolCalls(refinedToolCalls)
-		result.ToolCalls = append(result.ToolCalls, refinedToolCalls...)
+		genResult.ToolCalls = enrichToolCallMetadata(refinedToolCalls, stepTools)
+		stepResult.ToolCalls = genResult.ToolCalls
+		stepResult.StaticToolCalls = filterStaticToolCalls(genResult.ToolCalls)
+		stepResult.DynamicToolCalls = filterDynamicToolCalls(genResult.ToolCalls)
+		result.ToolCalls = append(result.ToolCalls, genResult.ToolCalls...)
 		result.StaticToolCalls = filterStaticToolCalls(result.ToolCalls)
 		result.DynamicToolCalls = filterDynamicToolCalls(result.ToolCalls)
 
@@ -983,8 +987,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			CallID:             callID,
 			StepNumber:         stepResult.StepNumber,
 			Model:              stepResult.Model,
-			ModelProvider:      opts.Model.Provider(),
-			ModelID:            opts.Model.ModelID(),
+			ModelProvider:      stepResult.Model.Provider,
+			ModelID:            stepResult.Model.ModelID,
 			Text:               stepResult.Text,
 			Reasoning:          stepResult.Reasoning,
 			ReasoningText:      stepResult.ReasoningText,
@@ -1055,7 +1059,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
 				Settings:         telemetrySettings,
-				RuntimeContext:   telemetryRuntimeContext(telemetrySettings, runtimeContext),
+				RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 			})
 		}
@@ -1122,7 +1126,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Text:           result.Text,
 		Files:          result.Files,
 		Settings:       telemetrySettings,
-		RuntimeContext: telemetryRuntimeContext(telemetrySettings, runtimeContext),
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
@@ -1169,8 +1173,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		CallID:             callID,
 		StepNumber:         lastStepNum,
 		Model:              lastModel,
-		ModelProvider:      opts.Model.Provider(),
-		ModelID:            opts.Model.ModelID(),
+		ModelProvider:      lastModel.Provider,
+		ModelID:            lastModel.ModelID,
 		Text:               result.Text,
 		Reasoning:          lastReasoning,
 		ReasoningText:      lastReasoningText,
@@ -1332,7 +1336,18 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolMetadata:     call.ToolMetadata,
 			}
 		} else {
-			approval := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			if approvalErr != nil {
+				results[i] = types.ToolResult{
+					ToolCallID:       call.ID,
+					ToolName:         call.ToolName,
+					Input:            call.Arguments,
+					Error:            approvalErr,
+					ProviderMetadata: providerMetadata,
+					ToolMetadata:     call.ToolMetadata,
+				}
+				continue
+			}
 			switch approval.Status {
 			case types.ToolApprovalStatusDenied:
 				reason := approval.Reason

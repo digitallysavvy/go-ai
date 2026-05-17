@@ -487,8 +487,8 @@ func TestStreamTextPrepareStepModelOverrideUpdatesStepAndFinishMetadata(t *testi
 	}
 	_ = result.Text()
 	steps := result.Steps()
-	if len(finishedStepModels) != 1 || finishedStepModels[0] != "second" {
-		t.Fatalf("finishedStepModels = %#v, want final step model second", finishedStepModels)
+	if len(finishedStepModels) != 2 || finishedStepModels[0] != "first" || finishedStepModels[1] != "second" {
+		t.Fatalf("finishedStepModels = %#v, want first then second step models", finishedStepModels)
 	}
 	if len(steps) != 2 || steps[0].Model.ModelID != "first" || steps[1].Model.ModelID != "second" {
 		t.Fatalf("steps = %#v, want first then second model metadata", steps)
