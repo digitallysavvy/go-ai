@@ -9,6 +9,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
 	"golang.org/x/oauth2"
 )
 
@@ -165,8 +167,8 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: http.MergeHeaders(headers, cfg.Headers),
+		BaseURL:    baseURL,
+		Headers:    http.MergeHeaders(headers, cfg.Headers),
 		HTTPClient: httpClient,
 	})
 
@@ -204,6 +206,46 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	}
 
 	return NewLanguageModel(p, modelID), nil
+}
+
+// AnthropicModel returns a Claude language model routed through Vertex AI's
+// Anthropic publisher endpoint.
+func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider.ModelOptions) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	var opts *anthropicprovider.ModelOptions
+	if len(settings) > 0 {
+		opts = settings[0]
+	}
+	vertexAnthropic := vertexanthropic.NewGoogleVertexAnthropicProvider(vertexanthropic.Options{
+		Project:   p.config.Project,
+		Location:  p.config.Location,
+		BaseURL:   p.config.BaseURL,
+		Headers:   p.config.Headers,
+		AuthToken: p.anthropicAuthToken,
+	})
+	return vertexAnthropic.LanguageModelWithOptions(modelID, opts)
+}
+
+func (p *Provider) anthropicAuthToken(ctx context.Context) (string, error) {
+	if p.config.AuthToken != nil {
+		return p.config.AuthToken(ctx)
+	}
+	if p.config.AccessToken != "" {
+		return p.config.AccessToken, nil
+	}
+	if p.config.TokenSource != nil {
+		token, err := p.config.TokenSource.Token()
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve vertex auth token: %w", err)
+		}
+		if token == nil || token.AccessToken == "" {
+			return "", fmt.Errorf("resolved empty vertex auth token")
+		}
+		return token.AccessToken, nil
+	}
+	return "", fmt.Errorf("access token is required for Google Vertex AI")
 }
 
 // EmbeddingModel returns an embedding model by ID
