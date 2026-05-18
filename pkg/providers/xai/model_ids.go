@@ -7,6 +7,8 @@ package xai
 // Removed model IDs (XAI shut down their APIs — do not re-add):
 //   - "grok-2"              (use grok-3 or later)
 //   - "grok-2-vision-1212"  (use a current multimodal model instead)
+//   - "grok-2-image"        (use grok-imagine-image instead)
+//   - "grok-2-image-1212"   (use grok-imagine-image instead)
 const (
 	// ModelGrokBeta — Grok Beta language model (default)
 	ModelGrokBeta = "grok-beta"
@@ -76,12 +78,6 @@ const (
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.x.ai/docs for the full list.
 const (
-	// ModelGrok2Image — Grok 2 image generation model (latest alias)
-	ModelGrok2Image = "grok-2-image"
-
-	// ModelGrok2Image1212 — Grok 2 image generation model (dated release)
-	ModelGrok2Image1212 = "grok-2-image-1212"
-
 	// ModelGrokImagineImage — Grok Imagine standard image generation model
 	ModelGrokImagineImage = "grok-imagine-image"
 

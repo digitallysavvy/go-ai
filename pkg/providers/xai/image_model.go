@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -28,17 +31,22 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "xai"
+	return "xai.image"
 }
 
 // ModelID returns the model ID
 func (m *ImageModel) ModelID() string {
 	return m.modelID
+}
+
+// MaxImagesPerCall returns the maximum number of images accepted in one request.
+func (m *ImageModel) MaxImagesPerCall() int {
+	return 3
 }
 
 // XAIImageProviderOptions contains provider-specific options for XAI image generation
@@ -86,6 +94,10 @@ type XAIImageItemMetadata struct {
 
 // DoGenerate performs image generation or editing
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	callCtx, cancel := imageCallContext(ctx, opts.AbortSignal)
+	if cancel != nil {
+		defer cancel()
+	}
 	warnings := []types.Warning{}
 
 	// Extract provider options
@@ -106,53 +118,57 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// Build request body
 	body := m.buildRequestBody(opts, provOpts, hasFiles)
+	responseTimestamp := time.Now()
 
 	// Make API request
 	var resp xaiImageResponse
-	if err := m.provider.client.PostJSON(ctx, endpoint, body, &resp); err != nil {
+	httpResp, err := m.provider.client.Do(callCtx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    endpoint,
+		Body:    body,
+		Headers: opts.Headers,
+	})
+	if err != nil {
 		return nil, m.handleError(err)
+	}
+	if httpResp.StatusCode >= 400 {
+		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Body)
+	}
+	if err := json.Unmarshal(httpResp.Body, &resp); err != nil {
+		return nil, providererrors.NewProviderError("xai.image", 0, "",
+			fmt.Sprintf("failed to decode JSON response: %v", err), err)
 	}
 
 	// Check if we have at least one image
 	if len(resp.Data) == 0 {
-		return nil, providererrors.NewProviderError("xai", 0, "",
+		return nil, providererrors.NewProviderError("xai.image", 0, "",
 			"no images in response", nil)
 	}
 
-	imageData := resp.Data[0]
-
-	// Handle b64_json or URL response format.
-	var imageBytes []byte
-	var mimeType string
-	if imageData.B64JSON != "" {
-		decoded, decErr := base64.StdEncoding.DecodeString(imageData.B64JSON)
-		if decErr != nil {
-			return nil, providererrors.NewProviderError("xai", 0, "",
-				fmt.Sprintf("failed to decode b64_json image: %v", decErr), decErr)
-		}
-		imageBytes = decoded
-		mimeType = "image/png"
-	} else if imageData.URL != "" {
-		imageBytes, err = m.downloadImage(ctx, imageData.URL)
-		if err != nil {
-			return nil, providererrors.NewProviderError("xai", 0, "",
-				fmt.Sprintf("failed to download image: %v", err), err)
-		}
-		mimeType = "image/png"
-	} else {
-		return nil, providererrors.NewProviderError("xai", 0, "",
-			"no image data (neither url nor b64_json) in response", nil)
+	images, base64Images, err := m.responseImages(callCtx, resp.Data)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build result with single image
 	result := &types.ImageResult{
-		Image:    imageBytes,
-		MimeType: mimeType,
-		URL:      imageData.URL,
+		Image:    images[0],
+		Images:   images,
+		MimeType: "image/png",
+		URL:      resp.Data[0].URL,
 		Usage: types.ImageUsage{
 			ImageCount: len(resp.Data),
 		},
 		Warnings: warnings,
+		Response: &types.ResponseMetadata{
+			Timestamp: responseTimestamp,
+			ModelID:   m.modelID,
+			Headers:   flattenHeaders(httpResp.Headers),
+		},
+	}
+	if len(base64Images) > 0 {
+		result.Base64Image = base64Images[0]
+		result.Base64Images = base64Images
 	}
 
 	// Always build providerMetadata with per-image array (exposes revisedPrompt).
@@ -169,6 +185,79 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return result, nil
 }
 
+func imageCallContext(ctx context.Context, abortSignal context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if abortSignal == nil {
+		return ctx, nil
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	select {
+	case <-abortSignal.Done():
+		cancel()
+		return callCtx, cancel
+	default:
+	}
+	stop := context.AfterFunc(abortSignal, cancel)
+	return callCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([][]byte, []string, error) {
+	hasAllBase64 := true
+	for _, image := range data {
+		if image.B64JSON == "" {
+			hasAllBase64 = false
+			break
+		}
+	}
+
+	images := make([][]byte, 0, len(data))
+	if hasAllBase64 {
+		base64Images := make([]string, 0, len(data))
+		for _, image := range data {
+			decoded, err := base64.StdEncoding.DecodeString(image.B64JSON)
+			if err != nil {
+				return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
+					fmt.Sprintf("failed to decode b64_json image: %v", err), err)
+			}
+			images = append(images, decoded)
+			base64Images = append(base64Images, image.B64JSON)
+		}
+		return images, base64Images, nil
+	}
+
+	for _, image := range data {
+		if image.URL == "" {
+			return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
+				"no image data (neither url nor b64_json) in response", nil)
+		}
+		imageBytes, err := m.downloadImage(ctx, image.URL)
+		if err != nil {
+			return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
+				fmt.Sprintf("failed to download image: %v", err), err)
+		}
+		images = append(images, imageBytes)
+	}
+	return images, nil, nil
+}
+
+func flattenHeaders(headers http.Header) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	flattened := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) > 0 {
+			flattened[key] = values[0]
+		}
+	}
+	return flattened
+}
+
 // buildRequestBody constructs the API request body
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provOpts *XAIImageProviderOptions, hasFiles bool) map[string]interface{} {
 	body := map[string]interface{}{
@@ -177,12 +266,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 		"response_format": "b64_json", // Always request base64 data directly from the API.
 	}
 
-	// Add N (number of images)
-	n := 1
-	if opts.N != nil && *opts.N > 0 {
-		n = *opts.N
+	if opts.N != nil {
+		body["n"] = *opts.N
 	}
-	body["n"] = n
 
 	// Add aspect ratio (prefer standard option over provider option)
 	if opts.AspectRatio != "" {
@@ -212,16 +298,23 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 		body["user"] = *provOpts.User
 	}
 
-	// Add source images for editing — accepts multiple reference images as an array.
+	// Add source images for editing.
 	if hasFiles {
-		images := make([]map[string]interface{}, 0, len(opts.Files))
-		for _, f := range opts.Files {
-			images = append(images, map[string]interface{}{
-				"url":  m.convertImageFileToDataURI(f),
+		if len(opts.Files) == 1 {
+			body["image"] = map[string]interface{}{
+				"url":  m.convertImageFileToDataURI(opts.Files[0]),
 				"type": "image_url",
-			})
+			}
+		} else {
+			images := make([]map[string]interface{}, 0, len(opts.Files))
+			for _, f := range opts.Files {
+				images = append(images, map[string]interface{}{
+					"url":  m.convertImageFileToDataURI(f),
+					"type": "image_url",
+				})
+			}
+			body["images"] = images
 		}
-		body["images"] = images
 	}
 
 	// mask is not supported by the xAI image API — omitted intentionally.
@@ -251,22 +344,23 @@ func (m *ImageModel) checkUnsupportedOptions(opts *provider.ImageGenerateOptions
 
 	if opts.Size != "" {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "XAI image model does not support the 'size' option. Use 'aspectRatio' instead.",
+			Type:    "unsupported",
+			Feature: "size",
+			Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
 		})
 	}
 
 	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "XAI image model does not support seed",
+			Type:    "unsupported",
+			Feature: "seed",
 		})
 	}
 
 	if opts.Mask != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-option",
-			Message: "XAI image model does not support mask/inpainting.",
+			Type:    "unsupported",
+			Feature: "mask",
 		})
 	}
 
@@ -299,6 +393,16 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
 	}
+	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "2k" {
+		return nil, fmt.Errorf("invalid xai image resolution %q: expected \"1k\" or \"2k\"", *provOpts.Resolution)
+	}
+	if provOpts.Quality != nil {
+		switch *provOpts.Quality {
+		case "low", "medium", "high":
+		default:
+			return nil, fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", or \"high\"", *provOpts.Quality)
+		}
+	}
 
 	return &provOpts, nil
 }
@@ -308,13 +412,13 @@ func (m *ImageModel) handleError(err error) error {
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
 	}
-	return providererrors.NewProviderError("xai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError("xai.image", 0, "", err.Error(), err)
 }
 
 // xaiImageResponse represents the image generation API response
 type xaiImageResponse struct {
-	Data  []xaiImageData  `json:"data"`
-	Usage *xaiImageUsage  `json:"usage,omitempty"`
+	Data  []xaiImageData `json:"data"`
+	Usage *xaiImageUsage `json:"usage,omitempty"`
 }
 
 // xaiImageUsage holds top-level usage data from the image generation response.

@@ -148,7 +148,7 @@ resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 
 ## Image Generation
 
-Generate and edit images with the dedicated `grok-image-1` model.
+Generate and edit images with the dedicated `grok-imagine-image` and `grok-imagine-image-pro` models.
 
 ### Features
 
@@ -162,7 +162,7 @@ Generate and edit images with the dedicated `grok-image-1` model.
 ### Text-to-Image
 
 ```go
-model, _ := prov.ImageModel("grok-image-1")
+model, _ := prov.ImageModel("grok-imagine-image")
 
 n := 1
 result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
@@ -704,7 +704,7 @@ if result.Usage.Raw != nil {
 |------|----------|-------------|
 | Language | `grok-beta` | Chat with tools and structured output |
 | Video | `grok-imagine-video` | Video generation and editing |
-| Image | `grok-image-1` | Dedicated image generation and editing |
+| Image | `grok-imagine-image` | Dedicated image generation and editing |
 
 ---
 

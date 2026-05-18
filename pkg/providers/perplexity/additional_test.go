@@ -27,7 +27,7 @@ func TestPerplexityProvider_FactoriesAndUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LanguageModel() error = %v", err)
 	}
-	if modelAny.ModelID() != "llama-3.1-sonar-small-128k-online" {
+	if modelAny.ModelID() != DefaultModelID {
 		t.Fatalf("default model ID = %q", modelAny.ModelID())
 	}
 
@@ -45,6 +45,46 @@ func TestPerplexityProvider_FactoriesAndUnsupported(t *testing.T) {
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")
+	}
+}
+
+func TestPerplexityModelIDConstantsMatchTypeScript(t *testing.T) {
+	want := map[string]PerplexityLanguageModelID{
+		"sonar-deep-research": ModelSonarDeepResearch,
+		"sonar-reasoning-pro": ModelSonarReasoningPro,
+		"sonar-reasoning":     ModelSonarReasoning,
+		"sonar-pro":           ModelSonarPro,
+		"sonar":               ModelSonar,
+	}
+	for wantString, got := range want {
+		if string(got) != wantString {
+			t.Fatalf("model constant = %q, want %q", got, wantString)
+		}
+	}
+}
+
+func TestPerplexityProviderLoadsAPIKeyFromEnvironmentAndNormalizesBaseURL(t *testing.T) {
+	t.Setenv("PERPLEXITY_API_KEY", "env-key")
+
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("request path = %q, want /chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"test","created":1770768220,"model":"sonar","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL + "/"})
+	model := NewLanguageModel(p, "sonar")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if auth != "Bearer env-key" {
+		t.Fatalf("Authorization = %q, want Bearer env-key", auth)
 	}
 }
 
@@ -127,7 +167,7 @@ func TestPerplexityUsageAndStreamCtorHelpers(t *testing.T) {
 		t.Fatalf("expected usage details, got %+v", usage)
 	}
 
-	stream := newPerplexityStream(io.NopCloser(strings.NewReader("")))
+	stream := newPerplexityStream(io.NopCloser(strings.NewReader("")), false, nil)
 	if stream == nil || stream.OpenAICompatStream == nil {
 		t.Fatal("newPerplexityStream() returned nil")
 	}

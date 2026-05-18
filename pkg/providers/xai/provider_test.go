@@ -49,6 +49,29 @@ func TestNewUsesEnvVar(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLMatchesTypeScriptBaseURLShape(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"default", "", "https://api.x.ai"},
+		{"root", "https://api.x.ai", "https://api.x.ai"},
+		{"root trailing slash", "https://api.x.ai/", "https://api.x.ai"},
+		{"typescript v1 base url", "https://api.x.ai/v1", "https://api.x.ai"},
+		{"typescript v1 base url trailing slash", "https://api.x.ai/v1/", "https://api.x.ai"},
+		{"custom v1 base url", "https://example.test/proxy/v1", "https://example.test/proxy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeBaseURL(tt.in); got != tt.want {
+				t.Fatalf("normalizeBaseURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestXAIDefaultUsesResponsesAPI verifies that LanguageModel() returns a Responses API model.
 func TestXAIDefaultUsesResponsesAPI(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
@@ -86,17 +109,15 @@ func TestXAIChatCompletionsLanguageModelIsLegacy(t *testing.T) {
 }
 
 // TestRemovedModelsNotInList verifies that removed model IDs are not present in model_ids.go.
-// grok-2 and grok-2-vision-1212 were shut down by XAI and must not be re-added.
+// Grok 2 IDs were shut down by XAI and must not be re-added.
 func TestRemovedModelsNotInList(t *testing.T) {
-	removed := []string{"grok-2", "grok-2-vision-1212"}
+	removed := []string{"grok-2", "grok-2-vision-1212", "grok-2-image", "grok-2-image-1212"}
 
 	// Collect all defined model ID constant values.
 	defined := []string{
 		ModelGrokBeta,
 		ModelGrok3,
 		ModelGrok3Mini,
-		ModelGrok2Image,
-		ModelGrok2Image1212,
 		ModelGrokImagineImage,
 		ModelGrokImagineImagePro,
 	}

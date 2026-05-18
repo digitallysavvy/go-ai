@@ -201,17 +201,24 @@ func TestProvider_UnsupportedModels(t *testing.T) {
 }
 
 func TestModelConstants(t *testing.T) {
-	expectedModels := map[ByteDanceVideoModelID]string{
-		ModelSeedance15Pro:     "seedance-1-5-pro-251215",
-		ModelSeedance10Pro:     "seedance-1-0-pro-250528",
-		ModelSeedance10ProFast: "seedance-1-0-pro-fast-251015",
-		ModelSeedance10LiteT2V: "seedance-1-0-lite-t2v-250428",
-		ModelSeedance10LiteI2V: "seedance-1-0-lite-i2v-250428",
+	expectedModels := []struct {
+		model    ByteDanceVideoModelID
+		expected string
+	}{
+		{ModelSeedance20Fast, "dreamina-seedance-2-0-fast-260128"},
+		{ModelSeedance20, "dreamina-seedance-2-0-260128"},
+		{ModelDreaminaSeedance20Fast, "dreamina-seedance-2-0-fast-260128"},
+		{ModelDreaminaSeedance20, "dreamina-seedance-2-0-260128"},
+		{ModelSeedance15Pro, "seedance-1-5-pro-251215"},
+		{ModelSeedance10Pro, "seedance-1-0-pro-250528"},
+		{ModelSeedance10ProFast, "seedance-1-0-pro-fast-251015"},
+		{ModelSeedance10LiteT2V, "seedance-1-0-lite-t2v-250428"},
+		{ModelSeedance10LiteI2V, "seedance-1-0-lite-i2v-250428"},
 	}
 
-	for model, expected := range expectedModels {
-		if string(model) != expected {
-			t.Errorf("model constant %v: expected %s, got %s", model, expected, string(model))
+	for _, tt := range expectedModels {
+		if string(tt.model) != tt.expected {
+			t.Errorf("model constant %v: expected %s, got %s", tt.model, tt.expected, string(tt.model))
 		}
 	}
 }

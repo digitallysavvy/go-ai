@@ -1,5 +1,41 @@
 package xai
 
+import (
+	"encoding/json"
+	"fmt"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+func newXAIProviderError(provider string, statusCode int, body []byte) *providererrors.ProviderError {
+	var parsed struct {
+		Error struct {
+			Message string      `json:"message"`
+			Type    string      `json:"type"`
+			Code    interface{} `json:"code"`
+		} `json:"error"`
+	}
+
+	message := string(body)
+	errorCode := ""
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if parsed.Error.Message != "" {
+			message = parsed.Error.Message
+		}
+		switch code := parsed.Error.Code.(type) {
+		case string:
+			errorCode = code
+		case float64:
+			errorCode = fmt.Sprintf("%.0f", code)
+		}
+		if errorCode == "" {
+			errorCode = parsed.Error.Type
+		}
+	}
+
+	return providererrors.NewProviderError(provider, statusCode, errorCode, message, nil)
+}
+
 // ModerationError is returned by the xAI video model when the API rejects
 // generated content due to content moderation policy.
 type ModerationError struct {

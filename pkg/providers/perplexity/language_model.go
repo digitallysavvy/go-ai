@@ -2,8 +2,13 @@ package perplexity
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -60,14 +65,11 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	var warnings []types.Warning
-	if opts.Reasoning != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "Perplexity does not support reasoning",
-		})
+	warnings := m.checkWarnings(opts)
+	reqBody, err := m.buildRequestBody(opts, false)
+	if err != nil {
+		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, false)
 	var response perplexityResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -80,19 +82,22 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(response)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	result.ResponseMetadata = &types.ResponseMetadata{
+		ID:        response.ID,
+		Timestamp: time.Unix(response.Created, 0),
+		ModelID:   response.Model,
+		Headers:   result.ResponseHeaders,
+	}
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	var warnings []types.Warning
-	if opts.Reasoning != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "Perplexity does not support reasoning",
-		})
+	warnings := m.checkWarnings(opts)
+	reqBody, err := m.buildRequestBody(opts, true)
+	if err != nil {
+		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/chat/completions",
@@ -104,27 +109,16 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	inner := newPerplexityStream(httpResp.Body)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
+	inner := newPerplexityStream(httpResp.Body, opts.IncludeRawChunks, providerutils.ExtractHeaders(httpResp.Header))
+	return newPerplexityStartStream(inner, warnings), nil
 }
 
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, error) {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
 	}
-	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
-	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
-	}
-	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
-		systemMsg := map[string]interface{}{
-			"role":    "system",
-			"content": opts.Prompt.System,
-		}
-		body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+	if stream {
+		body["stream"] = true
 	}
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
@@ -135,7 +129,227 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	return body
+	if opts.TopK != nil {
+		body["top_k"] = *opts.TopK
+	}
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
+	}
+	if opts.PresencePenalty != nil {
+		body["presence_penalty"] = *opts.PresencePenalty
+	}
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		jsonSchema := map[string]interface{}{}
+		if opts.ResponseFormat.Schema != nil {
+			jsonSchema["schema"] = opts.ResponseFormat.Schema
+		}
+		body["response_format"] = map[string]interface{}{
+			"type":        "json_schema",
+			"json_schema": jsonSchema,
+		}
+	}
+	if providerOpts, ok := opts.ProviderOptions["perplexity"].(map[string]interface{}); ok {
+		for k, v := range providerOpts {
+			body[k] = v
+		}
+	}
+	var messages []map[string]interface{}
+	var err error
+	if opts.Prompt.IsMessages() {
+		messages, err = convertToPerplexityMessages(opts.Prompt.Messages)
+	} else if opts.Prompt.IsSimple() {
+		messages, err = convertToPerplexityMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+	}
+	if err != nil {
+		return nil, err
+	}
+	if opts.Prompt.System != "" {
+		systemMsg := map[string]interface{}{
+			"role":    "system",
+			"content": opts.Prompt.System,
+		}
+		messages = append([]map[string]interface{}{systemMsg}, messages...)
+	}
+	if len(messages) > 0 {
+		body["messages"] = messages
+	}
+	return body, nil
+}
+
+func (m *LanguageModel) checkWarnings(opts *provider.GenerateOptions) []types.Warning {
+	var warnings []types.Warning
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if len(opts.StopSequences) > 0 {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoning",
+			Details: "This provider does not support reasoning configuration.",
+		})
+	}
+	return warnings
+}
+
+func convertToPerplexityMessages(messages []types.Message) ([]map[string]interface{}, error) {
+	result := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
+		switch msg.Role {
+		case types.RoleSystem:
+			result = append(result, map[string]interface{}{
+				"role":    "system",
+				"content": contentText(msg.Content),
+			})
+		case types.RoleUser, types.RoleAssistant:
+			content, err := convertPerplexityContent(msg.Content)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, map[string]interface{}{
+				"role":    string(msg.Role),
+				"content": content,
+			})
+		case types.RoleTool:
+			return nil, fmt.Errorf("perplexity: unsupported functionality: tool messages")
+		default:
+			return nil, fmt.Errorf("perplexity: unsupported role %q", msg.Role)
+		}
+	}
+	return result, nil
+}
+
+func convertPerplexityContent(parts []types.ContentPart) (interface{}, error) {
+	hasMultipart := false
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.ImageContent:
+			hasMultipart = true
+		case types.FileContent:
+			mediaType := firstNonEmpty(p.MediaType, p.MimeType, p.FileData.MediaType)
+			if topLevelMediaType(mediaType) == "image" || topLevelMediaType(mediaType) == "application" {
+				hasMultipart = true
+			}
+		}
+	}
+
+	contentParts := make([]map[string]interface{}, 0, len(parts))
+	for i, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			contentParts = append(contentParts, map[string]interface{}{"type": "text", "text": p.Text})
+		case types.ImageContent:
+			url := p.URL
+			mediaType := p.MimeType
+			if mediaType == "" {
+				mediaType = "image/png"
+			}
+			if url == "" {
+				url = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(p.Image))
+			}
+			contentParts = append(contentParts, map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": url}})
+		case types.FileContent:
+			converted, err := convertPerplexityFilePart(p, i)
+			if err != nil {
+				return nil, err
+			}
+			if converted != nil {
+				contentParts = append(contentParts, converted)
+			}
+		}
+	}
+
+	if hasMultipart {
+		return contentParts, nil
+	}
+	var b strings.Builder
+	for _, part := range contentParts {
+		if part["type"] == "text" {
+			if text, ok := part["text"].(string); ok {
+				b.WriteString(text)
+			}
+		}
+	}
+	return b.String(), nil
+}
+
+func convertPerplexityFilePart(file types.FileContent, index int) (map[string]interface{}, error) {
+	normalized, err := prompt.NormalizeFileContent(file)
+	if err != nil {
+		return nil, err
+	}
+	mediaType := firstNonEmpty(normalized.MediaType, normalized.MimeType, normalized.FileData.MediaType)
+	switch normalized.FileData.Type {
+	case types.FileDataTypeReference:
+		return nil, fmt.Errorf("perplexity: unsupported functionality: file parts with provider references")
+	case types.FileDataTypeText:
+		return nil, fmt.Errorf("perplexity: unsupported functionality: text file parts")
+	case types.FileDataTypeURL, types.FileDataTypeData:
+		if mediaType == "application/pdf" {
+			url := normalized.URL
+			if normalized.FileData.Type == types.FileDataTypeData {
+				url = base64.StdEncoding.EncodeToString(normalized.Data)
+			}
+			filename := normalized.Filename
+			if filename == "" {
+				filename = fmt.Sprintf("document-%d.pdf", index)
+			}
+			return map[string]interface{}{
+				"type":      "file_url",
+				"file_url":  map[string]interface{}{"url": url},
+				"file_name": filename,
+			}, nil
+		}
+		if topLevelMediaType(mediaType) == "image" {
+			url := normalized.URL
+			if normalized.FileData.Type == types.FileDataTypeData {
+				fullType := mediaType
+				if fullType == "image" || fullType == "image/*" || fullType == "" {
+					fullType = http.DetectContentType(normalized.Data)
+					if !strings.HasPrefix(fullType, "image/") {
+						fullType = "image/png"
+					}
+				}
+				url = fmt.Sprintf("data:%s;base64,%s", fullType, base64.StdEncoding.EncodeToString(normalized.Data))
+			}
+			return map[string]interface{}{
+				"type":      "image_url",
+				"image_url": map[string]interface{}{"url": url},
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func contentText(parts []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		if text, ok := part.(types.TextContent); ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return b.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func topLevelMediaType(mediaType string) string {
+	if idx := strings.Index(mediaType, "/"); idx >= 0 {
+		return mediaType[:idx]
+	}
+	return mediaType
 }
 
 // PerplexityImage mirrors the image object returned by the Perplexity API.
@@ -185,16 +399,30 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertPerplexityUsage(response.Usage),
+		Usage:        convertPerplexityUsagePtr(response.Usage),
 		RawResponse:  response,
+	}
+	if len(response.Citations) > 0 {
+		result.Content = make([]types.ContentPart, 0, len(response.Citations))
+		for i, u := range response.Citations {
+			result.Content = append(result.Content, types.SourceContent{
+				SourceType: "url",
+				ID:         fmt.Sprintf("perplexity-citation-%d", i),
+				URL:        u,
+			})
+		}
 	}
 
 	// Build providerMetadata.perplexity — always set (matches TS SDK behaviour).
 	meta := PerplexityMetadata{
 		Usage: PerplexityUsageMeta{
-			CitationTokens:   response.Usage.CitationTokens,
-			NumSearchQueries: response.Usage.NumSearchQueries,
+			CitationTokens:   nil,
+			NumSearchQueries: nil,
 		},
+	}
+	if response.Usage != nil {
+		meta.Usage.CitationTokens = response.Usage.CitationTokens
+		meta.Usage.NumSearchQueries = response.Usage.NumSearchQueries
 	}
 
 	// Map images from API wire format to public type.
@@ -206,7 +434,8 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 	}
 
 	// Cost is a nested object in the API response (usage.cost.*).
-	if c := response.Usage.Cost; c != nil {
+	if response.Usage != nil && response.Usage.Cost != nil {
+		c := response.Usage.Cost
 		meta.Cost = &PerplexityCost{
 			InputTokensCost:  c.InputTokensCost,
 			OutputTokensCost: c.OutputTokensCost,
@@ -224,6 +453,13 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
+}
+
+func convertPerplexityUsagePtr(usage *perplexityUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertPerplexityUsage(*usage)
 }
 
 func convertPerplexityUsage(usage perplexityUsage) types.Usage {
@@ -246,18 +482,32 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 		}
 	}
 	var reasoning int64
+	if usage.ReasoningTokens != nil {
+		reasoning = int64(*usage.ReasoningTokens)
+	}
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cached > 0 || textTokens != nil || imageTokens != nil {
-		noCache := p - cached
-		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	noCache := p - cached
+	result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: nil, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	if cached > 0 {
+		result.InputDetails.CacheReadTokens = &cached
 	}
-	if reasoning > 0 {
-		text := c - reasoning
-		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
-	}
+	text := c - reasoning
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 	result.Raw = map[string]interface{}{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens}
+	if usage.CitationTokens != nil {
+		result.Raw["citation_tokens"] = *usage.CitationTokens
+	}
+	if usage.NumSearchQueries != nil {
+		result.Raw["num_search_queries"] = *usage.NumSearchQueries
+	}
+	if usage.ReasoningTokens != nil {
+		result.Raw["reasoning_tokens"] = *usage.ReasoningTokens
+	}
+	if usage.Cost != nil {
+		result.Raw["cost"] = usage.Cost
+	}
 	if usage.PromptTokensDetails != nil {
 		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
 	}
@@ -269,6 +519,7 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 
 type perplexityResponse struct {
 	ID        string               `json:"id"`
+	Created   int64                `json:"created"`
 	Model     string               `json:"model"`
 	Citations []string             `json:"citations,omitempty"`
 	Images    []perplexityRawImage `json:"images,omitempty"`
@@ -280,7 +531,7 @@ type perplexityResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage perplexityUsage `json:"usage"`
+	Usage *perplexityUsage `json:"usage"`
 }
 
 // perplexityRawImage is the wire format of an image returned by the Perplexity API.
@@ -308,6 +559,7 @@ type perplexityUsage struct {
 	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 	// Cost is a nested object in the API response (not flat fields).
 	Cost                *perplexityCostRaw `json:"cost,omitempty"`
+	ReasoningTokens     *int               `json:"reasoning_tokens,omitempty"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`
@@ -323,10 +575,137 @@ type perplexityUsage struct {
 
 type perplexityStream struct {
 	*streaming.OpenAICompatStream
+	usage                   *perplexityUsage
+	providerMetadata        PerplexityMetadata
+	responseHeaders         map[string]string
+	emittedCitations        bool
+	emittedResponseMetadata bool
+	metadataMarshalErr      error
 }
 
-func newPerplexityStream(reader io.ReadCloser) *perplexityStream {
-	return &perplexityStream{
+func newPerplexityStream(reader io.ReadCloser, includeRawChunks bool, responseHeaders map[string]string) *perplexityStream {
+	s := &perplexityStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
+		responseHeaders:    responseHeaders,
 	}
+	s.IncludeRawChunks = includeRawChunks
+	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
+		var peek struct {
+			Citations []string             `json:"citations"`
+			Images    []perplexityRawImage `json:"images"`
+			Usage     *perplexityUsage     `json:"usage"`
+			ID        string               `json:"id"`
+			Created   int64                `json:"created"`
+			Model     string               `json:"model"`
+		}
+		if err := json.Unmarshal(data, &peek); err != nil {
+			return nil
+		}
+
+		if peek.Usage != nil {
+			s.usage = peek.Usage
+			s.providerMetadata.Usage = PerplexityUsageMeta{
+				CitationTokens:   peek.Usage.CitationTokens,
+				NumSearchQueries: peek.Usage.NumSearchQueries,
+			}
+			if c := peek.Usage.Cost; c != nil {
+				s.providerMetadata.Cost = &PerplexityCost{
+					InputTokensCost:  c.InputTokensCost,
+					OutputTokensCost: c.OutputTokensCost,
+					RequestCost:      c.RequestCost,
+					TotalCost:        c.TotalCost,
+				}
+			} else {
+				s.providerMetadata.Cost = nil
+			}
+		}
+
+		if len(peek.Images) > 0 {
+			s.providerMetadata.Images = make([]PerplexityImage, len(peek.Images))
+			for i, img := range peek.Images {
+				s.providerMetadata.Images[i] = PerplexityImage(img)
+			}
+		}
+
+		var chunks []*provider.StreamChunk
+		if !s.emittedResponseMetadata {
+			s.emittedResponseMetadata = true
+			chunks = append(chunks, &provider.StreamChunk{
+				Type: provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: &provider.ResponseMetadata{
+					ID:        peek.ID,
+					Timestamp: time.Unix(peek.Created, 0),
+					ModelID:   peek.Model,
+					Headers:   s.responseHeaders,
+				},
+			})
+		}
+		if !s.emittedCitations && len(peek.Citations) > 0 {
+			s.emittedCitations = true
+			for i, u := range peek.Citations {
+				chunks = append(chunks, &provider.StreamChunk{
+					Type: provider.ChunkTypeSource,
+					SourceContent: &types.SourceContent{
+						SourceType: "url",
+						ID:         fmt.Sprintf("perplexity-citation-%d", i),
+						URL:        u,
+					},
+				})
+			}
+		}
+		return chunks
+	}
+	return s
 }
+
+func (s *perplexityStream) Next() (*provider.StreamChunk, error) {
+	chunk, err := s.OpenAICompatStream.Next()
+	if chunk != nil && chunk.Type == provider.ChunkTypeFinish {
+		if s.usage != nil {
+			usage := convertPerplexityUsage(*s.usage)
+			chunk.Usage = &usage
+		}
+		if s.metadataMarshalErr == nil {
+			raw, marshalErr := json.Marshal(map[string]interface{}{
+				"perplexity": s.providerMetadata,
+			})
+			if marshalErr != nil {
+				s.metadataMarshalErr = marshalErr
+			} else {
+				chunk.ProviderMetadata = raw
+			}
+		}
+	}
+	return chunk, err
+}
+
+func (s *perplexityStream) Err() error {
+	if s.metadataMarshalErr != nil {
+		return s.metadataMarshalErr
+	}
+	return s.OpenAICompatStream.Err()
+}
+
+type perplexityStartStream struct {
+	inner    provider.TextStream
+	warnings []types.Warning
+	started  bool
+}
+
+func newPerplexityStartStream(inner provider.TextStream, warnings []types.Warning) provider.TextStream {
+	return &perplexityStartStream{inner: inner, warnings: warnings}
+}
+
+func (s *perplexityStartStream) Next() (*provider.StreamChunk, error) {
+	if !s.started {
+		s.started = true
+		return &provider.StreamChunk{
+			Type:     provider.ChunkTypeStreamStart,
+			Warnings: s.warnings,
+		}, nil
+	}
+	return s.inner.Next()
+}
+
+func (s *perplexityStartStream) Err() error   { return s.inner.Err() }
+func (s *perplexityStartStream) Close() error { return s.inner.Close() }

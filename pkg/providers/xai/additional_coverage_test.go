@@ -43,8 +43,8 @@ func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImageModel() error = %v", err)
 	}
-	if img.ModelID() != "grok-image-1" {
-		t.Fatalf("default image model ID = %q, want grok-image-1", img.ModelID())
+	if img.ModelID() != ModelGrokImagineImage {
+		t.Fatalf("default image model ID = %q, want %s", img.ModelID(), ModelGrokImagineImage)
 	}
 
 	video, err := p.VideoModel("")
@@ -170,19 +170,19 @@ func TestXAIModelMetadataAndErrorHelpers(t *testing.T) {
 		t.Fatalf("language handleError mismatch: %v", lerr)
 	}
 
-	im := NewImageModel(p, "grok-image-1")
-	if im.SpecificationVersion() != "v3" {
+	im := NewImageModel(p, ModelGrokImagineImage)
+	if im.SpecificationVersion() != "v4" {
 		t.Fatalf("image spec = %q", im.SpecificationVersion())
 	}
-	if im.Provider() != "xai" {
+	if im.Provider() != "xai.image" {
 		t.Fatalf("image provider = %q", im.Provider())
 	}
-	if im.ModelID() != "grok-image-1" {
+	if im.ModelID() != ModelGrokImagineImage {
 		t.Fatalf("image model ID = %q", im.ModelID())
 	}
 	ierr := im.handleError(errors.New("image fail"))
 	var ipErr *providererrors.ProviderError
-	if !errors.As(ierr, &ipErr) || ipErr.Provider != "xai" {
+	if !errors.As(ierr, &ipErr) || ipErr.Provider != "xai.image" {
 		t.Fatalf("image handleError mismatch: %v", ierr)
 	}
 }

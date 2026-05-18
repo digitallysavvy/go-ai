@@ -9,10 +9,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func TestMistralSmallReasoningSupported(t *testing.T) {
-	// Both mistral-small-latest and mistral-small-2603 support reasoning_effort.
+func TestMistralReasoningEffortSupportedModelsMatchTypeScript(t *testing.T) {
+	// Mirrors ai/packages/mistral/src/mistral-chat-language-model.ts.
 	// Mistral maps none → "none"; all non-default levels → "high".
-	for _, modelID := range []string{ModelMistralSmallLatest, ModelMistralSmall2603, ModelMistralMedium35} {
+	for _, modelID := range []string{ModelMistralSmallLatest, ModelMistralSmall2603, ModelMistralMedium3, ModelMistralMedium35} {
 		t.Run(modelID, func(t *testing.T) {
 			prov := New(Config{APIKey: "test-key"})
 			model := NewLanguageModel(prov, modelID)
@@ -45,6 +45,54 @@ func TestMistralSmallReasoningSupported(t *testing.T) {
 						t.Errorf("reasoning_effort: want %q, got %v", tt.want, val)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestMistralProviderReasoningEffortOverridesTopLevel(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ModelMistralMedium3)
+	level := types.ReasoningHigh
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Reasoning: &level,
+		ProviderOptions: map[string]interface{}{
+			"mistral": map[string]interface{}{
+				"reasoningEffort": "none",
+			},
+		},
+	}, false)
+
+	if got := body["reasoning_effort"]; got != "none" {
+		t.Fatalf("reasoning_effort = %v, want provider option override none", got)
+	}
+}
+
+func TestMistralProviderReasoningEffortValidatedLikeTypeScript(t *testing.T) {
+	tests := []struct {
+		name string
+		opts map[string]interface{}
+	}{
+		{
+			name: "invalid enum",
+			opts: map[string]interface{}{"mistral": map[string]interface{}{"reasoningEffort": "medium"}},
+		},
+		{
+			name: "non string",
+			opts: map[string]interface{}{"mistral": map[string]interface{}{"reasoningEffort": true}},
+		},
+		{
+			name: "non object",
+			opts: map[string]interface{}{"mistral": "invalid"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := extractMistralProviderOptions(&provider.GenerateOptions{ProviderOptions: tt.opts})
+			if err == nil {
+				t.Fatal("expected validation error")
 			}
 		})
 	}
@@ -167,13 +215,13 @@ func TestMistralNonReasoningModelWarning(t *testing.T) {
 	}
 	found := false
 	for _, w := range result.Warnings {
-		if w.Type == "unsupported-setting" {
+		if w.Type == "unsupported" && w.Feature == "reasoning" && w.Details == "This model does not support reasoning configuration." {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected unsupported-setting warning, got: %+v", result.Warnings)
+		t.Errorf("expected unsupported reasoning warning, got: %+v", result.Warnings)
 	}
 }
 
@@ -232,5 +280,17 @@ func TestMistralReasoningNilNoWarning(t *testing.T) {
 
 	if len(warnings) != 0 {
 		t.Errorf("expected no warnings when Reasoning is nil, got: %+v", warnings)
+	}
+}
+
+func TestMistralReasoningDefaultNoWarning(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "mistral-large-latest")
+	level := types.ReasoningDefault
+
+	warnings := model.checkReasoningWarnings(&provider.GenerateOptions{Reasoning: &level})
+
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for provider-default reasoning, got: %+v", warnings)
 	}
 }

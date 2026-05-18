@@ -77,13 +77,10 @@ prov, err := bytedance.New(bytedance.Config{
 
 | Constant | Model ID | Description |
 |---|---|---|
+| `ModelSeedance20Fast` | `dreamina-seedance-2-0-fast-260128` | Dreamina Seedance 2.0 Fast |
+| `ModelSeedance20` | `dreamina-seedance-2-0-260128` | Dreamina Seedance 2.0 |
 | `ModelDreaminaSeedance20Fast` | `dreamina-seedance-2-0-fast-260128` | Dreamina Seedance 2.0 Fast |
 | `ModelDreaminaSeedance20` | `dreamina-seedance-2-0-260128` | Dreamina Seedance 2.0 |
-| `ModelSeedance20` | `seedance-2-0` | Seedance 2.0 text-to-video alias |
-| `ModelSeedance20I2V` | `seedance-2-0-i2v` | Seedance 2.0 image-to-video alias |
-| `ModelSeedance20Edit` | `seedance-2-0-edit` | Seedance 2.0 edit alias |
-| `ModelSeedance20Extend` | `seedance-2-0-extend` | Seedance 2.0 extension alias |
-| `ModelSeedance20ReferenceAudio` | `seedance-2-0-reference-audio` | Seedance 2.0 reference-audio alias |
 | `ModelSeedance15Pro` | `seedance-1-5-pro-251215` | Seedance 1.5 Pro (latest) |
 | `ModelSeedance10Pro` | `seedance-1-0-pro-250528` | Seedance 1.0 Pro |
 | `ModelSeedance10ProFast` | `seedance-1-0-pro-fast-251015` | Seedance 1.0 Pro Fast |

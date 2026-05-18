@@ -149,6 +149,19 @@ type ImageResult struct {
 	// Generated image data
 	Image []byte `json:"image"`
 
+	// Generated images. Providers that support multiple images should return
+	// all images here while keeping Image populated with the first image for
+	// compatibility.
+	Images [][]byte `json:"images,omitempty"`
+
+	// Base64Image is the first generated image as a provider-returned base64
+	// string, when the provider returns base64 directly.
+	Base64Image string `json:"base64Image,omitempty"`
+
+	// Base64Images contains all provider-returned base64 image strings, when
+	// the provider returns base64 directly.
+	Base64Images []string `json:"base64Images,omitempty"`
+
 	// MIME type of the image
 	MimeType string `json:"mimeType"`
 
@@ -164,6 +177,9 @@ type ImageResult struct {
 	// ProviderMetadata holds provider-specific metadata (e.g. cost tracking).
 	// Keyed by provider name (e.g. "xai").
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Response contains provider response metadata such as model ID and headers.
+	Response *ResponseMetadata `json:"response,omitempty"`
 }
 
 // SpeechResult contains the result of a speech synthesis operation

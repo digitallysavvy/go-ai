@@ -15,6 +15,14 @@ type FilesAPI struct {
 	provider *Provider
 }
 
+func (f *FilesAPI) SpecificationVersion() string {
+	return "v4"
+}
+
+func (f *FilesAPI) Provider() string {
+	return "xai.files"
+}
+
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
 	content, err := inlineFileBytes(opts.Data)
 	if err != nil {
@@ -24,7 +32,15 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	var teamID string
 	if opts.ProviderOptions != nil {
 		if xopts, ok := opts.ProviderOptions["xai"].(map[string]interface{}); ok {
-			if v, ok := xopts["teamId"].(string); ok {
+			if v, ok := xopts["teamId"]; ok {
+				teamIDValue, ok := v.(string)
+				if !ok {
+					return nil, fmt.Errorf("invalid xai files teamId %T: expected string", v)
+				}
+				teamID = teamIDValue
+			}
+		} else if xopts, ok := opts.ProviderOptions["xai"].(map[string]string); ok {
+			if v, ok := xopts["teamId"]; ok {
 				teamID = v
 			}
 		}
@@ -48,7 +64,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	resp, err := f.provider.client.Do(ctx, internalhttp.Request{
 		Method: "POST",
-		Path:   "/files",
+		Path:   "/v1/files",
 		Body:   &body,
 		Headers: map[string]string{
 			"Content-Type": writer.FormDataContentType(),
@@ -58,7 +74,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("xai files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, newXAIProviderError("xai.files", resp.StatusCode, resp.Body)
 	}
 
 	var out struct {
