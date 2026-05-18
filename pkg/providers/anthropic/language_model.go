@@ -42,7 +42,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "anthropic"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -80,6 +80,9 @@ func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
 // via output_config.format. Matches the TS SDK getModelCapabilities() logic:
 // claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
 func (m *LanguageModel) SupportsStructuredOutput() bool {
+	if m.provider.config.SupportsNativeStructuredOutput != nil {
+		return *m.provider.config.SupportsNativeStructuredOutput
+	}
 	id := m.modelID
 	return strings.Contains(id, "claude-opus-4-7") ||
 		strings.Contains(id, "claude-sonnet-4-6") ||
@@ -92,6 +95,9 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 
 // SupportsImageInput returns whether the model accepts image inputs
 func (m *LanguageModel) SupportsImageInput() bool {
+	if m.provider.config.SupportsImageInput != nil {
+		return *m.provider.config.SupportsImageInput
+	}
 	// Claude 3+ models support vision
 	return m.modelID == "claude-3-opus-20240229" ||
 		m.modelID == "claude-3-sonnet-20240229" ||
@@ -103,6 +109,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
+	reqBody = m.transformRequestBody(reqBody, false)
 
 	// Determine whether this request uses the synthetic json tool for structured output.
 	// Must be computed from the same options used to build the request body.
@@ -119,7 +126,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Make API request, capturing response headers.
 	internalReq := internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v1/messages",
+		Path:    m.messagesPath(false),
 		Body:    reqBody,
 		Headers: reqHeaders,
 	}
@@ -132,6 +139,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response, usesJsonResponseTool, opts.Tools)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	result.Warnings = append(result.Warnings, m.strictToolWarnings(opts)...)
 	if w := m.detectSkillsWarning(opts); w != nil {
 		result.Warnings = append(result.Warnings, *w)
 	}
@@ -142,6 +150,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
 	reqBody := m.buildRequestBody(opts, true)
+	reqBody = m.transformRequestBody(reqBody, true)
 
 	// Prepare headers
 	headers := map[string]string{
@@ -157,7 +166,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v1/messages",
+		Path:    m.messagesPath(true),
 		Body:    reqBody,
 		Headers: headers,
 	})
@@ -168,7 +177,39 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
 	// events and route json tool input_json_delta as text chunks.
 	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return providerutils.WithResponseMetadata(newAnthropicStream(httpResp.Body, usesJsonResponseTool, opts.Tools), httpResp.Header, m.ModelID()), nil
+	return providerutils.WithResponseMetadata(newAnthropicStreamWithWarnings(httpResp.Body, usesJsonResponseTool, opts.Tools, m.strictToolWarnings(opts)), httpResp.Header, m.ModelID()), nil
+}
+
+func (m *LanguageModel) messagesPath(stream bool) string {
+	if m.provider.config.MessagesPath != nil {
+		return m.provider.config.MessagesPath(m.modelID, stream)
+	}
+	return "/v1/messages"
+}
+
+func (m *LanguageModel) transformRequestBody(body map[string]interface{}, stream bool) map[string]interface{} {
+	if m.provider.config.TransformRequestBody != nil {
+		return m.provider.config.TransformRequestBody(body, stream)
+	}
+	return body
+}
+
+func (m *LanguageModel) strictToolWarnings(opts *provider.GenerateOptions) []types.Warning {
+	if m.provider.config.SupportsStrictTools == nil || *m.provider.config.SupportsStrictTools || opts == nil {
+		return nil
+	}
+	var warnings []types.Warning
+	for _, t := range opts.Tools {
+		if !t.Strict {
+			continue
+		}
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "strict",
+			Details: fmt.Sprintf("Tool '%s' has strict: true, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name),
+		})
+	}
+	return warnings
 }
 
 // buildRequestBody builds the Anthropic API request body
@@ -1198,10 +1239,22 @@ func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool, toolsOp
 	if len(toolsOpt) > 0 {
 		tools = toolsOpt[0]
 	}
+	return newAnthropicStreamWithWarnings(reader, usesJsonResponseTool, tools, nil)
+}
+
+func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool bool, tools []types.Tool, warnings []types.Warning) *anthropicStream {
+	var pending []*provider.StreamChunk
+	if len(warnings) > 0 {
+		pending = append(pending, &provider.StreamChunk{
+			Type:     provider.ChunkTypeStreamStart,
+			Warnings: warnings,
+		})
+	}
 	return &anthropicStream{
 		reader:               reader,
 		parser:               streaming.NewSSEParser(reader),
 		contentBlocks:        make(map[int]*streamContentBlock),
+		pending:              pending,
 		serverToolCallNames:  make(map[string]string),
 		usesJsonResponseTool: usesJsonResponseTool,
 		toolNameMap:          anthropicProviderToolNameMap(tools),

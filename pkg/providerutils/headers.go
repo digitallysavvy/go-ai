@@ -23,17 +23,37 @@ func ExtractHeaders(h http.Header) map[string]string {
 }
 
 // responseMetadataStream wraps a TextStream and emits a ChunkTypeResponseMetadata
-// chunk as the very first chunk, then delegates all subsequent calls to the inner
-// stream. This is the standard way providers attach HTTP response headers to a
-// stream without modifying each stream's internal buffer.
+// chunk before provider content. If the inner stream starts with stream-start
+// warnings, that chunk is preserved first to match the TypeScript SDK lifecycle
+// order.
 type responseMetadataStream struct {
-	meta    *provider.StreamChunk
-	emitted bool
-	inner   provider.TextStream
+	meta       *provider.StreamChunk
+	emitted    bool
+	inner      provider.TextStream
+	passFirst  *provider.StreamChunk
+	checkedOne bool
 }
 
 func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
+	if s.passFirst != nil {
+		chunk := s.passFirst
+		s.passFirst = nil
+		return chunk, nil
+	}
 	if !s.emitted {
+		if !s.checkedOne {
+			s.checkedOne = true
+			chunk, err := s.inner.Next()
+			if err != nil {
+				return chunk, err
+			}
+			if chunk != nil && chunk.Type == provider.ChunkTypeStreamStart {
+				s.passFirst = s.meta
+				s.emitted = true
+				return chunk, nil
+			}
+			s.passFirst = chunk
+		}
 		s.emitted = true
 		return s.meta, nil
 	}
@@ -42,8 +62,9 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 func (s *responseMetadataStream) Err() error   { return s.inner.Err() }
 func (s *responseMetadataStream) Close() error { return s.inner.Close() }
 
-// WithResponseMetadata wraps stream so that the first chunk is a
-// ChunkTypeResponseMetadata chunk carrying the given HTTP response headers.
+// WithResponseMetadata wraps stream so that a ChunkTypeResponseMetadata chunk
+// carrying the given HTTP response headers is emitted before provider content.
+// A leading ChunkTypeStreamStart is kept first so warnings preserve TS ordering.
 // Consumers (StreamObject, StreamText) will pick up the real headers and
 // response ID from these headers, mirroring the TS SDK's 'response-metadata'
 // chunk. h may be nil; in that case the wrapped stream is returned unchanged.

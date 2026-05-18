@@ -74,6 +74,40 @@ func TestWithResponseMetadata(t *testing.T) {
 	}
 }
 
+func TestWithResponseMetadataPreservesLeadingStreamStart(t *testing.T) {
+	base := &stubStream{
+		chunks: []*provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeText, Text: "hello"},
+		},
+	}
+	wrapped := WithResponseMetadata(base, http.Header{"X-Test": {"1"}}, "m1")
+
+	first, err := wrapped.Next()
+	if err != nil {
+		t.Fatalf("first Next() error = %v", err)
+	}
+	if first.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %v, want stream-start", first.Type)
+	}
+
+	second, err := wrapped.Next()
+	if err != nil {
+		t.Fatalf("second Next() error = %v", err)
+	}
+	if second.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response metadata", second.Type)
+	}
+
+	third, err := wrapped.Next()
+	if err != nil {
+		t.Fatalf("third Next() error = %v", err)
+	}
+	if third.Type != provider.ChunkTypeText || third.Text != "hello" {
+		t.Fatalf("third chunk = %+v", third)
+	}
+}
+
 func TestWithResponseMetadataNoHeadersReturnsOriginal(t *testing.T) {
 	base := &stubStream{}
 	wrapped := WithResponseMetadata(base, nil, "m1")
