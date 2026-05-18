@@ -34,6 +34,9 @@ type Message struct {
 
 	// Optional name for the message sender
 	Name string `json:"name,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the whole message.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentPart represents a part of message content
@@ -46,6 +49,9 @@ type ContentPart interface {
 // TextContent represents text content in a message
 type TextContent struct {
 	Text string `json:"text"`
+
+	// ProviderOptions holds provider-specific options for the input direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 
 	// ProviderMetadata holds optional raw JSON metadata from the provider.
 	// Used by Google/Vertex providers to carry thoughtSignature for text parts
@@ -86,6 +92,9 @@ type ReasoningContent struct {
 	// ProviderMetadata holds optional raw JSON metadata from the provider.
 	// Used to carry provider-specific fields (e.g. xAI reasoning item ID).
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the input direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -320,9 +329,10 @@ type ToolCallContent struct {
 	// Arguments is the decoded form of Input for idiomatic Go callers.
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 
-	ProviderExecuted bool            `json:"providerExecuted,omitempty"`
-	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
-	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
+	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+	ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 }
 
 func (t ToolCallContent) ContentType() string {
@@ -410,6 +420,9 @@ type ToolResultContent struct {
 	// Structured output (takes precedence over Result)
 	// Use this for rich tool outputs with multiple content blocks
 	Output *ToolResultOutput `json:"output,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the input direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentType implements ContentPart interface

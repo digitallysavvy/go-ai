@@ -119,6 +119,33 @@ func TestDeepSeekProviderOptionsOverrideReasoning(t *testing.T) {
 	}
 }
 
+func TestDeepSeekProviderOptionsThinkingTypesPassThrough(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "deepseek-reasoner")
+
+	for _, thinkingType := range []string{"adaptive", "enabled", "disabled"} {
+		t.Run(thinkingType, func(t *testing.T) {
+			body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+				ProviderOptions: map[string]interface{}{
+					"deepseek": map[string]interface{}{
+						"thinking": map[string]interface{}{"type": thinkingType},
+					},
+				},
+			}, false)
+			if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", warnings)
+			}
+			thinking, ok := body["thinking"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("thinking = %T, want map", body["thinking"])
+			}
+			if thinking["type"] != thinkingType {
+				t.Fatalf("thinking.type = %v, want %q", thinking["type"], thinkingType)
+			}
+		})
+	}
+}
+
 func TestDeepSeekProviderOptionsReasoningEffort(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")
