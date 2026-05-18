@@ -43,6 +43,30 @@ func TestNormalizeFileContentURL(t *testing.T) {
 	}
 }
 
+func TestNormalizeFileContentURLInfersMediaTypeWhenMissing(t *testing.T) {
+	got, err := NormalizeFileContent(types.FileContent{
+		URL: "https://example.com/file.png",
+	})
+	if err != nil {
+		t.Fatalf("NormalizeFileContent() error = %v", err)
+	}
+	if got.FileData.MediaType != "image/png" {
+		t.Fatalf("FileData.MediaType = %q, want image/png", got.FileData.MediaType)
+	}
+}
+
+func TestNormalizeFileContentURLFallsBackOnPrototypeLikeExtension(t *testing.T) {
+	got, err := NormalizeFileContent(types.FileContent{
+		URL: "https://example.com/file.constructor",
+	})
+	if err != nil {
+		t.Fatalf("NormalizeFileContent() error = %v", err)
+	}
+	if got.FileData.MediaType != "application/octet-stream" {
+		t.Fatalf("FileData.MediaType = %q, want application/octet-stream", got.FileData.MediaType)
+	}
+}
+
 func TestNormalizeFileContentDataURL(t *testing.T) {
 	body := base64.StdEncoding.EncodeToString([]byte("hello"))
 	got, err := NormalizeFileContent(types.FileContent{

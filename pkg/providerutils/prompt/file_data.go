@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -469,6 +470,9 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 		}
 		if err := validateRemoteFileURL(data.URL); err != nil {
 			return types.FileData{}, err
+		}
+		if data.MediaType == "" {
+			data.MediaType = fileutil.InferMediaTypeFromURL(data.URL, "application/octet-stream")
 		}
 		if err := validateMediaType(data.MediaType); err != nil {
 			return types.FileData{}, err
