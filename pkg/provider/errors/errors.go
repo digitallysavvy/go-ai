@@ -382,6 +382,49 @@ type DownloadError struct {
 	Cause error
 }
 
+// SSRFError represents a blocked URL due to SSRF protections.
+type SSRFError struct {
+	// URL that was rejected.
+	URL string
+
+	// Reason explains which SSRF rule triggered the block.
+	Reason string
+
+	// Underlying cause, if any.
+	Cause error
+}
+
+// Error implements the error interface.
+func (e *SSRFError) Error() string {
+	if e.Reason != "" {
+		return e.Reason
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("url %s blocked by SSRF protection: %v", e.URL, e.Cause)
+	}
+	return fmt.Sprintf("url %s blocked by SSRF protection", e.URL)
+}
+
+// Unwrap returns the underlying cause.
+func (e *SSRFError) Unwrap() error {
+	return e.Cause
+}
+
+// IsSSRFError checks if an error is an SSRFError.
+func IsSSRFError(err error) bool {
+	var ssrfErr *SSRFError
+	return errors.As(err, &ssrfErr)
+}
+
+// NewSSRFError creates a new SSRF error.
+func NewSSRFError(url, reason string, cause error) *SSRFError {
+	return &SSRFError{
+		URL:    url,
+		Reason: reason,
+		Cause:  cause,
+	}
+}
+
 // Error implements the error interface
 func (e *DownloadError) Error() string {
 	if e.Message != "" {

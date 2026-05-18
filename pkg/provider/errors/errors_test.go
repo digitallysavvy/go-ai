@@ -99,6 +99,32 @@ func TestNewProviderError(t *testing.T) {
 	}
 }
 
+func TestSSRFError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("lookup failed")
+	err := NewSSRFError("http://169.254.169.254/latest", "private network address", cause)
+
+	if err.URL != "http://169.254.169.254/latest" {
+		t.Errorf("expected URL to be set, got %q", err.URL)
+	}
+	if err.Reason != "private network address" {
+		t.Errorf("expected reason to be set, got %q", err.Reason)
+	}
+	if err.Unwrap() != cause {
+		t.Error("expected Unwrap to return cause")
+	}
+	if !IsSSRFError(err) {
+		t.Error("expected IsSSRFError to return true for SSRFError")
+	}
+	if !IsSSRFError(NewDownloadError("download failed", 0, "", "", err)) {
+		t.Error("expected IsSSRFError to find SSRFError through wrapping")
+	}
+	if IsSSRFError(errors.New("regular error")) {
+		t.Error("expected IsSSRFError to return false for regular error")
+	}
+}
+
 func TestValidationError_Error(t *testing.T) {
 	t.Parallel()
 

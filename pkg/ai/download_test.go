@@ -5,8 +5,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestCreateDownloadWithNilOptionsRejectsUnsafeURL(t *testing.T) {
@@ -113,14 +116,60 @@ func TestCreateDownloadLeavesSupportedURLAsNilResult(t *testing.T) {
 	}
 }
 
+func TestCreateDownload_BlocksOpenRedirectChainViaPostRedirectValidation(t *testing.T) {
+	finalURL := "http://169.254.169.254/latest/meta-data"
+	redirect2 := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, finalURL, http.StatusFound)
+	}))
+	defer redirect2.Close()
+	redirect1 := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirect2.URL, http.StatusFound)
+	}))
+	defer redirect1.Close()
+
+	restore := downloadURLValidator
+	downloadURLValidator = func(raw string) error {
+		// Allow our local redirect fixtures as the initial trusted URLs.
+		if raw == redirect1.URL || raw == redirect2.URL {
+			return nil
+		}
+		if strings.Contains(raw, "169.254.169.254") {
+			return providererrors.NewSSRFError(raw, "blocked redirect target: "+raw, nil)
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return err
+		}
+		if parsed.Host == "" {
+			return providererrors.NewSSRFError(raw, "invalid redirect host", nil)
+		}
+		return nil
+	}
+	t.Cleanup(func() { downloadURLValidator = restore })
+
+	download := CreateDownload(nil)
+	_, err := download(context.Background(), []DownloadRequest{{URL: redirect1.URL}})
+	if err == nil {
+		t.Fatal("expected redirect chain to private target to be blocked")
+	}
+	if !strings.Contains(err.Error(), "blocked redirect target") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !providererrors.IsSSRFError(err) {
+		t.Fatalf("expected SSRFError in error chain, got: %T %[1]v", err)
+	}
+}
+
 func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
-	server := httptest.NewUnstartedServer(handler)
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("net.Listen tcp4 error = %v", err)
 	}
-	server.Listener = listener
+	server := &httptest.Server{
+		Listener: listener,
+		Config:   &http.Server{Handler: handler},
+	}
 	server.Start()
 	return server
 }
