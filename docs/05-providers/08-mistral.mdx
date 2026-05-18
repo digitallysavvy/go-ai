@@ -49,6 +49,7 @@ export MISTRAL_API_KEY=...
 |----------|---------|-------------|--------------|----------|
 | mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
 | mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
+| mistral-medium-3 | 128K | Varies | Varies | Balanced quality/latency |
 | mistral-medium-3.5 | 128K | Varies | Varies | Balanced quality/latency |
 | pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
 | codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
@@ -192,9 +193,10 @@ func main() {
 
 ## May 2026 parity updates
 
-### Mistral Medium 3.5
+### Mistral Medium 3 and 3.5
 
-Use `mistral.ModelMistralMedium35` for `mistral-medium-3.5`.
+Use `mistral.ModelMistralMedium3` for `mistral-medium-3` and
+`mistral.ModelMistralMedium35` for `mistral-medium-3.5`.
 
 ```go
 p := mistral.New(mistral.Config{APIKey: os.Getenv("MISTRAL_API_KEY")})

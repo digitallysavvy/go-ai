@@ -35,11 +35,11 @@ func main() {
     }
 
     // Access image data
-    fmt.Printf("Image format: %s\n", result.Image.Format)
-    fmt.Printf("Image size: %d bytes\n", len(result.Image.Data))
+    fmt.Printf("Image MIME type: %s\n", result.MimeType)
+    fmt.Printf("Image size: %d bytes\n", len(result.Image))
 
     // Save image to file
-    err = os.WriteFile("generated.png", result.Image.Data, 0644)
+    err = os.WriteFile("generated.png", result.Image, 0644)
     if err != nil {
         log.Fatal(err)
     }
@@ -52,13 +52,13 @@ You can access the image data in different formats:
 
 ```go
 // As bytes
-imageBytes := result.Image.Data
+imageBytes := result.Image
 
 // As base64 string
-base64String := result.Image.Base64
+base64String := result.Base64Image
 
-// Get image format (png, jpeg, etc.)
-format := result.Image.Format
+// Get image MIME type
+mimeType := result.MimeType
 ```
 
 ## Settings
@@ -111,7 +111,7 @@ if err != nil {
 // Access all images
 for i, image := range result.Images {
     filename := fmt.Sprintf("image-%d.png", i+1)
-    err := os.WriteFile(filename, image.Data, 0644)
+    err := os.WriteFile(filename, image, 0644)
     if err != nil {
         log.Fatal(err)
     }
@@ -270,15 +270,13 @@ if err != nil {
 ### Saving Images in Different Formats
 
 ```go
-func saveImage(image ai.Image, filename string) error {
-    // Determine file extension from image format
-    ext := image.Format
-    if ext == "" {
-        ext = "png" // default
+func saveImage(image []byte, mimeType string, filename string) error {
+    ext := "png"
+    if mimeType == "image/jpeg" {
+        ext = "jpg"
     }
 
-    fullPath := fmt.Sprintf("%s.%s", filename, ext)
-    return os.WriteFile(fullPath, image.Data, 0644)
+    return os.WriteFile(fmt.Sprintf("%s.%s", filename, ext), image, 0644)
 }
 
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
@@ -286,7 +284,7 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Prompt: "Beautiful sunset",
 })
 
-saveImage(result.Image, "sunset")
+saveImage(result.Image, result.MimeType, "sunset")
 ```
 
 ### Generating Image Variations
@@ -294,7 +292,7 @@ saveImage(result.Image, "sunset")
 Generate multiple variations of the same prompt:
 
 ```go
-func generateVariations(ctx context.Context, model ai.ImageModel, prompt string, count int) ([]ai.Image, error) {
+func generateVariations(ctx context.Context, model provider.ImageModel, prompt string, count int) ([][]byte, error) {
     result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
         Model:  model,
         Prompt: prompt,
@@ -310,7 +308,7 @@ func generateVariations(ctx context.Context, model ai.ImageModel, prompt string,
 images, _ := generateVariations(ctx, imageModel, "Abstract art with vibrant colors", 4)
 
 for i, img := range images {
-    os.WriteFile(fmt.Sprintf("variation-%d.png", i+1), img.Data, 0644)
+    os.WriteFile(fmt.Sprintf("variation-%d.png", i+1), img, 0644)
 }
 ```
 
@@ -337,7 +335,7 @@ for i, prompt := range prompts {
     }
 
     filename := fmt.Sprintf("batch-%d.png", i+1)
-    os.WriteFile(filename, result.Image.Data, 0644)
+    os.WriteFile(filename, result.Image, 0644)
     fmt.Printf("Generated %s: %s\n", filename, prompt)
 }
 ```
@@ -345,7 +343,7 @@ for i, prompt := range prompts {
 ### Image Generation with Retry Logic
 
 ```go
-func generateImageWithRetry(ctx context.Context, model ai.ImageModel, prompt string, maxRetries int) (*ai.GenerateImageResult, error) {
+func generateImageWithRetry(ctx context.Context, model provider.ImageModel, prompt string, maxRetries int) (*types.ImageResult, error) {
     var lastErr error
 
     for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -458,7 +456,7 @@ prompts := []string{
     "Mountain landscape with aurora borealis",
 }
 
-models := map[string]ai.ImageModel{
+models := map[string]provider.ImageModel{
     "imagen-4.0":    imagenModel,
     "gemini-flash":  geminiModel,
     "vertex-imagen": vertexModel,
@@ -489,7 +487,7 @@ Several providers offer image generation models:
 
 | Provider | Model | Supported Sizes/Aspect Ratios |
 |----------|-------|------------------------------|
-| **xAI** | `grok-image-1` | Flexible aspect ratios (1:1, 16:9, 9:16, 4:3, etc.) |
+| **xAI** | `grok-imagine-image` | Flexible aspect ratios (1:1, 16:9, 9:16, 4:3, etc.) |
 | **OpenAI** | `gpt-image-1` | 1024x1024, 1536x1024, 1024x1536 |
 | **OpenAI** | `dall-e-3` | 1024x1024, 1792x1024, 1024x1792 |
 | **OpenAI** | `dall-e-2` | 256x256, 512x512, 1024x1024 |
@@ -507,7 +505,7 @@ Several providers offer image generation models:
 ```go
 // XAI (Grok)
 xaiProvider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
-grokModel, _ := xaiProvider.ImageModel("grok-image-1")
+grokModel, _ := xaiProvider.ImageModel("grok-imagine-image")
 
 // OpenAI
 openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
@@ -552,7 +550,7 @@ imageData, _ := os.ReadFile("source.jpg")
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  grokModel,
     Prompt: "Change the sky to vibrant sunset colors",
-    Files: []ai.ImageFile{
+    Files: []provider.ImageFile{
         {
             Type:      "file",
             Data:      imageData,
@@ -573,10 +571,10 @@ maskImage, _ := os.ReadFile("mask.png")
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  grokModel,
     Prompt: "Add a rainbow in the masked area",
-    Files: []ai.ImageFile{
+    Files: []provider.ImageFile{
         {Type: "file", Data: sourceImage, MediaType: "image/jpeg"},
     },
-    Mask: &ai.ImageFile{
+    Mask: &provider.ImageFile{
         Type:      "file",
         Data:      maskImage,
         MediaType: "image/png",
@@ -595,18 +593,19 @@ Generate multiple variations of a source image:
 
 ```go
 sourceImage, _ := os.ReadFile("source.jpg")
+n := 4
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  grokModel,
     Prompt: "Generate creative variations with different styles",
-    N:      4,
-    Files: []ai.ImageFile{
+    N:      &n,
+    Files: []provider.ImageFile{
         {Type: "file", Data: sourceImage, MediaType: "image/jpeg"},
     },
 })
 ```
 
-> **Note:** The XAI provider can generate multiple images, but the SDK's `ImageResult` currently returns only the first image. Check `Usage.ImageCount` for the total number generated.
+The xAI provider returns all generated images in `result.Images`. When xAI returns `b64_json`, the original provider base64 strings are also available in `result.Base64Images`.
 
 ## Best Practices
 

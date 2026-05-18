@@ -77,7 +77,7 @@ func main() {
 
     // Save first image
     if len(result.Images) > 0 {
-        os.WriteFile("output.png", result.Images[0].Data, 0644)
+        os.WriteFile("output.png", result.Images[0], 0644)
     }
 }
 ```

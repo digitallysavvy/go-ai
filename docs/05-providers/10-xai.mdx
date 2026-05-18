@@ -61,8 +61,8 @@ export XAI_API_KEY=xai-...
 
 | Model ID | Description |
 |----------|-------------|
-| `grok-2-image` | Image generation |
-| `grok-2-image-1212` | Stable image generation version |
+| `grok-imagine-image` | Image generation |
+| `grok-imagine-image-pro` | Higher quality image generation |
 
 ### Video models
 
@@ -156,7 +156,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ## Image generation
 
 ```go
-imageModel, _ := provider.ImageModel("grok-2-image")
+imageModel, _ := provider.ImageModel("grok-imagine-image")
 
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
