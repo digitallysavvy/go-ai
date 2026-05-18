@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -760,6 +762,32 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 	_, err = stream.Next()
 	if err != nil {
 		t.Fatalf("unexpected error on finish chunk: %v", err)
+	}
+}
+
+func TestDoStreamToolCallAndFinishSameChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"calc","arguments":"{\"op\":\"add\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk := nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
+	if chunk.ToolCall == nil {
+		t.Fatal("ToolCall is nil")
+	}
+	if chunk.ToolCall.ID != "call_same" {
+		t.Fatalf("ToolCall.ID = %q, want call_same", chunk.ToolCall.ID)
+	}
+	if chunk.ToolCall.Arguments["op"] != "add" {
+		t.Fatalf("argument op = %v, want add", chunk.ToolCall.Arguments["op"])
+	}
+
+	chunk = nextChunkOfType(t, stream, provider.ChunkTypeFinish)
+	if chunk.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %q, want %q", chunk.FinishReason, types.FinishReasonToolCalls)
 	}
 }
 

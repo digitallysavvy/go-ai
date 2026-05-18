@@ -580,21 +580,16 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					s.flushQueue = append(s.flushQueue, &c)
 				}
 			}
+			if choice.FinishReason != nil {
+				s.flushOpenAIToolCalls(*choice.FinishReason)
+			}
 			// No chunk to emit yet — keep accumulating.
 			return s.Next()
 		}
 
 		// Finish chunk — flush all accumulated tool calls first.
 		if choice.FinishReason != nil {
-			// Emit one ChunkTypeToolCall per accumulated entry in index order.
-			for _, chunk := range s.toolCallTracker.Flush() {
-				c := chunk
-				s.flushQueue = append(s.flushQueue, &c)
-			}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: providerutils.MapOpenAIFinishReason(*choice.FinishReason),
-			})
+			s.flushOpenAIToolCalls(*choice.FinishReason)
 			return s.Next()
 		}
 	}
@@ -609,4 +604,16 @@ func (s *openAIStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
+	// Emit one ChunkTypeToolCall per accumulated entry in index order.
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:         provider.ChunkTypeFinish,
+		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+	})
 }

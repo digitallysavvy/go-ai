@@ -167,6 +167,33 @@ data: [DONE]
 	}
 }
 
+func TestOpenAICompatStream_ToolCallAndFinishSameChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"calc","arguments":"{\"op\":\"add\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
+	}
+	if toolCalls[0].ToolCall.Arguments["op"] != "add" {
+		t.Errorf("expected op=add, got %v", toolCalls[0].ToolCall.Arguments["op"])
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
+	}
+	if finishes[0].FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want %q", finishes[0].FinishReason, types.FinishReasonToolCalls)
+	}
+}
+
 // TestOpenAICompatStream_MultipleToolCalls verifies that multiple tool calls
 // (different indices) are all flushed correctly at finish_reason.
 func TestOpenAICompatStream_MultipleToolCalls(t *testing.T) {

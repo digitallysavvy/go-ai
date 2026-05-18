@@ -196,25 +196,15 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				})
 				s.enqueueChunks(chunks)
 			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				s.flushToolCallsAndFinish(*choice.FinishReason)
+			}
 			return s.Next()
 		}
 
 		// Finish event — flush all accumulated tool calls, then emit finish.
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-				}, s.flushQueue...)
-			}
-			for _, chunk := range s.toolCallTracker.Flush() {
-				c := chunk
-				s.flushQueue = append(s.flushQueue, &c)
-			}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: s.finishReasonMapper(*choice.FinishReason),
-			})
+			s.flushToolCallsAndFinish(*choice.FinishReason)
 			return s.Next()
 		}
 	}
@@ -228,6 +218,23 @@ func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
+}
+
+func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
+	if s.isActiveReasoning {
+		s.isActiveReasoning = false
+		s.flushQueue = append([]*provider.StreamChunk{
+			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+		}, s.flushQueue...)
+	}
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:         provider.ChunkTypeFinish,
+		FinishReason: s.finishReasonMapper(finishReason),
+	})
 }
 
 func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[string]interface{} {
