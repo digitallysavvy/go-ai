@@ -3,8 +3,10 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -72,6 +74,101 @@ func TestXAIChatLogprobsOption(t *testing.T) {
 	// top_logprobs should not be set when only logprobs is true.
 	if _, hasTopLogprobs := capturedBody["topLogprobs"]; hasTopLogprobs {
 		t.Error("top_logprobs should not be present when only logprobs=true")
+	}
+}
+
+func TestXAIChatDoStreamIncludesRawChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"chunk-1","object":"chat.completion.chunk","created":1750538300,"model":"grok-3","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chunk-2","object":"chat.completion.chunk","created":1750538301,"model":"grok-3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:           types.Prompt{Text: "hello"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var sawRawBeforeText bool
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeRaw:
+			raw, ok := chunk.Raw.(map[string]interface{})
+			if !ok || raw["id"] != "chunk-1" {
+				t.Fatalf("raw chunk = %#v, want first provider event", chunk.Raw)
+			}
+			sawRawBeforeText = true
+		case provider.ChunkTypeResponseMetadata:
+			if !sawRawBeforeText {
+				t.Fatal("response metadata arrived before raw provider event")
+			}
+		case provider.ChunkTypeText:
+			if !sawRawBeforeText {
+				t.Fatal("text chunk arrived before raw provider event")
+			}
+			if !strings.Contains(chunk.Text, "Hello") {
+				t.Fatalf("text = %q, want Hello", chunk.Text)
+			}
+			return
+		}
+	}
+	t.Fatal("expected text chunk")
+}
+
+func TestXAIChatDoStreamWarningsMatchTypeScript(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"chunk-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chunk-2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	topK := 4
+	model := NewLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		TopK:   &topK,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeStreamStart || len(chunk.Warnings) != 1 {
+		t.Fatalf("first chunk = %#v, want stream-start with one warning", chunk)
+	}
+	if chunk.Warnings[0].Type != "unsupported" || chunk.Warnings[0].Feature != "topK" {
+		t.Fatalf("warning = %#v, want unsupported topK", chunk.Warnings[0])
 	}
 }
 

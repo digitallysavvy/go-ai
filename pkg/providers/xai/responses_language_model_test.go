@@ -39,6 +39,124 @@ func TestXAIResponsesLanguageModelMetadata(t *testing.T) {
 	}
 }
 
+func TestXAIResponsesDoStreamIncludesRawChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:           types.Prompt{Text: "hello"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %v, want stream-start", chunk.Type)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("second chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["type"] != "response.output_text.delta" {
+		t.Fatalf("raw chunk = %#v, want response.output_text.delta", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
+func TestXAIResponsesDoStreamEmitsResponseMetadataLikeTypeScript(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+
+data: {"type":"response.in_progress","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+
+data: [DONE]
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("first chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "resp_1" || chunk.ResponseMetadata.ModelID != "grok-3" {
+		t.Fatalf("response metadata = %#v, want resp_1/grok-3", chunk.ResponseMetadata)
+	}
+	if got := chunk.ResponseMetadata.Timestamp.Unix(); got != 1741269019 {
+		t.Fatalf("timestamp = %d, want 1741269019", got)
+	}
+
+	_, err = stream.Next()
+	if err != io.EOF {
+		t.Fatalf("second Next error = %v, want io.EOF", err)
+	}
+}
+
+func TestXAIResponsesDoStreamWarningsMatchTypeScript(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:        types.Prompt{Text: "hello"},
+		StopSequences: []string{"stop"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeStreamStart || len(chunk.Warnings) != 1 {
+		t.Fatalf("first chunk = %#v, want stream-start with one warning", chunk)
+	}
+	if chunk.Warnings[0].Type != "unsupported" || chunk.Warnings[0].Feature != "stopSequences" {
+		t.Fatalf("warning = %#v, want unsupported stopSequences", chunk.Warnings[0])
+	}
+}
+
 func TestXAIResponsesToolsDoNotEmitAdditionalPropertiesFalse(t *testing.T) {
 	tools := prepareXAIResponsesTools([]types.Tool{
 		{
@@ -825,13 +943,11 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		name          string
 		event         string
 		wantChunkType provider.ChunkType
-		wantErrType   interface{}
 	}{
 		{
 			name:          "error",
 			event:         `{"type":"error","code":"bad_request","message":"boom"}`,
 			wantChunkType: provider.ChunkTypeError,
-			wantErrType:   &XAIStreamError{},
 		},
 		{
 			name:          "incomplete",
@@ -860,16 +976,40 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected stream termination")
 			}
-			switch tt.wantErrType.(type) {
-			case *XAIStreamError:
-				if _, ok := err.(*XAIStreamError); !ok {
-					t.Fatalf("err = %T, want *XAIStreamError", err)
-				}
-			default:
-				if err != io.EOF {
-					t.Fatalf("err = %T %v, want io.EOF", err, err)
-				}
+			if err != io.EOF {
+				t.Fatalf("err = %T %v, want io.EOF", err, err)
+			}
+			if stream.Err() != nil {
+				t.Fatalf("stream.Err() = %v, want nil", stream.Err())
 			}
 		})
+	}
+}
+
+func TestXAIResponsesStreamParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":
+
+data: [DONE]
+
+`)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }

@@ -107,8 +107,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	inner := newAlibabaStream(httpResp.Body)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
+	inner := newAlibabaStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 // buildRequestBody builds the API request body

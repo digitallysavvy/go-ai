@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -93,8 +94,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	inner := newGroqStream(httpResp.Body)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
+	inner := newGroqStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -330,10 +332,11 @@ type groqUsage struct {
 }
 
 type groqStreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Error   json.RawMessage `json:"error,omitempty"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -367,17 +370,31 @@ type groqStream struct {
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
 	pendingUsage      *groqUsage // captured from x_groq.usage
+	includeRawChunks  bool
+	responseHeaders   map[string]string
+	metadataEmitted   bool
 }
 
-func newGroqStream(reader io.ReadCloser) *groqStream {
+func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &groqStream{
-		reader:          reader,
-		parser:          streaming.NewSSEParser(reader),
-		toolCallTracker: streaming.NewStreamingToolCallTracker(),
+		reader:           reader,
+		parser:           streaming.NewSSEParser(reader),
+		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		includeRawChunks: emitRaw,
 	}
 }
 
 func (s *groqStream) Close() error { return s.reader.Close() }
+
+func (s *groqStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+	if len(s.flushQueue) == 0 {
+		return chunk, nil
+	}
+	s.flushQueue = append(s.flushQueue, chunk)
+	return s.Next()
+}
+
 func (s *groqStream) Next() (*provider.StreamChunk, error) {
 	if len(s.flushQueue) > 0 {
 		chunk := s.flushQueue[0]
@@ -396,9 +413,50 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
+	rawQueued := false
+	if s.includeRawChunks {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+			raw = event.Data
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  raw,
+		})
+		rawQueued = true
+	}
 	var chunkData groqStreamChunk
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
+		errorChunk := &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		}
+		if rawQueued {
+			s.flushQueue = append(s.flushQueue, errorChunk)
+			return s.Next()
+		}
+		return errorChunk, nil
+	}
+	if len(chunkData.Error) > 0 {
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: groqStreamErrorText(chunkData.Error),
+		})
+	}
+	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		metadata := &provider.ResponseMetadata{
+			ID:      chunkData.ID,
+			ModelID: chunkData.Model,
+			Headers: s.responseHeaders,
+		}
+		if chunkData.Created != 0 {
+			metadata.Timestamp = time.Unix(chunkData.Created, 0)
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: metadata,
+		})
+		s.metadataEmitted = true
 	}
 	// Capture usage from x_groq envelope (Groq's streaming usage mechanism).
 	if chunkData.XGroq != nil && chunkData.XGroq.Usage != nil {
@@ -417,11 +475,11 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 				}, s.flushQueue...)
 				return s.Next()
 			}
-			return &provider.StreamChunk{
+			return s.emitParsedChunk(&provider.StreamChunk{
 				Type:      provider.ChunkTypeReasoning,
 				Reasoning: choice.Delta.Reasoning,
 				ID:        "reasoning-0",
-			}, nil
+			})
 		}
 
 		if choice.Delta.Content != "" {
@@ -433,7 +491,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 				}, s.flushQueue...)
 				return s.Next()
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content}, nil
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
 		}
 		// Tool call delta — accumulate partial arguments by index.
 		// Finalize only when finish_reason is received, never mid-stream.
@@ -456,6 +514,20 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		}
 	}
 	return s.Next()
+}
+
+func groqStreamErrorText(raw json.RawMessage) string {
+	var withMessage struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+		return withMessage.Message
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return string(raw)
 }
 
 func (s *groqStream) flushGroqToolCalls(finishReason string) {

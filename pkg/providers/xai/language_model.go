@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -89,26 +90,26 @@ func (m *LanguageModel) checkUnsupportedOptions(opts *provider.GenerateOptions) 
 	var warnings []types.Warning
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "XAI does not support topK",
+			Type:    "unsupported",
+			Feature: "topK",
 		})
 	}
 	if opts.FrequencyPenalty != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "XAI does not support frequencyPenalty",
+			Type:    "unsupported",
+			Feature: "frequencyPenalty",
 		})
 	}
 	if opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "XAI does not support presencePenalty",
+			Type:    "unsupported",
+			Feature: "presencePenalty",
 		})
 	}
 	if len(opts.StopSequences) > 0 {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "XAI does not support stopSequences",
+			Type:    "unsupported",
+			Feature: "stopSequences",
 		})
 	}
 	return warnings
@@ -116,6 +117,7 @@ func (m *LanguageModel) checkUnsupportedOptions(opts *provider.GenerateOptions) 
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	warnings := m.checkUnsupportedOptions(opts)
 	reqBody := m.buildRequestBody(opts, true)
 	// Request usage data in the final streaming chunk (matches TypeScript SDK behavior).
 	reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
@@ -130,7 +132,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newXAIStream(httpResp.Body, lastAssistantText(opts)), httpResp.Header, m.ModelID()), nil
+	inner := newXAIStream(httpResp.Body, lastAssistantText(opts))
+	inner.IncludeRawChunks = opts.IncludeRawChunks
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 // XAIChatProviderOptions contains XAI-specific options for the chat completions path.
@@ -761,7 +766,9 @@ type xaiUsage struct {
 
 type xaiStream struct {
 	*streaming.OpenAICompatStream
-	lastAssistantContent string
+	lastAssistantContent    string
+	responseHeaders         map[string]string
+	responseMetadataEmitted bool
 }
 
 // Next overrides OpenAICompatStream.Next to skip content that duplicates
@@ -806,12 +813,30 @@ func newXAIStream(reader io.ReadCloser, lastAssistantContent string) *xaiStream 
 	// before the finish chunk.
 	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
 		var peek struct {
+			ID        string   `json:"id"`
+			Model     string   `json:"model"`
+			Created   int64    `json:"created"`
 			Citations []string `json:"citations"`
 		}
-		if json.Unmarshal(data, &peek) != nil || len(peek.Citations) == 0 {
+		if json.Unmarshal(data, &peek) != nil {
 			return nil
 		}
-		chunks := make([]*provider.StreamChunk, 0, len(peek.Citations))
+		chunks := make([]*provider.StreamChunk, 0, len(peek.Citations)+1)
+		if !s.responseMetadataEmitted && (peek.ID != "" || peek.Model != "" || peek.Created != 0 || len(s.responseHeaders) > 0) {
+			s.responseMetadataEmitted = true
+			meta := &provider.ResponseMetadata{
+				ID:      peek.ID,
+				ModelID: peek.Model,
+				Headers: s.responseHeaders,
+			}
+			if peek.Created != 0 {
+				meta.Timestamp = time.Unix(peek.Created, 0)
+			}
+			chunks = append(chunks, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: meta,
+			})
+		}
 		for i, u := range peek.Citations {
 			chunks = append(chunks, &provider.StreamChunk{
 				Type: provider.ChunkTypeSource,

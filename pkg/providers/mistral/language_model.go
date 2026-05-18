@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -16,6 +17,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
+
+type mistralProviderOptions struct {
+	ReasoningEffort string
+}
 
 // LanguageModel implements the provider.LanguageModel interface for Mistral AI
 type LanguageModel struct {
@@ -65,16 +70,18 @@ func (m *LanguageModel) SupportsImageInput() bool {
 func (m *LanguageModel) supportsReasoningEffort() bool {
 	return m.modelID == ModelMistralSmallLatest ||
 		m.modelID == ModelMistralSmall2603 ||
+		m.modelID == ModelMistralMedium3 ||
 		m.modelID == ModelMistralMedium35
 }
 
 // checkReasoningWarnings returns a warning when reasoning is requested for a model
 // that does not support it.
 func (m *LanguageModel) checkReasoningWarnings(opts *provider.GenerateOptions) []types.Warning {
-	if opts.Reasoning != nil && !m.supportsReasoningEffort() {
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault && !m.supportsReasoningEffort() {
 		return []types.Warning{{
-			Type:    "unsupported-setting",
-			Message: "This model does not support reasoning configuration.",
+			Type:    "unsupported",
+			Feature: "reasoning",
+			Details: "This model does not support reasoning configuration.",
 		}}
 	}
 	return nil
@@ -82,6 +89,9 @@ func (m *LanguageModel) checkReasoningWarnings(opts *provider.GenerateOptions) [
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if _, err := extractMistralProviderOptions(opts); err != nil {
+		return nil, err
+	}
 	warnings := m.checkReasoningWarnings(opts)
 	reqBody := m.buildRequestBody(opts, false)
 	var response mistralResponse
@@ -101,6 +111,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if _, err := extractMistralProviderOptions(opts); err != nil {
+		return nil, err
+	}
 	warnings := m.checkReasoningWarnings(opts)
 	reqBody := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -114,8 +127,37 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	inner := newMistralStream(httpResp.Body)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
+	inner := newMistralStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
+}
+
+func extractMistralProviderOptions(opts *provider.GenerateOptions) (mistralProviderOptions, error) {
+	if opts == nil || opts.ProviderOptions == nil {
+		return mistralProviderOptions{}, nil
+	}
+	raw, ok := opts.ProviderOptions["mistral"]
+	if !ok || raw == nil {
+		return mistralProviderOptions{}, nil
+	}
+	mistralOpts, ok := raw.(map[string]interface{})
+	if !ok {
+		return mistralProviderOptions{}, fmt.Errorf("invalid mistral provider options: expected object")
+	}
+	value, ok := mistralOpts["reasoningEffort"]
+	if !ok || value == nil {
+		return mistralProviderOptions{}, nil
+	}
+	effort, ok := value.(string)
+	if !ok {
+		return mistralProviderOptions{}, fmt.Errorf("invalid mistral reasoningEffort: expected string")
+	}
+	switch effort {
+	case "high", "none":
+		return mistralProviderOptions{ReasoningEffort: effort}, nil
+	default:
+		return mistralProviderOptions{}, fmt.Errorf("invalid mistral reasoningEffort %q: expected \"high\" or \"none\"", effort)
+	}
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -163,17 +205,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 	// Map top-level Reasoning to Mistral reasoning_effort.
-	// Only mistral-small-latest and mistral-small-2603 support reasoning_effort.
+	// Only selected Mistral models support reasoning_effort.
 	// Other models emit a CallWarning in DoGenerate instead.
 	// Mistral maps none → "none"; all non-default levels → "high".
 	// provider-default → omit.
-	if opts.Reasoning != nil && m.supportsReasoningEffort() {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			body["reasoning_effort"] = "none"
-		case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh:
-			body["reasoning_effort"] = "high"
-			// ReasoningDefault: omit
+	if m.supportsReasoningEffort() {
+		if opts.Reasoning != nil {
+			switch *opts.Reasoning {
+			case types.ReasoningNone:
+				body["reasoning_effort"] = "none"
+			case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh:
+				body["reasoning_effort"] = "high"
+				// ReasoningDefault: omit
+			}
+		}
+		provOpts, _ := extractMistralProviderOptions(opts)
+		if provOpts.ReasoningEffort != "" {
+			body["reasoning_effort"] = provOpts.ReasoningEffort
 		}
 	}
 	return body
@@ -386,12 +434,15 @@ type mistralUsage struct {
 // It handles delta.content as either a plain string or an array of content
 // parts (type "text" or "thinking") for thinking-enabled models.
 type mistralStream struct {
-	reader            io.ReadCloser
-	parser            *streaming.SSEParser
-	err               error
-	toolCallAccum     map[int]*mistralStreamAccumToolCall
-	flushQueue        []*provider.StreamChunk
-	isActiveReasoning bool
+	reader                  io.ReadCloser
+	parser                  *streaming.SSEParser
+	err                     error
+	toolCallAccum           map[int]*mistralStreamAccumToolCall
+	flushQueue              []*provider.StreamChunk
+	isActiveReasoning       bool
+	includeRawChunks        bool
+	responseHeaders         map[string]string
+	responseMetadataEmitted bool
 }
 
 type mistralStreamAccumToolCall struct {
@@ -400,11 +451,13 @@ type mistralStreamAccumToolCall struct {
 	arguments string
 }
 
-func newMistralStream(reader io.ReadCloser) *mistralStream {
+func newMistralStream(reader io.ReadCloser, includeRawChunks ...bool) *mistralStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &mistralStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		toolCallAccum: make(map[int]*mistralStreamAccumToolCall),
+		reader:           reader,
+		parser:           streaming.NewSSEParser(reader),
+		toolCallAccum:    make(map[int]*mistralStreamAccumToolCall),
+		includeRawChunks: emitRaw,
 	}
 }
 
@@ -434,10 +487,25 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
+	rawQueued := false
+	if s.includeRawChunks {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+			raw = event.Data
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  raw,
+		})
+		rawQueued = true
+	}
 
 	// Parse using a struct where content is json.RawMessage to handle
 	// both plain-string and content-array formats.
 	var chunkData struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Created int64  `json:"created"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
@@ -455,7 +523,30 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("mistral: failed to parse stream chunk: %w", err)
+		errorChunk := &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err),
+		}
+		if rawQueued {
+			s.flushQueue = append(s.flushQueue, errorChunk)
+			return s.Next()
+		}
+		return errorChunk, nil
+	}
+	if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		s.responseMetadataEmitted = true
+		meta := &provider.ResponseMetadata{
+			ID:      chunkData.ID,
+			ModelID: chunkData.Model,
+			Headers: s.responseHeaders,
+		}
+		if chunkData.Created != 0 {
+			meta.Timestamp = time.Unix(chunkData.Created, 0)
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: meta,
+		})
 	}
 
 	if len(chunkData.Choices) == 0 {
@@ -543,7 +634,12 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 				s.flushMistralToolCalls(choice.FinishReason)
 				return s.Next()
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}, nil
+			textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, textChunk)
+				return s.Next()
+			}
+			return textChunk, nil
 		}
 	}
 

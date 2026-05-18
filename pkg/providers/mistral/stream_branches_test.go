@@ -62,6 +62,49 @@ data: [DONE]
 	}
 }
 
+func TestMistralStreamIncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sse := `data: {"id":"raw-1","object":"chat.completion.chunk","created":1750538600,"model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null,"logprobs":null}]}
+
+data: {"id":"raw-2","object":"chat.completion.chunk","created":1750538601,"model":"mistral-large-latest","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+
+data: [DONE]
+
+`
+	stream := newMistralStream(io.NopCloser(strings.NewReader(sse)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk = %#v, want response metadata", chunk)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "mistral-large-latest" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
 func TestMistralFlushToolCallsReasoningEnd(t *testing.T) {
 	s := &mistralStream{
 		toolCallAccum: map[int]*mistralStreamAccumToolCall{

@@ -58,6 +58,47 @@ data: [DONE]
 	}
 }
 
+func TestGroqStream_IncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newGroqStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "llama-3.1-8b-instant" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
 // TestGroqStream_ToolCallPartialJSONNotFinalized verifies tool calls are accumulated
 // across deltas and only emitted at finish_reason, never based on JSON parsability.
 func TestGroqStream_ToolCallPartialJSONNotFinalized(t *testing.T) {

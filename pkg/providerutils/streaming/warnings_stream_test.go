@@ -64,7 +64,7 @@ func TestWarningsStreamEmitsStartChunk(t *testing.T) {
 	}
 }
 
-func TestWarningsStreamPassThroughWhenNoWarnings(t *testing.T) {
+func TestWarningsStreamEmitsStartChunkWhenNoWarnings(t *testing.T) {
 	inner := &stubTextStream{
 		chunks: []*provider.StreamChunk{
 			{Type: provider.ChunkTypeText, Text: "hello"},
@@ -77,7 +77,14 @@ func TestWarningsStreamPassThroughWhenNoWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Next() error = %v", err)
 	}
-	if first.Type != provider.ChunkTypeText {
-		t.Fatalf("expected passthrough text chunk, got %+v", first)
+	if first.Type != provider.ChunkTypeStreamStart || len(first.Warnings) != 0 {
+		t.Fatalf("expected empty stream-start chunk, got %+v", first)
+	}
+	second, err := ws.Next()
+	if err != nil {
+		t.Fatalf("second Next() error = %v", err)
+	}
+	if second.Type != provider.ChunkTypeText {
+		t.Fatalf("expected text chunk, got %+v", second)
 	}
 }

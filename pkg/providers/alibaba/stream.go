@@ -2,7 +2,9 @@ package alibaba
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -25,14 +27,19 @@ type alibabaStream struct {
 	// Tool calls are enqueued here only when finish_reason is received (flush).
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
+	includeRawChunks  bool
+	responseHeaders   map[string]string
+	metadataEmitted   bool
 }
 
 // newAlibabaStream creates a new Alibaba stream
-func newAlibabaStream(reader io.ReadCloser) *alibabaStream {
+func newAlibabaStream(reader io.ReadCloser, includeRawChunks ...bool) *alibabaStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &alibabaStream{
-		reader:          reader,
-		parser:          streaming.NewSSEParser(reader),
-		toolCallTracker: streaming.NewStreamingToolCallTracker(),
+		reader:           reader,
+		parser:           streaming.NewSSEParser(reader),
+		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		includeRawChunks: emitRaw,
 	}
 }
 
@@ -66,16 +73,58 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
+	rawQueued := false
+	if s.includeRawChunks {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+			raw = event.Data
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  raw,
+		})
+		rawQueued = true
+	}
 
 	// Parse the event data as JSON
 	var chunk alibabaStreamChunk
 	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-		// Skip unparseable chunks (common in SSE streams)
-		return s.Next()
+		errorChunk := &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		}
+		if rawQueued {
+			s.flushQueue = append(s.flushQueue, errorChunk)
+			return s.Next()
+		}
+		return errorChunk, nil
+	}
+	if !s.metadataEmitted && (chunk.ID != "" || chunk.Model != "" || chunk.Created != 0 || len(s.responseHeaders) > 0) {
+		metadata := &provider.ResponseMetadata{
+			ID:      chunk.ID,
+			ModelID: chunk.Model,
+			Headers: s.responseHeaders,
+		}
+		if chunk.Created != 0 {
+			metadata.Timestamp = time.Unix(chunk.Created, 0)
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: metadata,
+		})
+		s.metadataEmitted = true
 	}
 
 	// Process chunk and return appropriate StreamChunk
 	return s.processChunk(&chunk)
+}
+
+func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+	if len(s.flushQueue) == 0 {
+		return chunk, nil
+	}
+	s.flushQueue = append(s.flushQueue, chunk)
+	return s.Next()
 }
 
 // processChunk processes a single Alibaba stream chunk
@@ -125,7 +174,7 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			s.flushQueue = append(extra, reasoningChunk)
 			return s.Next()
 		}
-		return reasoningChunk, nil
+		return s.emitParsedChunk(reasoningChunk)
 	}
 
 	// Handle text content - end reasoning if active
@@ -142,12 +191,21 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			return s.Next()
 		}
 		if choice.FinishReason != "" {
+			textChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeText,
+				Text: delta.Content,
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, textChunk, s.buildFinishChunk())
+				return s.Next()
+			}
 			s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
+			return textChunk, nil
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
 			Text: delta.Content,
-		}, nil
+		})
 	}
 
 	// Handle tool call deltas — only accumulate, never emit mid-stream.

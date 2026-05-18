@@ -410,8 +410,9 @@ type ResponsesStreamEvent struct {
 type ResponseCreatedEvent struct {
 	Type     string `json:"type"` // "response.created"
 	Response struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
+		ID        string `json:"id"`
+		CreatedAt int64  `json:"created_at"`
+		Model     string `json:"model"`
 	} `json:"response"`
 }
 

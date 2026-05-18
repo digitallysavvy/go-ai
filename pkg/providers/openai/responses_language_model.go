@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -84,7 +85,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return newResponsesStream(httpResp.Body), nil
+	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks), nil), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,16 +555,20 @@ type responsesStream struct {
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
 	// Chunks ready to emit without reading more SSE events.
-	flushQueue []*provider.StreamChunk
+	flushQueue       []*provider.StreamChunk
+	includeRawChunks bool
+	responseID       string
 }
 
-func newResponsesStream(r io.ReadCloser) *responsesStream {
+func newResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *responsesStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &responsesStream{
-		reader:         r,
-		parser:         streaming.NewSSEParser(r),
-		toolAccum:      make(map[int]*responsesToolAccum),
-		reasoningAccum: make(map[int]*responsesReasoningAccum),
-		itemTypes:      make(map[int]string),
+		reader:           r,
+		parser:           streaming.NewSSEParser(r),
+		toolAccum:        make(map[int]*responsesToolAccum),
+		reasoningAccum:   make(map[int]*responsesReasoningAccum),
+		itemTypes:        make(map[int]string),
+		includeRawChunks: emitRaw,
 	}
 }
 
@@ -576,6 +581,20 @@ func (s *responsesStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+func (s *responsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+	if chunk == nil {
+		return s.Next()
+	}
+	if len(s.flushQueue) == 0 {
+		return chunk, nil
+	}
+	queue := make([]*provider.StreamChunk, 0, len(s.flushQueue)+1)
+	queue = append(queue, s.flushQueue[0], chunk)
+	queue = append(queue, s.flushQueue[1:]...)
+	s.flushQueue = queue
+	return s.Next()
 }
 
 // Next implements provider.TextStream. It reads SSE events and converts them to
@@ -613,18 +632,47 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
+	if s.includeRawChunks {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+			raw = event.Data
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  raw,
+		})
+	}
 
 	// Parse the "type" discriminator.
 	var peek responses.ResponsesStreamEvent
 	if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
-		return s.Next() // skip malformed events
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		})
 	}
 
 	switch peek.Type {
 
 	case "response.created":
-		// No chunk emitted; the responseId is surfaced via ChunkTypeFinish metadata.
-		return s.Next()
+		var e responses.ResponseCreatedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.Next()
+		}
+		if e.Response.ID != "" {
+			s.responseID = e.Response.ID
+		}
+		metadata := &provider.ResponseMetadata{
+			ID:      e.Response.ID,
+			ModelID: e.Response.Model,
+		}
+		if e.Response.CreatedAt != 0 {
+			metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: metadata,
+		})
 
 	case "response.output_item.added":
 		var e responses.OutputItemAddedEvent
@@ -653,10 +701,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Delta == "" {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
 			Text: e.Delta,
-		}, nil
+		})
 
 	case "response.function_call_arguments.delta":
 		var e responses.FunctionCallArgumentsDeltaEvent
@@ -680,10 +728,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if accum, ok := s.reasoningAccum[e.OutputIndex]; ok {
 			accum.text += e.Delta
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:      provider.ChunkTypeReasoning,
 			Reasoning: e.Delta,
-		}, nil
+		})
 
 	case "response.output_item.done":
 		var e responses.OutputItemDoneEvent
@@ -692,7 +740,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		return s.handleOutputItemDone(e)
 
-	case "response.completed":
+	case "response.completed", "response.incomplete":
 		var e responses.ResponseCompletedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			s.err = io.EOF
@@ -702,17 +750,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
 
 		var meta json.RawMessage
-		if e.Response.ID != "" {
-			meta, _ = json.Marshal(map[string]interface{}{"responseId": e.Response.ID})
+		responseID := s.responseID
+		if responseID == "" {
+			responseID = e.Response.ID
+		}
+		if responseID != "" {
+			meta, _ = json.Marshal(map[string]interface{}{"responseId": responseID})
 		}
 
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	case "response.failed":
 		var e responses.ResponseFailedEvent
@@ -727,8 +779,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		metaMap := map[string]interface{}{}
-		if e.Response.ID != "" {
-			metaMap["responseId"] = e.Response.ID
+		responseID := s.responseID
+		if responseID == "" {
+			responseID = e.Response.ID
+		}
+		if responseID != "" {
+			metaMap["responseId"] = responseID
 		}
 		if e.Response.ServiceTier != "" {
 			metaMap["serviceTier"] = e.Response.ServiceTier
@@ -739,23 +795,22 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	case "error":
 		var e responses.ResponsesStreamErrorEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
 		}
-		s.err = fmt.Errorf("openai.responses stream error: %s (code: %s)", e.Message, e.Code)
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: e.Message,
-		}, nil
+		})
 
 	default:
 		// Unknown event types (web_search_call, code_interpreter_call, etc.) —
@@ -796,7 +851,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			}
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               accum.id,
@@ -804,7 +859,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Arguments:        args,
 				ProviderMetadata: openAIResponsesToolCallMetadata(accum.itemID, accum.namespace),
 			},
-		}, nil
+		})
 
 	case "compaction":
 		var item responses.CompactionEvent
@@ -812,7 +867,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			return s.Next()
 		}
 		chunk := responses.CompactionEventToChunk(item)
-		return chunk, nil
+		return s.emitParsedChunk(chunk)
 
 	case "reasoning":
 		// Reasoning text was already emitted as ChunkTypeReasoning deltas.
@@ -835,11 +890,11 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			meta["itemId"] = item.ID
 		}
 		providerMeta, _ := json.Marshal(map[string]interface{}{"openai": meta})
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
 			ID:               "reasoning-" + item.ID,
 			ProviderMetadata: providerMeta,
-		}, nil
+		})
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
@@ -847,14 +902,14 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:        item.CallID,
 				ToolName:  item.Name,
 				Arguments: map[string]interface{}{"input": item.Input},
 			},
-		}, nil
+		})
 
 	default:
 		delete(s.itemTypes, e.OutputIndex)

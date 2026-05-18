@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -79,6 +80,46 @@ data: [DONE]
 	}
 	if chunks[2].Type != provider.ChunkTypeFinish || chunks[2].FinishReason != types.FinishReasonStop {
 		t.Errorf("chunk[2]: expected finish/stop, got type=%v reason=%v", chunks[2].Type, chunks[2].FinishReason)
+	}
+}
+
+func TestOpenAICompatStream_IncludeRawChunksEmitsRawBeforeParsedChunk(t *testing.T) {
+	sseData := `data: {"id":"raw-1","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"raw-2","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	stream.IncludeRawChunks = true
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeRaw,
+		provider.ChunkTypeText,
+		provider.ChunkTypeRaw,
+		provider.ChunkTypeFinish,
+	}
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("expected %d chunks, got %d", len(wantTypes), len(chunks))
+	}
+	for i, wantType := range wantTypes {
+		if chunks[i].Type != wantType {
+			t.Fatalf("chunk[%d] type = %s, want %s", i, chunks[i].Type, wantType)
+		}
+	}
+	raw, ok := chunks[0].Raw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("raw chunk type = %T, want map[string]interface{}", chunks[0].Raw)
+	}
+	if raw["id"] != "raw-1" {
+		encoded, _ := json.Marshal(raw)
+		t.Fatalf("raw chunk = %s, want id raw-1", encoded)
+	}
+	if chunks[1].Text != "Hello" {
+		t.Fatalf("text chunk = %q, want Hello", chunks[1].Text)
 	}
 }
 
@@ -303,5 +344,65 @@ data: [DONE]
 	google, ok := meta["google"].(map[string]interface{})
 	if !ok || google["thoughtSignature"] != "sig123" {
 		t.Fatalf("unexpected provider metadata: %#v", meta)
+	}
+}
+
+func TestOpenAICompatStream_ParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
+	sseData := `data: {"choices":[
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	stream.IncludeRawChunks = true
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("raw chunk error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("error chunk error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+func TestOpenAICompatStream_ProviderErrorEventEmitsErrorChunkAfterRaw(t *testing.T) {
+	sseData := `data: {"error":{"message":"provider failed"}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	stream.IncludeRawChunks = true
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("raw chunk error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("error chunk error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if chunk.Text != "provider failed" {
+		t.Fatalf("error text = %q, want provider failed", chunk.Text)
 	}
 }

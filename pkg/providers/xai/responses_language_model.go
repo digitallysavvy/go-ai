@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -78,13 +79,7 @@ func (m *ResponsesLanguageModel) SupportsImageInput() bool { return true }
 
 // DoGenerate performs non-streaming generation via POST /v1/responses.
 func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	var warnings []types.Warning
-	if len(opts.StopSequences) > 0 {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "XAI Responses API does not support stopSequences",
-		})
-	}
+	warnings := xaiResponsesWarnings(opts)
 
 	body, err := m.buildRequestBody(opts, false)
 	if err != nil {
@@ -108,6 +103,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	warnings := xaiResponsesWarnings(opts)
 	body, err := m.buildRequestBody(opts, true)
 	if err != nil {
 		return nil, err
@@ -125,7 +121,18 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return newXAIResponsesStream(httpResp.Body), nil
+	return streaming.NewWarningsStream(newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks), warnings), nil
+}
+
+func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
+	var warnings []types.Warning
+	if opts != nil && len(opts.StopSequences) > 0 {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
+	}
+	return warnings
 }
 
 // buildRequestBody constructs the Responses API request body.
@@ -762,16 +769,20 @@ type xaiResponsesStream struct {
 	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
 	// Used to emit the matching reasoning-end in output_item.done, and to avoid
 	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
-	activeReasoning map[string]struct{}
+	activeReasoning         map[string]struct{}
+	includeRawChunks        bool
+	responseMetadataEmitted bool
 }
 
-func newXAIResponsesStream(r io.ReadCloser) *xaiResponsesStream {
+func newXAIResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *xaiResponsesStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &xaiResponsesStream{
-		reader:          r,
-		parser:          streaming.NewSSEParser(r),
-		toolAccum:       make(map[int]*xaiResponsesToolAccum),
-		itemTypes:       make(map[int]string),
-		activeReasoning: make(map[string]struct{}),
+		reader:           r,
+		parser:           streaming.NewSSEParser(r),
+		toolAccum:        make(map[int]*xaiResponsesToolAccum),
+		itemTypes:        make(map[int]string),
+		activeReasoning:  make(map[string]struct{}),
+		includeRawChunks: emitRaw,
 	}
 }
 
@@ -784,6 +795,20 @@ func (s *xaiResponsesStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+func (s *xaiResponsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+	if chunk == nil {
+		return s.Next()
+	}
+	if len(s.flushQueue) == 0 {
+		return chunk, nil
+	}
+	queue := make([]*provider.StreamChunk, 0, len(s.flushQueue)+1)
+	queue = append(queue, s.flushQueue[0], chunk)
+	queue = append(queue, s.flushQueue[1:]...)
+	s.flushQueue = queue
+	return s.Next()
 }
 
 // Next implements provider.TextStream.
@@ -808,15 +833,46 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
+	if s.includeRawChunks {
+		var raw interface{}
+		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+			raw = event.Data
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  raw,
+		})
+	}
 
 	var peek responses.ResponsesStreamEvent
 	if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
-		return s.Next()
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		})
 	}
 
 	switch peek.Type {
-	case "response.created":
-		return s.Next()
+	case "response.created", "response.in_progress":
+		var e responses.ResponseCreatedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.Next()
+		}
+		if s.responseMetadataEmitted {
+			return s.Next()
+		}
+		s.responseMetadataEmitted = true
+		metadata := &provider.ResponseMetadata{
+			ID:      e.Response.ID,
+			ModelID: e.Response.Model,
+		}
+		if e.Response.CreatedAt != 0 {
+			metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: metadata,
+		})
 
 	case "response.output_item.added":
 		var e responses.OutputItemAddedEvent
@@ -840,10 +896,10 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Delta == "" {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
 			Text: e.Delta,
-		}, nil
+		})
 
 	case "response.function_call_arguments.delta":
 		var e responses.FunctionCallArgumentsDeltaEvent
@@ -865,11 +921,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		blockID := "reasoning-" + e.ItemID
 		s.activeReasoning[e.ItemID] = struct{}{}
 		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningStart,
 			ID:               blockID,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	case "response.reasoning_summary_text.delta":
 		var e responses.ReasoningSummaryTextDeltaEvent
@@ -881,12 +937,12 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		blockID := "reasoning-" + e.ItemID
 		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoning,
 			ID:               blockID,
 			Reasoning:        e.Delta,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	// Gap 6: raw reasoning text (not summary) — emitted by some Grok models.
 	// Also emits reasoning-start on first delta if not already started.
@@ -912,18 +968,18 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				Reasoning:        e.Delta,
 				ProviderMetadata: meta,
 			})
-			return &provider.StreamChunk{
+			return s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoningStart,
 				ID:               blockID,
 				ProviderMetadata: meta,
-			}, nil
+			})
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoning,
 			ID:               blockID,
 			Reasoning:        e.Delta,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	// Gap 7: url_citation annotations delivered when a text item is finalised.
 	case "response.output_text.done":
@@ -972,14 +1028,14 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if title == "" {
 				title = e.Annotation.URL
 			}
-			return &provider.StreamChunk{
+			return s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeSource,
 				SourceContent: &types.SourceContent{
 					SourceType: "url",
 					URL:        e.Annotation.URL,
 					Title:      title,
 				},
-			}, nil
+			})
 		}
 		return s.Next()
 
@@ -1002,9 +1058,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var meta json.RawMessage
 		metaMap := map[string]interface{}{}
-		if e.Response.ID != "" {
-			metaMap["responseId"] = e.Response.ID
-		}
 		if e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil {
 			xaiMeta := map[string]interface{}{}
 			if e.Response.Usage.CostInUsdTicks != nil {
@@ -1027,12 +1080,12 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
-		}, nil
+		})
 
 	case "response.incomplete":
 		var e struct {
@@ -1049,11 +1102,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		usage := convertXAIResponsesUsage(e.Response.Usage)
 		finishReason := mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
 			FinishReason: finishReason,
 			Usage:        &usage,
-		}, nil
+		})
 
 	case "response.failed":
 		var e responses.ResponseFailedEvent
@@ -1066,22 +1119,22 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
 		}
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
 			FinishReason: finishReason,
 			Usage:        &usage,
-		}, nil
+		})
 
 	case "error":
 		var e responses.ResponsesStreamErrorEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
 		}
-		s.err = &XAIStreamError{Code: e.Code, Message: e.Message}
-		return &provider.StreamChunk{
+		streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: s.err.Error(),
-		}, nil
+			Text: streamErr.Error(),
+		})
 
 	default:
 		return s.Next()
@@ -1104,14 +1157,14 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if accum.arguments != "" {
 			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:        accum.id,
 				ToolName:  accum.name,
 				Arguments: args,
 			},
-		}, nil
+		})
 
 	case "web_search_call", "x_search_call", "code_interpreter_call",
 		"code_execution_call", "view_image_call", "view_x_video_call":
@@ -1122,14 +1175,14 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.ID,
 				ToolName:         providerToolNameFromType(itemType),
 				ProviderExecuted: true,
 			},
-		}, nil
+		})
 
 	case "file_search_call":
 		delete(s.itemTypes, e.OutputIndex)
@@ -1139,14 +1192,14 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.ID,
 				ToolName:         "xai.file_search",
 				ProviderExecuted: true,
 			},
-		}, nil
+		})
 
 	case "mcp_call":
 		delete(s.itemTypes, e.OutputIndex)
@@ -1157,14 +1210,14 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.ID,
 				ToolName:         item.Name,
 				ProviderExecuted: true,
 			},
-		}, nil
+		})
 
 	// Gap 3: custom_tool_call handled on done (input arrives via custom_tool_call_input.delta).
 	case "custom_tool_call":
@@ -1177,7 +1230,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.ID,
@@ -1185,7 +1238,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 				Arguments:        map[string]interface{}{"input": item.Input},
 				ProviderExecuted: true,
 			},
-		}, nil
+		})
 
 	// Gap 2: forward encrypted_content from reasoning items so callers can
 	// round-trip it in subsequent turns when store=false.
@@ -1225,19 +1278,19 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			})
 			delete(s.activeReasoning, item.ID)
 			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
-			return &provider.StreamChunk{
+			return s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoningStart,
 				ID:               blockID,
 				ProviderMetadata: startMeta,
-			}, nil
+			})
 		}
 
 		delete(s.activeReasoning, item.ID)
-		return &provider.StreamChunk{
+		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
 			ID:               blockID,
 			ProviderMetadata: providerMeta,
-		}, nil
+		})
 
 	default:
 		delete(s.itemTypes, e.OutputIndex)

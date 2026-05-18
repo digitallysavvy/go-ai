@@ -47,20 +47,57 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	// Should have: 2 text chunks + 1 finish
-	require.Len(t, chunks, 3)
+	// Should have: response metadata + 2 text chunks + 1 finish
+	require.Len(t, chunks, 4)
+
+	// Response metadata from first provider event
+	assert.Equal(t, provider.ChunkTypeResponseMetadata, chunks[0].Type)
+	require.NotNil(t, chunks[0].ResponseMetadata)
+	assert.Equal(t, "chatcmpl-1", chunks[0].ResponseMetadata.ID)
+	assert.Equal(t, "qwen-plus", chunks[0].ResponseMetadata.ModelID)
 
 	// First text chunk
-	assert.Equal(t, provider.ChunkTypeText, chunks[0].Type)
-	assert.Equal(t, "Hello", chunks[0].Text)
+	assert.Equal(t, provider.ChunkTypeText, chunks[1].Type)
+	assert.Equal(t, "Hello", chunks[1].Text)
 
 	// Second text chunk
-	assert.Equal(t, provider.ChunkTypeText, chunks[1].Type)
-	assert.Equal(t, " world", chunks[1].Text)
+	assert.Equal(t, provider.ChunkTypeText, chunks[2].Type)
+	assert.Equal(t, " world", chunks[2].Text)
 
 	// Finish chunk
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[2].Type)
-	assert.Equal(t, types.FinishReasonStop, chunks[2].FinishReason)
+	assert.Equal(t, provider.ChunkTypeFinish, chunks[3].Type)
+	assert.Equal(t, types.FinishReasonStop, chunks[3].FinishReason)
+}
+
+func TestAlibabaStream_IncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","object":"chat.completion.chunk","created":1234567890,"model":"qwen-plus","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
+
+data: {"id":"raw-2","object":"chat.completion.chunk","created":1234567891,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newAlibabaStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	require.NoError(t, err)
+	require.Equal(t, provider.ChunkTypeRaw, chunk.Type)
+	raw, ok := chunk.Raw.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "raw-1", raw["id"])
+
+	chunk, err = stream.Next()
+	require.NoError(t, err)
+	assert.Equal(t, provider.ChunkTypeResponseMetadata, chunk.Type)
+	require.NotNil(t, chunk.ResponseMetadata)
+	assert.Equal(t, "raw-1", chunk.ResponseMetadata.ID)
+	assert.Equal(t, "qwen-plus", chunk.ResponseMetadata.ModelID)
+
+	chunk, err = stream.Next()
+	require.NoError(t, err)
+	assert.Equal(t, provider.ChunkTypeText, chunk.Type)
+	assert.Equal(t, "Hello", chunk.Text)
 }
 
 // TestAlibabaStream_ProcessReasoningChunks tests reasoning content (thinking mode)
@@ -275,7 +312,8 @@ data: [DONE]
 	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
 }
 
-// TestAlibabaStream_MalformedJSON tests handling of malformed JSON
+// TestAlibabaStream_MalformedJSON tests malformed JSON is surfaced as an
+// error stream part, matching the TypeScript transform behavior.
 func TestAlibabaStream_MalformedJSON(t *testing.T) {
 	sseData := `data: {malformed json}
 
@@ -301,13 +339,16 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	// Should skip malformed chunk and have: text + finish
-	require.Len(t, chunks, 2)
+	// Should have: error + text + finish
+	require.Len(t, chunks, 3)
 
-	assert.Equal(t, provider.ChunkTypeText, chunks[0].Type)
-	assert.Equal(t, "Hello", chunks[0].Text)
+	assert.Equal(t, provider.ChunkTypeError, chunks[0].Type)
+	assert.Contains(t, chunks[0].Text, "failed to parse stream chunk")
 
-	assert.Equal(t, provider.ChunkTypeFinish, chunks[1].Type)
+	assert.Equal(t, provider.ChunkTypeText, chunks[1].Type)
+	assert.Equal(t, "Hello", chunks[1].Text)
+
+	assert.Equal(t, provider.ChunkTypeFinish, chunks[2].Type)
 }
 
 // TestAlibabaStream_ToolCallPartialJSONNotFinalized verifies that a tool call whose

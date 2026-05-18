@@ -6,16 +6,15 @@ import (
 )
 
 // WarningsStream wraps an inner TextStream and emits a ChunkTypeStreamStart
-// chunk carrying pre-stream warnings as the very first chunk.
-// If warnings is empty, the wrapper is a transparent pass-through.
+// chunk carrying pre-stream warnings as the very first chunk. The TypeScript
+// SDK emits stream-start even when warnings is empty.
 type WarningsStream struct {
 	inner    provider.TextStream
 	warnings []types.Warning
 	started  bool
 }
 
-// NewWarningsStream wraps inner, prepending a stream-start chunk with warnings
-// if len(warnings) > 0. If warnings is empty the wrapper adds no overhead.
+// NewWarningsStream wraps inner, prepending a stream-start chunk with warnings.
 func NewWarningsStream(inner provider.TextStream, warnings []types.Warning) *WarningsStream {
 	return &WarningsStream{inner: inner, warnings: warnings}
 }
@@ -23,12 +22,10 @@ func NewWarningsStream(inner provider.TextStream, warnings []types.Warning) *War
 func (s *WarningsStream) Next() (*provider.StreamChunk, error) {
 	if !s.started {
 		s.started = true
-		if len(s.warnings) > 0 {
-			return &provider.StreamChunk{
-				Type:     provider.ChunkTypeStreamStart,
-				Warnings: s.warnings,
-			}, nil
-		}
+		return &provider.StreamChunk{
+			Type:     provider.ChunkTypeStreamStart,
+			Warnings: s.warnings,
+		}, nil
 	}
 	return s.inner.Next()
 }

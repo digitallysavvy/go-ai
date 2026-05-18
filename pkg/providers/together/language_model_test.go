@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -73,6 +74,49 @@ func TestLanguageModelBuildRequestBodyAndUsageConversion(t *testing.T) {
 	}
 }
 
+func TestTogetherStream_IncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"meta-llama/test","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"meta-llama/test","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newTogetherStream(io.NopCloser(strings.NewReader(sseData)))
+	stream.IncludeRawChunks = true
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "meta-llama/test" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
 func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
@@ -129,16 +173,23 @@ func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first stream chunk error = %v", err)
 	}
+	if chunk.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %v, want stream-start", chunk.Type)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second stream chunk error = %v", err)
+	}
 	if chunk.Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("first chunk type = %v, want response metadata", chunk.Type)
+		t.Fatalf("second chunk type = %v, want response metadata", chunk.Type)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Text != "hello " {
-		t.Fatalf("second stream chunk = %+v err=%v", chunk, err)
+		t.Fatalf("third stream chunk = %+v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Text != "world" {
-		t.Fatalf("third stream chunk = %+v err=%v", chunk, err)
+		t.Fatalf("fourth stream chunk = %+v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonStop {

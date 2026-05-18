@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -317,6 +318,172 @@ func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 		t.Error("expected a finish chunk")
 	} else if finishChunk.FinishReason != types.FinishReasonStop {
 		t.Errorf("FinishReason = %q, want stop", finishChunk.FinishReason)
+	}
+}
+
+func TestResponsesLanguageModel_DoStreamIncludesRawChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp_1","created_at":1702657020,"model":"gpt-4o"}}
+
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+
+data: [DONE]
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "gpt-4o")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:           types.Prompt{Text: "hello"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %v, want stream-start", chunk.Type)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("second chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["type"] != "response.created" {
+		t.Fatalf("raw chunk = %#v, want response.created", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("third chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "resp_1" || chunk.ResponseMetadata.ModelID != "gpt-4o" {
+		t.Fatalf("response metadata = %#v, want response.created metadata", chunk.ResponseMetadata)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("fourth chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("fourth chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok = chunk.Raw.(map[string]interface{})
+	if !ok || raw["type"] != "response.output_text.delta" {
+		t.Fatalf("raw chunk = %#v, want response.output_text.delta", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("fifth chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("fifth chunk = %#v, want text Hello", chunk)
+	}
+}
+
+func TestResponsesLanguageModel_DoStreamParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":
+
+data: [DONE]
+
+`)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+func TestResponsesLanguageModel_DoStreamProviderErrorEventIsChunkOnly(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","code":"bad_request","message":"boom"}
+
+data: [DONE]
+
+`)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError || chunk.Text != "boom" {
+		t.Fatalf("second chunk = %#v, want error boom", chunk)
+	}
+
+	_, err = stream.Next()
+	if err != io.EOF {
+		t.Fatalf("termination error = %v, want io.EOF", err)
+	}
+	if stream.Err() != nil {
+		t.Fatalf("stream.Err() = %v, want nil", stream.Err())
+	}
+}
+
+func TestResponsesLanguageModel_DoStreamIncompleteUsesCreatedResponseID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_created","created_at":1741269019,"model":"gpt-4o"}}
+
+data: {"type":"response.incomplete","response":{"id":"resp_terminal","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":0,"output_tokens":0}}}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("metadata chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata || chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "resp_created" {
+		t.Fatalf("metadata chunk = %#v, want response metadata for resp_created", chunk)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("finish chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish chunk = %#v, want length finish", chunk)
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(chunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("provider metadata unmarshal failed: %v", err)
+	}
+	if meta["responseId"] != "resp_created" {
+		t.Fatalf("provider metadata = %#v, want created response id", meta)
 	}
 }
 

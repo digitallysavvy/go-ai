@@ -30,14 +30,15 @@ type responseMetadataStream struct {
 	meta       *provider.StreamChunk
 	emitted    bool
 	inner      provider.TextStream
-	passFirst  *provider.StreamChunk
+	passQueue  []*provider.StreamChunk
 	checkedOne bool
+	sawStart   bool
 }
 
 func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
-	if s.passFirst != nil {
-		chunk := s.passFirst
-		s.passFirst = nil
+	if len(s.passQueue) > 0 {
+		chunk := s.passQueue[0]
+		s.passQueue = s.passQueue[1:]
 		return chunk, nil
 	}
 	if !s.emitted {
@@ -48,11 +49,22 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 				return chunk, err
 			}
 			if chunk != nil && chunk.Type == provider.ChunkTypeStreamStart {
-				s.passFirst = s.meta
+				s.sawStart = true
+				return chunk, nil
+			}
+			s.passQueue = append(s.passQueue, chunk)
+		}
+		if s.sawStart {
+			chunk, err := s.inner.Next()
+			if err != nil {
+				return chunk, err
+			}
+			if chunk != nil && chunk.Type == provider.ChunkTypeRaw {
+				s.passQueue = append(s.passQueue, s.meta)
 				s.emitted = true
 				return chunk, nil
 			}
-			s.passFirst = chunk
+			s.passQueue = append(s.passQueue, chunk)
 		}
 		s.emitted = true
 		return s.meta, nil

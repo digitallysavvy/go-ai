@@ -24,6 +24,10 @@ type OpenAICompatStream struct {
 	toolCallTracker    *StreamingToolCallTracker
 	flushQueue         []*provider.StreamChunk
 	finishReasonMapper func(string) types.FinishReason
+	pendingEventData   string
+	// IncludeRawChunks emits the raw parsed SSE event before normal processing,
+	// matching providers that expose TypeScript's includeRawChunks behavior.
+	IncludeRawChunks bool
 	// OnExtraDelta is an optional hook called with raw SSE event bytes before
 	// standard delta processing. If it returns (chunk, true), that chunk is
 	// returned immediately. Return (nil, false) to fall through to standard
@@ -94,15 +98,33 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		return nil, s.err
 	}
 
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
+	eventData := s.pendingEventData
+	if eventData != "" {
+		s.pendingEventData = ""
+	} else {
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
 
-	if IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
+		if IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+
+		eventData = event.Data
+		if s.IncludeRawChunks {
+			s.pendingEventData = eventData
+			var raw interface{}
+			if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
+				raw = eventData
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
+			}, nil
+		}
 	}
 
 	// The OpenAI-compatible SSE format sends choices[0].delta for streaming.
@@ -125,30 +147,44 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
+		Error json.RawMessage `json:"error,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
+	if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		}, nil
+	}
+	if len(chunkData.Error) > 0 {
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: rawStreamErrorText(chunkData.Error),
+		}, nil
 	}
 
 	// Pre-delta hook: enqueue extra chunks (e.g. top-level citations) before
 	// standard processing. Prepend so they drain before the finish chunk.
 	if s.OnBeforeDelta != nil {
-		if extra := s.OnBeforeDelta([]byte(event.Data)); len(extra) > 0 {
+		if extra := s.OnBeforeDelta([]byte(eventData)); len(extra) > 0 {
 			s.flushQueue = append(extra, s.flushQueue...)
 		}
 	}
 
 	// Provider-specific delta hook (e.g. xAI reasoning_content).
 	if s.OnExtraDelta != nil {
-		if chunk, handled := s.OnExtraDelta([]byte(event.Data)); handled {
+		if chunk, handled := s.OnExtraDelta([]byte(eventData)); handled {
+			if chunk != nil && len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, chunk)
+				return s.Next()
+			}
 			return chunk, nil
 		}
 	}
 
 	// Reasoning delta hook — manage start/end lifecycle.
 	if s.OnReasoningDelta != nil {
-		if rc, handled := s.OnReasoningDelta([]byte(event.Data)); handled && rc != "" {
+		if rc, handled := s.OnReasoningDelta([]byte(eventData)); handled && rc != "" {
 			if !s.isActiveReasoning {
 				s.isActiveReasoning = true
 				s.flushQueue = append([]*provider.StreamChunk{
@@ -157,11 +193,16 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				}, s.flushQueue...)
 				return s.Next()
 			}
-			return &provider.StreamChunk{
+			chunk := &provider.StreamChunk{
 				Type:      provider.ChunkTypeReasoning,
 				Reasoning: rc,
 				ID:        "reasoning-0",
-			}, nil
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, chunk)
+				return s.Next()
+			}
+			return chunk, nil
 		}
 	}
 
@@ -178,10 +219,15 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				}, s.flushQueue...)
 				return s.Next()
 			}
-			return &provider.StreamChunk{
+			chunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				Text: choice.Delta.Content,
-			}, nil
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, chunk)
+				return s.Next()
+			}
+			return chunk, nil
 		}
 
 		// Tool call delta — accumulate arguments by index, never emit yet.
@@ -211,6 +257,20 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 
 	// Empty or unrecognised event — skip and fetch the next one.
 	return s.Next()
+}
+
+func rawStreamErrorText(raw json.RawMessage) string {
+	var withMessage struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+		return withMessage.Message
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return string(raw)
 }
 
 func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {

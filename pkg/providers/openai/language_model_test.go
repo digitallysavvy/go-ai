@@ -14,9 +14,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// nextNonMeta reads and discards any leading ChunkTypeResponseMetadata chunks,
-// returning the first non-metadata chunk. Providers now emit response-metadata
-// as the very first chunk of every stream (carrying HTTP response headers).
+// nextNonMeta reads and discards stream lifecycle metadata chunks, returning
+// the first content chunk.
 func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk {
 	t.Helper()
 	for {
@@ -24,7 +23,7 @@ func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk
 		if err != nil {
 			t.Fatalf("stream.Next failed: %v", err)
 		}
-		if chunk.Type != provider.ChunkTypeResponseMetadata {
+		if chunk.Type != provider.ChunkTypeResponseMetadata && chunk.Type != provider.ChunkTypeStreamStart {
 			return chunk
 		}
 	}
@@ -788,6 +787,107 @@ data: [DONE]
 	chunk = nextChunkOfType(t, stream, provider.ChunkTypeFinish)
 	if chunk.FinishReason != types.FinishReasonToolCalls {
 		t.Fatalf("FinishReason = %q, want %q", chunk.FinishReason, types.FinishReasonToolCalls)
+	}
+}
+
+func TestOpenAIStreamIncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "gpt-3.5-turbo-0613" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
+func TestOpenAIStreamParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
+	sseData := `data: {"choices":[
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+func TestOpenAIStreamProviderErrorEventEmitsErrorChunkAfterRaw(t *testing.T) {
+	sseData := `data: {"error":{"message":"provider failed"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if chunk.Text != "provider failed" {
+		t.Fatalf("error text = %q, want provider failed", chunk.Text)
 	}
 }
 
