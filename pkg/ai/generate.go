@@ -1352,7 +1352,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			case types.ToolApprovalStatusDenied:
 				reason := approval.Reason
 				if reason == nil {
-					reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+					reason = strPtr("Tool execution denied.")
 				}
 				results[i] = types.ToolResult{
 					ToolCallID:       call.ID,

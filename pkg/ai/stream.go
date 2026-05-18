@@ -725,13 +725,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Text: currentText,
 					})
 					if partial != nil {
-						if newJSON, err := json.Marshal(partial); err == nil {
-							if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
-								r.lastPartialJSON = newJSONStr
-								r.mu.Lock()
-								r.partialOutput = partial
-								r.mu.Unlock()
-							}
+						newJSONStr, ok := partialOutputDedupKey(partial)
+						if ok && newJSONStr != r.lastPartialJSON {
+							r.lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
 						}
 					}
 				}
@@ -1672,13 +1671,12 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 					Text: r.text,
 				})
 				if partial != nil {
-					if newJSON, err := json.Marshal(partial); err == nil {
-						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
-							r.lastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
-						}
+					newJSONStr, ok := partialOutputDedupKey(partial)
+					if ok && newJSONStr != r.lastPartialJSON {
+						r.lastPartialJSON = newJSONStr
+						r.mu.Lock()
+						r.partialOutput = partial
+						r.mu.Unlock()
 					}
 				}
 			}
@@ -1899,6 +1897,18 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 // Populated once a ChunkTypeResponseMetadata chunk has been processed.
 func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	return r.responseHeaders
+}
+
+func partialOutputDedupKey(partial interface{}) (string, bool) {
+	// TS parity: for text/string partial outputs, avoid JSON serialization on each chunk.
+	if s, ok := partial.(string); ok {
+		return s, true
+	}
+	newJSON, err := json.Marshal(partial)
+	if err != nil {
+		return "", false
+	}
+	return string(newJSON), true
 }
 
 func responseIDFromMetadata(metadata *provider.ResponseMetadata) string {

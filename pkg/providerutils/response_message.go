@@ -2,7 +2,6 @@ package providerutils
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -11,8 +10,8 @@ import (
 // calls into a response message suitable for adding to conversation history.
 //
 // It mirrors the TypeScript SDK's response-message conversion behavior for
-// tool calls: invalid raw JSON inputs are skipped, and nil tool-call arguments
-// default to an empty JSON object.
+// tool calls: invalid raw JSON inputs are sanitized to an empty object, and nil
+// tool-call arguments default to an empty JSON object.
 func ConvertToResponseMessage(toolCalls []types.ToolCall, content []types.ContentPart) types.Message {
 	msg := types.Message{
 		Role:    types.RoleAssistant,
@@ -23,11 +22,7 @@ func ConvertToResponseMessage(toolCalls []types.ToolCall, content []types.Conten
 	}
 	msg.ToolCalls = make([]types.ToolCall, 0, len(toolCalls))
 	for _, call := range toolCalls {
-		normalized, ok := normalizeResponseToolCall(call)
-		if !ok {
-			continue
-		}
-		msg.ToolCalls = append(msg.ToolCalls, normalized)
+		msg.ToolCalls = append(msg.ToolCalls, normalizeResponseToolCall(call))
 	}
 	return msg
 }
@@ -76,12 +71,12 @@ func responseMessageHasContent(msg types.Message) bool {
 	return len(msg.Content) > 0 || len(msg.ToolCalls) > 0
 }
 
-func normalizeResponseToolCall(call types.ToolCall) (types.ToolCall, bool) {
+func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
 	if call.RawArguments != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(call.RawArguments), &parsed); err != nil {
-			log.Printf("go-ai: skipping tool call %q with invalid JSON input: %v", call.ID, err)
-			return types.ToolCall{}, false
+			call.Arguments = map[string]interface{}{}
+			return call
 		}
 		if parsed == nil {
 			parsed = map[string]interface{}{}
@@ -91,7 +86,7 @@ func normalizeResponseToolCall(call types.ToolCall) (types.ToolCall, bool) {
 	if call.Arguments == nil {
 		call.Arguments = map[string]interface{}{}
 	}
-	return call, true
+	return call
 }
 
 func filterResponseContent(content []types.ContentPart) []types.ContentPart {

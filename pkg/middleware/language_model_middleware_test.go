@@ -60,6 +60,46 @@ func TestWrapLanguageModel_TransformParams(t *testing.T) {
 	}
 }
 
+func TestWrapLanguageModel_TransformParamsDoStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{}
+	temp := 0.33
+	middleware := &LanguageModelMiddleware{
+		TransformParams: func(ctx context.Context, callType string, params *provider.GenerateOptions, model provider.LanguageModel) (*provider.GenerateOptions, error) {
+			if callType != "stream" {
+				t.Fatalf("callType = %q, want stream", callType)
+			}
+			cloned := *params
+			cloned.Temperature = &temp
+			return &cloned, nil
+		},
+		WrapStream: func(ctx context.Context, doGenerate func() (*types.GenerateResult, error), doStream func() (provider.TextStream, error), params *provider.GenerateOptions, model provider.LanguageModel) (provider.TextStream, error) {
+			if params.Temperature == nil || *params.Temperature != temp {
+				t.Fatalf("WrapStream params temperature = %#v, want %f", params.Temperature, temp)
+			}
+			return doStream()
+		},
+	}
+
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{middleware}, nil, nil)
+	originalTemp := 0.9
+	opts := &provider.GenerateOptions{
+		Temperature: &originalTemp,
+	}
+	_, err := wrapped.DoStream(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(model.StreamCalls) != 1 {
+		t.Fatalf("expected 1 stream call, got %d", len(model.StreamCalls))
+	}
+	if model.StreamCalls[0].Temperature == nil || *model.StreamCalls[0].Temperature != temp {
+		t.Fatalf("stream temperature = %#v, want %f", model.StreamCalls[0].Temperature, temp)
+	}
+}
+
 func TestWrapLanguageModel_WrapGenerate(t *testing.T) {
 	t.Parallel()
 

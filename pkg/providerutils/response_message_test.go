@@ -25,19 +25,25 @@ func TestConvertToResponseMessageDefaultsNilToolInput(t *testing.T) {
 	}
 }
 
-func TestConvertToResponseMessageSkipsInvalidRawToolInput(t *testing.T) {
+func TestConvertToResponseMessageSanitizesInvalidRawToolInput(t *testing.T) {
 	msg := ConvertToResponseMessage([]types.ToolCall{
 		{ID: "bad", ToolName: "lookup", RawArguments: `{"q":`},
 		{ID: "good", ToolName: "lookup", RawArguments: `{"q":"docs"}`},
 	}, nil)
 
-	if len(msg.ToolCalls) != 1 {
-		t.Fatalf("expected 1 valid tool call, got %d", len(msg.ToolCalls))
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(msg.ToolCalls))
 	}
-	if msg.ToolCalls[0].ID != "good" {
-		t.Fatalf("id = %q, want good", msg.ToolCalls[0].ID)
+	if msg.ToolCalls[0].ID != "bad" {
+		t.Fatalf("id = %q, want bad", msg.ToolCalls[0].ID)
 	}
-	if got := msg.ToolCalls[0].Arguments["q"]; got != "docs" {
+	if len(msg.ToolCalls[0].Arguments) != 0 {
+		t.Fatalf("invalid raw input arguments = %#v, want empty object", msg.ToolCalls[0].Arguments)
+	}
+	if msg.ToolCalls[1].ID != "good" {
+		t.Fatalf("id = %q, want good", msg.ToolCalls[1].ID)
+	}
+	if got := msg.ToolCalls[1].Arguments["q"]; got != "docs" {
 		t.Fatalf("q = %#v, want docs", got)
 	}
 }

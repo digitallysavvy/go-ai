@@ -1217,11 +1217,14 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if toolResults[0].ApprovalReason == nil || *toolResults[0].ApprovalReason == "" {
 		t.Fatalf("expected default denial reason, got %#v", toolResults[0].ApprovalReason)
 	}
+	if *toolResults[0].ApprovalReason != "Tool execution denied." {
+		t.Fatalf("unexpected default denial reason: %q", *toolResults[0].ApprovalReason)
+	}
 	output, ok := toolResults[0].Result.(types.ToolResultOutput)
 	if !ok {
 		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
 	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason == "" {
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "Tool execution denied." {
 		t.Fatalf("unexpected denied output: %#v", output)
 	}
 }
@@ -1291,6 +1294,69 @@ func TestStreamText_ContinuesWhenToolCallFinishesWithStop(t *testing.T) {
 	}
 	if result.Text() != "The weather in NYC is sunny!" {
 		t.Fatalf("unexpected text: %q", result.Text())
+	}
+}
+
+func TestStreamText_PreservesAllowSystemInMessagesAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			if !opts.AllowSystemMessages || !opts.AllowSystemInMessages {
+				t.Fatalf("allowSystem flags not preserved on call %d: %+v", callCount, opts)
+			}
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "call_1",
+						ToolName:  "weather",
+						Arguments: map[string]interface{}{"city": "NYC"},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			default:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+		},
+	}
+
+	tool := types.Tool{
+		Name: "weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "sunny", nil
+		},
+	}
+
+	done := make(chan struct{})
+	maxSteps := 2
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:                 model,
+		System:                "sys",
+		Messages:              []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "existing"}}}},
+		AllowSystemInMessages: true,
+		Tools:                 []types.Tool{tool},
+		MaxSteps:              &maxSteps,
+		OnFinish: func(_ *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stream finish")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 stream calls, got %d", callCount)
 	}
 }
 
