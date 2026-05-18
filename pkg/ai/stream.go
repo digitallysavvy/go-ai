@@ -110,6 +110,10 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
+	// MaxRetries controls transient provider call retries. For Gateway models,
+	// nil uses the TypeScript SDK default of 2 retries; set to 0 to disable.
+	MaxRetries *int
+
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
 	// override it for an individual step.
 	ExperimentalSandbox interface{}
@@ -330,6 +334,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
@@ -411,6 +418,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		PresencePenalty:     opts.PresencePenalty,
 		StopSequences:       opts.StopSequences,
 		Seed:                opts.Seed,
+		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
@@ -549,7 +557,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	})
 
 	// Start streaming
-	stream, err := stepModel.DoStream(ctx, genOpts)
+	stream, err := doStreamWithGatewayRetry(ctx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
 		if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)

@@ -189,9 +189,9 @@ func TestGenerateText_ToolCallFinishEventErrorPopulated(t *testing.T) {
 	}
 
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "Call fail tool",
-		Tools:  []types.Tool{failTool},
+		Model:    model,
+		Prompt:   "Call fail tool",
+		Tools:    []types.Tool{failTool},
 		StopWhen: []StopCondition{StepCountIs(5)},
 		OnToolCallFinish: func(_ context.Context, e OnToolCallFinishEvent) {
 			mu.Lock()
@@ -258,6 +258,9 @@ func TestGenerateText_OnStartEventFields(t *testing.T) {
 	if captured.ModelID == "" {
 		t.Error("OnStartEvent.ModelID should not be empty")
 	}
+	if captured.MaxRetries != 2 {
+		t.Errorf("OnStartEvent.MaxRetries = %d, want TypeScript default 2", captured.MaxRetries)
+	}
 }
 
 // CB-T24: OnFinishEvent aggregates all steps and total usage.
@@ -282,7 +285,7 @@ func TestGenerateText_OnFinishEventAggregation(t *testing.T) {
 			callCount++
 			if callCount == 1 {
 				return &types.GenerateResult{
-					ToolCalls: []types.ToolCall{{ID: "tc1", ToolName: "calc", Arguments: map[string]interface{}{}}},
+					ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "calc", Arguments: map[string]interface{}{}}},
 					FinishReason: types.FinishReasonToolCalls,
 					Usage:        types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &tot},
 				}, nil

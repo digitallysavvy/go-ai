@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -111,6 +112,14 @@ func TestClientDoAndHelpers(t *testing.T) {
 		Path:   "/bad",
 	}); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Fatalf("DoStream expected HTTP status error, got %v", err)
+	} else {
+		var statusErr *HTTPStatusError
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("DoStream error type = %T, want HTTPStatusError", err)
+		}
+		if statusErr.StatusCode != stdhttp.StatusBadRequest || string(statusErr.Body) != "bad req" {
+			t.Fatalf("DoStream HTTPStatusError = %+v, body=%q", statusErr, string(statusErr.Body))
+		}
 	}
 
 	if badResp, err := c.Post(context.Background(), "/bad", map[string]interface{}{"a": 1}); err != nil || badResp.StatusCode != stdhttp.StatusBadRequest {

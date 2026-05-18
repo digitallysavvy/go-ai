@@ -3,11 +3,16 @@ package ai
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -45,6 +50,159 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 	}
 	if result.FinishReason != types.FinishReasonStop {
 		t.Errorf("unexpected finish reason: %s", result.FinishReason)
+	}
+}
+
+func TestGenerateText_GatewayRetryableErrorsRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls < 2 {
+				return nil, gatewayerrors.NewGatewayRateLimitError("", 429, nil, "")
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("GenerateText error = %v", err)
+	}
+	if result.Text != "ok" || calls != 2 {
+		t.Fatalf("result=%#v calls=%d, want success after one retry", result, calls)
+	}
+}
+
+func TestGenerateText_GatewayHTTPStatusErrorsRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.Header().Set("Retry-After-Ms", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_exceeded"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{}}`))
+	}))
+	defer server.Close()
+
+	p, err := gateway.New(gateway.Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	maxRetries := 1
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "hello",
+		MaxRetries: &maxRetries,
+	})
+	if err != nil {
+		t.Fatalf("GenerateText error = %v", err)
+	}
+	if result.Text != "ok" || calls != 2 {
+		t.Fatalf("result=%#v calls=%d, want success after gateway HTTP retry", result, calls)
+	}
+}
+
+func TestGenerateText_GatewayNonRetryableErrorsDoNotRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			return nil, gatewayerrors.NewGatewayInvalidRequestError("", 400, nil, "")
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want no retry", calls)
+	}
+}
+
+func TestGenerateText_GatewayPlainErrorsDoNotRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			return nil, errors.New("plain failure")
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want no retry for untyped errors", calls)
+	}
+}
+
+func TestGenerateText_GatewayZeroMaxRetriesDisablesRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			return nil, gatewayerrors.NewGatewayRateLimitError("", 429, nil, "")
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want explicit zero retries", calls)
+	}
+}
+
+func TestGenerateText_RejectsNegativeMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := -1
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			return &types.GenerateResult{Text: "should not run"}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil || !strings.Contains(err.Error(), "maxRetries must be >= 0") {
+		t.Fatalf("GenerateText error = %v, want maxRetries validation error", err)
+	}
+	if calls != 0 {
+		t.Fatalf("DoGenerate calls = %d, want validation before provider call", calls)
 	}
 }
 

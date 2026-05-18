@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -81,7 +82,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: headers,
 	}, &result)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
 	return &result, nil
@@ -97,6 +98,10 @@ func (m *ImageModel) getModelConfigHeaders() map[string]string {
 
 // handleError converts errors to appropriate provider errors
 func (m *ImageModel) handleError(err error) error {
+	return m.handleErrorWithContext(context.Background(), err)
+}
+
+func (m *ImageModel) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -106,11 +111,23 @@ func (m *ImageModel) handleError(err error) error {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
 
+	if gatewayerrors.IsGatewayError(err) {
+		return err
+	}
+
 	// Check if it's already a provider error
 	if providererrors.IsProviderError(err) {
 		return err
 	}
 
-	// Return as ProviderError
-	return providererrors.NewProviderError("gateway", 0, "", err.Error(), err)
+	var httpStatusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &httpStatusErr) {
+		return m.provider.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
+			StatusCode: httpStatusErr.StatusCode,
+			Headers:    httpStatusErr.Headers,
+			Body:       httpStatusErr.Body,
+		})
+	}
+
+	return m.provider.gatewayUnknownError(err)
 }

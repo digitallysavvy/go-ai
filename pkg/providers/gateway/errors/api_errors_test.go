@@ -2,6 +2,7 @@ package errors
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -77,6 +78,36 @@ func TestGatewayAPIErrorConstructorsDefaults(t *testing.T) {
 	}
 	if response.ValidationError == nil || response.Response == nil {
 		t.Fatalf("expected response and validation error fields to be populated")
+	}
+}
+
+func TestGatewayErrorIsRetryableStatusCodes(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		want       bool
+	}{
+		{400, false},
+		{401, false},
+		{403, false},
+		{404, false},
+		{408, true},
+		{409, true},
+		{410, false},
+		{428, false},
+		{429, true},
+		{430, false},
+		{499, false},
+		{500, true},
+		{503, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d", tt.statusCode), func(t *testing.T) {
+			err := NewGatewayInternalServerError("status", tt.statusCode, nil, "")
+			if got := err.IsRetryable(); got != tt.want {
+				t.Fatalf("IsRetryable() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -171,5 +202,168 @@ func TestCreateGatewayErrorFromResponseInvalidPayload(t *testing.T) {
 	}
 	if responseErr.ValidationError == nil {
 		t.Fatal("expected validation error for non-JSON payload")
+	}
+}
+
+func TestCreateGatewayErrorFromResponsePreservesMalformedJSONValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		want interface{}
+	}{
+		{name: "string", body: []byte(`"Error string"`), want: "Error string"},
+		{name: "array", body: []byte(`["error","array"]`), want: []interface{}{"error", "array"}},
+		{name: "number", body: []byte(`404`), want: float64(404)},
+		{name: "boolean", body: []byte(`true`), want: true},
+		{name: "null", body: []byte(`null`), want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CreateGatewayErrorFromResponse(tt.body, 502, "fallback", nil, "api-key")
+			var responseErr *GatewayResponseError
+			if !errors.As(err, &responseErr) {
+				t.Fatalf("error type = %T, want *GatewayResponseError", err)
+			}
+			if fmt.Sprintf("%#v", responseErr.Response) != fmt.Sprintf("%#v", tt.want) {
+				t.Fatalf("response = %#v, want %#v", responseErr.Response, tt.want)
+			}
+			if responseErr.ValidationError == nil {
+				t.Fatal("expected validation error for malformed response")
+			}
+		})
+	}
+}
+
+func TestCreateGatewayErrorFromResponseRequiresStringMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "missing", body: []byte(`{"error":{"type":"rate_limit_exceeded"}}`)},
+		{name: "null", body: []byte(`{"error":{"message":null,"type":"rate_limit_exceeded"}}`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CreateGatewayErrorFromResponse(tt.body, 429, "fallback", nil, "api-key")
+			var responseErr *GatewayResponseError
+			if !errors.As(err, &responseErr) {
+				t.Fatalf("error type = %T, want *GatewayResponseError", err)
+			}
+			if responseErr.ValidationError == nil {
+				t.Fatal("expected validation error for missing/null message")
+			}
+		})
+	}
+}
+
+func TestCreateGatewayErrorFromResponsePreservesEmptyTypedMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       []byte
+		assertType func(error) bool
+	}{
+		{
+			name: "invalid request",
+			body: []byte(`{"error":{"message":"","type":"invalid_request_error"}}`),
+			assertType: func(err error) bool {
+				var target *GatewayInvalidRequestError
+				return errors.As(err, &target)
+			},
+		},
+		{
+			name: "rate limit",
+			body: []byte(`{"error":{"message":"","type":"rate_limit_exceeded"}}`),
+			assertType: func(err error) bool {
+				var target *GatewayRateLimitError
+				return errors.As(err, &target)
+			},
+		},
+		{
+			name: "model not found",
+			body: []byte(`{"error":{"message":"","type":"model_not_found","param":{"modelId":"gpt-5"}}}`),
+			assertType: func(err error) bool {
+				var target *GatewayModelNotFoundError
+				return errors.As(err, &target)
+			},
+		},
+		{
+			name: "internal server error",
+			body: []byte(`{"error":{"message":"","type":"internal_server_error"}}`),
+			assertType: func(err error) bool {
+				var target *GatewayInternalServerError
+				return errors.As(err, &target)
+			},
+		},
+		{
+			name: "unknown type",
+			body: []byte(`{"error":{"message":"","type":"new_error_type"}}`),
+			assertType: func(err error) bool {
+				var target *GatewayInternalServerError
+				return errors.As(err, &target)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CreateGatewayErrorFromResponse(tt.body, 500, "fallback", nil, "api-key")
+			if !tt.assertType(err) {
+				t.Fatalf("unexpected error type %T", err)
+			}
+			if err.Error() != "" {
+				t.Fatalf("Error() = %q, want empty string", err.Error())
+			}
+		})
+	}
+}
+
+func TestCreateGatewayErrorFromResponseRejectsNonStringGenerationID(t *testing.T) {
+	err := CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"rate","type":"rate_limit_exceeded"},"generationId":123}`),
+		429,
+		"fallback",
+		nil,
+		"api-key",
+	)
+	var responseErr *GatewayResponseError
+	if !errors.As(err, &responseErr) {
+		t.Fatalf("error type = %T, want *GatewayResponseError", err)
+	}
+	if responseErr.ValidationError == nil {
+		t.Fatal("expected validation error for non-string generationId")
+	}
+}
+
+func TestCreateGatewayErrorFromResponseValidatesCodeField(t *testing.T) {
+	validBodies := [][]byte{
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":"BAD_REQUEST"}}`),
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":400}}`),
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":null}}`),
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error"}}`),
+	}
+	for _, body := range validBodies {
+		err := CreateGatewayErrorFromResponse(body, 400, "fallback", nil, "api-key")
+		var invalidErr *GatewayInvalidRequestError
+		if !errors.As(err, &invalidErr) {
+			t.Fatalf("body %s produced %T, want *GatewayInvalidRequestError", body, err)
+		}
+	}
+
+	invalidBodies := [][]byte{
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":true}}`),
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":{"value":"BAD"}}}`),
+		[]byte(`{"error":{"message":"bad","type":"invalid_request_error","code":["BAD"]}}`),
+	}
+	for _, body := range invalidBodies {
+		err := CreateGatewayErrorFromResponse(body, 400, "fallback", nil, "api-key")
+		var responseErr *GatewayResponseError
+		if !errors.As(err, &responseErr) {
+			t.Fatalf("body %s produced %T, want *GatewayResponseError", body, err)
+		}
+		if responseErr.ValidationError == nil {
+			t.Fatalf("body %s missing validation error", body)
+		}
 	}
 }

@@ -76,6 +76,35 @@ func TestIsProviderError(t *testing.T) {
 	}
 }
 
+func TestRetryError(t *testing.T) {
+	t.Parallel()
+
+	first := errors.New("first")
+	last := errors.New("last")
+	err := &RetryError{
+		Message:   "Failed after 2 attempts. Last error: last",
+		Reason:    RetryReasonMaxRetriesExceeded,
+		LastError: last,
+		Errors:    []error{first, last},
+	}
+
+	if err.Error() != "Failed after 2 attempts. Last error: last" {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+	if err.Unwrap() != last {
+		t.Fatal("Unwrap() did not return last error")
+	}
+	if !errors.Is(err, last) {
+		t.Fatal("errors.Is did not match last error")
+	}
+	if !IsRetryError(err) {
+		t.Fatal("IsRetryError should identify RetryError")
+	}
+	if IsRetryError(errors.New("regular error")) {
+		t.Fatal("IsRetryError should reject regular errors")
+	}
+}
+
 func TestNewProviderError(t *testing.T) {
 	t.Parallel()
 

@@ -66,7 +66,7 @@ func TestGatewayImageModelHandleError(t *testing.T) {
 	}
 	m := NewImageModel(p, "img")
 
-	timeoutErr := m.handleError(errors.New("request timeout"))
+	timeoutErr := m.handleError(gatewayTimeoutTestError{})
 	var gte *gatewayerrors.GatewayTimeoutError
 	if !errors.As(timeoutErr, &gte) {
 		t.Fatalf("expected gateway timeout error, got %T (%v)", timeoutErr, timeoutErr)
@@ -78,7 +78,14 @@ func TestGatewayImageModelHandleError(t *testing.T) {
 	}
 
 	wrapped := m.handleError(errors.New("boom"))
-	if !providererrors.IsProviderError(wrapped) || !strings.Contains(wrapped.Error(), "boom") {
-		t.Fatalf("expected wrapped provider error, got %v", wrapped)
+	var responseErr *gatewayerrors.GatewayResponseError
+	if !errors.As(wrapped, &responseErr) || !strings.Contains(responseErr.Error(), "Gateway request failed: boom") {
+		t.Fatalf("expected gateway response error, got %T: %v", wrapped, wrapped)
 	}
 }
+
+type gatewayTimeoutTestError struct{}
+
+func (gatewayTimeoutTestError) Error() string   { return "request timeout" }
+func (gatewayTimeoutTestError) Timeout() bool   { return true }
+func (gatewayTimeoutTestError) Temporary() bool { return false }

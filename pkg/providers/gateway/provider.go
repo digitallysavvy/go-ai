@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -457,14 +459,14 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	// Fetch fresh metadata
 	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
-		return nil, p.handleError(err)
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, p.gatewayAPIError(resp)
+		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
-		return nil, p.handleError(err)
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
@@ -517,7 +519,7 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 		TotalUsed string `json:"total_used"`
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
-		return nil, p.handleError(err)
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	return &CreditsInfo{
 		Balance:   wire.Balance,
@@ -538,6 +540,10 @@ func (p *Provider) originClient() (*internalhttp.Client, error) {
 }
 
 func (p *Provider) handleError(err error) error {
+	return p.handleErrorWithContext(context.Background(), err)
+}
+
+func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -550,34 +556,69 @@ func (p *Provider) handleError(err error) error {
 	if providererrors.IsProviderError(err) {
 		return err
 	}
-	return providererrors.NewProviderError("gateway", 0, "", err.Error(), err)
+	var httpStatusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &httpStatusErr) {
+		return p.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
+			StatusCode: httpStatusErr.StatusCode,
+			Headers:    httpStatusErr.Headers,
+			Body:       httpStatusErr.Body,
+		})
+	}
+	return p.gatewayUnknownError(err)
 }
 
 func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, error) {
 	client, err := p.originClient()
 	if err != nil {
-		return nil, p.handleError(err)
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 
 	resp, err := client.Get(ctx, path)
 	if err != nil {
-		return nil, p.handleError(err)
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, p.gatewayAPIError(resp)
+		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	return resp.Body, nil
 }
 
 func (p *Provider) gatewayAPIError(resp *internalhttp.Response) error {
+	return p.gatewayAPIErrorWithContext(context.Background(), resp)
+}
+
+func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *internalhttp.Response) error {
 	if resp == nil {
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
 	authMethod := ""
 	if p.authResolver != nil {
-		_, authMethod, _ = p.authResolver(context.Background())
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_, authMethod, _ = p.authResolver(ctx)
 	}
-	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", nil, authMethod)
+	cause := &providererrors.ProviderError{
+		Provider:        "gateway",
+		StatusCode:      resp.StatusCode,
+		Message:         "Gateway request failed",
+		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+func (p *Provider) gatewayUnknownError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return gatewayerrors.NewGatewayResponseError(
+		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),
+		http.StatusInternalServerError,
+		map[string]interface{}{},
+		fmt.Errorf("invalid gateway error response"),
+		err,
+		"",
+	)
 }
 
 // Client returns the HTTP client for making API requests

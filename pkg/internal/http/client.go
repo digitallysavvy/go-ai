@@ -105,6 +105,21 @@ type Response struct {
 	Body       []byte
 }
 
+// HTTPStatusError preserves non-2xx/3xx response metadata for provider error
+// adapters while keeping the historical error string stable.
+type HTTPStatusError struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "LHTTP <nil>"
+	}
+	return fmt.Sprintf("LHTTP %d: %s", e.StatusCode, string(e.Body))
+}
+
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Build full URL
@@ -188,7 +203,11 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 
 	// Check for error status codes
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("LHTTP %d: %s", resp.StatusCode, string(resp.Body))
+		return &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Headers,
+			Body:       resp.Body,
+		}
 	}
 
 	// Decode JSON response
@@ -209,7 +228,11 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("LHTTP %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Headers,
+			Body:       resp.Body,
+		}
 	}
 	if err := json.Unmarshal(resp.Body, result); err != nil {
 		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
@@ -281,7 +304,11 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck
 		errBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("LHTTP %d: %s", httpResp.StatusCode, string(errBody))
+		return nil, &HTTPStatusError{
+			StatusCode: httpResp.StatusCode,
+			Headers:    httpResp.Header,
+			Body:       errBody,
+		}
 	}
 
 	// Return the response for streaming (caller must close Body)

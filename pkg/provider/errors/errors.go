@@ -42,6 +42,45 @@ type ProviderError struct {
 
 	// Underlying cause
 	Cause error
+
+	// ResponseHeaders are response headers from the failed provider call, when available.
+	ResponseHeaders map[string]string
+}
+
+// RetryErrorReason identifies why retrying stopped.
+type RetryErrorReason string
+
+const (
+	// RetryReasonMaxRetriesExceeded means all retry attempts were exhausted.
+	RetryReasonMaxRetriesExceeded RetryErrorReason = "maxRetriesExceeded"
+	// RetryReasonErrorNotRetryable means a later attempt failed with a
+	// non-retryable error after at least one retryable failure.
+	RetryReasonErrorNotRetryable RetryErrorReason = "errorNotRetryable"
+	// RetryReasonAbort means retrying stopped because the operation was aborted.
+	RetryReasonAbort RetryErrorReason = "abort"
+)
+
+// RetryError mirrors the TypeScript AI SDK RetryError shape for callers that
+// need to inspect retry failure reason and attempt history.
+type RetryError struct {
+	Message   string
+	Reason    RetryErrorReason
+	LastError error
+	Errors    []error
+}
+
+func (e *RetryError) Error() string {
+	return e.Message
+}
+
+func (e *RetryError) Unwrap() error {
+	return e.LastError
+}
+
+// IsRetryError checks if an error is a RetryError.
+func IsRetryError(err error) bool {
+	var retryErr *RetryError
+	return errors.As(err, &retryErr)
 }
 
 // Error implements the error interface

@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+type testNetTimeoutError struct{}
+
+func (testNetTimeoutError) Error() string   { return "net timeout" }
+func (testNetTimeoutError) Timeout() bool   { return true }
+func (testNetTimeoutError) Temporary() bool { return false }
+
 func TestNewGatewayTimeoutError(t *testing.T) {
 	duration := 30 * time.Second
 	provider := "gateway"
@@ -82,6 +88,16 @@ func TestGatewayTimeoutError_Unwrap(t *testing.T) {
 	}
 }
 
+func TestGatewayTimeoutErrorImplementsGatewayError(t *testing.T) {
+	var err GatewayError = NewGatewayTimeoutError(time.Second, "gateway", "", nil)
+	if err.GetStatusCode() != http.StatusRequestTimeout {
+		t.Fatalf("status = %d, want 408", err.GetStatusCode())
+	}
+	if !err.IsRetryable() {
+		t.Fatal("gateway timeout should be retryable")
+	}
+}
+
 func TestIsGatewayTimeoutError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -137,8 +153,11 @@ func TestCreateTimeoutError(t *testing.T) {
 	if !containsSubstring(errMsg, "client-side timeout") {
 		t.Errorf("Error message should mention client-side timeout, got: %v", errMsg)
 	}
-	if !containsSubstring(errMsg, "context.WithTimeout") {
-		t.Errorf("Error message should contain troubleshooting guidance, got: %v", errMsg)
+	if !containsSubstring(errMsg, "increase your timeout configuration") {
+		t.Errorf("Error message should contain TypeScript troubleshooting guidance, got: %v", errMsg)
+	}
+	if !containsSubstring(errMsg, "extending-timeouts-for-node.js") {
+		t.Errorf("Error message should contain TypeScript timeout documentation URL, got: %v", errMsg)
 	}
 
 	if err.Cause != cause {
@@ -168,21 +187,26 @@ func TestIsTimeoutError(t *testing.T) {
 		{
 			name: "error with timeout in message",
 			err:  errors.New("request timeout"),
-			want: true,
+			want: false,
 		},
 		{
 			name: "error with timed out in message",
 			err:  errors.New("connection timed out"),
-			want: true,
+			want: false,
 		},
 		{
 			name: "error with deadline exceeded in message",
 			err:  errors.New("deadline exceeded"),
-			want: true,
+			want: false,
 		},
 		{
 			name: "error with i/o timeout",
 			err:  errors.New("i/o timeout"),
+			want: false,
+		},
+		{
+			name: "net timeout error",
+			err:  testNetTimeoutError{},
 			want: true,
 		},
 		{
@@ -233,6 +257,12 @@ func TestConvertToGatewayTimeoutError(t *testing.T) {
 		{
 			name:     "timeout in message",
 			err:      errors.New("request timeout"),
+			provider: "gateway",
+			wantType: "*errors.errorString",
+		},
+		{
+			name:     "net timeout error",
+			err:      testNetTimeoutError{},
 			provider: "gateway",
 			wantType: "*errors.GatewayTimeoutError",
 		},
@@ -294,10 +324,10 @@ func TestTimeoutErrorWrapping(t *testing.T) {
 func containsSubstring(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(s == substr ||
-		 (len(s) > len(substr) &&
-		  (s[:len(substr)] == substr ||
-		   s[len(s)-len(substr):] == substr ||
-		   findSubstringHelper(s, substr))))
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					findSubstringHelper(s, substr))))
 }
 
 func findSubstringHelper(s, substr string) bool {

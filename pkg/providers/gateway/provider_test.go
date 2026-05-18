@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
@@ -708,6 +709,50 @@ func TestProvider_LanguageModel_DoGenerate_IncludesRequestIDHeader(t *testing.T)
 	}
 	if requestID != "req_from_ctx" {
 		t.Fatalf("request ID header = %q", requestID)
+	}
+}
+
+func TestProvider_LanguageModel_DoGenerate_HTTPStatusErrorPreservesGatewayErrorMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After-Ms", "25")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"slow down","type":"rate_limit_exceeded"},"generationId":"gen_123"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil {
+		t.Fatal("expected gateway error")
+	}
+
+	var gatewayErr gatewayerrors.GatewayError
+	if !errors.As(err, &gatewayErr) {
+		t.Fatalf("expected GatewayError, got %T: %v", err, err)
+	}
+	if gatewayErr.GetStatusCode() != http.StatusTooManyRequests || gatewayErr.GetType() != "rate_limit_exceeded" || !gatewayErr.IsRetryable() {
+		t.Fatalf("unexpected gateway error metadata: status=%d type=%q retryable=%v", gatewayErr.GetStatusCode(), gatewayErr.GetType(), gatewayErr.IsRetryable())
+	}
+	if gatewayErr.GetGenerationID() != "gen_123" {
+		t.Fatalf("generation ID = %q, want gen_123", gatewayErr.GetGenerationID())
+	}
+
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected provider error cause with headers, got %T: %v", err, err)
+	}
+	if providerErr.ResponseHeaders["Retry-After-Ms"] != "25" {
+		t.Fatalf("response headers = %+v, want Retry-After-Ms", providerErr.ResponseHeaders)
 	}
 }
 

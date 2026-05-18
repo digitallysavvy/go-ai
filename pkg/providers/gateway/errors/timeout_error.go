@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
@@ -38,7 +39,7 @@ func (e *GatewayTimeoutError) Error() string {
 	if e.Duration > 0 {
 		return fmt.Sprintf("Gateway request timed out after %v", e.Duration)
 	}
-	return "Gateway request timed out"
+	return "Request timed out"
 }
 
 // Unwrap returns the underlying cause
@@ -53,6 +54,10 @@ func (e *GatewayTimeoutError) GetStatusCode() int { return e.StatusCode }
 func (e *GatewayTimeoutError) GetType() string { return "timeout_error" }
 
 func (e *GatewayTimeoutError) GetGenerationID() string { return e.GenerationID }
+
+func (e *GatewayTimeoutError) IsRetryable() bool {
+	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusConflict || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= http.StatusInternalServerError
+}
 
 // IsGatewayTimeoutError checks if an error is a GatewayTimeoutError
 func IsGatewayTimeoutError(err error) bool {
@@ -75,13 +80,7 @@ func NewGatewayTimeoutError(duration time.Duration, provider, message string, ca
 func CreateTimeoutError(originalMessage string, cause error) *GatewayTimeoutError {
 	message := fmt.Sprintf(`Gateway request timed out: %s
 
-This is a client-side timeout. To resolve this:
-1. Increase your context timeout: ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-2. For video generation, consider using longer timeouts (e.g., 10 minutes)
-3. Check your network connectivity
-4. Verify the Gateway API is accessible
-
-For more information, see: https://vercel.com/docs/ai-gateway/capabilities/video-generation#extending-timeouts`,
+    This is a client-side timeout. To resolve this, increase your timeout configuration: https://vercel.com/docs/ai-gateway/capabilities/video-generation#extending-timeouts-for-node.js`,
 		originalMessage)
 
 	return &GatewayTimeoutError{
@@ -92,69 +91,25 @@ For more information, see: https://vercel.com/docs/ai-gateway/capabilities/video
 	}
 }
 
-// IsTimeoutError checks if an error is a timeout error
-// This checks for various timeout error types including:
-// - context.DeadlineExceeded
-// - HTTP client timeout errors
-// - GatewayTimeoutError itself
+// IsTimeoutError checks for structured timeout signals.
 func IsTimeoutError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Check if it's already a GatewayTimeoutError
 	if IsGatewayTimeoutError(err) {
 		return true
 	}
 
-	// Check for context timeout
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 
-	// Check for HTTP client timeout errors
-	// These are common error types from net/http
-	errMsg := err.Error()
-	timeoutIndicators := []string{
-		"context deadline exceeded",
-		"timeout",
-		"timed out",
-		"deadline exceeded",
-		"i/o timeout",
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
 	}
 
-	for _, indicator := range timeoutIndicators {
-		if contains(errMsg, indicator) {
-			return true
-		}
-	}
-
-	// Check if the cause is a timeout
-	unwrapped := errors.Unwrap(err)
-	if unwrapped != nil && unwrapped != err {
-		return IsTimeoutError(unwrapped)
-	}
-
-	return false
-}
-
-// contains checks if a string contains a substring (case-insensitive)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr ||
-			(len(s) > len(substr) &&
-				(s[:len(substr)] == substr ||
-					s[len(s)-len(substr):] == substr ||
-					findSubstring(s, substr))))
-}
-
-// findSubstring is a simple substring search helper
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
 	return false
 }
 

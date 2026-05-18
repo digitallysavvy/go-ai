@@ -2,12 +2,16 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -17,6 +21,90 @@ import (
 // Used for measuring tool call execution duration.
 func now() int64 {
 	return time.Now().UnixMilli()
+}
+
+func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
+	if model == nil || model.Provider() != "gateway" {
+		return 0
+	}
+	if maxRetries == nil {
+		return 2
+	}
+	return *maxRetries
+}
+
+func validateMaxRetries(maxRetries *int) error {
+	if maxRetries != nil && *maxRetries < 0 {
+		return fmt.Errorf("maxRetries must be >= 0")
+	}
+	return nil
+}
+
+func preparedMaxRetries(maxRetries *int) int {
+	if maxRetries == nil {
+		return 2
+	}
+	return *maxRetries
+}
+
+func isGatewayCallRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var gatewayErr gatewayerrors.GatewayError
+	if errors.As(err, &gatewayErr) {
+		return gatewayErr.IsRetryable()
+	}
+	var providerErr *providererrors.ProviderError
+	if errors.As(err, &providerErr) {
+		status := providerErr.StatusCode
+		return status == 408 || status == 409 || status == 429 || status >= 500
+	}
+	return false
+}
+
+func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	retries := gatewayMaxRetries(model, maxRetries)
+	if retries <= 0 {
+		return model.DoGenerate(ctx, opts)
+	}
+
+	var result *types.GenerateResult
+	err := retryutil.Do(ctx, retryutil.Config{
+		MaxRetries:   retries,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
+		Multiplier:   2,
+		Jitter:       false,
+		ShouldRetry:  isGatewayCallRetryable,
+	}, func(retryCtx context.Context) error {
+		var err error
+		result, err = model.DoGenerate(retryCtx, opts)
+		return err
+	})
+	return result, err
+}
+
+func doStreamWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (provider.TextStream, error) {
+	retries := gatewayMaxRetries(model, maxRetries)
+	if retries <= 0 {
+		return model.DoStream(ctx, opts)
+	}
+
+	var stream provider.TextStream
+	err := retryutil.Do(ctx, retryutil.Config{
+		MaxRetries:   retries,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
+		Multiplier:   2,
+		Jitter:       false,
+		ShouldRetry:  isGatewayCallRetryable,
+	}, func(retryCtx context.Context) error {
+		var err error
+		stream, err = model.DoStream(retryCtx, opts)
+		return err
+	})
+	return stream, err
 }
 
 // GenerateTextOptions contains options for text generation
@@ -164,6 +252,10 @@ type GenerateTextOptions struct {
 	//       },
 	//   }
 	ProviderOptions map[string]interface{}
+
+	// MaxRetries controls transient provider call retries. For Gateway models,
+	// nil uses the TypeScript SDK default of 2 retries; set to 0 to disable.
+	MaxRetries *int
 
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
 	// override it for an individual step.
@@ -433,6 +525,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
@@ -515,6 +610,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		PresencePenalty:     opts.PresencePenalty,
 		StopSequences:       opts.StopSequences,
 		Seed:                opts.Seed,
+		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
@@ -703,7 +799,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call the model with step context
 		modelCallStart := time.Now()
-		genResult, err := stepModel.DoGenerate(stepCtx, genOpts)
+		genResult, err := doGenerateWithGatewayRetry(stepCtx, stepModel, genOpts, opts.MaxRetries)
 		if err != nil {
 			if opts.Timeout != nil {
 				if opts.Timeout.HasPerStep() && stepCtx.Err() != nil {

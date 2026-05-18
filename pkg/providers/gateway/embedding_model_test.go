@@ -7,11 +7,12 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 func TestGatewayEmbeddingModelMetadataAndHeaders(t *testing.T) {
@@ -79,8 +80,15 @@ func TestGatewayEmbeddingModelHandleError(t *testing.T) {
 	}
 	m := NewEmbeddingModel(p, "m")
 	wrapped := m.handleError(errors.New("boom"))
-	if !providererrors.IsProviderError(wrapped) {
-		t.Fatalf("expected provider error, got %T", wrapped)
+	var responseErr *gatewayerrors.GatewayResponseError
+	if !errors.As(wrapped, &responseErr) {
+		t.Fatalf("expected gateway response error, got %T", wrapped)
+	}
+	if responseErr.GetStatusCode() != http.StatusInternalServerError || !responseErr.IsRetryable() {
+		t.Fatalf("unexpected gateway response error metadata: status=%d retryable=%v", responseErr.GetStatusCode(), responseErr.IsRetryable())
+	}
+	if !strings.Contains(responseErr.Error(), "Gateway request failed: boom") {
+		t.Fatalf("unexpected error message: %q", responseErr.Error())
 	}
 }
 

@@ -72,7 +72,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		Headers: headers,
 	}, &result)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	result.Response = types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers)}
 
@@ -102,7 +102,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers: headers,
 	}, &result)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	result.Responses = []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers)}}
 
@@ -119,7 +119,11 @@ func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 
 // handleError converts errors to appropriate provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	return m.handleErrorWithContext(context.Background(), err)
+}
+
+func (m *EmbeddingModel) handleErrorWithContext(ctx context.Context, err error) error {
 	// Use the same error handling as language model
 	lm := &LanguageModel{provider: m.provider, modelID: m.modelID}
-	return lm.handleError(err)
+	return lm.handleErrorWithContext(ctx, err)
 }

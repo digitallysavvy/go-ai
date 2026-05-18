@@ -116,11 +116,12 @@ func NewGatewayResponseError(message string, statusCode int, response interface{
 
 type gatewayErrorPayload struct {
 	Error *struct {
-		Message string          `json:"message"`
-		Type    string          `json:"type"`
+		Message *string         `json:"message"`
+		Type    *string         `json:"type"`
 		Param   json.RawMessage `json:"param"`
+		Code    json.RawMessage `json:"code"`
 	} `json:"error"`
-	GenerationID string `json:"generationId"`
+	GenerationID *string `json:"generationId"`
 }
 
 type modelNotFoundParam struct {
@@ -129,33 +130,108 @@ type modelNotFoundParam struct {
 
 func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, defaultMessage string, cause error, authMethod string) error {
 	var payload gatewayErrorPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil {
-		rawGenerationID := ""
-		var fallback map[string]interface{}
-		if json.Unmarshal(responseBody, &fallback) == nil {
-			if value, ok := fallback["generationId"].(string); ok {
-				rawGenerationID = value
-			}
-			return NewGatewayResponseError(fmt.Sprintf("Invalid error response format: %s", defaultMessage), statusCode, fallback, err, cause, rawGenerationID)
-		}
-		return NewGatewayResponseError(fmt.Sprintf("Invalid error response format: %s", defaultMessage), statusCode, string(responseBody), err, cause, rawGenerationID)
+	if err := json.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil || payload.Error.Message == nil {
+		return newInvalidGatewayErrorResponse(responseBody, statusCode, defaultMessage, err, cause)
+	}
+	if !isValidGatewayErrorCode(payload.Error.Code) {
+		return newInvalidGatewayErrorResponse(responseBody, statusCode, defaultMessage, fmt.Errorf("invalid gateway error response"), cause)
 	}
 
-	generationID := payload.GenerationID
-	switch payload.Error.Type {
+	generationID := ""
+	if payload.GenerationID != nil {
+		generationID = *payload.GenerationID
+	}
+	message := *payload.Error.Message
+	errorType := ""
+	if payload.Error.Type != nil {
+		errorType = *payload.Error.Type
+	}
+	switch errorType {
 	case "authentication_error":
 		return CreateContextualAuthenticationError(authMethod == "api-key", authMethod == "oidc", statusCode, cause, generationID)
 	case "invalid_request_error":
-		return NewGatewayInvalidRequestError(payload.Error.Message, statusCode, cause, generationID)
+		return newGatewayInvalidRequestErrorFromResponse(message, statusCode, cause, generationID)
 	case "rate_limit_exceeded":
-		return NewGatewayRateLimitError(payload.Error.Message, statusCode, cause, generationID)
+		return newGatewayRateLimitErrorFromResponse(message, statusCode, cause, generationID)
 	case "model_not_found":
 		var param modelNotFoundParam
 		_ = json.Unmarshal(payload.Error.Param, &param) // best effort
-		return NewGatewayModelNotFoundError(payload.Error.Message, statusCode, param.ModelID, cause, generationID)
+		return newGatewayModelNotFoundErrorFromResponse(message, statusCode, param.ModelID, cause, generationID)
 	case "internal_server_error":
-		return NewGatewayInternalServerError(payload.Error.Message, statusCode, cause, generationID)
+		return newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	default:
-		return NewGatewayInternalServerError(payload.Error.Message, statusCode, cause, generationID)
+		return newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	}
+}
+
+func newInvalidGatewayErrorResponse(responseBody []byte, statusCode int, defaultMessage string, validationErr error, cause error) *GatewayResponseError {
+	if validationErr == nil {
+		validationErr = fmt.Errorf("invalid gateway error response")
+	}
+	rawGenerationID := ""
+	var fallback interface{}
+	if json.Unmarshal(responseBody, &fallback) == nil {
+		if object, ok := fallback.(map[string]interface{}); ok {
+			if value, ok := object["generationId"].(string); ok {
+				rawGenerationID = value
+			}
+		}
+		return NewGatewayResponseError(fmt.Sprintf("Invalid error response format: %s", defaultMessage), statusCode, fallback, validationErr, cause, rawGenerationID)
+	}
+	if responseBody == nil {
+		return NewGatewayResponseError(fmt.Sprintf("Invalid error response format: %s", defaultMessage), statusCode, nil, validationErr, cause, rawGenerationID)
+	}
+	raw := string(responseBody)
+	var stringBody string
+	if json.Unmarshal(responseBody, &stringBody) == nil {
+		raw = stringBody
+	}
+	return NewGatewayResponseError(fmt.Sprintf("Invalid error response format: %s", defaultMessage), statusCode, raw, validationErr, cause, rawGenerationID)
+}
+
+func isValidGatewayErrorCode(code json.RawMessage) bool {
+	if len(code) == 0 || string(code) == "null" {
+		return true
+	}
+	var codeString string
+	if json.Unmarshal(code, &codeString) == nil {
+		return true
+	}
+	var codeNumber json.Number
+	if json.Unmarshal(code, &codeNumber) != nil {
+		return false
+	}
+	_, err := codeNumber.Float64()
+	return err == nil
+}
+
+func newGatewayInvalidRequestErrorFromResponse(message string, statusCode int, cause error, generationID string) *GatewayInvalidRequestError {
+	if statusCode == 0 {
+		statusCode = 400
+	}
+	return &GatewayInvalidRequestError{baseGatewayError{message: message, statusCode: statusCode, errorType: "invalid_request_error", cause: cause, generationID: generationID}}
+}
+
+func newGatewayRateLimitErrorFromResponse(message string, statusCode int, cause error, generationID string) *GatewayRateLimitError {
+	if statusCode == 0 {
+		statusCode = 429
+	}
+	return &GatewayRateLimitError{baseGatewayError{message: message, statusCode: statusCode, errorType: "rate_limit_exceeded", cause: cause, generationID: generationID}}
+}
+
+func newGatewayModelNotFoundErrorFromResponse(message string, statusCode int, modelID string, cause error, generationID string) *GatewayModelNotFoundError {
+	if statusCode == 0 {
+		statusCode = 404
+	}
+	return &GatewayModelNotFoundError{
+		baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "model_not_found", cause: cause, generationID: generationID},
+		ModelID:          modelID,
+	}
+}
+
+func newGatewayInternalServerErrorFromResponse(message string, statusCode int, cause error, generationID string) *GatewayInternalServerError {
+	if statusCode == 0 {
+		statusCode = 500
+	}
+	return &GatewayInternalServerError{baseGatewayError{message: message, statusCode: statusCode, errorType: "internal_server_error", cause: cause, generationID: generationID}}
 }

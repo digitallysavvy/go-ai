@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -44,6 +49,208 @@ func TestStreamText_BasicStream(t *testing.T) {
 
 	if text != "Hello World!" {
 		t.Errorf("unexpected text: %s", text)
+	}
+}
+
+func TestStreamText_OnStartDefaultMaxRetriesMatchesTypeScript(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var mu sync.Mutex
+	var captured OnStartEvent
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnStart: func(_ context.Context, e OnStartEvent) {
+			mu.Lock()
+			captured = e
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured.MaxRetries != 2 {
+		t.Fatalf("OnStartEvent.MaxRetries = %d, want TypeScript default 2", captured.MaxRetries)
+	}
+}
+
+func TestStreamText_GatewayRetryableErrorsRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			if calls < 2 {
+				return nil, gatewayerrors.NewGatewayInternalServerError("", 503, nil, "")
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if result.Text() != "ok" || calls != 2 {
+		t.Fatalf("text=%q calls=%d, want success after one retry", result.Text(), calls)
+	}
+}
+
+func TestStreamText_GatewayHTTPStatusErrorsRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After-Ms", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporarily unavailable","type":"internal_server_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"text-delta\",\"textDelta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"finish\",\"finishReason\":\"stop\",\"usage\":{}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p, err := gateway.New(gateway.Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("gateway.New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	maxRetries := 1
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:      model,
+		Prompt:     "hello",
+		MaxRetries: &maxRetries,
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if result.Text() != "ok" || calls != 2 {
+		t.Fatalf("text=%q calls=%d, want success after gateway HTTP stream retry", result.Text(), calls)
+	}
+}
+
+func TestStreamText_GatewayNonRetryableErrorsDoNotRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			return nil, gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want no retry", calls)
+	}
+}
+
+func TestStreamText_GatewayPlainErrorsDoNotRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 2
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			return nil, errors.New("plain failure")
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want no retry for untyped errors", calls)
+	}
+}
+
+func TestStreamText_GatewayZeroMaxRetriesDisablesRetry(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			return nil, gatewayerrors.NewGatewayInternalServerError("", 503, nil, "")
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want explicit zero retries", calls)
+	}
+}
+
+func TestStreamText_RejectsNegativeMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	maxRetries := -1
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			return testutil.NewMockTextStream(nil), nil
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil || !strings.Contains(err.Error(), "maxRetries must be >= 0") {
+		t.Fatalf("StreamText error = %v, want maxRetries validation error", err)
+	}
+	if calls != 0 {
+		t.Fatalf("DoStream calls = %d, want validation before provider call", calls)
 	}
 }
 

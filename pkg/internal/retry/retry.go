@@ -2,9 +2,16 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 // Config contains configuration for retry logic
@@ -44,6 +51,21 @@ func DefaultConfig() Config {
 // RetryFunc represents a function that can be retried
 type RetryFunc func(ctx context.Context) error
 
+func newRetryError(reason providererrors.RetryErrorReason, errors []error) *providererrors.RetryError {
+	copied := append([]error(nil), errors...)
+	last := copied[len(copied)-1]
+	message := fmt.Sprintf("Failed after %d attempts. Last error: %s", len(copied), last.Error())
+	if reason == providererrors.RetryReasonErrorNotRetryable {
+		message = fmt.Sprintf("Failed after %d attempts with non-retryable error: '%s'", len(copied), last.Error())
+	}
+	return &providererrors.RetryError{
+		Message:   message,
+		Reason:    reason,
+		LastError: last,
+		Errors:    copied,
+	}
+}
+
 // Do executes a function with retry logic using exponential backoff
 func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 	// Use default config if not provided
@@ -52,6 +74,7 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 	}
 
 	var lastErr error
+	errs := []error{}
 	attempt := 0
 
 	for attempt <= cfg.MaxRetries {
@@ -72,20 +95,25 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		}
 
 		lastErr = err
+		errs = append(errs, err)
 		attempt++
 
 		// Check if we should retry this error
 		if cfg.ShouldRetry != nil && !cfg.ShouldRetry(err) {
-			return fmt.Errorf("non-retryable error after %d attempts: %w", attempt, err)
+			if attempt == 1 {
+				return err
+			}
+			return newRetryError(providererrors.RetryReasonErrorNotRetryable, errs)
 		}
 
 		// If we've exhausted retries, return the error
 		if attempt > cfg.MaxRetries {
-			return fmt.Errorf("max retries (%d) exceeded: %w", cfg.MaxRetries, err)
+			return newRetryError(providererrors.RetryReasonMaxRetriesExceeded, errs)
 		}
 
-		// Calculate delay with exponential backoff
-		delay := calculateDelay(attempt, cfg)
+		// Calculate delay with exponential backoff, respecting retry headers
+		// from provider errors when present.
+		delay := calculateDelay(attempt, cfg, err)
 
 		// Wait before retrying
 		timer := time.NewTimer(delay)
@@ -98,11 +126,14 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		}
 	}
 
-	return fmt.Errorf("max retries (%d) exceeded: %w", cfg.MaxRetries, lastErr)
+	if len(errs) > 0 {
+		return newRetryError(providererrors.RetryReasonMaxRetriesExceeded, errs)
+	}
+	return lastErr
 }
 
 // calculateDelay calculates the delay for the given attempt using exponential backoff
-func calculateDelay(attempt int, cfg Config) time.Duration {
+func calculateDelay(attempt int, cfg Config, err error) time.Duration {
 	// Calculate exponential backoff: initialDelay * (multiplier ^ (attempt - 1))
 	delay := float64(cfg.InitialDelay) * math.Pow(cfg.Multiplier, float64(attempt-1))
 
@@ -117,7 +148,54 @@ func calculateDelay(attempt int, cfg Config) time.Duration {
 		delay = delay + jitter
 	}
 
-	return time.Duration(delay)
+	exponentialDelay := time.Duration(delay)
+	if headerDelay, ok := retryHeaderDelay(err, exponentialDelay); ok {
+		return headerDelay
+	}
+	return exponentialDelay
+}
+
+func retryHeaderDelay(err error, exponentialDelay time.Duration) (time.Duration, bool) {
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) || len(providerErr.ResponseHeaders) == 0 {
+		return 0, false
+	}
+
+	var retryAfterMS string
+	var retryAfter string
+	for name, value := range providerErr.ResponseHeaders {
+		switch strings.ToLower(name) {
+		case "retry-after-ms":
+			retryAfterMS = value
+		case "retry-after":
+			retryAfter = value
+		}
+	}
+
+	var delay time.Duration
+	var hasDelay bool
+	if retryAfterMS != "" {
+		if parsed, err := strconv.ParseFloat(retryAfterMS, 64); err == nil {
+			delay = time.Duration(parsed * float64(time.Millisecond))
+			hasDelay = true
+		}
+	}
+	if retryAfter != "" && !hasDelay {
+		if parsed, err := strconv.ParseFloat(retryAfter, 64); err == nil {
+			delay = time.Duration(parsed * float64(time.Second))
+			hasDelay = true
+		} else if when, err := http.ParseTime(retryAfter); err == nil {
+			delay = time.Until(when)
+			hasDelay = true
+		}
+	}
+	if !hasDelay {
+		return 0, false
+	}
+	if delay >= 0 && (delay < 60*time.Second || delay < exponentialDelay) {
+		return delay, true
+	}
+	return 0, false
 }
 
 // WithExponentialBackoff is a convenience function that uses default exponential backoff config
@@ -145,10 +223,13 @@ func IsRetryable(err error) bool {
 		return false
 	}
 
-	// TODO: Add more sophisticated retry logic based on error types
-	// For now, retry all errors except context cancellation
 	if err == context.Canceled || err == context.DeadlineExceeded {
 		return false
+	}
+
+	var gatewayErr gatewayerrors.GatewayError
+	if errors.As(err, &gatewayErr) {
+		return gatewayErr.IsRetryable()
 	}
 
 	return true

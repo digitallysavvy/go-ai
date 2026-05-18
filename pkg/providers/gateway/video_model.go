@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -122,14 +123,14 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
 	// Read and parse the SSE stream
 	result, err := m.readSSEVideoResponse(ctx, httpResp.Body)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
 	// Set response metadata from the HTTP response
@@ -329,6 +330,10 @@ func (m *VideoModel) getModelConfigHeaders() map[string]string {
 
 // handleError converts errors to appropriate provider errors
 func (m *VideoModel) handleError(err error) error {
+	return m.handleErrorWithContext(context.Background(), err)
+}
+
+func (m *VideoModel) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -338,11 +343,23 @@ func (m *VideoModel) handleError(err error) error {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
 
+	if gatewayerrors.IsGatewayError(err) {
+		return err
+	}
+
 	// Check if it's already a provider error
 	if providererrors.IsProviderError(err) {
 		return err
 	}
 
-	// Return as ProviderError
-	return providererrors.NewProviderError("gateway", 0, "", err.Error(), err)
+	var httpStatusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &httpStatusErr) {
+		return m.provider.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
+			StatusCode: httpStatusErr.StatusCode,
+			Headers:    httpStatusErr.Headers,
+			Body:       httpStatusErr.Body,
+		})
+	}
+
+	return m.provider.gatewayUnknownError(err)
 }
