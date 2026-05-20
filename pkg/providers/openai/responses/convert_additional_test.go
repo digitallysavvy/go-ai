@@ -121,6 +121,89 @@ func TestConvertToolResultOutput_StructuredContentAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestConvertPromptToInput_ToolApprovalResponses(t *testing.T) {
+	t.Parallel()
+
+	input := ConvertPromptToInput(types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolApprovalResponseContent{
+						ApprovalID: "approval-1",
+						Approved:   true,
+					},
+					types.ToolApprovalResponseContent{
+						ApprovalID: "approval-1",
+						Approved:   false,
+					},
+					types.ToolResultContent{
+						ToolCallID: "call-1",
+						Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"},
+					},
+				},
+			},
+		},
+	}, "system")
+
+	if len(input) != 2 {
+		t.Fatalf("input len = %d, want 2: %#v", len(input), input)
+	}
+	approval, ok := input[0].(MCPApprovalResponse)
+	if !ok {
+		t.Fatalf("input[0] = %T, want MCPApprovalResponse", input[0])
+	}
+	if approval.Type != "mcp_approval_response" || approval.ApprovalRequestID != "approval-1" || !approval.Approve {
+		t.Fatalf("approval item = %+v, want approved mcp_approval_response", approval)
+	}
+	result, ok := input[1].(FunctionCallOutputItem)
+	if !ok {
+		t.Fatalf("input[1] = %T, want FunctionCallOutputItem", input[1])
+	}
+	if result.CallID != "call-1" || result.Output != "ok" {
+		t.Fatalf("result item = %+v, want call-1 ok", result)
+	}
+}
+
+func TestConvertPromptToInput_SkipsApprovalDeniedToolOutput(t *testing.T) {
+	t.Parallel()
+
+	input := ConvertPromptToInput(types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolApprovalResponseContent{
+						ApprovalID: "approval-1",
+						Approved:   false,
+					},
+					types.ToolResultContent{
+						ToolCallID: "call-1",
+						Output: &types.ToolResultOutput{
+							Type:   types.ToolResultOutputExecutionDenied,
+							Reason: "blocked",
+						},
+						ProviderOptions: map[string]interface{}{
+							"openai": map[string]interface{}{"approvalId": "approval-1"},
+						},
+					},
+				},
+			},
+		},
+	}, "system")
+
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want only approval response: %#v", len(input), input)
+	}
+	approval, ok := input[0].(MCPApprovalResponse)
+	if !ok {
+		t.Fatalf("input[0] = %T, want MCPApprovalResponse", input[0])
+	}
+	if approval.ApprovalRequestID != "approval-1" || approval.Approve {
+		t.Fatalf("approval item = %+v, want denied approval-1", approval)
+	}
+}
+
 func TestOpenAIResponsesImageDetailHelper(t *testing.T) {
 	t.Parallel()
 

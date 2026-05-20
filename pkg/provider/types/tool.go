@@ -261,6 +261,9 @@ type ToolCall struct {
 	// Name of the tool to call
 	ToolName string `json:"toolName"`
 
+	// Title is a short, human-readable title for the tool call.
+	Title string `json:"title,omitempty"`
+
 	// Arguments to pass to the tool
 	Arguments map[string]interface{} `json:"arguments"`
 
@@ -306,6 +309,9 @@ type ToolResult struct {
 	// Name of the tool that was executed
 	ToolName string `json:"toolName"`
 
+	// Title is a short, human-readable title for the tool result.
+	Title string `json:"title,omitempty"`
+
 	// Input contains the arguments that were passed to the tool
 	Input map[string]interface{} `json:"input,omitempty"`
 
@@ -326,6 +332,10 @@ type ToolResult struct {
 	// Dynamic indicates this tool result came from a dynamically registered (untyped) tool.
 	// Mirrors the dynamic/static tool result split in the TypeScript SDK.
 	Dynamic bool `json:"dynamic,omitempty"`
+
+	// Preliminary indicates this is an intermediate streamed result rather than
+	// the final result for the tool call.
+	Preliminary bool `json:"preliminary,omitempty"`
 
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally)
 	// When true, the tool was executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)

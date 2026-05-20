@@ -226,9 +226,13 @@ func extractToolResultText(tr types.ToolResultContent) string {
 			if b, err := json.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
-		case types.ToolResultOutputError:
+		case types.ToolResultOutputError, types.ToolResultOutputErrorText:
 			if v, ok := tr.Output.Value.(string); ok {
 				return v
+			}
+		case types.ToolResultOutputErrorJSON:
+			if b, err := json.Marshal(tr.Output.Value); err == nil {
+				return string(b)
 			}
 		}
 	}

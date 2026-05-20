@@ -33,8 +33,11 @@ func TestResolveStepTools_DescriptionFunc(t *testing.T) {
 func TestEnrichToolCallMetadata_FromToolDefinition(t *testing.T) {
 	t.Parallel()
 	calls := []types.ToolCall{{ID: "1", ToolName: "weather"}}
-	tools := []types.Tool{{Name: "weather", Metadata: map[string]interface{}{"source": "mcp"}}}
+	tools := []types.Tool{{Name: "weather", Title: "Weather Information", Metadata: map[string]interface{}{"source": "mcp"}}}
 	got := enrichToolCallMetadata(calls, tools)
+	if got[0].Title != "Weather Information" {
+		t.Fatalf("tool title = %q, want Weather Information", got[0].Title)
+	}
 	if got[0].ToolMetadata["source"] != "mcp" {
 		t.Fatalf("tool metadata = %#v, want source=mcp", got[0].ToolMetadata)
 	}

@@ -166,16 +166,64 @@ func convertAssistantItems(msg types.Message) []interface{} {
 // convertToolItems maps tool-role message content to function_call_output items.
 func convertToolItems(msg types.Message) []interface{} {
 	items := make([]interface{}, 0, len(msg.Content))
+	processedApprovals := map[string]bool{}
 	for _, part := range msg.Content {
-		if tr, ok := part.(types.ToolResultContent); ok {
+		switch p := part.(type) {
+		case types.ToolApprovalResponseContent:
+			if p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+				continue
+			}
+			processedApprovals[p.ApprovalID] = true
+			items = append(items, MCPApprovalResponse{
+				Type:              "mcp_approval_response",
+				ApprovalRequestID: p.ApprovalID,
+				Approve:           p.Approved,
+			})
+		case *types.ToolApprovalResponseContent:
+			if p == nil || p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+				continue
+			}
+			processedApprovals[p.ApprovalID] = true
+			items = append(items, MCPApprovalResponse{
+				Type:              "mcp_approval_response",
+				ApprovalRequestID: p.ApprovalID,
+				Approve:           p.Approved,
+			})
+		case types.ToolResultContent:
+			if shouldSkipApprovalDeniedOutput(p) {
+				continue
+			}
 			items = append(items, FunctionCallOutputItem{
 				Type:   "function_call_output",
-				CallID: tr.ToolCallID,
-				Output: toolResultOutput(tr),
+				CallID: p.ToolCallID,
+				Output: toolResultOutput(p),
 			})
+		case *types.ToolResultContent:
+			if p != nil {
+				if shouldSkipApprovalDeniedOutput(*p) {
+					continue
+				}
+				items = append(items, FunctionCallOutputItem{
+					Type:   "function_call_output",
+					CallID: p.ToolCallID,
+					Output: toolResultOutput(*p),
+				})
+			}
 		}
 	}
 	return items
+}
+
+func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
+	if part.Output == nil || part.Output.Type != types.ToolResultOutputExecutionDenied {
+		return false
+	}
+	openaiOptions, ok := part.ProviderOptions["openai"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	approvalID, _ := openaiOptions["approvalId"].(string)
+	return approvalID != ""
 }
 
 // toolResultOutput converts a ToolResultContent to the Responses API output value.

@@ -224,6 +224,10 @@ type GeneratedFileContent struct {
 
 	// ProviderMetadata holds optional raw JSON metadata from the provider.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// ProviderOptions holds provider-specific options when replaying this file
+	// in an assistant message.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -235,9 +239,10 @@ func (f GeneratedFileContent) ContentType() string {
 // { mediaType, data: { type: "data"|"url", ... }, providerMetadata? }.
 func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 	type generatedFileJSON struct {
-		MediaType        string          `json:"mediaType"`
-		Data             interface{}     `json:"data"`
-		ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+		MediaType        string                 `json:"mediaType"`
+		Data             interface{}            `json:"data"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	}
 	var data interface{}
 	switch {
@@ -257,6 +262,7 @@ func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 		MediaType:        f.MediaType,
 		Data:             data,
 		ProviderMetadata: f.ProviderMetadata,
+		ProviderOptions:  f.ProviderOptions,
 	})
 }
 
@@ -264,11 +270,12 @@ func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 // base64-string data shape for backward compatibility.
 func (f *GeneratedFileContent) UnmarshalJSON(data []byte) error {
 	type generatedFileJSON struct {
-		MediaType        string          `json:"mediaType"`
-		Data             json.RawMessage `json:"data"`
-		URL              string          `json:"url,omitempty"`
-		FileData         FileData        `json:"fileData,omitempty"`
-		ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+		MediaType        string                 `json:"mediaType"`
+		Data             json.RawMessage        `json:"data"`
+		URL              string                 `json:"url,omitempty"`
+		FileData         FileData               `json:"fileData,omitempty"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	}
 	var raw generatedFileJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -278,6 +285,7 @@ func (f *GeneratedFileContent) UnmarshalJSON(data []byte) error {
 	f.URL = raw.URL
 	f.FileData = raw.FileData
 	f.ProviderMetadata = raw.ProviderMetadata
+	f.ProviderOptions = raw.ProviderOptions
 	if len(raw.Data) == 0 || string(raw.Data) == "null" {
 		return nil
 	}
@@ -322,6 +330,7 @@ func firstNonEmptyString(values ...string) string {
 type ToolCallContent struct {
 	ToolCallID string `json:"toolCallId"`
 	ToolName   string `json:"toolName"`
+	Title      string `json:"title,omitempty"`
 
 	// Input preserves the raw JSON-string tool input used by the TypeScript SDK.
 	Input string `json:"input,omitempty"`
@@ -332,11 +341,63 @@ type ToolCallContent struct {
 	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+	ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+	Dynamic          bool                   `json:"dynamic,omitempty"`
+	Invalid          bool                   `json:"invalid,omitempty"`
+	Error            interface{}            `json:"error,omitempty"`
 	ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 }
 
 func (t ToolCallContent) ContentType() string {
 	return "tool-call"
+}
+
+// MarshalJSON emits the TypeScript SDK content-part shape. Arguments remains
+// available to Go callers and provider converters, but JSON uses input.
+func (t ToolCallContent) MarshalJSON() ([]byte, error) {
+	type toolCallContentJSON struct {
+		Type             string                 `json:"type,omitempty"`
+		ToolCallID       string                 `json:"toolCallId"`
+		ToolName         string                 `json:"toolName"`
+		Title            string                 `json:"title,omitempty"`
+		Input            interface{}            `json:"input,omitempty"`
+		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+		ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+		Dynamic          bool                   `json:"dynamic,omitempty"`
+		Invalid          bool                   `json:"invalid,omitempty"`
+		Error            interface{}            `json:"error,omitempty"`
+		ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
+	}
+	return json.Marshal(toolCallContentJSON{
+		ToolCallID:       t.ToolCallID,
+		ToolName:         t.ToolName,
+		Title:            t.Title,
+		Input:            toolCallContentInput(t),
+		ProviderExecuted: t.ProviderExecuted,
+		ProviderOptions:  t.ProviderOptions,
+		ProviderMetadata: t.ProviderMetadata,
+		ToolMetadata:     t.ToolMetadata,
+		Dynamic:          t.Dynamic,
+		Invalid:          t.Invalid,
+		Error:            t.Error,
+		ThoughtSignature: t.ThoughtSignature,
+	})
+}
+
+func toolCallContentInput(t ToolCallContent) interface{} {
+	if t.Arguments != nil {
+		return t.Arguments
+	}
+	if t.Input == "" {
+		return nil
+	}
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
+		return parsed
+	}
+	return t.Input
 }
 
 // CustomContent is a provider-specific content block with no standard mapping.
@@ -410,6 +471,12 @@ type ToolResultContent struct {
 	// Name of the tool that was executed
 	ToolName string `json:"toolName"`
 
+	// Title is a short, human-readable title for the tool result.
+	Title string `json:"title,omitempty"`
+
+	// Input contains the tool input associated with this result.
+	Input map[string]interface{} `json:"input,omitempty"`
+
 	// Result of the tool execution (can be any type)
 	// DEPRECATED: Use Output for new code. Kept for backward compatibility.
 	Result interface{} `json:"result,omitempty"`
@@ -421,13 +488,168 @@ type ToolResultContent struct {
 	// Use this for rich tool outputs with multiple content blocks
 	Output *ToolResultOutput `json:"output,omitempty"`
 
+	// ProviderExecuted indicates the result was produced by the model provider
+	// and belongs in the assistant response content instead of a separate tool message.
+	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
 	// ProviderOptions holds provider-specific options for the input direction.
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata from output content.
+	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// ToolMetadata carries tool-specific metadata associated with this result.
+	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
+
+	// Dynamic indicates this result belongs to a dynamic tool call.
+	Dynamic bool `json:"dynamic,omitempty"`
+
+	// Preliminary indicates this is an intermediate streamed result rather than
+	// the final result for the tool call.
+	Preliminary bool `json:"preliminary,omitempty"`
 }
 
 // ContentType implements ContentPart interface
 func (t ToolResultContent) ContentType() string {
 	return "tool-result"
+}
+
+// ToolErrorContent represents a failed tool execution in ordered content.
+type ToolErrorContent struct {
+	ToolCallID       string                 `json:"toolCallId"`
+	ToolName         string                 `json:"toolName"`
+	Title            string                 `json:"title,omitempty"`
+	Input            map[string]interface{} `json:"input,omitempty"`
+	Error            interface{}            `json:"error"`
+	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+	ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+	Dynamic          bool                   `json:"dynamic,omitempty"`
+}
+
+func (t ToolErrorContent) ContentType() string {
+	return "tool-error"
+}
+
+// ToolApprovalRequestContent indicates that a tool call requires approval before execution.
+type ToolApprovalRequestContent struct {
+	ApprovalID  string   `json:"approvalId"`
+	ToolCallID  string   `json:"toolCallId"`
+	ToolCall    ToolCall `json:"toolCall,omitempty"`
+	IsAutomatic bool     `json:"isAutomatic,omitempty"`
+}
+
+func (t ToolApprovalRequestContent) ContentType() string {
+	return "tool-approval-request"
+}
+
+// MarshalJSON omits the full tool call when the part has been normalized for
+// provider replay. Public result content still includes ToolCall when present.
+func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
+	type toolApprovalRequestContentJSON struct {
+		ApprovalID  string           `json:"approvalId"`
+		ToolCallID  string           `json:"toolCallId,omitempty"`
+		ToolCall    *ToolCallContent `json:"toolCall,omitempty"`
+		IsAutomatic bool             `json:"isAutomatic,omitempty"`
+	}
+	out := toolApprovalRequestContentJSON{
+		ApprovalID:  t.ApprovalID,
+		IsAutomatic: t.IsAutomatic,
+	}
+	if !toolCallIsZero(t.ToolCall) {
+		toolCall := toolCallContentFromToolCall(t.ToolCall)
+		out.ToolCall = &toolCall
+	} else {
+		out.ToolCallID = t.ToolCallID
+	}
+	return json.Marshal(out)
+}
+
+// ToolApprovalResponseContent indicates that approval was granted or denied.
+type ToolApprovalResponseContent struct {
+	ApprovalID       string   `json:"approvalId"`
+	ToolCallID       string   `json:"toolCallId,omitempty"`
+	ToolCall         ToolCall `json:"toolCall,omitempty"`
+	Approved         bool     `json:"approved"`
+	Reason           string   `json:"reason,omitempty"`
+	ProviderExecuted bool     `json:"providerExecuted,omitempty"`
+}
+
+func (t ToolApprovalResponseContent) ContentType() string {
+	return "tool-approval-response"
+}
+
+// MarshalJSON omits the full tool call when the part has been normalized for
+// provider replay. Public result content still includes ToolCall when present.
+func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
+	type toolApprovalResponseContentJSON struct {
+		ApprovalID       string           `json:"approvalId"`
+		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
+		Approved         bool             `json:"approved"`
+		Reason           string           `json:"reason,omitempty"`
+		ProviderExecuted bool             `json:"providerExecuted,omitempty"`
+	}
+	out := toolApprovalResponseContentJSON{
+		ApprovalID:       t.ApprovalID,
+		Approved:         t.Approved,
+		Reason:           t.Reason,
+		ProviderExecuted: t.ProviderExecuted,
+	}
+	if !toolCallIsZero(t.ToolCall) {
+		toolCall := toolCallContentFromToolCall(t.ToolCall)
+		out.ToolCall = &toolCall
+	}
+	return json.Marshal(out)
+}
+
+func toolCallContentFromToolCall(call ToolCall) ToolCallContent {
+	return ToolCallContent{
+		ToolCallID:       call.ID,
+		ToolName:         call.ToolName,
+		Title:            call.Title,
+		Input:            call.RawArguments,
+		Arguments:        call.Arguments,
+		ProviderExecuted: call.ProviderExecuted,
+		ProviderMetadata: providerMetadataRawFromMap(call.ProviderMetadata),
+		ToolMetadata:     call.ToolMetadata,
+		Dynamic:          call.Dynamic,
+		Invalid:          call.Invalid,
+		Error:            toolCallErrorValue(call.Error),
+		ThoughtSignature: call.ThoughtSignature,
+	}
+}
+
+func toolCallErrorValue(err error) interface{} {
+	if err == nil {
+		return nil
+	}
+	return err.Error()
+}
+
+func providerMetadataRawFromMap(metadata map[string]interface{}) json.RawMessage {
+	if len(metadata) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func toolCallIsZero(call ToolCall) bool {
+	return call.ID == "" &&
+		call.ToolName == "" &&
+		call.Title == "" &&
+		len(call.Arguments) == 0 &&
+		!call.ProviderExecuted &&
+		len(call.ProviderMetadata) == 0 &&
+		len(call.ToolMetadata) == 0 &&
+		call.ThoughtSignature == "" &&
+		!call.Dynamic &&
+		!call.Invalid &&
+		call.Error == nil
 }
 
 // ToolResultOutputType represents the type of tool result output
@@ -445,6 +667,12 @@ const (
 
 	// ToolResultOutputError represents error output
 	ToolResultOutputError ToolResultOutputType = "error"
+
+	// ToolResultOutputErrorText represents a text error output.
+	ToolResultOutputErrorText ToolResultOutputType = "error-text"
+
+	// ToolResultOutputErrorJSON represents a JSON error output.
+	ToolResultOutputErrorJSON ToolResultOutputType = "error-json"
 
 	// ToolResultOutputExecutionDenied represents a tool call that was denied by
 	// the user approval gate before execution. The provider should receive a

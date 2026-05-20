@@ -258,7 +258,7 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 	case types.ToolResultOutputJSON:
 		b, _ := json.Marshal(part.Output.Value)
 		base["result"] = string(b)
-	case types.ToolResultOutputError:
+	case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 		base["is_error"] = true
 		base["result"] = fmt.Sprintf("%v", part.Output.Value)
 	case types.ToolResultOutputExecutionDenied:

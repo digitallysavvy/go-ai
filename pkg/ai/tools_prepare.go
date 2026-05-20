@@ -35,8 +35,11 @@ func enrichToolCallMetadata(calls []types.ToolCall, tools []types.Tool) []types.
 	out := make([]types.ToolCall, len(calls))
 	copy(out, calls)
 	for i := range out {
-		if out[i].ToolMetadata == nil {
-			if tool, ok := byName[out[i].ToolName]; ok && tool.Metadata != nil {
+		if tool, ok := byName[out[i].ToolName]; ok {
+			if out[i].Title == "" {
+				out[i].Title = tool.Title
+			}
+			if out[i].ToolMetadata == nil && tool.Metadata != nil {
 				out[i].ToolMetadata = cloneStringAnyMap(tool.Metadata)
 			}
 		}

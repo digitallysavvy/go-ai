@@ -323,7 +323,7 @@ func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]typ
 
 func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning, providerName string) (interface{}, error) {
 	switch output.Type {
-	case types.ToolResultOutputText, types.ToolResultOutputError:
+	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 		if output.Value == nil {
 			return "", nil
 		}

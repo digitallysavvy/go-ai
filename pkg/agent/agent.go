@@ -111,9 +111,13 @@ type AgentGenerateOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	ExperimentalDownload        ai.DownloadFunction
 
-	OnStart          func(ctx context.Context, e ai.OnStartEvent)
-	OnStepStart      func(ctx context.Context, e ai.OnStepStartEvent)
-	OnToolCallStart  func(ctx context.Context, e ai.OnToolCallStartEvent)
+	OnStart              func(ctx context.Context, e ai.OnStartEvent)
+	OnStepStart          func(ctx context.Context, e ai.OnStepStartEvent)
+	OnToolExecutionStart func(ctx context.Context, e ai.OnToolCallStartEvent)
+	OnToolExecutionEnd   func(ctx context.Context, e ai.OnToolCallFinishEvent)
+	// Deprecated: use OnToolExecutionStart.
+	OnToolCallStart func(ctx context.Context, e ai.OnToolCallStartEvent)
+	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 	OnStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
 	OnFinish         func(ctx context.Context, e ai.OnFinishEvent)
@@ -389,10 +393,20 @@ type AgentConfig struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStartEvent func(ctx context.Context, e ai.OnStepStartEvent)
 
-	// OnToolCallStart is called just before each tool's Execute function runs.
+	// OnToolExecutionStart is called just before each tool's Execute function runs.
+	OnToolExecutionStart func(ctx context.Context, e ai.OnToolCallStartEvent)
+
+	// OnToolExecutionEnd is called after each tool's Execute function returns.
+	OnToolExecutionEnd func(ctx context.Context, e ai.OnToolCallFinishEvent)
+
+	// OnToolCallStart is the previous Go name for OnToolExecutionStart.
+	//
+	// Deprecated: use OnToolExecutionStart.
 	OnToolCallStart func(ctx context.Context, e ai.OnToolCallStartEvent)
 
-	// OnToolCallFinish is called after each tool's Execute function returns.
+	// OnToolCallFinish is the previous Go name for OnToolExecutionEnd.
+	//
+	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 
 	// OnStepFinishEvent is called at the end of each LLM step.

@@ -508,7 +508,7 @@ func googleAppendFunctionResponse(parts *[]map[string]interface{}, p types.ToolR
 	content := fmt.Sprintf("%v", p.Result)
 	if p.Output != nil {
 		switch p.Output.Type {
-		case types.ToolResultOutputError:
+		case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 			if p.Output.Value != nil {
 				content = fmt.Sprintf("%v", p.Output.Value)
 			} else {

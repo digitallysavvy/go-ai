@@ -125,6 +125,172 @@ func TestOnStepFinish_ConstructorLevel(t *testing.T) {
 	}
 }
 
+func TestToolLoopAgent_ResponseMessagesUseFullStepContent(t *testing.T) {
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{
+			{
+				Text: "thinking",
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "reason"},
+				},
+				ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "docs"}}},
+				FinishReason: types.FinishReasonToolCalls,
+			},
+			{
+				Text:         "done",
+				Content:      []types.ContentPart{types.TextContent{Text: "done"}},
+				FinishReason: types.FinishReasonStop,
+			},
+		},
+	}
+	tool := types.Tool{
+		Name: "lookup",
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "found", nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{Model: mock, Tools: []types.Tool{tool}, MaxSteps: 2})
+
+	result, err := agent.Execute(context.Background(), "lookup")
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if len(result.Steps) == 0 {
+		t.Fatal("expected at least one step")
+	}
+	step := result.Steps[0]
+	if got, want := len(step.Content), 4; got != want {
+		t.Fatalf("step content len = %d, want %d: %#v", got, want, step.Content)
+	}
+	if _, ok := step.Content[0].(types.TextContent); !ok {
+		t.Fatalf("content[0] = %T, want TextContent", step.Content[0])
+	}
+	if _, ok := step.Content[1].(types.ReasoningContent); !ok {
+		t.Fatalf("content[1] = %T, want ReasoningContent", step.Content[1])
+	}
+	if _, ok := step.Content[2].(types.ToolCallContent); !ok {
+		t.Fatalf("content[2] = %T, want ToolCallContent", step.Content[2])
+	}
+	if tr, ok := step.Content[3].(types.ToolResultContent); !ok || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText {
+		t.Fatalf("content[3] = %#v, want text ToolResultContent", step.Content[3])
+	}
+	if len(step.ResponseMessages) != 2 {
+		t.Fatalf("response messages len = %d, want 2: %#v", len(step.ResponseMessages), step.ResponseMessages)
+	}
+	if _, ok := step.ResponseMessages[0].Content[1].(types.ReasoningContent); !ok {
+		t.Fatalf("assistant response content[1] = %T, want ReasoningContent", step.ResponseMessages[0].Content[1])
+	}
+}
+
+func TestToolLoopAgent_ProviderExecutedToolResolvesApproval(t *testing.T) {
+	mock := &mockLanguageModel{
+		responses: []types.GenerateResult{{
+			ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "server_tool", Arguments: map[string]interface{}{"q": "docs"}}},
+			FinishReason: types.FinishReasonToolCalls,
+		}},
+	}
+	tool := types.Tool{Name: "server_tool", ProviderExecuted: true}
+	reason := "approved"
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: mock,
+		Tools: []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{
+			"server_tool": types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved, Reason: &reason},
+		},
+		MaxSteps: 1,
+	})
+
+	result, err := agent.Execute(context.Background(), "lookup")
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("steps len = %d, want 1", len(result.Steps))
+	}
+	step := result.Steps[0]
+	if len(step.ToolResults) != 1 || !step.ToolResults[0].ProviderExecuted || step.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusApproved {
+		t.Fatalf("tool results = %#v, want approved provider-executed result", step.ToolResults)
+	}
+	if got, want := len(step.Content), 3; got != want {
+		t.Fatalf("step content len = %d, want tool-call + approval request/response: %#v", got, step.Content)
+	}
+	resp, ok := step.Content[2].(types.ToolApprovalResponseContent)
+	if !ok {
+		t.Fatalf("content[2] = %T, want ToolApprovalResponseContent", step.Content[2])
+	}
+	if !resp.Approved || !resp.ProviderExecuted {
+		t.Fatalf("approval response = %+v, want approved provider-executed response", resp)
+	}
+}
+
+func TestContentFromGenerateResultReplacesToolCallWithCanonicalStepCall(t *testing.T) {
+	parts := contentFromGenerateResult(&types.GenerateResult{
+		Content: []types.ContentPart{
+			types.ToolCallContent{
+				ToolCallID:       "call-1",
+				ToolName:         "lookup",
+				Input:            `{"q":"stale"}`,
+				Arguments:        map[string]interface{}{"q": "stale"},
+				ProviderExecuted: false,
+			},
+		},
+	}, []types.ToolCall{{
+		ID:               "call-1",
+		ToolName:         "lookup",
+		RawArguments:     `{"q":"refined"}`,
+		Arguments:        map[string]interface{}{"q": "refined"},
+		ProviderExecuted: true,
+		ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{"trace": "abc"}},
+	}})
+
+	if len(parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1", len(parts))
+	}
+	call, ok := parts[0].(types.ToolCallContent)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ToolCallContent", parts[0])
+	}
+	if call.Input != `{"q":"refined"}` || call.Arguments["q"] != "refined" || !call.ProviderExecuted || len(call.ProviderMetadata) == 0 {
+		t.Fatalf("tool-call content was not replaced with canonical step tool call: %+v", call)
+	}
+}
+
+func TestContentFromGenerateResultEnrichesProviderToolResultWithToolCallInput(t *testing.T) {
+	parts := contentFromGenerateResult(&types.GenerateResult{
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID:       "call-1",
+				ToolName:         "lookup",
+				Output:           &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"ok": true}},
+				ProviderExecuted: true,
+			},
+		},
+	}, []types.ToolCall{{
+		ID:           "call-1",
+		ToolName:     "lookup",
+		Title:        "Lookup",
+		Arguments:    map[string]interface{}{"q": "docs"},
+		ToolMetadata: map[string]interface{}{"source": "catalog"},
+		Dynamic:      true,
+	}})
+
+	var result types.ToolResultContent
+	var found bool
+	for _, part := range parts {
+		if p, ok := part.(types.ToolResultContent); ok && p.ToolCallID == "call-1" {
+			result = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing enriched ToolResultContent in %#v", parts)
+	}
+	if result.Title != "" || result.Input["q"] != "docs" || result.ToolMetadata["source"] != "catalog" || !result.Dynamic {
+		t.Fatalf("tool result was not enriched from tool call: %+v", result)
+	}
+}
+
 // Test that OnStepFinish is called for each step in multi-step execution
 func TestOnStepFinish_MultiStep(t *testing.T) {
 	var steps []types.StepResult

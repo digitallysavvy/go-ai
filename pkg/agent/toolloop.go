@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"time"
@@ -36,14 +37,36 @@ type agentCallbacks struct {
 // When both are provided, both fire in order: settings first, then call-level.
 // Either (or both) may be nil.
 func mergeCallbacks(settings AgentConfig, callOpts agentCallbacks) agentCallbacks {
+	settingsToolStart := settings.OnToolExecutionStart
+	if settingsToolStart == nil {
+		settingsToolStart = settings.OnToolCallStart
+	}
+	settingsToolFinish := settings.OnToolExecutionEnd
+	if settingsToolFinish == nil {
+		settingsToolFinish = settings.OnToolCallFinish
+	}
 	return agentCallbacks{
 		onStart:          mergeListener(settings.OnStart, callOpts.onStart),
 		onStepStart:      mergeListener(settings.OnStepStartEvent, callOpts.onStepStart),
-		onToolCallStart:  mergeListener(settings.OnToolCallStart, callOpts.onToolCallStart),
-		onToolCallFinish: mergeListener(settings.OnToolCallFinish, callOpts.onToolCallFinish),
+		onToolCallStart:  mergeListener(settingsToolStart, callOpts.onToolCallStart),
+		onToolCallFinish: mergeListener(settingsToolFinish, callOpts.onToolCallFinish),
 		onStepFinish:     mergeListener(settings.OnStepFinishEvent, callOpts.onStepFinish),
 		onFinish:         mergeListener(settings.OnFinishEvent, callOpts.onFinish),
 	}
+}
+
+func resolveAgentToolExecutionStart(opts AgentGenerateOptions) func(context.Context, ai.OnToolCallStartEvent) {
+	if opts.OnToolExecutionStart != nil {
+		return opts.OnToolExecutionStart
+	}
+	return opts.OnToolCallStart
+}
+
+func resolveAgentToolExecutionEnd(opts AgentGenerateOptions) func(context.Context, ai.OnToolCallFinishEvent) {
+	if opts.OnToolExecutionEnd != nil {
+		return opts.OnToolExecutionEnd
+	}
+	return opts.OnToolCallFinish
 }
 
 // mergeListener returns a single listener that calls both a and b in order.
@@ -174,8 +197,8 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 	cbs := mergeCallbacks(config, agentCallbacks{
 		onStart:          opts.OnStart,
 		onStepStart:      opts.OnStepStart,
-		onToolCallStart:  opts.OnToolCallStart,
-		onToolCallFinish: opts.OnToolCallFinish,
+		onToolCallStart:  resolveAgentToolExecutionStart(opts),
+		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
 		onStepFinish:     opts.OnStepFinish,
 		onFinish:         opts.OnFinish,
 	})
@@ -244,8 +267,8 @@ func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOpt
 	cbs := agentCallbacks{
 		onStart:          opts.OnStart,
 		onStepStart:      opts.OnStepStart,
-		onToolCallStart:  opts.OnToolCallStart,
-		onToolCallFinish: opts.OnToolCallFinish,
+		onToolCallStart:  resolveAgentToolExecutionStart(opts),
+		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
 		onStepFinish:     opts.OnStepFinish,
 		onFinish:         opts.OnFinish,
 	}
@@ -277,8 +300,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	cbs := mergeCallbacks(config, agentCallbacks{
 		onStart:          opts.OnStart,
 		onStepStart:      opts.OnStepStart,
-		onToolCallStart:  opts.OnToolCallStart,
-		onToolCallFinish: opts.OnToolCallFinish,
+		onToolCallStart:  resolveAgentToolExecutionStart(opts.AgentGenerateOptions),
+		onToolCallFinish: resolveAgentToolExecutionEnd(opts.AgentGenerateOptions),
 		onStepFinish:     opts.OnStepFinish,
 		onFinish:         opts.OnFinish,
 	})
@@ -467,10 +490,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			return nil, fmt.Errorf("step %d failed: %w", stepNum, err)
 		}
 
-		responseContent := make([]types.ContentPart, 0, 1)
-		if stepResult.Text != "" {
-			responseContent = append(responseContent, types.TextContent{Text: stepResult.Text})
-		}
+		responseContent := append([]types.ContentPart(nil), stepResult.Content...)
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
@@ -514,6 +534,8 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
+			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults)...)
+			responseContent = stepResult.Content
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			if len(toolResults) == 0 {
 				shouldContinue = false
@@ -910,8 +932,11 @@ func enrichAgentToolCallMetadata(calls []types.ToolCall, tools []types.Tool) []t
 	out := make([]types.ToolCall, len(calls))
 	copy(out, calls)
 	for i := range out {
-		if out[i].ToolMetadata == nil {
-			if tool, ok := byName[out[i].ToolName]; ok && tool.Metadata != nil {
+		if tool, ok := byName[out[i].ToolName]; ok {
+			if out[i].Title == "" {
+				out[i].Title = tool.Title
+			}
+			if out[i].ToolMetadata == nil && tool.Metadata != nil {
 				out[i].ToolMetadata = cloneAgentStringAnyMap(tool.Metadata)
 			}
 		}
@@ -1080,7 +1105,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,
-		Content:          contentFromGenerateResult(genResult),
+		Content:          contentFromGenerateResult(genResult, toolCalls),
 		ToolCalls:        toolCalls,
 		StaticToolCalls:  filterAgentStaticToolCalls(toolCalls),
 		DynamicToolCalls: filterAgentDynamicToolCalls(toolCalls),
@@ -1132,9 +1157,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			results = append(results, types.ToolResult{
 				ToolCallID:   call.ID,
 				ToolName:     call.ToolName,
+				Title:        call.Title,
 				Input:        call.Arguments,
 				Error:        invalidErr,
-				Result:       types.ToolResultOutput{Type: types.ToolResultOutputError, Value: invalidErr.Error()},
 				ToolMetadata: call.ToolMetadata,
 			})
 			continue
@@ -1154,6 +1179,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            notFoundErr,
 				ProviderExecuted: false,
@@ -1170,6 +1196,64 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		providerExecuted := tool.ProviderExecuted
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 
+		approval, approvalErr := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+		if approvalErr != nil {
+			results = append(results, types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Error:            approvalErr,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			})
+			continue
+		}
+		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
+			if !a.config.ToolApprover(call) {
+				approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+			}
+		}
+		switch approval.Status {
+		case types.ToolApprovalStatusDenied:
+			reason := approval.Reason
+			if reason == nil {
+				reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+			}
+			rejectionErr := fmt.Errorf("%s", *reason)
+			results = append(results, types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Error:            rejectionErr,
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				ApprovalStatus:   types.ToolApprovalStatusDenied,
+				ApprovalReason:   reason,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			})
+			if a.config.OnToolError != nil {
+				a.config.OnToolError(call, rejectionErr)
+			}
+			continue
+		case types.ToolApprovalStatusUserApproval:
+			results = append(results, types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			})
+			continue
+		}
+
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
 			// Call OnToolStart for provider-executed tools
@@ -1180,9 +1264,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           nil,
 				Error:            nil,
+				ApprovalStatus:   approval.Status,
+				ApprovalReason:   approval.Reason,
 				ProviderExecuted: true,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
@@ -1199,58 +1286,6 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				a.config.OnToolEnd(result)
 			}
 		} else {
-			approval, approvalErr := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
-			if approvalErr != nil {
-				results = append(results, types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Error:            approvalErr,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				})
-				continue
-			}
-			if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
-				if !a.config.ToolApprover(call) {
-					approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
-				}
-			}
-			switch approval.Status {
-			case types.ToolApprovalStatusDenied:
-				reason := approval.Reason
-				if reason == nil {
-					reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
-				}
-				rejectionErr := fmt.Errorf("%s", *reason)
-				results = append(results, types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Error:            rejectionErr,
-					Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
-					ApprovalStatus:   types.ToolApprovalStatusDenied,
-					ApprovalReason:   reason,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				})
-				if a.config.OnToolError != nil {
-					a.config.OnToolError(call, rejectionErr)
-				}
-				continue
-			case types.ToolApprovalStatusUserApproval:
-				results = append(results, types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
-					ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				})
-				continue
-			}
-
 			if tool.Execute == nil {
 				continue
 			}
@@ -1260,6 +1295,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				results = append(results, types.ToolResult{
 					ToolCallID:       call.ID,
 					ToolName:         call.ToolName,
+					Title:            call.Title,
 					Input:            call.Arguments,
 					Error:            err,
 					ProviderMetadata: providerMetadata,
@@ -1302,6 +1338,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,
@@ -1376,14 +1413,242 @@ func includeAgentRequestMessages(include bool, messages []types.Message) []types
 	return append([]types.Message(nil), messages...)
 }
 
-func contentFromGenerateResult(result *types.GenerateResult) []types.ContentPart {
-	if len(result.Content) > 0 {
-		return append([]types.ContentPart(nil), result.Content...)
-	}
-	if result.Text == "" {
+func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.ToolCall) []types.ContentPart {
+	if result == nil {
 		return nil
 	}
-	return []types.ContentPart{types.TextContent{Text: result.Text}}
+	parts := append([]types.ContentPart(nil), result.Content...)
+	if result.Text != "" && !agentContentHasText(parts) {
+		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+	}
+	seenToolCalls := map[string]bool{}
+	for i, part := range parts {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			seenToolCalls[p.ToolCallID] = true
+			if call, ok := agentToolCallByID(toolCalls, p.ToolCallID); ok {
+				parts[i] = agentContentPartFromToolCall(call)
+			}
+		case *types.ToolCallContent:
+			if p != nil {
+				seenToolCalls[p.ToolCallID] = true
+				if call, ok := agentToolCallByID(toolCalls, p.ToolCallID); ok {
+					parts[i] = agentContentPartFromToolCall(call)
+				}
+			}
+		}
+	}
+	for _, call := range toolCalls {
+		if seenToolCalls[call.ID] {
+			continue
+		}
+		parts = append(parts, agentContentPartFromToolCall(call))
+	}
+	parts = replaceAgentToolResultContentParts(parts, toolCalls)
+	return parts
+}
+
+func agentToolCallByID(calls []types.ToolCall, id string) (types.ToolCall, bool) {
+	for _, call := range calls {
+		if call.ID == id {
+			return call, true
+		}
+	}
+	return types.ToolCall{}, false
+}
+
+func agentContentPartFromToolCall(call types.ToolCall) types.ToolCallContent {
+	return types.ToolCallContent{
+		ToolCallID:       call.ID,
+		ToolName:         call.ToolName,
+		Title:            call.Title,
+		Input:            call.RawArguments,
+		Arguments:        call.Arguments,
+		ProviderExecuted: call.ProviderExecuted,
+		ProviderMetadata: agentProviderMetadataRaw(call.ProviderMetadata),
+		ToolMetadata:     call.ToolMetadata,
+		Dynamic:          call.Dynamic,
+		Invalid:          call.Invalid,
+		Error:            agentToolCallContentError(call.Error),
+		ThoughtSignature: call.ThoughtSignature,
+	}
+}
+
+func agentToolCallContentError(err error) interface{} {
+	if err == nil {
+		return nil
+	}
+	return err.Error()
+}
+
+func replaceAgentToolResultContentParts(parts []types.ContentPart, calls []types.ToolCall) []types.ContentPart {
+	if len(parts) == 0 || len(calls) == 0 {
+		return parts
+	}
+	for i, part := range parts {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+				parts[i] = enrichAgentToolResultContent(p, call)
+			}
+		case *types.ToolResultContent:
+			if p != nil {
+				if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+					parts[i] = enrichAgentToolResultContent(*p, call)
+				}
+			}
+		case types.ToolErrorContent:
+			if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+				parts[i] = enrichAgentToolErrorContent(p, call)
+			}
+		case *types.ToolErrorContent:
+			if p != nil {
+				if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+					parts[i] = enrichAgentToolErrorContent(*p, call)
+				}
+			}
+		}
+	}
+	return parts
+}
+
+func enrichAgentToolResultContent(part types.ToolResultContent, call types.ToolCall) types.ToolResultContent {
+	if part.Input == nil {
+		part.Input = call.Arguments
+	}
+	if part.ToolMetadata == nil {
+		part.ToolMetadata = call.ToolMetadata
+	}
+	part.Dynamic = call.Dynamic
+	return part
+}
+
+func enrichAgentToolErrorContent(part types.ToolErrorContent, call types.ToolCall) types.ToolErrorContent {
+	if part.Input == nil {
+		part.Input = call.Arguments
+	}
+	if part.ToolMetadata == nil {
+		part.ToolMetadata = call.ToolMetadata
+	}
+	part.Dynamic = call.Dynamic
+	return part
+}
+
+func agentProviderMetadataRaw(metadata map[string]interface{}) json.RawMessage {
+	if len(metadata) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func agentContentHasText(parts []types.ContentPart) bool {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			if p.Text != "" {
+				return true
+			}
+		case *types.TextContent:
+			if p != nil && p.Text != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func agentToolResultsToContentParts(results []types.ToolResult) []types.ContentPart {
+	if len(results) == 0 {
+		return nil
+	}
+	parts := make([]types.ContentPart, 0, len(results))
+	for _, result := range results {
+		if result.ProviderExecuted && result.ApprovalStatus == "" {
+			continue
+		}
+		if result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
+			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
+			result.ApprovalStatus == types.ToolApprovalStatusDenied {
+			toolCall := types.ToolCall{
+				ID:               result.ToolCallID,
+				ToolName:         result.ToolName,
+				Title:            result.Title,
+				Arguments:        result.Input,
+				ProviderExecuted: result.ProviderExecuted,
+				ProviderMetadata: result.ProviderMetadata,
+				ToolMetadata:     result.ToolMetadata,
+				Dynamic:          result.Dynamic,
+			}
+			parts = append(parts, types.ToolApprovalRequestContent{
+				ApprovalID:  result.ToolCallID,
+				ToolCallID:  result.ToolCallID,
+				ToolCall:    toolCall,
+				IsAutomatic: result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied,
+			})
+			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+				continue
+			}
+			reason := ""
+			if result.ApprovalReason != nil {
+				reason = *result.ApprovalReason
+			}
+			parts = append(parts, types.ToolApprovalResponseContent{
+				ApprovalID:       result.ToolCallID,
+				ToolCallID:       result.ToolCallID,
+				ToolCall:         toolCall,
+				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,
+				Reason:           reason,
+				ProviderExecuted: result.ProviderExecuted,
+			})
+			if result.ProviderExecuted || result.ApprovalStatus == types.ToolApprovalStatusDenied {
+				continue
+			}
+		}
+		if result.Error != nil {
+			parts = append(parts, types.ToolErrorContent{
+				ToolCallID:       result.ToolCallID,
+				ToolName:         result.ToolName,
+				Input:            result.Input,
+				Error:            result.Error.Error(),
+				ProviderExecuted: result.ProviderExecuted,
+				ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),
+				ToolMetadata:     result.ToolMetadata,
+				Dynamic:          result.Dynamic,
+			})
+			continue
+		}
+		part := types.ToolResultContent{
+			ToolCallID:       result.ToolCallID,
+			ToolName:         result.ToolName,
+			Input:            result.Input,
+			Result:           result.Result,
+			ProviderExecuted: result.ProviderExecuted,
+			ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),
+			ToolMetadata:     result.ToolMetadata,
+			Dynamic:          result.Dynamic,
+			Preliminary:      result.Preliminary,
+		}
+		switch output := result.Result.(type) {
+		case types.ToolResultOutput:
+			part.Output = &output
+			part.Result = nil
+		case *types.ToolResultOutput:
+			part.Output = output
+			part.Result = nil
+		case string:
+			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
+			part.Result = nil
+		default:
+			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+			part.Result = nil
+		}
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 func filterAgentStaticToolCalls(calls []types.ToolCall) []types.ToolCall {
