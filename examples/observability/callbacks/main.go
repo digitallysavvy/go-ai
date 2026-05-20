@@ -18,8 +18,8 @@ import (
 // Structured callbacks fire at each lifecycle stage of generation:
 //   - OnStart:           once, before any LLM request
 //   - OnStepStart:       once per step (LLM call)
-//   - OnToolCallStart:   once per tool, before execution
-//   - OnToolCallFinish:  once per tool, after execution (success or error)
+//   - OnToolExecutionStart: once per tool, before execution
+//   - OnToolExecutionEnd:   once per tool, after execution (success or error)
 //   - OnStepFinish:      once per step, after all tools for that step run
 //   - OnFinish:          once, after all steps complete
 //
@@ -86,18 +86,18 @@ func main() {
 				e.StepNumber, len(e.Messages))
 		},
 
-		OnToolCallStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
-			log.Printf("[OnToolCallStart] step=%d tool=%s id=%s args=%v",
+		OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
+			log.Printf("[OnToolExecutionStart] step=%d tool=%s id=%s args=%v",
 				e.StepNumber, e.ToolName, e.ToolCallID, e.Args)
 		},
 
-		OnToolCallFinish: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
 			if e.Error != nil {
-				log.Printf("[OnToolCallFinish] step=%d tool=%s ERROR: %v",
+				log.Printf("[OnToolExecutionEnd] step=%d tool=%s ERROR: %v",
 					e.StepNumber, e.ToolName, e.Error)
 				return
 			}
-			log.Printf("[OnToolCallFinish] step=%d tool=%s result=%v",
+			log.Printf("[OnToolExecutionEnd] step=%d tool=%s result=%v",
 				e.StepNumber, e.ToolName, e.Result)
 		},
 

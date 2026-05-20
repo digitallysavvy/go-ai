@@ -54,12 +54,12 @@ func main() {
 |----------|-----------|-------------|
 | `OnStart` | `OnStartEvent` | Called when generation begins, before any LLM calls. |
 | `OnStepStart` | `OnStepStartEvent` | Called when a step (LLM call) begins, before the provider is called. |
-| `OnToolCallStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
-| `OnToolCallFinish` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
+| `OnToolExecutionStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
+| `OnToolExecutionEnd` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
 | `OnStepFinishEvent` | `OnStepFinishEvent` | Called when a step (LLM call) completes. |
 | `OnFinishEvent` | `OnFinishEvent` | Called when the entire generation completes (all steps finished). |
 
-All six callbacks receive `(ctx context.Context, event <EventType>)` and are panic-safe. They fire in addition to the legacy `OnStepFinish` and `OnFinish` callbacks.
+All six callbacks receive `(ctx context.Context, event <EventType>)` and are panic-safe. They fire in addition to the legacy `OnStepFinish` and `OnFinish` callbacks. `OnToolCallStart` and `OnToolCallFinish` remain as deprecated aliases for `OnToolExecutionStart` and `OnToolExecutionEnd`.
 
 ### Embed / EmbedMany
 
@@ -350,10 +350,10 @@ func main() {
 		Model:  model,
 		Prompt: "What is the weather?",
 		// Tools: []types.Tool{getWeather},
-		OnToolCallStart: func(ctx context.Context, event ai.OnToolCallStartEvent) {
+		OnToolExecutionStart: func(ctx context.Context, event ai.OnToolCallStartEvent) {
 			fmt.Printf("Tool %q starting...\n", event.ToolName)
 		},
-		OnToolCallFinish: func(ctx context.Context, event ai.OnToolCallFinishEvent) {
+		OnToolExecutionEnd: func(ctx context.Context, event ai.OnToolCallFinishEvent) {
 			if event.Error == nil {
 				fmt.Printf("Tool %q completed in %dms\n",
 					event.ToolName, event.DurationMs)

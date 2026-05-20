@@ -115,6 +115,7 @@ type GeneratedFileContent struct {
     FileData         FileData        `json:"fileData,omitempty"`
     Data             []byte          `json:"data,omitempty"`
     URL              string          `json:"url,omitempty"`
+    ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
     ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
 }
 ```
@@ -127,28 +128,92 @@ Generated file output from providers that return files or file URLs. Custom JSON
 type ToolCallContent struct {
     ToolCallID       string          `json:"toolCallId"`
     ToolName         string          `json:"toolName"`
+    Title            string          `json:"title,omitempty"`
     Input            string          `json:"input,omitempty"`
     Arguments        map[string]interface{} `json:"arguments,omitempty"`
     ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+    ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
     ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+    ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+    Dynamic          bool                   `json:"dynamic,omitempty"`
+    Invalid          bool                   `json:"invalid,omitempty"`
+    Error            interface{}            `json:"error,omitempty"`
     ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 }
 ```
 
-Assistant tool-call content preserves ordered model output, including provider-executed tool calls and Google `thoughtSignature` metadata for round trips.
+Assistant tool-call content preserves ordered model output, including provider-executed, dynamic, invalid, and tool-metadata fields plus Google `thoughtSignature` metadata for round trips.
+
+`Input` stores the provider's raw streamed JSON when available, while `Arguments` stores the decoded Go map used by provider converters and tool execution. JSON serialization follows the TypeScript SDK public shape and emits `input`; it does not emit the Go-only `arguments` helper field.
 
 ## ToolResultContent
 
 ```go
 type ToolResultContent struct {
-    ToolCallID string      `json:"toolCallId"`
-    ToolName   string      `json:"toolName"`
-    Result     interface{} `json:"result"`
-    Error      string      `json:"error,omitempty"`
+    ToolCallID       string                 `json:"toolCallId"`
+    ToolName         string                 `json:"toolName"`
+    Title            string                 `json:"title,omitempty"`
+    Input            map[string]interface{} `json:"input,omitempty"`
+    Result           interface{}            `json:"result,omitempty"` // deprecated; use Output
+    Error            string                 `json:"error,omitempty"`
+    Output           *ToolResultOutput      `json:"output,omitempty"`
+    ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+    ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+    ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+    ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+    Dynamic          bool                   `json:"dynamic,omitempty"`
+    Preliminary      bool                   `json:"preliminary,omitempty"`
 }
 ```
 
-Tool execution result in a message.
+Tool execution result content mirrors the TypeScript SDK `tool-result` part. Output content carries `ProviderMetadata`; when the part is replayed to a provider as a response message, that metadata is converted to provider-facing `ProviderOptions`.
+
+## ToolErrorContent
+
+```go
+type ToolErrorContent struct {
+    ToolCallID       string                 `json:"toolCallId"`
+    ToolName         string                 `json:"toolName"`
+    Title            string                 `json:"title,omitempty"`
+    Input            map[string]interface{} `json:"input,omitempty"`
+    Error            interface{}            `json:"error"`
+    ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+    ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+    ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+    ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+    Dynamic          bool                   `json:"dynamic,omitempty"`
+}
+```
+
+Tool execution error content mirrors the TypeScript SDK `tool-error` part and follows the same `ProviderMetadata` to `ProviderOptions` replay behavior.
+
+## ToolApprovalRequestContent
+
+```go
+type ToolApprovalRequestContent struct {
+    ApprovalID  string   `json:"approvalId"`
+    ToolCallID  string   `json:"toolCallId"` // provider replay shape
+    ToolCall    ToolCall `json:"toolCall,omitempty"` // public result content shape
+    IsAutomatic bool     `json:"isAutomatic,omitempty"`
+}
+```
+
+Tool approval request content mirrors the TypeScript SDK split between public result content and replayed provider messages. In `GenerateTextResult.Content` and `StreamTextResult.Content()`, JSON contains `approvalId`, nested `toolCall`, and optional `isAutomatic`. In response messages replayed to a provider, JSON contains `approvalId`, `toolCallId`, and optional `isAutomatic`.
+
+## ToolApprovalResponseContent
+
+```go
+type ToolApprovalResponseContent struct {
+    ApprovalID       string   `json:"approvalId"`
+    ToolCallID       string   `json:"toolCallId,omitempty"` // internal lookup field
+    ToolCall         ToolCall `json:"toolCall,omitempty"` // public result content shape
+    Approved         bool     `json:"approved"`
+    Reason           string   `json:"reason,omitempty"`
+    ProviderExecuted bool     `json:"providerExecuted,omitempty"`
+}
+```
+
+Tool approval response content contains `approvalId`, nested `toolCall`, `approved`, optional `reason`, and optional `providerExecuted` in public result content. Provider replay strips the nested tool call and sends `approvalId`, `approved`, `reason`, and `providerExecuted`, matching the TypeScript SDK `toResponseMessages` behavior.
 
 ## Prompt
 

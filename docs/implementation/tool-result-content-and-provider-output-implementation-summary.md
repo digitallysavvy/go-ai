@@ -1,4 +1,4 @@
-# P1-6: Tool Result Content Arrays & Provider-Specific Content - IMPLEMENTATION COMPLETE ✅
+# Tool Result Content Arrays and Provider-Specific Content - Implementation Summary
 
 ## Overview
 

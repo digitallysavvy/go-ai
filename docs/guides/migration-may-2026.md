@@ -151,13 +151,35 @@ Telemetry integrations should use the stable end-event names from the May 2026 T
 
 | Previous Go name | New Go name |
 | --- | --- |
+| `OnToolCallStart` / `FireOnToolCallStart` | `OnToolExecutionStart` / `FireOnToolCallStart` |
+| `OnToolCallFinish` / `FireOnToolCallFinish` | `OnToolExecutionEnd` / `FireOnToolCallFinish` |
 | `OnFinish` / `FireOnFinish` | `OnEnd` / `FireOnEnd` |
 | `OnEmbedFinish` / `FireOnEmbedFinish` | `OnEmbedEnd` / `FireOnEmbedEnd` |
 | `OnRerankFinish` / `FireOnRerankFinish` | `OnRerankEnd` / `FireOnRerankEnd` |
 
-The older names remain as deprecated compatibility fallbacks. Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should continue using `StreamTextOptions.OnChunk` for application-level chunk handling.
+`TelemetryIntegration` now includes the TypeScript-aligned `OnToolExecutionStart` and `OnToolExecutionEnd` methods. `OnToolCallStart` and `OnToolCallFinish` remain as deprecated aliases.
+
+Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should continue using `StreamTextOptions.OnChunk` for application-level chunk handling.
+
+`GenerateTextOptions`, `StreamTextOptions`, `agent.AgentGenerateOptions`, and `agent.AgentConfig` also prefer `OnToolExecutionStart` and `OnToolExecutionEnd` for tool execution callbacks. The older `OnToolCallStart` and `OnToolCallFinish` option fields remain deprecated aliases.
+
+## Result Content And Step Performance
+
+`GenerateTextResult.Content` now matches the TypeScript SDK `result.content` getter: it is the ordered aggregate of every step's content parts, including text, reasoning, files, sources, tool calls, tool results, tool errors, and tool approval request/response parts.
 
 `types.StepResult` now includes `Performance` statistics matching the TypeScript SDK: `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `TokensPerSecond`, and streaming-only `TimeToFirstTokenMs`. Use `FinalStep.Performance.TokensPerSecond` for final-step throughput and `Steps[i].Performance` for multi-step workflows.
+
+`StepTimeMs` is measured as wall-clock step duration, including client-side tool execution. `ToolExecutionMs` is keyed by `toolCallID`.
+
+## Sandbox Description
+
+`ai.Sandbox` now includes `Description() string`. When a sandbox is active, non-empty descriptions are appended to system instructions before provider calls, matching the TypeScript SDK sandbox instruction behavior.
+
+```go
+sandbox := ai.NewShellSandbox(
+    ai.WithShellSandboxDescription("Ubuntu 22.04, root: /workspace"),
+)
+```
 
 ## CallOptionsSchema
 

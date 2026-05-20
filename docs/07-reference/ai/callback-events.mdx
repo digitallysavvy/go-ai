@@ -7,6 +7,8 @@ description: Structured lifecycle events for observability in GenerateText, Stre
 
 The Go-AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
 
+`GenerateTextOptions`, `StreamTextOptions`, `AgentGenerateOptions`, and `AgentConfig` use the TypeScript-aligned tool callback names `OnToolExecutionStart` and `OnToolExecutionEnd`. The event structs keep their Go names, `OnToolCallStartEvent` and `OnToolCallFinishEvent`.
+
 All callbacks are **optional** and **panic-safe** — a panicking callback never aborts generation.
 
 ## Event Types
@@ -66,7 +68,7 @@ type OnStepStartEvent struct {
 
 ### OnToolCallStartEvent
 
-Fired before each individual tool is executed.
+Fired before each individual tool is executed. Use this event with `OnToolExecutionStart`.
 
 ```go
 type OnToolCallStartEvent struct {
@@ -90,7 +92,7 @@ type OnToolCallStartEvent struct {
 
 ### OnToolCallFinishEvent
 
-Fired after each tool completes (success or failure). This is a discriminated union: either `Result` or `Error` is non-nil.
+Fired after each tool completes (success or failure). Use this event with `OnToolExecutionEnd`. This is a discriminated union: either `Result` or `Error` is non-nil.
 
 ```go
 type OnToolCallFinishEvent struct {
@@ -197,10 +199,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     OnStepStart: func(ctx context.Context, e ai.OnStepStartEvent) {
         log.Printf("[step %d start] messages=%d", e.StepNumber, len(e.Messages))
     },
-    OnToolCallStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
+    OnToolExecutionStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
         log.Printf("[tool start] %s args=%v", e.ToolName, e.Args)
     },
-    OnToolCallFinish: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
+    OnToolExecutionEnd: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
         if e.Error != nil {
             log.Printf("[tool error] %s: %v", e.ToolName, e.Error)
         } else {
@@ -230,12 +232,12 @@ agent := agent.NewToolLoopAgent(agent.AgentConfig{
     OnStart: func(ctx context.Context, e ai.OnStartEvent) {
         log.Printf("Agent starting: model=%s", e.ModelID)
     },
-    OnToolCallStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
+    OnToolExecutionStart: func(ctx context.Context, e ai.OnToolCallStartEvent) {
         log.Printf("Tool call: %s", e.ToolName)
     },
-    OnToolCallFinish: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
+    OnToolExecutionEnd: func(ctx context.Context, e ai.OnToolCallFinishEvent) {
         if e.Error != nil {
-            log.Printf("Tool failed: %s — %v", e.ToolName, e.Error)
+            log.Printf("Tool failed: %s: %v", e.ToolName, e.Error)
         }
     },
     OnFinishEvent: func(ctx context.Context, e ai.OnFinishEvent) {
@@ -254,8 +256,8 @@ For a single `GenerateText` call with one tool call, the event order is:
 OnStart
 └── Step 1
     ├── OnStepStart
-    ├── OnToolCallStart (for each tool call)
-    ├── OnToolCallFinish (for each tool call)
+    ├── OnToolExecutionStart (for each tool execution)
+    ├── OnToolExecutionEnd (for each tool execution)
     └── OnStepFinish
 └── Step 2
     ├── OnStepStart

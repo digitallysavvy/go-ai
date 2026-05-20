@@ -11,7 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-type p0TelemetryCapture struct {
+type telemetryCapture struct {
 	telemetry.NoopTelemetryIntegration
 
 	mu             sync.Mutex
@@ -23,45 +23,45 @@ type p0TelemetryCapture struct {
 	rerankFinishes []telemetry.RerankingModelCallEndEvent
 }
 
-func (c *p0TelemetryCapture) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+func (c *telemetryCapture) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.starts = append(c.starts, e)
 	return ctx
 }
 
-func (c *p0TelemetryCapture) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
+func (c *telemetryCapture) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.finishes = append(c.finishes, e)
 }
 
-func (c *p0TelemetryCapture) OnEmbedStart(_ context.Context, e telemetry.EmbeddingModelCallStartEvent) {
+func (c *telemetryCapture) OnEmbedStart(_ context.Context, e telemetry.EmbeddingModelCallStartEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.embedStarts = append(c.embedStarts, e)
 }
 
-func (c *p0TelemetryCapture) OnEmbedFinish(_ context.Context, e telemetry.EmbeddingModelCallEndEvent) {
+func (c *telemetryCapture) OnEmbedFinish(_ context.Context, e telemetry.EmbeddingModelCallEndEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.embedFinishes = append(c.embedFinishes, e)
 }
 
-func (c *p0TelemetryCapture) OnRerankStart(_ context.Context, e telemetry.RerankingModelCallStartEvent) {
+func (c *telemetryCapture) OnRerankStart(_ context.Context, e telemetry.RerankingModelCallStartEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rerankStarts = append(c.rerankStarts, e)
 }
 
-func (c *p0TelemetryCapture) OnRerankFinish(_ context.Context, e telemetry.RerankingModelCallEndEvent) {
+func (c *telemetryCapture) OnRerankFinish(_ context.Context, e telemetry.RerankingModelCallEndEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rerankFinishes = append(c.rerankFinishes, e)
 }
 
-func TestP0Telemetry_EmbedUsesGlobalIntegrationByDefault(t *testing.T) {
-	capture := &p0TelemetryCapture{}
+func TestTelemetry_EmbedUsesGlobalIntegrationByDefault(t *testing.T) {
+	capture := &telemetryCapture{}
 	telemetry.RegisterTelemetryIntegration(capture)
 	defer telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
 
@@ -97,9 +97,9 @@ func TestP0Telemetry_EmbedUsesGlobalIntegrationByDefault(t *testing.T) {
 	}
 }
 
-func TestP0Telemetry_RerankPerCallIntegrationOverridesGlobal(t *testing.T) {
-	global := &p0TelemetryCapture{}
-	local := &p0TelemetryCapture{}
+func TestTelemetry_RerankPerCallIntegrationOverridesGlobal(t *testing.T) {
+	global := &telemetryCapture{}
+	local := &telemetryCapture{}
 	telemetry.RegisterTelemetryIntegration(global)
 	defer telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{})
 

@@ -7,12 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+TS SDK parity — fully compatible with TS AI SDK v7 at `9e8753a26c`.
+May 2026 cycle: 7 PRDs (P1-4 through P2-3), 120+ tasks. Zero open parity gaps.
+
 ### Breaking Changes
 
 - **Core SDK** `IncludeOptions.RawChunks` is now `*bool` instead of `bool` so
   unset can be distinguished from explicit `false`. This matches the TypeScript
   SDK resolution order: `include.rawChunks ?? includeRawChunks ?? false`.
   Existing callers should replace `RawChunks: true` with a bool pointer.
+
+### Added
+
+#### Core SDK
+- **`GenerateTextResult.Content []types.ContentPart`** — aggregates content from
+  all steps in order (text, tool calls, tool results, reasoning); mirrors TS
+  `GenerateTextResult.content` (GAP-008)
+- **`StepPerformance.StepTimeMs int64`** and **`ToolExecutionMs map[string]int64`**
+  — wall-clock step time and per-tool execution time keyed by toolCallID (GAP-001)
+- **`Sandbox.Description() string`** interface method; `ShellSandbox.WithShellSandboxDescription()`
+  option; non-empty description appended to system prompt before each provider
+  call (GAP-009)
+- **`StreamTextOptions.OnError func(ctx, err)`** — called when a `ChunkTypeError`
+  chunk arrives during streaming; mirrors TS `onError` callback
+- **`StreamTextOptions.ExperimentalTransform []StreamTransformFunc`** — ordered
+  post-emit transforms applied to each chunk before `OnChunk` and telemetry;
+  mirrors TS `experimental_transform`
+- **`Tool.Metadata map[string]interface{}`** — arbitrary caller metadata attached
+  to a tool definition; propagated to `ToolCall.ToolMetadata` and
+  `ToolResult.ToolMetadata` for use in callbacks and logging (GAP-002)
+- **`Tool.DescriptionFunc func(ctx, ToolDescriptionOptions) string`** — dynamic
+  description evaluated per-step with runtime context and sandbox (GAP-003)
+
+#### Telemetry
+- **`OnToolExecutionStart` / `OnToolExecutionEnd`** primary method names on
+  `TelemetryIntegration`; `OnToolCallStart` / `OnToolCallFinish` kept as
+  deprecated aliases; matches TS SDK naming (GAP-004)
+
+#### Google Vertex Provider
+- **`GoogleVertexAnthropicProvider`** sub-package
+  (`pkg/providers/googlevertex/anthropic/`) — ADC Bearer token auth,
+  15 `GoogleVertexAnthropicModelID` constants matching TS union,
+  `AnthropicModel()` factory on the Vertex provider (GAP-012)
+
+#### DeepSeek Provider
+- **`thinking.type = 'adaptive'`** passthrough — the type string is now forwarded
+  verbatim to the wire payload (adaptive / enabled / disabled) (GAP-005)
+
+#### Bedrock Provider
+- **Part-level `cachePoint`** injection — `{cachePoint:{type:default}}` appended
+  after each content block when `bedrock.cachePoint` provider option is set (GAP-006)
+- **Unsigned reasoning filter** — `ReasoningContent` parts with an empty
+  `Signature` field are now silently skipped in assistant message conversion (GAP-007)
+
+#### Gateway Provider
+- **`GatewayError.IsRetryable() bool`** — returns true for status 408/409/429
+  and ≥500; wired into exponential-backoff retry in generate.go / stream.go (GAP-010)
+- **Model catalog sync** — ~26 previously missing provider models added
+  (amazon/nova-*, arcee-ai, bytedance/seed-*, inception/mercury-*,
+  interfaze, kwaipilot/kat-coder-*, meituan/longcat-*) (GAP-011)
+
+#### New Provider: Voyage AI
+- **`pkg/providers/voyage/`** — embedding and reranking models; all 17 model ID
+  constants (`voyage-4-large` through `voyage-2`) matching TS union (P2-2)
+
+#### xAI Provider
+- **Image model**: `b64_json` response format, `Quality`, `User`, and
+  `CostInUsdTicks` fields in both options and metadata (P2-2)
+
+#### Perplexity Provider
+- **Cost in `providerMetadata`** — `PerplexityMetadata.Cost` with
+  `InputTokensCost`, `OutputTokensCost`, `RequestCost`, `TotalCost`; reads from
+  nested `usage.cost.*` wire format (P2-2)
+
+#### OpenAI Provider
+- **GPT-5.5 model family** — `gpt-5.5`, `gpt-5.5-2026-04-23` model ID constants
+  completing the GPT-5.x catalog (P2-2)
+
+#### Mistral Provider
+- **Reasoning support** for `mistral-medium-3.5` and `mistral-small-latest` —
+  `supportsReasoningEffort()` check wired to `reasoning_effort` wire field (P2-2)
+
+### Fixed
+
+- **`TestGenerateVideoParallelGenerate` race** — `callCount` in the test mock
+  converted from `int` to `atomic.Int32` to eliminate the data race under
+  `-race`
 
 ## [0.4.0] - 2026-03-29
 

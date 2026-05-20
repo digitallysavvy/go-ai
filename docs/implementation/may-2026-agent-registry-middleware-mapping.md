@@ -1,6 +1,6 @@
-# May 2026 Agent Registry Middleware Parity Matrix
+# May 2026 Agent Registry Middleware Mapping
 
-| TypeScript source | Go package | Parity notes |
+| TypeScript source | Go package | Mapping notes |
 | --- | --- | --- |
 | `ai/packages/ai/src/agent/tool-loop-agent.ts` | `pkg/agent` | `RuntimeContext`, `ToolsContext`, `Prompt`, `FilterActiveTools`, `CallOptionsSchema`, approval statuses, invalid tool-call preservation, and `MaxSteps` to `StopWhen` compatibility are implemented. |
 | `ai/packages/workflow/src/workflow-agent.ts` | `pkg/agent` | Agent ID, prompt, step finish enrichment, provider-executed tool handling, and invalid tool-call error preservation are mapped onto `ToolLoopAgent` APIs. |

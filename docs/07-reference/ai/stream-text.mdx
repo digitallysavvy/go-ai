@@ -59,6 +59,7 @@ The result provides methods to consume the stream:
 | Chunks() | <-chan provider.StreamChunk | Channel of chunks |
 | Steps() | []types.StepResult | Completed steps, including per-step `Performance` statistics |
 | FinalStep() | types.StepResult | Last completed step with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `TokensPerSecond`, and `TimeToFirstTokenMs` |
+| Content() | []types.ContentPart | Ordered generated content from all completed steps |
 
 ## Examples
 

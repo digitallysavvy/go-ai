@@ -76,6 +76,11 @@ type GenerateTextResult struct {
     // The generated text
     Text string
 
+    // Ordered output content from all completed steps. Includes text,
+    // reasoning, tool calls, tool results, files, sources, and provider
+    // metadata-bearing parts in the same order emitted by the model/tool loop.
+    Content []types.ContentPart
+
     // Output contains the parsed output when a WithOutput option was provided.
     // Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
     // Nil when no Output option was set.
@@ -185,6 +190,7 @@ result.ReadAll() (string, error)             // Read all text (blocks until comp
 
 // Accessor methods (available after stream completes)
 result.Text() string                         // Complete generated text
+result.Content() []types.ContentPart         // Ordered content across all steps
 result.FinishReason() types.FinishReason     // Reason the model finished
 result.Usage() types.Usage                   // Token usage information
 result.ToolCalls() []types.ToolCall          // Tool calls made during streaming
@@ -586,7 +592,9 @@ for i, result := range results {
 
 ## Custom Content Types
 
-Some providers return content that does not map to standard text, reasoning, or tool call types. The Go AI SDK represents these as `CustomContent` and `ReasoningFileContent`.
+Some providers return ordered content that carries provider-specific metadata. The Go AI SDK preserves that metadata on output content as `ProviderMetadata`; when the content is replayed to a provider as response messages, it is converted to provider-facing `ProviderOptions`, matching the TypeScript SDK.
+
+This applies to standard content such as text, reasoning, tool-call, tool-result, and tool-error parts, and to provider-specific content that does not map to standard text, reasoning, or tool call types. The Go AI SDK represents provider-specific parts as `CustomContent` and `ReasoningFileContent`.
 
 ### CustomContent
 
