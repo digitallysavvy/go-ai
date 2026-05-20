@@ -33,3 +33,10 @@ func TestShellSandboxCancellation(t *testing.T) {
 		t.Fatal("Execute() error = nil, want cancellation")
 	}
 }
+
+func TestShellSandboxDescription(t *testing.T) {
+	sb := NewShellSandbox(WithShellSandboxDescription("Ubuntu 22.04, root: /workspace"))
+	if got, want := sb.Description(), "Ubuntu 22.04, root: /workspace"; got != want {
+		t.Fatalf("Description() = %q, want %q", got, want)
+	}
+}

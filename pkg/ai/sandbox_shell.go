@@ -10,12 +10,34 @@ import (
 // concrete sandbox abstraction for callers that want TypeScript-style shell
 // execution with Go context cancellation.
 type ShellSandbox struct {
-	Shell string
+	Shell       string
+	description string
 }
 
 // NewShellSandbox returns a sandbox that executes commands with /bin/sh.
-func NewShellSandbox() *ShellSandbox {
-	return &ShellSandbox{Shell: "/bin/sh"}
+func NewShellSandbox(opts ...ShellSandboxOption) *ShellSandbox {
+	sb := &ShellSandbox{Shell: "/bin/sh"}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(sb)
+		}
+	}
+	return sb
+}
+
+// ShellSandboxOption configures ShellSandbox construction.
+type ShellSandboxOption func(*ShellSandbox)
+
+// WithShellSandboxDescription sets a sandbox description appended to model instructions.
+func WithShellSandboxDescription(description string) ShellSandboxOption {
+	return func(s *ShellSandbox) {
+		s.description = description
+	}
+}
+
+// Description returns the sandbox description for instruction injection.
+func (s *ShellSandbox) Description() string {
+	return s.description
 }
 
 // Execute runs command in the configured shell.

@@ -112,6 +112,7 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 
 // Sandbox executes shell commands in an isolated environment.
 type Sandbox interface {
+	Description() string
 	Execute(ctx context.Context, command string, opts SandboxExecuteOptions) (SandboxExecuteResult, error)
 }
 
