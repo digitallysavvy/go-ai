@@ -40,11 +40,11 @@ func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time
 }
 
 func finishStepPerformance(performance types.StepPerformance, stepStart time.Time, toolExecutionMs map[string]int64) types.StepPerformance {
-	performance.StepTimeMs = time.Since(stepStart).Milliseconds()
 	if toolExecutionMs == nil {
 		toolExecutionMs = map[string]int64{}
 	}
 	performance.ToolExecutionMs = toolExecutionMs
+	performance.StepTimeMs = time.Since(stepStart).Milliseconds()
 	return performance
 }
 

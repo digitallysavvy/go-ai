@@ -431,6 +431,9 @@ type PrepareStepOptions struct {
 
 // GenerateTextResult contains the result of text generation.
 type GenerateTextResult struct {
+	// Content contains all generated content parts from all steps in order.
+	Content []types.ContentPart
+
 	// Generated text content
 	Text string
 
@@ -485,16 +488,16 @@ type GenerateTextResult struct {
 	// Context management information (Anthropic-specific)
 	ContextManagement interface{}
 
-	// Warnings from the provider
+	// Warnings from all provider calls.
 	Warnings []types.Warning
 
 	// ProviderMetadata holds provider-specific metadata from the last generation step.
 	ProviderMetadata map[string]interface{}
 
-	// Sources contains citation or grounding references from the final generation step.
+	// Sources contains citation or grounding references from all steps.
 	Sources []types.SourceContent
 
-	// Files contains model-generated output files (e.g. images, audio) from the final step.
+	// Files contains model-generated output files (e.g. images, audio) from all steps.
 	Files []types.GeneratedFileContent
 
 	// TotalUsage is the sum of token usage across all steps.
@@ -745,7 +748,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: stepMessages,
-			System:   stepSystem,
+			System:   appendSandboxDescription(stepSystem, stepSandbox),
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
 			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
@@ -917,6 +920,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepResult.ToolCalls = genResult.ToolCalls
 		stepResult.StaticToolCalls = filterStaticToolCalls(genResult.ToolCalls)
 		stepResult.DynamicToolCalls = filterDynamicToolCalls(genResult.ToolCalls)
+		stepResult.Content = generateResultContentParts(genResult)
 		result.ToolCalls = append(result.ToolCalls, genResult.ToolCalls...)
 		result.StaticToolCalls = filterStaticToolCalls(result.ToolCalls)
 		result.DynamicToolCalls = filterDynamicToolCalls(result.ToolCalls)
@@ -960,6 +964,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
+			stepResult.Content = append(stepResult.Content, toolResultsToContentParts(toolResults)...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -971,18 +976,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 			}
 
-			// Add assistant message with tool calls to history.
-			// ToolCalls must be carried on the message so providers that require
-			// a top-level tool_calls field (e.g. OpenAI) can emit it correctly.
-			assistantMsg := providerutils.ConvertToResponseMessage(
-				genResult.ToolCalls,
-				[]types.ContentPart{types.TextContent{Text: genResult.Text}},
-			)
-
 			// Build response messages: assistant + tool results.
 			stepResponseMsgs := providerutils.ConvertToResponseMessages(
 				genResult.ToolCalls,
-				assistantMsg.Content,
+				stepResult.Content,
 				toolResults,
 			)
 			currentMessages = append(currentMessages, stepResponseMsgs...)
@@ -996,10 +993,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.ReasoningText = stepReasoningText
 			result.FinishReason = genResult.FinishReason
 			result.RawFinishReason = stepRawFinishReason
-			result.Sources = stepSources
-			result.Files = stepFiles
 			result.ContextManagement = genResult.ContextManagement
-			result.Warnings = append(result.Warnings, genResult.Warnings...)
 			result.RawRequest = requestBody
 			result.RawResponse = responseBody
 			result.ResponseHeaders = genResult.ResponseHeaders
@@ -1016,7 +1010,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// Build response messages for this (final) step.
 			finalMsgs := providerutils.ConvertToResponseMessages(
 				genResult.ToolCalls,
-				[]types.ContentPart{types.TextContent{Text: genResult.Text}},
+				stepResult.Content,
 				nil,
 			)
 			stepResult.ResponseMessages = finalMsgs
@@ -1070,6 +1064,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)
+		result.Content = append(result.Content, stepResult.Content...)
+		result.Sources = append(result.Sources, stepResult.Sources...)
+		result.Files = append(result.Files, stepResult.Files...)
+		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 		result.ResponseMessages = responseMessagesFromSteps(result.Steps)
 		result.FinalStep = stepResult
 
@@ -1199,6 +1197,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 	}
 
+	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
+	result.TotalUsage = result.Usage
+	if len(result.Steps) > 0 {
+		result.FinalStep = result.Steps[len(result.Steps)-1]
+		result.Request = result.FinalStep.Request
+		result.Response = result.FinalStep.Response
+		result.ResponseMessages = responseMessagesFromSteps(result.Steps)
+		result.RawRequest = result.Request.Body
+		result.RawResponse = result.Response.Body
+	}
+
 	// Fire OnFinish — integrations record output attributes and end their spans.
 	telUsage := telemetry.TelemetryUsage{
 		InputTokens:  result.Usage.InputTokens,
@@ -1231,17 +1240,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		opts.OnFinish(ctx, result, runtimeContext)
 	}
 
-	// Populate TotalUsage: Usage accumulates across all steps so they are equal.
-	result.TotalUsage = result.Usage
-	if len(result.Steps) > 0 {
-		result.FinalStep = result.Steps[len(result.Steps)-1]
-		result.Request = result.FinalStep.Request
-		result.Response = result.FinalStep.Response
-		result.ResponseMessages = responseMessagesFromSteps(result.Steps)
-		result.RawRequest = result.Request.Body
-		result.RawResponse = result.Response.Body
-	}
-
 	// Emit structured OnFinishEvent.
 	// Usage = last step's usage; TotalUsage = sum across all steps.
 	var finishUsage types.Usage
@@ -1250,8 +1248,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	var lastStepNum int
 	var lastReasoning []types.ReasoningContent
 	var lastReasoningText string
+	var lastToolCalls []types.ToolCall
+	var lastToolResults []types.ToolResult
 	var lastStaticCalls, lastDynamicCalls []types.ToolCall
 	var lastStaticResults, lastDynamicResults []types.ToolResult
+	var lastSources []types.SourceContent
 	if len(result.Steps) > 0 {
 		last := result.Steps[len(result.Steps)-1]
 		finishUsage = last.Usage
@@ -1260,10 +1261,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		lastStepNum = last.StepNumber
 		lastReasoning = last.Reasoning
 		lastReasoningText = last.ReasoningText
+		lastToolCalls = last.ToolCalls
+		lastToolResults = last.ToolResults
 		lastStaticCalls = last.StaticToolCalls
 		lastDynamicCalls = last.DynamicToolCalls
 		lastStaticResults = last.StaticToolResults
 		lastDynamicResults = last.DynamicToolResults
+		lastSources = last.Sources
 	}
 	Notify(ctx, OnFinishEvent{
 		CallID:             callID,
@@ -1274,10 +1278,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Text:               result.Text,
 		Reasoning:          lastReasoning,
 		ReasoningText:      lastReasoningText,
-		ToolCalls:          result.ToolCalls,
+		ToolCalls:          lastToolCalls,
 		StaticToolCalls:    lastStaticCalls,
 		DynamicToolCalls:   lastDynamicCalls,
-		ToolResults:        result.ToolResults,
+		ToolResults:        lastToolResults,
 		StaticToolResults:  lastStaticResults,
 		DynamicToolResults: lastDynamicResults,
 		FinishReason:       result.FinishReason,
@@ -1286,7 +1290,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Steps:              result.Steps,
 		TotalUsage:         result.Usage,
 		Warnings:           result.Warnings,
-		Sources:            result.Sources,
+		Sources:            lastSources,
 		Files:              result.Files,
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
@@ -1405,6 +1409,8 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
 				Error:            toolErr,
 				ProviderExecuted: false,
 				ToolMetadata:     call.ToolMetadata,
@@ -1418,67 +1424,79 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		providerExecuted := tool.ProviderExecuted
 
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
+		approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+		if approvalErr != nil {
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Error:            approvalErr,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			}
+			continue
+		}
+		switch approval.Status {
+		case types.ToolApprovalStatusDenied:
+			reason := approval.Reason
+			if reason == nil {
+				reason = strPtr("Tool execution denied.")
+			}
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				ApprovalStatus:   types.ToolApprovalStatusDenied,
+				ApprovalReason:   reason,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			}
+			continue
+		case types.ToolApprovalStatusUserApproval:
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+				ProviderExecuted: providerExecuted,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			}
+			continue
+		}
 		if providerExecuted {
 			// Provider-executed tool: result will come from provider in next response
 			// We don't execute locally, just mark as pending
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           nil,
 				Error:            nil,
+				ApprovalStatus:   approval.Status,
+				ApprovalReason:   approval.Reason,
 				ProviderExecuted: true,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
 			}
 		} else {
-			approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
-			if approvalErr != nil {
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Error:            approvalErr,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				}
-				continue
-			}
-			switch approval.Status {
-			case types.ToolApprovalStatusDenied:
-				reason := approval.Reason
-				if reason == nil {
-					reason = strPtr("Tool execution denied.")
-				}
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
-					ApprovalStatus:   types.ToolApprovalStatusDenied,
-					ApprovalReason:   reason,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				}
-				continue
-			case types.ToolApprovalStatusUserApproval:
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Input:            call.Arguments,
-					Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
-					ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				}
-				continue
-			}
+			approvalStatus := approval.Status
+			approvalReason := approval.Reason
 
 			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
 				results[i] = types.ToolResult{
 					ToolCallID:       call.ID,
 					ToolName:         call.ToolName,
+					Title:            call.Title,
 					Input:            call.Arguments,
 					Error:            err,
 					ProviderMetadata: providerMetadata,
@@ -1558,9 +1576,12 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
+				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,
+				ApprovalStatus:   approvalStatus,
+				ApprovalReason:   approvalReason,
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,

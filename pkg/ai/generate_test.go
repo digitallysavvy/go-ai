@@ -1486,7 +1486,7 @@ func TestGenerateText_ToolApprovalOverridesNeedsApproval(t *testing.T) {
 	}
 }
 
-func TestGenerateText_ProviderExecutedBypassesApproval(t *testing.T) {
+func TestGenerateText_ProviderExecutedResolvesApproval(t *testing.T) {
 	t.Parallel()
 
 	approvalCalls := 0
@@ -1521,11 +1521,24 @@ func TestGenerateText_ProviderExecutedBypassesApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if approvalCalls != 0 {
-		t.Fatalf("expected provider-executed tool to bypass approval, got %d calls", approvalCalls)
+	if approvalCalls != 1 {
+		t.Fatalf("approval calls = %d, want 1", approvalCalls)
 	}
-	if len(result.ToolResults) != 1 || !result.ToolResults[0].ProviderExecuted {
-		t.Fatalf("expected provider-executed pending result, got %#v", result.ToolResults)
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].ProviderExecuted || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
+		t.Fatalf("expected provider-executed denied result, got %#v", result.ToolResults)
+	}
+	if got, want := len(result.Content), 3; got != want {
+		t.Fatalf("content len = %d, want %d: %#v", got, want, result.Content)
+	}
+	if _, ok := result.Content[1].(types.ToolApprovalRequestContent); !ok {
+		t.Fatalf("content[1] = %T, want ToolApprovalRequestContent", result.Content[1])
+	}
+	resp, ok := result.Content[2].(types.ToolApprovalResponseContent)
+	if !ok {
+		t.Fatalf("content[2] = %T, want ToolApprovalResponseContent", result.Content[2])
+	}
+	if resp.Approved || !resp.ProviderExecuted {
+		t.Fatalf("approval response = %+v, want denied provider-executed response", resp)
 	}
 }
 
