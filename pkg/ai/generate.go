@@ -432,94 +432,94 @@ type PrepareStepOptions struct {
 // GenerateTextResult contains the result of text generation.
 type GenerateTextResult struct {
 	// Content contains all generated content parts from all steps in order.
-	Content []types.ContentPart
+	Content []types.ContentPart `json:"content"`
 
 	// Generated text content
-	Text string
+	Text string `json:"text"`
 
 	// Reasoning holds the reasoning/thinking content from the final step.
-	Reasoning []types.ReasoningContent
+	Reasoning []types.ReasoningContent `json:"reasoning"`
 
 	// ReasoningText is the concatenated reasoning text from the final step.
-	ReasoningText string
+	ReasoningText string `json:"reasoningText,omitempty"`
 
 	// Output contains the parsed output when a WithOutput option was provided.
 	// Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
 	// Nil when no Output option was set.
-	Output any
+	Output any `json:"output,omitempty"`
 
-	// Tool calls made during the final step
-	ToolCalls []types.ToolCall
+	// Tool calls made across all steps.
+	ToolCalls []types.ToolCall `json:"toolCalls"`
 
-	// StaticToolCalls are tool calls from non-dynamic (typed) tools in the final step.
-	StaticToolCalls []types.ToolCall
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools across all steps.
+	StaticToolCalls []types.ToolCall `json:"staticToolCalls"`
 
-	// DynamicToolCalls are tool calls from dynamically registered tools in the final step.
-	DynamicToolCalls []types.ToolCall
+	// DynamicToolCalls are tool calls from dynamically registered tools across all steps.
+	DynamicToolCalls []types.ToolCall `json:"dynamicToolCalls"`
 
-	// Tool results from the final step
-	ToolResults []types.ToolResult
+	// Tool results from all steps.
+	ToolResults []types.ToolResult `json:"toolResults"`
 
-	// StaticToolResults are results from non-dynamic (typed) tools in the final step.
-	StaticToolResults []types.ToolResult
+	// StaticToolResults are results from non-dynamic (typed) tools across all steps.
+	StaticToolResults []types.ToolResult `json:"staticToolResults"`
 
-	// DynamicToolResults are results from dynamically registered tools in the final step.
-	DynamicToolResults []types.ToolResult
+	// DynamicToolResults are results from dynamically registered tools across all steps.
+	DynamicToolResults []types.ToolResult `json:"dynamicToolResults"`
 
 	// Steps taken during generation (for multi-step tool calling)
-	Steps []types.StepResult
+	Steps []types.StepResult `json:"steps"`
 
 	// FinalStep is the last step. It is a shortcut for Steps[len(Steps)-1].
-	FinalStep types.StepResult
+	FinalStep types.StepResult `json:"finalStep"`
 
 	// Reason why generation finished
-	FinishReason types.FinishReason
+	FinishReason types.FinishReason `json:"finishReason"`
 
 	// RawFinishReason is the raw finish reason string from the provider.
-	RawFinishReason string
+	RawFinishReason string `json:"rawFinishReason,omitempty"`
 
 	// StopReason is the reason string from the StopCondition that stopped the loop.
 	// Empty if the loop ended naturally (model stopped calling tools).
-	StopReason string
+	StopReason string `json:"stopReason,omitempty"`
 
 	// Token usage information (last step)
-	Usage types.Usage
+	Usage types.Usage `json:"usage"`
 
 	// Context management information (Anthropic-specific)
-	ContextManagement interface{}
+	ContextManagement interface{} `json:"contextManagement,omitempty"`
 
 	// Warnings from all provider calls.
-	Warnings []types.Warning
+	Warnings []types.Warning `json:"warnings,omitempty"`
 
 	// ProviderMetadata holds provider-specific metadata from the last generation step.
-	ProviderMetadata map[string]interface{}
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
 	// Sources contains citation or grounding references from all steps.
-	Sources []types.SourceContent
+	Sources []types.SourceContent `json:"sources,omitempty"`
 
 	// Files contains model-generated output files (e.g. images, audio) from all steps.
-	Files []types.GeneratedFileContent
+	Files []types.GeneratedFileContent `json:"files,omitempty"`
 
 	// TotalUsage is the sum of token usage across all steps.
 	// For single-step generation, TotalUsage == Usage.
-	TotalUsage types.Usage
+	TotalUsage types.Usage `json:"totalUsage"`
 
 	// ResponseMessages contains response messages generated across all steps.
-	ResponseMessages []types.Message
+	ResponseMessages []types.Message `json:"responseMessages"`
 
 	// Request contains metadata about the last request sent to the provider.
-	Request types.StepRequest
+	Request types.StepRequest `json:"request"`
 
 	// Response contains metadata about the last response from the provider.
-	Response types.StepResponse
+	Response types.StepResponse `json:"response"`
 
 	// Raw request/response (for debugging). Deprecated: use Request.Body and Response.Body.
-	RawRequest  interface{}
-	RawResponse interface{}
+	RawRequest  interface{} `json:"rawRequest,omitempty"`
+	RawResponse interface{} `json:"rawResponse,omitempty"`
 
 	// ResponseHeaders are the raw HTTP response headers from the provider.
 	// Deprecated: use Response.Headers instead.
-	ResponseHeaders map[string]string
+	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 }
 
 // GenerateText performs non-streaming text generation with optional tool calling

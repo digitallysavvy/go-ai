@@ -11,7 +11,7 @@ import (
 // Mirrors LanguageModelRequestMetadata in the TypeScript SDK.
 type GenerateStepRequest struct {
 	// Body is the raw request body sent to the provider API (for debugging).
-	Body interface{}
+	Body interface{} `json:"body,omitempty"`
 }
 
 // GenerateStepResponse contains additional information about the response
@@ -20,24 +20,24 @@ type GenerateStepRequest struct {
 type GenerateStepResponse struct {
 	// ID is the provider-assigned response identifier when available.
 	// For streaming paths, this may be a generated fallback value.
-	ID string
+	ID string `json:"id,omitempty"`
 
 	// Timestamp is when the provider started generating the response.
 	// Zero value means it was not available.
-	Timestamp time.Time
+	Timestamp time.Time `json:"timestamp,omitempty"`
 
 	// ModelID is the model that handled the request, when available.
-	ModelID string
+	ModelID string `json:"modelId,omitempty"`
 
 	// Headers are the raw HTTP response headers from the provider.
-	Headers map[string]string
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// Messages are the response messages generated in this step
 	// (assistant message + any tool messages).
-	Messages []types.Message
+	Messages []types.Message `json:"messages,omitempty"`
 
 	// Body is the raw response body from the provider (for debugging).
-	Body interface{}
+	Body interface{} `json:"body,omitempty"`
 }
 
 // OnStartEvent is emitted once when GenerateText or StreamText begins,
