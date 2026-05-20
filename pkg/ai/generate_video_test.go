@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,11 +84,11 @@ func TestGenerateVideoSingleCallDefaultsAndConversion(t *testing.T) {
 
 func TestGenerateVideoParallelGenerate(t *testing.T) {
 	maxPerCall := 2
-	callCount := 0
+	var callCount atomic.Int32
 	model := &mockVideoModel{
 		maxPerCall: &maxPerCall,
 		generateFn: func(_ context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
-			callCount++
+			n := callCount.Add(1)
 			videos := make([]provider.VideoModelV3VideoData, 0, opts.N)
 			for i := 0; i < opts.N; i++ {
 				videos = append(videos, provider.VideoModelV3VideoData{
@@ -99,10 +100,10 @@ func TestGenerateVideoParallelGenerate(t *testing.T) {
 			return &provider.VideoModelV3Response{
 				Videos: videos,
 				Response: provider.VideoModelV3ResponseInfo{
-					Timestamp: time.Unix(int64(1710000000+callCount), 0).UTC(),
+					Timestamp: time.Unix(int64(1710000000+int64(n)), 0).UTC(),
 					ModelID:   "mock-video",
 				},
-				ProviderMetadata: map[string]interface{}{"call": callCount},
+				ProviderMetadata: map[string]interface{}{"call": n},
 			}, nil
 		},
 	}
@@ -115,8 +116,8 @@ func TestGenerateVideoParallelGenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateVideo() error = %v", err)
 	}
-	if callCount != 2 {
-		t.Fatalf("expected 2 calls, got %d", callCount)
+	if callCount.Load() != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount.Load())
 	}
 	if len(res.Videos) != 3 {
 		t.Fatalf("expected 3 videos, got %d", len(res.Videos))
