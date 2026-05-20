@@ -602,7 +602,7 @@ func bedrockToolResultContent(part types.ToolResultContent) ([]map[string]interf
 			}
 		}
 		return out, nil
-	case types.ToolResultOutputText, types.ToolResultOutputError:
+	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 		return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
 	case types.ToolResultOutputExecutionDenied:
 		reason := part.Output.Reason
