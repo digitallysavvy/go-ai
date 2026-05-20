@@ -1,191 +1,56 @@
 ---
 title: GenerateImage
-description: API reference for GenerateImage function
+description: API reference for GenerateImage
 ---
 
 # GenerateImage
 
-Generates images from text prompts using image generation models.
+Generates images from prompts using an image model.
 
 ## Signature
 
 ```go
-func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*types.ImageResult, error)
+func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateImageResult, error)
 ```
 
-## Parameters
-
-### GenerateImageOptions
+## GenerateImageOptions
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.ImageModel | Yes | Image generation model to use |
-| Prompt | string | Yes | Text description of the image to generate |
-| NegativePrompt | string | No | What to avoid in the generated image |
-| Width | *int | No | Image width in pixels |
-| Height | *int | No | Image height in pixels |
-| NumImages | *int | No | Number of images to generate (default: 1) |
-| Seed | *int | No | Random seed for reproducibility |
-| Style | string | No | Style preset (model-specific) |
-| Format | string | No | Output format (png, jpeg, webp) |
-| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+|---|---|---|---|
+| `Model` | `provider.ImageModel` | Yes | Image model implementation |
+| `Prompt` | `string` | Yes | Prompt text |
+| `N` | `*int` | No | Number of images requested |
+| `Size` | `string` | No | Provider image size string |
+| `AspectRatio` | `string` | No | Aspect ratio string |
+| `Seed` | `*int` | No | Deterministic seed |
+| `Quality` | `string` | No | Provider quality setting |
+| `Style` | `string` | No | Provider style setting |
+| `Files` | `[]provider.ImageFile` | No | Input files for edit/variation flows |
+| `Mask` | `*provider.ImageFile` | No | Optional mask file |
+| `Headers` | `map[string]string` | No | Extra request headers |
+| `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options |
 
-## Return Value
-
-### types.ImageResult
+## GenerateImageResult
 
 | Field | Type | Description |
-|-------|------|-------------|
-| Image | []byte | First generated image in binary format |
-| Images | [][]byte | All generated images in binary format |
-| Base64Image | string | First provider-returned base64 image, when available |
-| Base64Images | []string | All provider-returned base64 images, when available |
-| MimeType | string | MIME type (image/png, image/jpeg, etc.) |
-| URL | string | URL of the first image if hosted remotely |
-| Usage | types.ImageUsage | Image generation usage |
-| Warnings | []types.Warning | Provider warnings |
-| ProviderMetadata | map[string]interface{} | Provider-specific metadata |
-| Response | *types.ResponseMetadata | Response metadata |
+|---|---|---|
+| `Image` | `types.GeneratedFile` | First generated image |
+| `Images` | `[]types.GeneratedFile` | All generated images |
+| `Warnings` | `[]types.Warning` | Provider warnings |
+| `Responses` | `[]*types.ResponseMetadata` | Provider response metadata entries |
+| `ProviderMetadata` | `map[string]interface{}` | Provider-specific metadata |
+| `Usage` | `types.ImageUsage` | Image generation usage metrics |
 
-## Examples
-
-### Basic Image Generation
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func main() {
-    provider := openai.New(openai.Config{
-        APIKey: "your-api-key",
-    })
-    model, err := provider.ImageModel("dall-e-3")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
-        Model:  model,
-        Prompt: "A serene landscape with mountains at sunset",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Save the first image
-    if len(result.Images) > 0 {
-        img := result.Images[0]
-        err = os.WriteFile("output.png", img, 0644)
-        if err != nil {
-            log.Fatal(err)
-        }
-        fmt.Printf("Image saved: %d bytes\n", len(img))
-    }
-}
-```
-
-### Multiple Images
-
-```go
-numImages := 4
-
-result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:     model,
-    Prompt:    "A futuristic city with flying cars",
-    NumImages: &numImages,
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-for i, img := range result.Images {
-    filename := fmt.Sprintf("output_%d.png", i+1)
-    os.WriteFile(filename, img, 0644)
-    fmt.Printf("Saved %s\n", filename)
-}
-```
-
-### With Size and Format
-
-```go
-width := 1024
-height := 1024
-
-result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  model,
-    Prompt: "Abstract art with vibrant colors",
-    Width:  &width,
-    Height: &height,
-    Format: "jpeg",
-})
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-### With Negative Prompt
+## Example
 
 ```go
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:          model,
-    Prompt:         "A beautiful garden with flowers",
-    NegativePrompt: "people, animals, buildings",
+    Model:  imageModel,
+    Prompt: "A serene landscape at sunset",
 })
 if err != nil {
-    log.Fatal(err)
+    // handle
 }
+
+_ = os.WriteFile("output.png", result.Image.Data, 0644)
 ```
-
-### Reproducible Generation
-
-```go
-seed := 12345
-
-result1, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  model,
-    Prompt: "A mystical forest",
-    Seed:   &seed,
-})
-
-// Same seed should produce same image
-result2, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  model,
-    Prompt: "A mystical forest",
-    Seed:   &seed,
-})
-```
-
-## Error Handling
-
-```go
-result, err := ai.GenerateImage(ctx, opts)
-if err != nil {
-    switch {
-    case strings.Contains(err.Error(), "model is required"):
-        log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "prompt is required"):
-        log.Println("Missing required prompt")
-    case strings.Contains(err.Error(), "content policy"):
-        log.Println("Prompt violated content policy")
-    case strings.Contains(err.Error(), "invalid dimensions"):
-        log.Println("Invalid image dimensions")
-    default:
-        log.Println("Unknown error:", err)
-    }
-    return
-}
-```
-
-## See Also
-
-- [Image Models Guide](../../03-providers/image-models.mdx)
-- [Image Generation Guide](../../06-media/image-generation.mdx)

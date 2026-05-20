@@ -1,0 +1,35 @@
+---
+title: Middleware Aliases
+description: Reference for middleware aliases exposed by pkg/ai.
+---
+
+# Middleware Aliases
+
+The `pkg/ai` package re-exports middleware APIs for parity-oriented discoverability.
+
+## Type aliases
+
+- `ai.LanguageModelMiddleware`
+- `ai.EmbeddingModelMiddleware`
+- `ai.ExtractReasoningOptions`
+- `ai.ExtractJSONOptions`
+- `ai.AddToolInputExamplesOptions`
+
+## Wrapper functions
+
+```go
+func WrapLanguageModel(model provider.LanguageModel, middleware []*ai.LanguageModelMiddleware, modelID, providerID *string) provider.LanguageModel
+func WrapEmbeddingModel(model provider.EmbeddingModel, middleware []*ai.EmbeddingModelMiddleware, modelID, providerID *string) provider.EmbeddingModel
+func WrapProvider(p provider.Provider, languageModelMiddleware []*ai.LanguageModelMiddleware, embeddingModelMiddleware []*ai.EmbeddingModelMiddleware) provider.Provider
+```
+
+## Built-in middleware constructors
+
+```go
+func SimulateStreamingMiddleware() *ai.LanguageModelMiddleware
+func DefaultSettingsMiddleware(settings *provider.GenerateOptions) *ai.LanguageModelMiddleware
+func ExtractReasoningMiddleware(options *ai.ExtractReasoningOptions) *ai.LanguageModelMiddleware
+func ExtractJSONMiddleware(options *ai.ExtractJSONOptions) *ai.LanguageModelMiddleware
+func AddToolInputExamplesMiddleware(options *ai.AddToolInputExamplesOptions) *ai.LanguageModelMiddleware
+```
+

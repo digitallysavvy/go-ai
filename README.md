@@ -304,6 +304,18 @@ And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT
 - ✅ **Context Support** — native Go context cancellation and timeouts
 - ✅ **Streaming** — deferred tool execution, real-time responses with backpressure
 
+### Parity Helpers
+
+- `pkg/ai` stream transport helpers:
+  - `CreateTextStreamResponse()`, `PipeTextStreamToResponse()`, `CreateUIMessageStream()`, `CreateUIMessageStreamResponse()`, `PipeUIMessageStreamToResponse()`, `ReadUIMessageStream()`
+- `pkg/ai` utility compatibility helpers:
+  - `ConsumeStream()`, `ParsePartialJSON()`, `SimulateReadableStream()`
+- `pkg/ai` middleware aliases:
+  - `WrapLanguageModel()`, `WrapEmbeddingModel()`, `WrapProvider()`
+  - `DefaultSettingsMiddleware()`, `SimulateStreamingMiddleware()`, `ExtractJSONMiddleware()`, `ExtractReasoningMiddleware()`, `AddToolInputExamplesMiddleware()`
+- `pkg/agent` UI stream helpers:
+  - `CreateAgentUIStream()`, `CreateAgentUIStreamResponse()`, `PipeAgentUIStreamToResponse()`
+
 ## Why Go for AI?
 
 While Python dominates AI/ML model training, **Go excels at building production AI applications**:

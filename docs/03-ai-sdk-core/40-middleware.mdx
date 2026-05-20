@@ -13,6 +13,8 @@ It can be used to add features like guardrails, RAG, caching, and logging in a l
 
 You can use language model middleware with the `middleware.WrapLanguageModel` function. It takes a language model and one or more middleware instances and returns a new language model that incorporates the middleware.
 
+For parity-oriented API discovery, equivalent wrappers are also exposed from `pkg/ai` (for example `ai.WrapLanguageModel` and `ai.DefaultSettingsMiddleware`).
+
 ```go
 package main
 
