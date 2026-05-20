@@ -368,7 +368,7 @@ type OnFinishEvent struct {
 	// Sources contains citation or grounding references from the final step.
 	Sources []types.SourceContent
 
-	// Files contains model-generated output files from the final step.
+	// Files contains model-generated output files from all steps.
 	Files []types.GeneratedFileContent
 
 	// ProviderMetadata holds provider-specific metadata from the final step.

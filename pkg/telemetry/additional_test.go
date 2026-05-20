@@ -42,17 +42,21 @@ func (s *eventSpy) OnStepStart(ctx context.Context, _ TelemetryStepStartEvent) c
 	s.mu.Unlock()
 	return ctx
 }
-func (s *eventSpy) OnToolCallStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
+func (s *eventSpy) OnToolExecutionStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
 	s.mu.Lock()
 	s.toolStarts++
 	s.mu.Unlock()
 	return ctx
 }
-func (s *eventSpy) OnToolCallFinish(_ context.Context, _ TelemetryToolCallFinishEvent) {
+func (s *eventSpy) OnToolExecutionEnd(_ context.Context, _ TelemetryToolCallFinishEvent) {
 	s.mu.Lock()
 	s.toolFinishes++
 	s.mu.Unlock()
 }
+func (s *eventSpy) OnToolCallStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
+	return ctx
+}
+func (s *eventSpy) OnToolCallFinish(_ context.Context, _ TelemetryToolCallFinishEvent) {}
 func (s *eventSpy) OnChunk(_ context.Context, _ TelemetryChunkEvent) {
 	s.mu.Lock()
 	s.chunks++

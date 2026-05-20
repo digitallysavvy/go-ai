@@ -44,12 +44,12 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 		ModelProvider: "openai",
 		ModelID:       "gpt-5",
 	})
-	ctx = integration.OnToolCallStart(ctx, TelemetryToolCallStartEvent{
+	ctx = integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
 		Settings:   settings,
 		ToolCallID: "call-1",
 		ToolName:   "lookup_weather",
 	})
-	integration.OnToolCallFinish(ctx, TelemetryToolCallFinishEvent{
+	integration.OnToolExecutionEnd(ctx, TelemetryToolCallFinishEvent{
 		Settings:   settings,
 		ToolCallID: "call-1",
 		ToolName:   "lookup_weather",
@@ -167,12 +167,12 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 			TokensPerSecond: 20,
 		},
 	})
-	toolCtx := integration.OnToolCallStart(stepCtx, TelemetryToolCallStartEvent{
+	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{
 		Settings:   settings,
 		ToolCallID: "call-1",
 		ToolName:   "lookup",
 	})
-	integration.OnToolCallFinish(toolCtx, TelemetryToolCallFinishEvent{
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
 		Settings:   settings,
 		ToolCallID: "call-1",
 		ToolName:   "lookup",

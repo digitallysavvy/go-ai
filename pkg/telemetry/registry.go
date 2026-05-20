@@ -131,7 +131,7 @@ type RerankingModelCallEndEvent struct {
 	Ranking       []types.RerankItem
 }
 
-// TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolCallStart.
+// TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolExecutionStart.
 type TelemetryToolCallStartEvent struct {
 	Settings    *Settings
 	ToolCallID  string
@@ -140,7 +140,7 @@ type TelemetryToolCallStartEvent struct {
 	ToolContext map[string]interface{}
 }
 
-// TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolCallFinish.
+// TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolExecutionEnd.
 type TelemetryToolCallFinishEvent struct {
 	Settings    *Settings
 	ToolCallID  string
@@ -263,13 +263,25 @@ type TelemetryIntegration interface {
 	// returned context so OnStepFinish can retrieve and end it.
 	OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context
 
-	// OnToolCallStart is called just before each tool's Execute function runs.
+	// OnToolExecutionStart is called just before each tool's Execute function runs.
+	// TypeScript equivalent: onToolExecutionStart.
 	// Return a (possibly modified) context; OTel implementations may start a
-	// child span and embed it for OnToolCallFinish.
+	// child span and embed it for OnToolExecutionEnd.
+	OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context
+
+	// OnToolExecutionEnd is called after each tool's Execute function returns,
+	// whether the execution succeeded or failed.
+	// TypeScript equivalent: onToolExecutionEnd.
+	OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent)
+
+	// OnToolCallStart is the previous Go name for OnToolExecutionStart.
+	//
+	// Deprecated: use OnToolExecutionStart.
 	OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context
 
-	// OnToolCallFinish is called after each tool's Execute function returns,
-	// whether the execution succeeded or failed.
+	// OnToolCallFinish is the previous Go name for OnToolExecutionEnd.
+	//
+	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent)
 
 	// OnChunk is retained for source compatibility with older integrations.
@@ -356,6 +368,11 @@ func (NoopTelemetryIntegration) OnStart(ctx context.Context, _ TelemetryStartEve
 }
 func (NoopTelemetryIntegration) OnStepStart(ctx context.Context, _ TelemetryStepStartEvent) context.Context {
 	return ctx
+}
+func (NoopTelemetryIntegration) OnToolExecutionStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
+	return ctx
+}
+func (NoopTelemetryIntegration) OnToolExecutionEnd(_ context.Context, _ TelemetryToolCallFinishEvent) {
 }
 func (NoopTelemetryIntegration) OnToolCallStart(ctx context.Context, _ TelemetryToolCallStartEvent) context.Context {
 	return ctx
@@ -668,8 +685,8 @@ func (OTelTelemetryIntegration) OnRerankEnd(_ context.Context, e RerankingModelC
 	entry.span.End()
 }
 
-// OnToolCallStart starts a child span for tool execution and embeds it.
-func (OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+// OnToolExecutionStart starts a child span for tool execution and embeds it.
+func (OTelTelemetryIntegration) OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return ctx
@@ -689,8 +706,8 @@ func (OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e Telemetry
 	return ctx
 }
 
-// OnToolCallFinish ends the tool-call child span.
-func (OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
+// OnToolExecutionEnd ends the tool execution child span.
+func (OTelTelemetryIntegration) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
@@ -701,6 +718,20 @@ func (OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e Telemetr
 		span.SetStatus(codes.Error, e.Error.Error())
 	}
 	span.End()
+}
+
+// OnToolCallStart is the previous Go name for OnToolExecutionStart.
+//
+// Deprecated: use OnToolExecutionStart.
+func (i OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+	return i.OnToolExecutionStart(ctx, e)
+}
+
+// OnToolCallFinish is the previous Go name for OnToolExecutionEnd.
+//
+// Deprecated: use OnToolExecutionEnd.
+func (i OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
+	i.OnToolExecutionEnd(ctx, e)
 }
 
 func (OTelTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
@@ -1134,7 +1165,7 @@ func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
 	FireOnRerankEnd(ctx, e)
 }
 
-// FireOnToolCallStart calls OnToolCallStart on every registered integration,
+// FireOnToolCallStart calls OnToolExecutionStart on every registered integration,
 // threading the returned context through the chain.
 func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
@@ -1142,19 +1173,19 @@ func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) con
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionStart, e)
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnToolCallStart(ctx, e)
+		ctx = i.OnToolExecutionStart(ctx, e)
 	}
 	return ctx
 }
 
-// FireOnToolCallFinish calls OnToolCallFinish on every registered integration.
+// FireOnToolCallFinish calls OnToolExecutionEnd on every registered integration.
 func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnToolCallFinish(ctx, e)
+		i.OnToolExecutionEnd(ctx, e)
 	}
 }
 

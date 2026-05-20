@@ -461,8 +461,8 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		ExperimentalRefineToolInput: refineToolInput,
 		OnStart:                     mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
 		OnStepStartEvent:            mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
-		OnToolCallStart:             mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
-		OnToolCallFinish:            mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
+		OnToolExecutionStart:        mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
+		OnToolExecutionEnd:          mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
 		OnStepFinishEvent:           mergeStepFinish(w.OnStepFinish, mergeStepFinish(govr.OnStepFinish, ovr.OnStepFinish)),
 		OnFinishEvent:               mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
 	})
@@ -488,8 +488,14 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 		legacy.StopWhen = opts.StopWhen
 		legacy.OnStart = opts.OnStart
 		legacy.OnStepStart = opts.OnStepStart
-		legacy.OnToolExecutionStart = opts.OnToolCallStart
-		legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+		legacy.OnToolExecutionStart = opts.OnToolExecutionStart
+		if legacy.OnToolExecutionStart == nil {
+			legacy.OnToolExecutionStart = opts.OnToolCallStart
+		}
+		legacy.OnToolExecutionEnd = opts.OnToolExecutionEnd
+		if legacy.OnToolExecutionEnd == nil {
+			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+		}
 		legacy.OnStepFinish = opts.OnStepFinish
 		legacy.OnFinish = opts.OnFinish
 	}
@@ -547,8 +553,14 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		legacy.OnChunk = opts.OnChunk
 		legacy.OnStart = opts.OnStart
 		legacy.OnStepStart = opts.OnStepStart
-		legacy.OnToolExecutionStart = opts.OnToolCallStart
-		legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+		legacy.OnToolExecutionStart = opts.OnToolExecutionStart
+		if legacy.OnToolExecutionStart == nil {
+			legacy.OnToolExecutionStart = opts.OnToolCallStart
+		}
+		legacy.OnToolExecutionEnd = opts.OnToolExecutionEnd
+		if legacy.OnToolExecutionEnd == nil {
+			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+		}
 		legacy.OnStepFinish = opts.OnStepFinish
 		legacy.OnFinish = opts.OnFinish
 	}
