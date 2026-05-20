@@ -244,7 +244,7 @@ result, err = model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 
 ## Status
 
-✅ **Complete** - This provider is fully implemented with all features from PRD P0-1.
+✅ **Complete** - This provider is fully implemented with all planned feature requirements.
 
 Features:
 - ✅ All 5 Qwen chat models (plus, turbo, max, qwq-32b-preview, vl-max)
