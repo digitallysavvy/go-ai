@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -188,7 +189,27 @@ type StreamTextOptions struct {
 
 	// OnFinishEvent is called once when the stream fully completes.
 	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
+
+	// OnError is called when an error chunk is received from the provider during
+	// streaming. Mirrors the TypeScript SDK's onError callback. Unlike a fatal
+	// stream error (which surfaces via TextStream.Err()), error chunks are
+	// non-fatal stream events that can be observed and logged without aborting
+	// the stream. If nil, error chunks are silently forwarded to OnChunk.
+	OnError func(ctx context.Context, err error)
+
+	// ExperimentalTransform is an ordered list of transform functions applied to
+	// each stream chunk after provider emission but before forwarding to OnChunk.
+	// Each function receives a chunk and returns zero or more replacement chunks.
+	// Returning nil or an empty slice drops the chunk. Transforms are applied in
+	// order; each transform receives the output of the previous one.
+	// Mirrors the TypeScript SDK's experimental_transform option.
+	ExperimentalTransform []StreamTransformFunc
 }
+
+// StreamTransformFunc is a transform applied to stream chunks in StreamText.
+// It receives a single chunk and returns zero or more replacement chunks.
+// Return nil or an empty slice to suppress the chunk.
+type StreamTransformFunc func(ctx context.Context, chunk provider.StreamChunk) []provider.StreamChunk
 
 // StreamStatus represents the lifecycle state of a streaming generation.
 type StreamStatus string
@@ -515,7 +536,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 	}
 
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{System: stepSystem, Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
 		return nil, fmt.Errorf("prompt normalization failed: %w", normErr)
@@ -604,7 +625,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		opts.OnStepStart != nil ||
 		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
 		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
-		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil {
+		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil ||
+		opts.OnError != nil {
 		result.processingDone = make(chan struct{})
 		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
 	}
@@ -671,6 +693,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// All Execute() calls happen after the stream loop ends.
 		var stepTextParts []string
 		var stepToolCalls []types.ToolCall
+		var stepContent []types.ContentPart
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		var stepUsage types.Usage
@@ -723,6 +746,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
 				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
+				stepContent = appendTextPart(stepContent, chunk.Text)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -747,17 +771,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Accumulate reasoning text from reasoning chunks.
 			if chunk.Type == provider.ChunkTypeReasoning && chunk.Text != "" {
 				stepReasoningBuilder.WriteString(chunk.Text)
+				stepContent = appendReasoningPart(stepContent, chunk.Text)
 			}
 
 			// Accumulate tool call chunks without executing until the stream is consumed.
 			// The chunk is still forwarded to the consumer below.
 			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
-				stepToolCalls = append(stepToolCalls, *chunk.ToolCall)
+				enriched := enrichToolCallMetadata([]types.ToolCall{*chunk.ToolCall}, stepTools)[0]
+				chunk.ToolCall = &enriched
+				stepToolCalls = append(stepToolCalls, enriched)
+				stepContent = append(stepContent, types.ToolCallContent{
+					ToolCallID:       enriched.ID,
+					ToolName:         enriched.ToolName,
+					Title:            enriched.Title,
+					Input:            enriched.RawArguments,
+					Arguments:        enriched.Arguments,
+					ProviderExecuted: enriched.ProviderExecuted,
+					ProviderMetadata: providerMetadataRaw(enriched.ProviderMetadata),
+					ToolMetadata:     enriched.ToolMetadata,
+					Dynamic:          enriched.Dynamic,
+					Invalid:          enriched.Invalid,
+					Error:            toolCallContentError(enriched.Error),
+					ThoughtSignature: enriched.ThoughtSignature,
+				})
 			}
 
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
 				streamedToolResultIDs[chunk.ToolResult.ToolCallID] = true
+				stepContent = append(stepContent, toolResultContentFromToolResult(*chunk.ToolResult))
 			}
 
 			if chunk.Usage != nil {
@@ -796,11 +838,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Accumulate sources from ChunkTypeSource chunks.
 			if chunk.Type == provider.ChunkTypeSource && chunk.SourceContent != nil {
 				r.sources = append(r.sources, *chunk.SourceContent)
+				stepContent = append(stepContent, *chunk.SourceContent)
 			}
 
 			// Accumulate generated files from ChunkTypeFile chunks.
 			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
 				r.files = append(r.files, *chunk.GeneratedFileContent)
+				stepContent = append(stepContent, *chunk.GeneratedFileContent)
+			}
+
+			if chunk.Type == provider.ChunkTypeCustom && chunk.CustomContent != nil {
+				stepContent = append(stepContent, *chunk.CustomContent)
+			}
+
+			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
+				stepContent = append(stepContent, *chunk.ReasoningFileContent)
 			}
 
 			// Update response headers from ChunkTypeResponseMetadata.
@@ -811,17 +863,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Forward chunk to consumer before any tool Execute fires.
-			if onChunk != nil && forwardChunk {
-				onChunk(*chunk)
+			// Call OnError for error chunks before forwarding.
+			if chunk.Type == provider.ChunkTypeError && opts.OnError != nil {
+				opts.OnError(ctx, errors.New(chunk.Text))
 			}
-			// Notify telemetry integrations of each chunk.
+
+			// Apply experimental transforms to produce the consumer-facing chunks.
+			chunksToForward := []provider.StreamChunk{*chunk}
+			if forwardChunk && len(opts.ExperimentalTransform) > 0 {
+				for _, transform := range opts.ExperimentalTransform {
+					var transformed []provider.StreamChunk
+					for _, c := range chunksToForward {
+						transformed = append(transformed, transform(ctx, c)...)
+					}
+					chunksToForward = transformed
+				}
+			}
+
+			// Forward chunk(s) to consumer before any tool Execute fires.
 			if forwardChunk {
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(chunk.Type),
-					Text:      chunk.Text,
-				})
+				for _, c := range chunksToForward {
+					if onChunk != nil {
+						onChunk(c)
+					}
+					telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+						Settings:  r.telemetrySettings,
+						ChunkType: string(c.Type),
+						Text:      c.Text,
+					})
+				}
 			}
 		}
 		if r.err != nil {
@@ -836,6 +906,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		stepToolCalls = enrichToolCallMetadata(stepToolCalls, stepTools)
+		stepContent = replaceToolCallContentParts(stepContent, stepToolCalls)
+		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
 
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
@@ -889,6 +961,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				ChunkType: string(provider.ChunkTypeToolResult),
 			})
 		}
+		stepContent = append(stepContent, toolResultsToContentParts(stepToolResults)...)
 
 		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.
@@ -906,8 +979,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Remove entries resolved by inline provider results (ChunkTypeToolResult chunks)
 		// delivered in this step's stream. This is the primary resolution path for
 		// deferred tools: the provider streams the result in a subsequent response.
-		// Note: stepToolResults includes placeholder entries for provider-executed tools
-		// (ProviderExecuted=true, Result=nil) — those must NOT clear the pending map.
+		// Note: stepToolResults includes pending markers for provider-executed tools
+		// (ProviderExecuted=true, Result=nil); those must NOT clear the pending map.
 		// Only real locally-executed results (ProviderExecuted=false) are safe to clear,
 		// and those tools are never added to pendingDeferredToolCalls anyway, so this is
 		// a no-op for them. Only streamedToolResultIDs represents actual inline results.
@@ -950,11 +1023,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
+		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 		stepResult := types.StepResult{
 			CallID:             r.cbCallID,
 			StepNumber:         stepIndex,
 			Model:              types.StepModel{Provider: stepProvider, ModelID: stepModelID},
 			Text:               stepText,
+			Content:            stepContent,
 			Reasoning:          stepReasoning,
 			ReasoningText:      buildReasoningText(stepReasoning),
 			ToolCalls:          stepToolCalls,
@@ -1016,14 +1091,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Populate ResponseMessages on the step that just completed.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
 			stepToolCalls,
-			[]types.ContentPart{types.TextContent{Text: stepText}},
+			stepResult.Content,
 			stepToolResults,
 		)
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
 		stepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
-		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 		stepResult = allSteps[len(allSteps)-1]
 		r.mu.Lock()
 		r.cbSteps = append([]types.StepResult(nil), allSteps...)
@@ -1183,7 +1257,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}, opts.OnStepStart)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{
 			Messages: nextMessages,
-			System:   nextSystem,
+			System:   appendSandboxDescription(nextSystem, nextSandbox),
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
@@ -1276,7 +1350,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	r.mu.Lock()
 	streamFiles := r.files
 	streamWarnings := r.warnings
-	streamSources := r.sources
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		FinishReason:   string(r.finishReason),
@@ -1318,11 +1391,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	r.mu.Unlock()
 
 	// Use the last step for the single-step path.
+	fallbackContent := []types.ContentPart{types.TextContent{Text: r.text}}
 	lastStep := types.StepResult{
 		CallID:             r.cbCallID,
 		StepNumber:         0,
 		Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
 		Text:               r.text,
+		Content:            fallbackContent,
 		ToolCalls:          finalToolCalls,
 		StaticToolCalls:    filterStaticToolCalls(finalToolCalls),
 		DynamicToolCalls:   filterDynamicToolCalls(finalToolCalls),
@@ -1339,7 +1414,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		RuntimeContext:     r.cbRuntimeCtx,
 		ResponseMessages: providerutils.ConvertToResponseMessages(
 			finalToolCalls,
-			[]types.ContentPart{types.TextContent{Text: r.text}},
+			fallbackContent,
 			nil,
 		),
 	}
@@ -1359,19 +1434,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Text:               r.text,
 		Reasoning:          lastStep.Reasoning,
 		ReasoningText:      lastStep.ReasoningText,
-		ToolCalls:          finalToolCalls,
-		StaticToolCalls:    filterStaticToolCalls(finalToolCalls),
-		DynamicToolCalls:   filterDynamicToolCalls(finalToolCalls),
-		ToolResults:        finalToolResults,
-		StaticToolResults:  filterStaticToolResults(finalToolResults),
-		DynamicToolResults: filterDynamicToolResults(finalToolResults),
+		ToolCalls:          lastStep.ToolCalls,
+		StaticToolCalls:    lastStep.StaticToolCalls,
+		DynamicToolCalls:   lastStep.DynamicToolCalls,
+		ToolResults:        lastStep.ToolResults,
+		StaticToolResults:  lastStep.StaticToolResults,
+		DynamicToolResults: lastStep.DynamicToolResults,
 		FinishReason:       r.finishReason,
 		RawFinishReason:    lastStep.RawFinishReason,
 		Usage:              lastStep.Usage,
 		Steps:              stepsForEvent,
 		TotalUsage:         r.usage,
 		Warnings:           streamWarnings,
-		Sources:            streamSources,
+		Sources:            lastStep.Sources,
 		Files:              streamFiles,
 		ProviderMetadata:   lastStep.ProviderMetadata,
 		ResponseHeaders:    r.responseHeaders,
@@ -1600,6 +1675,16 @@ func (r *StreamTextResult) FinalStep() types.StepResult {
 	return steps[len(steps)-1]
 }
 
+// Content returns generated content from all stream steps in order.
+func (r *StreamTextResult) Content() []types.ContentPart {
+	steps := r.Steps()
+	var content []types.ContentPart
+	for _, step := range steps {
+		content = append(content, step.Content...)
+	}
+	return content
+}
+
 // ResponseMessages returns accumulated assistant/tool response messages.
 func (r *StreamTextResult) ResponseMessages() []types.Message {
 	_ = r.ensureConsumed()
@@ -1638,6 +1723,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	var firstTokenAt *time.Time
 	firstChunk := true
 	var pendingToolCalls []types.ToolCall
+	var stepContent []types.ContentPart
+	var stepReasoning []types.ReasoningContent
 
 	for {
 		chunk, err := r.nextChunk(ctx)
@@ -1672,6 +1759,7 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		// Accumulate text
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
+			stepContent = appendTextPart(stepContent, chunk.Text)
 
 			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
@@ -1692,7 +1780,34 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 
 		// Collect tool call chunks.
 		if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
-			pendingToolCalls = append(pendingToolCalls, *chunk.ToolCall)
+			enriched := enrichToolCallMetadata([]types.ToolCall{*chunk.ToolCall}, r.cbTools)[0]
+			chunk.ToolCall = &enriched
+			pendingToolCalls = append(pendingToolCalls, enriched)
+			stepContent = append(stepContent, types.ToolCallContent{
+				ToolCallID:       enriched.ID,
+				ToolName:         enriched.ToolName,
+				Title:            enriched.Title,
+				Input:            enriched.RawArguments,
+				Arguments:        enriched.Arguments,
+				ProviderExecuted: enriched.ProviderExecuted,
+				ProviderMetadata: providerMetadataRaw(enriched.ProviderMetadata),
+				ToolMetadata:     enriched.ToolMetadata,
+				Dynamic:          enriched.Dynamic,
+				Invalid:          enriched.Invalid,
+				Error:            toolCallContentError(enriched.Error),
+				ThoughtSignature: enriched.ThoughtSignature,
+			})
+		}
+		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+			stepContent = append(stepContent, toolResultContentFromToolResult(*chunk.ToolResult))
+		}
+		if chunk.Type == provider.ChunkTypeReasoning && chunk.Text != "" {
+			stepContent = appendReasoningPart(stepContent, chunk.Text)
+			if n := len(stepReasoning); n > 0 {
+				stepReasoning[n-1].Text += chunk.Text
+			} else {
+				stepReasoning = append(stepReasoning, types.ReasoningContent{Text: chunk.Text})
+			}
 		}
 
 		// Update finish reason, usage, and context management
@@ -1714,9 +1829,17 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		// Accumulate generated files.
 		if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
 			r.files = append(r.files, *chunk.GeneratedFileContent)
+			stepContent = append(stepContent, *chunk.GeneratedFileContent)
 		}
 		if chunk.Type == provider.ChunkTypeSource && chunk.SourceContent != nil {
 			r.sources = append(r.sources, *chunk.SourceContent)
+			stepContent = append(stepContent, *chunk.SourceContent)
+		}
+		if chunk.Type == provider.ChunkTypeCustom && chunk.CustomContent != nil {
+			stepContent = append(stepContent, *chunk.CustomContent)
+		}
+		if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
+			stepContent = append(stepContent, *chunk.ReasoningFileContent)
 		}
 		if chunk.Type == provider.ChunkTypeResponseMetadata && chunk.ResponseMetadata != nil {
 			r.responseHeaders = chunk.ResponseMetadata.Headers
@@ -1737,13 +1860,15 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 
 	// Store collected tool calls.
 	if len(pendingToolCalls) > 0 {
+		stepContent = replaceToolCallContentParts(stepContent, pendingToolCalls)
+		stepContent = replaceToolResultContentParts(stepContent, pendingToolCalls)
 		r.mu.Lock()
 		r.toolCalls = pendingToolCalls
 		r.mu.Unlock()
 	}
 	responseMessages := providerutils.ConvertToResponseMessages(
 		pendingToolCalls,
-		[]types.ContentPart{types.TextContent{Text: r.text}},
+		stepContent,
 		nil,
 	)
 	step := types.StepResult{
@@ -1751,7 +1876,9 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		StepNumber:       0,
 		Model:            types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
 		Text:             r.text,
-		Content:          []types.ContentPart{types.TextContent{Text: r.text}},
+		Content:          stepContent,
+		Reasoning:        stepReasoning,
+		ReasoningText:    buildReasoningText(stepReasoning),
 		ToolCalls:        pendingToolCalls,
 		StaticToolCalls:  filterStaticToolCalls(pendingToolCalls),
 		DynamicToolCalls: filterDynamicToolCalls(pendingToolCalls),

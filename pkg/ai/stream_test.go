@@ -1371,6 +1371,62 @@ func TestStreamTextChunksDeliveredBeforeToolCallback(t *testing.T) {
 	}
 }
 
+func TestStreamTextToolCallChunkIncludesToolTitleAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	toolMetadata := map[string]interface{}{"source": "catalog"}
+	tool := types.Tool{
+		Name:     "weather",
+		Title:    "Weather Lookup",
+		Metadata: toolMetadata,
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "sunny", nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "c1",
+					ToolName:  "weather",
+					Arguments: map[string]interface{}{"city": "Paris"},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	var seen types.ToolCall
+	maxSteps := 1
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "weather?",
+		Tools:    []types.Tool{tool},
+		MaxSteps: &maxSteps,
+		OnChunk: func(chunk provider.StreamChunk) {
+			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
+				seen = *chunk.ToolCall
+			}
+		},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	if seen.Title != "Weather Lookup" {
+		t.Fatalf("stream tool-call title = %q, want Weather Lookup", seen.Title)
+	}
+	if got := seen.ToolMetadata["source"]; got != "catalog" {
+		t.Fatalf("stream tool-call metadata source = %#v, want catalog", got)
+	}
+}
+
 func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	t.Parallel()
 
