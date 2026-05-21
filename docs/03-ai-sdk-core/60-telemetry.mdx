@@ -319,7 +319,10 @@ Records the following spans:
 - Same attributes as `ai.generateText`, plus:
   - `ai.response.msToFirstChunk`: Time to first chunk (milliseconds)
   - `ai.response.msToFinish`: Time to completion (milliseconds)
-  - `ai.response.avgCompletionTokensPerSecond`: Tokens per second
+  - `ai.response.effectiveOutputTokensPerSecond`: Output tokens per request second
+  - `ai.response.effectiveTotalTokensPerSecond`: Input plus output tokens per request second
+  - `ai.response.outputTokensPerSecond`: Streaming output tokens per output-stream second, when available
+  - `ai.response.inputTokensPerSecond`: Streaming input tokens per time-to-first-output-token second, when available
 
 **`ai.streamText.doStream` span:**
 - Individual provider stream call

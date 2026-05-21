@@ -64,7 +64,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | RawRequest | interface{} | Raw request for debugging |
 | RawResponse | interface{} | Raw response for debugging |
 
-Each `types.StepResult` includes `Performance` with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `TokensPerSecond`, and streaming-only `TimeToFirstTokenMs`.
+Each `types.StepResult` includes `Performance` with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming-only `OutputTokensPerSecond`, `InputTokensPerSecond`, and `TimeToFirstTokenMs` serialized as `timeToFirstOutputTokenMs`.
 
 ## Examples
 

@@ -605,7 +605,7 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 })
 ```
 
-The xAI provider returns all generated images in `result.Images`. When xAI returns `b64_json`, the original provider base64 strings are also available in `result.Base64Images`.
+Providers that can return multiple images expose every image through `result.Images`. Low-level provider results also preserve provider-returned base64 strings in `result.Base64Images`; the high-level `ai.GenerateImage` helper decodes those strings into `GeneratedFile.Data` so JSON output contains the expected base64 image data.
 
 ## Best Practices
 

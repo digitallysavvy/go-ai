@@ -28,6 +28,8 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 | `Files` | `[]provider.ImageFile` | No | Input files for edit/variation flows |
 | `Mask` | `*provider.ImageFile` | No | Optional mask file |
 | `Headers` | `map[string]string` | No | Extra request headers |
+| `MaxImagesPerCall` | `int` | No | Override the model's per-call image limit for automatic batching |
+| `MaxRetries` | `*int` | No | Maximum retries per image model call; defaults to 2, set to 0 to disable |
 | `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options |
 
 ## GenerateImageResult
@@ -40,6 +42,8 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 | `Responses` | `[]*types.ResponseMetadata` | Provider response metadata entries |
 | `ProviderMetadata` | `map[string]interface{}` | Provider-specific metadata |
 | `Usage` | `types.ImageUsage` | Image generation usage metrics |
+
+`GeneratedFile.Data` contains binary image bytes. When a provider returns base64 image strings, `GenerateImage` decodes them into `GeneratedFile.Data` so JSON encoding of the result preserves the provider base64 value instead of double-encoding it.
 
 ## Example
 

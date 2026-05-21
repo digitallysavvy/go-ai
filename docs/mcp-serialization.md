@@ -182,12 +182,9 @@ func getAllTools(client *mcp.MCPClient, ctx context.Context) ([]mcp.MCPTool, err
 
     allTools = append(allTools, result.Tools...)
 
-    // Handle pagination if present
-    // Note: Current implementation doesn't support cursor-based pagination yet
-    // This is a placeholder for future enhancement
+    // Handle pagination if present.
     if result.NextCursor != "" {
         log.Printf("More tools available (cursor: %s)", result.NextCursor)
-        // TODO: Implement pagination when available in SDK
     }
 
     return allTools, nil

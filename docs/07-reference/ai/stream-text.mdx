@@ -58,7 +58,7 @@ The result provides methods to consume the stream:
 | ReadAll() | (string, error) | Read all chunks and return complete text |
 | Chunks() | <-chan provider.StreamChunk | Channel of chunks |
 | Steps() | []types.StepResult | Completed steps, including per-step `Performance` statistics |
-| FinalStep() | types.StepResult | Last completed step with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `TokensPerSecond`, and `TimeToFirstTokenMs` |
+| FinalStep() | types.StepResult | Last completed step with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming throughput fields |
 | Content() | []types.ContentPart | Ordered generated content from all completed steps |
 
 ## Examples

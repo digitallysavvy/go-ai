@@ -12,11 +12,11 @@ import (
 
 // LinkValidator validates internal links in documentation files
 type LinkValidator struct {
-	docsRoot     string
-	files        map[string]bool
-	links        []Link
-	brokenLinks  []BrokenLink
-	verbose      bool
+	docsRoot    string
+	files       map[string]bool
+	links       []Link
+	brokenLinks []BrokenLink
+	verbose     bool
 }
 
 // Link represents a markdown link found in documentation
@@ -41,14 +41,12 @@ var (
 
 	// Matches <reference to="path.mdx" />
 	referenceRegex = regexp.MustCompile(`<reference\s+to="([^"]+)"\s*/>`)
-
 )
 
 func main() {
 	var (
 		docsPath = flag.String("docs", "./", "Path to documentation root directory")
 		verbose  = flag.Bool("verbose", false, "Enable verbose output")
-		fix      = flag.Bool("fix", false, "Attempt to fix broken links (not implemented)")
 	)
 	flag.Parse()
 
@@ -93,10 +91,6 @@ func main() {
 
 	// Step 4: Generate report
 	validator.printReport()
-
-	if *fix {
-		fmt.Println("\n⚠️  Auto-fix feature is not yet implemented")
-	}
 
 	// Exit with error code if broken links found
 	if len(validator.brokenLinks) > 0 {
