@@ -83,6 +83,22 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 
 ## Provider-Specific Features
 
+### PayGo Request Type
+
+Vertex AI uses request headers for PayGo tier selection. Set `sharedRequestType` and optionally `requestType` in Vertex provider options:
+
+```go
+result, err := ai.GenerateText(model, "hello",
+    ai.WithProviderOptions(map[string]interface{}{
+        "vertex": map[string]interface{}{
+            "sharedRequestType": "priority",
+            "requestType":       "shared",
+        },
+    }))
+```
+
+`serviceTier` is a Gemini API body option and is ignored for Vertex requests with a warning.
+
 ### Enterprise Security
 
 ```go

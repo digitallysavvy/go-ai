@@ -128,6 +128,22 @@ result, err := ai.GenerateImage(model,
 )
 ```
 
+### Fill Models
+
+`flux-pro-1.0-fill` uses Black Forest Labs' fill request format. Pass the source image through `Files`; the provider maps it to the `image` request field required by the upstream API.
+
+```go
+model, _ := bflProvider.ImageModel("flux-pro-1.0-fill")
+
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "replace the background with a studio wall",
+    Files: []provider.ImageFile{{
+        Data:      imageBytes,
+        MediaType: "image/png",
+    }},
+})
+```
+
 ### Artistic Styles
 
 ```go

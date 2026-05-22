@@ -1,0 +1,63 @@
+---
+title: QuiverAI Provider
+description: Generate SVGs and vectorize images with QuiverAI.
+---
+
+# QuiverAI Provider
+
+QuiverAI provides SVG generation and raster-to-SVG vectorization through the Go-AI image model interface.
+
+## Setup
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
+
+qprovider := quiverai.New(quiverai.Config{
+    APIKey: "your-api-key",
+})
+```
+
+`APIKey` defaults to `QUIVERAI_API_KEY`. `BaseURL` defaults to `https://api.quiver.ai/v1` and can be overridden with `QUIVERAI_BASE_URL`.
+
+## SVG Generation
+
+```go
+model, _ := qprovider.ImageModel(quiverai.ModelArrow11)
+
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "minimal rocket logo",
+})
+```
+
+Generated images are returned as SVG bytes, use `image/svg+xml` as the MIME type, and include token usage when QuiverAI reports it.
+
+## Vectorization
+
+```go
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Files: []provider.ImageFile{{
+        Type: "url",
+        URL:  "https://example.com/logo.png",
+    }},
+    ProviderOptions: map[string]interface{}{
+        "quiverai": map[string]interface{}{
+            "operation":  quiverai.OperationVectorize,
+            "autoCrop":   true,
+            "targetSize": 512,
+        },
+    },
+})
+```
+
+## Provider Options
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `operation` | `generate` or `vectorize` | Selects text-to-SVG generation or raster vectorization. |
+| `instructions` | string | Extra style guidance for generation. |
+| `temperature` | number | Sampling temperature. |
+| `topP` | number | Nucleus sampling value. |
+| `presencePenalty` | number | Presence penalty. |
+| `maxOutputTokens` | number | Maximum output tokens. |
+| `autoCrop` | bool | Vectorization-only auto-crop setting. |
+| `targetSize` | number | Vectorization-only target canvas size in pixels. |

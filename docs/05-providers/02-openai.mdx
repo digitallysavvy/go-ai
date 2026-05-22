@@ -660,9 +660,25 @@ Use `ResponsesModel` when you need OpenAI Responses API behavior. The provider p
 model, err := p.ResponsesModel(openai.ModelGPT55)
 ```
 
+Continue an OpenAI Conversation by passing the conversation ID through provider options. This is distinct from `previousResponseId`; if both are set, the request forwards both fields and returns an unsupported warning matching the TypeScript SDK.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: messages,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "conversation": "conv_123",
+        },
+    },
+})
+```
+
 ### Image detail and file content
 
 Image detail provider options are forwarded on image parts, including tool-result image content. Prefer `types.FileContent` with tagged `types.FileData` for new multimodal code. `types.ImageContent` remains available for compatibility.
+
+For OpenAI Responses compatibility, string file data with the default `file-` prefix is sent as a `file_id` reference instead of inline base64 data, matching the TypeScript provider. To disable or customize this deprecated compatibility path, set `openai.Config.FileIDPrefixes`.
 
 ```go
 messages := []types.Message{{

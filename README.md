@@ -277,6 +277,7 @@ The Go AI SDK supports 30+ providers:
 | **Perplexity**   | Sonar models                 | -          | -                | -            |
 | **DeepSeek**     | DeepSeek R1, Chat            | -          | -                | -            |
 | **Alibaba**      | Qwen models                  | ✓          | -                | -            |
+| **QuiverAI**     | SVG generation/vectorization | -          | SVG              | -            |
 | **KlingAI**      | -                            | -          | Video (v3.0)     | -            |
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
 | **Ollama**       | Local models                 | ✓          | -                | -            |

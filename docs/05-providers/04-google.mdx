@@ -88,6 +88,21 @@ export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 | gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
 | gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
 
+Gemini image models can use Google Search grounding during image generation through provider options:
+
+```go
+result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "create a current-events infographic",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "googleSearch": map[string]interface{}{},
+        },
+    },
+})
+```
+
+`googleSearch` is only supported for Gemini image models. Imagen models return an unsupported warning and omit it from the request.
+
 ### Embedding Models
 
 | Model ID | Dimensions | Price | Best For |
@@ -96,6 +111,19 @@ export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 | gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
 
 ## Provider-Specific Features
+
+### Service Tier
+
+For the Gemini API, pass `serviceTier` in Google provider options:
+
+```go
+result, err := ai.GenerateText(model, "hello",
+    ai.WithProviderOptions(map[string]interface{}{
+        "google": map[string]interface{}{
+            "serviceTier": "priority",
+        },
+    }))
+```
 
 ### Massive Context Windows
 

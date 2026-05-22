@@ -472,3 +472,8 @@ chunk := responses.CompactionEventToChunk(event)
 // chunk.Type == provider.ChunkTypeCustom
 // chunk.CustomContent.Kind == "openai-compaction"
 ```
+
+When you pass that custom content back in a later assistant message, the
+Responses prompt converter forwards it as a `compaction` item. If `store` is
+enabled and the item has an OpenAI item ID, the converter sends an
+`item_reference` instead, matching the TypeScript SDK replay behavior.
