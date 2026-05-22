@@ -3,12 +3,17 @@ package ai
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // UIMessageChunk is a lightweight JSON-compatible chunk shape.
@@ -24,6 +29,7 @@ type UIMessageStreamOnFinishCallback func(ctx map[string]interface{})
 type UIMessageStreamWriter struct {
 	writeFn func(UIMessageChunk)
 	mergeFn func(<-chan UIMessageChunk)
+	onError func(error) string
 }
 
 // Write appends a data stream part.
@@ -42,21 +48,64 @@ func (w UIMessageStreamWriter) Merge(stream <-chan UIMessageChunk) {
 
 // UIMessageStreamOptions configures custom UI-message stream creation.
 type UIMessageStreamOptions struct {
-	Execute          func(writer UIMessageStreamWriter)
-	OnError          func(error) string
-	OriginalMessages []UIMessageChunk
-	OnStepFinish     UIMessageStreamOnStepFinishCallback
-	OnFinish         UIMessageStreamOnFinishCallback
+	Execute           func(writer UIMessageStreamWriter)
+	OnError           func(error) string
+	OriginalMessages  []UIMessageChunk
+	OnStepFinish      UIMessageStreamOnStepFinishCallback
+	OnFinish          UIMessageStreamOnFinishCallback
 	GenerateMessageID IDGenerator
+}
+
+// UIMessageStreamResultOptions controls result-to-UI projection settings.
+type UIMessageStreamResultOptions struct {
+	OriginalMessages  []UIMessageChunk
+	GenerateMessageID IDGenerator
+	MessageMetadata   func(part map[string]interface{}) map[string]interface{}
+	SendReasoning     *bool
+	SendSources       *bool
+	SendStart         *bool
+	SendFinish        *bool
+	OnStepFinish      UIMessageStreamOnStepFinishCallback
+	OnFinish          UIMessageStreamOnFinishCallback
+	OnError           func(error) string
 }
 
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
 // createUIMessageStreamResponse.
 type UIMessageStreamResponseInit struct {
-	Status      int
-	StatusText  string
-	Headers     map[string]string
+	Status           int
+	StatusText       string
+	Headers          map[string]string
 	ConsumeSSEStream func(io.Reader) error
+}
+
+func getDefaultMessageErrorHandler(onError func(error) string) func(error) string {
+	if onError == nil {
+		return func(err error) string {
+			if err == nil {
+				return "error"
+			}
+			return err.Error()
+		}
+	}
+	return onError
+}
+
+func boolOption(value *bool, defaultValue bool) bool {
+	if value == nil {
+		return defaultValue
+	}
+	return *value
+}
+
+func appendErrorChunk(onError func(error) string, write func(UIMessageChunk), err error) {
+	if err == nil {
+		return
+	}
+	write(UIMessageChunk{
+		"type":      "error",
+		"errorText": onError(err),
+	})
 }
 
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
@@ -73,6 +122,8 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			return
 		}
 
+		onError := getDefaultMessageErrorHandler(options.OnError)
+
 		var mu sync.Mutex
 		var closed bool
 		safeEnqueue := func(part UIMessageChunk) {
@@ -88,6 +139,13 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			select {
 			case out <- part:
 			case <-ctx.Done():
+			}
+		}
+		enqueueError := func(err error) {
+			appendErrorChunk(onError, safeEnqueue, err)
+			select {
+			case errCh <- err:
+			default:
 			}
 		}
 
@@ -134,9 +192,22 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 
 		var wg sync.WaitGroup
 		merge := func(stream <-chan UIMessageChunk) {
+			if stream == nil {
+				enqueueError(errors.New("merge stream is nil"))
+				return
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						if err, ok := r.(error); ok {
+							enqueueError(err)
+						} else {
+							enqueueError(fmt.Errorf("ui message stream panicked: %v", r))
+						}
+					}
+				}()
 				for {
 					select {
 					case <-ctx.Done():
@@ -154,16 +225,19 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		writer := UIMessageStreamWriter{
 			writeFn: safeEnqueue,
 			mergeFn: merge,
+			onError: onError,
 		}
 
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					if err, ok := r.(error); ok {
-						errCh <- err
+					var err error
+					if e, ok := r.(error); ok {
+						err = e
 					} else {
-						errCh <- fmt.Errorf("ui message stream panicked: %v", r)
+						err = fmt.Errorf("ui message stream panicked: %v", r)
 					}
+					enqueueError(err)
 				}
 			}()
 			options.Execute(writer)
@@ -183,7 +257,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 }
 
 // CreateUIMessageStream converts a StreamTextResult into a channel of UI chunks.
-func CreateUIMessageStream(ctx context.Context, result *StreamTextResult) (<-chan UIMessageChunk, <-chan error) {
+func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
 	errCh := make(chan error, 1)
 
@@ -194,7 +268,116 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult) (<-cha
 			errCh <- fmt.Errorf("result is required")
 			return
 		}
+
+		options := UIMessageStreamResultOptions{}
+		if len(opts) > 0 {
+			options = opts[0]
+		}
+
+		onError := getDefaultMessageErrorHandler(options.OnError)
+		sendStart := boolOption(options.SendStart, true)
+		sendFinish := boolOption(options.SendFinish, true)
+		sendReasoning := boolOption(options.SendReasoning, true)
+		sendSources := boolOption(options.SendSources, false)
+
+		generateID := options.GenerateMessageID
+		if generateID == nil {
+			generateID = newCallID
+		}
+		messageID := generateID()
+
+		accumText := strings.Builder{}
+
+		callOnFinish := func(finishReason types.FinishReason) {
+			if options.OnFinish == nil {
+				return
+			}
+			isContinuation := false
+			if len(options.OriginalMessages) > 0 {
+				lastMsg := options.OriginalMessages[len(options.OriginalMessages)-1]
+				if lastID, ok := lastMsg["id"].(string); ok && lastID == messageID {
+					isContinuation = true
+				}
+			}
+			responseMessage := map[string]interface{}{
+				"id":      messageID,
+				"role":    "assistant",
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": accumText.String()}},
+			}
+			messages := append([]UIMessageChunk{}, options.OriginalMessages...)
+			if !isContinuation {
+				messages = append(messages, responseMessage)
+			}
+			finishEvent := map[string]interface{}{
+				"isContinuation":  isContinuation,
+				"isAborted":       ctx.Err() != nil,
+				"responseMessage": responseMessage,
+				"messages":        messages,
+				"finishReason":    finishReason,
+			}
+			defer func() {
+				_ = recover()
+			}()
+			options.OnFinish(finishEvent)
+		}
+
+		callOnStepFinish := func() {
+			if options.OnStepFinish == nil {
+				return
+			}
+			isContinuation := false
+			if len(options.OriginalMessages) > 0 {
+				lastMsg := options.OriginalMessages[len(options.OriginalMessages)-1]
+				if lastID, ok := lastMsg["id"].(string); ok && lastID == messageID {
+					isContinuation = true
+				}
+			}
+			responseMessage := map[string]interface{}{
+				"id":      messageID,
+				"role":    "assistant",
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": accumText.String()}},
+			}
+			messages := append([]UIMessageChunk{}, options.OriginalMessages...)
+			if !isContinuation {
+				messages = append(messages, responseMessage)
+			}
+			stepEvent := map[string]interface{}{
+				"isContinuation":  isContinuation,
+				"responseMessage": responseMessage,
+				"messages":        messages,
+			}
+			defer func() {
+				_ = recover()
+			}()
+			options.OnStepFinish(stepEvent)
+		}
+
+		safeEnqueue := func(part UIMessageChunk) {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- part:
+			}
+		}
+
+		if sendStart {
+			startEvent := map[string]interface{}{
+				"type": "start",
+			}
+			if messageID != "" {
+				startEvent["messageId"] = messageID
+			}
+			if options.MessageMetadata != nil {
+				metadata := options.MessageMetadata(map[string]interface{}{"type": "start"})
+				if metadata != nil {
+					startEvent["messageMetadata"] = metadata
+				}
+			}
+			safeEnqueue(startEvent)
+		}
+
 		stream := result.Stream()
+		finishReason := types.FinishReason("")
 		for {
 			select {
 			case <-ctx.Done():
@@ -205,28 +388,71 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult) (<-cha
 			chunk, err := stream.Next()
 			if err != nil {
 				if err == io.EOF {
-					return
+					break
 				}
 				errCh <- err
+				appendErrorChunk(onError, safeEnqueue, err)
+				callOnFinish(finishReason)
 				return
 			}
-			out <- UIMessageChunk{
-				"type":  string(chunk.Type),
-				"chunk": chunk,
+
+			if chunk.Type == provider.ChunkTypeText {
+				accumText.WriteString(chunk.Text)
+			}
+			if chunk.Type == provider.ChunkTypeFinish {
+				finishReason = chunk.FinishReason
+			}
+			for _, converted := range convertProviderChunkToUIMessageChunks(*chunk, resultChunkConversionOptions{
+				SendReasoning: sendReasoning,
+				SendSources:   sendSources,
+				OnError:       onError,
+			}) {
+				safeEnqueue(converted)
+				if options.MessageMetadata != nil && chunk.Type != provider.ChunkTypeStreamStart && chunk.Type != provider.ChunkTypeStreamFinish {
+					metadata := options.MessageMetadata(map[string]interface{}{
+						"type": string(chunk.Type),
+						"part": chunk,
+					})
+					if metadata != nil && string(chunk.Type) != "start" && string(chunk.Type) != "finish" {
+						safeEnqueue(UIMessageChunk{
+							"type":            "message-metadata",
+							"messageMetadata": metadata,
+						})
+					}
+				}
 			}
 		}
+
+		if sendFinish {
+			finishEvent := map[string]interface{}{
+				"type":         "finish",
+				"finishReason": string(finishReason),
+			}
+			if options.MessageMetadata != nil {
+				metadata := options.MessageMetadata(map[string]interface{}{
+					"type":         "finish",
+					"finishReason": string(finishReason),
+				})
+				if metadata != nil {
+					finishEvent["messageMetadata"] = metadata
+				}
+			}
+			safeEnqueue(finishEvent)
+		}
+		callOnStepFinish()
+		callOnFinish(finishReason)
 	}()
 	return out, errCh
 }
 
 // CreateUIMessageStreamResponse writes UI chunks as SSE to an HTTP response.
-func CreateUIMessageStreamResponse(ctx context.Context, result *StreamTextResult) (*http.Response, error) {
-	return CreateUIMessageStreamResponseWithInit(ctx, result, nil)
+func CreateUIMessageStreamResponse(ctx context.Context, result *StreamTextResult, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
+	return CreateUIMessageStreamResponseWithInit(ctx, result, nil, opts...)
 }
 
 // CreateUIMessageStreamResponseWithInit writes UI chunks as SSE to an HTTP response
 // with optional status/statusText/headers.
-func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit) (*http.Response, error) {
+func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
 	}
@@ -253,7 +479,7 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init)
+		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...)
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -264,12 +490,12 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 }
 
 // PipeUIMessageStreamToResponse writes UI chunks to the given writer as SSE.
-func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult, w io.Writer) error {
-	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil)
+func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult, w io.Writer, opts ...UIMessageStreamResultOptions) error {
+	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil, opts...)
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
-func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit) error {
+func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
 	}
@@ -290,11 +516,11 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		go func() {
 			closeSide <- init.ConsumeSSEStream(pr)
 		}()
-		defer pw.Close() // closes pipe on early-error returns so the goroutine unblocks
+		defer pw.Close()
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
-	chunks, errCh := CreateUIMessageStream(ctx, result)
+	chunks, errCh := CreateUIMessageStream(ctx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
 	defer bw.Flush()
 	for chunk := range chunks {
@@ -312,10 +538,6 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 			return err
 		}
 	}
-	// Flush buffered data into the pipe before closing it, then wait for the
-	// side consumer to drain. This must happen before the deferred bw.Flush()
-	// and pw.Close() to avoid the deadlock where pw.Close() would only run
-	// after we return, but we're blocked waiting for closeSide.
 	if sideWriter != nil {
 		_ = bw.Flush()
 		sideWriter.Close()
@@ -361,4 +583,247 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 		return nil, err
 	}
 	return chunks, nil
+}
+
+type resultChunkConversionOptions struct {
+	SendReasoning bool
+	SendSources   bool
+	OnError       func(error) string
+}
+
+func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resultChunkConversionOptions) []UIMessageChunk {
+	out := make([]UIMessageChunk, 0, 2)
+
+	withMeta := func(part map[string]interface{}) {
+		if len(chunk.ProviderMetadata) == 0 {
+			return
+		}
+		var providerMetadata map[string]interface{}
+		if err := json.Unmarshal(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
+			part["providerMetadata"] = providerMetadata
+		}
+	}
+
+	switch chunk.Type {
+	case provider.ChunkTypeTextStart:
+		part := map[string]interface{}{"type": "text-start", "id": chunk.ID}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeText:
+		part := map[string]interface{}{"type": "text-delta", "id": chunk.ID, "delta": chunk.Text}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeTextEnd:
+		part := map[string]interface{}{"type": "text-end", "id": chunk.ID}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeReasoningStart:
+		if !opts.SendReasoning {
+			break
+		}
+		part := map[string]interface{}{"type": "reasoning-start", "id": chunk.ID}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeReasoningEnd:
+		if !opts.SendReasoning {
+			break
+		}
+		part := map[string]interface{}{"type": "reasoning-end", "id": chunk.ID}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeReasoning:
+		if !opts.SendReasoning {
+			break
+		}
+		part := map[string]interface{}{"type": "reasoning-delta", "id": chunk.ID, "delta": chunk.Text}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeSource:
+		if chunk.SourceContent == nil || !opts.SendSources {
+			break
+		}
+		if chunk.SourceContent.SourceType == "url" {
+			part := map[string]interface{}{
+				"type":     "source-url",
+				"sourceId": chunk.SourceContent.ID,
+				"url":      chunk.SourceContent.URL,
+				"title":    chunk.SourceContent.Title,
+			}
+			withMeta(part)
+			out = append(out, part)
+			break
+		}
+		if chunk.SourceContent.SourceType == "document" {
+			part := map[string]interface{}{
+				"type":      "source-document",
+				"sourceId":  chunk.SourceContent.ID,
+				"mediaType": chunk.SourceContent.MediaType,
+				"title":     chunk.SourceContent.Title,
+				"filename":  chunk.SourceContent.Filename,
+			}
+			withMeta(part)
+			out = append(out, part)
+		}
+	case provider.ChunkTypeFile:
+		fileContent := chunk.GeneratedFileContent
+		if fileContent == nil {
+			break
+		}
+		part := map[string]interface{}{
+			"type":      "file",
+			"mediaType": fileContent.MediaType,
+			"url":       deriveFileURL(fileContent.MediaType, fileContent),
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeReasoningFile:
+		if !opts.SendReasoning {
+			break
+		}
+		fileContent := chunk.ReasoningFileContent
+		part := map[string]interface{}{
+			"type":      "reasoning-file",
+			"mediaType": fileContent.MediaType,
+			"url":       deriveFileURLFromReasoning(fileContent, fileContent.MediaType),
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeCustom:
+		if chunk.CustomContent == nil {
+			break
+		}
+		part := map[string]interface{}{
+			"type": "custom",
+			"kind": chunk.CustomContent.Kind,
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeToolCall:
+		if chunk.ToolCall == nil {
+			break
+		}
+		if chunk.ToolCall.Invalid {
+			part := map[string]interface{}{
+				"type":       "tool-input-error",
+				"toolCallId": chunk.ToolCall.ID,
+				"toolName":   chunk.ToolCall.ToolName,
+				"input":      chunk.ToolCall.Arguments,
+				"errorText":  opts.OnError(chunk.ToolCall.Error),
+			}
+			if chunk.ToolCall.ProviderExecuted {
+				part["providerExecuted"] = true
+			}
+			withMeta(part)
+			out = append(out, part)
+			break
+		}
+		part := map[string]interface{}{
+			"type":       "tool-input-available",
+			"toolCallId": chunk.ToolCall.ID,
+			"toolName":   chunk.ToolCall.ToolName,
+			"input":      chunk.ToolCall.Arguments,
+		}
+		if chunk.ToolCall.ProviderExecuted {
+			part["providerExecuted"] = true
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeToolResult:
+		if chunk.ToolResult == nil {
+			break
+		}
+		partType := "tool-output-available"
+		part := map[string]interface{}{
+			"type":       partType,
+			"toolCallId": chunk.ToolResult.ToolCallID,
+			"output":     chunk.ToolResult.Result,
+		}
+		if chunk.ToolResult.Error != nil {
+			partType = "tool-output-error"
+			part = map[string]interface{}{
+				"type":       partType,
+				"toolCallId": chunk.ToolResult.ToolCallID,
+				"errorText":  opts.OnError(chunk.ToolResult.Error),
+			}
+		}
+		if chunk.ToolResult.ProviderExecuted {
+			part["providerExecuted"] = true
+		}
+		if chunk.ToolResult.Dynamic {
+			part["dynamic"] = true
+		}
+		if chunk.ToolResult.Preliminary {
+			part["preliminary"] = true
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeError:
+		out = append(out, map[string]interface{}{
+			"type":      "error",
+			"errorText": opts.OnError(errors.New(chunk.Text)),
+		})
+	default:
+		if chunk.Type == "start-step" {
+			out = append(out, map[string]interface{}{"type": "start-step"})
+			break
+		}
+		if chunk.Type == provider.ChunkTypeStreamStart {
+			out = append(out, map[string]interface{}{"type": "start-step"})
+			break
+		}
+		if chunk.Type == provider.ChunkTypeStreamFinish {
+			out = append(out, map[string]interface{}{"type": "finish-step"})
+			break
+		}
+		out = append(out, UIMessageChunk{
+			"type":  string(chunk.Type),
+			"chunk": chunk,
+		})
+	}
+	return out
+}
+
+func deriveFileURL(mediaType string, file *types.GeneratedFileContent) string {
+	if file == nil {
+		return ""
+	}
+	if file.URL != "" {
+		return file.URL
+	}
+	if file.FileData.Type == "url" && file.FileData.URL != "" {
+		return file.FileData.URL
+	}
+	if file.FileData.Type == "data" {
+		if file.FileData.DataString != "" {
+			return "data:" + mediaType + ";base64," + file.FileData.DataString
+		}
+		if len(file.FileData.Data) > 0 {
+			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data)
+		}
+	}
+	if len(file.Data) > 0 {
+		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.Data)
+	}
+	return ""
+}
+
+func deriveFileURLFromReasoning(file *types.ReasoningFileContent, mediaType string) string {
+	if file == nil {
+		return ""
+	}
+	if file.FileData.Type == "url" && file.FileData.URL != "" {
+		return file.FileData.URL
+	}
+	if file.FileData.Type == "data" {
+		if file.FileData.DataString != "" {
+			return "data:" + mediaType + ";base64," + file.FileData.DataString
+		}
+		if len(file.FileData.Data) > 0 {
+			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data)
+		}
+	}
+	if len(file.Data) > 0 {
+		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.Data)
+	}
+	return ""
 }

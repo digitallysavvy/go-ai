@@ -1478,13 +1478,13 @@ func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextS
 }
 
 // ToUIMessageStream converts the stream result into UI message chunks.
-func (r *StreamTextResult) ToUIMessageStream(ctx context.Context) (<-chan UIMessageChunk, <-chan error) {
-	return CreateUIMessageStream(ctx, r)
+func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
+	return CreateUIMessageStream(ctx, r, opts...)
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.
-func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *UIMessageStreamResponseInit) (*http.Response, error) {
-	return CreateUIMessageStreamResponseWithInit(ctx, r, init)
+func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
+	return CreateUIMessageStreamResponseWithInit(ctx, r, init, opts...)
 }
 
 // PipeTextStreamToResponse writes text delta output to the writer.
@@ -1493,8 +1493,8 @@ func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Wr
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
-func (r *StreamTextResult) PipeUIMessageStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeUIMessageStreamToResponse(ctx, r, w)
+func (r *StreamTextResult) PipeUIMessageStreamToResponse(ctx context.Context, w io.Writer, opts ...UIMessageStreamResultOptions) error {
+	return PipeUIMessageStreamToResponse(ctx, r, w, opts...)
 }
 
 // Text returns the accumulated text so far
