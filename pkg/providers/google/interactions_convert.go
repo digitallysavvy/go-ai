@@ -316,6 +316,29 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 	hasFunctionCall := false
 	for _, block := range outputs {
 		switch block.Type {
+		case "user_input":
+			// skip user input steps in response
+		case "model_output":
+			var innerBlocks []interactionsContentBlock
+			if len(block.ContentRaw) > 0 {
+				_ = json.Unmarshal(block.ContentRaw, &innerBlocks)
+			}
+			for _, inner := range innerBlocks {
+				meta := providerMetaRaw("", interactionID)
+				switch inner.Type {
+				case "text":
+					content = append(content, types.TextContent{Text: inner.Text, ProviderMetadata: meta})
+					content = append(content, annotationsToSources(inner.Annotations)...)
+				case "image":
+					if inner.Data != "" {
+						data, _ := base64.StdEncoding.DecodeString(inner.Data)
+						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
+					} else if inner.URI != "" {
+						mediaType := firstNonEmpty(inner.MimeType, "image/png")
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+					}
+				}
+			}
 		case "text":
 			meta := providerMetaRaw("", interactionID)
 			content = append(content, types.TextContent{Text: block.Text, ProviderMetadata: meta})
@@ -334,7 +357,10 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			}
 		case "function_call":
 			hasFunctionCall = true
-			args := block.Arguments
+			var args map[string]interface{}
+			if len(block.Arguments) > 0 {
+				_ = json.Unmarshal(block.Arguments, &args)
+			}
 			if args == nil {
 				args = map[string]interface{}{}
 			}
@@ -359,7 +385,10 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			})
 		default:
 			if isBuiltinInteractionsToolCall(block.Type) {
-				args := block.Arguments
+				var args map[string]interface{}
+				if len(block.Arguments) > 0 {
+					_ = json.Unmarshal(block.Arguments, &args)
+				}
 				if args == nil {
 					args = map[string]interface{}{}
 				}

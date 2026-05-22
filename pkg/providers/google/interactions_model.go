@@ -254,7 +254,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 }
 
 func (m *InteractionsLanguageModel) convertResponse(response interactionsResponse, httpResp *internalhttp.Response, request interactionsRequest, warnings []types.Warning) *types.GenerateResult {
-	content, toolCalls, hasFunctionCall := m.parseOutputs(response.Outputs, normalizedInteractionID(response.ID))
+	content, toolCalls, hasFunctionCall := m.parseOutputs(response.Steps, normalizedInteractionID(response.ID))
 	text, _, _, _ := splitContent(content)
 	finishReason := mapInteractionsFinishReason(response.Status, hasFunctionCall)
 	headers := map[string]string(nil)
@@ -361,10 +361,11 @@ func (m *InteractionsLanguageModel) handleError(err error) error {
 }
 
 func requestHeaders(opts *provider.GenerateOptions) map[string]string {
+	base := map[string]string{"Api-Revision": "2026-05-20"}
 	if opts == nil {
-		return nil
+		return base
 	}
-	return opts.Headers
+	return internalhttp.MergeHeaders(opts.Headers, base)
 }
 
 func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (GoogleInteractionsProviderOptions, error) {

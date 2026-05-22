@@ -61,7 +61,7 @@ type interactionsResponse struct {
 	Status                string                     `json:"status,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
 	Agent                 string                     `json:"agent,omitempty"`
-	Outputs               []interactionsContentBlock `json:"outputs,omitempty"`
+	Steps                 []interactionsContentBlock `json:"steps,omitempty"`
 	Usage                 *interactionsUsage         `json:"usage,omitempty"`
 	ServiceTier           string                     `json:"service_tier,omitempty"`
 	PreviousInteractionID string                     `json:"previous_interaction_id,omitempty"`
@@ -78,11 +78,11 @@ type interactionsContentBlock struct {
 	Resolution  string                     `json:"resolution,omitempty"`
 	Signature   string                     `json:"signature,omitempty"`
 	Summary     []interactionsContentBlock `json:"summary,omitempty"`
-	Content     *interactionsContentBlock  `json:"content,omitempty"`
+	ContentRaw  json.RawMessage            `json:"content,omitempty"`
 	ID          string                     `json:"id,omitempty"`
 	Name        string                     `json:"name,omitempty"`
 	ServerName  string                     `json:"server_name,omitempty"`
-	Arguments   map[string]interface{}     `json:"arguments,omitempty"`
+	Arguments   json.RawMessage            `json:"arguments,omitempty"`
 	CallID      string                     `json:"call_id,omitempty"`
 	Result      interface{}                `json:"result,omitempty"`
 	IsError     *bool                      `json:"is_error,omitempty"`
@@ -133,6 +133,7 @@ type interactionsEvent struct {
 	Interaction   *interactionsResponse     `json:"interaction,omitempty"`
 	InteractionID string                    `json:"interaction_id,omitempty"`
 	Status        string                    `json:"status,omitempty"`
+	Step          *interactionsContentBlock `json:"step,omitempty"`
 	Content       *interactionsContentBlock `json:"content,omitempty"`
 	Delta         *interactionsContentBlock `json:"delta,omitempty"`
 	Error         *struct {
