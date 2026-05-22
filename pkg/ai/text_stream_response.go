@@ -10,11 +10,39 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
+// TextStreamResponseInit mirrors the TypeScript ResponseInit shape used by
+// createTextStreamResponse.
+type TextStreamResponseInit struct {
+	Status     int
+	StatusText string
+	Headers    map[string]string
+}
+
 // CreateTextStreamResponse creates an HTTP response with a plain-text body from
 // stream text chunks.
 func CreateTextStreamResponse(ctx context.Context, result *StreamTextResult) (*http.Response, error) {
+	return CreateTextStreamResponseWithInit(ctx, result, nil)
+}
+
+// CreateTextStreamResponseWithInit creates an HTTP response with optional status,
+// status text, and headers.
+func CreateTextStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *TextStreamResponseInit) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
+	}
+	status := http.StatusOK
+	statusText := ""
+	headers := http.Header{
+		"Content-Type": []string{"text/plain; charset=utf-8"},
+	}
+	if init != nil {
+		if init.Status != 0 {
+			status = init.Status
+		}
+		statusText = init.StatusText
+		for key, value := range init.Headers {
+			headers.Set(key, value)
+		}
 	}
 	pr, pw := io.Pipe()
 	go func() {
@@ -22,11 +50,10 @@ func CreateTextStreamResponse(ctx context.Context, result *StreamTextResult) (*h
 		_ = PipeTextStreamToResponse(ctx, result, pw)
 	}()
 	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header: http.Header{
-			"Content-Type": []string{"text/plain; charset=utf-8"},
-		},
-		Body: pr,
+		StatusCode: status,
+		Status:     statusText,
+		Header:     headers,
+		Body:       pr,
 	}, nil
 }
 

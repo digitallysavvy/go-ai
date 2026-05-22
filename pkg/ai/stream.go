@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -1463,6 +1464,37 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 // Stream returns the underlying text stream
 func (r *StreamTextResult) Stream() provider.TextStream {
 	return r.stream
+}
+
+// ConsumeStream drains the stream and waits for completion.
+func (r *StreamTextResult) ConsumeStream() error {
+	_, err := r.ReadAll()
+	return err
+}
+
+// ToTextStreamResponse creates a text Response object from the stream result.
+func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextStreamResponseInit) (*http.Response, error) {
+	return CreateTextStreamResponseWithInit(ctx, r, init)
+}
+
+// ToUIMessageStream converts the stream result into UI message chunks.
+func (r *StreamTextResult) ToUIMessageStream(ctx context.Context) (<-chan UIMessageChunk, <-chan error) {
+	return CreateUIMessageStream(ctx, r)
+}
+
+// ToUIMessageStreamResponse creates an SSE response from the stream result.
+func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *UIMessageStreamResponseInit) (*http.Response, error) {
+	return CreateUIMessageStreamResponseWithInit(ctx, r, init)
+}
+
+// PipeTextStreamToResponse writes text delta output to the writer.
+func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
+	return PipeTextStreamToResponse(ctx, r, w)
+}
+
+// PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
+func (r *StreamTextResult) PipeUIMessageStreamToResponse(ctx context.Context, w io.Writer) error {
+	return PipeUIMessageStreamToResponse(ctx, r, w)
 }
 
 // Text returns the accumulated text so far
