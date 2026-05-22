@@ -62,6 +62,27 @@ func TestProviderError_Unwrap(t *testing.T) {
 	}
 }
 
+func TestProviderError_IsRetryable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{status: 0, want: true},
+		{status: 400, want: false},
+		{status: 429, want: true},
+		{status: 500, want: true},
+		{status: 503, want: true},
+	}
+	for _, tt := range tests {
+		err := &ProviderError{StatusCode: tt.status}
+		if got := err.IsRetryable(); got != tt.want {
+			t.Fatalf("IsRetryable(%d) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
 func TestIsProviderError(t *testing.T) {
 	t.Parallel()
 

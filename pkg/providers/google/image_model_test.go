@@ -70,6 +70,64 @@ func TestImageModel_IsGeminiModel(t *testing.T) {
 	}
 }
 
+func TestImageModel_GeminiGoogleSearchGrounding(t *testing.T) {
+	var seenBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{
+			"candidates": [{
+				"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": "aW1n"}}]},
+				"groundingMetadata": {"webSearchQueries": ["logo"]}
+			}],
+			"usageMetadata": {
+				"promptTokenCount": 7,
+				"candidatesTokenCount": 11,
+				"totalTokenCount": 18,
+				"serviceTier": "standard"
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewImageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "logo",
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{
+				"googleSearch": map[string]interface{}{},
+				"imageSize":    ImageSize1K,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	tools, ok := seenBody["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools missing: %#v", seenBody)
+	}
+	tool := tools[0].(map[string]interface{})
+	if _, ok := tool["googleSearch"]; !ok {
+		t.Fatalf("googleSearch tool missing: %#v", tool)
+	}
+	genConfig := seenBody["generationConfig"].(map[string]interface{})
+	if _, ok := genConfig["googleSearch"]; ok {
+		t.Fatalf("googleSearch must not be forwarded into generationConfig: %#v", genConfig)
+	}
+	googleMeta := result.ProviderMetadata["google"].(map[string]interface{})
+	if googleMeta["groundingMetadata"] == nil {
+		t.Fatalf("groundingMetadata missing: %#v", googleMeta)
+	}
+	if result.Usage.InputTokens != 7 || result.Usage.OutputTokens != 11 || result.Usage.TotalTokens != 18 {
+		t.Fatalf("usage = %#v, want token metadata from language model path", result.Usage)
+	}
+	if googleMeta["usageMetadata"] == nil || googleMeta["serviceTier"] == nil {
+		t.Fatalf("language model provider metadata missing: %#v", googleMeta)
+	}
+}
+
 func TestImageModel_ConvertSizeToAspectRatio(t *testing.T) {
 	tests := []struct {
 		name     string

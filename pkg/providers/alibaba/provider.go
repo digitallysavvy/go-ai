@@ -66,24 +66,12 @@ func (p *Provider) Name() string {
 	return "alibaba"
 }
 
-// LanguageModel returns a language model by ID
-// Supported models: qwen-plus, qwen-turbo, qwen-max, qwen-qwq-32b-preview, qwen-vl-max
+// LanguageModel returns a language model by ID.
+// Alibaba's TypeScript SDK model ID type allows current known IDs and custom
+// strings; mirror that here by accepting any non-empty model ID.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
 		modelID = "qwen-plus" // Default model
-	}
-
-	// Validate model ID
-	validModels := map[string]bool{
-		"qwen-plus":            true,
-		"qwen-turbo":           true,
-		"qwen-max":             true,
-		"qwen-qwq-32b-preview": true,
-		"qwen-vl-max":          true,
-	}
-
-	if !validModels[modelID] {
-		return nil, fmt.Errorf("unsupported Alibaba chat model: %s (supported: qwen-plus, qwen-turbo, qwen-max, qwen-qwq-32b-preview, qwen-vl-max)", modelID)
 	}
 
 	return NewLanguageModel(p, modelID), nil

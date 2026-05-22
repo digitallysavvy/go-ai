@@ -32,6 +32,7 @@ const (
 	GatewayLanguageModelAlibabaQwen35Plus               GatewayLanguageModelID = "alibaba/qwen3.5-plus"
 	GatewayLanguageModelAlibabaQwen3627b                GatewayLanguageModelID = "alibaba/qwen3.6-27b"
 	GatewayLanguageModelAlibabaQwen36Plus               GatewayLanguageModelID = "alibaba/qwen3.6-plus"
+	GatewayLanguageModelAlibabaQwen37Max                GatewayLanguageModelID = "alibaba/qwen3.7-max"
 	GatewayLanguageModelAmazonNova2Lite                 GatewayLanguageModelID = "amazon/nova-2-lite"
 	GatewayLanguageModelAmazonNovaLite                  GatewayLanguageModelID = "amazon/nova-lite"
 	GatewayLanguageModelAmazonNovaMicro                 GatewayLanguageModelID = "amazon/nova-micro"
@@ -110,6 +111,7 @@ const (
 	GatewayLanguageModelMistralMinistral8b              GatewayLanguageModelID = "mistral/ministral-8b"
 	GatewayLanguageModelMistralMistralLarge3            GatewayLanguageModelID = "mistral/mistral-large-3"
 	GatewayLanguageModelMistralMistralMedium            GatewayLanguageModelID = "mistral/mistral-medium"
+	GatewayLanguageModelMistralMistralMedium35          GatewayLanguageModelID = "mistral/mistral-medium-3.5"
 	GatewayLanguageModelMistralMistralNemo              GatewayLanguageModelID = "mistral/mistral-nemo"
 	GatewayLanguageModelMistralMistralSmall             GatewayLanguageModelID = "mistral/mistral-small"
 	GatewayLanguageModelMistralPixtral12b               GatewayLanguageModelID = "mistral/pixtral-12b"
@@ -186,6 +188,7 @@ const (
 	GatewayLanguageModelXaiGrok420Reasoning             GatewayLanguageModelID = "xai/grok-4.20-reasoning"
 	GatewayLanguageModelXaiGrok420ReasoningBeta         GatewayLanguageModelID = "xai/grok-4.20-reasoning-beta"
 	GatewayLanguageModelXaiGrok43                       GatewayLanguageModelID = "xai/grok-4.3"
+	GatewayLanguageModelXaiGrokBuild01                  GatewayLanguageModelID = "xai/grok-build-0.1"
 	GatewayLanguageModelXaiGrokCodeFast1                GatewayLanguageModelID = "xai/grok-code-fast-1"
 	GatewayLanguageModelXiaomiMimoV2Flash               GatewayLanguageModelID = "xiaomi/mimo-v2-flash"
 	GatewayLanguageModelXiaomiMimoV2Pro                 GatewayLanguageModelID = "xiaomi/mimo-v2-pro"
@@ -230,6 +233,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAlibabaQwen35Plus,
 	GatewayLanguageModelAlibabaQwen3627b,
 	GatewayLanguageModelAlibabaQwen36Plus,
+	GatewayLanguageModelAlibabaQwen37Max,
 	GatewayLanguageModelAmazonNova2Lite,
 	GatewayLanguageModelAmazonNovaLite,
 	GatewayLanguageModelAmazonNovaMicro,
@@ -308,6 +312,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMistralMinistral8b,
 	GatewayLanguageModelMistralMistralLarge3,
 	GatewayLanguageModelMistralMistralMedium,
+	GatewayLanguageModelMistralMistralMedium35,
 	GatewayLanguageModelMistralMistralNemo,
 	GatewayLanguageModelMistralMistralSmall,
 	GatewayLanguageModelMistralPixtral12b,
@@ -384,6 +389,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelXaiGrok420Reasoning,
 	GatewayLanguageModelXaiGrok420ReasoningBeta,
 	GatewayLanguageModelXaiGrok43,
+	GatewayLanguageModelXaiGrokBuild01,
 	GatewayLanguageModelXaiGrokCodeFast1,
 	GatewayLanguageModelXiaomiMimoV2Flash,
 	GatewayLanguageModelXiaomiMimoV2Pro,

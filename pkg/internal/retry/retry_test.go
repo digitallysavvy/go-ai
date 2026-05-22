@@ -438,6 +438,23 @@ func TestIsRetryable_GatewayErrorStatusCodes(t *testing.T) {
 	}
 }
 
+func TestIsRetryable_ProviderErrorStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	if !IsRetryable(providererrors.NewProviderError("quiverai", 429, "", "rate limited", nil)) {
+		t.Fatal("provider 429 should be retryable")
+	}
+	if !IsRetryable(providererrors.NewProviderError("quiverai", 503, "", "unavailable", nil)) {
+		t.Fatal("provider 503 should be retryable")
+	}
+	if !IsRetryable(providererrors.NewProviderError("quiverai", 0, "", "network error", nil)) {
+		t.Fatal("provider status 0 should preserve generic retryable behavior")
+	}
+	if IsRetryable(providererrors.NewProviderError("quiverai", 400, "", "bad request", nil)) {
+		t.Fatal("provider 400 should not be retryable")
+	}
+}
+
 func TestDo_ContextCancelledBeforeStart(t *testing.T) {
 	t.Parallel()
 

@@ -42,6 +42,12 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// FileIDPrefixes identifies deprecated string file-data values that should
+	// be sent to the Responses API as file_id references instead of base64 data.
+	// Nil defaults to []string{"file-"} to match the TypeScript OpenAI provider;
+	// set an empty non-nil slice to disable this compatibility path.
+	FileIDPrefixes []string
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -82,6 +88,13 @@ func New(cfg Config) *Provider {
 // idiomatic Go constructor.
 func CreateOpenAI(cfg Config) *Provider {
 	return New(cfg)
+}
+
+func (p *Provider) responsesFileIDPrefixes() []string {
+	if p.config.FileIDPrefixes != nil {
+		return p.config.FileIDPrefixes
+	}
+	return []string{"file-"}
 }
 
 // Name returns the provider name

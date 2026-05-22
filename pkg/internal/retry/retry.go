@@ -232,5 +232,10 @@ func IsRetryable(err error) bool {
 		return gatewayErr.IsRetryable()
 	}
 
+	var providerErr *providererrors.ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.IsRetryable()
+	}
+
 	return true
 }

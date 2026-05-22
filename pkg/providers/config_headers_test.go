@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
+	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 )
@@ -45,6 +46,7 @@ func TestProviderConfigHeadersAreOptionalForWorkflowSerialization(t *testing.T) 
 		{name: "azure", config: azure.Config{}},
 		{name: "ollama", config: ollama.Config{}},
 		{name: "gateway", config: gateway.Config{}},
+		{name: "quiverai", config: quiverai.Config{}},
 	}
 
 	for _, tt := range tests {

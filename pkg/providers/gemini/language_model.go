@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -54,38 +55,41 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, headers, warnings := m.buildRequest(opts, false)
 
 	var response Response
 	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   m.cfg.GeneratePath(m.modelID),
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    m.cfg.GeneratePath(m.modelID),
+		Body:    reqBody,
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, headers, warnings := m.buildRequest(opts, true)
 
 	httpResp, err := m.cfg.Client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   m.cfg.StreamPath(m.modelID),
 		Body:   reqBody,
-		Headers: map[string]string{
+		Headers: internalhttp.MergeHeaders(headers, map[string]string{
 			"Accept": "text/event-stream",
-		},
+		}),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header, m.ModelID()), nil
+	stream := providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header, m.ModelID())
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 // handleError wraps a low-level error into a provider error.
@@ -109,7 +113,14 @@ func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[stri
 
 // buildRequestBody builds the Gemini API request body from GenerateOptions.
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStreaming bool) map[string]interface{} {
+	body, _, _ := m.buildRequest(opts, isStreaming)
+	return body
+}
+
+func (m *LanguageModel) buildRequest(opts *provider.GenerateOptions, isStreaming bool) (map[string]interface{}, map[string]string, []types.Warning) {
 	body := map[string]interface{}{}
+	headers := map[string]string{}
+	warnings := []types.Warning{}
 
 	// Messages / simple prompt → contents.
 	if opts.Prompt.IsMessages() {
@@ -207,7 +218,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStrea
 	// Forward additional provider options into generationConfig and the top-level body.
 	provOpts := m.getProviderOpts(opts)
 	if provOpts != nil {
-		for _, key := range []string{"responseModalities", "mediaResolution", "audioTimestamp", "imageConfig"} {
+		for _, key := range []string{"responseModalities", "mediaResolution", "audioTimestamp", "imageConfig", "thinkingBudget"} {
 			if v, ok := provOpts[key]; ok {
 				genConfig[key] = v
 			}
@@ -226,10 +237,39 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStrea
 			// Store it temporarily; the tools section below will pick it up.
 			body["_retrievalConfig"] = rc
 		}
-		// serviceTier: forward to top-level request body (not generationConfig).
-		// Allowed values: SERVICE_TIER_STANDARD, SERVICE_TIER_FLEX, SERVICE_TIER_PRIORITY.
+		isVertex := m.cfg.ProviderName == "google-vertex"
 		if st, ok := provOpts["serviceTier"].(string); ok && st != "" {
-			body["serviceTier"] = st
+			if isVertex {
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: "'serviceTier' is a Gemini API option and is not supported on Vertex AI. Use 'sharedRequestType' and optionally 'requestType' instead.",
+					Details: "'serviceTier' is a Gemini API option and is not supported on Vertex AI. Use 'sharedRequestType' and optionally 'requestType' instead.",
+				})
+			} else {
+				body["serviceTier"] = st
+			}
+		}
+		if shared, _ := provOpts["sharedRequestType"].(string); shared != "" {
+			if isVertex {
+				headers["X-Vertex-AI-LLM-Shared-Request-Type"] = shared
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: "'sharedRequestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
+					Details: "'sharedRequestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
+				})
+			}
+		}
+		if requestType, _ := provOpts["requestType"].(string); requestType != "" {
+			if isVertex {
+				headers["X-Vertex-AI-LLM-Request-Type"] = requestType
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: "'requestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
+					Details: "'requestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
+				})
+			}
 		}
 	}
 
@@ -299,7 +339,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStrea
 	}
 	delete(body, "_retrievalConfig")
 
-	return body
+	if opts != nil {
+		headers = internalhttp.MergeHeaders(opts.Headers, headers)
+	}
+	return body, headers, warnings
 }
 
 // buildFunctionCallingConfig builds the functionCallingConfig map for the toolConfig
@@ -515,8 +558,15 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior:
 	// `serviceTier: response.serviceTier ?? null`
-	if response.ServiceTier != "" {
-		if st, err := json.Marshal(response.ServiceTier); err == nil {
+	serviceTier := ""
+	if response.UsageMetadata != nil {
+		serviceTier = response.UsageMetadata.ServiceTier
+	}
+	if serviceTier == "" {
+		serviceTier = response.ServiceTier
+	}
+	if serviceTier != "" {
+		if st, err := json.Marshal(serviceTier); err == nil {
 			meta["serviceTier"] = st
 		}
 	} else {

@@ -2510,6 +2510,43 @@ func TestToolLoopAgentExperimentalDownloadFunctionDownloadsBeforeNextStep(t *tes
 	}
 }
 
+func TestToolLoopAgentAllowsSystemMessagesFromConfigAndCallOptions(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "system in history"}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hello"}}},
+	}
+
+	var captured *provider.GenerateOptions
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			captured = opts
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:                 model,
+		AllowSystemInMessages: true,
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Messages: messages}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if captured == nil || !captured.AllowSystemMessages || !captured.AllowSystemInMessages {
+		t.Fatalf("AllowSystemInMessages was not forwarded to provider options: %#v", captured)
+	}
+
+	captured = nil
+	agent = NewToolLoopAgent(AgentConfig{Model: model})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Messages:              messages,
+		AllowSystemInMessages: true,
+	}); err != nil {
+		t.Fatalf("Generate() with call option error = %v", err)
+	}
+	if captured == nil || !captured.AllowSystemMessages || !captured.AllowSystemInMessages {
+		t.Fatalf("call option AllowSystemInMessages was not forwarded: %#v", captured)
+	}
+}
+
 func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
 	model := &functionalAgentLanguageModel{
 		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {

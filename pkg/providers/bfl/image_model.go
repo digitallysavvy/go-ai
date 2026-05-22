@@ -2,6 +2,7 @@ package bfl
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -43,6 +44,12 @@ func (m *ImageModel) ModelID() string {
 
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if opts == nil {
+		opts = &provider.ImageGenerateOptions{}
+	}
+	if len(opts.Files) > 10 {
+		return nil, fmt.Errorf("black forest labs supports up to 10 input images")
+	}
 	reqBody := m.buildRequestBody(opts)
 
 	// Create request
@@ -71,19 +78,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 }
 
 func (m *ImageModel) getEndpoint() string {
-	// Different FLUX models have different endpoints
-	switch m.modelID {
-	case "flux-pro":
-		return "/flux-pro"
-	case "flux-pro-1.1":
-		return "/flux-pro-1.1"
-	case "flux-dev":
-		return "/flux-dev"
-	case "flux-schnell":
-		return "/flux-schnell"
-	default:
-		return "/flux-pro" // Default to pro
-	}
+	return "/" + m.modelID
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
@@ -100,8 +95,65 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 			reqBody["height"] = height
 		}
 	}
+	inputImageField := "input_image"
+	if m.modelID == "flux-pro-1.0-fill" {
+		inputImageField = "image"
+	}
+	for i, file := range opts.Files {
+		key := inputImageField
+		if i > 0 {
+			key = fmt.Sprintf("%s_%d", inputImageField, i+1)
+		}
+		reqBody[key] = bflImageValue(file)
+	}
+	if opts.Mask != nil {
+		reqBody["mask"] = bflImageValue(*opts.Mask)
+	}
+	if opts.Seed != nil {
+		reqBody["seed"] = *opts.Seed
+	}
+	for key, value := range extractBFLProviderOptions(opts.ProviderOptions) {
+		if value != nil {
+			reqBody[key] = value
+		}
+	}
 
 	return reqBody
+}
+
+func bflImageValue(file provider.ImageFile) string {
+	if file.Type == "url" || file.URL != "" {
+		return file.URL
+	}
+	return base64.StdEncoding.EncodeToString(file.Data)
+}
+
+func extractBFLProviderOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	if providerOptions == nil {
+		return nil
+	}
+	raw, ok := providerOptions["blackForestLabs"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := map[string]interface{}{}
+	mappings := map[string]string{
+		"imagePromptStrength": "image_prompt_strength",
+		"imagePrompt":         "image_prompt",
+		"outputFormat":        "output_format",
+		"promptUpsampling":    "prompt_upsampling",
+		"safetyTolerance":     "safety_tolerance",
+		"webhookSecret":       "webhook_secret",
+		"webhookUrl":          "webhook_url",
+	}
+	for key, value := range raw {
+		if mapped, ok := mappings[key]; ok {
+			out[mapped] = value
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (m *ImageModel) pollResult(ctx context.Context, requestID string) (bflResult, error) {

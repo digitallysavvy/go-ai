@@ -350,7 +350,7 @@ func TestConvertAssistantItems_DefaultToolCallArgsToEmptyObject(t *testing.T) {
 		},
 	}
 
-	items := convertAssistantItems(msg)
+	items := convertAssistantItems(msg, ConvertOptions{})
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -382,7 +382,7 @@ func TestConvertAssistantItems_PreservesToolCallNamespace(t *testing.T) {
 		},
 	}
 
-	items := convertAssistantItems(msg)
+	items := convertAssistantItems(msg, ConvertOptions{})
 	call := items[0].(FunctionCallItem)
 	if call.Namespace != "weather.tools" {
 		t.Fatalf("namespace = %q, want weather.tools", call.Namespace)

@@ -34,7 +34,10 @@ type HTTPTransport struct {
 	config TransportConfig
 
 	// OAuth
-	oauth *OAuthConfig
+	oauth      *OAuthConfig
+	refreshMu  sync.Mutex
+	refreshCh  chan struct{}
+	refreshErr error
 }
 
 // HTTPTransportConfig contains configuration for HTTP transport
@@ -88,6 +91,10 @@ type OAuthConfig struct {
 
 	// ExpiresAt is when the access token expires
 	ExpiresAt time.Time
+
+	// RefreshTokenFunc refreshes the OAuth token. When nil, refresh attempts
+	// return an error and callers should provide a fresh access token manually.
+	RefreshTokenFunc func(ctx context.Context, cfg *OAuthConfig) (accessToken string, expiresIn time.Duration, err error) `json:"-"`
 }
 
 // NewHTTPTransport creates a new HTTP transport
@@ -197,18 +204,37 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		req.Header.Set("Authorization", "Bearer "+t.oauth.AccessToken)
 	}
 
-	// Send request
-	client := SSEClient(t.client)
-	if t.sseClient != nil {
-		client = t.sseClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return NewTransportError("failed to send request", err)
+	var resp *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		client := SSEClient(t.client)
+		if t.sseClient != nil {
+			client = t.sseClient
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return NewTransportError("failed to send request", err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized || t.oauth == nil || attempt == 1 {
+			break
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		if err := t.refreshOAuthToken(ctx); err != nil {
+			return NewTransportError("failed to refresh OAuth token", err)
+		}
+		req, err = http.NewRequestWithContext(ctx, "POST", t.url, bytes.NewReader(data))
+		if err != nil {
+			return NewTransportError("failed to create request", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
+		for k, v := range t.config.Headers {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Authorization", "Bearer "+t.oauth.AccessToken)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	// Check status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return NewTransportError(fmt.Sprintf("HTTP error %d: %s", resp.StatusCode, string(body)), nil)
@@ -295,12 +321,50 @@ func (t *HTTPTransport) refreshOAuthToken(ctx context.Context) error {
 		return fmt.Errorf("LOAuth not configured")
 	}
 
-	// Implement OAuth token refresh
-	// This is a simplified implementation - in production, you'd use
-	// a proper OAuth library like golang.org/x/oauth2
+	t.refreshMu.Lock()
+	if t.refreshCh != nil {
+		ch := t.refreshCh
+		t.refreshMu.Unlock()
+		select {
+		case <-ch:
+			t.refreshMu.Lock()
+			err := t.refreshErr
+			t.refreshMu.Unlock()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	t.refreshCh = make(chan struct{})
+	t.refreshMu.Unlock()
 
-	// For now, just return an error
-	return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
+	err := t.doRefreshOAuthToken(ctx)
+
+	t.refreshMu.Lock()
+	t.refreshErr = err
+	close(t.refreshCh)
+	t.refreshCh = nil
+	t.refreshMu.Unlock()
+	return err
+}
+
+func (t *HTTPTransport) doRefreshOAuthToken(ctx context.Context) error {
+	if t.oauth.RefreshTokenFunc == nil {
+		return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
+	}
+	token, expiresIn, err := t.oauth.RefreshTokenFunc(ctx, t.oauth)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return fmt.Errorf("LOAuth refresh returned empty access token")
+	}
+	if expiresIn <= 0 {
+		expiresIn = time.Hour
+	}
+	t.oauth.AccessToken = token
+	t.oauth.ExpiresAt = time.Now().Add(expiresIn)
+	return nil
 }
 
 // SetAccessToken sets the OAuth access token manually

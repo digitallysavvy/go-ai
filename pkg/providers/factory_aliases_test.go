@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
+	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 )
@@ -66,6 +67,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if alibaba.CreateAlibaba(alibaba.Config{}) == nil {
 		t.Fatal("CreateAlibaba returned nil")
+	}
+	if quiverai.CreateQuiverAI(quiverai.Config{}) == nil {
+		t.Fatal("CreateQuiverAI returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{

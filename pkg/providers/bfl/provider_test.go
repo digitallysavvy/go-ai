@@ -49,7 +49,7 @@ func TestImageModelEndpointSelection(t *testing.T) {
 		"flux-pro-1.1": "/flux-pro-1.1",
 		"flux-dev":     "/flux-dev",
 		"flux-schnell": "/flux-schnell",
-		"unknown":      "/flux-pro",
+		"unknown":      "/unknown",
 	}
 	for id, want := range tests {
 		m := NewImageModel(p, id)
@@ -72,6 +72,18 @@ func TestBuildRequestBodyAndConvertErrors(t *testing.T) {
 	}
 	if body["width"] != 1280 || body["height"] != 720 {
 		t.Fatalf("size parse failed: %#v", body)
+	}
+
+	fill := NewImageModel(p, "flux-pro-1.0-fill")
+	fillBody := fill.buildRequestBody(&provider.ImageGenerateOptions{
+		Prompt: "fill it",
+		Files:  []provider.ImageFile{{Data: []byte("image"), MediaType: "image/png"}},
+	})
+	if _, hasOldKey := fillBody["input_image"]; hasOldKey {
+		t.Fatalf("fill model must use image key, got %#v", fillBody)
+	}
+	if fillBody["image"] != "aW1hZ2U=" {
+		t.Fatalf("fill image = %#v", fillBody["image"])
 	}
 
 	if _, err := m.convertResponse(t.Context(), bflResult{}); err == nil {

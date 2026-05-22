@@ -98,6 +98,17 @@ func (e *ProviderError) Unwrap() error {
 	return e.Cause
 }
 
+// IsRetryable reports whether the provider error represents a retryable
+// condition. Unknown/no-status errors preserve the SDK's historical generic
+// retry behavior, while HTTP responses follow the TypeScript SDK default:
+// rate limits and transient server errors are retryable.
+func (e *ProviderError) IsRetryable() bool {
+	if e == nil {
+		return false
+	}
+	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
+}
+
 // IsProviderError checks if an error is a ProviderError
 func IsProviderError(err error) bool {
 	var providerErr *ProviderError

@@ -26,8 +26,8 @@ type Response struct {
 	Candidates     []Candidate     `json:"candidates"`
 	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
-	// ServiceTier is the service tier used for this request (non-streaming).
-	// Values: "SERVICE_TIER_STANDARD", "SERVICE_TIER_FLEX", "SERVICE_TIER_PRIORITY".
+	// ServiceTier is kept for compatibility with older responses. Current
+	// Gemini API responses report it inside usageMetadata.
 	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
@@ -39,6 +39,7 @@ type UsageMetadata struct {
 	CachedContentTokenCount int    `json:"cachedContentTokenCount,omitempty"`
 	ThoughtsTokenCount      int    `json:"thoughtsTokenCount,omitempty"`
 	TrafficType             string `json:"trafficType,omitempty"`
+	ServiceTier             string `json:"serviceTier,omitempty"`
 	PromptTokensDetails     []struct {
 		Modality   string `json:"modality,omitempty"`
 		TokenCount int    `json:"tokenCount,omitempty"`

@@ -28,8 +28,10 @@ func TestLanguageModelValidation(t *testing.T) {
 		"qwen-plus",
 		"qwen-turbo",
 		"qwen-max",
+		"qwen3.7-max",
 		"qwen-qwq-32b-preview",
 		"qwen-vl-max",
+		"custom-model-id",
 	}
 
 	for _, modelID := range validModels {
@@ -42,11 +44,6 @@ func TestLanguageModelValidation(t *testing.T) {
 		}
 	}
 
-	// Test invalid model
-	_, err := prov.LanguageModel("invalid-model")
-	if err == nil {
-		t.Error("Expected error for invalid model")
-	}
 }
 
 func TestVideoModelValidation(t *testing.T) {

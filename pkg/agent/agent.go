@@ -73,6 +73,9 @@ type AgentGenerateOptions struct {
 	Messages     []types.Message
 	System       string
 	Instructions *string
+	// AllowSystemInMessages controls whether system-role messages in Messages
+	// are accepted instead of requiring Instructions/System.
+	AllowSystemInMessages bool
 
 	RuntimeContext interface{}
 	ToolsContext   map[string]interface{}
@@ -218,6 +221,10 @@ type AgentConfig struct {
 	// Instructions is the canonical TypeScript-compatible name for System.
 	// When set, Instructions takes precedence over System.
 	Instructions *string
+
+	// AllowSystemInMessages mirrors TypeScript
+	// ToolLoopAgentSettings.allowSystemInMessages.
+	AllowSystemInMessages bool
 
 	// Tools available to the agent
 	Tools []types.Tool
@@ -480,6 +487,10 @@ type PrepareCallConfig struct {
 
 	// System prompt for this call
 	System string
+
+	// AllowSystemInMessages controls whether system-role messages are accepted
+	// in this call's message list.
+	AllowSystemInMessages bool
 
 	// Prompt is the per-call user prompt when the caller used Prompt instead
 	// of Messages.

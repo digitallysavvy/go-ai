@@ -570,6 +570,33 @@ func TestBuildRequestBody_ServiceTierAbsentWhenNotSet(t *testing.T) {
 	}
 }
 
+func TestBuildRequest_VertexPayGoHeaders(t *testing.T) {
+	m := makeVertexTestModel("gemini-2.5-pro")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		ProviderOptions: map[string]interface{}{
+			"vertex": map[string]interface{}{
+				"sharedRequestType": "priority",
+				"requestType":       "shared",
+				"serviceTier":       "SERVICE_TIER_FLEX",
+			},
+		},
+	}
+	body, headers, warnings := m.buildRequest(opts, false)
+	if _, ok := body["serviceTier"]; ok {
+		t.Fatal("Vertex request body must not include serviceTier")
+	}
+	if headers["X-Vertex-AI-LLM-Shared-Request-Type"] != "priority" {
+		t.Fatalf("shared request header = %q", headers["X-Vertex-AI-LLM-Shared-Request-Type"])
+	}
+	if headers["X-Vertex-AI-LLM-Request-Type"] != "shared" {
+		t.Fatalf("request type header = %q", headers["X-Vertex-AI-LLM-Request-Type"])
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for Vertex serviceTier")
+	}
+}
+
 func TestConvertResponse_ServiceTierInMetadata(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
 	resp := Response{
@@ -580,7 +607,7 @@ func TestConvertResponse_ServiceTierInMetadata(t *testing.T) {
 			}{Parts: []Part{{Text: "Hello"}}},
 			FinishReason: "STOP",
 		}},
-		ServiceTier: "SERVICE_TIER_PRIORITY",
+		UsageMetadata: &UsageMetadata{ServiceTier: "SERVICE_TIER_PRIORITY"},
 	}
 	result := m.convertResponse(resp)
 	if result.ProviderMetadata == nil {

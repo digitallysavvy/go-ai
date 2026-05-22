@@ -208,6 +208,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Messages:                    messages,
 		System:                      callConfig.System,
 		Instructions:                &callConfig.System,
+		AllowSystemInMessages:       callConfig.AllowSystemInMessages,
 		Temperature:                 callConfig.Temperature,
 		MaxTokens:                   callConfig.MaxTokens,
 		TopP:                        callConfig.TopP,
@@ -311,6 +312,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		Messages:                    messages,
 		System:                      callConfig.System,
 		Instructions:                &callConfig.System,
+		AllowSystemInMessages:       callConfig.AllowSystemInMessages,
 		Temperature:                 callConfig.Temperature,
 		MaxTokens:                   callConfig.MaxTokens,
 		TopP:                        callConfig.TopP,
@@ -721,6 +723,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		StepNumber:                  stepNum,
 		Model:                       a.config.Model,
 		System:                      a.config.System,
+		AllowSystemInMessages:       a.config.AllowSystemInMessages,
 		Prompt:                      prompt,
 		Messages:                    messages,
 		Tools:                       a.config.Tools,
@@ -789,6 +792,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.Instructions != nil {
 		c.Instructions = opts.Instructions
 		c.System = *opts.Instructions
+	}
+	if opts.AllowSystemInMessages {
+		c.AllowSystemInMessages = true
 	}
 	if opts.Prompt != "" {
 		c.Prompt = opts.Prompt
@@ -1051,32 +1057,34 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 		Messages: callConfig.Messages,
 		System:   callConfig.System,
-	}, true, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
+	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
 	// Build generate options using potentially modified config
 	genOpts := &provider.GenerateOptions{
-		Prompt:           prompt,
-		Temperature:      callConfig.Temperature,
-		MaxTokens:        callConfig.MaxTokens,
-		TopP:             callConfig.TopP,
-		TopK:             callConfig.TopK,
-		FrequencyPenalty: callConfig.FrequencyPenalty,
-		PresencePenalty:  callConfig.PresencePenalty,
-		StopSequences:    callConfig.StopSequences,
-		Tools:            callConfig.Tools,
-		ToolChoice:       toolChoice,
-		RuntimeContext:   callConfig.RuntimeContext,
-		ToolsContext:     callConfig.ToolsContext,
-		Seed:             callConfig.Seed,
-		Headers:          callConfig.Headers,
-		Reasoning:        callConfig.Reasoning,
-		SendReasoning:    callConfig.SendReasoning,
-		ProviderOptions:  callConfig.ProviderOptions,
-		Telemetry:        callConfig.Telemetry,
-		ResponseFormat:   responseFormat,
+		Prompt:                prompt,
+		AllowSystemMessages:   callConfig.AllowSystemInMessages,
+		AllowSystemInMessages: callConfig.AllowSystemInMessages,
+		Temperature:           callConfig.Temperature,
+		MaxTokens:             callConfig.MaxTokens,
+		TopP:                  callConfig.TopP,
+		TopK:                  callConfig.TopK,
+		FrequencyPenalty:      callConfig.FrequencyPenalty,
+		PresencePenalty:       callConfig.PresencePenalty,
+		StopSequences:         callConfig.StopSequences,
+		Tools:                 callConfig.Tools,
+		ToolChoice:            toolChoice,
+		RuntimeContext:        callConfig.RuntimeContext,
+		ToolsContext:          callConfig.ToolsContext,
+		Seed:                  callConfig.Seed,
+		Headers:               callConfig.Headers,
+		Reasoning:             callConfig.Reasoning,
+		SendReasoning:         callConfig.SendReasoning,
+		ProviderOptions:       callConfig.ProviderOptions,
+		Telemetry:             callConfig.Telemetry,
+		ResponseFormat:        responseFormat,
 	}
 
 	// Call the model with step context

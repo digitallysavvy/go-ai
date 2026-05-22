@@ -131,8 +131,10 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	}
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
-	}
-	if chunkData.ServiceTier != "" {
+		if chunkData.UsageMetadata.ServiceTier != "" {
+			s.lastServiceTier = chunkData.UsageMetadata.ServiceTier
+		}
+	} else if chunkData.ServiceTier != "" {
 		s.lastServiceTier = chunkData.ServiceTier
 	}
 	if len(chunkData.Candidates) == 0 {

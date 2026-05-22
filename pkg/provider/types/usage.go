@@ -184,6 +184,12 @@ type EmbeddingUsage struct {
 type ImageUsage struct {
 	// Number of images generated
 	ImageCount int `json:"imageCount"`
+
+	// Token usage, when reported by image providers that use language-model
+	// style accounting.
+	InputTokens  int `json:"inputTokens,omitempty"`
+	OutputTokens int `json:"outputTokens,omitempty"`
+	TotalTokens  int `json:"totalTokens,omitempty"`
 }
 
 // SpeechUsage represents usage for speech synthesis operations

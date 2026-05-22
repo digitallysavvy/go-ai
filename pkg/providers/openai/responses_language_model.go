@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
+	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -50,7 +51,7 @@ func (m *ResponsesLanguageModel) SupportsImageInput() bool { return true }
 
 // DoGenerate performs non-streaming generation via POST /v1/responses.
 func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	body, store, err := m.buildRequestBody(opts, false)
+	body, store, warnings, err := m.buildRequest(opts, false)
 	if err != nil {
 		return nil, err
 	}
@@ -65,12 +66,17 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, m.wrapErr(err)
 	}
 
-	return m.convertResponse(resp, store)
+	result, err := m.convertResponse(resp, store)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = append(warnings, result.Warnings...)
+	return result, nil
 }
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	body, _, err := m.buildRequestBody(opts, true)
+	body, _, warnings, err := m.buildRequest(opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +91,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks), nil), nil
+	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks), warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,9 +101,15 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 // buildRequestBody constructs the Responses API request body.
 // Returns the body map, the effective store flag, and any error.
 func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, error) {
+	body, store, _, err := m.buildRequest(opts, stream)
+	return body, store, err
+}
+
+func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, []types.Warning, error) {
 	// Extract provider options early (store needed before input conversion).
 	store := true
 	storeExplicit := false
+	conversation := ""
 	previousResponseID := ""
 	promptCacheRetention := ""
 	reasoningEffort := ""
@@ -117,6 +129,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 			if v, ok := openaiOpts["store"].(bool); ok {
 				store = v
 				storeExplicit = true
+			}
+			if v, ok := openaiOpts["conversation"].(string); ok {
+				conversation = v
 			}
 			if v, ok := openaiOpts["previousResponseId"].(string); ok {
 				previousResponseID = v
@@ -158,6 +173,15 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
+	var warnings []types.Warning
+	if conversation != "" && previousResponseID != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "conversation",
+			Details: "conversation and previousResponseId cannot be used together",
+		})
+	}
+
 	// Determine system message mode based on model type.
 	systemMsgMode := "system"
 	if isReasoningModel(m.modelID) {
@@ -167,9 +191,18 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	// Convert prompt to Responses API input format.
 	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
+		HasPreviousResponseID:       previousResponseID != "",
+		HasConversation:             conversation != "",
+		Store:                       store,
+		CustomToolNames:             customToolNames(opts.Tools),
+		HasLocalShellTool:           hasTool(opts.Tools, "openai.local_shell"),
+		HasShellTool:                hasTool(opts.Tools, "openai.shell"),
+		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
+		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
+		ProviderOptionsName:         "openai",
 	})
 	if err != nil {
-		return nil, store, err
+		return nil, store, warnings, err
 	}
 
 	body := map[string]interface{}{
@@ -264,6 +297,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	}
 
 	// Provider options fields.
+	if conversation != "" {
+		body["conversation"] = conversation
+	}
 	if storeExplicit {
 		body["store"] = store
 	}
@@ -289,7 +325,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		body["truncation"] = truncation
 	}
 
-	return body, store, nil
+	return body, store, warnings, nil
 }
 
 func parseAllowedTools(value interface{}) *responses.AllowedToolsToolChoice {
@@ -360,6 +396,31 @@ func appendUnique(slice []string, s string) []string {
 	return append(slice, s)
 }
 
+func customToolNames(tools []types.Tool) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+			names[tool.Name] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func hasTool(tools []types.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name || tool.ProviderID == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
@@ -389,8 +450,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			for _, part := range item.Content {
 				result.Text += part.Text
+				result.Content = append(result.Content, types.TextContent{
+					Text:            part.Text,
+					ProviderOptions: openAIResponsesMessageProviderOptions(item.ID, item.Phase),
+				})
 			}
-			result.Content = append(result.Content, types.TextContent{Text: result.Text})
 
 		case "function_call":
 			var item responses.FunctionCallItem
@@ -428,6 +492,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			rc := types.ReasoningContent{
 				Text:             summaryText,
 				EncryptedContent: item.EncryptedContent,
+				ProviderMetadata: openAIResponsesReasoningMetadata(item.ID),
 			}
 			result.Content = append(result.Content, rc)
 
@@ -471,6 +536,30 @@ func openAIResponsesToolCallMetadata(itemID, namespace string) map[string]interf
 	}
 	if namespace != "" {
 		openai["namespace"] = namespace
+	}
+	if len(openai) == 0 {
+		return nil
+	}
+	return map[string]interface{}{"openai": openai}
+}
+
+func openAIResponsesReasoningMetadata(itemID string) json.RawMessage {
+	if itemID == "" {
+		return nil
+	}
+	raw, _ := json.Marshal(map[string]interface{}{
+		"openai": map[string]interface{}{"itemId": itemID},
+	})
+	return raw
+}
+
+func openAIResponsesMessageProviderOptions(itemID string, phase *string) map[string]interface{} {
+	openai := map[string]interface{}{}
+	if itemID != "" {
+		openai["itemId"] = itemID
+	}
+	if phase != nil && *phase != "" {
+		openai["phase"] = *phase
 	}
 	if len(openai) == 0 {
 		return nil

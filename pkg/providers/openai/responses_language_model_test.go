@@ -232,6 +232,16 @@ func TestResponsesLanguageModel_AllowedToolsProviderOption(t *testing.T) {
 	}
 }
 
+func TestResponsesLanguageModel_HasToolMatchesProviderID(t *testing.T) {
+	tools := []types.Tool{{
+		Type:       types.ToolTypeProviderDefined,
+		ProviderID: "openai.shell",
+	}}
+	if !hasTool(tools, "openai.shell") {
+		t.Fatal("hasTool should match provider-defined tools by ProviderID")
+	}
+}
+
 func TestResponsesLanguageModel_AllowedToolsRequiredMode(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
@@ -620,6 +630,243 @@ func TestResponsesLanguageModel_PreviousResponseId(t *testing.T) {
 	}
 }
 
+func TestResponsesLanguageModel_ConversationProviderOption(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "continue"}}},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"conversation": "conv_123"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if body["conversation"] != "conv_123" {
+		t.Errorf("conversation = %v, want conv_123", body["conversation"])
+	}
+}
+
+func TestResponsesLanguageModel_ConversationSkipsStoredReasoningAndWarnsWithPreviousResponseID(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-5")
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role: types.RoleAssistant,
+					Content: []types.ContentPart{
+						types.ReasoningContent{
+							Text:             "summary",
+							EncryptedContent: "enc_123",
+							ProviderOptions: map[string]interface{}{
+								"openai": map[string]interface{}{"itemId": "rs_123"},
+							},
+						},
+						types.TextContent{Text: "answer"},
+					},
+				},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"conversation":       "conv_123",
+				"previousResponseId": "resp_prev123",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if body["conversation"] != "conv_123" || body["previous_response_id"] != "resp_prev123" {
+		t.Fatalf("conversation fields missing from body: %#v", body)
+	}
+	input := body["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("input length = %d, want only assistant message", len(input))
+	}
+	msg := input[0].(responses.AssistantMessageItem)
+	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
+		t.Fatalf("assistant message item = %#v", msg)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "conversation" {
+		t.Fatalf("warnings = %#v, want conversation warning", warnings)
+	}
+}
+
+func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredFunctionCalls(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role: types.RoleAssistant,
+					ToolCalls: []types.ToolCall{
+						{
+							ID:        "call_1",
+							ToolName:  "lookup",
+							Arguments: map[string]interface{}{"q": "go"},
+							ProviderMetadata: map[string]interface{}{
+								"openai": map[string]interface{}{"itemId": "fc_123"},
+							},
+						},
+						{
+							ID:        "call_2",
+							ToolName:  "fresh",
+							Arguments: map[string]interface{}{"q": "new"},
+						},
+					},
+				},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"previousResponseId": "resp_prev123"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("input length = %d, want only fresh function call", len(input))
+	}
+	call := input[0].(responses.FunctionCallItem)
+	if call.CallID != "call_2" || call.Name != "fresh" {
+		t.Fatalf("unexpected function call item: %#v", call)
+	}
+}
+
+func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredReasoning(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-5")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role: types.RoleAssistant,
+					Content: []types.ContentPart{
+						types.ReasoningContent{
+							Text:             "summary",
+							EncryptedContent: "enc_123",
+							ProviderOptions: map[string]interface{}{
+								"openai": map[string]interface{}{"itemId": "rs_123"},
+							},
+						},
+						types.TextContent{Text: "answer"},
+					},
+				},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"previousResponseId": "resp_prev123"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("input length = %d, want only assistant message", len(input))
+	}
+	msg := input[0].(responses.AssistantMessageItem)
+	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
+		t.Fatalf("assistant message item = %#v", msg)
+	}
+}
+
+func TestResponsesLanguageModel_StoreUsesReasoningItemReference(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-5")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{
+					Role: types.RoleAssistant,
+					Content: []types.ContentPart{
+						types.ReasoningContent{
+							Text:             "summary",
+							EncryptedContent: "enc_123",
+							ProviderOptions: map[string]interface{}{
+								"openai": map[string]interface{}{"itemId": "rs_123"},
+							},
+						},
+					},
+				},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"store": true},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	item := input[0].(map[string]interface{})
+	if item["type"] != "item_reference" || item["id"] != "rs_123" {
+		t.Fatalf("reasoning item = %#v, want item_reference rs_123", item)
+	}
+}
+
+func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
+	phase := "final_answer"
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	raw, _ := json.Marshal(responses.AssistantMessageItem{
+		Type:  "message",
+		Role:  "assistant",
+		ID:    "msg_123",
+		Phase: &phase,
+		Content: []responses.AssistantMessageContent{
+			{Type: "output_text", Text: "stored answer"},
+		},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		ID:     "resp_123",
+		Model:  "gpt-4o",
+		Output: []json.RawMessage{raw},
+	}, true)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	text, ok := result.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("content[0] = %T, want TextContent", result.Content[0])
+	}
+	openaiMeta := text.ProviderOptions["openai"].(map[string]interface{})
+	if openaiMeta["itemId"] != "msg_123" || openaiMeta["phase"] != "final_answer" {
+		t.Fatalf("message provider options = %#v", text.ProviderOptions)
+	}
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role:    types.RoleAssistant,
+			Content: result.Content,
+		}}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"store": true},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	item := input[0].(map[string]interface{})
+	if item["type"] != "item_reference" || item["id"] != "msg_123" {
+		t.Fatalf("round-tripped message item = %#v, want item_reference msg_123", item)
+	}
+}
+
 // TestResponsesLanguageModel_TextVerbosity verifies that textVerbosity is mapped
 // to text.verbosity in the Responses API request body.
 func TestResponsesLanguageModel_TextVerbosity(t *testing.T) {
@@ -718,6 +965,55 @@ func TestResponsesLanguageModel_NoTextVerbosity(t *testing.T) {
 
 	if _, ok := body["text"]; ok {
 		t.Error("expected no text object when textVerbosity and responseFormat are not set")
+	}
+}
+
+func TestResponsesLanguageModel_DefaultFileIDPrefixes(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{
+				FileData: types.FileData{
+					Type:       types.FileDataTypeData,
+					DataString: "file-12345",
+					MediaType:  "application/pdf",
+				},
+			}},
+		}}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	parts := body["input"].([]interface{})[0].(responses.UserMessage).Content.([]interface{})
+	file := parts[0].(map[string]interface{})
+	if file["type"] != "input_file" || file["file_id"] != "file-12345" {
+		t.Fatalf("file part = %#v, want TS-compatible file_id", file)
+	}
+
+	disabled := New(Config{APIKey: "test-key", FileIDPrefixes: []string{}})
+	model = NewResponsesLanguageModel(disabled, "gpt-4o")
+	body, _, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{
+				FileData: types.FileData{
+					Type:       types.FileDataTypeData,
+					DataString: "file-12345",
+					MediaType:  "application/pdf",
+				},
+			}},
+		}}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody with disabled prefixes failed: %v", err)
+	}
+	parts = body["input"].([]interface{})[0].(responses.UserMessage).Content.([]interface{})
+	file = parts[0].(map[string]interface{})
+	if file["file_id"] != nil || !strings.HasPrefix(file["file_data"].(string), "data:application/pdf;base64,file-12345") {
+		t.Fatalf("file part with disabled prefixes = %#v, want file_data", file)
 	}
 }
 

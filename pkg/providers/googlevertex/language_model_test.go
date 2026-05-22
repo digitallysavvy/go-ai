@@ -334,24 +334,29 @@ func TestGoogleVertexFinishMessageInMetadata(t *testing.T) {
 	}
 }
 
-func TestGoogleVertexServiceTierForwarding(t *testing.T) {
+func TestGoogleVertexPayGoHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 			t.Fatalf("decode request body: %v", err)
 		}
-		if reqBody["serviceTier"] != "SERVICE_TIER_FLEX" {
-			t.Fatalf("serviceTier = %#v, want SERVICE_TIER_FLEX", reqBody["serviceTier"])
+		if _, ok := reqBody["serviceTier"]; ok {
+			t.Fatalf("Vertex request body must not include serviceTier: %#v", reqBody["serviceTier"])
+		}
+		if got := r.Header.Get("X-Vertex-AI-LLM-Shared-Request-Type"); got != "flex" {
+			t.Fatalf("shared request header = %q, want flex", got)
+		}
+		if got := r.Header.Get("X-Vertex-AI-LLM-Request-Type"); got != "shared" {
+			t.Fatalf("request type header = %q, want shared", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"serviceTier": "SERVICE_TIER_FLEX",
 			"candidates": [{
 				"content": {"parts": [{"text": "ok"}], "role": "model"},
 				"finishReason": "STOP",
 				"index": 0
 			}],
-			"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+			"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2, "serviceTier": "SERVICE_TIER_FLEX"}
 		}`))
 	}))
 	defer server.Close()
@@ -379,7 +384,8 @@ func TestGoogleVertexServiceTierForwarding(t *testing.T) {
 		},
 		ProviderOptions: map[string]interface{}{
 			"vertex": map[string]interface{}{
-				"serviceTier": "SERVICE_TIER_FLEX",
+				"sharedRequestType": "flex",
+				"requestType":       "shared",
 			},
 		},
 	})
