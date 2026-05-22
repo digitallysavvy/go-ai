@@ -2,6 +2,7 @@ package responses
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -1203,5 +1204,98 @@ func TestOpenAIResponsesImageDetailHelper(t *testing.T) {
 	}
 	if got := openAIResponsesImageDetail(map[string]interface{}{"azure": map[string]interface{}{"imageDetail": "auto"}}, "azure"); got != "auto" {
 		t.Fatalf("provider-specific imageDetail parse failed: %q", got)
+	}
+}
+
+func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
+	t.Parallel()
+
+	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				ToolCalls: []types.ToolCall{
+					{
+						ID:               "search-call",
+						ToolName:         "tool_search",
+						Arguments:        map[string]interface{}{"paths": []string{"weather"}},
+						ProviderMetadata: map[string]interface{}{},
+					},
+					{
+						ID:        "local-call",
+						ToolName:  "openai.local_shell",
+						Arguments: map[string]interface{}{"action": map[string]interface{}{"command": []interface{}{}}},
+					},
+					{
+						ID:        "shell-call",
+						ToolName:  "openai.shell",
+						Arguments: map[string]interface{}{"action": map[string]interface{}{"commands": []interface{}{}}},
+					},
+					{
+						ID:        "patch-call",
+						ToolName:  "openai.apply_patch",
+						Arguments: map[string]interface{}{"callId": "call-explicit", "operation": map[string]interface{}{}},
+					},
+					{
+						ID:           "custom-call",
+						ToolName:     "grammar_tool",
+						Arguments:    map[string]interface{}{"input": "value"},
+						RawArguments: "{\"input\":\"value\"}",
+					},
+					{
+						ID:        "fn-call",
+						ToolName:  "weather",
+						Arguments: map[string]interface{}{"city": "SF"},
+					},
+				},
+			},
+		},
+	}, "system", ConvertOptions{
+		HasLocalShellTool: true,
+		HasShellTool:      true,
+		HasApplyPatchTool: true,
+		CustomToolNames:   map[string]bool{"grammar_tool": true},
+	})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 6 {
+		t.Fatalf("input len = %d, want six tool-call items", len(input))
+	}
+
+	for i, item := range input {
+		data, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("failed to marshal item[%d]: %v", i, err)
+		}
+		s := string(data)
+		if strings.Contains(s, "\"id\":\"\"") {
+			t.Fatalf("item[%d] includes empty id unexpectedly: %s", i, s)
+		}
+	}
+
+	search, ok := input[0].(ToolSearchCallItem)
+	if !ok || search.ID != "" || search.CallID != nil {
+		t.Fatalf("input[0] = %#v, want tool_search_call without item id and nil call_id", input[0])
+	}
+	local, ok := input[1].(LocalShellCall)
+	if !ok || local.ID != "" || local.CallID != "local-call" {
+		t.Fatalf("input[1] = %#v, want local_shell_call without item id", input[1])
+	}
+	shell, ok := input[2].(ShellCall)
+	if !ok || shell.ID != "" || shell.CallID != "shell-call" {
+		t.Fatalf("input[2] = %#v, want shell_call without item id", input[2])
+	}
+	patch, ok := input[3].(ApplyPatchCall)
+	if !ok || patch.ID != nil || patch.CallID != "call-explicit" {
+		t.Fatalf("input[3] = %#v, want apply_patch_call with nil item id and callId from args", input[3])
+	}
+	custom, ok := input[4].(CustomToolCallItem)
+	if !ok || custom.ID != "" || custom.CallID != "custom-call" {
+		t.Fatalf("input[4] = %#v, want custom_tool_call without item id", input[4])
+	}
+	function, ok := input[5].(FunctionCallItem)
+	if !ok || function.ID != "" || function.CallID != "fn-call" {
+		t.Fatalf("input[5] = %#v, want function_call without item id", input[5])
 	}
 }

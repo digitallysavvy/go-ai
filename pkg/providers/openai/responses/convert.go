@@ -345,7 +345,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 		}
 		items = append(items, FunctionCallItem{
 			Type:      "function_call",
-			ID:        firstNonEmpty(itemID, tc.ID),
+			ID:        itemID,
 			CallID:    tc.ID,
 			Name:      tc.ToolName,
 			Namespace: namespace,
@@ -392,7 +392,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	}
 	return FunctionCallItem{
 		Type:      "function_call",
-		ID:        firstNonEmpty(itemID, tc.ID),
+		ID:        itemID,
 		CallID:    tc.ID,
 		Name:      tc.ToolName,
 		Namespace: namespace,
@@ -440,7 +440,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}
 		return ToolSearchCallItem{
 			Type:      "tool_search_call",
-			ID:        firstNonEmpty(itemID, tc.ID),
+			ID:        itemID,
 			Status:    "completed",
 			Execution: execution,
 			CallID:    callID,
@@ -463,7 +463,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		action := localShellActionFromArgs(tc.Arguments)
 		return LocalShellCall{
 			Type:   "local_shell_call",
-			ID:     firstNonEmpty(itemID, tc.ID),
+			ID:     itemID,
 			CallID: tc.ID,
 			Action: action,
 		}, true
@@ -471,7 +471,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if opts.HasShellTool && toolName == "shell" {
 		return ShellCall{
 			Type:   "shell_call",
-			ID:     firstNonEmpty(itemID, tc.ID),
+			ID:     itemID,
 			CallID: tc.ID,
 			Status: "completed",
 			Action: shellActionFromArgs(tc.Arguments),
@@ -479,13 +479,10 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	}
 	if opts.HasApplyPatchTool && toolName == "apply_patch" {
 		callID := stringArg(tc.Arguments, "callId")
-		if callID == "" {
-			callID = tc.ID
-		}
 		operation := applyPatchOperationFromArgs(tc.Arguments)
 		return ApplyPatchCall{
 			Type:      "apply_patch_call",
-			ID:        stringPtr(firstNonEmpty(itemID, tc.ID)),
+			ID:        stringPtr(itemID),
 			CallID:    callID,
 			Status:    "completed",
 			Operation: operation,
