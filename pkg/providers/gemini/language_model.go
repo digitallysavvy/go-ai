@@ -449,8 +449,12 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 					},
 				}
 			}
+			toolCallID := part.FunctionCall.ID
+			if toolCallID == "" {
+				toolCallID = part.FunctionCall.Name
+			}
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID:               part.FunctionCall.Name,
+				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
 				Arguments:        args,
 				ProviderMetadata: providerMetadata,

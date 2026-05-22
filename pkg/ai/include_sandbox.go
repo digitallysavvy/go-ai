@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"io"
 	"regexp"
 	"strings"
 
@@ -113,21 +114,51 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 // Sandbox executes shell commands in an isolated environment.
 type Sandbox interface {
 	Description() string
-	Execute(ctx context.Context, command string, opts SandboxExecuteOptions) (SandboxExecuteResult, error)
+	RunCommand(ctx context.Context, opts SandboxRunCommandOptions) (SandboxRunCommandResult, error)
+	ReadFile(ctx context.Context, path string) (io.ReadCloser, error)
+	ReadBinaryFile(ctx context.Context, path string) ([]byte, error)
+	ReadTextFile(ctx context.Context, opts SandboxReadTextFileOptions) (*string, error)
+	WriteFile(ctx context.Context, path string, content io.Reader) error
+	WriteBinaryFile(ctx context.Context, path string, content []byte) error
+	WriteTextFile(ctx context.Context, opts SandboxWriteTextFileOptions) error
 }
 
-// SandboxExecuteOptions are passed to Sandbox.Execute.
-type SandboxExecuteOptions struct {
+// SandboxRunCommandOptions are passed to Sandbox.RunCommand.
+type SandboxRunCommandOptions struct {
+	Command          string
 	WorkingDirectory string
 	Environment      map[string]string
 }
 
-// SandboxExecuteResult is returned by Sandbox.Execute.
-type SandboxExecuteResult struct {
+// SandboxRunCommandResult is returned by Sandbox.RunCommand.
+type SandboxRunCommandResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
 }
+
+// SandboxReadTextFileOptions controls text file reads.
+type SandboxReadTextFileOptions struct {
+	Path      string
+	Encoding  string
+	StartLine *int
+	EndLine   *int
+}
+
+// SandboxWriteTextFileOptions controls text file writes.
+type SandboxWriteTextFileOptions struct {
+	Path     string
+	Content  string
+	Encoding string
+}
+
+// SandboxExecuteOptions is kept as a source-compatibility alias for older Go
+// callers. New code should use SandboxRunCommandOptions.
+type SandboxExecuteOptions = SandboxRunCommandOptions
+
+// SandboxExecuteResult is kept as a source-compatibility alias for older Go
+// callers. New code should use SandboxRunCommandResult.
+type SandboxExecuteResult = SandboxRunCommandResult
 
 // ToolInputRefiner can adjust parsed tool input before approval, callbacks,
 // telemetry, tool execution, and response-message construction.

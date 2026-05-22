@@ -78,9 +78,12 @@ type LanguageModelCallEndEvent struct {
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
 type LanguageModelCallPerformance struct {
-	ResponseTimeMs     int64   `json:"responseTimeMs"`
-	TokensPerSecond    float64 `json:"tokensPerSecond"`
-	TimeToFirstTokenMs *int64  `json:"timeToFirstTokenMs,omitempty"`
+	ResponseTimeMs                 int64    `json:"responseTimeMs"`
+	EffectiveOutputTokensPerSecond float64  `json:"effectiveOutputTokensPerSecond"`
+	OutputTokensPerSecond          *float64 `json:"outputTokensPerSecond,omitempty"`
+	InputTokensPerSecond           *float64 `json:"inputTokensPerSecond,omitempty"`
+	EffectiveTotalTokensPerSecond  float64  `json:"effectiveTotalTokensPerSecond"`
+	TimeToFirstOutputTokenMs       *int64   `json:"timeToFirstOutputTokenMs,omitempty"`
 }
 
 // EmbeddingModelCallStartEvent is emitted immediately before an embedding model call.
@@ -578,10 +581,17 @@ func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e Lang
 	entry.span.SetAttributes(
 		attribute.String("ai.response.finishReason", e.FinishReason),
 		attribute.Int64("ai.response.responseTimeMs", e.Performance.ResponseTimeMs),
-		attribute.Float64("ai.response.tokensPerSecond", e.Performance.TokensPerSecond),
+		attribute.Float64("ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
+		attribute.Float64("ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond),
 	)
-	if e.Performance.TimeToFirstTokenMs != nil {
-		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstTokenMs", *e.Performance.TimeToFirstTokenMs))
+	if e.Performance.OutputTokensPerSecond != nil {
+		entry.span.SetAttributes(attribute.Float64("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond))
+	}
+	if e.Performance.InputTokensPerSecond != nil {
+		entry.span.SetAttributes(attribute.Float64("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond))
+	}
+	if e.Performance.TimeToFirstOutputTokenMs != nil {
+		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputTokenMs", *e.Performance.TimeToFirstOutputTokenMs))
 	}
 	if e.Usage.InputTokens != nil {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))

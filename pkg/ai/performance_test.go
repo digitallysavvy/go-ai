@@ -53,17 +53,17 @@ func TestGenerateTextStepPerformance(t *testing.T) {
 	if result.FinalStep.Performance.ToolExecutionMs == nil {
 		t.Fatal("toolExecutionMs = nil, want empty map")
 	}
-	if result.FinalStep.Performance.TokensPerSecond <= 0 {
-		t.Fatalf("tokensPerSecond = %v, want > 0", result.FinalStep.Performance.TokensPerSecond)
+	if result.FinalStep.Performance.EffectiveOutputTokensPerSecond <= 0 {
+		t.Fatalf("effectiveOutputTokensPerSecond = %v, want > 0", result.FinalStep.Performance.EffectiveOutputTokensPerSecond)
 	}
 	if result.FinalStep.Performance.TimeToFirstTokenMs != nil {
-		t.Fatalf("generateText timeToFirstTokenMs = %v, want nil", *result.FinalStep.Performance.TimeToFirstTokenMs)
+		t.Fatalf("generateText timeToFirstOutputTokenMs = %v, want nil", *result.FinalStep.Performance.TimeToFirstTokenMs)
 	}
 	data, err := json.Marshal(result.FinalStep.Performance)
 	if err != nil {
 		t.Fatalf("marshal performance: %v", err)
 	}
-	for _, field := range []string{"stepTimeMs", "responseTimeMs", "toolExecutionMs", "tokensPerSecond"} {
+	for _, field := range []string{"stepTimeMs", "responseTimeMs", "toolExecutionMs", "effectiveOutputTokensPerSecond", "effectiveTotalTokensPerSecond"} {
 		if !json.Valid(data) || !containsJSONField(data, field) {
 			t.Fatalf("performance JSON missing %s: %s", field, data)
 		}

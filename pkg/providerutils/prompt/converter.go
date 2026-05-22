@@ -292,20 +292,28 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 							}
 						}
 
-						contentParts = append(contentParts, map[string]interface{}{
+						toolResult := map[string]interface{}{
 							"type":        "tool_result",
 							"tool_use_id": p.ToolCallID,
 							"content":     contentArray,
 							"is_error":    p.Error != "",
-						})
+						}
+						if cacheControl := anthropicToolResultCacheControl(p); cacheControl != nil {
+							toolResult["cache_control"] = cacheControl
+						}
+						contentParts = append(contentParts, toolResult)
 					} else {
 						// Fall back to old style (backward compatible)
-						contentParts = append(contentParts, map[string]interface{}{
+						toolResult := map[string]interface{}{
 							"type":        "tool_result",
 							"tool_use_id": p.ToolCallID,
 							"content":     fmt.Sprintf("%v", p.Result),
 							"is_error":    p.Error != "",
-						})
+						}
+						if cacheControl := anthropicToolResultCacheControl(p); cacheControl != nil {
+							toolResult["cache_control"] = cacheControl
+						}
+						contentParts = append(contentParts, toolResult)
 					}
 				}
 			}
@@ -316,6 +324,55 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 	}
 
 	return result
+}
+
+func anthropicToolResultCacheControl(p types.ToolResultContent) interface{} {
+	if cacheControl := anthropicCacheControlFromOptions(p.ProviderOptions); cacheControl != nil {
+		return cacheControl
+	}
+	if p.Output != nil {
+		if cacheControl := anthropicCacheControlFromOptions(p.Output.ProviderOptions); cacheControl != nil {
+			return cacheControl
+		}
+		if p.Output.Type == types.ToolResultOutputContent && len(p.Output.Content) > 0 {
+			if cacheControl := anthropicCacheControlFromBlock(p.Output.Content[0]); cacheControl != nil {
+				return cacheControl
+			}
+		}
+	}
+	return nil
+}
+
+func anthropicCacheControlFromBlock(block types.ToolResultContentBlock) interface{} {
+	switch b := block.(type) {
+	case types.TextContentBlock:
+		return anthropicCacheControlFromOptions(b.ProviderOptions)
+	case types.ImageContentBlock:
+		return anthropicCacheControlFromOptions(b.ProviderOptions)
+	case types.FileContentBlock:
+		return anthropicCacheControlFromOptions(b.ProviderOptions)
+	case types.CustomContentBlock:
+		return anthropicCacheControlFromOptions(b.ProviderOptions)
+	default:
+		return nil
+	}
+}
+
+func anthropicCacheControlFromOptions(options map[string]interface{}) interface{} {
+	if options == nil {
+		return nil
+	}
+	anthropicOpts, ok := options["anthropic"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if cacheControl, ok := anthropicOpts["cache_control"]; ok {
+		return cacheControl
+	}
+	if cacheControl, ok := anthropicOpts["cacheControl"]; ok {
+		return cacheControl
+	}
+	return nil
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
@@ -422,11 +479,15 @@ func ToGoogleMessages(messages []types.Message, supportsFunctionResponseParts bo
 			// Include ThoughtSignature at part level when present so Google can
 			// verify the sealed reasoning chain in multi-turn conversations.
 			for _, tc := range msg.ToolCalls {
+				functionCall := map[string]interface{}{
+					"name": tc.ToolName,
+					"args": tc.Arguments,
+				}
+				if tc.ID != "" {
+					functionCall["id"] = tc.ID
+				}
 				fcPart := map[string]interface{}{
-					"functionCall": map[string]interface{}{
-						"name": tc.ToolName,
-						"args": tc.Arguments,
-					},
+					"functionCall": functionCall,
 				}
 				if tc.ThoughtSignature != "" {
 					fcPart["thoughtSignature"] = tc.ThoughtSignature
@@ -528,15 +589,17 @@ func googleAppendFunctionResponse(parts *[]map[string]interface{}, p types.ToolR
 			}
 		}
 	}
-	*parts = append(*parts, map[string]interface{}{
-		"functionResponse": map[string]interface{}{
-			"name": p.ToolName,
-			"response": map[string]interface{}{
-				"name":    p.ToolName,
-				"content": content,
-			},
+	functionResponse := map[string]interface{}{
+		"name": p.ToolName,
+		"response": map[string]interface{}{
+			"name":    p.ToolName,
+			"content": content,
 		},
-	})
+	}
+	if p.ToolCallID != "" {
+		functionResponse["id"] = p.ToolCallID
+	}
+	*parts = append(*parts, map[string]interface{}{"functionResponse": functionResponse})
 }
 
 // googleAppendToolResultParts implements the Gemini 3+ multimodal

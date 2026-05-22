@@ -52,6 +52,7 @@ const (
 	ModelGemini31ProPreviewCustom  = "gemini-3.1-pro-preview-customtools" // (#12819)
 	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"      // (#12883)
 	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"     // image model (#12883)
+	ModelGemini35Flash             = "gemini-3.5-flash"
 
 	// Latest alias models — added in #12819
 	ModelGeminiProLatest       = "gemini-pro-latest"
@@ -88,6 +89,7 @@ const (
 	InteractionsModelGemini25Flash             = "gemini-2.5-flash"
 	InteractionsModelGemini25Pro               = "gemini-2.5-pro"
 	InteractionsModelGemini3ProImage           = "gemini-3-pro-image-preview"
+	InteractionsModelGemini35Flash             = "gemini-3.5-flash"
 	InteractionsAgentDeepResearchProPreview    = "deep-research-pro-preview-12-2025"
 	InteractionsAgentDeepResearchPreview042026 = "deep-research-preview-04-2026"
 	InteractionsAgentDeepResearchMax042026     = "deep-research-max-preview-04-2026"

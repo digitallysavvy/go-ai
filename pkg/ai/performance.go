@@ -8,34 +8,58 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
-func calculateTokensPerSecond(outputTokens *int64, responseTimeMs int64) float64 {
-	if responseTimeMs == 0 {
+func calculateTokensPerSecond(tokens *int64, durationMs int64) float64 {
+	if durationMs == 0 {
 		return 0
 	}
-	var tokens int64
-	if outputTokens != nil {
-		tokens = *outputTokens
+	var tokenCount int64
+	if tokens != nil {
+		tokenCount = *tokens
 	}
-	tokensPerSecond := (1000 * float64(tokens)) / float64(responseTimeMs)
+	tokensPerSecond := (1000 * float64(tokenCount)) / float64(durationMs)
 	if math.IsInf(tokensPerSecond, 0) || math.IsNaN(tokensPerSecond) {
 		return 0
 	}
 	return tokensPerSecond
 }
 
+func sumTokenCounts(a, b *int64) *int64 {
+	if a == nil && b == nil {
+		return nil
+	}
+	var total int64
+	if a != nil {
+		total += *a
+	}
+	if b != nil {
+		total += *b
+	}
+	return &total
+}
+
 func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time) types.StepPerformance {
 	responseTimeMs := time.Since(start).Milliseconds()
 	var timeToFirstTokenMs *int64
+	var outputTokensPerSecond *float64
+	var inputTokensPerSecond *float64
 	if firstTokenAt != nil {
 		value := firstTokenAt.Sub(start).Milliseconds()
 		timeToFirstTokenMs = &value
+		input := calculateTokensPerSecond(usage.InputTokens, value)
+		inputTokensPerSecond = &input
+		outputStreamMs := responseTimeMs - value
+		output := calculateTokensPerSecond(usage.OutputTokens, outputStreamMs)
+		outputTokensPerSecond = &output
 	}
 	return types.StepPerformance{
-		StepTimeMs:         responseTimeMs,
-		ResponseTimeMs:     responseTimeMs,
-		ToolExecutionMs:    map[string]int64{},
-		TokensPerSecond:    calculateTokensPerSecond(usage.OutputTokens, responseTimeMs),
-		TimeToFirstTokenMs: timeToFirstTokenMs,
+		StepTimeMs:                     responseTimeMs,
+		ResponseTimeMs:                 responseTimeMs,
+		ToolExecutionMs:                map[string]int64{},
+		EffectiveOutputTokensPerSecond: calculateTokensPerSecond(usage.OutputTokens, responseTimeMs),
+		OutputTokensPerSecond:          outputTokensPerSecond,
+		InputTokensPerSecond:           inputTokensPerSecond,
+		EffectiveTotalTokensPerSecond:  calculateTokensPerSecond(sumTokenCounts(usage.InputTokens, usage.OutputTokens), responseTimeMs),
+		TimeToFirstTokenMs:             timeToFirstTokenMs,
 	}
 }
 
@@ -50,8 +74,11 @@ func finishStepPerformance(performance types.StepPerformance, stepStart time.Tim
 
 func languageModelCallPerformance(performance types.StepPerformance) telemetry.LanguageModelCallPerformance {
 	return telemetry.LanguageModelCallPerformance{
-		ResponseTimeMs:     performance.ResponseTimeMs,
-		TokensPerSecond:    performance.TokensPerSecond,
-		TimeToFirstTokenMs: performance.TimeToFirstTokenMs,
+		ResponseTimeMs:                 performance.ResponseTimeMs,
+		EffectiveOutputTokensPerSecond: performance.EffectiveOutputTokensPerSecond,
+		OutputTokensPerSecond:          performance.OutputTokensPerSecond,
+		InputTokensPerSecond:           performance.InputTokensPerSecond,
+		EffectiveTotalTokensPerSecond:  performance.EffectiveTotalTokensPerSecond,
+		TimeToFirstOutputTokenMs:       performance.TimeToFirstTokenMs,
 	}
 }

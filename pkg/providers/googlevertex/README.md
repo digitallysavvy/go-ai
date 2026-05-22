@@ -11,7 +11,7 @@ This package provides access to Google Vertex AI models, including **Gemini lang
 - ✅ **Gemini Image Models**: `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`
 - ✅ **Text-to-Image Generation**: Create images from text prompts
 - ✅ **Aspect Ratio Control**: 1:1, 4:3, 3:4, 16:9, 9:16
-- ⚠️ **Image Editing**: Structure prepared, full implementation pending (see TODO comments)
+- ✅ **Image Editing**: Vertex Imagen source images, masks, and edit options
 
 ## Installation
 
@@ -363,10 +363,9 @@ The structure for image editing is prepared but not fully implemented. Once the 
 - **Object Removal**: Remove unwanted objects
 - **Controlled Editing**: Guided image modifications
 
-### Example Code Structure (Future)
+### Image Editing
 
 ```go
-// This is the planned API structure (not yet working)
 result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
     Prompt: "Add a sunset sky",
     Files: []provider.ImageFile{
@@ -387,8 +386,6 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
     },
 })
 ```
-
-See `image_model.go` TODO comments for full implementation details.
 
 ## Locations
 

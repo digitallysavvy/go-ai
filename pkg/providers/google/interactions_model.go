@@ -236,10 +236,17 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		Store:                 interactionsOpts.Store,
 		GenerationConfig:      generationConfig,
 		AgentConfig:           emptyMapToNil(interactionsOpts.AgentConfig),
+		Environment:           interactionsOpts.Environment,
+		Background:            interactionsOpts.Background,
 	}
 	if isAgent {
 		body.Agent = m.agent
-		body.Background = true
+		if body.Background == nil {
+			background := true
+			body.Background = &background
+		}
+	} else if interactionsOpts.Agent != "" {
+		body.Agent = interactionsOpts.Agent
 	} else {
 		body.Model = m.modelID
 	}
@@ -386,6 +393,11 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		out.ServiceTier, _ = v["serviceTier"].(string)
 		out.ThinkingLevel, _ = v["thinkingLevel"].(string)
 		out.ThinkingSummaries, _ = v["thinkingSummaries"].(string)
+		out.Agent, _ = v["agent"].(string)
+		out.Environment = v["environment"]
+		if background, ok := v["background"].(bool); ok {
+			out.Background = &background
+		}
 		if store, ok := v["store"].(bool); ok {
 			out.Store = &store
 		}

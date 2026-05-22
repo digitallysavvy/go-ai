@@ -78,6 +78,28 @@ func TestConvertPromptToInput_UserAndAssistantVariants(t *testing.T) {
 	}
 }
 
+func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{
+			types.FileContent{Data: []byte("csv"), MediaType: "text/csv", Filename: "data.csv"},
+		},
+	}}}
+	if _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
+		t.Fatal("expected unsupported file media type error")
+	}
+	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions error = %v", err)
+	}
+	user := input[0].(UserMessage)
+	parts := user.Content.([]interface{})
+	file := parts[0].(map[string]interface{})
+	if file["type"] != "input_file" || file["filename"] != "data.csv" {
+		t.Fatalf("file part = %#v", file)
+	}
+}
+
 func TestConvertToolResultOutput_StructuredContentAndFallbacks(t *testing.T) {
 	t.Parallel()
 

@@ -65,6 +65,7 @@ type Part struct {
 	Thought          bool   `json:"thought,omitempty"`
 	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 	FunctionCall     *struct {
+		ID   string                 `json:"id,omitempty"`
 		Name string                 `json:"name"`
 		Args map[string]interface{} `json:"args"`
 	} `json:"functionCall,omitempty"`

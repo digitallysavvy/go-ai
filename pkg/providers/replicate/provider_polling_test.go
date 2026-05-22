@@ -82,7 +82,7 @@ func TestReplicateImageDoGeneratePollingAndNoURLError(t *testing.T) {
 		return nil, errors.New("unexpected request")
 	})
 	im := NewImageModel(p, "img-ver")
-	if im.SpecificationVersion() != "v3" || im.Provider() != "replicate" || im.ModelID() != "img-ver" {
+	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver" {
 		t.Fatalf("metadata mismatch")
 	}
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})

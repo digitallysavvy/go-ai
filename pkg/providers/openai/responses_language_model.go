@@ -105,6 +105,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	textVerbosity := ""
 	serviceTier := ""
 	user := ""
+	passThroughUnsupportedFiles := false
 	maxToolCalls := 0
 	parallelToolCalls := (*bool)(nil)
 	truncation := ""
@@ -138,6 +139,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 			if v, ok := openaiOpts["user"].(string); ok {
 				user = v
 			}
+			if v, ok := openaiOpts["passThroughUnsupportedFiles"].(bool); ok {
+				passThroughUnsupportedFiles = v
+			}
 			if v, ok := openaiOpts["maxToolCalls"].(int); ok {
 				maxToolCalls = v
 			}
@@ -161,7 +165,12 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	}
 
 	// Convert prompt to Responses API input format.
-	input := responses.ConvertPromptToInput(opts.Prompt, systemMsgMode)
+	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
+		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
+	})
+	if err != nil {
+		return nil, store, err
+	}
 
 	body := map[string]interface{}{
 		"model":  m.modelID,

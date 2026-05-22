@@ -20,6 +20,18 @@ import (
 //   - FunctionCallItem
 //   - FunctionCallOutputItem
 func ConvertPromptToInput(prompt types.Prompt, systemMessageMode string) []interface{} {
+	input, _ := ConvertPromptToInputWithOptions(prompt, systemMessageMode, ConvertOptions{PassThroughUnsupportedFiles: true})
+	return input
+}
+
+// ConvertOptions controls provider-specific Responses API conversion behavior.
+type ConvertOptions struct {
+	PassThroughUnsupportedFiles bool
+}
+
+// ConvertPromptToInputWithOptions converts a prompt to Responses API input and
+// validates file media types according to OpenAI Responses defaults.
+func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 
 	// Prepend system message when present and not suppressed.
@@ -33,7 +45,11 @@ func ConvertPromptToInput(prompt types.Prompt, systemMessageMode string) []inter
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
 		case types.RoleUser:
-			input = append(input, convertUserMessage(msg))
+			userMessage, err := convertUserMessage(msg, opts)
+			if err != nil {
+				return nil, err
+			}
+			input = append(input, userMessage)
 		case types.RoleAssistant:
 			input = append(input, convertAssistantItems(msg)...)
 		case types.RoleTool:
@@ -41,16 +57,16 @@ func ConvertPromptToInput(prompt types.Prompt, systemMessageMode string) []inter
 		}
 	}
 
-	return input
+	return input, nil
 }
 
 // convertUserMessage maps a user-role Message to a UserMessage.
 // Simple single-text messages use a string content value; multi-modal messages
 // use a slice of typed content parts.
-func convertUserMessage(msg types.Message) UserMessage {
+func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, error) {
 	if len(msg.Content) == 1 {
 		if text, ok := msg.Content[0].(types.TextContent); ok {
-			return UserMessage{Role: "user", Content: text.Text}
+			return UserMessage{Role: "user", Content: text.Text}, nil
 		}
 	}
 
@@ -85,6 +101,9 @@ func convertUserMessage(msg types.Message) UserMessage {
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions),
 					})
 				} else {
+					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles); err != nil {
+						return UserMessage{}, err
+					}
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: p.URL})
 				}
 			} else if p.Reference != "" {
@@ -100,6 +119,9 @@ func convertUserMessage(msg types.Message) UserMessage {
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions),
 					})
 				} else {
+					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles); err != nil {
+						return UserMessage{}, err
+					}
 					part := map[string]interface{}{"type": "input_file", "file_data": fileData}
 					if p.Filename != "" {
 						part["filename"] = p.Filename
@@ -110,7 +132,14 @@ func convertUserMessage(msg types.Message) UserMessage {
 		}
 	}
 
-	return UserMessage{Role: "user", Content: parts}
+	return UserMessage{Role: "user", Content: parts}, nil
+}
+
+func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool) error {
+	if passThroughUnsupportedFiles || mediaType == "" || mediaType == "application/pdf" {
+		return nil
+	}
+	return fmt.Errorf("openai.responses: unsupported file media type %q; set providerOptions.openai.passThroughUnsupportedFiles to true to pass it through", mediaType)
 }
 
 // convertAssistantItems maps an assistant-role Message to one or more Responses

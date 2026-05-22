@@ -1568,3 +1568,21 @@ func TestBuildClaudeRequest_OutputObjectSupport(t *testing.T) {
 		t.Errorf("format = %#v, want json_schema with schema", format)
 	}
 }
+
+func TestBuildClaudeRequest_DisablesNativeStructuredOutputForClaudeOpus47(t *testing.T) {
+	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
+	model := NewLanguageModel(p, "anthropic.claude-opus-4-7-20260219-v1:0")
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json_schema",
+			Schema: map[string]interface{}{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest error = %v", err)
+	}
+	if _, ok := body["output_config"]; ok {
+		t.Fatalf("output_config = %#v, want omitted for claude-opus-4-7", body["output_config"])
+	}
+}

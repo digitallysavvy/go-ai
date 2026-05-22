@@ -18,7 +18,7 @@ func TestBFLImageModel_MetadataAndClient(t *testing.T) {
 		t.Fatal("Client() returned nil")
 	}
 	m := NewImageModel(p, "flux-pro")
-	if m.SpecificationVersion() != "v3" {
+	if m.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", m.SpecificationVersion())
 	}
 	if m.Provider() != "bfl" {

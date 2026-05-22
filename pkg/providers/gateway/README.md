@@ -8,6 +8,7 @@ The AI Gateway provider enables unified access to multiple LLM providers through
 - **Zero Data Retention**: Optional mode that prevents request logging
 - **Model Routing**: Intelligent routing to different model providers
 - **Search Tools**: Built-in Parallel Search and Perplexity Search tools
+- **Audio Models**: Speech synthesis and transcription through Gateway model routing
 - **Automatic Failover**: Gateway handles provider failover automatically
 - **Usage Tracking**: Track API usage and credits
 
@@ -141,6 +142,50 @@ result, err := reranker.DoRerank(context.Background(), &goprovider.RerankOptions
     TopN: &topN,
 })
 ```
+
+### Speech Synthesis
+
+```go
+speech, err := provider.SpeechModel("openai/tts-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := speech.DoGenerate(context.Background(), &goprovider.SpeechGenerateOptions{
+    Text:         "Welcome to the demo.",
+    Voice:        "alloy",
+    OutputFormat: "mp3",
+    Instructions: "Speak clearly and warmly.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("generated %d audio bytes\n", len(result.Audio))
+```
+
+Gateway sends speech requests to `/speech-model` with `ai-speech-model-specification-version: 4` and `ai-model-id`.
+
+### Transcription
+
+```go
+transcriber, err := provider.TranscriptionModel("openai/whisper-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := transcriber.DoTranscribe(context.Background(), &goprovider.TranscriptionOptions{
+    Audio:    audioBytes,
+    MimeType: "audio/wav",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+Gateway sends transcription requests to `/transcription-model` with `ai-transcription-model-specification-version: 4` and `ai-model-id`.
 
 ## Provider-Executed Tools
 

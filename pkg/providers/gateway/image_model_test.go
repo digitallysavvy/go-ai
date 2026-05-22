@@ -15,7 +15,7 @@ import (
 
 func TestGatewayImageModelMetadataAndHeaders(t *testing.T) {
 	m := NewImageModel(&Provider{}, "openai/gpt-image-1")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "gateway" || m.ModelID() != "openai/gpt-image-1" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "gateway" || m.ModelID() != "openai/gpt-image-1" {
 		t.Fatalf("metadata mismatch")
 	}
 	headers := m.getModelConfigHeaders()

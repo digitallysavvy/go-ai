@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -29,7 +29,7 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -61,18 +61,16 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 
 	vertexOpts := extractVertexOptions(opts.ProviderOptions)
 
-	if negPrompt, ok := vertexOpts["negativePrompt"].(string); ok && negPrompt != "" {
-		instance["negativePrompt"] = negPrompt
-	}
-
-	parameters := map[string]interface{}{
-		"sampleCount": getIntValue(opts.N, 1),
+	parameters := map[string]interface{}{}
+	if opts.N != nil {
+		parameters["sampleCount"] = *opts.N
 	}
 
 	// Add aspect ratio if specified.
-	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
-	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
-		parameters["aspectRatio"] = aspectRatio
+	// Vertex Imagen follows the TypeScript SDK: size is accepted by the shared
+	// image API but not serialized for this provider.
+	if opts.AspectRatio != "" {
+		parameters["aspectRatio"] = opts.AspectRatio
 	}
 
 	// sampleImageSize provider option (e.g., VertexImageSize1K, VertexImageSize2K)
@@ -85,62 +83,28 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 		parameters["seed"] = *opts.Seed
 	}
 
-	// Additional Vertex AI provider options.
-	if pgen, ok := vertexOpts["personGeneration"].(string); ok && pgen != "" {
-		parameters["personGeneration"] = pgen
-	}
-	if safetySetting, ok := vertexOpts["safetySetting"].(string); ok && safetySetting != "" {
-		parameters["safetySetting"] = safetySetting
-	}
-	if addWatermark, ok := vertexOpts["addWatermark"].(bool); ok {
-		parameters["addWatermark"] = addWatermark
-	}
-	if storageUri, ok := vertexOpts["storageUri"].(string); ok && storageUri != "" {
-		parameters["storageUri"] = storageUri
+	// Additional Vertex AI provider options. TS spreads top-level image options
+	// into parameters after standard fields; edit options are handled below.
+	for key, value := range vertexOpts {
+		if key == "edit" || value == nil {
+			continue
+		}
+		parameters[key] = value
 	}
 
-	// TODO: Image editing support
-	// To fully implement image editing, the provider.ImageGenerateOptions struct needs to be extended with:
-	// - Files []ImageFile - reference images for editing
-	// - Mask *ImageFile - mask image for inpainting/outpainting
-	// - ProviderOptions map[string]interface{} - for provider-specific settings
-	//
-	// Vertex AI Imagen supports these edit modes:
-	// - EDIT_MODE_INPAINT_INSERTION - Insert objects into masked region
-	// - EDIT_MODE_INPAINT_REMOVAL - Remove objects from masked region
-	// - EDIT_MODE_OUTPAINT - Extend image beyond boundaries
-	// - EDIT_MODE_CONTROLLED_EDITING - Controlled editing with guidance
-	// - EDIT_MODE_PRODUCT_IMAGE - Product-specific image editing
-	// - EDIT_MODE_BGSWAP - Background replacement
-	//
-	// Example of what the editing request would look like:
-	// if len(files) > 0 {
-	//     referenceImages := []map[string]interface{}{}
-	//     for i, file := range files {
-	//         referenceImages = append(referenceImages, map[string]interface{}{
-	//             "referenceType": "REFERENCE_TYPE_RAW",
-	//             "referenceId": i + 1,
-	//             "referenceImage": map[string]interface{}{
-	//                 "bytesBase64Encoded": base64.StdEncoding.EncodeToString(file.Data),
-	//             },
-	//         })
-	//     }
-	//     if mask != nil {
-	//         referenceImages = append(referenceImages, map[string]interface{}{
-	//             "referenceType": "REFERENCE_TYPE_MASK",
-	//             "referenceId": len(files) + 1,
-	//             "referenceImage": map[string]interface{}{
-	//                 "bytesBase64Encoded": base64.StdEncoding.EncodeToString(mask.Data),
-	//             },
-	//             "maskImageConfig": map[string]interface{}{
-	//                 "maskMode": "MASK_MODE_USER_PROVIDED",
-	//                 "dilation": 0.01,
-	//             },
-	//         })
-	//     }
-	//     instances[0]["referenceImages"] = referenceImages
-	//     parameters["editMode"] = "EDIT_MODE_INPAINT_INSERTION"
-	// }
+	if len(opts.Files) > 0 {
+		referenceImages, err := buildVertexReferenceImages(opts.Files, opts.Mask, vertexOpts)
+		if err != nil {
+			return nil, err
+		}
+		instance["referenceImages"] = referenceImages
+		parameters["editMode"] = vertexEditString(vertexOpts, "mode", "EDIT_MODE_INPAINT_INSERTION")
+		if baseSteps, ok := vertexEditNumber(vertexOpts, "baseSteps"); ok {
+			parameters["editConfig"] = map[string]interface{}{"baseSteps": baseSteps}
+		}
+	} else if opts.Mask != nil {
+		return nil, fmt.Errorf("google vertex imagen image editing requires at least one source image when mask is provided")
+	}
 
 	reqBody := map[string]interface{}{
 		"instances":  []map[string]interface{}{instance},
@@ -171,17 +135,37 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "no images in response", nil)
 	}
 
-	// Decode first image (Vertex AI returns base64)
-	imageData, err := base64.StdEncoding.DecodeString(imagenResp.Predictions[0].BytesBase64Encoded)
-	if err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
+	images := make([][]byte, 0, len(imagenResp.Predictions))
+	base64Images := make([]string, 0, len(imagenResp.Predictions))
+	imageMetadata := make([]map[string]interface{}, 0, len(imagenResp.Predictions))
+	for _, prediction := range imagenResp.Predictions {
+		imageData, err := base64.StdEncoding.DecodeString(prediction.BytesBase64Encoded)
+		if err != nil {
+			return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
+		}
+		images = append(images, imageData)
+		base64Images = append(base64Images, prediction.BytesBase64Encoded)
+		meta := map[string]interface{}{}
+		if prediction.Prompt != "" {
+			meta["revisedPrompt"] = prediction.Prompt
+		}
+		imageMetadata = append(imageMetadata, meta)
 	}
+	metadata := map[string]interface{}{"images": imageMetadata}
 
 	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: imagenResp.Predictions[0].MimeType,
+		Image:        images[0],
+		Images:       images,
+		Base64Image:  base64Images[0],
+		Base64Images: base64Images,
+		MimeType:     imagenResp.Predictions[0].MimeType,
 		Usage: types.ImageUsage{
 			ImageCount: len(imagenResp.Predictions),
+		},
+		Warnings: vertexImageWarnings(opts),
+		ProviderMetadata: map[string]interface{}{
+			"googleVertex": metadata,
+			"vertex":       metadata,
 		},
 	}, nil
 }
@@ -207,31 +191,32 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		genConfig["seed"] = *opts.Seed
 	}
 
+	parts := vertexGeminiImageParts(opts)
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"text": opts.Prompt,
-					},
-				},
+				"role":  "user",
+				"parts": parts,
 			},
 		},
 		"generationConfig": genConfig,
 	}
 
 	// Add aspect ratio and/or imageSize if specified.
-	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
 	imageConfig := map[string]interface{}{}
-	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
-		imageConfig["aspectRatio"] = aspectRatio
+	if opts.AspectRatio != "" {
+		imageConfig["aspectRatio"] = opts.AspectRatio
 	}
 	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
 		imageConfig["imageSize"] = imageSize
 	}
 	if len(imageConfig) > 0 {
 		genConfig["imageConfig"] = imageConfig
+	}
+	for key, value := range extractVertexOptions(opts.ProviderOptions) {
+		if value != nil {
+			genConfig[key] = value
+		}
 	}
 
 	// Build URL
@@ -261,6 +246,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 
 	// Find the image part (inlineData with image/* mimeType)
 	var imageData []byte
+	var base64Image string
 	var mimeType string
 	for _, part := range geminiResp.Candidates[0].Content.Parts {
 		if part.InlineData != nil && len(part.InlineData.MimeType) >= 6 && part.InlineData.MimeType[:6] == "image/" {
@@ -269,6 +255,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 				return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
 			}
 			imageData = data
+			base64Image = part.InlineData.Data
 			mimeType = part.InlineData.MimeType
 			break
 		}
@@ -279,12 +266,56 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	}
 
 	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: mimeType,
+		Image:        imageData,
+		Images:       [][]byte{imageData},
+		Base64Image:  base64Image,
+		Base64Images: []string{base64Image},
+		MimeType:     mimeType,
 		Usage: types.ImageUsage{
 			ImageCount: 1,
 		},
+		Warnings: vertexImageWarnings(opts),
+		ProviderMetadata: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"images": []map[string]interface{}{{}}},
+			"vertex":       map[string]interface{}{"images": []map[string]interface{}{{}}},
+		},
 	}, nil
+}
+
+func vertexGeminiImageParts(opts *provider.ImageGenerateOptions) []map[string]interface{} {
+	parts := []map[string]interface{}{}
+	if opts.Prompt != "" {
+		parts = append(parts, map[string]interface{}{"text": opts.Prompt})
+	}
+	for _, file := range opts.Files {
+		if file.Type == "url" || file.URL != "" {
+			parts = append(parts, map[string]interface{}{
+				"fileData": map[string]interface{}{
+					"fileUri":  file.URL,
+					"mimeType": "image/*",
+				},
+			})
+			continue
+		}
+		parts = append(parts, map[string]interface{}{
+			"inlineData": map[string]interface{}{
+				"mimeType": file.MediaType,
+				"data":     base64.StdEncoding.EncodeToString(file.Data),
+			},
+		})
+	}
+	return parts
+}
+
+func vertexImageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+	if opts == nil || opts.Size == "" {
+		return nil
+	}
+	return []types.Warning{{
+		Type:    "unsupported",
+		Feature: "size",
+		Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
+	}}
 }
 
 // isGeminiModel checks if the model ID is a Gemini image model
@@ -326,11 +357,93 @@ func extractVertexOptions(providerOptions map[string]interface{}) map[string]int
 	if providerOptions == nil {
 		return map[string]interface{}{}
 	}
-	opts, _ := providerOptions["vertex"].(map[string]interface{})
+	opts, _ := providerOptions["googleVertex"].(map[string]interface{})
+	if opts == nil {
+		opts, _ = providerOptions["vertex"].(map[string]interface{})
+	}
 	if opts == nil {
 		return map[string]interface{}{}
 	}
 	return opts
+}
+
+func buildVertexReferenceImages(files []provider.ImageFile, mask *provider.ImageFile, vertexOpts map[string]interface{}) ([]map[string]interface{}, error) {
+	referenceImages := make([]map[string]interface{}, 0, len(files)+1)
+	for i, file := range files {
+		data, err := vertexImageFileBase64(file)
+		if err != nil {
+			return nil, err
+		}
+		referenceImages = append(referenceImages, map[string]interface{}{
+			"referenceType": "REFERENCE_TYPE_RAW",
+			"referenceId":   i + 1,
+			"referenceImage": map[string]interface{}{
+				"bytesBase64Encoded": data,
+			},
+		})
+	}
+	if mask != nil {
+		data, err := vertexImageFileBase64(*mask)
+		if err != nil {
+			return nil, err
+		}
+		maskConfig := map[string]interface{}{
+			"maskMode": vertexEditString(vertexOpts, "maskMode", "MASK_MODE_USER_PROVIDED"),
+		}
+		if dilation, ok := vertexEditNumber(vertexOpts, "maskDilation"); ok {
+			maskConfig["dilation"] = dilation
+		}
+		referenceImages = append(referenceImages, map[string]interface{}{
+			"referenceType": "REFERENCE_TYPE_MASK",
+			"referenceId":   len(files) + 1,
+			"referenceImage": map[string]interface{}{
+				"bytesBase64Encoded": data,
+			},
+			"maskImageConfig": maskConfig,
+		})
+	}
+	return referenceImages, nil
+}
+
+func vertexImageFileBase64(file provider.ImageFile) (string, error) {
+	if file.Type == "url" || file.URL != "" {
+		return "", fmt.Errorf("url-based images are not supported for Google Vertex image editing; provide image data directly")
+	}
+	if len(file.Data) == 0 {
+		return "", fmt.Errorf("google vertex image editing requires non-empty image data")
+	}
+	return base64.StdEncoding.EncodeToString(file.Data), nil
+}
+
+func vertexEditOptions(vertexOpts map[string]interface{}) map[string]interface{} {
+	edit, _ := vertexOpts["edit"].(map[string]interface{})
+	if edit == nil {
+		return map[string]interface{}{}
+	}
+	return edit
+}
+
+func vertexEditString(vertexOpts map[string]interface{}, key string, defaultValue string) string {
+	if value, ok := vertexEditOptions(vertexOpts)[key].(string); ok && value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func vertexEditNumber(vertexOpts map[string]interface{}, key string) (float64, bool) {
+	switch value := vertexEditOptions(vertexOpts)[key].(type) {
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	case float64:
+		return value, true
+	case json.Number:
+		parsed, err := value.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // resolveVertexImageSize extracts the sampleImageSize option from provider options.

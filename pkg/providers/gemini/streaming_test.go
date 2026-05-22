@@ -336,6 +336,7 @@ func TestStream_ToolInputDeltaCarriesID(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{FunctionCall: &struct {
+					ID   string                 `json:"id,omitempty"`
 					Name string                 `json:"name"`
 					Args map[string]interface{} `json:"args"`
 				}{Name: "my_tool", Args: map[string]interface{}{"key": "val"}}},
@@ -440,6 +441,7 @@ func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{FunctionCall: &struct {
+					ID   string                 `json:"id,omitempty"`
 					Name string                 `json:"name"`
 					Args map[string]interface{} `json:"args"`
 				}{Name: "tool", Args: map[string]interface{}{"a": "hel"}}},
@@ -453,6 +455,7 @@ func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{FunctionCall: &struct {
+					ID   string                 `json:"id,omitempty"`
 					Name string                 `json:"name"`
 					Args map[string]interface{} `json:"args"`
 				}{Name: "tool", Args: map[string]interface{}{"a": "hello"}}},

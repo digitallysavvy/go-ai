@@ -7,7 +7,7 @@ import (
 )
 
 // providerExecutedNoop returns an Execute function for provider-executed tools.
-// These tools are run by xAI's servers; the local execute stub should never be called.
+// These tools are run by xAI's servers; local execution reports provider execution.
 func providerExecutedNoop(toolName string) func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 	return func(_ context.Context, _ map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 		return nil, &types.ToolExecutionError{

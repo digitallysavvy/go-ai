@@ -55,11 +55,11 @@ type stream struct {
 }
 
 type toolInputAccum struct {
-	name             string
+	name              string
 	lastArgumentsJSON string
-	lastArguments    map[string]interface{}
-	thoughtSignature string
-	signatureMeta    json.RawMessage
+	lastArguments     map[string]interface{}
+	thoughtSignature  string
+	signatureMeta     json.RawMessage
 }
 
 // newStream creates a stream with the given reader and provider configuration.
@@ -440,7 +440,10 @@ func (s *stream) processFuncCallPart(part Part) {
 		return
 	}
 	s.hasToolCalls = true
-	toolCallID := part.FunctionCall.Name // Gemini does not provide separate call IDs
+	toolCallID := part.FunctionCall.ID
+	if toolCallID == "" {
+		toolCallID = part.FunctionCall.Name
+	}
 
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {

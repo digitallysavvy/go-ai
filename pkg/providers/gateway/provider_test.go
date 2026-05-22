@@ -304,16 +304,24 @@ func TestProvider_GetAvailableModels_FiltersUnknownModelTypes(t *testing.T) {
 	}
 }
 
-func TestProvider_UnsupportedCapabilityErrors(t *testing.T) {
+func TestProvider_SpeechAndTranscriptionModels(t *testing.T) {
 	provider, err := New(Config{APIKey: "test-key"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if _, err := provider.SpeechModel("x"); err == nil || err.Error() != "gateway provider does not directly support speech synthesis models" {
+	speech, err := provider.SpeechModel("x")
+	if err != nil {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
-	if _, err := provider.TranscriptionModel("x"); err == nil || err.Error() != "gateway provider does not directly support transcription models" {
+	if speech.Provider() != "gateway" || speech.ModelID() != "x" {
+		t.Fatalf("SpeechModel metadata = %s/%s", speech.Provider(), speech.ModelID())
+	}
+	transcription, err := provider.TranscriptionModel("x")
+	if err != nil {
 		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+	if transcription.Provider() != "gateway" || transcription.ModelID() != "x" {
+		t.Fatalf("TranscriptionModel metadata = %s/%s", transcription.Provider(), transcription.ModelID())
 	}
 }
 

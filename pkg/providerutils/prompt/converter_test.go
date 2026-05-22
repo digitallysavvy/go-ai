@@ -637,9 +637,57 @@ func TestToGoogleMessagesAssistantFunctionCall(t *testing.T) {
 	if fc["name"] != "search" {
 		t.Errorf("name = %v, want search", fc["name"])
 	}
+	if fc["id"] != "c1" {
+		t.Errorf("id = %v, want c1", fc["id"])
+	}
 	args := fc["args"].(map[string]interface{})
 	if args["q"] != "go generics" {
 		t.Errorf("args[q] = %v, want go generics", args["q"])
+	}
+}
+
+func TestToGoogleMessagesFunctionResponseIncludesID(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{ToolCallID: "call-1", ToolName: "lookup", Result: "ok"},
+		},
+	}}
+	got := ToGoogleMessages(msgs, true)
+	parts := got[0]["parts"].([]map[string]interface{})
+	fr := parts[0]["functionResponse"].(map[string]interface{})
+	if fr["id"] != "call-1" {
+		t.Fatalf("functionResponse.id = %v", fr["id"])
+	}
+}
+
+func TestToAnthropicMessagesToolResultOutputCacheControl(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID: "call-1",
+				ToolName:   "lookup",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.TextContentBlock{Text: "cached"},
+					},
+					ProviderOptions: map[string]interface{}{
+						"anthropic": map[string]interface{}{
+							"cache_control": map[string]interface{}{"type": "ephemeral"},
+						},
+					},
+				},
+			},
+		},
+	}}
+	got := ToAnthropicMessages(msgs)
+	content := got[0]["content"].([]map[string]interface{})
+	toolResult := content[0]
+	cacheControl, ok := toolResult["cache_control"].(map[string]interface{})
+	if !ok || cacheControl["type"] != "ephemeral" {
+		t.Fatalf("cache_control = %#v", toolResult["cache_control"])
 	}
 }
 

@@ -8,6 +8,14 @@ import (
 )
 
 func newXAIProviderError(provider string, statusCode int, body []byte) *providererrors.ProviderError {
+	var responsesError struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &responsesError); err == nil && responsesError.Code != "" && responsesError.Error != "" {
+		return providererrors.NewProviderError(provider, statusCode, responsesError.Code, responsesError.Code+": "+responsesError.Error, nil)
+	}
+
 	var parsed struct {
 		Error struct {
 			Message string      `json:"message"`
@@ -34,6 +42,13 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 	}
 
 	return providererrors.NewProviderError(provider, statusCode, errorCode, message, nil)
+}
+
+func formatXAIResponseError(code string, message string) string {
+	if code != "" && message != "" {
+		return code + ": " + message
+	}
+	return message
 }
 
 // ModerationError is returned by the xAI video model when the API rejects

@@ -163,8 +163,9 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 		CallID:       "lm-1",
 		FinishReason: "stop",
 		Performance: LanguageModelCallPerformance{
-			ResponseTimeMs:  10,
-			TokensPerSecond: 20,
+			ResponseTimeMs:                 10,
+			EffectiveOutputTokensPerSecond: 20,
+			EffectiveTotalTokensPerSecond:  30,
 		},
 	})
 	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{

@@ -32,11 +32,13 @@ const (
 )
 
 var knownGatewayModelTypes = map[string]struct{}{
-	"embedding": {},
-	"image":     {},
-	"language":  {},
-	"reranking": {},
-	"video":     {},
+	"embedding":     {},
+	"image":         {},
+	"language":      {},
+	"reranking":     {},
+	"speech":        {},
+	"transcription": {},
+	"video":         {},
 }
 
 // Provider implements the provider.Provider interface for AI Gateway
@@ -422,12 +424,18 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("gateway provider does not directly support speech synthesis models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("gateway provider does not directly support transcription models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID

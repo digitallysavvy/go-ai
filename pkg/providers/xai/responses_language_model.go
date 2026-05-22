@@ -151,7 +151,12 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		return nil, err
 	}
 
-	input := responses.ConvertPromptToInput(opts.Prompt, "system")
+	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
+		PassThroughUnsupportedFiles: true,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	body := map[string]interface{}{
 		"model":  m.modelID,
@@ -919,6 +924,9 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		blockID := "reasoning-" + e.ItemID
+		if _, alreadyStarted := s.activeReasoning[e.ItemID]; alreadyStarted {
+			return s.Next()
+		}
 		s.activeReasoning[e.ItemID] = struct{}{}
 		meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 		return s.emitParsedChunk(&provider.StreamChunk{

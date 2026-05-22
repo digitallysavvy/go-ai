@@ -27,7 +27,7 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider identifier for this model type.
@@ -196,4 +196,3 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 func (m *ImageModel) buildQuery() map[string]string {
 	return map[string]string{"price": "true"}
 }
-

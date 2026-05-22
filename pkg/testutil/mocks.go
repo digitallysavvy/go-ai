@@ -21,9 +21,9 @@ type MockLanguageModel struct {
 	ImageSupport      bool
 
 	// Call tracking
-	mu              sync.Mutex
-	GenerateCalls   []*provider.GenerateOptions
-	StreamCalls     []*provider.GenerateOptions
+	mu            sync.Mutex
+	GenerateCalls []*provider.GenerateOptions
+	StreamCalls   []*provider.GenerateOptions
 }
 
 func (m *MockLanguageModel) SpecificationVersion() string { return "v3" }
@@ -87,8 +87,8 @@ type MockEmbeddingModel struct {
 	ParallelSupport bool
 
 	// Call tracking
-	mu            sync.Mutex
-	EmbedCalls    []string
+	mu             sync.Mutex
+	EmbedCalls     []string
 	EmbedManyCalls [][]string
 }
 
@@ -282,6 +282,7 @@ type MockImageModel struct {
 	DoGenerateFunc func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error)
 	ProviderName   string
 	ModelName      string
+	MaxImages      int
 }
 
 func (m *MockImageModel) SpecificationVersion() string { return "v3" }
@@ -296,6 +297,10 @@ func (m *MockImageModel) ModelID() string {
 		return "mock-image"
 	}
 	return m.ModelName
+}
+
+func (m *MockImageModel) MaxImagesPerCall() int {
+	return m.MaxImages
 }
 
 func (m *MockImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

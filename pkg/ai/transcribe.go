@@ -13,11 +13,12 @@ import (
 type TranscribeOptions struct {
 	Model provider.TranscriptionModel
 
-	Audio      []byte
-	MimeType   string
-	Language   string
-	Timestamps bool
-	Headers    map[string]string
+	Audio           []byte
+	MimeType        string
+	Language        string
+	Timestamps      bool
+	ProviderOptions map[string]interface{}
+	Headers         map[string]string
 }
 
 // TranscribeResult contains speech transcription output.
@@ -48,11 +49,12 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		return nil, fmt.Errorf("audio is required")
 	}
 	raw, err := opts.Model.DoTranscribe(ctx, &provider.TranscriptionOptions{
-		Audio:      opts.Audio,
-		MimeType:   opts.MimeType,
-		Language:   opts.Language,
-		Timestamps: opts.Timestamps,
-		Headers:    opts.Headers,
+		Audio:           opts.Audio,
+		MimeType:        opts.MimeType,
+		Language:        opts.Language,
+		Timestamps:      opts.Timestamps,
+		ProviderOptions: opts.ProviderOptions,
+		Headers:         opts.Headers,
 	})
 	if err != nil {
 		return nil, err
@@ -60,8 +62,12 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if raw == nil || raw.Text == "" {
 		return nil, fmt.Errorf("no transcript generated")
 	}
-	segments := make([]TranscriptionSegment, 0, len(raw.Timestamps))
-	for _, ts := range raw.Timestamps {
+	rawSegments := raw.Segments
+	if len(rawSegments) == 0 {
+		rawSegments = raw.Timestamps
+	}
+	segments := make([]TranscriptionSegment, 0, len(rawSegments))
+	for _, ts := range rawSegments {
 		segments = append(segments, TranscriptionSegment{
 			Text:        ts.Text,
 			StartSecond: ts.Start,
@@ -69,17 +75,18 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		})
 	}
 	return &TranscribeResult{
-		Text:       raw.Text,
-		Segments:   segments,
-		Language:   opts.Language,
-		Timestamps: raw.Timestamps,
-		Warnings:   []types.Warning{},
+		Text:              raw.Text,
+		Segments:          segments,
+		Language:          raw.Language,
+		DurationInSeconds: raw.DurationInSeconds,
+		Timestamps:        raw.Timestamps,
+		Warnings:          raw.Warnings,
 		Responses: []*types.ResponseMetadata{{
 			ID:        newCallID(),
 			Timestamp: time.Now(),
 			ModelID:   opts.Model.ModelID(),
 		}},
-		ProviderMetadata: map[string]interface{}{},
+		ProviderMetadata: raw.ProviderMetadata,
 		Usage:            raw.Usage,
 	}, nil
 }

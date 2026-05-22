@@ -695,6 +695,9 @@ type ToolResultOutput struct {
 	// ToolResultOutputExecutionDenied to describe why the tool was not run.
 	// Forwarded to the provider so the model understands the denial context.
 	Reason string `json:"reason,omitempty"`
+
+	// ProviderOptions holds provider-specific options for the output direction.
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
 // ToolResultContentBlock represents a content block in tool results

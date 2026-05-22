@@ -505,8 +505,20 @@ type SpeechGenerateOptions struct {
 	// Voice to use
 	Voice string
 
+	// OutputFormat requests a specific audio container/codec.
+	OutputFormat string
+
+	// Instructions tune style, tone, accent, or other model-specific behavior.
+	Instructions string
+
 	// Speed of speech (0.25 to 4.0)
 	Speed *float64
+
+	// Language hint for multilingual speech models.
+	Language string
+
+	// ProviderOptions contains provider-specific request options.
+	ProviderOptions map[string]interface{}
 
 	// Additional HTTP headers
 	Headers map[string]string
@@ -536,6 +548,9 @@ type TranscriptionOptions struct {
 
 	// Whether to include timestamps
 	Timestamps bool
+
+	// ProviderOptions contains provider-specific request options.
+	ProviderOptions map[string]interface{}
 
 	// Additional HTTP headers
 	Headers map[string]string

@@ -225,8 +225,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData) 
 		}, nil
 
 	case "base64":
-		// Base64 data is already in data.Data as string
-		// We keep it as is for now (could decode if needed)
+		// Base64 data is already in data.Data as string.
 		return &types.GeneratedFile{
 			Data:      []byte(data.Data),
 			MediaType: data.MediaType,

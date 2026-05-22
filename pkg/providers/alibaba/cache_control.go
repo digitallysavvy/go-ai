@@ -30,7 +30,7 @@ func NewCacheControlValidator() *CacheControlValidator {
 }
 
 // GetCacheControl returns an ephemeral cache marker if the breakpoint limit has not
-// been exceeded, or nil if the limit (4) would be exceeded. A warning is added on
+// been exceeded, or nil if adding another block would pass the limit (4). A warning is added on
 // the first call that exceeds the limit.
 func (v *CacheControlValidator) GetCacheControl() *MessageCacheControl {
 	v.breakpointCount++

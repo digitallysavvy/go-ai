@@ -117,7 +117,7 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 func TestBedrockImageModelHelpers(t *testing.T) {
 	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
 	model := NewImageModel(p, "stability.stable-diffusion-xl-v1")
-	if model.SpecificationVersion() != "v3" || model.Provider() != "aws-bedrock" || model.ModelID() != "stability.stable-diffusion-xl-v1" {
+	if model.SpecificationVersion() != "v4" || model.Provider() != "aws-bedrock" || model.ModelID() != "stability.stable-diffusion-xl-v1" {
 		t.Fatalf("image model metadata mismatch")
 	}
 	n := 2

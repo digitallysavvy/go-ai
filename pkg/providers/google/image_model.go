@@ -66,7 +66,7 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -101,8 +101,7 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 		return nil, fmt.Errorf("image editing with masks is not supported for Google Generative AI Imagen models. Use Google Vertex AI instead")
 	}
 
-	// Resolve aspect ratio: prefer opts.AspectRatio, fall back to size conversion, then default to 1:1.
-	aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size)
+	aspectRatio := opts.AspectRatio
 	if aspectRatio == "" {
 		aspectRatio = ImageAspectRatio1x1
 	}
@@ -112,9 +111,10 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 		"aspectRatio": aspectRatio,
 	}
 
-	// personGeneration provider option (e.g., "dont_allow", "allow_adult", "allow_all")
-	if pgen := extractGoogleStringOption(opts.ProviderOptions, "personGeneration"); pgen != "" {
-		parameters["personGeneration"] = pgen
+	for key, value := range extractGoogleOptions(opts.ProviderOptions) {
+		if value != nil {
+			parameters[key] = value
+		}
 	}
 
 	// Build request body for Imagen
@@ -151,17 +151,35 @@ func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageG
 		return nil, providererrors.NewProviderError("google", 0, "", "no images in response", nil)
 	}
 
-	// Decode first image (Google Generative AI returns base64)
-	imageData, err := base64.StdEncoding.DecodeString(imagenResp.Predictions[0].BytesBase64Encoded)
-	if err != nil {
-		return nil, providererrors.NewProviderError("google", 0, "", "failed to decode image: "+err.Error(), err)
+	images := make([][]byte, 0, len(imagenResp.Predictions))
+	base64Images := make([]string, 0, len(imagenResp.Predictions))
+	imageMetadata := make([]map[string]interface{}, 0, len(imagenResp.Predictions))
+	for _, prediction := range imagenResp.Predictions {
+		imageData, err := base64.StdEncoding.DecodeString(prediction.BytesBase64Encoded)
+		if err != nil {
+			return nil, providererrors.NewProviderError("google", 0, "", "failed to decode image: "+err.Error(), err)
+		}
+		images = append(images, imageData)
+		base64Images = append(base64Images, prediction.BytesBase64Encoded)
+		meta := map[string]interface{}{}
+		if prediction.Prompt != "" {
+			meta["revisedPrompt"] = prediction.Prompt
+		}
+		imageMetadata = append(imageMetadata, meta)
 	}
 
 	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: "image/png",
+		Image:        images[0],
+		Images:       images,
+		Base64Image:  base64Images[0],
+		Base64Images: base64Images,
+		MimeType:     "image/png",
 		Usage: types.ImageUsage{
 			ImageCount: len(imagenResp.Predictions),
+		},
+		Warnings: googleImageWarnings(opts, true),
+		ProviderMetadata: map[string]interface{}{
+			"google": map[string]interface{}{"images": imageMetadata},
 		},
 	}, nil
 }
@@ -174,7 +192,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	}
 	// Gemini image models only support generating a single image at a time.
 	if opts.N != nil && *opts.N > 1 {
-		return nil, fmt.Errorf("LGemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
+		return nil, fmt.Errorf("Gemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
 	}
 
 	// Gemini image models use the language model API with responseModalities: ["IMAGE"]
@@ -187,31 +205,32 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		genConfig["seed"] = *opts.Seed
 	}
 
+	parts := googleGeminiImageParts(opts)
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"text": opts.Prompt,
-					},
-				},
+				"role":  "user",
+				"parts": parts,
 			},
 		},
 		"generationConfig": genConfig,
 	}
 
 	// Add aspect ratio and/or imageSize if specified.
-	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
 	imageConfig := map[string]interface{}{}
-	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
-		imageConfig["aspectRatio"] = aspectRatio
+	if opts.AspectRatio != "" {
+		imageConfig["aspectRatio"] = opts.AspectRatio
 	}
 	if imageSize := extractGoogleStringOption(opts.ProviderOptions, "imageSize"); imageSize != "" {
 		imageConfig["imageSize"] = imageSize
 	}
 	if len(imageConfig) > 0 {
 		genConfig["imageConfig"] = imageConfig
+	}
+	for key, value := range extractGoogleOptions(opts.ProviderOptions) {
+		if value != nil {
+			genConfig[key] = value
+		}
 	}
 
 	// Build URL with API key
@@ -241,6 +260,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 
 	// Find the image part (inlineData with image/* mimeType)
 	var imageData []byte
+	var base64Image string
 	var mimeType string
 	for _, part := range geminiResp.Candidates[0].Content.Parts {
 		if part.InlineData != nil && len(part.InlineData.MimeType) >= 6 && part.InlineData.MimeType[:6] == "image/" {
@@ -249,6 +269,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 				return nil, providererrors.NewProviderError("google", 0, "", "failed to decode image: "+err.Error(), err)
 			}
 			imageData = data
+			base64Image = part.InlineData.Data
 			mimeType = part.InlineData.MimeType
 			break
 		}
@@ -259,12 +280,66 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	}
 
 	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: mimeType,
+		Image:        imageData,
+		Images:       [][]byte{imageData},
+		Base64Image:  base64Image,
+		Base64Images: []string{base64Image},
+		MimeType:     mimeType,
 		Usage: types.ImageUsage{
 			ImageCount: 1,
 		},
+		Warnings: googleImageWarnings(opts, false),
+		ProviderMetadata: map[string]interface{}{
+			"google": map[string]interface{}{"images": []map[string]interface{}{{}}},
+		},
 	}, nil
+}
+
+func googleGeminiImageParts(opts *provider.ImageGenerateOptions) []map[string]interface{} {
+	parts := []map[string]interface{}{}
+	if opts.Prompt != "" {
+		parts = append(parts, map[string]interface{}{"text": opts.Prompt})
+	}
+	for _, file := range opts.Files {
+		if file.Type == "url" || file.URL != "" {
+			parts = append(parts, map[string]interface{}{
+				"fileData": map[string]interface{}{
+					"fileUri":  file.URL,
+					"mimeType": "image/*",
+				},
+			})
+			continue
+		}
+		parts = append(parts, map[string]interface{}{
+			"inlineData": map[string]interface{}{
+				"mimeType": file.MediaType,
+				"data":     base64.StdEncoding.EncodeToString(file.Data),
+			},
+		})
+	}
+	return parts
+}
+
+func googleImageWarnings(opts *provider.ImageGenerateOptions, imagen bool) []types.Warning {
+	if opts == nil {
+		return nil
+	}
+	var warnings []types.Warning
+	if opts.Size != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "size",
+			Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
+		})
+	}
+	if imagen && opts.Seed != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "seed",
+			Details: "This model does not support the `seed` option through this provider.",
+		})
+	}
+	return warnings
 }
 
 // isGeminiModel checks if the model ID is a Gemini image model
@@ -303,15 +378,23 @@ func convertSizeToAspectRatio(size string) string {
 
 // extractGoogleStringOption extracts a string value from ProviderOptions["google"][key].
 func extractGoogleStringOption(providerOptions map[string]interface{}, key string) string {
-	if providerOptions == nil {
-		return ""
-	}
-	googleOpts, ok := providerOptions["google"].(map[string]interface{})
-	if !ok {
+	googleOpts := extractGoogleOptions(providerOptions)
+	if googleOpts == nil {
 		return ""
 	}
 	val, _ := googleOpts[key].(string)
 	return val
+}
+
+func extractGoogleOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	if providerOptions == nil {
+		return nil
+	}
+	googleOpts, ok := providerOptions["google"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return googleOpts
 }
 
 // resolveImageSize extracts the imageSize option from provider options for Gemini image models.

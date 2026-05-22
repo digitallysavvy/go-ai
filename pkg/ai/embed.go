@@ -22,6 +22,13 @@ func newCallID() string {
 	return hex.EncodeToString(b)
 }
 
+func warningsOrEmpty(warnings []types.Warning) []types.Warning {
+	if warnings == nil {
+		return []types.Warning{}
+	}
+	return warnings
+}
+
 // EmbedOnStartEvent is emitted before calling the embedding model.
 type EmbedOnStartEvent struct {
 	// CallID is a unique identifier for this embedding call, correlates with EmbedOnFinishEvent.
@@ -260,7 +267,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	embedResult := &EmbedResult{
 		Embedding: result.Embedding,
 		Usage:     result.Usage,
-		Warnings:  result.Warnings,
+		Warnings:  warningsOrEmpty(result.Warnings),
 	}
 
 	// Record telemetry output attributes
@@ -483,7 +490,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	embedResult := &EmbedManyResult{
 		Embeddings: result.Embeddings,
 		Usage:      result.Usage,
-		Warnings:   result.Warnings,
+		Warnings:   warningsOrEmpty(result.Warnings),
 	}
 
 	// Record telemetry output attributes

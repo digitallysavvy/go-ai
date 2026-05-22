@@ -352,7 +352,8 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 	if rc := m.mergedReasoningConfig(opts, reqBody["reasoningConfig"]); rc != nil {
 		reqBody["reasoningConfig"] = rc
 	}
-	if opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
+	if bedrockSupportsNativeStructuredOutput(m.modelID) &&
+		opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
 		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
 		outputConfig := map[string]interface{}{}
 		if existing, ok := reqBody["output_config"].(map[string]interface{}); ok {
@@ -424,6 +425,10 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 	}
 
 	return reqBody, nil
+}
+
+func bedrockSupportsNativeStructuredOutput(modelID string) bool {
+	return !strings.Contains(modelID, "claude-opus-4-7")
 }
 
 func (m *LanguageModel) toClaudeSystemContent(msg types.Message) []map[string]interface{} {

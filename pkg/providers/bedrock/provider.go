@@ -70,8 +70,6 @@ func New(cfg Config) *Provider {
 	// AWS Bedrock endpoint
 	baseURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", cfg.Region)
 
-	// Note: AWS Signature V4 signing would be required for real implementation
-	// For now, we'll create a basic client structure
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: internalhttp.MergeHeaders(map[string]string{

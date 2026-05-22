@@ -28,8 +28,11 @@ type GoogleInteractionsProviderOptions struct {
 	ThinkingLevel         string
 	ThinkingSummaries     string
 	ImageConfig           map[string]interface{}
+	Agent                 string
 	AgentConfig           map[string]interface{}
+	Environment           interface{}
 	PollingTimeoutMs      int
+	Background            *bool
 }
 
 type interactionsRequest struct {
@@ -46,7 +49,8 @@ type interactionsRequest struct {
 	Store                 *bool                    `json:"store,omitempty"`
 	GenerationConfig      map[string]interface{}   `json:"generation_config,omitempty"`
 	AgentConfig           map[string]interface{}   `json:"agent_config,omitempty"`
-	Background            bool                     `json:"background,omitempty"`
+	Environment           interface{}              `json:"environment,omitempty"`
+	Background            *bool                    `json:"background,omitempty"`
 	Stream                bool                     `json:"stream,omitempty"`
 }
 

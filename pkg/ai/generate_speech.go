@@ -16,7 +16,11 @@ type GenerateSpeechOptions struct {
 	Voice string
 	Speed *float64
 
-	Headers map[string]string
+	OutputFormat    string
+	Instructions    string
+	Language        string
+	ProviderOptions map[string]interface{}
+	Headers         map[string]string
 }
 
 // GenerateSpeechResult contains generated speech audio.
@@ -37,10 +41,14 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		return nil, fmt.Errorf("text is required")
 	}
 	raw, err := opts.Model.DoGenerate(ctx, &provider.SpeechGenerateOptions{
-		Text:    opts.Text,
-		Voice:   opts.Voice,
-		Speed:   opts.Speed,
-		Headers: opts.Headers,
+		Text:            opts.Text,
+		Voice:           opts.Voice,
+		Speed:           opts.Speed,
+		OutputFormat:    opts.OutputFormat,
+		Instructions:    opts.Instructions,
+		Language:        opts.Language,
+		ProviderOptions: opts.ProviderOptions,
+		Headers:         opts.Headers,
 	})
 	if err != nil {
 		return nil, err
@@ -53,13 +61,13 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 			Data:      raw.Audio,
 			MediaType: raw.MimeType,
 		},
-		Warnings: []types.Warning{},
+		Warnings: raw.Warnings,
 		Responses: []*types.ResponseMetadata{{
 			ID:        newCallID(),
 			Timestamp: time.Now(),
 			ModelID:   opts.Model.ModelID(),
 		}},
-		ProviderMetadata: map[string]interface{}{},
+		ProviderMetadata: raw.ProviderMetadata,
 		Usage:            raw.Usage,
 	}, nil
 }

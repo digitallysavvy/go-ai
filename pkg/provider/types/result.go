@@ -50,13 +50,24 @@ type StepPerformance struct {
 	// ToolExecutionMs contains client-side tool execution durations keyed by tool call ID.
 	ToolExecutionMs map[string]int64 `json:"toolExecutionMs"`
 
-	// TokensPerSecond is average output tokens per second. It is 0 when the
-	// value cannot be represented as a finite number.
-	TokensPerSecond float64 `json:"tokensPerSecond"`
+	// EffectiveOutputTokensPerSecond is outputTokens / requestSeconds. It is 0
+	// when the value cannot be represented as a finite number.
+	EffectiveOutputTokensPerSecond float64 `json:"effectiveOutputTokensPerSecond"`
+
+	// OutputTokensPerSecond is outputTokens / outputStreamSeconds for streaming
+	// responses. It is nil for non-streaming responses.
+	OutputTokensPerSecond *float64 `json:"outputTokensPerSecond,omitempty"`
+
+	// InputTokensPerSecond is inputTokens / ttftSeconds for streaming responses.
+	// It is nil for non-streaming responses.
+	InputTokensPerSecond *float64 `json:"inputTokensPerSecond,omitempty"`
+
+	// EffectiveTotalTokensPerSecond is (inputTokens + outputTokens) / requestSeconds.
+	EffectiveTotalTokensPerSecond float64 `json:"effectiveTotalTokensPerSecond"`
 
 	// TimeToFirstTokenMs is populated for streaming steps when the first content
 	// token/chunk timing is known.
-	TimeToFirstTokenMs *int64 `json:"timeToFirstTokenMs,omitempty"`
+	TimeToFirstTokenMs *int64 `json:"timeToFirstOutputTokenMs,omitempty"`
 }
 
 // GenerateResult contains the result of a text generation operation
@@ -192,6 +203,12 @@ type SpeechResult struct {
 
 	// Usage information
 	Usage SpeechUsage `json:"usage"`
+
+	// Warnings from the provider
+	Warnings []Warning `json:"warnings,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // TranscriptionResult contains the result of a speech-to-text operation
@@ -199,11 +216,26 @@ type TranscriptionResult struct {
 	// Transcribed text
 	Text string `json:"text"`
 
+	// Segments are timestamped transcript segments.
+	Segments []TranscriptionTimestamp `json:"segments,omitempty"`
+
+	// Detected or requested language.
+	Language string `json:"language,omitempty"`
+
+	// DurationInSeconds is the audio duration when provided by the model.
+	DurationInSeconds *float64 `json:"durationInSeconds,omitempty"`
+
 	// Optional timestamps for words or segments
 	Timestamps []TranscriptionTimestamp `json:"timestamps,omitempty"`
 
 	// Usage information
 	Usage TranscriptionUsage `json:"usage"`
+
+	// Warnings from the provider
+	Warnings []Warning `json:"warnings,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // TranscriptionTimestamp represents a timestamp in a transcription

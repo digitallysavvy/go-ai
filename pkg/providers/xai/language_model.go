@@ -77,7 +77,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	// Surface API-level errors returned in the response body.
 	if response.Error != nil {
-		return nil, m.handleError(fmt.Errorf("%s", *response.Error))
+		code := ""
+		if response.Code != nil {
+			code = *response.Code
+		}
+		return nil, m.handleError(fmt.Errorf("%s", formatXAIResponseError(code, *response.Error)))
 	}
 	result := m.convertResponse(response, lastAssistantText(opts))
 	result.Warnings = append(warnings, result.Warnings...)

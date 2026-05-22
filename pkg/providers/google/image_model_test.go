@@ -15,7 +15,7 @@ import (
 
 func TestImageModel_SpecificationVersion(t *testing.T) {
 	model := NewImageModel(nil, "imagen-4.0-generate-001")
-	assert.Equal(t, "v3", model.SpecificationVersion())
+	assert.Equal(t, "v4", model.SpecificationVersion())
 }
 
 func TestImageModel_Provider(t *testing.T) {
@@ -187,8 +187,63 @@ func TestImageModel_DoGenerate_Imagen(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.NotEmpty(t, result.Image)
+	assert.Len(t, result.Images, 1)
+	assert.NotEmpty(t, result.Base64Image)
+	assert.Len(t, result.Base64Images, 1)
 	assert.Equal(t, "image/png", result.MimeType)
 	assert.Equal(t, 1, result.Usage.ImageCount)
+	googleMeta := result.ProviderMetadata["google"].(map[string]interface{})
+	imagesMeta := googleMeta["images"].([]map[string]interface{})
+	assert.Len(t, imagesMeta, 1)
+}
+
+func TestImageModel_DoGenerate_Imagen_MultipleImagesAndMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := imagenResponse{
+			Predictions: []struct {
+				BytesBase64Encoded string `json:"bytesBase64Encoded"`
+				MimeType           string `json:"mimeType"`
+				Prompt             string `json:"prompt,omitempty"`
+			}{
+				{
+					BytesBase64Encoded: "Zmlyc3Q=",
+					MimeType:           "image/png",
+					Prompt:             "first revised",
+				},
+				{
+					BytesBase64Encoded: "c2Vjb25k",
+					MimeType:           "image/png",
+					Prompt:             "second revised",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
+	model := NewImageModel(prov, "imagen-4.0-generate-001")
+	n := 2
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A beautiful sunset",
+		N:      &n,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []byte("first"), result.Image)
+	assert.Len(t, result.Images, 2)
+	assert.Equal(t, []byte("second"), result.Images[1])
+	assert.Equal(t, "Zmlyc3Q=", result.Base64Image)
+	assert.Equal(t, []string{"Zmlyc3Q=", "c2Vjb25k"}, result.Base64Images)
+	assert.Equal(t, 2, result.Usage.ImageCount)
+	googleMeta := result.ProviderMetadata["google"].(map[string]interface{})
+	imagesMeta := googleMeta["images"].([]map[string]interface{})
+	require.Len(t, imagesMeta, 2)
+	assert.Equal(t, "first revised", imagesMeta[0]["revisedPrompt"])
+	assert.Equal(t, "second revised", imagesMeta[1]["revisedPrompt"])
 }
 
 func TestImageModel_DoGenerate_Gemini(t *testing.T) {
@@ -273,8 +328,14 @@ func TestImageModel_DoGenerate_Gemini(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.NotEmpty(t, result.Image)
+	assert.Len(t, result.Images, 1)
+	assert.NotEmpty(t, result.Base64Image)
+	assert.Len(t, result.Base64Images, 1)
 	assert.Equal(t, "image/jpeg", result.MimeType)
 	assert.Equal(t, 1, result.Usage.ImageCount)
+	googleMeta := result.ProviderMetadata["google"].(map[string]interface{})
+	imagesMeta := googleMeta["images"].([]map[string]interface{})
+	assert.Len(t, imagesMeta, 1)
 }
 
 func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
@@ -623,6 +684,52 @@ func TestImageModel_DoGenerate_WithAspectRatioField(t *testing.T) {
 	require.NotNil(t, result)
 }
 
+func TestImageModel_DoGenerate_Imagen_SizeAndSeedWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+
+		params := reqBody["parameters"].(map[string]interface{})
+		assert.Equal(t, "1:1", params["aspectRatio"], "size should not be converted into aspectRatio")
+		assert.Equal(t, "allow_all", params["personGeneration"])
+
+		response := imagenResponse{
+			Predictions: []struct {
+				BytesBase64Encoded string `json:"bytesBase64Encoded"`
+				MimeType           string `json:"mimeType"`
+				Prompt             string `json:"prompt,omitempty"`
+			}{
+				{
+					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+					MimeType:           "image/png",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
+	model := NewImageModel(prov, "imagen-4.0-generate-001")
+	seed := 42
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A square image",
+		Size:   "1920x1080",
+		Seed:   &seed,
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"personGeneration": "allow_all"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	if len(result.Warnings) != 2 {
+		t.Fatalf("warnings = %+v, want size and seed warnings", result.Warnings)
+	}
+}
+
 // TestImageModel_DoGenerate_Imagen_ErrorFilesNotSupported verifies that passing files to
 // an Imagen model returns an unsupported error (matches TS behavior).
 func TestImageModel_DoGenerate_Imagen_ErrorFilesNotSupported(t *testing.T) {
@@ -829,6 +936,93 @@ func TestImageModel_DoGenerate_Gemini_WithSeed(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
+}
+
+func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+
+		contents := reqBody["contents"].([]interface{})
+		content := contents[0].(map[string]interface{})
+		parts := content["parts"].([]interface{})
+		require.Len(t, parts, 3)
+		assert.Equal(t, "Edit these", parts[0].(map[string]interface{})["text"])
+		inline := parts[1].(map[string]interface{})["inlineData"].(map[string]interface{})
+		assert.Equal(t, "image/png", inline["mimeType"])
+		assert.Equal(t, "aW5saW5l", inline["data"])
+		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
+		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
+		assert.Equal(t, "image/*", fileData["mimeType"])
+
+		genConfig := reqBody["generationConfig"].(map[string]interface{})
+		imageConfig := genConfig["imageConfig"].(map[string]interface{})
+		assert.Equal(t, "9:16", imageConfig["aspectRatio"])
+		assert.Equal(t, "low", genConfig["thinkingBudget"])
+
+		response := geminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string      `json:"text,omitempty"`
+						InlineData *InlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
+			}{
+				{
+					Content: struct {
+						Parts []struct {
+							Text       string      `json:"text,omitempty"`
+							InlineData *InlineData `json:"inlineData,omitempty"`
+						} `json:"parts"`
+					}{
+						Parts: []struct {
+							Text       string      `json:"text,omitempty"`
+							InlineData *InlineData `json:"inlineData,omitempty"`
+						}{
+							{
+								InlineData: &InlineData{
+									MimeType: "image/png",
+									Data:     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:      "Edit these",
+		Size:        "1024x1024",
+		AspectRatio: "9:16",
+		Files: []provider.ImageFile{
+			{Type: "file", MediaType: "image/png", Data: []byte("inline")},
+			{Type: "url", URL: "https://example.com/ref.png"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"thinkingBudget": "low"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Len(t, result.Images, 1)
+	assert.NotEmpty(t, result.Base64Image)
+	assert.Len(t, result.Base64Images, 1)
+	googleMeta := result.ProviderMetadata["google"].(map[string]interface{})
+	imagesMeta := googleMeta["images"].([]map[string]interface{})
+	assert.Len(t, imagesMeta, 1)
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "size" {
+		t.Fatalf("warnings = %+v, want size warning", result.Warnings)
+	}
 }
 
 // TestExtractGoogleStringOption verifies the helper extracts string values correctly.

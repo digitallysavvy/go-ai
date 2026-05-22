@@ -4,10 +4,11 @@ AWS Bedrock provider for the Go-AI SDK, offering access to multiple AI models th
 
 ## Overview
 
-The Bedrock provider package offers two approaches for working with Anthropic's Claude models on AWS Bedrock:
+The Bedrock provider package offers three approaches for working with models on AWS Bedrock:
 
 1. **Standard Bedrock** - Uses AWS Bedrock's Converse API
 2. **[Bedrock Anthropic](anthropic/README.md)** - Direct Anthropic Messages API with full feature support
+3. **Bedrock Mantle** - OpenAI-compatible Chat Completions and Responses API access through `pkg/providers/bedrock/mantle`
 
 ## Quick Start
 
@@ -71,6 +72,30 @@ export AWS_SECRET_ACCESS_KEY=your_secret_key
 export AWS_SESSION_TOKEN=your_session_token  # Optional
 export AWS_REGION=us-east-1                  # Optional
 ```
+
+### Bedrock Mantle
+
+```go
+import mantle "github.com/digitallysavvy/go-ai/pkg/providers/bedrock/mantle"
+
+provider := mantle.CreateBedrockMantle(mantle.ProviderSettings{
+    Region: "us-east-1",
+    // APIKey can also come from AWS_BEARER_TOKEN_BEDROCK.
+    APIKey: os.Getenv("AWS_BEARER_TOKEN_BEDROCK"),
+})
+
+model, err := provider.Chat(mantle.ModelOpenAIGPTOSS120B)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the release notes.",
+})
+```
+
+If no bearer token is provided, the Mantle provider falls back to AWS SigV4 using explicit credentials or standard AWS environment variables. The default endpoint is `https://bedrock-mantle.{region}.api.aws/v1`.
 
 ## Message Validation
 

@@ -65,6 +65,7 @@ func TestConvertResponse_ThoughtPartDoesNotBlockFunctionCall(t *testing.T) {
 			}{Parts: []Part{
 				{Text: "thinking", Thought: true},
 				{FunctionCall: &struct {
+					ID   string                 `json:"id,omitempty"`
 					Name string                 `json:"name"`
 					Args map[string]interface{} `json:"args"`
 				}{Name: "get_weather", Args: map[string]interface{}{"city": "SF"}}},
@@ -407,6 +408,7 @@ func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
 			}{Parts: []Part{
 				{
 					FunctionCall: &struct {
+						ID   string                 `json:"id,omitempty"`
 						Name string                 `json:"name"`
 						Args map[string]interface{} `json:"args"`
 					}{Name: "search", Args: map[string]interface{}{"q": "test"}},
@@ -677,6 +679,7 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 				Role  string `json:"role"`
 			}{Parts: []Part{{
 				FunctionCall: &struct {
+					ID   string                 `json:"id,omitempty"`
 					Name string                 `json:"name"`
 					Args map[string]interface{} `json:"args"`
 				}{Name: "read_screen"},

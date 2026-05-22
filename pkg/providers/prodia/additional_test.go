@@ -55,7 +55,7 @@ func TestProdiaProvider_ModelRoutingAndMetadata(t *testing.T) {
 	if im.Provider() != "prodia.image" {
 		t.Fatalf("image provider = %q", im.Provider())
 	}
-	if im.SpecificationVersion() != "v3" {
+	if im.SpecificationVersion() != "v4" {
 		t.Fatalf("image spec version = %q", im.SpecificationVersion())
 	}
 
