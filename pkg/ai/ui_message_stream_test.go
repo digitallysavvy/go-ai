@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -158,8 +159,8 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "s1", URL: "https://example.com"}},
 	})
 	res := &StreamTextResult{stream: stream}
-	finishCalled := make(chan struct{}, 1)
-	stepCalled := make(chan struct{}, 1)
+	stepCalled := make(chan map[string]interface{}, 1)
+	finishCalled := make(chan map[string]interface{}, 1)
 
 	var metadata []map[string]interface{}
 	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
@@ -174,11 +175,11 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 			metadata = append(metadata, part)
 			return map[string]interface{}{"source": "test"}
 		},
-		OnStepFinish: func(map[string]interface{}) {
-			stepCalled <- struct{}{}
+		OnStepFinish: func(event map[string]interface{}) {
+			stepCalled <- event
 		},
-		OnFinish: func(map[string]interface{}) {
-			finishCalled <- struct{}{}
+		OnFinish: func(event map[string]interface{}) {
+			finishCalled <- event
 		},
 	})
 
@@ -186,9 +187,7 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 	for chunk := range chunks {
 		got = append(got, chunk)
 	}
-	if !sendStart {
-		// keep test intent clear
-	}
+	var hasFinishStep bool
 	hasStart := false
 	hasMetadata := false
 	hasSource := false
@@ -196,6 +195,8 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 		switch c["type"] {
 		case "start":
 			hasStart = true
+		case "finish-step":
+			hasFinishStep = true
 		case "message-metadata":
 			hasMetadata = true
 		case "source-url":
@@ -211,8 +212,44 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 	if !hasMetadata || len(metadata) == 0 {
 		t.Fatalf("expected message-metadata: %#v", got)
 	}
-	if len(finishCalled) == 0 || len(stepCalled) == 0 {
-		t.Fatalf("expected callbacks")
+	stepMessageReceived := <-stepCalled
+	finishMessageReceived := <-finishCalled
+
+	if len(stepCalled) != 0 || len(finishCalled) != 0 {
+		t.Fatalf("callbacks should fire exactly once")
+	}
+	if _, ok := stepMessageReceived["responseMessage"].(map[string]interface{}); !ok {
+		t.Fatalf("step callback responseMessage missing: %#v", stepMessageReceived["responseMessage"])
+	}
+	if _, ok := finishMessageReceived["responseMessage"].(map[string]interface{}); !ok {
+		t.Fatalf("finish callback responseMessage missing: %#v", finishMessageReceived["responseMessage"])
+	}
+	if isContinuation, ok := stepMessageReceived["isContinuation"].(bool); !ok || isContinuation {
+		t.Fatalf("step callback should report continuation false for new message: %#v", stepMessageReceived["isContinuation"])
+	}
+	if isContinuation, ok := finishMessageReceived["isContinuation"].(bool); !ok || isContinuation {
+		t.Fatalf("finish callback should report continuation false for new message: %#v", finishMessageReceived["isContinuation"])
+	}
+	if gotReason, ok := finishMessageReceived["finishReason"].(types.FinishReason); !ok || gotReason != types.FinishReasonStop {
+		t.Fatalf("finish callback finishReason = %#v", finishMessageReceived["finishReason"])
+	}
+	if gotMessages, ok := stepMessageReceived["messages"].([]UIMessageChunk); !ok || len(gotMessages) != 2 {
+		t.Fatalf("step callback messages shape = %#v", stepMessageReceived["messages"])
+	}
+	if gotMessages, ok := finishMessageReceived["messages"].([]UIMessageChunk); !ok || len(gotMessages) != 2 {
+		t.Fatalf("finish callback messages shape = %#v", finishMessageReceived["messages"])
+	}
+	if !hasMetadata || len(metadata) == 0 {
+		t.Fatalf("expected message-metadata: %#v", got)
+	}
+	if hasSource {
+		t.Fatalf("did not expect source-url chunk when sendSources=false: %#v", got)
+	}
+	if !hasStart {
+		t.Fatalf("expected start chunk: %#v", got)
+	}
+	if !hasFinishStep {
+		t.Fatalf("expected finish-step from finish chunk: %#v", got)
 	}
 	select {
 	case err := <-errs:
@@ -253,6 +290,212 @@ func TestCreateUIMessageStreamWithOptions_AsyncErrorEmission(t *testing.T) {
 	case err := <-errs:
 		if err == nil {
 			t.Fatalf("expected err")
+		}
+	default:
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_ToolInputAndOutputEventShapes(t *testing.T) {
+	approvalReason := "policy-blocked"
+	toolInputStartMeta, _ := json.Marshal(map[string]interface{}{"provider": "search"})
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{
+			Type: provider.ChunkTypeToolInputStart,
+			ToolCall: &types.ToolCall{
+				ID:               "call-1",
+				ToolName:         "search",
+				Title:            "Search tool",
+				Arguments:        map[string]interface{}{"query": "go"},
+				ProviderExecuted:  true,
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+			},
+			ProviderMetadata: toolInputStartMeta,
+		},
+		{
+			Type: provider.ChunkTypeToolInputDelta,
+			ID:   "call-1",
+			Text: `{"query":"g`,
+		},
+		{
+			Type: provider.ChunkTypeToolInputEnd,
+			ID:   "call-1",
+		},
+		{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               "call-1",
+				ToolName:         "search",
+				Title:            "Search tool",
+				Arguments:        map[string]interface{}{"query": "go"},
+				ProviderMetadata: map[string]interface{}{"provider": "search"},
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+			},
+		},
+		{
+			Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+				ToolCallID:       "call-1",
+				Result:           map[string]interface{}{"text": "ok"},
+				ProviderExecuted:  false,
+				ProviderMetadata: map[string]interface{}{"provider": "search"},
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+				Preliminary:      true,
+			},
+		},
+		{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:     "call-denied",
+				ApprovalStatus: types.ToolApprovalStatusDenied,
+				ApprovalReason: &approvalReason,
+			},
+		},
+		{
+			Type: provider.ChunkTypeFinish,
+			ID:   "ignored",
+		},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := res.ToUIMessageStream(context.Background())
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	var (
+		toolInputStart      UIMessageChunk
+		toolInputDelta      UIMessageChunk
+		toolInputAvailable  UIMessageChunk
+		toolOutputAvailable UIMessageChunk
+		toolOutputDenied    UIMessageChunk
+		finishStepCount     int
+	)
+	for _, chunk := range got {
+		switch chunk["type"] {
+		case "tool-input-start":
+			toolInputStart = chunk
+		case "tool-input-delta":
+			toolInputDelta = chunk
+		case "tool-input-available":
+			toolInputAvailable = chunk
+		case "tool-output-available":
+			toolOutputAvailable = chunk
+		case "tool-output-denied":
+			toolOutputDenied = chunk
+		case "finish-step":
+			finishStepCount++
+		}
+	}
+	if gotStep := toolInputStart["toolCallId"]; gotStep != "call-1" {
+		t.Fatalf("tool-input-start.toolCallId = %v, want call-1", gotStep)
+	}
+	if gotStep := toolInputDelta["toolCallId"]; gotStep != "call-1" {
+		t.Fatalf("tool-input-delta.toolCallId = %v, want call-1", gotStep)
+	}
+	if gotDelta := toolInputDelta["inputTextDelta"]; gotDelta != "{\"query\":\"g" {
+		t.Fatalf("tool-input-delta.inputTextDelta = %v, want {\\\"query\\\":\\\"g", gotDelta)
+	}
+	if gotMeta, ok := toolInputStart["providerMetadata"].(map[string]interface{}); !ok || gotMeta["provider"] != "search" {
+		t.Fatalf("tool-input-start.providerMetadata = %#v", gotMeta)
+	}
+	if gotMeta, ok := toolInputStart["toolMetadata"].(map[string]interface{}); !ok || gotMeta["category"] != "docs" {
+		t.Fatalf("tool-input-start.toolMetadata = %#v", gotMeta)
+	}
+	if gotDynamic := toolInputStart["dynamic"]; gotDynamic != true {
+		t.Fatalf("tool-input-start.dynamic = %v, want true", gotDynamic)
+	}
+	if gotTitle := toolInputStart["title"]; gotTitle != "Search tool" {
+		t.Fatalf("tool-input-start.title = %v, want Search tool", gotTitle)
+	}
+	if gotInput := toolInputAvailable["input"]; gotInput == nil {
+		t.Fatalf("tool-input-available.input = %#v", gotInput)
+	}
+	if gotMeta, ok := toolOutputAvailable["providerMetadata"].(map[string]interface{}); !ok || gotMeta["provider"] != "search" {
+		t.Fatalf("tool-output-available.providerMetadata = %#v", gotMeta)
+	}
+	if gotMeta, ok := toolOutputAvailable["toolMetadata"].(map[string]interface{}); !ok || gotMeta["category"] != "docs" {
+		t.Fatalf("tool-output-available.toolMetadata = %#v", gotMeta)
+	}
+	if gotOutput := toolOutputAvailable["output"]; gotOutput == nil {
+		t.Fatalf("tool-output-available.output = %#v", gotOutput)
+	}
+	if gotPreliminary := toolOutputAvailable["preliminary"]; gotPreliminary != true {
+		t.Fatalf("tool-output-available.preliminary = %v, want true", gotPreliminary)
+	}
+	if _, ok := toolOutputDenied["toolCallId"]; !ok {
+		t.Fatalf("tool-output-denied.toolCallId missing: %#v", toolOutputDenied)
+	}
+	if finishStepCount != 1 {
+		t.Fatalf("finish-step count = %d, want 1", finishStepCount)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_ContinuationCallbackState(t *testing.T) {
+	genID := "msg-continuation"
+	sendStart := true
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	res := &StreamTextResult{stream: stream}
+	finishEvent := make(chan map[string]interface{}, 1)
+	stepEvent := make(chan map[string]interface{}, 1)
+
+	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		SendStart: &sendStart,
+		GenerateMessageID: func() string {
+			return genID
+		},
+		OriginalMessages: []UIMessageChunk{
+			{
+				"id":      genID,
+				"role":    "assistant",
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": "old"}},
+			},
+		},
+		OnStepFinish: func(event map[string]interface{}) {
+			stepEvent <- event
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected chunks, got none")
+	}
+	events := 0
+	if msg := <-stepEvent; msg["isContinuation"] != true {
+		t.Fatalf("step.isContinuation = %v, want true", msg["isContinuation"])
+	} else {
+		events++
+	}
+	if msg := <-finishEvent; msg["isContinuation"] != true {
+		t.Fatalf("finish.isContinuation = %v, want true", msg["isContinuation"])
+	} else {
+		events++
+	}
+	if events != 2 {
+		t.Fatalf("expected both callbacks to fire, got %d", events)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
 		}
 	default:
 	}

@@ -713,6 +713,18 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			if chunk.ToolCall.ProviderExecuted {
 				part["providerExecuted"] = true
 			}
+			if len(chunk.ToolCall.ToolMetadata) > 0 {
+				part["toolMetadata"] = chunk.ToolCall.ToolMetadata
+			}
+			if chunk.ToolCall.Dynamic {
+				part["dynamic"] = true
+			}
+			if chunk.ToolCall.Title != "" {
+				part["title"] = chunk.ToolCall.Title
+			}
+			if len(chunk.ToolCall.ProviderMetadata) > 0 {
+				part["providerMetadata"] = chunk.ToolCall.ProviderMetadata
+			}
 			withMeta(part)
 			out = append(out, part)
 			break
@@ -726,10 +738,68 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ProviderExecuted {
 			part["providerExecuted"] = true
 		}
+		if len(chunk.ToolCall.ToolMetadata) > 0 {
+			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
+		}
+		if chunk.ToolCall.Dynamic {
+			part["dynamic"] = true
+		}
+		if chunk.ToolCall.Title != "" {
+			part["title"] = chunk.ToolCall.Title
+		}
+		if len(chunk.ToolCall.ProviderMetadata) > 0 {
+			part["providerMetadata"] = chunk.ToolCall.ProviderMetadata
+		}
 		withMeta(part)
 		out = append(out, part)
+	case provider.ChunkTypeToolInputStart:
+		if chunk.ToolCall == nil {
+			break
+		}
+		part := map[string]interface{}{
+			"type":       "tool-input-start",
+			"toolCallId": chunk.ToolCall.ID,
+			"toolName":   chunk.ToolCall.ToolName,
+		}
+		if chunk.ToolCall.ProviderExecuted {
+			part["providerExecuted"] = true
+		}
+		if chunk.ToolCall.ToolMetadata != nil && len(chunk.ToolCall.ToolMetadata) > 0 {
+			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
+		}
+		if chunk.ToolCall.Dynamic {
+			part["dynamic"] = true
+		}
+		if chunk.ToolCall.Title != "" {
+			part["title"] = chunk.ToolCall.Title
+		}
+		if len(chunk.ToolCall.ProviderMetadata) > 0 {
+			part["providerMetadata"] = chunk.ToolCall.ProviderMetadata
+		}
+		withMeta(part)
+		out = append(out, part)
+	case provider.ChunkTypeToolInputDelta:
+		if chunk.Text == "" {
+			break
+		}
+		part := map[string]interface{}{
+			"type":           "tool-input-delta",
+			"toolCallId":     chunk.ID,
+			"inputTextDelta": chunk.Text,
+		}
+		out = append(out, part)
+	case provider.ChunkTypeToolInputEnd:
+		break
 	case provider.ChunkTypeToolResult:
 		if chunk.ToolResult == nil {
+			break
+		}
+		if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
+			part := map[string]interface{}{
+				"type":       "tool-output-denied",
+				"toolCallId": chunk.ToolResult.ToolCallID,
+			}
+			out = append(out, part)
 			break
 		}
 		partType := "tool-output-available"
@@ -738,12 +808,18 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"toolCallId": chunk.ToolResult.ToolCallID,
 			"output":     chunk.ToolResult.Result,
 		}
+		if len(chunk.ToolResult.ToolMetadata) > 0 {
+			part["toolMetadata"] = chunk.ToolResult.ToolMetadata
+		}
 		if chunk.ToolResult.Error != nil {
 			partType = "tool-output-error"
 			part = map[string]interface{}{
 				"type":       partType,
 				"toolCallId": chunk.ToolResult.ToolCallID,
 				"errorText":  opts.OnError(chunk.ToolResult.Error),
+			}
+			if len(chunk.ToolResult.ToolMetadata) > 0 {
+				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 			}
 		}
 		if chunk.ToolResult.ProviderExecuted {
@@ -755,12 +831,19 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolResult.Preliminary {
 			part["preliminary"] = true
 		}
+		if len(chunk.ToolResult.ProviderMetadata) > 0 {
+			part["providerMetadata"] = chunk.ToolResult.ProviderMetadata
+		}
 		withMeta(part)
 		out = append(out, part)
 	case provider.ChunkTypeError:
 		out = append(out, map[string]interface{}{
 			"type":      "error",
 			"errorText": opts.OnError(errors.New(chunk.Text)),
+		})
+	case provider.ChunkTypeFinish:
+		out = append(out, map[string]interface{}{
+			"type": "finish-step",
 		})
 	default:
 		if chunk.Type == "start-step" {
