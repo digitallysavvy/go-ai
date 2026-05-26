@@ -884,23 +884,20 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			r.warnings = append(r.warnings, chunk.Warnings...)
 		}
 
-		// Accumulate text
-		if chunk.Type == provider.ChunkTypeText {
-			r.text += chunk.Text
+		r.accumulateChunk(chunk)
 
-			// Update partial output after each text chunk (with deduplication).
-			if r.outputSpec != nil {
-				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-					Text: r.text,
-				})
-				if partial != nil {
-					if newJSON, err := json.Marshal(partial); err == nil {
-						if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
-							r.lastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
-						}
+		// Update partial output after each text chunk (with deduplication).
+		if chunk.Type == provider.ChunkTypeText && r.outputSpec != nil {
+			partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+				Text: r.text,
+			})
+			if partial != nil {
+				if newJSON, err := json.Marshal(partial); err == nil {
+					if newJSONStr := string(newJSON); newJSONStr != r.lastPartialJSON {
+						r.lastPartialJSON = newJSONStr
+						r.mu.Lock()
+						r.partialOutput = partial
+						r.mu.Unlock()
 					}
 				}
 			}
@@ -910,16 +907,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
 			pendingToolCalls = append(pendingToolCalls, *chunk.ToolCall)
 		}
-
-		// Update finish reason, usage, and context management
-		if chunk.Type == provider.ChunkTypeFinish {
-			r.finishReason = chunk.FinishReason
-			if chunk.ContextManagement != nil {
-				r.contextManagement = chunk.ContextManagement
-			}
-		}
-		if chunk.Usage != nil {
-			r.usage = *chunk.Usage
+		if chunk.Type == provider.ChunkTypeFinish && chunk.ContextManagement != nil {
+			r.contextManagement = chunk.ContextManagement
 		}
 
 		// Accumulate provider metadata.
@@ -1033,6 +1022,7 @@ func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 	go func() {
 		defer close(ch)
 		ctx := context.Background()
+		firstChunk := true
 		for {
 			chunk, err := r.nextChunk(ctx)
 			if err == io.EOF {
@@ -1043,9 +1033,33 @@ func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 				break
 			}
 
+			if firstChunk {
+				firstChunk = false
+				r.mu.Lock()
+				r.status = StreamStatusStreaming
+				r.mu.Unlock()
+			}
+			r.accumulateChunk(chunk)
+
 			ch <- *chunk
 		}
+		r.mu.Lock()
+		r.status = StreamStatusDone
+		r.mu.Unlock()
 	}()
 
 	return ch
+}
+
+// accumulateChunk updates result fields from a stream chunk (shared by ReadAll and Chunks).
+func (r *StreamTextResult) accumulateChunk(chunk *provider.StreamChunk) {
+	if chunk.Type == provider.ChunkTypeText {
+		r.text += chunk.Text
+	}
+	if chunk.Type == provider.ChunkTypeFinish {
+		r.finishReason = chunk.FinishReason
+	}
+	if chunk.Usage != nil {
+		r.usage = *chunk.Usage
+	}
 }
