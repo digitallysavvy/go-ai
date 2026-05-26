@@ -102,16 +102,19 @@ func main() {
 
 ## Streaming with Callbacks
 
-For more control, you can use callbacks to process each chunk:
+Use `OnChunk` and `OnFinish` when you want the SDK to drive the stream for you. The SDK launches an internal goroutine automatically — **do not** also call `result.Chunks()` or `result.ReadAll()`, as that would create a second consumer racing against the callback goroutine.
+
+Because the stream runs in the background, you need to explicitly wait for it to finish before your function returns. The simplest way is a done channel closed inside `OnFinish`:
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Explain quantum computing.",
     OnChunk: func(chunk provider.StreamChunk) {
         fmt.Print(chunk.Text)
 
-        // You can also process other chunk data
         if chunk.Usage != nil {
             fmt.Printf("[Tokens: %d]", chunk.Usage.TotalTokens)
         }
@@ -119,6 +122,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     OnFinish: func(result *ai.StreamTextResult) {
         fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
         fmt.Printf("Finish reason: %s\n", result.FinishReason())
+        close(done)
     },
 })
 if err != nil {
@@ -126,9 +130,7 @@ if err != nil {
 }
 defer result.Close()
 
-// Still need to consume the channel to trigger callbacks
-for range result.Chunks() {
-}
+<-done // block until the stream and all callbacks complete
 ```
 
 ## Accumulating Streamed Text
@@ -164,6 +166,8 @@ completeStory := fullText.String()
 Streaming also works with tool calls. Tool calls are streamed as they're generated:
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather in Tokyo and Paris?",
@@ -178,14 +182,16 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
             fmt.Printf("\n[Calling tool: %s]\n", chunk.ToolCall.ToolName)
         }
     },
+    OnFinish: func(result *ai.StreamTextResult) {
+        close(done)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
 defer result.Close()
 
-for range result.Chunks() {
-}
+<-done
 ```
 
 ## Tool Execution Timing (v0.4.0)

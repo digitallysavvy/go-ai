@@ -116,7 +116,11 @@ func main() {
 
 ### Using Callbacks
 
+When `OnChunk` or `OnFinish` are provided, the SDK drives the stream automatically. Do not also call `result.Chunks()` or `result.ReadAll()`. Block until the stream finishes:
+
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Explain machine learning",
@@ -127,11 +131,15 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     },
     OnFinish: func(result *ai.StreamTextResult) {
         fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().TotalTokens)
+        close(done)
     },
 })
 if err != nil {
     log.Fatal(err)
 }
+defer result.Close()
+
+<-done
 ```
 
 ### Using ReadAll

@@ -35,6 +35,8 @@ This ensures consumers receive all content before any tool side-effects fire. If
 **Before (v0.3.x):**
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
@@ -43,19 +45,23 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         // v0.3.x: tool-result chunks could arrive between text chunks
         fmt.Print(chunk.Text)
     },
+    OnFinish: func(result *ai.StreamTextResult) {
+        close(done)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
 defer result.Close()
 
-for range result.Chunks() {
-}
+<-done
 ```
 
 **After (v0.4.0):**
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
@@ -66,14 +72,16 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         // Order: provider chunks -> stream end -> tool execution -> tool-result
         fmt.Print(chunk.Text)
     },
+    OnFinish: func(result *ai.StreamTextResult) {
+        close(done)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
 defer result.Close()
 
-for range result.Chunks() {
-}
+<-done
 ```
 
 ### XAI default API changed to Responses API

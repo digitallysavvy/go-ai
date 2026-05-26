@@ -111,6 +111,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"model":  m.modelID,
 		"stream": stream,
 	}
+	if stream {
+		body["stream_options"] = map[string]interface{}{
+			"include_usage": true,
+		}
+	}
 
 	// Extract store flag early — needed before message conversion so we can
 	// filter unencrypted reasoning parts from assistant messages when store=false.
@@ -538,10 +543,20 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage openAIUsage `json:"usage"`
 	}
 
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
+	}
+
+	// Final chunk: empty choices, usage populated (requires stream_options.include_usage).
+	if len(chunkData.Choices) == 0 && chunkData.Usage.TotalTokens > 0 {
+		usage := convertOpenAIUsage(chunkData.Usage)
+		return &provider.StreamChunk{
+			Type:  provider.ChunkTypeUsage,
+			Usage: &usage,
+		}, nil
 	}
 
 	if len(chunkData.Choices) > 0 {

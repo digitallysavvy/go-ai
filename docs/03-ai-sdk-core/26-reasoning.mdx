@@ -79,6 +79,8 @@ func main() {
 	p := google.NewProvider()
 	model := p.LanguageModel("gemini-3-flash-preview")
 
+	done := make(chan struct{})
+
 	reasoning := types.ReasoningHigh
 	result, err := ai.StreamText(ctx, ai.StreamTextOptions{
 		Model:     model,
@@ -92,15 +94,16 @@ func main() {
 				fmt.Print(chunk.Text)
 			}
 		},
+		OnFinish: func(result *ai.StreamTextResult) {
+			close(done)
+		},
 	})
 	if err != nil {
 		log.Fatalf("Streaming failed: %v", err)
 	}
+	defer result.Close()
 
-	// ReadAll blocks until the stream completes.
-	if _, err := result.ReadAll(); err != nil {
-		log.Fatalf("ReadAll failed: %v", err)
-	}
+	<-done
 }
 ```
 
