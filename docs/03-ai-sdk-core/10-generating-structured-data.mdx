@@ -697,7 +697,7 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 Process chunks as they arrive when streaming:
 
 ```go
-result, _ := ai.StreamObject(ctx, ai.StreamObjectOptions{
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate data",
@@ -709,11 +709,12 @@ result, _ := ai.StreamObject(ctx, ai.StreamObjectOptions{
         fmt.Printf("Partial: %s\n", chunk.PartialObject)
     },
 })
-defer result.Close()
-
-// Still need to consume channel
-for range result.Chunks() {
+if err != nil {
+    log.Fatal(err)
 }
+
+// StreamObject blocks until complete — callbacks fire during the call.
+fmt.Println(result.Object)
 ```
 
 ## Validation

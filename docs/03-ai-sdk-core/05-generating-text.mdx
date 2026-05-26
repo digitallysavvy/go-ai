@@ -169,7 +169,7 @@ for chunk := range result.Chunks() {
 
 > **Note:** `StreamText` immediately starts streaming and errors become part of the stream. Use the `OnError` callback to log errors.
 
-> **Note:** `StreamText` uses backpressure and only generates tokens as they are requested. You need to consume the channel for the stream to finish.
+> **Note:** `StreamText` uses backpressure and only generates tokens as they are requested. When using `result.Chunks()` or `result.ReadAll()`, you must consume the stream for it to finish. When using callbacks, the SDK consumes the stream for you.
 
 ### Stream Result Object
 
@@ -232,7 +232,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
 
 ### OnChunk Callback
 
-When using `StreamText`, you can provide an `OnChunk` callback that is triggered for each chunk of the stream.
+When using `StreamText`, you can provide an `OnChunk` callback that is triggered for each chunk of the stream. The SDK drives the stream in a background goroutine — do not also call `result.Chunks()` or `result.ReadAll()`. Block until the stream finishes, for example by closing a channel in `OnFinish`:
 
 It receives the following chunk types:
 
@@ -242,6 +242,8 @@ It receives the following chunk types:
 - `finish` - Stream finish
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Generate text",
@@ -253,7 +255,16 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
             fmt.Printf("\n[Tool call: %s]\n", chunk.ToolCall.ToolName)
         }
     },
+    OnFinish: func(result *ai.StreamTextResult) {
+        close(done)
+    },
 })
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+<-done
 ```
 
 ### OnFinish Callback
@@ -261,6 +272,8 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
 When using `StreamText`, you can provide an `OnFinish` callback that is triggered when the stream is finished. It contains the text, usage information, finish reason, and more:
 
 ```go
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Generate text",
@@ -269,8 +282,15 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         fmt.Printf("\n\nText: %s\n", result.Text())
         fmt.Printf("Finish reason: %s\n", result.FinishReason())
         fmt.Printf("Usage: %+v\n", result.Usage())
+        close(done)
     },
 })
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+<-done
 ```
 
 ### Accumulating Streamed Text
@@ -632,6 +652,8 @@ Both content types flow through stream chunks via `OnChunk`. Use `ChunkTypeCusto
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/provider"
 
+done := make(chan struct{})
+
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Analyze this data with reasoning.",
@@ -653,14 +675,16 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
                 len(chunk.ReasoningFileContent.Data))
         }
     },
+    OnFinish: func(result *ai.StreamTextResult) {
+        close(done)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
 defer result.Close()
 
-for range result.Chunks() {
-}
+<-done
 ```
 
 ### Multi-Turn Behavior
