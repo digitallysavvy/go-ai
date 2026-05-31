@@ -300,6 +300,10 @@ const (
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"
 
+	// ChunkTypeAbort indicates the stream was aborted by cancellation or timeout.
+	// Mirrors the TypeScript SDK's "abort" stream part.
+	ChunkTypeAbort ChunkType = "abort"
+
 	// ChunkTypeToolResult is a synthetic chunk emitted by streamText after
 	// deferred tool execution.  It carries the result of a tool call and is
 	// forwarded to OnChunk consumers just like any other chunk, matching the

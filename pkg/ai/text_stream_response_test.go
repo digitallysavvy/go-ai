@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -9,6 +10,69 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
+
+func TestToTextStream_StandaloneEmitsOnlyTextDeltas(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "text-1"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: ""},
+		{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "thinking"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: " world"},
+		{Type: provider.ChunkTypeFinish},
+	})
+
+	text, errs := ToTextStream(context.Background(), stream)
+	var got []string
+	for delta := range text {
+		got = append(got, delta)
+	}
+	if len(got) != 3 || got[0] != "hello" || got[1] != "" || got[2] != " world" {
+		t.Fatalf("text deltas = %#v", got)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPipeTextStreamToWriter_Standalone(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "a"},
+		{Type: provider.ChunkTypeToolCall},
+		{Type: provider.ChunkTypeText, Text: "b"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	var buf bytes.Buffer
+	if err := PipeTextStreamToWriter(context.Background(), stream, &buf); err != nil {
+		t.Fatalf("PipeTextStreamToWriter() error = %v", err)
+	}
+	if got := buf.String(); got != "ab" {
+		t.Fatalf("written text = %q", got)
+	}
+}
+
+func TestCreateTextStreamResponseFromStream_Standalone(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "ok"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	httpRes, err := CreateTextStreamResponseFromStream(context.Background(), stream, &TextStreamResponseInit{
+		Status:  http.StatusCreated,
+		Headers: map[string]string{"X-Standalone": "text"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTextStreamResponseFromStream() error = %v", err)
+	}
+	if got := httpRes.StatusCode; got != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", got, http.StatusCreated)
+	}
+	body, err := io.ReadAll(httpRes.Body)
+	if err != nil {
+		t.Fatalf("read body = %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
+}
 
 func TestCreateTextStreamResponse_Defaults(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{

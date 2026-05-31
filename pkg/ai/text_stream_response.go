@@ -30,6 +30,15 @@ func CreateTextStreamResponseWithInit(ctx context.Context, result *StreamTextRes
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
 	}
+	return CreateTextStreamResponseFromStream(ctx, result.Stream(), init)
+}
+
+// CreateTextStreamResponseFromStream creates an HTTP response with a plain-text
+// body from a provider text stream.
+func CreateTextStreamResponseFromStream(ctx context.Context, stream provider.TextStream, init *TextStreamResponseInit) (*http.Response, error) {
+	if stream == nil {
+		return nil, fmt.Errorf("stream is required")
+	}
 	status := http.StatusOK
 	statusText := ""
 	headers := http.Header{
@@ -47,7 +56,7 @@ func CreateTextStreamResponseWithInit(ctx context.Context, result *StreamTextRes
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		_ = PipeTextStreamToResponse(ctx, result, pw)
+		_ = PipeTextStreamToWriter(ctx, stream, pw)
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -62,14 +71,27 @@ func PipeTextStreamToResponse(ctx context.Context, result *StreamTextResult, w i
 	if result == nil {
 		return fmt.Errorf("result is required")
 	}
+	return PipeTextStreamToWriter(ctx, result.Stream(), w)
+}
+
+// PipeTextStreamToWriter writes text delta chunks from a provider stream to w as
+// UTF-8 text.
+func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w io.Writer) error {
+	if stream == nil {
+		return fmt.Errorf("stream is required")
+	}
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
 
-	stream := result.Stream()
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		chunk, err := stream.Next()
 		if err != nil {
 			if err == io.EOF {
@@ -77,12 +99,53 @@ func PipeTextStreamToResponse(ctx context.Context, result *StreamTextResult, w i
 			}
 			return err
 		}
-		if chunk.Type == provider.ChunkTypeText && chunk.Text != "" {
+		if chunk.Type == provider.ChunkTypeText {
 			if _, err := bw.WriteString(chunk.Text); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// ToTextStream converts a provider text stream into text delta and error
+// channels. Only text-delta chunks are emitted, matching the TypeScript
+// toTextStream helper.
+func ToTextStream(ctx context.Context, stream provider.TextStream) (<-chan string, <-chan error) {
+	out := make(chan string)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(out)
+		defer close(errCh)
+		if stream == nil {
+			errCh <- fmt.Errorf("stream is required")
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			default:
+			}
+			chunk, err := stream.Next()
+			if err != nil {
+				if err != io.EOF {
+					errCh <- err
+				}
+				return
+			}
+			if chunk.Type != provider.ChunkTypeText {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			case out <- chunk.Text:
+			}
+		}
+	}()
+	return out, errCh
 }
 
 // ConsumeStream drains a text stream until completion.

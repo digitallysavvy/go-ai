@@ -60,6 +60,8 @@ type UIMessageStreamOptions struct {
 type UIMessageStreamResultOptions struct {
 	OriginalMessages  []UIMessageChunk
 	GenerateMessageID IDGenerator
+	ResponseMessageID string
+	Tools             []types.Tool
 	MessageMetadata   func(part map[string]interface{}) map[string]interface{}
 	SendReasoning     *bool
 	SendSources       *bool
@@ -83,7 +85,7 @@ func getDefaultMessageErrorHandler(onError func(error) string) func(error) strin
 	if onError == nil {
 		return func(err error) string {
 			if err == nil {
-				return "error"
+				return "unknown error"
 			}
 			return err.Error()
 		}
@@ -143,29 +145,24 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}
 		enqueueError := func(err error) {
 			appendErrorChunk(onError, safeEnqueue, err)
-			select {
-			case errCh <- err:
-			default:
-			}
 		}
 
 		generateID := options.GenerateMessageID
 		if generateID == nil {
 			generateID = newCallID
 		}
+		uiState := newUIMessageCallbackState(options.OriginalMessages, generateID())
 
 		callOnFinish := func() {
 			if options.OnFinish == nil {
 				return
 			}
 			finishEvent := map[string]interface{}{
-				"isContinuation": false,
-				"isAborted":      ctx.Err() != nil,
-				"responseMessage": map[string]interface{}{
-					"id": generateID(),
-				},
-				"messages":     append([]UIMessageChunk{}, options.OriginalMessages...),
-				"finishReason": "",
+				"isContinuation":  uiState.isContinuation,
+				"isAborted":       ctx.Err() != nil || uiState.isAborted,
+				"responseMessage": uiState.responseMessage(),
+				"messages":        uiState.messages(),
+				"finishReason":    uiState.finishReason,
 			}
 			defer func() {
 				_ = recover()
@@ -178,16 +175,21 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation": false,
-				"responseMessage": map[string]interface{}{
-					"id": generateID(),
-				},
-				"messages": append([]UIMessageChunk{}, options.OriginalMessages...),
+				"isContinuation":  uiState.isContinuation,
+				"responseMessage": uiState.responseMessage(),
+				"messages":        uiState.messages(),
 			}
 			defer func() {
 				_ = recover()
 			}()
 			options.OnStepFinish(stepEvent)
+		}
+		processAndEnqueue := func(part UIMessageChunk) {
+			uiState.apply(part, onError)
+			safeEnqueue(part)
+			if part["type"] == "finish-step" {
+				callOnStepFinish()
+			}
 		}
 
 		var wg sync.WaitGroup
@@ -216,14 +218,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 						if !ok {
 							return
 						}
-						safeEnqueue(chunk)
+						processAndEnqueue(chunk)
 					}
 				}
 			}()
 		}
 
 		writer := UIMessageStreamWriter{
-			writeFn: safeEnqueue,
+			writeFn: processAndEnqueue,
 			mergeFn: merge,
 			onError: onError,
 		}
@@ -243,7 +245,6 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			options.Execute(writer)
 		}()
 
-		callOnStepFinish()
 		wg.Wait()
 
 		mu.Lock()
@@ -258,14 +259,27 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 
 // CreateUIMessageStream converts a StreamTextResult into a channel of UI chunks.
 func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
+	if result == nil {
+		out := make(chan UIMessageChunk)
+		errCh := make(chan error, 1)
+		close(out)
+		errCh <- fmt.Errorf("result is required")
+		close(errCh)
+		return out, errCh
+	}
+	return ToUIMessageStream(ctx, result.Stream(), opts...)
+}
+
+// ToUIMessageStream converts a provider text stream into UI message chunks.
+func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
 	errCh := make(chan error, 1)
 
 	go func() {
 		defer close(out)
 		defer close(errCh)
-		if result == nil {
-			errCh <- fmt.Errorf("result is required")
+		if stream == nil {
+			errCh <- fmt.Errorf("stream is required")
 			return
 		}
 
@@ -278,41 +292,24 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 		sendStart := boolOption(options.SendStart, true)
 		sendFinish := boolOption(options.SendFinish, true)
 		sendReasoning := boolOption(options.SendReasoning, true)
-		sendSources := boolOption(options.SendSources, false)
 
-		generateID := options.GenerateMessageID
-		if generateID == nil {
-			generateID = newCallID
+		streamMessageID := responseUIMessageID(options)
+		callbackMessageID := streamMessageID
+		if callbackMessageID == "" && options.GenerateMessageID != nil {
+			callbackMessageID = options.GenerateMessageID()
 		}
-		messageID := generateID()
 
-		accumText := strings.Builder{}
+		uiState := newUIMessageCallbackState(options.OriginalMessages, callbackMessageID)
 
 		callOnFinish := func(finishReason types.FinishReason) {
 			if options.OnFinish == nil {
 				return
 			}
-			isContinuation := false
-			if len(options.OriginalMessages) > 0 {
-				lastMsg := options.OriginalMessages[len(options.OriginalMessages)-1]
-				if lastID, ok := lastMsg["id"].(string); ok && lastID == messageID {
-					isContinuation = true
-				}
-			}
-			responseMessage := map[string]interface{}{
-				"id":      messageID,
-				"role":    "assistant",
-				"content": []interface{}{map[string]interface{}{"type": "text", "text": accumText.String()}},
-			}
-			messages := append([]UIMessageChunk{}, options.OriginalMessages...)
-			if !isContinuation {
-				messages = append(messages, responseMessage)
-			}
 			finishEvent := map[string]interface{}{
-				"isContinuation":  isContinuation,
-				"isAborted":       ctx.Err() != nil,
-				"responseMessage": responseMessage,
-				"messages":        messages,
+				"isContinuation":  uiState.isContinuation,
+				"isAborted":       ctx.Err() != nil || uiState.isAborted,
+				"responseMessage": uiState.responseMessage(),
+				"messages":        uiState.messages(),
 				"finishReason":    finishReason,
 			}
 			defer func() {
@@ -325,26 +322,10 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 			if options.OnStepFinish == nil {
 				return
 			}
-			isContinuation := false
-			if len(options.OriginalMessages) > 0 {
-				lastMsg := options.OriginalMessages[len(options.OriginalMessages)-1]
-				if lastID, ok := lastMsg["id"].(string); ok && lastID == messageID {
-					isContinuation = true
-				}
-			}
-			responseMessage := map[string]interface{}{
-				"id":      messageID,
-				"role":    "assistant",
-				"content": []interface{}{map[string]interface{}{"type": "text", "text": accumText.String()}},
-			}
-			messages := append([]UIMessageChunk{}, options.OriginalMessages...)
-			if !isContinuation {
-				messages = append(messages, responseMessage)
-			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  isContinuation,
-				"responseMessage": responseMessage,
-				"messages":        messages,
+				"isContinuation":  uiState.isContinuation,
+				"responseMessage": uiState.responseMessage(),
+				"messages":        uiState.messages(),
 			}
 			defer func() {
 				_ = recover()
@@ -360,12 +341,20 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 			}
 		}
 
+		processChunk := func(chunk UIMessageChunk) {
+			uiState.apply(chunk, onError)
+			safeEnqueue(chunk)
+			if chunk["type"] == "finish-step" {
+				callOnStepFinish()
+			}
+		}
+
 		if sendStart {
 			startEvent := map[string]interface{}{
 				"type": "start",
 			}
-			if messageID != "" {
-				startEvent["messageId"] = messageID
+			if streamMessageID != "" {
+				startEvent["messageId"] = streamMessageID
 			}
 			if options.MessageMetadata != nil {
 				metadata := options.MessageMetadata(map[string]interface{}{"type": "start"})
@@ -373,11 +362,58 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 					startEvent["messageMetadata"] = metadata
 				}
 			}
-			safeEnqueue(startEvent)
+			processChunk(startEvent)
 		}
 
-		stream := result.Stream()
 		finishReason := types.FinishReason("")
+		activeTextIDs := map[string]bool{}
+		activeReasoningIDs := map[string]bool{}
+		textID := ""
+		reasoningID := ""
+		textSeq := 0
+		reasoningSeq := 0
+		ensureTextStart := func(id string) string {
+			if id == "" {
+				if textID == "" {
+					textSeq++
+					textID = fmt.Sprintf("text-%d", textSeq)
+				}
+				id = textID
+			}
+			if !activeTextIDs[id] {
+				activeTextIDs[id] = true
+				processChunk(UIMessageChunk{"type": "text-start", "id": id})
+			}
+			return id
+		}
+		ensureReasoningStart := func(id string) string {
+			if id == "" {
+				if reasoningID == "" {
+					reasoningSeq++
+					reasoningID = fmt.Sprintf("reasoning-%d", reasoningSeq)
+				}
+				id = reasoningID
+			}
+			if !activeReasoningIDs[id] {
+				activeReasoningIDs[id] = true
+				processChunk(UIMessageChunk{"type": "reasoning-start", "id": id})
+			}
+			return id
+		}
+		closeOpenParts := func() {
+			for id := range activeTextIDs {
+				processChunk(UIMessageChunk{"type": "text-end", "id": id})
+				delete(activeTextIDs, id)
+			}
+			if sendReasoning {
+				for id := range activeReasoningIDs {
+					processChunk(UIMessageChunk{"type": "reasoning-end", "id": id})
+					delete(activeReasoningIDs, id)
+				}
+			} else {
+				activeReasoningIDs = map[string]bool{}
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -396,33 +432,83 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 				return
 			}
 
-			if chunk.Type == provider.ChunkTypeText {
-				accumText.WriteString(chunk.Text)
-			}
 			if chunk.Type == provider.ChunkTypeFinish {
 				finishReason = chunk.FinishReason
 			}
-			for _, converted := range convertProviderChunkToUIMessageChunks(*chunk, resultChunkConversionOptions{
-				SendReasoning: sendReasoning,
-				SendSources:   sendSources,
-				OnError:       onError,
-			}) {
-				safeEnqueue(converted)
-				if options.MessageMetadata != nil && chunk.Type != provider.ChunkTypeStreamStart && chunk.Type != provider.ChunkTypeStreamFinish {
-					metadata := options.MessageMetadata(map[string]interface{}{
-						"type": string(chunk.Type),
-						"part": chunk,
+			chunkForConversion := *chunk
+			switch chunk.Type {
+			case provider.ChunkTypeTextStart:
+				id := chunk.ID
+				if id == "" {
+					textSeq++
+					id = fmt.Sprintf("text-%d", textSeq)
+					textID = id
+				}
+				activeTextIDs[id] = true
+				chunkForConversion.ID = id
+			case provider.ChunkTypeText:
+				chunkForConversion.ID = ensureTextStart(chunk.ID)
+			case provider.ChunkTypeTextEnd:
+				id := chunk.ID
+				if id == "" {
+					id = textID
+				}
+				chunkForConversion.ID = id
+				delete(activeTextIDs, id)
+				if id == textID {
+					textID = ""
+				}
+			case provider.ChunkTypeReasoningStart:
+				if !sendReasoning {
+					break
+				}
+				id := chunk.ID
+				if id == "" {
+					reasoningSeq++
+					id = fmt.Sprintf("reasoning-%d", reasoningSeq)
+					reasoningID = id
+				}
+				activeReasoningIDs[id] = true
+				chunkForConversion.ID = id
+			case provider.ChunkTypeReasoning:
+				if sendReasoning {
+					chunkForConversion.ID = ensureReasoningStart(chunk.ID)
+				}
+			case provider.ChunkTypeReasoningEnd:
+				if !sendReasoning {
+					break
+				}
+				id := chunk.ID
+				if id == "" {
+					id = reasoningID
+				}
+				chunkForConversion.ID = id
+				delete(activeReasoningIDs, id)
+				if id == reasoningID {
+					reasoningID = ""
+				}
+			case provider.ChunkTypeFinish:
+				closeOpenParts()
+			}
+			converted, ok := ToUIMessageChunk(chunkForConversion, options)
+			if ok {
+				processChunk(converted)
+			}
+			if options.MessageMetadata != nil && chunk.Type != provider.ChunkTypeStreamStart && chunk.Type != provider.ChunkTypeStreamFinish {
+				metadata := options.MessageMetadata(map[string]interface{}{
+					"type": string(chunk.Type),
+					"part": chunk,
+				})
+				if metadata != nil && string(chunk.Type) != "start" && string(chunk.Type) != "finish" {
+					processChunk(UIMessageChunk{
+						"type":            "message-metadata",
+						"messageMetadata": metadata,
 					})
-					if metadata != nil && string(chunk.Type) != "start" && string(chunk.Type) != "finish" {
-						safeEnqueue(UIMessageChunk{
-							"type":            "message-metadata",
-							"messageMetadata": metadata,
-						})
-					}
 				}
 			}
 		}
 
+		closeOpenParts()
 		if sendFinish {
 			finishEvent := map[string]interface{}{
 				"type":         "finish",
@@ -437,12 +523,605 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 					finishEvent["messageMetadata"] = metadata
 				}
 			}
-			safeEnqueue(finishEvent)
+			processChunk(finishEvent)
 		}
-		callOnStepFinish()
 		callOnFinish(finishReason)
 	}()
 	return out, errCh
+}
+
+// ToUIMessageChunk converts a single provider stream chunk into a UI message
+// chunk. The boolean return is false for stream parts that do not produce UI
+// message chunks, matching TypeScript's undefined result.
+func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
+	onError := getDefaultMessageErrorHandler(opts.OnError)
+	sendReasoning := boolOption(opts.SendReasoning, true)
+	sendSources := boolOption(opts.SendSources, false)
+
+	switch part.Type {
+	case provider.ChunkTypeStreamStart:
+		return UIMessageChunk{"type": "start-step"}, true
+	case provider.ChunkTypeFinish:
+		return UIMessageChunk{"type": "finish-step"}, true
+	case provider.ChunkTypeAbort:
+		chunk := UIMessageChunk{"type": "abort"}
+		if part.AbortReason != "" {
+			chunk["reason"] = part.AbortReason
+		}
+		return chunk, true
+	}
+
+	chunks := convertProviderChunkToUIMessageChunks(part, resultChunkConversionOptions{
+		SendReasoning: sendReasoning,
+		SendSources:   sendSources,
+		OnError:       onError,
+		Tools:         opts.Tools,
+	})
+	if len(chunks) == 0 {
+		if part.Type == provider.ChunkTypeRaw || part.Type == provider.ChunkTypeToolInputEnd {
+			return nil, false
+		}
+		return nil, false
+	}
+	return chunks[0], true
+}
+
+func responseUIMessageID(options UIMessageStreamResultOptions) string {
+	if options.ResponseMessageID != "" {
+		return options.ResponseMessageID
+	}
+	if options.OriginalMessages == nil {
+		return ""
+	}
+	if len(options.OriginalMessages) > 0 {
+		last := options.OriginalMessages[len(options.OriginalMessages)-1]
+		if role, _ := last["role"].(string); role == "assistant" {
+			id, _ := last["id"].(string)
+			return id
+		}
+	}
+	if options.GenerateMessageID != nil {
+		return options.GenerateMessageID()
+	}
+	return ""
+}
+
+type uiMessageCallbackState struct {
+	originalMessages []UIMessageChunk
+	message          UIMessageChunk
+	isContinuation   bool
+	isAborted        bool
+	finishReason     interface{}
+	activeText       map[string]UIMessageChunk
+	activeReasoning  map[string]UIMessageChunk
+	partialTools     map[string]*uiPartialToolCall
+}
+
+type uiPartialToolCall struct {
+	text         string
+	toolName     string
+	dynamic      bool
+	title        interface{}
+	toolMetadata interface{}
+}
+
+func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiMessageCallbackState {
+	state := &uiMessageCallbackState{
+		originalMessages: append([]UIMessageChunk(nil), original...),
+		message: UIMessageChunk{
+			"id":    messageID,
+			"role":  "assistant",
+			"parts": []interface{}{},
+		},
+		activeText:      map[string]UIMessageChunk{},
+		activeReasoning: map[string]UIMessageChunk{},
+		partialTools:    map[string]*uiPartialToolCall{},
+	}
+	if len(original) > 0 {
+		last := original[len(original)-1]
+		if role, _ := last["role"].(string); role == "assistant" {
+			state.isContinuation = true
+			state.message = cloneUIMessageChunk(last)
+			if _, ok := state.message["parts"]; !ok {
+				state.message["parts"] = []interface{}{}
+			}
+		}
+	}
+	return state
+}
+
+func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
+	return cloneUIMessageChunk(s.message)
+}
+
+func (s *uiMessageCallbackState) messages() []UIMessageChunk {
+	messages := append([]UIMessageChunk(nil), s.originalMessages...)
+	if s.isContinuation && len(messages) > 0 {
+		messages = messages[:len(messages)-1]
+	}
+	messages = append(messages, s.responseMessage())
+	return messages
+}
+
+func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error) string) {
+	chunkType, _ := chunk["type"].(string)
+	switch chunkType {
+	case "start":
+		if id, _ := chunk["messageId"].(string); id != "" {
+			s.message["id"] = id
+		}
+		s.mergeMetadata(chunk["messageMetadata"])
+	case "finish":
+		if reason, ok := chunk["finishReason"]; ok {
+			s.finishReason = reason
+		}
+		s.mergeMetadata(chunk["messageMetadata"])
+	case "message-metadata":
+		s.mergeMetadata(chunk["messageMetadata"])
+	case "abort":
+		s.isAborted = true
+	case "text-start":
+		id, _ := chunk["id"].(string)
+		part := UIMessageChunk{"type": "text", "text": "", "state": "streaming"}
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.activeText[id] = part
+		s.appendPart(part)
+	case "text-delta":
+		id, _ := chunk["id"].(string)
+		part := s.activeText[id]
+		if part == nil {
+			reportMissingUIMessagePart(onError, "text-delta", id)
+			return
+		}
+		part["text"] = stringValue(part["text"]) + stringValue(chunk["delta"])
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+	case "text-end":
+		id, _ := chunk["id"].(string)
+		part := s.activeText[id]
+		if part == nil {
+			reportMissingUIMessagePart(onError, "text-end", id)
+			return
+		}
+		part["state"] = "done"
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		delete(s.activeText, id)
+	case "reasoning-start":
+		id, _ := chunk["id"].(string)
+		part := UIMessageChunk{"type": "reasoning", "text": "", "state": "streaming"}
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.activeReasoning[id] = part
+		s.appendPart(part)
+	case "reasoning-delta":
+		id, _ := chunk["id"].(string)
+		part := s.activeReasoning[id]
+		if part == nil {
+			reportMissingUIMessagePart(onError, "reasoning-delta", id)
+			return
+		}
+		part["text"] = stringValue(part["text"]) + stringValue(chunk["delta"])
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+	case "reasoning-end":
+		id, _ := chunk["id"].(string)
+		part := s.activeReasoning[id]
+		if part == nil {
+			reportMissingUIMessagePart(onError, "reasoning-end", id)
+			return
+		}
+		part["state"] = "done"
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		delete(s.activeReasoning, id)
+	case "file", "reasoning-file":
+		part := UIMessageChunk{"type": chunkType}
+		copyIfPresent(part, chunk, "mediaType", "mediaType")
+		copyIfPresent(part, chunk, "url", "url")
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.appendPart(part)
+	case "source-url":
+		part := UIMessageChunk{"type": "source-url"}
+		copyIfPresent(part, chunk, "sourceId", "sourceId")
+		copyIfPresent(part, chunk, "url", "url")
+		copyIfPresent(part, chunk, "title", "title")
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.appendPart(part)
+	case "source-document":
+		part := UIMessageChunk{"type": "source-document"}
+		copyIfPresent(part, chunk, "sourceId", "sourceId")
+		copyIfPresent(part, chunk, "mediaType", "mediaType")
+		copyIfPresent(part, chunk, "title", "title")
+		copyIfPresent(part, chunk, "filename", "filename")
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.appendPart(part)
+	case "custom":
+		part := UIMessageChunk{"type": "custom"}
+		copyIfPresent(part, chunk, "kind", "kind")
+		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
+		s.appendPart(part)
+	case "start-step":
+		s.appendPart(UIMessageChunk{"type": "step-start"})
+	case "finish-step":
+		s.activeText = map[string]UIMessageChunk{}
+		s.activeReasoning = map[string]UIMessageChunk{}
+	case "tool-input-start":
+		toolCallID := stringValue(chunk["toolCallId"])
+		toolName := stringValue(chunk["toolName"])
+		dynamic, _ := chunk["dynamic"].(bool)
+		s.partialTools[toolCallID] = &uiPartialToolCall{
+			toolName:     toolName,
+			dynamic:      dynamic,
+			title:        chunk["title"],
+			toolMetadata: chunk["toolMetadata"],
+		}
+		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+			"state": "input-streaming",
+			"input": nil,
+		}, chunk)
+	case "tool-input-delta":
+		toolCallID := stringValue(chunk["toolCallId"])
+		partial := s.partialTools[toolCallID]
+		if partial == nil {
+			reportMissingToolInput(onError, "tool-input-delta", toolCallID)
+			return
+		}
+		partial.text += stringValue(chunk["inputTextDelta"])
+		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, UIMessageChunk{
+			"state": "input-streaming",
+			"input": parseToolInputPartial(partial.text),
+		}, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
+	case "tool-input-available":
+		toolCallID := stringValue(chunk["toolCallId"])
+		toolName := stringValue(chunk["toolName"])
+		dynamic, _ := chunk["dynamic"].(bool)
+		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+			"state": "input-available",
+			"input": chunk["input"],
+		}, chunk)
+	case "tool-input-error":
+		toolCallID := stringValue(chunk["toolCallId"])
+		toolName := stringValue(chunk["toolName"])
+		dynamic, _ := chunk["dynamic"].(bool)
+		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"]}
+		if dynamic {
+			update["input"] = chunk["input"]
+		} else {
+			update["input"] = nil
+			update["rawInput"] = chunk["input"]
+		}
+		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
+	case "tool-output-available":
+		toolCallID := stringValue(chunk["toolCallId"])
+		part := s.findToolPart(toolCallID)
+		if part == nil {
+			reportMissingToolInvocation(onError, toolCallID)
+			return
+		}
+		toolName, dynamic := toolInfoFromPart(part)
+		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+			"state":       "output-available",
+			"input":       part["input"],
+			"output":      chunk["output"],
+			"preliminary": chunk["preliminary"],
+		}, chunk)
+	case "tool-output-error":
+		toolCallID := stringValue(chunk["toolCallId"])
+		part := s.findToolPart(toolCallID)
+		if part == nil {
+			reportMissingToolInvocation(onError, toolCallID)
+			return
+		}
+		toolName, dynamic := toolInfoFromPart(part)
+		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+			"state":     "output-error",
+			"input":     part["input"],
+			"rawInput":  part["rawInput"],
+			"errorText": chunk["errorText"],
+		}, chunk)
+	case "tool-output-denied":
+		toolCallID := stringValue(chunk["toolCallId"])
+		if part := s.findToolPart(toolCallID); part != nil {
+			part["state"] = "output-denied"
+		} else {
+			reportMissingToolInvocation(onError, toolCallID)
+		}
+	case "tool-approval-request":
+		toolCallID := stringValue(chunk["toolCallId"])
+		if part := s.findToolPart(toolCallID); part != nil {
+			part["state"] = "approval-requested"
+			approval := UIMessageChunk{"id": chunk["approvalId"]}
+			if auto, ok := chunk["isAutomatic"].(bool); ok && auto {
+				approval["isAutomatic"] = true
+			}
+			part["approval"] = approval
+		} else {
+			reportMissingToolInvocation(onError, toolCallID)
+		}
+	case "tool-approval-response":
+		approvalID := stringValue(chunk["approvalId"])
+		if part := s.findToolPartByApprovalID(approvalID); part != nil {
+			part["state"] = "approval-responded"
+			approval := UIMessageChunk{"id": chunk["approvalId"], "approved": chunk["approved"]}
+			copyIfPresent(approval, chunk, "reason", "reason")
+			if previous, _ := part["approval"].(UIMessageChunk); previous != nil {
+				if auto, _ := previous["isAutomatic"].(bool); auto {
+					approval["isAutomatic"] = true
+				}
+			}
+			part["approval"] = approval
+			copyIfPresent(part, chunk, "providerExecuted", "providerExecuted")
+			copyIfPresent(part, chunk, "providerMetadata", "callProviderMetadata")
+		} else {
+			reportMissingApproval(onError, approvalID)
+		}
+	case "error":
+		if onError != nil {
+			_ = onError(errors.New(stringValue(chunk["errorText"])))
+		}
+	default:
+		if strings.HasPrefix(chunkType, "data-") {
+			if transient, _ := chunk["transient"].(bool); transient {
+				return
+			}
+			s.upsertDataPart(chunk)
+		}
+	}
+}
+
+func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
+	if metadata == nil {
+		return
+	}
+	if existing, ok := asUIMap(s.message["metadata"]); ok {
+		if incoming, ok := asUIMap(metadata); ok {
+			s.message["metadata"] = mergeUIMaps(existing, incoming)
+			return
+		}
+	}
+	s.message["metadata"] = cloneUIValue(metadata)
+}
+
+func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
+	if typedParts, ok := s.message["parts"].([]UIMessageChunk); ok {
+		parts := make([]interface{}, 0, len(typedParts)+1)
+		for _, typedPart := range typedParts {
+			parts = append(parts, typedPart)
+		}
+		s.message["parts"] = append(parts, part)
+		return
+	}
+	parts, _ := s.message["parts"].([]interface{})
+	s.message["parts"] = append(parts, part)
+}
+
+func (s *uiMessageCallbackState) upsertDataPart(chunk UIMessageChunk) {
+	id, hasID := chunk["id"].(string)
+	if hasID && id != "" {
+		for _, raw := range uiParts(s.message) {
+			part, ok := raw.(UIMessageChunk)
+			if !ok {
+				if m, mapOK := raw.(map[string]interface{}); mapOK {
+					part = UIMessageChunk(m)
+				}
+			}
+			if part != nil && part["type"] == chunk["type"] && part["id"] == id {
+				part["data"] = cloneUIValue(chunk["data"])
+				return
+			}
+		}
+	}
+	s.appendPart(cloneUIMessageChunk(chunk))
+}
+
+func (s *uiMessageCallbackState) updateToolPart(toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
+	part := s.findToolPart(toolCallID)
+	if part == nil {
+		if dynamic {
+			part = UIMessageChunk{"type": "dynamic-tool", "toolName": toolName, "toolCallId": toolCallID}
+		} else {
+			part = UIMessageChunk{"type": "tool-" + toolName, "toolCallId": toolCallID}
+		}
+		s.appendPart(part)
+	}
+	if toolName != "" && part["type"] == "dynamic-tool" {
+		part["toolName"] = toolName
+	}
+	for key, value := range update {
+		part[key] = value
+	}
+	copyIfPresent(part, source, "providerExecuted", "providerExecuted")
+	copyIfPresent(part, source, "title", "title")
+	copyIfPresent(part, source, "toolMetadata", "toolMetadata")
+	if _, isOutput := update["output"]; isOutput {
+		copyIfPresent(part, source, "providerMetadata", "resultProviderMetadata")
+	} else if update["state"] == "output-error" {
+		copyIfPresent(part, source, "providerMetadata", "resultProviderMetadata")
+	} else {
+		copyIfPresent(part, source, "providerMetadata", "callProviderMetadata")
+	}
+}
+
+func (s *uiMessageCallbackState) findToolPart(toolCallID string) UIMessageChunk {
+	for _, raw := range uiParts(s.message) {
+		part, ok := raw.(UIMessageChunk)
+		if !ok {
+			if m, ok := raw.(map[string]interface{}); ok {
+				part = UIMessageChunk(m)
+			}
+		}
+		if part != nil && part["toolCallId"] == toolCallID {
+			return part
+		}
+	}
+	return nil
+}
+
+func (s *uiMessageCallbackState) findToolPartByApprovalID(approvalID string) UIMessageChunk {
+	for _, raw := range uiParts(s.message) {
+		part, ok := raw.(UIMessageChunk)
+		if !ok {
+			if m, ok := raw.(map[string]interface{}); ok {
+				part = UIMessageChunk(m)
+			}
+		}
+		if part == nil {
+			continue
+		}
+		approval, _ := part["approval"].(UIMessageChunk)
+		if approval == nil {
+			if m, ok := part["approval"].(map[string]interface{}); ok {
+				approval = UIMessageChunk(m)
+			}
+		}
+		if approval != nil && approval["id"] == approvalID {
+			return part
+		}
+	}
+	return nil
+}
+
+func toolInfoFromPart(part UIMessageChunk) (string, bool) {
+	if part == nil {
+		return "", false
+	}
+	if part["type"] == "dynamic-tool" {
+		return stringValue(part["toolName"]), true
+	}
+	typeName := stringValue(part["type"])
+	return strings.TrimPrefix(typeName, "tool-"), false
+}
+
+func uiParts(message UIMessageChunk) []interface{} {
+	if parts, ok := message["parts"].([]interface{}); ok {
+		return parts
+	}
+	if typedParts, ok := message["parts"].([]UIMessageChunk); ok {
+		parts := make([]interface{}, 0, len(typedParts))
+		for _, part := range typedParts {
+			parts = append(parts, part)
+		}
+		return parts
+	}
+	return nil
+}
+
+func copyIfPresent(dst UIMessageChunk, src UIMessageChunk, from, to string) {
+	if value, ok := src[from]; ok && value != nil {
+		dst[to] = value
+	}
+}
+
+func stringValue(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func parseToolInputPartial(text string) interface{} {
+	if text == "" {
+		return nil
+	}
+	var value interface{}
+	if err := json.Unmarshal([]byte(text), &value); err == nil {
+		return value
+	}
+	return nil
+}
+
+func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID string) {
+	if onError == nil {
+		return
+	}
+	partType := "text"
+	if strings.HasPrefix(chunkType, "reasoning-") {
+		partType = "reasoning"
+	}
+	startType := partType + "-start"
+	_ = onError(fmt.Errorf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType))
+}
+
+func reportMissingToolInput(onError func(error) string, chunkType, toolCallID string) {
+	if onError == nil {
+		return
+	}
+	_ = onError(fmt.Errorf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType))
+}
+
+func reportMissingToolInvocation(onError func(error) string, toolCallID string) {
+	if onError == nil {
+		return
+	}
+	_ = onError(fmt.Errorf("No tool invocation found for tool call ID %q.", toolCallID))
+}
+
+func reportMissingApproval(onError func(error) string, approvalID string) {
+	if onError == nil {
+		return
+	}
+	_ = onError(fmt.Errorf("No tool invocation found for approval ID %q.", approvalID))
+}
+
+func cloneUIMessageChunk(in UIMessageChunk) UIMessageChunk {
+	if in == nil {
+		return nil
+	}
+	out := make(UIMessageChunk, len(in))
+	for key, value := range in {
+		out[key] = cloneUIValue(value)
+	}
+	return out
+}
+
+func cloneUIValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case UIMessageChunk:
+		return cloneUIMessageChunk(v)
+	case map[string]interface{}:
+		return cloneUIMessageChunk(UIMessageChunk(v))
+	case []UIMessageChunk:
+		out := make([]UIMessageChunk, len(v))
+		for i, item := range v {
+			out[i] = cloneUIMessageChunk(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneUIValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func asUIMap(value interface{}) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case UIMessageChunk:
+		return map[string]interface{}(v), true
+	case map[string]interface{}:
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func mergeUIMaps(base, incoming map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(base)+len(incoming))
+	for key, value := range base {
+		out[key] = cloneUIValue(value)
+	}
+	for key, value := range incoming {
+		if key == "__proto__" || key == "constructor" || key == "prototype" {
+			continue
+		}
+		if existing, ok := asUIMap(out[key]); ok {
+			if next, ok := asUIMap(value); ok {
+				out[key] = mergeUIMaps(existing, next)
+				continue
+			}
+		}
+		out[key] = cloneUIValue(value)
+	}
+	return out
 }
 
 // CreateUIMessageStreamResponse writes UI chunks as SSE to an HTTP response.
@@ -538,6 +1217,9 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 			return err
 		}
 	}
+	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
+		return err
+	}
 	if sideWriter != nil {
 		_ = bw.Flush()
 		sideWriter.Close()
@@ -573,6 +1255,9 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			continue
+		}
 		var chunk UIMessageChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return nil, err
@@ -589,6 +1274,7 @@ type resultChunkConversionOptions struct {
 	SendReasoning bool
 	SendSources   bool
 	OnError       func(error) string
+	Tools         []types.Tool
 }
 
 func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resultChunkConversionOptions) []UIMessageChunk {
@@ -602,6 +1288,17 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if err := json.Unmarshal(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
 			part["providerMetadata"] = providerMetadata
 		}
+	}
+	isDynamicTool := func(toolName string, dynamic bool) bool {
+		if dynamic {
+			return true
+		}
+		for _, tool := range opts.Tools {
+			if tool.Name == toolName && tool.Type == types.ToolTypeDynamic {
+				return true
+			}
+		}
+		return false
 	}
 
 	switch chunk.Type {
@@ -635,7 +1332,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if !opts.SendReasoning {
 			break
 		}
-		part := map[string]interface{}{"type": "reasoning-delta", "id": chunk.ID, "delta": chunk.Text}
+		delta := chunk.Reasoning
+		if delta == "" {
+			delta = chunk.Text
+		}
+		part := map[string]interface{}{"type": "reasoning-delta", "id": chunk.ID, "delta": delta}
 		withMeta(part)
 		out = append(out, part)
 	case provider.ChunkTypeSource:
@@ -716,7 +1417,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			if len(chunk.ToolCall.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 			}
-			if chunk.ToolCall.Dynamic {
+			if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
 				part["dynamic"] = true
 			}
 			if chunk.ToolCall.Title != "" {
@@ -741,7 +1442,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
-		if chunk.ToolCall.Dynamic {
+		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
 			part["dynamic"] = true
 		}
 		if chunk.ToolCall.Title != "" {
@@ -767,7 +1468,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ToolMetadata != nil && len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
-		if chunk.ToolCall.Dynamic {
+		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
 			part["dynamic"] = true
 		}
 		if chunk.ToolCall.Title != "" {
@@ -779,9 +1480,6 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		withMeta(part)
 		out = append(out, part)
 	case provider.ChunkTypeToolInputDelta:
-		if chunk.Text == "" {
-			break
-		}
 		part := map[string]interface{}{
 			"type":           "tool-input-delta",
 			"toolCallId":     chunk.ID,
@@ -812,11 +1510,15 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 		}
 		if chunk.ToolResult.Error != nil {
+			errorText := opts.OnError(chunk.ToolResult.Error)
+			if chunk.ToolResult.ProviderExecuted {
+				errorText = chunk.ToolResult.Error.Error()
+			}
 			partType = "tool-output-error"
 			part = map[string]interface{}{
 				"type":       partType,
 				"toolCallId": chunk.ToolResult.ToolCallID,
-				"errorText":  opts.OnError(chunk.ToolResult.Error),
+				"errorText":  errorText,
 			}
 			if len(chunk.ToolResult.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
@@ -825,7 +1527,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolResult.ProviderExecuted {
 			part["providerExecuted"] = true
 		}
-		if chunk.ToolResult.Dynamic {
+		if isDynamicTool(chunk.ToolResult.ToolName, chunk.ToolResult.Dynamic) {
 			part["dynamic"] = true
 		}
 		if chunk.ToolResult.Preliminary {
@@ -870,6 +1572,13 @@ func deriveFileURL(mediaType string, file *types.GeneratedFileContent) string {
 	if file == nil {
 		return ""
 	}
+	return "data:" + mediaType + ";base64," + generatedFileBase64Data(file)
+}
+
+func generatedFileBase64Data(file *types.GeneratedFileContent) string {
+	if file == nil {
+		return ""
+	}
 	if file.URL != "" {
 		return file.URL
 	}
@@ -878,14 +1587,14 @@ func deriveFileURL(mediaType string, file *types.GeneratedFileContent) string {
 	}
 	if file.FileData.Type == "data" {
 		if file.FileData.DataString != "" {
-			return "data:" + mediaType + ";base64," + file.FileData.DataString
+			return file.FileData.DataString
 		}
 		if len(file.FileData.Data) > 0 {
-			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data)
+			return base64.StdEncoding.EncodeToString(file.FileData.Data)
 		}
 	}
 	if len(file.Data) > 0 {
-		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.Data)
+		return base64.StdEncoding.EncodeToString(file.Data)
 	}
 	return ""
 }
@@ -894,19 +1603,26 @@ func deriveFileURLFromReasoning(file *types.ReasoningFileContent, mediaType stri
 	if file == nil {
 		return ""
 	}
+	return "data:" + mediaType + ";base64," + reasoningFileBase64Data(file)
+}
+
+func reasoningFileBase64Data(file *types.ReasoningFileContent) string {
+	if file == nil {
+		return ""
+	}
 	if file.FileData.Type == "url" && file.FileData.URL != "" {
 		return file.FileData.URL
 	}
 	if file.FileData.Type == "data" {
 		if file.FileData.DataString != "" {
-			return "data:" + mediaType + ";base64," + file.FileData.DataString
+			return file.FileData.DataString
 		}
 		if len(file.FileData.Data) > 0 {
-			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data)
+			return base64.StdEncoding.EncodeToString(file.FileData.Data)
 		}
 	}
 	if len(file.Data) > 0 {
-		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(file.Data)
+		return base64.StdEncoding.EncodeToString(file.Data)
 	}
 	return ""
 }
