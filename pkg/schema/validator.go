@@ -156,6 +156,17 @@ func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, p
 			}
 		}
 	}
+	if allOf, ok := interfaceSlice(schema["allOf"]); ok {
+		for i, rawSubschema := range allOf {
+			subschema, ok := rawSubschema.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if err := validateJSONSchemaValue(value, subschema, fmt.Sprintf("%s.allOf[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
 	if items, ok := schema["items"].(map[string]interface{}); ok {
 		rv := reflect.ValueOf(value)
 		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {

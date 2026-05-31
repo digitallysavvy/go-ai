@@ -59,6 +59,21 @@ func TestValidateJSONTypeAndSchemaValue(t *testing.T) {
 	}
 }
 
+func TestValidateJSONSchemaAllOfPipelineParity(t *testing.T) {
+	pipelineSchema := map[string]interface{}{
+		"allOf": []interface{}{
+			map[string]interface{}{"type": "number"},
+			map[string]interface{}{"type": "integer"},
+		},
+	}
+	if err := validateJSONSchemaValue(2, pipelineSchema, "$"); err != nil {
+		t.Fatalf("integer should satisfy number->integer pipeline schema: %v", err)
+	}
+	if err := validateJSONSchemaValue(2.5, pipelineSchema, "$"); err == nil {
+		t.Fatal("fractional number should fail integer output schema in allOf pipeline")
+	}
+}
+
 type taggedStruct struct {
 	Name  string `json:"name"`
 	Age   int    `json:"age"`
