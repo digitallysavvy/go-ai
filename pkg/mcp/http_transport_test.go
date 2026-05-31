@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -75,6 +76,133 @@ func TestHTTPTransportUsesNegotiatedProtocolVersionHeader(t *testing.T) {
 	}
 	if sse.protocolHeader != "2025-06-18" {
 		t.Fatalf("mcp-protocol-version = %q", sse.protocolHeader)
+	}
+}
+
+type errorSSEClient struct {
+	status         int
+	body           string
+	protocolHeader string
+}
+
+func (c *errorSSEClient) Do(req *http.Request) (*http.Response, error) {
+	c.protocolHeader = req.Header.Get("mcp-protocol-version")
+	return &http.Response{
+		StatusCode: c.status,
+		Status:     http.StatusText(c.status),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    req,
+	}, nil
+}
+
+type statusOnlySSEClient struct {
+	status int
+}
+
+func (c statusOnlySSEClient) Do(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: c.status,
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func TestHTTPTransportAcceptedResponseCompletesSend(t *testing.T) {
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: statusOnlySSEClient{status: http.StatusAccepted},
+	})
+	transport.connected = true
+
+	msg, err := CreateNotification("notifications/initialized", nil)
+	if err != nil {
+		t.Fatalf("CreateNotification error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error for 202 Accepted = %v, want nil", err)
+	}
+}
+
+func TestHTTPTransportOKNotificationCompletesWithoutJSONRPCResponse(t *testing.T) {
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL: "http://localhost:9999/mcp",
+		SSEClient: &errorSSEClient{
+			status: http.StatusOK,
+			body:   `{"ack":true}`,
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateNotification("notifications/initialized", nil)
+	if err != nil {
+		t.Fatalf("CreateNotification error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error for 200 notification ack = %v, want nil", err)
+	}
+}
+
+func TestHTTPTransportNon2xxReturnsStructuredMCPClientError(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusServiceUnavailable, body: "Service Unavailable"}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+	})
+	transport.connected = true
+	transport.SetProtocolVersion("2025-06-18")
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	err = transport.Send(t.Context(), msg)
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("Send error = %T %v, want *MCPClientError", err, err)
+	}
+	if clientErr.StatusCode != http.StatusServiceUnavailable || clientErr.URL != "http://localhost:9999/mcp" || clientErr.ResponseBody != "Service Unavailable" {
+		t.Fatalf("structured HTTP fields mismatch: %#v", clientErr)
+	}
+	if clientErr.Code != 0 {
+		t.Fatalf("Code = %d, want JSON-RPC zero value for HTTP transport error", clientErr.Code)
+	}
+	if sse.protocolHeader != "2025-06-18" {
+		t.Fatalf("mcp-protocol-version = %q, want negotiated version", sse.protocolHeader)
+	}
+}
+
+type networkErrorSSEClient struct {
+	err error
+}
+
+func (c networkErrorSSEClient) Do(req *http.Request) (*http.Response, error) {
+	return nil, c.err
+}
+
+func TestHTTPTransportNetworkErrorRemainsTransportError(t *testing.T) {
+	cause := errors.New("dial refused")
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: networkErrorSSEClient{err: cause},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	err = transport.Send(t.Context(), msg)
+	var transportErr *TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("Send error = %T %v, want *TransportError", err, err)
+	}
+	var clientErr *MCPClientError
+	if errors.As(err, &clientErr) {
+		t.Fatalf("network error should not become MCPClientError: %#v", clientErr)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("Send error should wrap cause %v: %v", cause, err)
 	}
 }
 

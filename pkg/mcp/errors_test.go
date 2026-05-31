@@ -21,6 +21,24 @@ func TestMCPClientErrorFormattingAndConstructor(t *testing.T) {
 	}
 }
 
+func TestMCPClientErrorStructuredHTTPFieldsAndErrorsAs(t *testing.T) {
+	err := NewMCPClientError(0, "POSTing to endpoint", nil,
+		WithMCPHTTPResponse(503, "http://localhost:4000/mcp", "Service Unavailable"),
+	)
+	wrapped := NewTransportError("failed to send request", err)
+
+	var clientErr *MCPClientError
+	if !errors.As(wrapped, &clientErr) {
+		t.Fatalf("errors.As(%T) failed", wrapped)
+	}
+	if clientErr.Code != 0 {
+		t.Fatalf("Code = %d, want JSON-RPC zero value for HTTP-only error", clientErr.Code)
+	}
+	if clientErr.StatusCode != 503 || clientErr.URL != "http://localhost:4000/mcp" || clientErr.ResponseBody != "Service Unavailable" {
+		t.Fatalf("structured HTTP fields mismatch: %#v", clientErr)
+	}
+}
+
 func TestTransportErrorFormattingAndUnwrap(t *testing.T) {
 	cause := errors.New("dial timeout")
 	err := NewTransportError("send failed", cause)

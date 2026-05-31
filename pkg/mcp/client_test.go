@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 )
 
 // mockTransport implements Transport interface for testing
@@ -12,6 +14,8 @@ type mockTransport struct {
 	connected        bool
 	protocolVersion  string
 	initializeParams InitializeParams
+	sentMu           sync.Mutex
+	sent             []*MCPMessage
 }
 
 func newMockTransport() *mockTransport {
@@ -42,6 +46,10 @@ func (m *mockTransport) SetProtocolVersion(version string) {
 }
 
 func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	m.sentMu.Lock()
+	m.sent = append(m.sent, msg)
+	m.sentMu.Unlock()
+
 	// Simulate server response for tools/list
 	if msg.Method == "tools/list" {
 		response := &MCPMessage{
@@ -184,6 +192,14 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	return nil
 }
 
+func (m *mockTransport) sentMessages() []*MCPMessage {
+	m.sentMu.Lock()
+	defer m.sentMu.Unlock()
+	out := make([]*MCPMessage, len(m.sent))
+	copy(out, m.sent)
+	return out
+}
+
 func TestMCPClientDefaultCapabilitiesMatchTypeScriptEmptyObject(t *testing.T) {
 	transport := newMockTransport()
 	client := NewMCPClient(transport, MCPClientConfig{})
@@ -217,6 +233,59 @@ func TestMCPClientClientNameFallbacksAndNegotiatedProtocol(t *testing.T) {
 
 	if transport.protocolVersion != ProtocolVersion {
 		t.Fatalf("negotiated protocolVersion = %q, want %q", transport.protocolVersion, ProtocolVersion)
+	}
+}
+
+func TestMCPClientRespondsToPingRequestWithEmptyResult(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	transport.messages <- &MCPMessage{JSONRpc: "2.0", ID: "server-ping-1", Method: "ping"}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for ping response")
+		default:
+		}
+		for _, msg := range transport.sentMessages() {
+			if msg.ID == "server-ping-1" {
+				if msg.Error != nil {
+					t.Fatalf("ping response error = %#v", msg.Error)
+				}
+				var result map[string]interface{}
+				if err := json.Unmarshal(msg.Result, &result); err != nil {
+					t.Fatalf("ping result unmarshal error = %v, raw=%s", err, string(msg.Result))
+				}
+				if len(result) != 0 {
+					t.Fatalf("ping result = %#v, want empty object", result)
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestMCPClientDoesNotRespondToPingNotification(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	before := len(transport.sentMessages())
+	transport.messages <- &MCPMessage{JSONRpc: "2.0", Method: "ping"}
+	time.Sleep(20 * time.Millisecond)
+	after := len(transport.sentMessages())
+	if after != before {
+		t.Fatalf("sent message count after ping notification = %d, want %d", after, before)
 	}
 }
 

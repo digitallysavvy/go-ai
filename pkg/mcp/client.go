@@ -427,8 +427,15 @@ func (c *MCPClient) handleNotification(msg *MCPMessage) {
 
 // handleRequest handles requests from the server
 func (c *MCPClient) handleRequest(msg *MCPMessage) {
-	// Handle server requests
-	// For now, respond with method not found
+	if msg.Method == "ping" {
+		response, err := CreateResponse(msg.ID, map[string]interface{}{})
+		if err != nil {
+			response = CreateErrorResponse(msg.ID, ErrorCodeInternalError, err.Error(), nil)
+		}
+		_ = c.transport.Send(c.ctx, response)
+		return
+	}
+
 	response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, "Method not found", nil)
 	_ = c.transport.Send(c.ctx, response)
 }

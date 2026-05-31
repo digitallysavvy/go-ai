@@ -2,27 +2,77 @@ package mcp
 
 import "fmt"
 
-// MCPClientError represents an error from the MCP client
+// MCPClientError represents an error from the MCP client.
+//
+// Code is the JSON-RPC application error code from an MCP error payload.
+// StatusCode is the HTTP transport status for streamable HTTP failures. These
+// fields are intentionally distinct so callers can branch on protocol errors
+// and transport failures independently.
 type MCPClientError struct {
-	Code    int
-	Message string
-	Data    interface{}
+	Code         int
+	Message      string
+	Data         interface{}
+	StatusCode   int
+	URL          string
+	ResponseBody string
 }
 
 func (e *MCPClientError) Error() string {
+	if e.Code == 0 && e.StatusCode != 0 {
+		return e.Message
+	}
 	if e.Data != nil {
 		return fmt.Sprintf("MCP error %d: %s (data: %v)", e.Code, e.Message, e.Data)
 	}
 	return fmt.Sprintf("MCP error %d: %s", e.Code, e.Message)
 }
 
+// MCPClientErrorOption configures optional fields on MCPClientError.
+type MCPClientErrorOption func(*MCPClientError)
+
+// WithMCPHTTPStatus records the HTTP status code for an MCP transport error.
+func WithMCPHTTPStatus(statusCode int) MCPClientErrorOption {
+	return func(e *MCPClientError) {
+		e.StatusCode = statusCode
+	}
+}
+
+// WithMCPHTTPURL records the endpoint URL for an MCP transport error.
+func WithMCPHTTPURL(url string) MCPClientErrorOption {
+	return func(e *MCPClientError) {
+		e.URL = url
+	}
+}
+
+// WithMCPHTTPResponseBody records the response body for an MCP transport error.
+func WithMCPHTTPResponseBody(body string) MCPClientErrorOption {
+	return func(e *MCPClientError) {
+		e.ResponseBody = body
+	}
+}
+
+// WithMCPHTTPResponse records the structured HTTP fields for an MCP transport error.
+func WithMCPHTTPResponse(statusCode int, url string, responseBody string) MCPClientErrorOption {
+	return func(e *MCPClientError) {
+		e.StatusCode = statusCode
+		e.URL = url
+		e.ResponseBody = responseBody
+	}
+}
+
 // NewMCPClientError creates a new MCP client error
-func NewMCPClientError(code int, message string, data interface{}) *MCPClientError {
-	return &MCPClientError{
+func NewMCPClientError(code int, message string, data interface{}, opts ...MCPClientErrorOption) *MCPClientError {
+	err := &MCPClientError{
 		Code:    code,
 		Message: message,
 		Data:    data,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(err)
+		}
+	}
+	return err
 }
 
 // Common MCP errors

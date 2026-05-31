@@ -214,6 +214,12 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		if err != nil {
 			return NewTransportError("failed to send request", err)
 		}
+		if resp == nil {
+			return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
+		}
+		if resp.Body == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+		}
 		if resp.StatusCode != http.StatusUnauthorized || t.oauth == nil || attempt == 1 {
 			break
 		}
@@ -235,9 +241,16 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(resp.Body)
-		return NewTransportError(fmt.Sprintf("HTTP error %d: %s", resp.StatusCode, string(body)), nil)
+		message := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
+		if resp.StatusCode == http.StatusNotFound {
+			message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+		}
+		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body)))
+	}
+	if resp.StatusCode == http.StatusAccepted || IsNotification(message) {
+		return nil
 	}
 
 	// Read response
