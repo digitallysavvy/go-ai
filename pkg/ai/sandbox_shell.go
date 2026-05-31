@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // ShellSandbox executes commands through the local shell. It is the default
@@ -46,33 +47,63 @@ func (s *ShellSandbox) Description() string {
 
 // RunCommand runs command in the configured shell.
 func (s *ShellSandbox) RunCommand(ctx context.Context, opts SandboxRunCommandOptions) (SandboxRunCommandResult, error) {
+	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Environment)
+	if err != nil {
+		return SandboxRunCommandResult{}, err
+	}
+	var stdout, stderr bytes.Buffer
+	var copyWG sync.WaitGroup
+	copyWG.Add(2)
+	go func() {
+		defer copyWG.Done()
+		_, _ = io.Copy(&stdout, process.Stdout())
+	}()
+	go func() {
+		defer copyWG.Done()
+		_, _ = io.Copy(&stderr, process.Stderr())
+	}()
+	waitResult, waitErr := process.Wait()
+	copyWG.Wait()
+	return SandboxRunCommandResult{
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: waitResult.ExitCode,
+	}, waitErr
+}
+
+// Spawn starts command in the configured shell and returns immediately with a process handle.
+func (s *ShellSandbox) Spawn(ctx context.Context, opts SandboxSpawnOptions) (SandboxProcess, error) {
+	return s.spawn(ctx, opts.Command, opts.WorkingDirectory, nil)
+}
+
+func (s *ShellSandbox) spawn(ctx context.Context, command, workingDirectory string, environment map[string]string) (SandboxProcess, error) {
 	shell := s.Shell
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	cmd := exec.CommandContext(ctx, shell, "-c", opts.Command)
-	if opts.WorkingDirectory != "" {
-		cmd.Dir = opts.WorkingDirectory
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	if workingDirectory != "" {
+		cmd.Dir = workingDirectory
 	}
-	if len(opts.Environment) > 0 {
-		env := make([]string, 0, len(opts.Environment))
-		for k, v := range opts.Environment {
+	if len(environment) > 0 {
+		env := make([]string, 0, len(environment))
+		for k, v := range environment {
 			env = append(env, k+"="+v)
 		}
 		cmd.Env = append(cmd.Environ(), env...)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	result := SandboxRunCommandResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
 	}
-	if cmd.ProcessState != nil {
-		result.ExitCode = cmd.ProcessState.ExitCode()
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
 	}
-	return result, err
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return newShellSandboxProcess(ctx, cmd, stdout, stderr), nil
 }
 
 // Execute is a deprecated compatibility wrapper for older callers.
@@ -159,4 +190,99 @@ func (s *ShellSandbox) WriteBinaryFile(ctx context.Context, path string, content
 // WriteTextFile writes text to a path.
 func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextFileOptions) error {
 	return s.WriteFile(ctx, opts.Path, strings.NewReader(opts.Content))
+}
+
+type shellSandboxProcess struct {
+	ctx    context.Context
+	cmd    *exec.Cmd
+	stdout io.Reader
+	stderr io.Reader
+
+	waitOnce sync.Once
+	waitDone chan struct{}
+	waitErr  error
+	exitCode int
+	exited   bool
+
+	killOnce sync.Once
+	killErr  error
+	mu       sync.RWMutex
+}
+
+func newShellSandboxProcess(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Reader) *shellSandboxProcess {
+	return &shellSandboxProcess{
+		ctx:      ctx,
+		cmd:      cmd,
+		stdout:   stdout,
+		stderr:   stderr,
+		waitDone: make(chan struct{}),
+		exitCode: -1,
+	}
+}
+
+func (p *shellSandboxProcess) PID() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
+func (p *shellSandboxProcess) Stdout() io.Reader {
+	return p.stdout
+}
+
+func (p *shellSandboxProcess) Stderr() io.Reader {
+	return p.stderr
+}
+
+func (p *shellSandboxProcess) Wait() (SandboxProcessResult, error) {
+	p.waitOnce.Do(func() {
+		err := p.cmd.Wait()
+		exitCode := -1
+		if p.cmd.ProcessState != nil {
+			exitCode = p.cmd.ProcessState.ExitCode()
+		}
+		if ctxErr := p.ctx.Err(); ctxErr != nil && exitCode != 0 {
+			err = ctxErr
+		}
+		p.mu.Lock()
+		p.exitCode = exitCode
+		p.exited = true
+		p.waitErr = err
+		p.mu.Unlock()
+		close(p.waitDone)
+	})
+	<-p.waitDone
+
+	p.mu.RLock()
+	result := SandboxProcessResult{ExitCode: p.exitCode}
+	err := p.waitErr
+	p.mu.RUnlock()
+	return result, err
+}
+
+func (p *shellSandboxProcess) Kill() error {
+	p.killOnce.Do(func() {
+		if p.cmd == nil || p.cmd.Process == nil {
+			return
+		}
+		p.mu.RLock()
+		exited := p.exited
+		p.mu.RUnlock()
+		if exited {
+			return
+		}
+		err := p.cmd.Process.Kill()
+		if errors.Is(err, os.ErrProcessDone) {
+			err = nil
+		}
+		p.killErr = err
+	})
+	return p.killErr
+}
+
+func (p *shellSandboxProcess) ExitCode() (int, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.exitCode, p.exited
 }

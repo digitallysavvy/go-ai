@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // IncludeOptions controls which large request/response details are retained
@@ -115,6 +116,7 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 type Sandbox interface {
 	Description() string
 	RunCommand(ctx context.Context, opts SandboxRunCommandOptions) (SandboxRunCommandResult, error)
+	Spawn(ctx context.Context, opts SandboxSpawnOptions) (SandboxProcess, error)
 	ReadFile(ctx context.Context, path string) (io.ReadCloser, error)
 	ReadBinaryFile(ctx context.Context, path string) ([]byte, error)
 	ReadTextFile(ctx context.Context, opts SandboxReadTextFileOptions) (*string, error)
@@ -129,6 +131,18 @@ type SandboxRunCommandOptions struct {
 	WorkingDirectory string
 	Environment      map[string]string
 }
+
+// SandboxSpawnOptions are passed to Sandbox.Spawn.
+type SandboxSpawnOptions struct {
+	Command          string
+	WorkingDirectory string
+}
+
+// SandboxProcess is a handle to a process started by Sandbox.Spawn.
+type SandboxProcess = providerutils.SandboxProcess
+
+// SandboxProcessResult is returned by SandboxProcess.Wait.
+type SandboxProcessResult = providerutils.SandboxProcessResult
 
 // SandboxRunCommandResult is returned by Sandbox.RunCommand.
 type SandboxRunCommandResult struct {
