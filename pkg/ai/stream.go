@@ -198,6 +198,10 @@ type StreamTextOptions struct {
 	// the stream. If nil, error chunks are silently forwarded to OnChunk.
 	OnError func(ctx context.Context, err error)
 
+	// OnAbort is called when streaming is aborted by context cancellation or
+	// deadline before normal completion.
+	OnAbort func(ctx context.Context, steps []types.StepResult)
+
 	// ExperimentalTransform is an ordered list of transform functions applied to
 	// each stream chunk after provider emission but before forwarding to OnChunk.
 	// Each function receives a chunk and returns zero or more replacement chunks.
@@ -584,7 +588,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		if isAbortErr(ctx, err) {
+			if opts.OnAbort != nil {
+				opts.OnAbort(ctx, nil)
+			}
+			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err})
+		} else {
+			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		}
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
 
@@ -627,7 +638,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
 		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
 		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil ||
-		opts.OnError != nil {
+		opts.OnError != nil || opts.OnAbort != nil {
 		result.processingDone = make(chan struct{})
 		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
 	}
@@ -711,6 +722,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if err != nil {
 				r.err = err
+				if isAbortErr(ctx, err) {
+					if opts.OnAbort != nil {
+						opts.OnAbort(ctx, allSteps)
+					}
+					telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
+						Settings: r.telemetrySettings,
+						CallID:   r.cbCallID,
+						Reason:   err,
+						Steps:    append([]types.StepResult(nil), allSteps...),
+					})
+				}
 				break
 			}
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
@@ -1328,6 +1350,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ChunkType: string(provider.ChunkTypeStreamFinish),
 		})
 	}
+	if r.err != nil {
+		if !isAbortErr(ctx, r.err) {
+			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
+				Settings: r.telemetrySettings,
+				Error:    r.err,
+			})
+		}
+		r.mu.Lock()
+		r.status = StreamStatusDone
+		r.mu.Unlock()
+		return
+	}
 
 	// Resolve final typed output if spec was provided and stream completed cleanly.
 	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
@@ -1795,6 +1829,14 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			break
 		}
 		if err != nil {
+			if isAbortErr(ctx, err) {
+				telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
+					Settings: r.telemetrySettings,
+					CallID:   r.cbCallID,
+					Reason:   err,
+					Steps:    append([]types.StepResult(nil), r.cbSteps...),
+				})
+			}
 			return "", err
 		}
 
@@ -2062,6 +2104,16 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+func isAbortErr(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil
 }
 
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {

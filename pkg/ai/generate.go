@@ -352,6 +352,10 @@ type GenerateTextOptions struct {
 	// OnFinishEvent is called once when the entire generation completes with a
 	// typed OnFinishEvent. Use this instead of OnFinish for structured access.
 	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
+
+	// OnAbort is called when generation is aborted by context cancellation or
+	// deadline before normal completion.
+	OnAbort func(ctx context.Context, steps []types.StepResult)
 }
 
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
@@ -563,11 +567,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
+	callID := ""
 
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
+			if isAbortErr(ctx, err) {
+				var abortSteps []types.StepResult
+				if result != nil {
+					abortSteps = append([]types.StepResult(nil), result.Steps...)
+				}
+				if opts.OnAbort != nil {
+					opts.OnAbort(ctx, abortSteps)
+				}
+				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err, Steps: abortSteps})
+				return
+			}
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
 	}()
@@ -589,7 +605,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	generateID := internalGenerateID(opts.Internal)
-	callID := internalGenerateCallID(opts.Internal)()
+	callID = internalGenerateCallID(opts.Internal)()
 
 	// Emit OnStartEvent.
 	Notify(ctx, OnStartEvent{
@@ -815,7 +831,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
-		performance := stepPerformance(modelCallStart, genResult.Usage, nil)
+		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
 		responseID := ""
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {
 			responseID = meta.ID

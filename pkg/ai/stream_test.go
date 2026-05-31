@@ -2192,3 +2192,41 @@ func TestStreamEmitsReasoningBlockBoundaries(t *testing.T) {
 		t.Errorf("reasoning-end ID = %q, want \"thinking-1\"", endChunk.ID)
 	}
 }
+
+func TestStreamTextAbortDoesNotCallFinish(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStreamWithError(context.Canceled), nil
+		},
+	}
+
+	abortCalled := make(chan struct{}, 1)
+	finishCalled := make(chan struct{}, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			abortCalled <- struct{}{}
+		},
+		OnFinish: func(*StreamTextResult) {
+			finishCalled <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("StreamText() result is nil")
+	}
+
+	select {
+	case <-abortCalled:
+	case <-time.After(time.Second):
+		t.Fatal("OnAbort was not called")
+	}
+	select {
+	case <-finishCalled:
+		t.Fatal("OnFinish should not be called for aborted stream")
+	default:
+	}
+}

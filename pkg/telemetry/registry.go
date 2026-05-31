@@ -228,6 +228,15 @@ type TelemetryErrorEvent struct {
 	Error    error
 }
 
+// TelemetryAbortEvent is emitted when a generation is aborted by context
+// cancellation or timeout.
+type TelemetryAbortEvent struct {
+	Settings *Settings
+	CallID   string
+	Reason   error
+	Steps    []types.StepResult
+}
+
 // TelemetryUsage carries token counts for telemetry events.
 type TelemetryUsage struct {
 	InputTokens              *int64
@@ -330,6 +339,10 @@ type languageModelCallEndHandler interface {
 	OnLanguageModelCallEnd(context.Context, LanguageModelCallEndEvent)
 }
 
+type abortHandler interface {
+	OnAbort(context.Context, TelemetryAbortEvent)
+}
+
 type endHandler interface {
 	OnEnd(context.Context, TelemetryFinishEvent)
 }
@@ -387,6 +400,7 @@ func (NoopTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent
 func (NoopTelemetryIntegration) OnStepFinish(_ context.Context, _ TelemetryStepFinishEvent) {}
 func (NoopTelemetryIntegration) OnFinish(_ context.Context, _ TelemetryFinishEvent)         {}
 func (NoopTelemetryIntegration) OnError(_ context.Context, _ TelemetryErrorEvent)           {}
+func (NoopTelemetryIntegration) OnAbort(_ context.Context, _ TelemetryAbortEvent)           {}
 func (NoopTelemetryIntegration) ExecuteTool(
 	ctx context.Context,
 	_ string,
@@ -968,6 +982,22 @@ func (OTelTelemetryIntegration) OnError(ctx context.Context, e TelemetryErrorEve
 	span.End()
 }
 
+// OnAbort records the abort reason on the root span and ends it.
+func (OTelTelemetryIntegration) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	if e.CallID != "" {
+		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				entry.span.End()
+			}
+		}
+	}
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	span.End()
+}
+
 // ExecuteTool delegates directly to execute. Nested span support can be added here.
 func (OTelTelemetryIntegration) ExecuteTool(
 	ctx context.Context,
@@ -1260,6 +1290,19 @@ func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnError, e)
 	for _, i := range snapshotFor(e.Settings) {
 		i.OnError(ctx, e)
+	}
+}
+
+// FireOnAbort calls OnAbort on every registered integration.
+func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	PublishDiagnostic(ctx, DiagnosticEventOnAbort, e)
+	for _, i := range snapshotFor(e.Settings) {
+		if h, ok := i.(abortHandler); ok {
+			h.OnAbort(ctx, e)
+		}
 	}
 }
 

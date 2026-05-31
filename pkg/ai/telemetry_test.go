@@ -680,6 +680,13 @@ func (m *mockTelemetryIntegration) OnError(ctx context.Context, _ telemetry.Tele
 		sp.mu.Unlock()
 	}
 }
+func (m *mockTelemetryIntegration) OnAbort(ctx context.Context, _ telemetry.TelemetryAbortEvent) {
+	if sp, ok := ctx.Value(mockTelemetryCtxKey{}).(*mockTelemetrySpan); ok {
+		sp.mu.Lock()
+		sp.ended = true
+		sp.mu.Unlock()
+	}
+}
 
 func (m *mockTelemetryIntegration) ExecuteTool(
 	ctx context.Context,

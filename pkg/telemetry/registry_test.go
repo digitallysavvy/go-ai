@@ -60,6 +60,11 @@ func (m *mockIntegration) OnError(_ context.Context, _ TelemetryErrorEvent) {
 	m.ends++
 	m.mu.Unlock()
 }
+func (m *mockIntegration) OnAbort(_ context.Context, _ TelemetryAbortEvent) {
+	m.mu.Lock()
+	m.ends++
+	m.mu.Unlock()
+}
 
 func (m *mockIntegration) ExecuteTool(
 	ctx context.Context,

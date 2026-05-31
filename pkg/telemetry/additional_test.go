@@ -77,6 +77,7 @@ func (s *eventSpy) OnError(_ context.Context, _ TelemetryErrorEvent) {
 	s.errs++
 	s.mu.Unlock()
 }
+func (s *eventSpy) OnAbort(_ context.Context, _ TelemetryAbortEvent) {}
 func (s *eventSpy) ExecuteTool(
 	ctx context.Context,
 	toolName string,

@@ -28,6 +28,7 @@ const (
 	DiagnosticEventOnRerankEnd              DiagnosticEventType = "onRerankEnd"
 	DiagnosticEventOnEnd                    DiagnosticEventType = "onEnd"
 	DiagnosticEventOnError                  DiagnosticEventType = "onError"
+	DiagnosticEventOnAbort                  DiagnosticEventType = "onAbort"
 
 	// Deprecated compatibility aliases.
 	DiagnosticEventOnEmbedFinish  DiagnosticEventType = DiagnosticEventOnEmbedEnd
