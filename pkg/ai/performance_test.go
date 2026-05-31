@@ -24,6 +24,19 @@ func TestCalculateTokensPerSecondParity(t *testing.T) {
 	}
 }
 
+func TestCalculateOutputChunkTimingStatsParity(t *testing.T) {
+	stats := calculateOutputChunkTimingStats([]int64{30, 10, 20, 100, 40})
+	if stats == nil {
+		t.Fatal("stats = nil")
+	}
+	if stats.Min != 10 || stats.P10 != 10 || stats.Median != 30 || stats.Avg != 40 || stats.P90 != 100 || stats.Max != 100 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if got := calculateOutputChunkTimingStats(nil); got != nil {
+		t.Fatalf("nil stats = %+v", got)
+	}
+}
+
 func TestGenerateTextStepPerformance(t *testing.T) {
 	outputTokens := int64(4)
 	model := &testutil.MockLanguageModel{
@@ -56,8 +69,8 @@ func TestGenerateTextStepPerformance(t *testing.T) {
 	if result.FinalStep.Performance.EffectiveOutputTokensPerSecond <= 0 {
 		t.Fatalf("effectiveOutputTokensPerSecond = %v, want > 0", result.FinalStep.Performance.EffectiveOutputTokensPerSecond)
 	}
-	if result.FinalStep.Performance.TimeToFirstTokenMs != nil {
-		t.Fatalf("generateText timeToFirstOutputTokenMs = %v, want nil", *result.FinalStep.Performance.TimeToFirstTokenMs)
+	if result.FinalStep.Performance.TimeToFirstOutputMs != nil {
+		t.Fatalf("generateText timeToFirstOutputMs = %v, want nil", *result.FinalStep.Performance.TimeToFirstOutputMs)
 	}
 	data, err := json.Marshal(result.FinalStep.Performance)
 	if err != nil {

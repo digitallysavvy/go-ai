@@ -666,6 +666,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepIndex := stepNum - 1
 		stepStart := time.Now()
 		var firstTokenAt *time.Time
+		var previousOutputChunkAt *time.Time
+		var outputChunkGapsMs []int64
 		stepProvider := r.cbModel.Provider()
 		stepModelID := r.cbModel.ModelID()
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -719,9 +721,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Transition from Submitted to Streaming on the first content chunk.
 			// Metadata and stream lifecycle chunks are forwarded before this
 			// marker, matching the TypeScript stream part order.
-			if firstTokenAt == nil && forwardChunk && isFirstChunkContent(chunk.Type) {
+			if forwardChunk && isOutputChunkForTiming(*chunk) {
 				now := time.Now()
-				firstTokenAt = &now
+				if firstTokenAt == nil {
+					firstTokenAt = &now
+				} else if previousOutputChunkAt != nil {
+					outputChunkGapsMs = append(outputChunkGapsMs, now.Sub(*previousOutputChunkAt).Milliseconds())
+				}
+				previousOutputChunkAt = &now
 			}
 			if firstChunkEver && forwardChunk && isFirstChunkContent(chunk.Type) {
 				firstChunkEver = false
@@ -770,9 +777,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Accumulate reasoning text from reasoning chunks.
-			if chunk.Type == provider.ChunkTypeReasoning && chunk.Text != "" {
-				stepReasoningBuilder.WriteString(chunk.Text)
-				stepContent = appendReasoningPart(stepContent, chunk.Text)
+			if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "") {
+				reasoningText := chunk.Reasoning
+				if reasoningText == "" {
+					reasoningText = chunk.Text
+				}
+				stepReasoningBuilder.WriteString(reasoningText)
+				stepContent = appendReasoningPart(stepContent, reasoningText)
 			}
 
 			// Accumulate tool call chunks without executing until the stream is consumed.
@@ -815,7 +826,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				if !modelCallEndFired {
 					modelCallEndFired = true
-					performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
+					performance := stepPerformance(stepStart, stepUsage, firstTokenAt, outputChunkGapsMs)
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
 						Settings:      r.telemetrySettings,
 						CallID:        r.cbCallID,
@@ -1021,7 +1032,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Record this step. For multi-step streaming, r.text accumulates across steps;
 		// use the current snapshot as the step's text.
-		performance := stepPerformance(stepStart, stepUsage, firstTokenAt)
+		performance := stepPerformance(stepStart, stepUsage, firstTokenAt, outputChunkGapsMs)
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
@@ -1466,6 +1477,13 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 	return r.stream
 }
 
+// FullStream returns the underlying text stream.
+//
+// Deprecated: use Stream.
+func (r *StreamTextResult) FullStream() provider.TextStream {
+	return r.Stream()
+}
+
 // ConsumeStream drains the stream and waits for completion.
 func (r *StreamTextResult) ConsumeStream() error {
 	_, err := r.ReadAll()
@@ -1473,26 +1491,37 @@ func (r *StreamTextResult) ConsumeStream() error {
 }
 
 // ToTextStreamResponse creates a text Response object from the stream result.
+//
+// Deprecated: use CreateTextStreamResponseFromStream with Stream.
 func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextStreamResponseInit) (*http.Response, error) {
-	return CreateTextStreamResponseWithInit(ctx, r, init)
+	return CreateTextStreamResponseFromStream(ctx, r.Stream(), init)
 }
 
 // ToUIMessageStream converts the stream result into UI message chunks.
+//
+// Deprecated: use ToUIMessageStream with Stream.
 func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
-	return CreateUIMessageStream(ctx, r, opts...)
+	return ToUIMessageStream(ctx, r.Stream(), opts...)
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.
+//
+// Deprecated: use ToUIMessageStream with Stream and create a response with the
+// standalone helpers.
 func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	return CreateUIMessageStreamResponseWithInit(ctx, r, init, opts...)
 }
 
 // PipeTextStreamToResponse writes text delta output to the writer.
+//
+// Deprecated: use PipeTextStreamToWriter with Stream.
 func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeTextStreamToResponse(ctx, r, w)
+	return PipeTextStreamToWriter(ctx, r.Stream(), w)
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
+//
+// Deprecated: use ToUIMessageStream with Stream and write the resulting chunks.
 func (r *StreamTextResult) PipeUIMessageStreamToResponse(ctx context.Context, w io.Writer, opts ...UIMessageStreamResultOptions) error {
 	return PipeUIMessageStreamToResponse(ctx, r, w, opts...)
 }
@@ -1753,6 +1782,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	ctx := context.Background()
 	stepStart := time.Now()
 	var firstTokenAt *time.Time
+	var previousOutputChunkAt *time.Time
+	var outputChunkGapsMs []int64
 	firstChunk := true
 	var pendingToolCalls []types.ToolCall
 	var stepContent []types.ContentPart
@@ -1767,11 +1798,16 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			return "", err
 		}
 
-		// Transition Submitted to Streaming on the first content chunk.
-		if firstTokenAt == nil && isFirstChunkContent(chunk.Type) {
+		if isOutputChunkForTiming(*chunk) {
 			now := time.Now()
-			firstTokenAt = &now
+			if firstTokenAt == nil {
+				firstTokenAt = &now
+			} else if previousOutputChunkAt != nil {
+				outputChunkGapsMs = append(outputChunkGapsMs, now.Sub(*previousOutputChunkAt).Milliseconds())
+			}
+			previousOutputChunkAt = &now
 		}
+		// Transition Submitted to Streaming on the first content chunk.
 		if firstChunk && isFirstChunkContent(chunk.Type) {
 			firstChunk = false
 			r.mu.Lock()
@@ -1833,12 +1869,16 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
 			stepContent = append(stepContent, toolResultContentFromToolResult(*chunk.ToolResult))
 		}
-		if chunk.Type == provider.ChunkTypeReasoning && chunk.Text != "" {
-			stepContent = appendReasoningPart(stepContent, chunk.Text)
+		if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "") {
+			reasoningText := chunk.Reasoning
+			if reasoningText == "" {
+				reasoningText = chunk.Text
+			}
+			stepContent = appendReasoningPart(stepContent, reasoningText)
 			if n := len(stepReasoning); n > 0 {
-				stepReasoning[n-1].Text += chunk.Text
+				stepReasoning[n-1].Text += reasoningText
 			} else {
-				stepReasoning = append(stepReasoning, types.ReasoningContent{Text: chunk.Text})
+				stepReasoning = append(stepReasoning, types.ReasoningContent{Text: reasoningText})
 			}
 		}
 
@@ -1916,7 +1956,7 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		DynamicToolCalls: filterDynamicToolCalls(pendingToolCalls),
 		FinishReason:     r.finishReason,
 		Usage:            r.usage,
-		Performance:      stepPerformance(stepStart, r.usage, firstTokenAt),
+		Performance:      stepPerformance(stepStart, r.usage, firstTokenAt, outputChunkGapsMs),
 		Sources:          r.sources,
 		Files:            r.files,
 		Request: types.StepRequest{
@@ -2000,6 +2040,23 @@ func isFirstChunkContent(chunkType provider.ChunkType) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
+	switch chunk.Type {
+	case provider.ChunkTypeText:
+		return chunk.Text != ""
+	case provider.ChunkTypeReasoning:
+		return chunk.Text != "" || chunk.Reasoning != ""
+	case provider.ChunkTypeToolInputDelta:
+		return chunk.Text != ""
+	case provider.ChunkTypeFile,
+		provider.ChunkTypeReasoningFile,
+		provider.ChunkTypeToolCall:
+		return true
+	default:
+		return false
 	}
 }
 

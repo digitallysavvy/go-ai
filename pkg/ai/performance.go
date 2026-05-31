@@ -2,6 +2,7 @@ package ai
 
 import (
 	"math"
+	"sort"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -37,20 +38,22 @@ func sumTokenCounts(a, b *int64) *int64 {
 	return &total
 }
 
-func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time) types.StepPerformance {
+func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time, outputChunkGapsMs []int64) types.StepPerformance {
 	responseTimeMs := time.Since(start).Milliseconds()
-	var timeToFirstTokenMs *int64
+	var timeToFirstOutputMs *int64
+	var timeBetweenOutputChunksMs *types.OutputChunkTimingStats
 	var outputTokensPerSecond *float64
 	var inputTokensPerSecond *float64
 	if firstTokenAt != nil {
 		value := firstTokenAt.Sub(start).Milliseconds()
-		timeToFirstTokenMs = &value
+		timeToFirstOutputMs = &value
 		input := calculateTokensPerSecond(usage.InputTokens, value)
 		inputTokensPerSecond = &input
 		outputStreamMs := responseTimeMs - value
 		output := calculateTokensPerSecond(usage.OutputTokens, outputStreamMs)
 		outputTokensPerSecond = &output
 	}
+	timeBetweenOutputChunksMs = calculateOutputChunkTimingStats(outputChunkGapsMs)
 	return types.StepPerformance{
 		StepTimeMs:                     responseTimeMs,
 		ResponseTimeMs:                 responseTimeMs,
@@ -59,8 +62,40 @@ func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time
 		OutputTokensPerSecond:          outputTokensPerSecond,
 		InputTokensPerSecond:           inputTokensPerSecond,
 		EffectiveTotalTokensPerSecond:  calculateTokensPerSecond(sumTokenCounts(usage.InputTokens, usage.OutputTokens), responseTimeMs),
-		TimeToFirstTokenMs:             timeToFirstTokenMs,
+		TimeToFirstOutputMs:            timeToFirstOutputMs,
+		TimeBetweenOutputChunksMs:      timeBetweenOutputChunksMs,
 	}
+}
+
+func calculateOutputChunkTimingStats(timingsMs []int64) *types.OutputChunkTimingStats {
+	if len(timingsMs) == 0 {
+		return nil
+	}
+	sorted := append([]int64(nil), timingsMs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	var sum int64
+	for _, timing := range timingsMs {
+		sum += timing
+	}
+	return &types.OutputChunkTimingStats{
+		Min:    sorted[0],
+		P10:    nearestRankPercentile(sorted, 0.1),
+		Median: nearestRankPercentile(sorted, 0.5),
+		Avg:    float64(sum) / float64(len(timingsMs)),
+		P90:    nearestRankPercentile(sorted, 0.9),
+		Max:    sorted[len(sorted)-1],
+	}
+}
+
+func nearestRankPercentile(sorted []int64, percentile float64) int64 {
+	index := int(math.Ceil(percentile*float64(len(sorted)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
 }
 
 func finishStepPerformance(performance types.StepPerformance, stepStart time.Time, toolExecutionMs map[string]int64) types.StepPerformance {
@@ -79,6 +114,7 @@ func languageModelCallPerformance(performance types.StepPerformance) telemetry.L
 		OutputTokensPerSecond:          performance.OutputTokensPerSecond,
 		InputTokensPerSecond:           performance.InputTokensPerSecond,
 		EffectiveTotalTokensPerSecond:  performance.EffectiveTotalTokensPerSecond,
-		TimeToFirstOutputTokenMs:       performance.TimeToFirstTokenMs,
+		TimeToFirstOutputMs:            performance.TimeToFirstOutputMs,
+		TimeBetweenOutputChunksMs:      performance.TimeBetweenOutputChunksMs,
 	}
 }

@@ -38,6 +38,17 @@ type StepResponse struct {
 	Body interface{} `json:"body,omitempty"`
 }
 
+// OutputChunkTimingStats contains timing statistics for gaps between generated
+// output chunks in milliseconds.
+type OutputChunkTimingStats struct {
+	Min    int64   `json:"min"`
+	P10    int64   `json:"p10"`
+	Median int64   `json:"median"`
+	Avg    float64 `json:"avg"`
+	P90    int64   `json:"p90"`
+	Max    int64   `json:"max"`
+}
+
 // StepPerformance contains deterministic performance statistics for a model step.
 // It mirrors the TypeScript AI SDK StepResult.performance shape.
 type StepPerformance struct {
@@ -65,9 +76,13 @@ type StepPerformance struct {
 	// EffectiveTotalTokensPerSecond is (inputTokens + outputTokens) / requestSeconds.
 	EffectiveTotalTokensPerSecond float64 `json:"effectiveTotalTokensPerSecond"`
 
-	// TimeToFirstTokenMs is populated for streaming steps when the first content
-	// token/chunk timing is known.
-	TimeToFirstTokenMs *int64 `json:"timeToFirstOutputTokenMs,omitempty"`
+	// TimeToFirstOutputMs is populated for streaming steps when the first
+	// generated output chunk timing is known.
+	TimeToFirstOutputMs *int64 `json:"timeToFirstOutputMs,omitempty"`
+
+	// TimeBetweenOutputChunksMs contains timing statistics for gaps between
+	// generated output chunks.
+	TimeBetweenOutputChunksMs *OutputChunkTimingStats `json:"timeBetweenOutputChunksMs,omitempty"`
 }
 
 // GenerateResult contains the result of a text generation operation

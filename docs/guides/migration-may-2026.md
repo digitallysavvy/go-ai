@@ -206,7 +206,7 @@ Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should co
 
 `GenerateTextResult.Content` now matches the TypeScript SDK `result.content` getter: it is the ordered aggregate of every step's content parts, including text, reasoning, files, sources, tool calls, tool results, tool errors, and tool approval request/response parts.
 
-`types.StepResult` now includes `Performance` statistics matching the TypeScript SDK: `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming-only `OutputTokensPerSecond`, `InputTokensPerSecond`, and `TimeToFirstTokenMs` serialized as `timeToFirstOutputTokenMs`. Use `FinalStep.Performance.EffectiveOutputTokensPerSecond` for final-step output throughput and `Steps[i].Performance` for multi-step workflows.
+`types.StepResult` now includes `Performance` statistics matching the TypeScript SDK: `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming-only `OutputTokensPerSecond`, `InputTokensPerSecond`, `TimeToFirstOutputMs`, and `TimeBetweenOutputChunksMs`. Use `FinalStep.Performance.EffectiveOutputTokensPerSecond` for final-step output throughput and `Steps[i].Performance` for multi-step workflows.
 
 `StepTimeMs` is measured as wall-clock step duration, including client-side tool execution. `ToolExecutionMs` is keyed by `toolCallID`.
 

@@ -78,12 +78,13 @@ type LanguageModelCallEndEvent struct {
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
 type LanguageModelCallPerformance struct {
-	ResponseTimeMs                 int64    `json:"responseTimeMs"`
-	EffectiveOutputTokensPerSecond float64  `json:"effectiveOutputTokensPerSecond"`
-	OutputTokensPerSecond          *float64 `json:"outputTokensPerSecond,omitempty"`
-	InputTokensPerSecond           *float64 `json:"inputTokensPerSecond,omitempty"`
-	EffectiveTotalTokensPerSecond  float64  `json:"effectiveTotalTokensPerSecond"`
-	TimeToFirstOutputTokenMs       *int64   `json:"timeToFirstOutputTokenMs,omitempty"`
+	ResponseTimeMs                 int64                         `json:"responseTimeMs"`
+	EffectiveOutputTokensPerSecond float64                       `json:"effectiveOutputTokensPerSecond"`
+	OutputTokensPerSecond          *float64                      `json:"outputTokensPerSecond,omitempty"`
+	InputTokensPerSecond           *float64                      `json:"inputTokensPerSecond,omitempty"`
+	EffectiveTotalTokensPerSecond  float64                       `json:"effectiveTotalTokensPerSecond"`
+	TimeToFirstOutputMs            *int64                        `json:"timeToFirstOutputMs,omitempty"`
+	TimeBetweenOutputChunksMs      *types.OutputChunkTimingStats `json:"timeBetweenOutputChunksMs,omitempty"`
 }
 
 // EmbeddingModelCallStartEvent is emitted immediately before an embedding model call.
@@ -590,8 +591,18 @@ func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e Lang
 	if e.Performance.InputTokensPerSecond != nil {
 		entry.span.SetAttributes(attribute.Float64("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond))
 	}
-	if e.Performance.TimeToFirstOutputTokenMs != nil {
-		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputTokenMs", *e.Performance.TimeToFirstOutputTokenMs))
+	if e.Performance.TimeToFirstOutputMs != nil {
+		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputMs", *e.Performance.TimeToFirstOutputMs))
+	}
+	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
+		entry.span.SetAttributes(
+			attribute.Int64("ai.response.timeBetweenOutputChunksMs.min", stats.Min),
+			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p10", stats.P10),
+			attribute.Int64("ai.response.timeBetweenOutputChunksMs.median", stats.Median),
+			attribute.Float64("ai.response.timeBetweenOutputChunksMs.avg", stats.Avg),
+			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p90", stats.P90),
+			attribute.Int64("ai.response.timeBetweenOutputChunksMs.max", stats.Max),
+		)
 	}
 	if e.Usage.InputTokens != nil {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
