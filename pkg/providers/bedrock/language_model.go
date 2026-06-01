@@ -428,7 +428,8 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 }
 
 func bedrockSupportsNativeStructuredOutput(modelID string) bool {
-	return !strings.Contains(modelID, "claude-opus-4-7")
+	return !strings.Contains(modelID, "claude-opus-4-7") &&
+		!strings.Contains(modelID, "claude-opus-4-8")
 }
 
 func (m *LanguageModel) toClaudeSystemContent(msg types.Message) []map[string]interface{} {
@@ -530,7 +531,7 @@ func (m *LanguageModel) toClaudeMessageContent(msg types.Message, trimFinalAssis
 			})
 			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
 		case types.ToolResultContent:
-			content, err := bedrockToolResultContent(p)
+			content, err := bedrockToolResultContent(p, documentCounter)
 			if err != nil {
 				return nil, err
 			}
@@ -552,7 +553,7 @@ func (m *LanguageModel) toClaudeMessageContent(msg types.Message, trimFinalAssis
 	return blocks, nil
 }
 
-func bedrockToolResultContent(part types.ToolResultContent) ([]map[string]interface{}, error) {
+func bedrockToolResultContent(part types.ToolResultContent, documentCounter *int) ([]map[string]interface{}, error) {
 	if part.Output == nil {
 		if part.Error != "" {
 			return []map[string]interface{}{{"text": part.Error}}, nil
@@ -590,7 +591,29 @@ func bedrockToolResultContent(part types.ToolResultContent) ([]map[string]interf
 					return nil, err
 				}
 				if !strings.HasPrefix(mediaType, "image/") {
-					return nil, fmt.Errorf("unsupported tool result media type: %s", mediaType)
+					format, err := bedrockDocumentFormat(mediaType)
+					if err != nil {
+						return nil, err
+					}
+					name := stripBedrockFileExtension(b.Filename)
+					if name == "" {
+						if documentCounter != nil {
+							(*documentCounter)++
+							name = fmt.Sprintf("document-%d", *documentCounter)
+						} else {
+							name = "document-1"
+						}
+					}
+					document := map[string]interface{}{
+						"format": format,
+						"name":   name,
+						"source": map[string]interface{}{"bytes": payload.bytes},
+					}
+					if bedrockCitationsEnabled(b.ProviderOptions) {
+						document["citations"] = map[string]interface{}{"enabled": true}
+					}
+					out = append(out, map[string]interface{}{"document": document})
+					continue
 				}
 				format, err := bedrockImageFormat(mediaType)
 				if err != nil {

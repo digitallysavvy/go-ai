@@ -4,6 +4,9 @@ package anthropic
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.anthropic.com/en/docs/about-claude/models/overview for the full list.
 const (
+	// Claude Opus 4.8 — Most capable model with native structured output support
+	ClaudeOpus4_8 = "claude-opus-4-8"
+
 	// Claude Opus 4.7 — Most capable model with x-high effort support
 	ClaudeOpus4_7 = "claude-opus-4-7"
 

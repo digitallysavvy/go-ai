@@ -817,6 +817,51 @@ func TestBuildClaudeRequest_DocumentCitationsProviderOption(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeRequest_ToolResultDocumentFileContent(t *testing.T) {
+	model := newTestBedrockModel()
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "call-123",
+						ToolName:   "document-reader",
+						Output: &types.ToolResultOutput{
+							Type: types.ToolResultOutputContent,
+							Content: []types.ToolResultContentBlock{
+								types.FileContentBlock{
+									MediaType: "application/pdf",
+									Filename:  "tool-result.pdf",
+									FileData: types.FileData{
+										Type:       types.FileDataTypeData,
+										DataString: "base64data",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest error = %v", err)
+	}
+	messages := body["messages"].([]map[string]interface{})
+	content := messages[0]["content"].([]map[string]interface{})
+	toolResult := content[0]["toolResult"].(map[string]interface{})
+	blocks := toolResult["content"].([]map[string]interface{})
+	document := blocks[0]["document"].(map[string]interface{})
+	if document["format"] != "pdf" || document["name"] != "tool-result" {
+		t.Fatalf("document = %#v", document)
+	}
+	source := document["source"].(map[string]interface{})
+	if source["bytes"] != "base64data" {
+		t.Fatalf("document source = %#v, want bytes base64data", source)
+	}
+}
+
 func TestBuildClaudeRequest_CitationsDoNotFallBackWhenAmazonBedrockPresent(t *testing.T) {
 	model := newTestBedrockModel()
 	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
@@ -1077,9 +1122,9 @@ func TestBuildClaudeRequest_RejectsSystemAfterUser(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeRequest_RejectsNonImageToolResultFile(t *testing.T) {
+func TestBuildClaudeRequest_NonImageToolResultFileBecomesDocument(t *testing.T) {
 	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleTool,
@@ -1097,8 +1142,16 @@ func TestBuildClaudeRequest_RejectsNonImageToolResultFile(t *testing.T) {
 			},
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported tool result media type") {
-		t.Fatalf("buildClaudeRequest error = %v, want unsupported tool result media type", err)
+	if err != nil {
+		t.Fatalf("buildClaudeRequest error = %v", err)
+	}
+	messages := body["messages"].([]map[string]interface{})
+	content := messages[0]["content"].([]map[string]interface{})
+	toolResult := content[0]["toolResult"].(map[string]interface{})
+	blocks := toolResult["content"].([]map[string]interface{})
+	document := blocks[0]["document"].(map[string]interface{})
+	if document["format"] != "pdf" || document["name"] != "document-1" {
+		t.Fatalf("document = %#v", document)
 	}
 }
 
@@ -1584,5 +1637,23 @@ func TestBuildClaudeRequest_DisablesNativeStructuredOutputForClaudeOpus47(t *tes
 	}
 	if _, ok := body["output_config"]; ok {
 		t.Fatalf("output_config = %#v, want omitted for claude-opus-4-7", body["output_config"])
+	}
+}
+
+func TestBuildClaudeRequest_DisablesNativeStructuredOutputForClaudeOpus48(t *testing.T) {
+	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
+	model := NewLanguageModel(p, ModelAnthropicClaudeOpus4_8)
+	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json_schema",
+			Schema: map[string]interface{}{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildClaudeRequest error = %v", err)
+	}
+	if _, ok := body["output_config"]; ok {
+		t.Fatalf("output_config = %#v, want omitted for claude-opus-4-8", body["output_config"])
 	}
 }

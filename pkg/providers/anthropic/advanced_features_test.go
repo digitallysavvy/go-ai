@@ -84,6 +84,46 @@ func TestFastModeConfiguration(t *testing.T) {
 	}
 }
 
+func TestConvertResponseWebToolResultErrorsMatchTSShape(t *testing.T) {
+	cfg := Config{APIKey: "test-key", BaseURL: DefaultBaseURL}
+	p := New(cfg)
+	model := NewLanguageModel(p, "claude-3-5-sonnet-20241022", nil)
+
+	response := anthropicResponse{
+		ID:         "msg_123",
+		Type:       "message",
+		Role:       "assistant",
+		StopReason: "end_turn",
+		Content: []anthropicContent{
+			{
+				Type:      "web_search_tool_result",
+				ToolUseID: "srvtoolu_search",
+				Content:   json.RawMessage(`{"type":"web_search_tool_result_error","error_code":"too_many_requests"}`),
+			},
+			{
+				Type:      "web_fetch_tool_result",
+				ToolUseID: "srvtoolu_fetch",
+				Content:   json.RawMessage(`{"type":"web_fetch_tool_result_error","error_code":"invalid_url"}`),
+			},
+		},
+	}
+
+	result := model.convertResponse(response, false)
+	if len(result.Content) != 2 {
+		t.Fatalf("content len = %d, want 2", len(result.Content))
+	}
+	search := result.Content[0].(types.ToolResultContent)
+	searchResult := search.Result.(map[string]interface{})
+	if search.ToolName != "web_search" || search.Error != "too_many_requests" || searchResult["type"] != "web_search_tool_result_error" || searchResult["errorCode"] != "too_many_requests" {
+		t.Fatalf("search result = %#v", search)
+	}
+	fetch := result.Content[1].(types.ToolResultContent)
+	fetchResult := fetch.Result.(map[string]interface{})
+	if fetch.ToolName != "web_fetch" || fetch.Error != "invalid_url" || fetchResult["type"] != "web_fetch_tool_result_error" || fetchResult["errorCode"] != "invalid_url" {
+		t.Fatalf("fetch result = %#v", fetch)
+	}
+}
+
 // TestAdaptiveThinkingConfiguration tests adaptive thinking configuration
 func TestAdaptiveThinkingConfiguration(t *testing.T) {
 	tests := []struct {
@@ -341,4 +381,3 @@ func TestResponseBodySerialization(t *testing.T) {
 		t.Errorf("failed to marshal request body to JSON: %v", err)
 	}
 }
-

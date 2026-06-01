@@ -6,9 +6,9 @@ package bedrock
 const (
 	// ─── Amazon Titan ────────────────────────────────────────────────────────
 
-	ModelAmazonTitanTG1Large       = "amazon.titan-tg1-large"
-	ModelAmazonTitanTextExpressV1  = "amazon.titan-text-express-v1"
-	ModelAmazonTitanTextLiteV1     = "amazon.titan-text-lite-v1"
+	ModelAmazonTitanTG1Large      = "amazon.titan-tg1-large"
+	ModelAmazonTitanTextExpressV1 = "amazon.titan-text-express-v1"
+	ModelAmazonTitanTextLiteV1    = "amazon.titan-text-lite-v1"
 
 	// ─── Amazon Nova ─────────────────────────────────────────────────────────
 
@@ -22,6 +22,7 @@ const (
 	ModelAnthropicClaudeV2            = "anthropic.claude-v2"
 	ModelAnthropicClaudeV2_1          = "anthropic.claude-v2:1"
 	ModelAnthropicClaudeInstantV1     = "anthropic.claude-instant-v1"
+	ModelAnthropicClaudeOpus4_8       = "anthropic.claude-opus-4-8"
 	ModelAnthropicClaudeOpus4_6V1     = "anthropic.claude-opus-4-6-v1"
 	ModelAnthropicClaudeSonnet4_6V1   = "anthropic.claude-sonnet-4-6-v1"
 	ModelAnthropicClaudeOpus45_V1     = "anthropic.claude-opus-4-5-20251101-v1:0"
@@ -47,6 +48,7 @@ const (
 	ModelUSAnthropicClaude35Haiku_V1    = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
 	ModelUSAnthropicClaude35SonnetV2_V1 = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 	ModelUSAnthropicClaude37Sonnet_V1   = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+	ModelUSAnthropicClaudeOpus4_8       = "us.anthropic.claude-opus-4-8"
 	ModelUSAnthropicClaudeOpus4_6V1     = "us.anthropic.claude-opus-4-6-v1"
 	ModelUSAnthropicClaudeSonnet4_6V1   = "us.anthropic.claude-sonnet-4-6-v1"
 	ModelUSAnthropicClaudeOpus45_V1     = "us.anthropic.claude-opus-4-5-20251101-v1:0"
@@ -55,6 +57,10 @@ const (
 	ModelUSAnthropicClaudeOpus4_V1      = "us.anthropic.claude-opus-4-20250514-v1:0"
 	ModelUSAnthropicClaudeOpus41_V1     = "us.anthropic.claude-opus-4-1-20250805-v1:0"
 	ModelUSAnthropicClaudeHaiku45_V1    = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+	// ─── Anthropic Claude (eu cross-region) ──────────────────────────────────
+
+	ModelEUAnthropicClaudeOpus4_8 = "eu.anthropic.claude-opus-4-8"
 
 	// ─── Cohere ──────────────────────────────────────────────────────────────
 
@@ -65,15 +71,15 @@ const (
 
 	// ─── Meta Llama 3 ────────────────────────────────────────────────────────
 
-	ModelMetaLlama370BInstructV1  = "meta.llama3-70b-instruct-v1:0"
-	ModelMetaLlama38BInstructV1   = "meta.llama3-8b-instruct-v1:0"
+	ModelMetaLlama370BInstructV1   = "meta.llama3-70b-instruct-v1:0"
+	ModelMetaLlama38BInstructV1    = "meta.llama3-8b-instruct-v1:0"
 	ModelMetaLlama31405BInstructV1 = "meta.llama3-1-405b-instruct-v1:0"
-	ModelMetaLlama3170BInstructV1 = "meta.llama3-1-70b-instruct-v1:0"
-	ModelMetaLlama318BInstructV1  = "meta.llama3-1-8b-instruct-v1:0"
-	ModelMetaLlama3211BInstructV1 = "meta.llama3-2-11b-instruct-v1:0"
-	ModelMetaLlama321BInstructV1  = "meta.llama3-2-1b-instruct-v1:0"
-	ModelMetaLlama323BInstructV1  = "meta.llama3-2-3b-instruct-v1:0"
-	ModelMetaLlama3290BInstructV1 = "meta.llama3-2-90b-instruct-v1:0"
+	ModelMetaLlama3170BInstructV1  = "meta.llama3-1-70b-instruct-v1:0"
+	ModelMetaLlama318BInstructV1   = "meta.llama3-1-8b-instruct-v1:0"
+	ModelMetaLlama3211BInstructV1  = "meta.llama3-2-11b-instruct-v1:0"
+	ModelMetaLlama321BInstructV1   = "meta.llama3-2-1b-instruct-v1:0"
+	ModelMetaLlama323BInstructV1   = "meta.llama3-2-3b-instruct-v1:0"
+	ModelMetaLlama3290BInstructV1  = "meta.llama3-2-90b-instruct-v1:0"
 
 	// ─── Meta Llama 3 (us cross-region) ──────────────────────────────────────
 
@@ -92,10 +98,10 @@ const (
 
 	// ─── Mistral ─────────────────────────────────────────────────────────────
 
-	ModelMistral7BInstructV0         = "mistral.mistral-7b-instruct-v0:2"
+	ModelMistral7BInstructV0          = "mistral.mistral-7b-instruct-v0:2"
 	ModelMistralMixtral8x7BInstructV0 = "mistral.mixtral-8x7b-instruct-v0:1"
-	ModelMistralLarge2402V1          = "mistral.mistral-large-2402-v1:0"
-	ModelMistralSmall2402V1          = "mistral.mistral-small-2402-v1:0"
+	ModelMistralLarge2402V1           = "mistral.mistral-large-2402-v1:0"
+	ModelMistralSmall2402V1           = "mistral.mistral-small-2402-v1:0"
 	ModelUSMistralPixtralLarge2502V1  = "us.mistral.pixtral-large-2502-v1:0"
 
 	// ─── OpenAI (via Bedrock) ─────────────────────────────────────────────────

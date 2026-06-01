@@ -691,6 +691,121 @@ func TestToAnthropicMessagesToolResultOutputCacheControl(t *testing.T) {
 	}
 }
 
+func TestToAnthropicMessagesContainerUploadFileReference(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{
+			types.FileContent{
+				MediaType: "application/pdf",
+				Reference: "file_123",
+				ProviderOptions: map[string]interface{}{
+					"anthropic": map[string]interface{}{"containerUpload": true},
+				},
+			},
+		},
+	}}
+	got := ToAnthropicMessages(msgs)
+	content := got[0]["content"].([]map[string]interface{})
+	block := content[0]
+	if block["type"] != "container_upload" || block["file_id"] != "file_123" {
+		t.Fatalf("container upload block = %#v", block)
+	}
+}
+
+func TestToAnthropicMessagesProviderExecutedWebSearchResult(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID:       "srvtoolu_search",
+				ToolName:         "web_search",
+				ProviderExecuted: true,
+				Result: []map[string]interface{}{
+					{
+						"type":             "web_search_result",
+						"url":              "https://example.com",
+						"title":            "Example",
+						"pageAge":          "2026-05-31",
+						"encryptedContent": "enc",
+					},
+				},
+			},
+		},
+	}}
+	got := ToAnthropicMessages(msgs)
+	content := got[0]["content"].([]map[string]interface{})
+	block := content[0]
+	if block["type"] != "web_search_tool_result" || block["tool_use_id"] != "srvtoolu_search" {
+		t.Fatalf("web search result block = %#v", block)
+	}
+	results := block["content"].([]map[string]interface{})
+	result := results[0]
+	if result["page_age"] != "2026-05-31" || result["encrypted_content"] != "enc" {
+		t.Fatalf("web search content = %#v", result)
+	}
+}
+
+func TestToAnthropicMessagesLocalWebSearchToolResultStaysGeneric(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID: "call_search",
+				ToolName:   "web_search",
+				Result:     map[string]interface{}{"ok": true},
+			},
+		},
+	}}
+	got := ToAnthropicMessages(msgs)
+	content := got[0]["content"].([]map[string]interface{})
+	block := content[0]
+	if block["type"] != "tool_result" {
+		t.Fatalf("tool result block = %#v, want generic tool_result", block)
+	}
+}
+
+func TestToAnthropicMessagesProviderExecutedWebFetchResult(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{
+			types.ToolResultContent{
+				ToolCallID:       "srvtoolu_fetch",
+				ToolName:         "web_fetch",
+				ProviderExecuted: true,
+				Result: map[string]interface{}{
+					"type":        "web_fetch_result",
+					"url":         "https://example.com/doc",
+					"retrievedAt": "2026-05-31T00:00:00Z",
+					"content": map[string]interface{}{
+						"type":  "document",
+						"title": "Doc",
+						"source": map[string]interface{}{
+							"type":      "text",
+							"mediaType": "text/plain",
+							"data":      "body",
+						},
+					},
+				},
+			},
+		},
+	}}
+	got := ToAnthropicMessages(msgs)
+	content := got[0]["content"].([]map[string]interface{})
+	block := content[0]
+	if block["type"] != "web_fetch_tool_result" || block["tool_use_id"] != "srvtoolu_fetch" {
+		t.Fatalf("web fetch result block = %#v", block)
+	}
+	fetch := block["content"].(map[string]interface{})
+	if fetch["retrieved_at"] != "2026-05-31T00:00:00Z" {
+		t.Fatalf("web fetch content = %#v", fetch)
+	}
+	doc := fetch["content"].(map[string]interface{})
+	source := doc["source"].(map[string]interface{})
+	if source["media_type"] != "text/plain" {
+		t.Fatalf("web fetch source = %#v", source)
+	}
+}
+
 func TestToOpenAIMessagesImageDetailProviderOption(t *testing.T) {
 	msgs := []types.Message{
 		{

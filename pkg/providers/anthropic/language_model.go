@@ -78,13 +78,14 @@ func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
 
 // SupportsStructuredOutput returns whether the model supports structured output
 // via output_config.format. Matches the TS SDK getModelCapabilities() logic:
-// claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
+// claude-opus-4-8, claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
 func (m *LanguageModel) SupportsStructuredOutput() bool {
 	if m.provider.config.SupportsNativeStructuredOutput != nil {
 		return *m.provider.config.SupportsNativeStructuredOutput
 	}
 	id := m.modelID
-	return strings.Contains(id, "claude-opus-4-7") ||
+	return strings.Contains(id, "claude-opus-4-8") ||
+		strings.Contains(id, "claude-opus-4-7") ||
 		strings.Contains(id, "claude-sonnet-4-6") ||
 		strings.Contains(id, "claude-opus-4-6") ||
 		strings.Contains(id, "claude-sonnet-4-5") ||
@@ -586,15 +587,13 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 			// Remap snake_case wire fields to camelCase and emit source chunks.
 			// Mirrors TS SDK anthropic-messages-language-model.ts:1055-1093.
 			trc := types.ToolResultContent{
-				ToolCallID: content.ToolUseID,
-				ToolName:   providerToolResultName(content.Type),
+				ToolCallID:       content.ToolUseID,
+				ToolName:         providerToolResultName(content.Type),
+				ProviderExecuted: true,
 			}
-			if content.IsError {
-				var errParsed interface{}
-				if len(content.Content) > 0 {
-					json.Unmarshal(content.Content, &errParsed) //nolint:errcheck
-				}
-				trc.Error = fmt.Sprintf("%v", errParsed)
+			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_search_tool_result_error", content.IsError); ok {
+				trc.Result = errResult
+				trc.Error = fmt.Sprintf("%v", errResult["errorCode"])
 			} else if len(content.Content) > 0 {
 				mapped, sources := convertWebSearchToolResult(content.Content)
 				trc.Result = mapped
@@ -608,15 +607,13 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 			// Remap snake_case wire fields (retrieved_at, media_type) to camelCase.
 			// Mirrors TS SDK anthropic-messages-language-model.ts:1015-1053.
 			trc := types.ToolResultContent{
-				ToolCallID: content.ToolUseID,
-				ToolName:   providerToolResultName(content.Type),
+				ToolCallID:       content.ToolUseID,
+				ToolName:         providerToolResultName(content.Type),
+				ProviderExecuted: true,
 			}
-			if content.IsError {
-				var errParsed interface{}
-				if len(content.Content) > 0 {
-					json.Unmarshal(content.Content, &errParsed) //nolint:errcheck
-				}
-				trc.Error = fmt.Sprintf("%v", errParsed)
+			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_fetch_tool_result_error", content.IsError); ok {
+				trc.Result = errResult
+				trc.Error = fmt.Sprintf("%v", errResult["errorCode"])
 			} else if len(content.Content) > 0 {
 				trc.Result = convertWebFetchToolResult(content.Content)
 			}
@@ -1529,16 +1526,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						toolName = providerToolResultName(part.Type)
 					}
 					tr := &types.ToolResult{
-						ToolCallID: part.ToolUseID,
-						ToolName:   toolName,
+						ToolCallID:       part.ToolUseID,
+						ToolName:         toolName,
+						ProviderExecuted: true,
 					}
 					var webSearchSources []types.SourceContent
-					if part.IsError {
-						var errContent interface{}
-						if len(part.Content) > 0 {
-							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
-						}
-						tr.Error = fmt.Errorf("%v", errContent)
+					if errResult, ok := parseAnthropicWebToolResultError(part.Content, "web_search_tool_result_error", part.IsError); ok {
+						tr.Result = errResult
+						tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					} else if len(part.Content) > 0 {
 						mapped, sources := convertWebSearchToolResult(part.Content)
 						tr.Result = mapped
@@ -1562,15 +1557,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						toolName = providerToolResultName(part.Type)
 					}
 					tr := &types.ToolResult{
-						ToolCallID: part.ToolUseID,
-						ToolName:   toolName,
+						ToolCallID:       part.ToolUseID,
+						ToolName:         toolName,
+						ProviderExecuted: true,
 					}
-					if part.IsError {
-						var errContent interface{}
-						if len(part.Content) > 0 {
-							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
-						}
-						tr.Error = fmt.Errorf("%v", errContent)
+					if errResult, ok := parseAnthropicWebToolResultError(part.Content, "web_fetch_tool_result_error", part.IsError); ok {
+						tr.Result = errResult
+						tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					} else if len(part.Content) > 0 {
 						tr.Result = convertWebFetchToolResult(part.Content)
 					}
@@ -1872,6 +1865,32 @@ type webSearchResultWire struct {
 	Title            *string `json:"title"`
 	PageAge          *string `json:"page_age"`
 	EncryptedContent string  `json:"encrypted_content"`
+}
+
+func parseAnthropicWebToolResultError(raw json.RawMessage, expectedType string, force bool) (map[string]interface{}, bool) {
+	if len(raw) == 0 && !force {
+		return nil, false
+	}
+	var wire struct {
+		Type      string `json:"type"`
+		ErrorCode string `json:"error_code"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &wire); err != nil && !force {
+			return nil, false
+		}
+	}
+	if wire.Type != expectedType && !force {
+		return nil, false
+	}
+	code := wire.ErrorCode
+	if code == "" {
+		code = "unavailable"
+	}
+	return map[string]interface{}{
+		"type":      expectedType,
+		"errorCode": code,
+	}, true
 }
 
 // convertWebSearchToolResult parses a web_search_tool_result content payload,
