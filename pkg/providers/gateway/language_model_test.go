@@ -16,7 +16,7 @@ func newTestGatewayLanguageModel(modelID string) *LanguageModel {
 func TestGatewayLanguageModelMetadataAndCapabilities(t *testing.T) {
 	model := newTestGatewayLanguageModel("openai/gpt-5")
 
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
 	if model.Provider() != "gateway" {
@@ -33,7 +33,7 @@ func TestGatewayLanguageModelMetadataAndCapabilities(t *testing.T) {
 func TestGatewayLanguageModelGetModelConfigHeaders(t *testing.T) {
 	model := newTestGatewayLanguageModel("anthropic/claude-3.7")
 	headers := model.getModelConfigHeaders(true)
-	if headers["ai-language-model-specification-version"] != "3" {
+	if headers["ai-language-model-specification-version"] != "4" {
 		t.Fatalf("spec version header = %q", headers["ai-language-model-specification-version"])
 	}
 	if headers["ai-language-model-id"] != "anthropic/claude-3.7" {

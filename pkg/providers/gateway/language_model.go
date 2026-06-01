@@ -33,7 +33,7 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -435,6 +435,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 }
 
 func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[string]interface{} {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
 	providerOptions := cloneProviderOptions(opts.ProviderOptions)
 	configGatewayOptions := m.provider.configGatewayProviderOptions()
 	if len(configGatewayOptions) > 0 {
@@ -443,7 +446,7 @@ func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[stri
 	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
 		if configGatewayOptions == nil {
 			providerOptions["gateway"] = gatewayOptions
-			return providerOptions
+			return enforceGatewayServiceTier(providerOptions)
 		}
 		if callerGatewayOptions, ok := gatewayOptions.(map[string]interface{}); ok {
 			merged := cloneMapStringInterface(configGatewayOptions)
@@ -455,7 +458,7 @@ func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[stri
 			providerOptions["gateway"] = gatewayOptions
 		}
 	}
-	return providerOptions
+	return enforceGatewayServiceTier(providerOptions)
 }
 
 func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
@@ -473,6 +476,27 @@ func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
 		return nil
 	}
 	return out
+}
+
+func enforceGatewayServiceTier(providerOptions map[string]interface{}) map[string]interface{} {
+	gatewayOptions, ok := providerOptions["gateway"].(map[string]interface{})
+	if !ok {
+		return providerOptions
+	}
+	serviceTier, ok := gatewayOptions["serviceTier"].(string)
+	if !ok || serviceTier == "" {
+		return providerOptions
+	}
+	for providerName, raw := range providerOptions {
+		if providerName == "gateway" {
+			continue
+		}
+		if opts, ok := raw.(map[string]interface{}); ok {
+			delete(opts, "serviceTier")
+			delete(opts, "service_tier")
+		}
+	}
+	return providerOptions
 }
 
 func cloneProviderOptions(in map[string]interface{}) map[string]interface{} {
@@ -556,7 +580,7 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 // getModelConfigHeaders returns headers specific to the gateway model configuration
 func (m *LanguageModel) getModelConfigHeaders(streaming bool) map[string]string {
 	return map[string]string{
-		"ai-language-model-specification-version": "3",
+		"ai-language-model-specification-version": "4",
 		"ai-language-model-id":                    m.modelID,
 		"ai-language-model-streaming":             fmt.Sprintf("%t", streaming),
 	}

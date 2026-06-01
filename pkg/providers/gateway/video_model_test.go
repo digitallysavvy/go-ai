@@ -24,8 +24,8 @@ func TestVideoModel_SpecificationVersion(t *testing.T) {
 	}
 
 	model := NewVideoModel(p, "google/veo-3.1")
-	if got := model.SpecificationVersion(); got != "v3" {
-		t.Errorf("SpecificationVersion() = %v, want %v", got, "v3")
+	if got := model.SpecificationVersion(); got != "v4" {
+		t.Errorf("SpecificationVersion() = %v, want %v", got, "v4")
 	}
 }
 
@@ -91,7 +91,7 @@ func TestVideoModel_DoGenerate_SSE(t *testing.T) {
 				AspectRatio: "16:9",
 				Duration:    floatPtr(4.0),
 			},
-			resultEvent: `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}]}`,
+			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}]}`,
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			wantVideos:   1,
@@ -189,7 +189,7 @@ data: {"type":"heartbeat","timestamp":1234567891}
 				}
 
 				// Verify spec version header and model ID header
-				if r.Header.Get("ai-video-model-specification-version") != "3" {
+				if r.Header.Get("ai-video-model-specification-version") != "4" {
 					t.Errorf("Missing or incorrect specification version header")
 				}
 				if r.Header.Get("ai-model-id") == "" {

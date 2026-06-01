@@ -111,8 +111,11 @@ func gatewayRequestID(ctx context.Context) string {
 // Config contains configuration for the AI Gateway provider
 type Config struct {
 	// APIKey is the AI Gateway API key
-	// Can also be set via AI_GATEWAY_API_KEY environment variable
+	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
+
+	// TeamIDOrSlug scopes Vercel access-token requests to a team.
+	TeamIDOrSlug string
 
 	// BaseURL is the base URL for the AI Gateway API
 	// Default: https://ai-gateway.vercel.sh/v4/ai
@@ -165,6 +168,7 @@ type GatewayProviderOptions struct {
 	HIPAACompliant         *bool                          `json:"hipaaCompliant,omitempty"`
 	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
 	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
+	ServiceTier            string                         `json:"serviceTier,omitempty"`
 }
 
 // GatewayProviderTimeoutOptions contains Gateway provider timeout settings.
@@ -215,6 +219,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.ProviderTimeouts != nil && len(o.ProviderTimeouts.BYOK) > 0 {
 		out["providerTimeouts"] = map[string]interface{}{"byok": o.ProviderTimeouts.BYOK}
+	}
+	if o.ServiceTier != "" {
+		out["serviceTier"] = o.ServiceTier
 	}
 	return out
 }
@@ -322,6 +329,9 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
+	}
+	if cfg.TeamIDOrSlug != "" {
+		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 
 	httpClient := newGatewayHTTPClient(cfg.HTTPClient, authResolver)

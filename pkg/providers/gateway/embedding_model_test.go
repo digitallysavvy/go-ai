@@ -17,14 +17,14 @@ import (
 
 func TestGatewayEmbeddingModelMetadataAndHeaders(t *testing.T) {
 	m := NewEmbeddingModel(&Provider{}, "openai/text-embedding-3-small")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "gateway" || m.ModelID() != "openai/text-embedding-3-small" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "gateway" || m.ModelID() != "openai/text-embedding-3-small" {
 		t.Fatalf("metadata mismatch")
 	}
 	if m.MaxEmbeddingsPerCall() != 100 || !m.SupportsParallelCalls() {
 		t.Fatalf("limits mismatch")
 	}
 	headers := m.getModelConfigHeaders()
-	if headers["ai-embedding-model-specification-version"] != "3" || headers["ai-embedding-model-id"] != "openai/text-embedding-3-small" {
+	if headers["ai-embedding-model-specification-version"] != "4" || headers["ai-embedding-model-id"] != "openai/text-embedding-3-small" {
 		t.Fatalf("config headers mismatch: %#v", headers)
 	}
 }

@@ -109,6 +109,20 @@ func TestNew_PrefersAPIKeyOverOIDCToken(t *testing.T) {
 	}
 }
 
+func TestResolveGatewayAuthTokenDoesNotUseVercelAccessTokenEnv(t *testing.T) {
+	t.Setenv("AI_GATEWAY_API_KEY", "")
+	t.Setenv("VERCEL_ACCESS_TOKEN", "vercel-access-token")
+	t.Setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+
+	token, authMethod, err := resolveGatewayAuthToken(context.Background(), Config{})
+	if err != nil {
+		t.Fatalf("resolveGatewayAuthToken error = %v", err)
+	}
+	if token != "oidc-token" || authMethod != "oidc" {
+		t.Fatalf("auth = (%q, %q), want OIDC token", token, authMethod)
+	}
+}
+
 func TestNew_RequiresAPIKeyOrOIDCToken(t *testing.T) {
 	t.Setenv("AI_GATEWAY_API_KEY", "")
 	t.Setenv("VERCEL_OIDC_TOKEN", "")

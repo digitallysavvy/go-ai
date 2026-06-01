@@ -25,7 +25,7 @@ func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -112,7 +112,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 // getModelConfigHeaders returns headers specific to the gateway model configuration
 func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
-		"ai-embedding-model-specification-version": "3",
+		"ai-embedding-model-specification-version": "4",
 		"ai-embedding-model-id":                    m.modelID,
 	}
 }

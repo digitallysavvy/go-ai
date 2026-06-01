@@ -35,7 +35,7 @@ func NewVideoModel(provider *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -323,7 +323,7 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 // getModelConfigHeaders returns headers specific to the gateway model configuration
 func (m *VideoModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
-		"ai-video-model-specification-version": "3",
+		"ai-video-model-specification-version": "4",
 		"ai-model-id":                          m.modelID,
 	}
 }

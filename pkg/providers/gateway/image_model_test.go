@@ -19,7 +19,7 @@ func TestGatewayImageModelMetadataAndHeaders(t *testing.T) {
 		t.Fatalf("metadata mismatch")
 	}
 	headers := m.getModelConfigHeaders()
-	if headers["ai-image-model-specification-version"] != "3" || headers["ai-image-model-id"] != "openai/gpt-image-1" {
+	if headers["ai-image-model-specification-version"] != "4" || headers["ai-image-model-id"] != "openai/gpt-image-1" {
 		t.Fatalf("headers mismatch: %#v", headers)
 	}
 }

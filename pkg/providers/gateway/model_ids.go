@@ -45,6 +45,7 @@ const (
 	GatewayLanguageModelAnthropicClaudeOpus45           GatewayLanguageModelID = "anthropic/claude-opus-4.5"
 	GatewayLanguageModelAnthropicClaudeOpus46           GatewayLanguageModelID = "anthropic/claude-opus-4.6"
 	GatewayLanguageModelAnthropicClaudeOpus47           GatewayLanguageModelID = "anthropic/claude-opus-4.7"
+	GatewayLanguageModelAnthropicClaudeOpus48           GatewayLanguageModelID = "anthropic/claude-opus-4.8"
 	GatewayLanguageModelAnthropicClaudeSonnet4          GatewayLanguageModelID = "anthropic/claude-sonnet-4"
 	GatewayLanguageModelAnthropicClaudeSonnet45         GatewayLanguageModelID = "anthropic/claude-sonnet-4.5"
 	GatewayLanguageModelAnthropicClaudeSonnet46         GatewayLanguageModelID = "anthropic/claude-sonnet-4.6"
@@ -246,6 +247,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAnthropicClaudeOpus45,
 	GatewayLanguageModelAnthropicClaudeOpus46,
 	GatewayLanguageModelAnthropicClaudeOpus47,
+	GatewayLanguageModelAnthropicClaudeOpus48,
 	GatewayLanguageModelAnthropicClaudeSonnet4,
 	GatewayLanguageModelAnthropicClaudeSonnet45,
 	GatewayLanguageModelAnthropicClaudeSonnet46,

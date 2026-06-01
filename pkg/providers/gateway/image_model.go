@@ -91,7 +91,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // getModelConfigHeaders returns headers specific to the gateway model configuration
 func (m *ImageModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
-		"ai-image-model-specification-version": "3",
+		"ai-image-model-specification-version": "4",
 		"ai-image-model-id":                    m.modelID,
 	}
 }
