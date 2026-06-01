@@ -159,11 +159,15 @@ type XAIChatProviderOptions struct {
 	// in a single turn. Defaults to true when tools are provided.
 	ParallelFunctionCalling *bool `json:"parallelFunctionCalling,omitempty"`
 
-	// SearchParameters configures the Live Search / web search behavior.
+	// SearchParameters configures the deprecated Live Search / search_parameters behavior.
+	// Deprecated: xAI has deprecated chat Live Search in favor of provider-executed
+	// WebSearch and XSearch tools on the Responses API.
 	SearchParameters *XAIChatSearchParameters `json:"searchParameters,omitempty"`
 }
 
 // XAIChatSearchParameters configures the XAI Live Search feature.
+//
+// Deprecated: use WebSearch or XSearch with the Responses API.
 type XAIChatSearchParameters struct {
 	// Mode controls when search is triggered: "auto", "on", "off".
 	Mode string `json:"mode"`

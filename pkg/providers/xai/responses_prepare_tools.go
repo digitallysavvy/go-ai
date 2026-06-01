@@ -27,6 +27,9 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		if len(cfg.ExcludedDomains) > 0 {
 			m["excluded_domains"] = cfg.ExcludedDomains
 		}
+		if cfg.EnableImageSearch != nil {
+			m["enable_image_search"] = *cfg.EnableImageSearch
+		}
 		if cfg.EnableImageUnderstanding != nil {
 			m["enable_image_understanding"] = *cfg.EnableImageUnderstanding
 		}

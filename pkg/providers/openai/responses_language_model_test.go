@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
+	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
 
 // mockResponsesResponse returns a minimal valid Responses API response body.
@@ -88,6 +89,118 @@ func TestResponsesLanguageModel_DoGenerate_Text(t *testing.T) {
 	}
 	if _, hasMessages := capturedBody["messages"]; hasMessages {
 		t.Error("request body should not have 'messages' field")
+	}
+}
+
+func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testing.T) {
+	webSearchItem, _ := json.Marshal(WebSearchCallItem{
+		Type:   "web_search_call",
+		ID:     "ws_123",
+		Status: "completed",
+		Action: &WebSearchAction{
+			Type:    "search",
+			Queries: []string{"go generics", "type parameters"},
+			Sources: []WebSearchSource{{Type: "url", URL: "https://go.dev/doc/"}},
+		},
+	})
+
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{})},
+	}
+	body, _, err := model.buildRequestBody(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		ID:     "resp_web",
+		Model:  "gpt-4o",
+		Output: []json.RawMessage{webSearchItem},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(opts.Tools))
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	include := body["include"].([]string)
+	if include[0] != "web_search_call.action.sources" {
+		t.Fatalf("include = %#v", include)
+	}
+	if len(result.ToolCalls) != 1 || !result.ToolCalls[0].ProviderExecuted {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("content len = %d, want 2", len(result.Content))
+	}
+	toolResult, ok := result.Content[1].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("content[1] = %T", result.Content[1])
+	}
+	output := toolResult.Result.(map[string]interface{})
+	action := output["action"].(map[string]interface{})
+	queries := action["queries"].([]string)
+	if queries[0] != "go generics" || queries[1] != "type parameters" {
+		t.Fatalf("action = %#v", action)
+	}
+	sources := output["sources"].([]map[string]interface{})
+	if sources[0]["url"] != "https://go.dev/doc/" {
+		t.Fatalf("sources = %#v", sources)
+	}
+}
+
+func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(t *testing.T) {
+	webSearchItem := json.RawMessage(`{"type":"web_search_call","id":"ws_preview","status":"completed","action":{"type":"search","queries":[],"sources":[]}}`)
+
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		ID:     "resp_web",
+		Model:  "gpt-4o",
+		Output: []json.RawMessage{webSearchItem},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(tools))
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if result.ToolCalls[0].ToolName != "web_search_preview" {
+		t.Fatalf("tool name = %q, want web_search_preview", result.ToolCalls[0].ToolName)
+	}
+	toolResult := result.Content[1].(types.ToolResultContent)
+	if toolResult.ToolName != "web_search_preview" {
+		t.Fatalf("tool result name = %q, want web_search_preview", toolResult.ToolName)
+	}
+	output := toolResult.Result.(map[string]interface{})
+	action := output["action"].(map[string]interface{})
+	if queries, ok := action["queries"].([]string); !ok || len(queries) != 0 {
+		t.Fatalf("queries = %#v, want empty []string", action["queries"])
+	}
+	if sources, ok := output["sources"].([]map[string]interface{}); !ok || len(sources) != 0 {
+		t.Fatalf("sources = %#v, want empty []map", output["sources"])
+	}
+}
+
+func TestResponsesLanguageModel_WebSearchToolChoiceUsesProviderType(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{})},
+		ToolChoice: types.ToolChoice{
+			Type:     types.ToolChoiceTool,
+			ToolName: "web_search",
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice := body["tool_choice"].(map[string]interface{})
+	if choice["type"] != "web_search" {
+		t.Fatalf("tool_choice = %#v, want type web_search", choice)
+	}
+	if _, ok := choice["name"]; ok {
+		t.Fatalf("tool_choice should not include name for web_search: %#v", choice)
 	}
 }
 
@@ -470,7 +583,7 @@ func TestResponsesLanguageModel_DoStreamIncompleteUsesCreatedResponseID(t *testi
 
 data: {"type":"response.incomplete","response":{"id":"resp_terminal","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":0,"output_tokens":0}}}
 
-`)))
+`)), false)
 	defer stream.Close() //nolint:errcheck
 
 	chunk, err := stream.Next()
@@ -568,6 +681,95 @@ func TestResponsesLanguageModel_DoStream_ToolCall(t *testing.T) {
 	}
 	if openaiMeta["namespace"] != "search_tools" {
 		t.Errorf("namespace = %v, want search_tools", openaiMeta["namespace"])
+	}
+}
+
+func TestResponsesLanguageModel_DoStream_WebSearchCallLifecycle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		doneItem, _ := json.Marshal(WebSearchCallItem{
+			Type:   "web_search_call",
+			ID:     "ws_123",
+			Status: "completed",
+			Action: &WebSearchAction{
+				Type:    "search",
+				Queries: []string{"go ai sdk"},
+			},
+		})
+		events := []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"web_search_call","id":"ws_123","status":"in_progress"}}`,
+			fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":%s}`, string(doneItem)),
+			`{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":5,"output_tokens":5}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Search"}}},
+			},
+		},
+		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var got []provider.ChunkType
+	var toolCall *types.ToolCall
+	var toolResult *types.ToolResult
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeStreamStart {
+			continue
+		}
+		got = append(got, chunk.Type)
+		switch chunk.Type {
+		case provider.ChunkTypeToolCall:
+			toolCall = chunk.ToolCall
+		case provider.ChunkTypeToolResult:
+			toolResult = chunk.ToolResult
+		}
+	}
+
+	wantPrefix := []provider.ChunkType{
+		provider.ChunkTypeToolInputStart,
+		provider.ChunkTypeToolInputEnd,
+		provider.ChunkTypeToolCall,
+		provider.ChunkTypeToolResult,
+	}
+	if len(got) < len(wantPrefix) {
+		t.Fatalf("chunks = %v, want prefix %v", got, wantPrefix)
+	}
+	for i, want := range wantPrefix {
+		if got[i] != want {
+			t.Fatalf("chunks = %v, want prefix %v", got, wantPrefix)
+		}
+	}
+	if toolCall == nil || toolCall.ToolName != "web_search_preview" || !toolCall.ProviderExecuted {
+		t.Fatalf("tool call = %#v, want provider-executed web_search_preview", toolCall)
+	}
+	if toolResult == nil || toolResult.ToolName != "web_search_preview" {
+		t.Fatalf("tool result = %#v, want web_search_preview", toolResult)
+	}
+	output := toolResult.Result.(map[string]interface{})
+	action := output["action"].(map[string]interface{})
+	queries := action["queries"].([]string)
+	if len(queries) != 1 || queries[0] != "go ai sdk" {
+		t.Fatalf("queries = %#v", action["queries"])
 	}
 }
 
@@ -836,7 +1038,7 @@ func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
 		ID:     "resp_123",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{raw},
-	}, true)
+	}, true, "")
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}

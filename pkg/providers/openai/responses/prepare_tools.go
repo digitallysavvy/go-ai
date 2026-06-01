@@ -42,6 +42,10 @@ func convertTool(t types.Tool) interface{} {
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.web_search":
+		return convertWebSearchTool(t)
+	case "openai.web_search_preview":
+		return convertWebSearchPreviewTool(t)
 	case "openai.tool_search":
 		return convertToolSearchTool(t)
 	default:
@@ -74,6 +78,50 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 	}
 
 	return def
+}
+
+func convertWebSearchTool(t types.Tool) WebSearchToolDef {
+	def := WebSearchToolDef{Type: "web_search"}
+	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
+	if cfg.Filters != nil && len(cfg.Filters.AllowedDomains) > 0 {
+		def.Filters = map[string]interface{}{"allowed_domains": cfg.Filters.AllowedDomains}
+	}
+	def.ExternalWebAccess = cfg.ExternalWebAccess
+	def.SearchContextSize = cfg.SearchContextSize
+	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	return def
+}
+
+func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
+	def := WebSearchPreviewToolDef{Type: "web_search_preview"}
+	cfg, _ := t.ProviderOptions.(openaitool.WebSearchPreviewConfig)
+	def.SearchContextSize = cfg.SearchContextSize
+	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	return def
+}
+
+func webSearchLocation(loc *openaitool.WebSearchLocation) interface{} {
+	if loc == nil {
+		return nil
+	}
+	locationType := loc.Type
+	if locationType == "" {
+		locationType = "approximate"
+	}
+	out := map[string]interface{}{"type": locationType}
+	if loc.Country != "" {
+		out["country"] = loc.Country
+	}
+	if loc.City != "" {
+		out["city"] = loc.City
+	}
+	if loc.Region != "" {
+		out["region"] = loc.Region
+	}
+	if loc.Timezone != "" {
+		out["timezone"] = loc.Timezone
+	}
+	return out
 }
 
 // convertToolSearchTool builds a ToolSearchToolDef from a tool_search tool.

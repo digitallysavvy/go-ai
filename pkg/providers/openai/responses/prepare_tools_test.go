@@ -100,6 +100,50 @@ func TestPrepareTools_FunctionTool_ImplicitObjectSchemaGetsType(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_WebSearch(t *testing.T) {
+	external := false
+	result := PrepareTools([]types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{
+		ExternalWebAccess: &external,
+		Filters:           &openaitool.WebSearchFilters{AllowedDomains: []string{"example.com"}},
+		SearchContextSize: "high",
+		UserLocation:      &openaitool.WebSearchLocation{Type: "approximate", Country: "US"},
+	})})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result))
+	}
+	def, ok := result[0].(WebSearchToolDef)
+	if !ok {
+		t.Fatalf("expected WebSearchToolDef, got %T", result[0])
+	}
+	if def.Type != "web_search" || def.SearchContextSize != "high" {
+		t.Fatalf("web search def = %#v", def)
+	}
+	if def.ExternalWebAccess == nil || *def.ExternalWebAccess {
+		t.Fatalf("external_web_access = %#v, want false", def.ExternalWebAccess)
+	}
+	domains := def.Filters["allowed_domains"].([]string)
+	if domains[0] != "example.com" {
+		t.Fatalf("filters = %#v", def.Filters)
+	}
+	location := def.UserLocation.(map[string]interface{})
+	if location["type"] != "approximate" || location["country"] != "US" {
+		t.Fatalf("user_location = %#v", location)
+	}
+}
+
+func TestPrepareTools_WebSearchPreview(t *testing.T) {
+	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{
+		SearchContextSize: "low",
+	})})
+	def, ok := result[0].(WebSearchPreviewToolDef)
+	if !ok {
+		t.Fatalf("expected WebSearchPreviewToolDef, got %T", result[0])
+	}
+	if def.Type != "web_search_preview" || def.SearchContextSize != "low" {
+		t.Fatalf("web search preview def = %#v", def)
+	}
+}
+
 func TestPrepareTools_LocalShell(t *testing.T) {
 	tool := NewLocalShellTool()
 	result := PrepareTools([]types.Tool{tool})

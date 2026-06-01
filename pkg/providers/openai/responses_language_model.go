@@ -55,6 +55,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	if err != nil {
 		return nil, err
 	}
+	webSearchToolName := responsesWebSearchToolName(opts.Tools)
 
 	var resp responses.ResponsesAPIResponse
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
@@ -66,7 +67,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, m.wrapErr(err)
 	}
 
-	result, err := m.convertResponse(resp, store)
+	result, err := m.convertResponse(resp, store, webSearchToolName)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +81,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	if err != nil {
 		return nil, err
 	}
+	webSearchToolName := responsesWebSearchToolName(opts.Tools)
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -91,7 +93,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks), warnings), nil
+	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks, webSearchToolName), warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,7 +284,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if allowedTools != nil {
 			body["tool_choice"] = *allowedTools
 		} else if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice)
+			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
 	}
 
@@ -291,6 +293,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// server-side persistence.
 	if !store && isReasoningModel(m.modelID) {
 		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
+	}
+	if hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview") {
+		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
 	}
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
@@ -370,20 +375,70 @@ func stringSliceFromInterface(value interface{}) []string {
 }
 
 // convertResponsesToolChoice maps a types.ToolChoice to the Responses API format.
-func convertResponsesToolChoice(tc types.ToolChoice) interface{} {
+func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interface{} {
 	switch tc.Type {
 	case types.ToolChoiceNone:
 		return "none"
 	case types.ToolChoiceRequired:
 		return "required"
 	case types.ToolChoiceTool:
+		name, tool := resolveResponsesToolChoiceName(tc.ToolName, tools)
+		switch name {
+		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch":
+			return map[string]interface{}{"type": name}
+		}
+		if tool != nil {
+			if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+				return map[string]interface{}{"type": "custom", "name": name}
+			}
+		}
 		return map[string]interface{}{
 			"type": "function",
-			"name": tc.ToolName,
+			"name": name,
 		}
 	default:
 		return "auto"
 	}
+}
+
+func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
+	providerNames := map[string]string{
+		"openai.code_interpreter":   "code_interpreter",
+		"openai.file_search":        "file_search",
+		"openai.image_generation":   "image_generation",
+		"openai.web_search_preview": "web_search_preview",
+		"openai.web_search":         "web_search",
+		"openai.mcp":                "mcp",
+		"openai.apply_patch":        "apply_patch",
+		"code_interpreter":          "code_interpreter",
+		"file_search":               "file_search",
+		"image_generation":          "image_generation",
+		"web_search_preview":        "web_search_preview",
+		"web_search":                "web_search",
+		"mcp":                       "mcp",
+		"apply_patch":               "apply_patch",
+	}
+	if mapped, ok := providerNames[name]; ok {
+		for i := range tools {
+			if tools[i].Name == name || tools[i].Name == "openai."+mapped || tools[i].ProviderID == "openai."+mapped {
+				return mapped, &tools[i]
+			}
+		}
+		return mapped, nil
+	}
+	for i := range tools {
+		tool := &tools[i]
+		if tool.Name == name || tool.ProviderID == name {
+			if mapped, ok := providerNames[tool.Name]; ok {
+				return mapped, tool
+			}
+			if mapped, ok := providerNames[tool.ProviderID]; ok {
+				return mapped, tool
+			}
+			return tool.Name, tool
+		}
+	}
+	return name, nil
 }
 
 // appendUnique appends s to slice if not already present.
@@ -421,11 +476,23 @@ func hasTool(tools []types.Tool, name string) bool {
 	return false
 }
 
+func responsesWebSearchToolName(tools []types.Tool) string {
+	for _, tool := range tools {
+		switch {
+		case tool.Name == "openai.web_search_preview" || tool.ProviderID == "openai.web_search_preview":
+			return "web_search_preview"
+		case tool.Name == "openai.web_search" || tool.ProviderID == "openai.web_search":
+			return "web_search"
+		}
+	}
+	return "web_search"
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
-func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool) (*types.GenerateResult, error) {
+func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string) (*types.GenerateResult, error) {
 	result := &types.GenerateResult{
 		Usage:       convertResponsesUsage(resp.Usage),
 		RawResponse: resp,
@@ -507,6 +574,38 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Arguments: map[string]interface{}{"input": item.Input},
 			})
 
+		case "web_search_call":
+			var item WebSearchCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolName := webSearchToolName
+			if toolName == "" {
+				toolName = "web_search"
+			}
+			tc := types.ToolCall{
+				ID:               item.ID,
+				ToolName:         toolName,
+				Arguments:        map[string]interface{}{},
+				ProviderExecuted: true,
+			}
+			toolCalls = append(toolCalls, tc)
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       item.ID,
+					ToolName:         toolName,
+					Input:            "{}",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       item.ID,
+					ToolName:         toolName,
+					Result:           mapWebSearchOutput(item.Action),
+					ProviderExecuted: true,
+				},
+			)
+
 		case "compaction":
 			var item responses.CompactionEvent
 			if err := json.Unmarshal(rawItem, &item); err != nil {
@@ -565,6 +664,54 @@ func openAIResponsesMessageProviderOptions(itemID string, phase *string) map[str
 		return nil
 	}
 	return map[string]interface{}{"openai": openai}
+}
+
+func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
+	if action == nil {
+		return map[string]interface{}{}
+	}
+	result := map[string]interface{}{}
+	switch action.Type {
+	case "search":
+		mapped := map[string]interface{}{"type": "search"}
+		if action.Query != nil {
+			mapped["query"] = *action.Query
+		}
+		if action.Queries != nil {
+			mapped["queries"] = action.Queries
+		}
+		result["action"] = mapped
+	case "open_page":
+		mapped := map[string]interface{}{"type": "openPage", "url": nil}
+		if action.URL != nil {
+			mapped["url"] = *action.URL
+		}
+		result["action"] = mapped
+	case "find_in_page":
+		mapped := map[string]interface{}{"type": "findInPage", "url": nil, "pattern": nil}
+		if action.URL != nil {
+			mapped["url"] = *action.URL
+		}
+		if action.Pattern != nil {
+			mapped["pattern"] = *action.Pattern
+		}
+		result["action"] = mapped
+	}
+	if action.Sources != nil {
+		sources := make([]map[string]interface{}, 0, len(action.Sources))
+		for _, source := range action.Sources {
+			mapped := map[string]interface{}{"type": source.Type}
+			if source.URL != "" {
+				mapped["url"] = source.URL
+			}
+			if source.Name != "" {
+				mapped["name"] = source.Name
+			}
+			sources = append(sources, mapped)
+		}
+		result["sources"] = sources
+	}
+	return result
 }
 
 // mapResponsesFinishReason maps Responses API incomplete_details to a FinishReason.
@@ -653,20 +800,25 @@ type responsesStream struct {
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
 	// Chunks ready to emit without reading more SSE events.
-	flushQueue       []*provider.StreamChunk
-	includeRawChunks bool
-	responseID       string
+	flushQueue        []*provider.StreamChunk
+	includeRawChunks  bool
+	webSearchToolName string
+	responseID        string
 }
 
-func newResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *responsesStream {
-	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
+func newResponsesStream(r io.ReadCloser, includeRawChunks bool, webSearchToolName ...string) *responsesStream {
+	toolName := "web_search"
+	if len(webSearchToolName) > 0 && webSearchToolName[0] != "" {
+		toolName = webSearchToolName[0]
+	}
 	return &responsesStream{
-		reader:           r,
-		parser:           streaming.NewSSEParser(r),
-		toolAccum:        make(map[int]*responsesToolAccum),
-		reasoningAccum:   make(map[int]*responsesReasoningAccum),
-		itemTypes:        make(map[int]string),
-		includeRawChunks: emitRaw,
+		reader:            r,
+		parser:            streaming.NewSSEParser(r),
+		toolAccum:         make(map[int]*responsesToolAccum),
+		reasoningAccum:    make(map[int]*responsesReasoningAccum),
+		itemTypes:         make(map[int]string),
+		includeRawChunks:  includeRawChunks,
+		webSearchToolName: toolName,
 	}
 }
 
@@ -786,6 +938,35 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				name:      e.Item.Name,
 				namespace: e.Item.Namespace,
 			}
+		case "web_search_call":
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         s.webSearchToolName,
+						ProviderExecuted: true,
+					},
+				},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputEnd,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         s.webSearchToolName,
+						ProviderExecuted: true,
+					},
+				},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         s.webSearchToolName,
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+				},
+			)
+			return s.Next()
 		case "reasoning":
 			s.reasoningAccum[e.OutputIndex] = &responsesReasoningAccum{}
 		}
@@ -1006,6 +1187,21 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:        item.CallID,
 				ToolName:  item.Name,
 				Arguments: map[string]interface{}{"input": item.Input},
+			},
+		})
+
+	case "web_search_call":
+		delete(s.itemTypes, e.OutputIndex)
+		var item WebSearchCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.ID,
+				ToolName:   s.webSearchToolName,
+				Result:     mapWebSearchOutput(item.Action),
 			},
 		})
 

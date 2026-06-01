@@ -10,6 +10,9 @@ type WebSearchConfig struct {
 	// ExcludedDomains omits results from specific domains.
 	ExcludedDomains []string
 
+	// EnableImageSearch enables image search in xAI Responses web search.
+	EnableImageSearch *bool
+
 	// EnableImageUnderstanding enables image understanding in search results.
 	EnableImageUnderstanding *bool
 }

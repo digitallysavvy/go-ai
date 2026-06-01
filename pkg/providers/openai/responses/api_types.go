@@ -223,6 +223,22 @@ type ApplyPatchToolDef struct {
 	Type string `json:"type"`
 }
 
+// WebSearchToolDef represents the stable web_search tool in a Responses request.
+type WebSearchToolDef struct {
+	Type              string                 `json:"type"`
+	Filters           map[string]interface{} `json:"filters,omitempty"`
+	ExternalWebAccess *bool                  `json:"external_web_access,omitempty"`
+	SearchContextSize string                 `json:"search_context_size,omitempty"`
+	UserLocation      interface{}            `json:"user_location,omitempty"`
+}
+
+// WebSearchPreviewToolDef represents the web_search_preview tool in a Responses request.
+type WebSearchPreviewToolDef struct {
+	Type              string      `json:"type"`
+	SearchContextSize string      `json:"search_context_size,omitempty"`
+	UserLocation      interface{} `json:"user_location,omitempty"`
+}
+
 // ShellToolDef represents the shell container tool in an API request.
 type ShellToolDef struct {
 	// Type is always "shell".

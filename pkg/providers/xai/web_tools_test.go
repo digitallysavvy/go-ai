@@ -8,9 +8,11 @@ import (
 
 func TestWebSearchToolShape(t *testing.T) {
 	enableImage := true
+	enableImageSearch := true
 	config := WebSearchConfig{
 		AllowedDomains:           []string{"example.com"},
 		ExcludedDomains:          []string{"spam.com"},
+		EnableImageSearch:        &enableImageSearch,
 		EnableImageUnderstanding: &enableImage,
 	}
 
@@ -31,6 +33,10 @@ func TestWebSearchToolShape(t *testing.T) {
 	}
 	if options.EnableImageUnderstanding == nil || *options.EnableImageUnderstanding != true {
 		t.Fatalf("image understanding option mismatch: %#v", options.EnableImageUnderstanding)
+	}
+	wire := convertXAIResponsesTool(tool).(map[string]interface{})
+	if wire["enable_image_search"] != true {
+		t.Fatalf("enable_image_search = %#v, want true", wire["enable_image_search"])
 	}
 
 	result, err := tool.Execute(nil, map[string]interface{}{"query": "x"}, types.ToolExecutionOptions{ToolCallID: "tc1"})
