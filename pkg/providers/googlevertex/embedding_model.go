@@ -26,7 +26,7 @@ func NewEmbeddingModel(p *Provider, modelID string) *EmbeddingModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *EmbeddingModel) SpecificationVersion() string { return "v3" }
+func (m *EmbeddingModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
 func (m *EmbeddingModel) Provider() string { return "google-vertex" }

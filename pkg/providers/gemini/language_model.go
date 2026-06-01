@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -16,6 +17,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
+
+const skipThoughtSignatureValidator = "skip_thought_signature_validator"
 
 // LanguageModel implements provider.LanguageModel using the Gemini wire format.
 // It is shared by both the google and googlevertex packages; provider-specific
@@ -111,6 +114,52 @@ func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[stri
 	return nil
 }
 
+func injectGemini3ThoughtSignatureSentinel(contents interface{}) *types.Warning {
+	contentList, ok := contents.([]map[string]interface{})
+	if !ok {
+		return nil
+	}
+	missing := 0
+	names := map[string]struct{}{}
+	for _, content := range contentList {
+		if content["role"] != "model" {
+			continue
+		}
+		parts, ok := content["parts"].([]map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			fc, ok := part["functionCall"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if sig, ok := part["thoughtSignature"].(string); ok && sig != "" {
+				continue
+			}
+			part["thoughtSignature"] = skipThoughtSignatureValidator
+			missing++
+			if name, ok := fc["name"].(string); ok && name != "" {
+				names[name] = struct{}{}
+			}
+		}
+	}
+	if missing == 0 {
+		return nil
+	}
+	toolNames := make([]string, 0, len(names))
+	for name := range names {
+		toolNames = append(toolNames, "`"+name+"`")
+	}
+	sort.Strings(toolNames)
+	message := fmt.Sprintf("Replayed %d `functionCall` part(s) for a Gemini 3 model without a `thoughtSignature`", missing)
+	if len(toolNames) > 0 {
+		message += fmt.Sprintf(" (tools: %s)", strings.Join(toolNames, ", "))
+	}
+	message += ". Injected the documented `skip_thought_signature_validator` sentinel to keep the request from failing with HTTP 400. The likely cause is application code that drops `providerOptions.google.thoughtSignature` when persisting or serializing assistant tool-call messages. See https://ai.google.dev/gemini-api/docs/thought-signatures."
+	return &types.Warning{Type: "other", Details: message, Message: message}
+}
+
 // buildRequestBody builds the Gemini API request body from GenerateOptions.
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStreaming bool) map[string]interface{} {
 	body, _, _ := m.buildRequest(opts, isStreaming)
@@ -127,6 +176,11 @@ func (m *LanguageModel) buildRequest(opts *provider.GenerateOptions, isStreaming
 		body["contents"] = prompt.ToGoogleMessages(opts.Prompt.Messages, m.supportsFunctionResponseParts())
 	} else if opts.Prompt.IsSimple() {
 		body["contents"] = prompt.ToGoogleMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), false)
+	}
+	if isGemini3Model(m.modelID) {
+		if warning := injectGemini3ThoughtSignatureSentinel(body["contents"]); warning != nil {
+			warnings = append(warnings, *warning)
+		}
 	}
 
 	// System instruction — skipped for Gemma models.

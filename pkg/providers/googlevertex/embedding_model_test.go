@@ -13,6 +13,12 @@ import (
 
 func TestVertexEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
 	t.Parallel()
+	if EmbeddingModelGeminiEmbedding2 != "gemini-embedding-2" {
+		t.Fatalf("EmbeddingModelGeminiEmbedding2 = %q", EmbeddingModelGeminiEmbedding2)
+	}
+	if EmbeddingModelGeminiEmbedding2Preview != "gemini-embedding-2-preview" {
+		t.Fatalf("EmbeddingModelGeminiEmbedding2Preview = %q", EmbeddingModelGeminiEmbedding2Preview)
+	}
 
 	p, err := New(Config{
 		Project:     "test-project",
@@ -25,8 +31,8 @@ func TestVertexEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
 	}
 	m := NewEmbeddingModel(p, "text-embedding-005")
 
-	if got := m.SpecificationVersion(); got != "v3" {
-		t.Fatalf("SpecificationVersion() = %q, want v3", got)
+	if got := m.SpecificationVersion(); got != "v4" {
+		t.Fatalf("SpecificationVersion() = %q, want v4", got)
 	}
 	if got := m.Provider(); got != "google-vertex" {
 		t.Fatalf("Provider() = %q, want google-vertex", got)

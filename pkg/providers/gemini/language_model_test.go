@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -649,6 +650,31 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 	}
 	if string(raw) != "null" {
 		t.Errorf("serviceTier = %s, want null", raw)
+	}
+}
+
+func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
+	model := makeTestModel("gemini-3-pro-preview")
+	body, _, warnings := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				ToolCalls: []types.ToolCall{{
+					ID:        "tc_1",
+					ToolName:  "weather",
+					Arguments: map[string]interface{}{"location": "SF"},
+				}},
+			},
+		}},
+	}, false)
+
+	contents := body["contents"].([]map[string]interface{})
+	parts := contents[0]["parts"].([]map[string]interface{})
+	if parts[0]["thoughtSignature"] != skipThoughtSignatureValidator {
+		t.Fatalf("thoughtSignature = %#v", parts[0]["thoughtSignature"])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Details, "skip_thought_signature_validator") {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 }
 

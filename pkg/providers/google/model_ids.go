@@ -81,6 +81,7 @@ const (
 // Embedding model IDs for Google Generative AI
 const (
 	EmbeddingModelGeminiEmbedding001      = "gemini-embedding-001"
+	EmbeddingModelGeminiEmbedding2        = "gemini-embedding-2"
 	EmbeddingModelGeminiEmbedding2Preview = "gemini-embedding-2-preview"
 )
 

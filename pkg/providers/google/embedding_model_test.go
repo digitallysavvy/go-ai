@@ -7,6 +7,10 @@ import (
 // TestGeminiEmbedding2PreviewModel verifies the embedding model ID constant exists
 // and that the model routes to the correct API path.
 func TestGeminiEmbedding2PreviewModel(t *testing.T) {
+	if EmbeddingModelGeminiEmbedding2 != "gemini-embedding-2" {
+		t.Errorf("EmbeddingModelGeminiEmbedding2 = %q, want %q",
+			EmbeddingModelGeminiEmbedding2, "gemini-embedding-2")
+	}
 	if EmbeddingModelGeminiEmbedding2Preview != "gemini-embedding-2-preview" {
 		t.Errorf("EmbeddingModelGeminiEmbedding2Preview = %q, want %q",
 			EmbeddingModelGeminiEmbedding2Preview, "gemini-embedding-2-preview")
