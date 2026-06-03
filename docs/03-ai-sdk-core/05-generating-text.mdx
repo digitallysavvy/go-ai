@@ -199,6 +199,22 @@ result.ContextManagement() interface{}       // Context management stats (Anthro
 result.Err() error                           // Error if stream failed
 ```
 
+### Standalone Stream Helpers
+
+For new code, use `result.Stream()` with the package-level helpers. The result-bound helpers are retained only as deprecated compatibility wrappers.
+
+```go
+textStream, errStream := ai.ToTextStream(ctx, result.Stream())
+for text := range textStream {
+    fmt.Print(text)
+}
+if err := <-errStream; err != nil {
+    log.Fatal(err)
+}
+```
+
+Use `ai.ToUIMessageStream(ctx, result.Stream(), ...)` to convert provider stream chunks into UI message chunks. `result.FullStream()` remains as a deprecated alias for `result.Stream()`.
+
 ### Channel-Based Streaming
 
 The Go AI SDK uses Go channels for streaming, providing a natural and idiomatic way to handle streaming data:

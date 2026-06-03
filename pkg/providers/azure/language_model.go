@@ -3,7 +3,6 @@ package azure
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
@@ -38,7 +37,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "azure-openai"
+	return "azure.chat"
 }
 
 // ModelID returns the deployment ID (Azure's equivalent of model ID)
@@ -68,8 +67,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 
 	// Make API request to Azure-specific endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/chat/completions?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
 
 	var response azureResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -93,8 +91,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody := m.buildRequestBody(opts, true)
 
 	// Make streaming API request to Azure-specific endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/chat/completions?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -115,6 +112,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // buildRequestBody builds the Azure OpenAI API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
+		"model":  m.deploymentID,
 		"stream": stream,
 	}
 
@@ -217,7 +215,7 @@ func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateR
 
 // handleError converts errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // convertAzureUsage converts Azure OpenAI usage to detailed Usage struct

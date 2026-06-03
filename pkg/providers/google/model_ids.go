@@ -94,6 +94,7 @@ const (
 	InteractionsAgentDeepResearchProPreview    = "deep-research-pro-preview-12-2025"
 	InteractionsAgentDeepResearchPreview042026 = "deep-research-preview-04-2026"
 	InteractionsAgentDeepResearchMax042026     = "deep-research-max-preview-04-2026"
+	InteractionsAgentAntigravityPreview052026  = "antigravity-preview-05-2026"
 
 	// InteractionsAgentDeepResearch is kept for source compatibility and maps to
 	// the current TS SDK deep-research pro preview agent name.

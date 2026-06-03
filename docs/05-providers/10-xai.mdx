@@ -53,6 +53,7 @@ export XAI_API_KEY=xai-...
 | `grok-3-mini` | Smaller, faster Grok 3 variant |
 | `grok-4` | Latest Grok 4 model |
 | `grok-4-latest` | Alias for latest Grok 4 |
+| `grok-4.3` | Current Grok 4.3 model |
 | `grok-4.20-multi-agent` | Multi-agent orchestration |
 | `grok-4.20-reasoning` | Reasoning-optimized |
 | `grok-4.20-non-reasoning` | Fast non-reasoning |
@@ -68,7 +69,7 @@ export XAI_API_KEY=xai-...
 
 | Model ID | Description |
 |----------|-------------|
-| `grok-video` | Video generation |
+| `grok-imagine-video` | Video generation |
 
 ## Responses API (default)
 
@@ -84,6 +85,25 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ```
 
 ## Provider options
+
+### Provider-executed web search
+
+Use `xai.WebSearch` with the Responses API. `EnableImageSearch` maps to xAI's `enable_image_search` request field.
+
+```go
+enableImageSearch := true
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Show me images of SpaceX Starship on the launch pad.",
+    Tools: []types.Tool{
+        xai.WebSearch(xai.WebSearchConfig{
+            EnableImageSearch: &enableImageSearch,
+        }),
+    },
+})
+```
+
+The legacy chat-completions `SearchParameters` option remains source-compatible but is deprecated. Prefer provider-executed `WebSearch` or `XSearch` tools on the Responses API.
 
 ### Reasoning summary
 
@@ -174,7 +194,7 @@ Supports multiple input images for editing, b64_json output format, and `CostInU
 ## Video generation
 
 ```go
-videoModel, _ := provider.VideoModel("grok-video")
+videoModel, _ := provider.VideoModel("grok-imagine-video")
 
 result, _ := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
     Model:  videoModel,

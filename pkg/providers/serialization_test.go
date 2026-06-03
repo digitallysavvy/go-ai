@@ -30,7 +30,7 @@ func TestOpenAIModelWorkflowSerializationRoundTrip(t *testing.T) {
 		t.Fatalf("model does not implement provider.SerializableModel")
 	}
 	serialized := serializable.Serialize()
-	if serialized.Provider != "openai" || serialized.ModelID != "gpt-4o" {
+	if serialized.Provider != "openai.responses" || serialized.ModelID != "gpt-4o" {
 		t.Fatalf("unexpected serialized model: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -43,14 +43,14 @@ func TestOpenAIModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeserializeModel() error: %v", err)
 	}
-	if restored.Provider() != "openai" || restored.ModelID() != "gpt-4o" {
+	if restored.Provider() != "openai.responses" || restored.ModelID() != "gpt-4o" {
 		t.Fatalf("unexpected restored model provider=%q model=%q", restored.Provider(), restored.ModelID())
 	}
 	asMap, err := providerutils.SerializeModel(model)
 	if err != nil {
 		t.Fatalf("providerutils.SerializeModel() error: %v", err)
 	}
-	if asMap["provider"] != "openai" || asMap["modelId"] != "gpt-4o" {
+	if asMap["provider"] != "openai.responses" || asMap["modelId"] != "gpt-4o" {
 		t.Fatalf("unexpected providerutils serialization: %#v", asMap)
 	}
 }

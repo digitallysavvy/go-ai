@@ -31,7 +31,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "azure-openai"
+	return "azure.image"
 }
 
 // ModelID returns the model ID (deployment ID for Azure)
@@ -44,13 +44,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts)
 
 	// Azure OpenAI image generation endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/images/generations?api-version=%s",
-		m.deploymentID,
-		m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/images/generations")
 
 	resp, err := m.provider.client.Post(ctx, path, reqBody)
 	if err != nil {
-		return nil, providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {
@@ -63,6 +61,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
 	reqBody := map[string]interface{}{
 		"prompt": opts.Prompt,
+		"model":  m.deploymentID,
 	}
 
 	if opts.N != nil {

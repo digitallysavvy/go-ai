@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -32,7 +32,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "azure-openai"
+	return "azure.embeddings"
 }
 
 // ModelID returns the deployment ID
@@ -55,9 +55,9 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
 	reqBody := map[string]interface{}{
 		"input": input,
+		"model": m.deploymentID,
 	}
-	path := fmt.Sprintf("/openai/deployments/%s/embeddings?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -88,9 +88,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	reqBody := map[string]interface{}{
 		"input": inputs,
+		"model": m.deploymentID,
 	}
-	path := fmt.Sprintf("/openai/deployments/%s/embeddings?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -120,7 +120,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 // handleError converts errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
-	return providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // optsHeaders extracts the Headers map from EmbedModelOptions (nil-safe).

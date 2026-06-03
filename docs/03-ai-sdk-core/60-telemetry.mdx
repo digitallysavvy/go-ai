@@ -133,6 +133,23 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 Telemetry integrations should implement `OnEnd`, `OnEmbedEnd`, and `OnRerankEnd`. The older `OnFinish`, `OnEmbedFinish`, and `OnRerankFinish` names are kept as deprecated compatibility fallbacks. Streaming `OnChunk` telemetry is no longer emitted; application-level `StreamTextOptions.OnChunk` callbacks still receive stream chunks.
 
+### Abort and Performance Events
+
+Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when generation is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open.
+
+Model calls are made inside the telemetry context returned by `OnStart` and `OnStepStart`. If an integration stores span context or request-scoped values in the returned context, provider calls and tool execution receive that context.
+
+Language model call performance uses TypeScript-compatible names:
+
+```go
+type LanguageModelCallPerformance struct {
+    TimeToFirstOutputMs       *int64
+    TimeBetweenOutputChunksMs *types.OutputChunkTimingStats
+}
+```
+
+File outputs and tool calls count as output for `TimeToFirstOutputMs`. Runtime and tool context remain excluded from telemetry by default; when included through `IncludeRuntimeContext` or `IncludeToolsContext`, nested objects are emitted as separate attributes instead of a single collapsed object.
+
 ## Fluent API for Settings
 
 Use the fluent API to build telemetry settings:

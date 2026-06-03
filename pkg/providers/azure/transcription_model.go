@@ -9,8 +9,8 @@ import (
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -35,7 +35,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "azure-openai"
+	return "azure.transcription"
 }
 
 // ModelID returns the model ID (deployment ID for Azure)
@@ -51,9 +51,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Azure OpenAI transcription endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/audio/transcriptions?api-version=%s",
-		m.deploymentID,
-		m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/audio/transcriptions")
 
 	// Use internal http client's Do method with custom headers
 	req := internalhttp.Request{
@@ -67,7 +65,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	resp, err := m.provider.client.Do(ctx, req)
 	if err != nil {
-		return nil, providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {
@@ -92,6 +90,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	// Add optional parameters
+	_ = writer.WriteField("model", m.deploymentID)
+
 	if opts.Language != "" {
 		_ = writer.WriteField("language", opts.Language)
 	}

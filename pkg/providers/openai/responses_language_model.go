@@ -31,11 +31,11 @@ func NewResponsesLanguageModel(p *Provider, modelID string) *ResponsesLanguageMo
 }
 
 // SpecificationVersion returns the provider spec version.
-func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider identifier. Uses the ".responses" suffix so
 // callers can distinguish Responses API models from Chat Completions models.
-func (m *ResponsesLanguageModel) Provider() string { return "openai.responses" }
+func (m *ResponsesLanguageModel) Provider() string { return m.provider.responsesProviderName() }
 
 // ModelID returns the model ID.
 func (m *ResponsesLanguageModel) ModelID() string { return m.modelID }
@@ -61,13 +61,14 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
+		Query:   m.provider.responsesQuery(),
 		Body:    body,
 		Headers: opts.Headers,
 	}, &resp); err != nil {
 		return nil, m.wrapErr(err)
 	}
 
-	result, err := m.convertResponse(resp, store, webSearchToolName)
+	result, err := m.convertResponse(resp, store, webSearchToolName, m.provider.responsesProviderOptionsName())
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +87,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
+		Query:   m.provider.responsesQuery(),
 		Body:    body,
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
@@ -93,7 +95,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks, webSearchToolName), warnings), nil
+	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName()), warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,9 +127,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	truncation := ""
 	includeFields := []string(nil)
 	var allowedTools *responses.AllowedToolsToolChoice
+	providerOptionsName := m.provider.responsesProviderOptionsName()
 
 	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+		openaiOpts, ok := opts.ProviderOptions[providerOptionsName].(map[string]interface{})
+		if !ok && providerOptionsName != "openai" {
+			openaiOpts, ok = opts.ProviderOptions["openai"].(map[string]interface{})
+		}
+		if ok {
 			if v, ok := openaiOpts["store"].(bool); ok {
 				store = v
 				storeExplicit = true
@@ -201,7 +208,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		HasShellTool:                hasTool(opts.Tools, "openai.shell"),
 		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
 		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
-		ProviderOptionsName:         "openai",
+		ProviderOptionsName:         providerOptionsName,
 	})
 	if err != nil {
 		return nil, store, warnings, err
@@ -492,7 +499,11 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
-func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string) (*types.GenerateResult, error) {
+func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, providerOptionsName ...string) (*types.GenerateResult, error) {
+	providerName := "openai"
+	if len(providerOptionsName) > 0 && providerOptionsName[0] != "" {
+		providerName = providerOptionsName[0]
+	}
 	result := &types.GenerateResult{
 		Usage:       convertResponsesUsage(resp.Usage),
 		RawResponse: resp,
@@ -519,7 +530,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Text += part.Text
 				result.Content = append(result.Content, types.TextContent{
 					Text:            part.Text,
-					ProviderOptions: openAIResponsesMessageProviderOptions(item.ID, item.Phase),
+					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase),
 				})
 			}
 
@@ -534,7 +545,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(item.ID, item.Namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace),
 			}
 			toolCalls = append(toolCalls, tc)
 
@@ -559,7 +570,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			rc := types.ReasoningContent{
 				Text:             summaryText,
 				EncryptedContent: item.EncryptedContent,
-				ProviderMetadata: openAIResponsesReasoningMetadata(item.ID),
+				ProviderMetadata: openAIResponsesReasoningMetadata(providerName, item.ID),
 			}
 			result.Content = append(result.Content, rc)
 
@@ -628,7 +639,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	return result, nil
 }
 
-func openAIResponsesToolCallMetadata(itemID, namespace string) map[string]interface{} {
+func openAIResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
@@ -639,20 +650,20 @@ func openAIResponsesToolCallMetadata(itemID, namespace string) map[string]interf
 	if len(openai) == 0 {
 		return nil
 	}
-	return map[string]interface{}{"openai": openai}
+	return map[string]interface{}{providerName: openai}
 }
 
-func openAIResponsesReasoningMetadata(itemID string) json.RawMessage {
+func openAIResponsesReasoningMetadata(providerName, itemID string) json.RawMessage {
 	if itemID == "" {
 		return nil
 	}
 	raw, _ := json.Marshal(map[string]interface{}{
-		"openai": map[string]interface{}{"itemId": itemID},
+		providerName: map[string]interface{}{"itemId": itemID},
 	})
 	return raw
 }
 
-func openAIResponsesMessageProviderOptions(itemID string, phase *string) map[string]interface{} {
+func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *string) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
@@ -663,7 +674,7 @@ func openAIResponsesMessageProviderOptions(itemID string, phase *string) map[str
 	if len(openai) == 0 {
 		return nil
 	}
-	return map[string]interface{}{"openai": openai}
+	return map[string]interface{}{providerName: openai}
 }
 
 func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
@@ -766,7 +777,7 @@ func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 }
 
 func (m *ResponsesLanguageModel) wrapErr(err error) error {
-	return providererrors.NewProviderError("openai.responses", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,13 +814,18 @@ type responsesStream struct {
 	flushQueue        []*provider.StreamChunk
 	includeRawChunks  bool
 	webSearchToolName string
+	providerName      string
 	responseID        string
 }
 
-func newResponsesStream(r io.ReadCloser, includeRawChunks bool, webSearchToolName ...string) *responsesStream {
+func newResponsesStream(r io.ReadCloser, includeRawChunks bool, args ...string) *responsesStream {
 	toolName := "web_search"
-	if len(webSearchToolName) > 0 && webSearchToolName[0] != "" {
-		toolName = webSearchToolName[0]
+	if len(args) > 0 && args[0] != "" {
+		toolName = args[0]
+	}
+	providerName := "openai"
+	if len(args) > 1 && args[1] != "" {
+		providerName = args[1]
 	}
 	return &responsesStream{
 		reader:            r,
@@ -819,6 +835,7 @@ func newResponsesStream(r io.ReadCloser, includeRawChunks bool, webSearchToolNam
 		itemTypes:         make(map[int]string),
 		includeRawChunks:  includeRawChunks,
 		webSearchToolName: toolName,
+		providerName:      providerName,
 	}
 }
 
@@ -1034,7 +1051,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			responseID = e.Response.ID
 		}
 		if responseID != "" {
-			meta, _ = json.Marshal(map[string]interface{}{"responseId": responseID})
+			meta, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"responseId": responseID}})
 		}
 
 		s.err = io.EOF
@@ -1070,7 +1087,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		var meta json.RawMessage
 		if len(metaMap) > 0 {
-			meta, _ = json.Marshal(metaMap)
+			meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
 		}
 
 		s.err = io.EOF
@@ -1136,7 +1153,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               accum.id,
 				ToolName:         accum.name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(accum.itemID, accum.namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace),
 			},
 		})
 
@@ -1168,7 +1185,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if item.ID != "" {
 			meta["itemId"] = item.ID
 		}
-		providerMeta, _ := json.Marshal(map[string]interface{}{"openai": meta})
+		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
 			ID:               "reasoning-" + item.ID,

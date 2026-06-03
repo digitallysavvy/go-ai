@@ -121,7 +121,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions, providerName),
 					})
 				} else {
-					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles); err != nil {
+					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles, providerName); err != nil {
 						return UserMessage{}, err
 					}
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: fileURL})
@@ -174,7 +174,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions, providerName),
 					})
 				} else {
-					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles); err != nil {
+					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles, providerName); err != nil {
 						return UserMessage{}, err
 					}
 					part := map[string]interface{}{"type": "input_file", "file_data": fileData}
@@ -250,11 +250,14 @@ func isImageMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
 }
 
-func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool) error {
+func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool, providerName string) error {
 	if passThroughUnsupportedFiles || mediaType == "" || mediaType == "application/pdf" {
 		return nil
 	}
-	return fmt.Errorf("openai.responses: unsupported file media type %q; set providerOptions.openai.passThroughUnsupportedFiles to true to pass it through", mediaType)
+	if providerName == "" {
+		providerName = "openai"
+	}
+	return fmt.Errorf("openai.responses: unsupported file media type %q; set providerOptions.%s.passThroughUnsupportedFiles to true to pass it through", mediaType, providerName)
 }
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
@@ -264,6 +267,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 	providerName := openAIProviderOptionsName(opts)
 
 	reasoningItems := map[string]map[string]interface{}{}
+	toolCallContentIDs := map[string]bool{}
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.TextContent:
@@ -275,11 +279,13 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 				items = append(items, item)
 			}
 		case types.ToolCallContent:
+			toolCallContentIDs[p.ToolCallID] = true
 			if item := convertAssistantToolCallContentItem(p, opts); item != nil {
 				items = append(items, item)
 			}
 		case *types.ToolCallContent:
 			if p != nil {
+				toolCallContentIDs[p.ToolCallID] = true
 				if item := convertAssistantToolCallContentItem(*p, opts); item != nil {
 					items = append(items, item)
 				}
@@ -312,6 +318,9 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 
 	// Each ToolCall on the message becomes a function_call item.
 	for _, tc := range msg.ToolCalls {
+		if toolCallContentIDs[tc.ID] {
+			continue
+		}
 		itemID := openAIItemID(tc.ProviderMetadata, providerName)
 		if opts.HasConversation && itemID != "" {
 			continue

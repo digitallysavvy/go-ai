@@ -99,6 +99,22 @@ if err != nil {
 defer client.Close()
 ```
 
+### HTTP Error Handling
+
+HTTP transport failures return `*mcp.MCPClientError` with structured transport fields. `Code` remains the JSON-RPC application error code; `StatusCode`, `URL`, and `ResponseBody` describe the HTTP failure.
+
+```go
+err := client.Connect(ctx)
+if err != nil {
+    var clientErr *mcp.MCPClientError
+    if errors.As(err, &clientErr) && clientErr.StatusCode == http.StatusUnauthorized {
+        log.Printf("MCP auth failed for %s: %s", clientErr.URL, clientErr.ResponseBody)
+        return
+    }
+    log.Fatal(err)
+}
+```
+
 ### Stdio Transport (Local Servers Only)
 
 <Note type="warning">

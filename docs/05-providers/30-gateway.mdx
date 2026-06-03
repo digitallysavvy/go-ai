@@ -33,6 +33,8 @@ go get github.com/digitallysavvy/go-ai
 export AI_GATEWAY_API_KEY="your-api-key-here"
 ```
 
+`AI_GATEWAY_API_KEY` may contain either an AI Gateway API key or a Vercel access token. When a Vercel access token can access multiple teams, set `TeamIDOrSlug`; the provider sends it as `x-vercel-ai-gateway-team`.
+
 ### Basic Configuration
 
 ```go
@@ -57,8 +59,9 @@ func main() {
 
 ```go
 provider, err := gateway.New(gateway.Config{
-    APIKey:  "your-api-key",
-    BaseURL: "https://ai-gateway.vercel.sh/v4/ai", // Custom base URL
+    APIKey:       "your-api-key-or-vercel-access-token",
+    TeamIDOrSlug: "team-slug-or-id",
+    BaseURL:      "https://ai-gateway.vercel.sh/v4/ai", // Custom base URL
     Headers: map[string]string{
         "X-Custom-Header": "value",
     },
@@ -213,6 +216,7 @@ result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
 - **gateway.disallowPromptTraining**: Restrict to no-prompt-training providers.
 - **gateway.hipaaCompliant**: Restrict to HIPAA-capable providers.
 - **gateway.quotaEntityId**: Quota identity for tenant/account-level tracking.
+- **gateway.serviceTier**: Unified service tier intent. Supported values are `"flex"` and `"priority"`; Gateway translates this to the provider-specific tier and overrides lower-level provider tier options.
 
 ## Reranking
 
@@ -454,12 +458,13 @@ result, err := ranker.DoRerank(ctx, &provider.RerankOptions{
 
 ### Routing, quota, and compliance
 
-`gateway.GatewayProviderOptions` includes `Sort`, `QuotaEntityID`, `HIPAACompliant`, `DisallowPromptTraining`, `ZeroDataRetention`, provider order, model filters, and BYOK options.
+`gateway.GatewayProviderOptions` includes `Sort`, `QuotaEntityID`, `HIPAACompliant`, `DisallowPromptTraining`, `ZeroDataRetention`, `ServiceTier`, provider order, model filters, and BYOK options.
 
 ```go
 opts := gateway.GatewayProviderOptions{
-    Sort:          "price",
+    Sort:          "cost",
     QuotaEntityID: "tenant_123",
+    ServiceTier:   "priority",
 }
 hipaa := true
 opts.HIPAACompliant = &hipaa

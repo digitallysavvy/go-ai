@@ -509,19 +509,19 @@ import (
 )
 
 func main() {
-    // Azure OpenAI requires specific configuration
-    endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")     // e.g., https://your-resource.openai.azure.com
-    apiKey := os.Getenv("AZURE_OPENAI_API_KEY")
-    deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT") // e.g., "gpt-4-deployment"
+    // Azure OpenAI requires resource, key, and deployment configuration.
+    resourceName := os.Getenv("AZURE_RESOURCE_NAME")
+    apiKey := os.Getenv("AZURE_API_KEY")
+    deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT") // e.g., "gpt-5-mini"
 
-    if endpoint == "" || apiKey == "" || deployment == "" {
-        log.Fatal("Missing Azure OpenAI configuration (endpoint, key, or deployment)")
+    if resourceName == "" || apiKey == "" || deployment == "" {
+        log.Fatal("Missing Azure OpenAI configuration (resource name, key, or deployment)")
     }
 
     provider := azure.New(azure.Config{
-        Endpoint:   endpoint,
-        APIKey:     apiKey,
-        Deployment: deployment,
+        ResourceName:           resourceName,
+        APIKey:                 apiKey,
+        UseDeploymentBasedURLs: true,
     })
 
     // Use the deployment name, not the model name

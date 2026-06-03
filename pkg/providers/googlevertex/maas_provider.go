@@ -176,9 +176,10 @@ func (p *MaaSProvider) init() error {
 	}
 
 	p.provider = openai.New(openai.Config{
-		Name:       "vertex.maas",
-		BaseURL:    baseURL,
-		HTTPClient: httpClient,
+		Name:             "vertex.maas",
+		BaseURL:          baseURL,
+		HTTPClient:       httpClient,
+		ChatProviderName: "vertex.maas",
 	})
 	return nil
 }
@@ -208,7 +209,7 @@ func (p *MaaSProvider) LanguageModel(modelID string) (provider.LanguageModel, er
 	if err := p.init(); err != nil {
 		return nil, err
 	}
-	return p.provider.LanguageModel(modelID)
+	return p.provider.ChatModel(modelID)
 }
 
 func (p *MaaSProvider) ChatModel(modelID string) (provider.LanguageModel, error) {

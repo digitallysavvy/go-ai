@@ -3,6 +3,7 @@ package openai
 import (
 	"fmt"
 	stdhttp "net/http"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -43,6 +44,34 @@ type Config struct {
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
 
+	// ChatProviderName overrides the provider identifier returned by ChatModel.
+	// Defaults to "openai.chat".
+	ChatProviderName string
+
+	// CompletionProviderName overrides the provider identifier returned by
+	// CompletionModel. Defaults to "openai.completion".
+	CompletionProviderName string
+
+	// CompletionProviderOptionsName selects the providerOptions/providerMetadata
+	// namespace used by completion models. Defaults to "azure" when the
+	// completion provider name contains "azure", otherwise "openai".
+	CompletionProviderOptionsName string
+
+	// CompletionQuery contains query parameters added to Completions API requests.
+	CompletionQuery map[string]string
+
+	// ResponsesProviderName overrides the provider identifier returned by
+	// ResponsesModel. Defaults to "openai.responses".
+	ResponsesProviderName string
+
+	// ResponsesProviderOptionsName selects the providerOptions/providerMetadata
+	// namespace used by Responses models. Defaults to "azure" when the
+	// Responses provider name contains "azure", otherwise "openai".
+	ResponsesProviderOptionsName string
+
+	// ResponsesQuery contains query parameters added to Responses API requests.
+	ResponsesQuery map[string]string
+
 	// FileIDPrefixes identifies deprecated string file-data values that should
 	// be sent to the Responses API as file_id references instead of base64 data.
 	// Nil defaults to []string{"file-"} to match the TypeScript OpenAI provider;
@@ -58,8 +87,9 @@ func New(cfg Config) *Provider {
 	}
 
 	// Create HTTP client with default headers
-	headers := map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", cfg.APIKey),
+	headers := map[string]string{}
+	if cfg.APIKey != "" {
+		headers["Authorization"] = fmt.Sprintf("Bearer %s", cfg.APIKey)
 	}
 
 	if cfg.Organization != "" {
@@ -97,6 +127,68 @@ func (p *Provider) responsesFileIDPrefixes() []string {
 	return []string{"file-"}
 }
 
+func (p *Provider) responsesProviderName() string {
+	if p.config.ResponsesProviderName != "" {
+		return p.config.ResponsesProviderName
+	}
+	if name := p.Name(); name != "" && name != "openai" {
+		return name + ".responses"
+	}
+	return "openai.responses"
+}
+
+func (p *Provider) responsesQuery() map[string]string {
+	if len(p.config.ResponsesQuery) == 0 {
+		return nil
+	}
+	query := make(map[string]string, len(p.config.ResponsesQuery))
+	for k, v := range p.config.ResponsesQuery {
+		query[k] = v
+	}
+	return query
+}
+
+func (p *Provider) responsesProviderOptionsName() string {
+	if p.config.ResponsesProviderOptionsName != "" {
+		return p.config.ResponsesProviderOptionsName
+	}
+	if strings.Contains(p.responsesProviderName(), "azure") {
+		return "azure"
+	}
+	return "openai"
+}
+
+func (p *Provider) completionProviderName() string {
+	if p.config.CompletionProviderName != "" {
+		return p.config.CompletionProviderName
+	}
+	if name := p.Name(); name != "" && name != "openai" {
+		return name + ".completion"
+	}
+	return "openai.completion"
+}
+
+func (p *Provider) completionQuery() map[string]string {
+	if len(p.config.CompletionQuery) == 0 {
+		return nil
+	}
+	query := make(map[string]string, len(p.config.CompletionQuery))
+	for k, v := range p.config.CompletionQuery {
+		query[k] = v
+	}
+	return query
+}
+
+func (p *Provider) completionProviderOptionsName() string {
+	if p.config.CompletionProviderOptionsName != "" {
+		return p.config.CompletionProviderOptionsName
+	}
+	if strings.Contains(p.completionProviderName(), "azure") {
+		return "azure"
+	}
+	return "openai"
+}
+
 // Name returns the provider name
 func (p *Provider) Name() string {
 	if p.config.Name != "" {
@@ -107,12 +199,30 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
+	return p.ResponsesModel(modelID)
+}
+
+// ChatModel returns a Chat Completions API language model by ID. It mirrors the
+// TypeScript provider.chat factory while LanguageModel follows the TypeScript
+// default provider function and returns a Responses API model.
+func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 	// Validate model ID
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
 	return NewLanguageModel(p, modelID), nil
+}
+
+// CompletionModel returns a language model that uses the OpenAI Completions API
+// (/v1/completions). This mirrors the TypeScript provider.completion factory for
+// instruct-style completion models.
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	return NewCompletionModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID

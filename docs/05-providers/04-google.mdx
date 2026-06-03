@@ -108,6 +108,7 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 | Model ID | Dimensions | Price | Best For |
 |----------|-----------|-------|----------|
 | gemini-embedding-001 | 3072 | See Google pricing | Multimodal semantic search |
+| gemini-embedding-2 | 3072 | See Google pricing | Stable Gemini embedding workloads |
 | gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
 
 ## Provider-Specific Features
@@ -236,7 +237,7 @@ if err != nil {
 fmt.Println(result.Text)
 ```
 
-Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait.
+Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
 
 ```go
 agentModel, err := googleProvider.InteractionsAgent(google.InteractionsAgentDeepResearchProPreview)

@@ -144,6 +144,70 @@ func TestPrepareTools_WebSearchPreview(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_HostedOpenAITools(t *testing.T) {
+	maxResults := 5
+	scoreThreshold := 0.75
+	compression := 80
+	partialImages := 2
+
+	result := PrepareTools([]types.Tool{
+		openaitool.CodeInterpreter(openaitool.CodeInterpreterConfig{
+			Container: openaitool.CodeInterpreterContainer{FileIDs: []string{"file_1"}},
+		}),
+		openaitool.FileSearch(openaitool.FileSearchConfig{
+			VectorStoreIDs: []string{"vs_1"},
+			MaxNumResults:  &maxResults,
+			Ranking: &openaitool.FileSearchRanking{
+				Ranker:         "auto",
+				ScoreThreshold: &scoreThreshold,
+			},
+			Filters: map[string]interface{}{"type": "eq", "key": "topic", "value": "go"},
+		}),
+		openaitool.ImageGeneration(openaitool.ImageGenerationConfig{
+			Background:        "transparent",
+			InputFidelity:     "high",
+			InputImageMask:    &openaitool.ImageGenerationMask{FileID: "file_mask", ImageURL: "data:image/png;base64,abc"},
+			Model:             "gpt-image-1",
+			Moderation:        "auto",
+			OutputCompression: &compression,
+			OutputFormat:      "png",
+			PartialImages:     &partialImages,
+			Quality:           "high",
+			Size:              "1024x1024",
+		}),
+	})
+	if len(result) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(result))
+	}
+
+	code := result[0].(map[string]interface{})
+	container := code["container"].(map[string]interface{})
+	if code["type"] != "code_interpreter" || container["type"] != "auto" || container["file_ids"].([]string)[0] != "file_1" {
+		t.Fatalf("code interpreter def = %#v", code)
+	}
+
+	fileSearch := result[1].(map[string]interface{})
+	ranking := fileSearch["ranking_options"].(map[string]interface{})
+	if fileSearch["type"] != "file_search" || fileSearch["vector_store_ids"].([]string)[0] != "vs_1" || fileSearch["max_num_results"] != maxResults {
+		t.Fatalf("file search def = %#v", fileSearch)
+	}
+	if ranking["ranker"] != "auto" || ranking["score_threshold"] != scoreThreshold {
+		t.Fatalf("ranking_options = %#v", ranking)
+	}
+
+	image := result[2].(map[string]interface{})
+	mask := image["input_image_mask"].(map[string]interface{})
+	if image["type"] != "image_generation" || image["background"] != "transparent" || image["input_fidelity"] != "high" || image["model"] != "gpt-image-1" {
+		t.Fatalf("image generation def = %#v", image)
+	}
+	if mask["file_id"] != "file_mask" || mask["image_url"] != "data:image/png;base64,abc" {
+		t.Fatalf("image mask = %#v", mask)
+	}
+	if image["output_compression"] != compression || image["partial_images"] != partialImages || image["quality"] != "high" || image["size"] != "1024x1024" {
+		t.Fatalf("image generation options = %#v", image)
+	}
+}
+
 func TestPrepareTools_LocalShell(t *testing.T) {
 	tool := NewLocalShellTool()
 	result := PrepareTools([]types.Tool{tool})

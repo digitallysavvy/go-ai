@@ -605,7 +605,8 @@ data: {"type":"response.incomplete","response":{"id":"resp_terminal","incomplete
 	if err := json.Unmarshal(chunk.ProviderMetadata, &meta); err != nil {
 		t.Fatalf("provider metadata unmarshal failed: %v", err)
 	}
-	if meta["responseId"] != "resp_created" {
+	openaiMeta, ok := meta["openai"].(map[string]interface{})
+	if !ok || openaiMeta["responseId"] != "resp_created" {
 		t.Fatalf("provider metadata = %#v, want created response id", meta)
 	}
 }
@@ -1231,5 +1232,8 @@ func TestResponsesModel_Factory(t *testing.T) {
 	}
 	if model.Provider() != "openai.responses" {
 		t.Errorf("Provider() = %q, want %q", model.Provider(), "openai.responses")
+	}
+	if model.SpecificationVersion() != "v4" {
+		t.Errorf("SpecificationVersion() = %q, want v4", model.SpecificationVersion())
 	}
 }

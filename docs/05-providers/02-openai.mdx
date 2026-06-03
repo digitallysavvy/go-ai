@@ -33,6 +33,13 @@ if err != nil {
 }
 ```
 
+`LanguageModel` matches the TypeScript OpenAI provider default and returns a Responses API model. Use `ChatModel` when you need the Chat Completions endpoint or `CompletionModel` for legacy instruct-style completions:
+
+```go
+chatModel, err := provider.ChatModel("gpt-4o")
+completionModel, err := provider.CompletionModel("gpt-3.5-turbo-instruct")
+```
+
 ### Get API Key
 
 1. Sign up at [platform.openai.com](https://platform.openai.com)
@@ -654,7 +661,7 @@ model, err := p.LanguageModel(openai.ModelGPT55)
 
 ### Responses API metadata
 
-Use `ResponsesModel` when you need OpenAI Responses API behavior. The provider preserves response IDs, headers, provider metadata, encrypted reasoning, function-call namespace values, and generated files in the standard result fields.
+`LanguageModel` and `ResponsesModel` both use OpenAI Responses API behavior. The provider preserves response IDs, headers, provider metadata, encrypted reasoning, function-call namespace values, and generated files in the standard result fields.
 
 ```go
 model, err := p.ResponsesModel(openai.ModelGPT55)

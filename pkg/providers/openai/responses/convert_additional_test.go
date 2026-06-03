@@ -89,6 +89,9 @@ func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *
 	if _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
 		t.Fatal("expected unsupported file media type error")
 	}
+	if _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); err == nil || !strings.Contains(err.Error(), "providerOptions.azure.passThroughUnsupportedFiles") {
+		t.Fatalf("azure unsupported file error = %v, want azure providerOptions hint", err)
+	}
 	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions error = %v", err)
@@ -957,6 +960,43 @@ func TestConvertPromptToInput_AssistantToolCallContentParts(t *testing.T) {
 	raw, ok := input[2].(FunctionCallItem)
 	if !ok || raw.Name != "write_sql" || raw.Arguments != `"SELECT 1"` {
 		t.Fatalf("input[2] = %#v, want function_call with JSON-string arguments", input[2])
+	}
+}
+
+func TestConvertPromptToInput_AssistantToolCallContentDeduplicatesTopLevelToolCalls(t *testing.T) {
+	t.Parallel()
+
+	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ToolCallContent{
+						ToolCallID: "call-1",
+						ToolName:   "weather",
+						Arguments:  map[string]interface{}{"city": "SF"},
+						ProviderOptions: map[string]interface{}{
+							"openai": map[string]interface{}{"itemId": "fc_123"},
+						},
+					},
+				},
+				ToolCalls: []types.ToolCall{{
+					ID:               "call-1",
+					ToolName:         "weather",
+					Arguments:        map[string]interface{}{"city": "SF"},
+					ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{"itemId": "fc_123"}},
+				}},
+			},
+		},
+	}, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want one deduplicated function_call: %#v", len(input), input)
+	}
+	if call, ok := input[0].(FunctionCallItem); !ok || call.ID != "fc_123" || call.CallID != "call-1" {
+		t.Fatalf("input[0] = %#v, want function_call from content part", input[0])
 	}
 }
 

@@ -181,9 +181,9 @@ provider := openai.New(openai.Config{
 
 ```go
 provider := azure.New(azure.Config{
-    APIKey: os.Getenv("AZURE_API_KEY"),
-    Endpoint: "https://my-resource.openai.azure.com",
-    DeploymentName: "gpt-4",
+    ResourceName:           os.Getenv("AZURE_RESOURCE_NAME"),
+    APIKey:                 os.Getenv("AZURE_API_KEY"),
+    UseDeploymentBasedURLs: true,
 })
 ```
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -30,7 +30,7 @@ func (m *SpeechModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *SpeechModel) Provider() string {
-	return "azure-openai"
+	return "azure.speech"
 }
 
 // ModelID returns the model ID (deployment ID for Azure)
@@ -43,13 +43,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	reqBody := m.buildRequestBody(opts)
 
 	// Azure OpenAI speech generation endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/audio/speech?api-version=%s",
-		m.deploymentID,
-		m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/audio/speech")
 
 	resp, err := m.provider.client.Post(ctx, path, reqBody)
 	if err != nil {
-		return nil, providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {
@@ -66,6 +64,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) map[string]interface{} {
 	reqBody := map[string]interface{}{
 		"input": opts.Text,
+		"model": m.deploymentID,
 	}
 
 	if opts.Voice != "" {

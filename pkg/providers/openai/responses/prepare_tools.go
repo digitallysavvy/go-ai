@@ -42,6 +42,12 @@ func convertTool(t types.Tool) interface{} {
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.code_interpreter":
+		return convertCodeInterpreterTool(t)
+	case "openai.file_search":
+		return convertFileSearchTool(t)
+	case "openai.image_generation":
+		return convertImageGenerationTool(t)
 	case "openai.web_search":
 		return convertWebSearchTool(t)
 	case "openai.web_search_preview":
@@ -77,6 +83,100 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 		def.Format = f
 	}
 
+	return def
+}
+
+func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "code_interpreter"}
+	cfg, _ := t.ProviderOptions.(openaitool.CodeInterpreterConfig)
+	switch container := cfg.Container.(type) {
+	case string:
+		if container != "" {
+			def["container"] = container
+		} else {
+			def["container"] = map[string]interface{}{"type": "auto"}
+		}
+	case openaitool.CodeInterpreterContainer:
+		containerDef := map[string]interface{}{"type": "auto"}
+		if len(container.FileIDs) > 0 {
+			containerDef["file_ids"] = container.FileIDs
+		}
+		def["container"] = containerDef
+	case *openaitool.CodeInterpreterContainer:
+		containerDef := map[string]interface{}{"type": "auto"}
+		if container != nil && len(container.FileIDs) > 0 {
+			containerDef["file_ids"] = container.FileIDs
+		}
+		def["container"] = containerDef
+	default:
+		def["container"] = map[string]interface{}{"type": "auto"}
+	}
+	return def
+}
+
+func convertFileSearchTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "file_search"}
+	cfg, _ := t.ProviderOptions.(openaitool.FileSearchConfig)
+	def["vector_store_ids"] = cfg.VectorStoreIDs
+	if cfg.MaxNumResults != nil {
+		def["max_num_results"] = *cfg.MaxNumResults
+	}
+	if cfg.Ranking != nil {
+		ranking := map[string]interface{}{}
+		if cfg.Ranking.Ranker != "" {
+			ranking["ranker"] = cfg.Ranking.Ranker
+		}
+		if cfg.Ranking.ScoreThreshold != nil {
+			ranking["score_threshold"] = *cfg.Ranking.ScoreThreshold
+		}
+		def["ranking_options"] = ranking
+	}
+	if cfg.Filters != nil {
+		def["filters"] = cfg.Filters
+	}
+	return def
+}
+
+func convertImageGenerationTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "image_generation"}
+	cfg, _ := t.ProviderOptions.(openaitool.ImageGenerationConfig)
+	if cfg.Background != "" {
+		def["background"] = cfg.Background
+	}
+	if cfg.InputFidelity != "" {
+		def["input_fidelity"] = cfg.InputFidelity
+	}
+	if cfg.InputImageMask != nil {
+		mask := map[string]interface{}{}
+		if cfg.InputImageMask.FileID != "" {
+			mask["file_id"] = cfg.InputImageMask.FileID
+		}
+		if cfg.InputImageMask.ImageURL != "" {
+			mask["image_url"] = cfg.InputImageMask.ImageURL
+		}
+		def["input_image_mask"] = mask
+	}
+	if cfg.Model != "" {
+		def["model"] = cfg.Model
+	}
+	if cfg.Moderation != "" {
+		def["moderation"] = cfg.Moderation
+	}
+	if cfg.OutputCompression != nil {
+		def["output_compression"] = *cfg.OutputCompression
+	}
+	if cfg.OutputFormat != "" {
+		def["output_format"] = cfg.OutputFormat
+	}
+	if cfg.PartialImages != nil {
+		def["partial_images"] = *cfg.PartialImages
+	}
+	if cfg.Quality != "" {
+		def["quality"] = cfg.Quality
+	}
+	if cfg.Size != "" {
+		def["size"] = cfg.Size
+	}
 	return def
 }
 

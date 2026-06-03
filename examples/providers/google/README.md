@@ -71,6 +71,7 @@ Google embeddings use specification version `v4`, support up to `2048` values pe
 | Constant | Model ID |
 |---|---|
 | `google.EmbeddingModelGeminiEmbedding001` | `gemini-embedding-001` |
+| `google.EmbeddingModelGeminiEmbedding2` | `gemini-embedding-2` |
 | `google.EmbeddingModelGeminiEmbedding2Preview` | `gemini-embedding-2-preview` |
 
 Provider options are passed under `ProviderOptions["google"]` with `google.GoogleEmbeddingProviderOptions`:
@@ -166,7 +167,9 @@ opts := &provider.ImageGenerateOptions{
 See `main.go` for working examples including:
 - Text generation with Gemini Pro
 - Interactions API generation
+- Interactions agents, including Deep Research and Antigravity IDs
 - Text embeddings with task type and output dimensionality
+- Stable `gemini-embedding-2` embeddings
 - Optional fileData embeddings with `GOOGLE_FILE_URI`
 - Image generation with `gemini-3.1-flash-image-preview`
 - Extended aspect ratio and image size usage

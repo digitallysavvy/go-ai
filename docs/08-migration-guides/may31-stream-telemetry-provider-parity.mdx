@@ -1,0 +1,111 @@
+---
+title: May 31 Stream, Telemetry, and Provider Migration
+description: Migration notes for the May 31 Go-AI parity update.
+---
+
+# May 31 Stream, Telemetry, and Provider Migration
+
+This guide maps the May 31 TypeScript AI SDK changes to the Go-AI SDK API names.
+
+## Stream Helpers
+
+Use standalone stream helpers with `result.Stream()` for new code:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a concise release note.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+textStream, errStream := ai.ToTextStream(ctx, result.Stream())
+for text := range textStream {
+    fmt.Print(text)
+}
+if err := <-errStream; err != nil {
+    log.Fatal(err)
+}
+```
+
+For HTTP responses, prefer helpers that accept a raw `provider.TextStream`:
+
+```go
+response, err := ai.CreateTextStreamResponseFromStream(ctx, result.Stream(), &ai.TextStreamResponseInit{
+    Headers: map[string]string{"Cache-Control": "no-cache"},
+})
+```
+
+`StreamTextResult.ToTextStreamResponse`, `StreamTextResult.ToUIMessageStream`, `StreamTextResult.ToUIMessageStreamResponse`, `StreamTextResult.PipeTextStreamToResponse`, and `StreamTextResult.PipeUIMessageStreamToResponse` are retained as deprecated compatibility wrappers.
+
+## Stream and FullStream
+
+`Stream()` is the canonical Go accessor for the underlying provider stream. `FullStream()` remains available as a deprecated alias for TypeScript `fullStream` migration.
+
+```go
+stream := result.Stream()
+
+// Deprecated compatibility:
+legacy := result.FullStream()
+_ = legacy
+```
+
+## UI Message Conversion
+
+Use `ToUIMessageChunk` for one chunk and `ToUIMessageStream` for a full stream:
+
+```go
+sendStart := true
+sendFinish := true
+uiChunks, uiErrs := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStreamResultOptions{
+    SendStart:  &sendStart,
+    SendFinish: &sendFinish,
+})
+
+for chunk := range uiChunks {
+    fmt.Printf("%s\n", chunk.Type)
+}
+if err := <-uiErrs; err != nil {
+    log.Fatal(err)
+}
+```
+
+The standalone stream helper is the Go equivalent of TypeScript's helper surface. Result-bound methods delegate to these helpers only for source compatibility.
+
+## Telemetry
+
+`Telemetry` is the canonical field. `ExperimentalTelemetry` still works as a deprecated alias.
+
+Telemetry integrations now receive abort events through `OnAbort`, and OpenTelemetry spans are closed when generation is canceled. Model calls run inside the telemetry context, so integrations that attach spans or values in `OnStart` can make them visible downstream.
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+enabled := true
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Stream until canceled.",
+    Telemetry: &ai.TelemetrySettings{
+        IsEnabled: &enabled,
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+cancel()
+_ = result.ConsumeStream()
+```
+
+Output timing fields use the TypeScript-compatible names:
+
+- `TimeToFirstOutputMs`
+- `TimeBetweenOutputChunksMs`
+
+File outputs and tool calls count as first output events, matching the TypeScript SDK. Earlier token-specific naming is not canonical in Go.
+
+Nested runtime/tool context objects are split into separate telemetry attributes when opted in through `IncludeRuntimeContext` or `IncludeToolsContext`.

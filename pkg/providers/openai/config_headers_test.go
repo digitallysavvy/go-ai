@@ -49,7 +49,7 @@ func TestConfigHeadersApplyToAllOpenAIRequestPathsAndCanOverrideSDKHeaders(t *te
 		},
 	})
 
-	languageModel, err := p.LanguageModel(ModelGPT4oMini)
+	languageModel, err := p.ChatModel(ModelGPT4oMini)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestRequestHeadersOverrideProviderHeaders(t *testing.T) {
 		},
 	})
 
-	languageModel, err := p.LanguageModel(ModelGPT4oMini)
+	languageModel, err := p.ChatModel(ModelGPT4oMini)
 	if err != nil {
 		t.Fatal(err)
 	}

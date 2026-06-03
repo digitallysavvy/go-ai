@@ -52,11 +52,12 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 	return &BedrockMantleProvider{
 		settings: settings,
 		openai: openai.New(openai.Config{
-			APIKey:     apiKey,
-			Name:       "bedrock-mantle.chat",
-			BaseURL:    baseURL,
-			Headers:    headers,
-			HTTPClient: httpClient,
+			APIKey:           apiKey,
+			Name:             "bedrock-mantle",
+			BaseURL:          baseURL,
+			Headers:          headers,
+			HTTPClient:       httpClient,
+			ChatProviderName: "bedrock-mantle.chat",
 		}),
 	}
 }
@@ -76,7 +77,7 @@ func (p *BedrockMantleProvider) LanguageModel(modelID string) (provider.Language
 
 // Chat returns a chat-completions-compatible model.
 func (p *BedrockMantleProvider) Chat(modelID string) (provider.LanguageModel, error) {
-	return p.openai.LanguageModel(modelID)
+	return p.openai.ChatModel(modelID)
 }
 
 // ChatModel is an alias for Chat.

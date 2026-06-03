@@ -1,7 +1,11 @@
 package azure
 
 import (
+	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -18,12 +22,15 @@ func TestProviderDefaultsAndFactories(t *testing.T) {
 	if p.Name() != "azure-openai" {
 		t.Fatalf("Name = %q", p.Name())
 	}
-	if p.APIVersion() != "2024-02-15-preview" {
+	if p.APIVersion() != "v1" {
 		t.Fatalf("default APIVersion = %q", p.APIVersion())
 	}
 
 	if _, err := p.LanguageModel(""); err != nil {
 		t.Fatalf("LanguageModel fallback deployment should work: %v", err)
+	}
+	if _, err := p.CompletionModel(""); err != nil {
+		t.Fatalf("CompletionModel fallback deployment should work: %v", err)
 	}
 	if _, err := p.EmbeddingModel(""); err != nil {
 		t.Fatalf("EmbeddingModel fallback deployment should work: %v", err)
@@ -52,6 +59,121 @@ func TestProviderRequiresDeploymentWhenUnset(t *testing.T) {
 	}
 	if _, err := p.ImageModel(""); err == nil {
 		t.Fatal("expected deployment error")
+	}
+	if _, err := p.CompletionModel(""); err == nil {
+		t.Fatal("expected deployment error")
+	}
+}
+
+func TestCompletionModelUsesAzureCompletionURLHeadersAndOptions(t *testing.T) {
+	var capturedPath string
+	var capturedQuery string
+	var capturedAPIKey string
+	var capturedAuthorization string
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		capturedAPIKey = r.Header.Get("api-key")
+		capturedAuthorization = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"cmpl_azure",
+			"created":1711363706,
+			"model":"deployment-1",
+			"choices":[{"text":"azure completion","finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:     "azure-key",
+		BaseURL:    server.URL + "/openai",
+		APIVersion: "2025-04-01-preview",
+	})
+	model, err := p.CompletionModel("deployment-1")
+	if err != nil {
+		t.Fatalf("CompletionModel: %v", err)
+	}
+	if model.Provider() != "azure.completion" {
+		t.Fatalf("Provider = %q", model.Provider())
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"user": "openai-user"},
+			"azure":  map[string]interface{}{"user": "azure-user"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedPath != "/openai/v1/completions" {
+		t.Fatalf("path = %q", capturedPath)
+	}
+	if capturedQuery != "api-version=2025-04-01-preview" {
+		t.Fatalf("query = %q", capturedQuery)
+	}
+	if capturedAPIKey != "azure-key" {
+		t.Fatalf("api-key = %q", capturedAPIKey)
+	}
+	if capturedAuthorization != "" {
+		t.Fatalf("Authorization = %q, want empty", capturedAuthorization)
+	}
+	if capturedBody["model"] != "deployment-1" || capturedBody["user"] != "azure-user" {
+		t.Fatalf("body = %#v", capturedBody)
+	}
+	if result.Text != "azure completion" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+
+	serializable, ok := model.(provider.SerializableModel)
+	if !ok {
+		t.Fatal("Azure completion model should be serializable")
+	}
+	serialized := serializable.Serialize()
+	if serialized.Provider != "azure.completion" || serialized.ModelID != "deployment-1" {
+		t.Fatalf("serialized = %#v", serialized)
+	}
+	restored, err := deserializeCompletionModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeCompletionModel: %v", err)
+	}
+	if restored.Provider() != "azure.completion" || restored.ModelID() != "deployment-1" {
+		t.Fatalf("restored = %s/%s", restored.Provider(), restored.ModelID())
+	}
+}
+
+func TestCompletionModelUsesDeploymentBasedAzureURL(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"text":"","finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:                 "azure-key",
+		BaseURL:                server.URL + "/openai",
+		APIVersion:             "v1",
+		UseDeploymentBasedURLs: true,
+	})
+	model, err := p.CompletionModel("deployment-1")
+	if err != nil {
+		t.Fatalf("CompletionModel: %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedPath != "/openai/deployments/deployment-1/completions" {
+		t.Fatalf("path = %q", capturedPath)
 	}
 }
 
@@ -209,9 +331,9 @@ func TestSerializeDeserializeLanguageModel(t *testing.T) {
 		DeploymentID: "dep",
 		APIVersion:   "2024-10-21",
 	})
-	mAny, err := p.LanguageModel("dep-a")
+	mAny, err := p.ChatModel("dep-a")
 	if err != nil {
-		t.Fatalf("LanguageModel: %v", err)
+		t.Fatalf("ChatModel: %v", err)
 	}
 	lm := mAny.(*LanguageModel)
 	s := lm.Serialize()
@@ -219,8 +341,130 @@ func TestSerializeDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel: %v", err)
 	}
-	if restored.Provider() != "azure-openai" || restored.ModelID() != "dep-a" {
+	if restored.Provider() != "azure.chat" || restored.ModelID() != "dep-a" {
 		t.Fatalf("restored model mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+}
+
+func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
+	var capturedPath string
+	var capturedQuery string
+	var capturedHeaders http.Header
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		capturedHeaders = r.Header.Clone()
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_123",
+			"model":"test-deployment",
+			"created_at":123,
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+		}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:     "test-api-key",
+		BaseURL:    server.URL + "/openai",
+		APIVersion: "v1",
+		Headers: map[string]string{
+			"X-Provider": "provider",
+		},
+	})
+	model, err := p.LanguageModel("test-deployment")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
+	}
+	if model.Provider() != "azure.responses" {
+		t.Fatalf("Provider = %q, want azure.responses", model.Provider())
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		Headers: map[string]string{
+			"X-Request": "request",
+		},
+		ProviderOptions: map[string]interface{}{
+			"azure": map[string]interface{}{
+				"serviceTier": "priority",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("Text = %q, want done", result.Text)
+	}
+	if capturedPath != "/openai/v1/responses" {
+		t.Fatalf("path = %q, want /openai/v1/responses", capturedPath)
+	}
+	if capturedQuery != "api-version=v1" {
+		t.Fatalf("query = %q, want api-version=v1", capturedQuery)
+	}
+	if capturedHeaders.Get("api-key") != "test-api-key" {
+		t.Fatalf("api-key header missing: %#v", capturedHeaders)
+	}
+	if capturedHeaders.Get("Authorization") != "" {
+		t.Fatalf("Authorization header should be absent, got %q", capturedHeaders.Get("Authorization"))
+	}
+	if capturedHeaders.Get("X-Provider") != "provider" || capturedHeaders.Get("X-Request") != "request" {
+		t.Fatalf("custom headers missing: %#v", capturedHeaders)
+	}
+	if capturedBody["model"] != "test-deployment" {
+		t.Fatalf("model body = %#v", capturedBody["model"])
+	}
+	if capturedBody["service_tier"] != "priority" {
+		t.Fatalf("service_tier body = %#v, want priority", capturedBody["service_tier"])
+	}
+	if _, ok := capturedBody["input"]; !ok {
+		t.Fatalf("responses body missing input: %#v", capturedBody)
+	}
+	if len(result.Content) == 0 {
+		t.Fatalf("result content missing")
+	}
+	text, ok := result.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("content[0] = %T, want TextContent", result.Content[0])
+	}
+	if _, ok := text.ProviderOptions["azure"]; !ok {
+		t.Fatalf("provider options = %#v, want azure metadata key", text.ProviderOptions)
+	}
+}
+
+func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_123",
+			"model":"test-deployment",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+		}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{
+		APIKey:                 "test-api-key",
+		BaseURL:                server.URL + "/openai",
+		UseDeploymentBasedURLs: true,
+	})
+	model, err := p.ResponsesModel("test-deployment")
+	if err != nil {
+		t.Fatalf("ResponsesModel: %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedPath != "/openai/deployments/test-deployment/responses" {
+		t.Fatalf("path = %q, want deployment-based responses path", capturedPath)
 	}
 }
 

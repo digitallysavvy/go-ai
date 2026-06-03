@@ -31,7 +31,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if !strings.HasPrefix(seenURI, "/openai/deployments/dep/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" {
+	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" || seenBody["model"] != "dep" {
 		t.Fatalf("request mismatch uri=%q body=%#v", seenURI, seenBody)
 	}
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"][0] != "r1" {
@@ -61,10 +61,10 @@ func TestAzureLanguageModelDoGenerateHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
-	if !strings.HasPrefix(seenURI, "/openai/deployments/dep/chat/completions?api-version=2024-10-21") {
+	if !strings.HasPrefix(seenURI, "/v1/chat/completions?api-version=2024-10-21") {
 		t.Fatalf("path = %q", seenURI)
 	}
-	if seenBody["stream"] != false {
+	if seenBody["stream"] != false || seenBody["model"] != "dep" {
 		t.Fatalf("stream flag mismatch: %#v", seenBody)
 	}
 	if res.Text != "ok" {
@@ -74,7 +74,7 @@ func TestAzureLanguageModelDoGenerateHTTP(t *testing.T) {
 
 func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 	pImage := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
-		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/img/images/generations?api-version=2024-10-21") {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/v1/images/generations?api-version=2024-10-21") {
 			t.Fatalf("image path = %q", r.URL.RequestURI())
 		}
 		return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
@@ -89,7 +89,7 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 	}
 
 	pSpeech := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
-		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/tts/audio/speech?api-version=2024-10-21") {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/v1/audio/speech?api-version=2024-10-21") {
 			t.Fatalf("speech path = %q", r.URL.RequestURI())
 		}
 		return azureTextResponse(200, "AUDIO"), nil
@@ -107,7 +107,7 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	var seenBody string
 	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
-		if !strings.HasPrefix(r.URL.RequestURI(), "/openai/deployments/whisper/audio/transcriptions?api-version=2024-10-21") {
+		if !strings.HasPrefix(r.URL.RequestURI(), "/v1/audio/transcriptions?api-version=2024-10-21") {
 			t.Fatalf("transcription path = %q", r.URL.RequestURI())
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -128,21 +128,54 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	if !strings.Contains(seenBody, `name="response_format"`) || !strings.Contains(seenBody, "verbose_json") {
 		t.Fatalf("missing verbose response format in multipart body")
 	}
+	if !strings.Contains(seenBody, `name="model"`) || !strings.Contains(seenBody, "whisper") {
+		t.Fatalf("missing model in multipart body")
+	}
 	if res.Text != "hello" || len(res.Timestamps) != 1 {
 		t.Fatalf("transcription result mismatch: %#v", res)
 	}
 
-	modelAny, err := p.LanguageModel("whisper")
+	modelAny, err := p.ChatModel("whisper")
 	if err != nil {
-		t.Fatalf("LanguageModel error = %v", err)
+		t.Fatalf("ChatModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
 	restored, err := deserializeModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "azure-openai" || restored.ModelID() != "whisper" {
+	if restored.Provider() != "azure.chat" || restored.ModelID() != "whisper" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+}
+
+func TestAzureUseDeploymentBasedURLs(t *testing.T) {
+	var seenURI string
+	p := New(Config{
+		APIKey:                 "k",
+		BaseURL:                "https://azure.example/openai",
+		DeploymentID:           "dep",
+		APIVersion:             "v1",
+		UseDeploymentBasedURLs: true,
+	})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://azure.example/openai",
+		Headers: map[string]string{"api-key": "k"},
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			seenURI = r.URL.RequestURI()
+			return azureJSONResponse(200, `{"text":"hello"}`, nil), nil
+		})},
+	})
+
+	_, err := NewTranscriptionModel(p, "whisper-1").DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("audio"),
+		MimeType: "audio/mpeg",
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe error = %v", err)
+	}
+	if !strings.HasPrefix(seenURI, "/openai/deployments/whisper-1/audio/transcriptions?api-version=v1") {
+		t.Fatalf("deployment-based path = %q", seenURI)
 	}
 }
 

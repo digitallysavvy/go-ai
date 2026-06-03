@@ -1,51 +1,39 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
 )
 
-// Note: Placeholder example for Azure OpenAI Service integration
-
-type AzureProvider struct {
-	Endpoint   string
-	APIKey     string
-	Deployment string
-}
-
-func NewAzureProvider(endpoint, apiKey, deployment string) *AzureProvider {
-	return &AzureProvider{
-		Endpoint:   endpoint,
-		APIKey:     apiKey,
-		Deployment: deployment,
-	}
-}
-
-func (p *AzureProvider) Generate(prompt string) (string, error) {
-	// Would use Azure OpenAI REST API
-	return fmt.Sprintf("Response from Azure %s: %s", p.Deployment, prompt), nil
-}
-
 func main() {
-	endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
-	apiKey := os.Getenv("AZURE_OPENAI_KEY")
-
-	if endpoint == "" || apiKey == "" {
-		log.Println("Note: This is a placeholder example")
-		log.Println("Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY for actual use")
-		endpoint = "https://your-resource.openai.azure.com"
-		apiKey = "demo-key"
+	if os.Getenv("AZURE_API_KEY") == "" || os.Getenv("AZURE_RESOURCE_NAME") == "" {
+		fmt.Println("set AZURE_API_KEY and AZURE_RESOURCE_NAME to run")
+		return
 	}
 
-	provider := NewAzureProvider(endpoint, apiKey, "gpt-4")
+	provider := azure.New(azure.Config{
+		APIKey:       os.Getenv("AZURE_API_KEY"),
+		ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
+		APIVersion:   "v1",
+	})
 
-	fmt.Println("=== Azure OpenAI Provider Example ===")
-	fmt.Printf("Endpoint: %s\n", provider.Endpoint)
-	fmt.Printf("Deployment: %s\n", provider.Deployment)
+	model, err := provider.LanguageModel("gpt-5.4-mini")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	response, _ := provider.Generate("Hello, Azure!")
-	fmt.Printf("Response: %s\n", response)
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "Write a short Azure OpenAI migration checklist.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	fmt.Println("\nNote: Full implementation requires Azure OpenAI SDK")
+	fmt.Println(result.Text)
 }

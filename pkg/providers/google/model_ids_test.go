@@ -17,6 +17,13 @@ func TestModelConstants_Gemini31FlashImagePreview(t *testing.T) {
 	assert.Equal(t, "gemini-3.1-flash-image-preview", ModelGemini31FlashImagePreview)
 }
 
+func TestModelConstants_InteractionsAgents(t *testing.T) {
+	assert.Equal(t, "deep-research-pro-preview-12-2025", InteractionsAgentDeepResearchProPreview)
+	assert.Equal(t, "deep-research-preview-04-2026", InteractionsAgentDeepResearchPreview042026)
+	assert.Equal(t, "deep-research-max-preview-04-2026", InteractionsAgentDeepResearchMax042026)
+	assert.Equal(t, "antigravity-preview-05-2026", InteractionsAgentAntigravityPreview052026)
+}
+
 func TestModelConstants_AllGemini3Series(t *testing.T) {
 	// Verify the Gemini 3 and 3.1 model IDs from #12819 and #12695 are present
 	tests := []struct {

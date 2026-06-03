@@ -161,6 +161,8 @@ if result.Usage.OutputDetails != nil {
 - `gemini-1.5-flash-8b` - Lightweight, high-volume tasks
 - `gemini-2.0-flash-exp` - Experimental next-gen model
 - `gemini-2.5-flash-preview-04-17` - Preview with reasoning capabilities
+- `gemini-embedding-2` - Stable Gemini embedding model
+- `deep-research-preview-04-2026` and `deep-research-max-preview-04-2026` - April 2026 Deep Research agent IDs
 
 ## Vertex AI vs Google AI
 
