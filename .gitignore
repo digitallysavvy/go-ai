@@ -65,6 +65,34 @@ examples/*/[a-z]*[!.]*
 !examples/*/go.sum
 !examples/*/*.go
 !examples/*/*.md
+!examples/mcp/
+!examples/mcp/http-error-handling/
+!examples/mcp/http-error-handling/main.go
+!examples/providers/
+!examples/providers/anthropicaws/
+!examples/providers/anthropicaws/basic/
+!examples/providers/anthropicaws/basic/main.go
+!examples/providers/anthropicaws/sigv4/
+!examples/providers/anthropicaws/sigv4/main.go
+!examples/providers/azure/
+!examples/providers/azure/responses-web-search/
+!examples/providers/azure/responses-web-search/main.go
+!examples/providers/google/
+!examples/providers/google/deep-research/
+!examples/providers/google/deep-research/main.go
+!examples/providers/google/gemini-embedding-2/
+!examples/providers/google/gemini-embedding-2/main.go
+!examples/providers/xai/
+!examples/providers/xai/web-search-image/
+!examples/providers/xai/web-search-image/main.go
+!examples/sandbox/
+!examples/sandbox/spawn/
+!examples/sandbox/spawn/main.go
+
+# Docs website
+website/node_modules/
+website/build/
+website/.docusaurus/
 
 # Claude Code project files
 CLAUDE.md
