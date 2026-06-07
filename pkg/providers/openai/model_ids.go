@@ -139,3 +139,12 @@ const (
 	ModelGPT4oMiniTranscribe_2025_03_20 = "gpt-4o-mini-transcribe-2025-03-20"
 	ModelGPT4oMiniTranscribe_2025_12_15 = "gpt-4o-mini-transcribe-2025-12-15"
 )
+
+// Realtime model ID constants for OpenAI realtime models.
+const (
+	ModelGPT4oRealtimePreview                = "gpt-4o-realtime-preview"
+	ModelGPT4oRealtimePreview_2024_10_01     = "gpt-4o-realtime-preview-2024-10-01"
+	ModelGPT4oRealtimePreview_2024_12_17     = "gpt-4o-realtime-preview-2024-12-17"
+	ModelGPT4oMiniRealtimePreview            = "gpt-4o-mini-realtime-preview"
+	ModelGPT4oMiniRealtimePreview_2024_12_17 = "gpt-4o-mini-realtime-preview-2024-12-17"
+)

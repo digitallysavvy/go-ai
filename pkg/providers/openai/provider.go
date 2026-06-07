@@ -3,6 +3,7 @@ package openai
 import (
 	"fmt"
 	stdhttp "net/http"
+	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -83,13 +84,24 @@ type Config struct {
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
+		baseURL = os.Getenv("OPENAI_BASE_URL")
+	}
+	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	cfg.BaseURL = baseURL
+
+	apiKey := cfg.APIKey
+	if apiKey == "" && cfg.Name != "azure" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	cfg.APIKey = apiKey
 
 	// Create HTTP client with default headers
 	headers := map[string]string{}
-	if cfg.APIKey != "" {
-		headers["Authorization"] = fmt.Sprintf("Bearer %s", cfg.APIKey)
+	if apiKey != "" {
+		headers["Authorization"] = fmt.Sprintf("Bearer %s", apiKey)
 	}
 
 	if cfg.Organization != "" {
