@@ -85,6 +85,12 @@ const (
 	EmbeddingModelGeminiEmbedding2Preview = "gemini-embedding-2-preview"
 )
 
+// Realtime model ID constants for Gemini Live models.
+const (
+	ModelGeminiLive25FlashPreview = "gemini-live-2.5-flash-preview"
+	ModelGeminiLive20FlashExp     = "gemini-live-2.0-flash-exp"
+)
+
 // Interactions API model IDs.
 const (
 	InteractionsModelGemini25Flash             = "gemini-2.5-flash"

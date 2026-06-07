@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -45,6 +46,8 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	cfg.BaseURL = baseURL
 
 	apiKey := cfg.APIKey
 	if apiKey == "" {
