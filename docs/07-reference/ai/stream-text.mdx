@@ -56,7 +56,7 @@ The result provides methods to consume the stream:
 | Err() | error | Error that occurred during streaming |
 | Close() | error | Close the stream |
 | ReadAll() | (string, error) | Read all chunks and return complete text |
-| Chunks() | <-chan provider.StreamChunk | Channel of chunks |
+| Chunks() | `<-chan provider.StreamChunk` | Channel of chunks |
 | Steps() | []types.StepResult | Completed steps, including per-step `Performance` statistics |
 | FinalStep() | types.StepResult | Last completed step with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming throughput fields |
 | Content() | []types.ContentPart | Ordered generated content from all completed steps |
