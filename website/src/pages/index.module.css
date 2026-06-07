@@ -1,0 +1,430 @@
+.hero {
+  position: relative;
+  padding: 5rem 0 4rem;
+  overflow: hidden;
+  background: #0d1117;
+}
+
+.heroBg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 172, 215, 0.18) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 40% at 80% 60%, rgba(0, 172, 215, 0.08) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+@media (max-width: 996px) {
+  .heroGrid {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .heroBadges {
+    justify-content: center;
+  }
+
+  .heroCtas {
+    justify-content: center;
+  }
+}
+
+.heroBadges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(0, 172, 215, 0.3);
+  background: rgba(0, 172, 215, 0.08);
+  color: #00d2ff;
+}
+
+.heroTitle {
+  font-size: 3.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: #e6edf3;
+  margin-bottom: 1.25rem;
+}
+
+.heroAccent {
+  background: linear-gradient(135deg, #00d2ff 0%, #00acd7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.heroSubtitle {
+  font-size: 1.15rem;
+  line-height: 1.65;
+  color: #768390;
+  margin-bottom: 2rem;
+  max-width: 480px;
+}
+
+@media (max-width: 996px) {
+  .heroSubtitle {
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+.heroCtas {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 2.5rem;
+}
+
+.ctaPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.4rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: #00acd7;
+  color: #0d1117;
+  text-decoration: none;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.ctaPrimary:hover {
+  background: #00d2ff;
+  color: #0d1117;
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.ctaSecondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.4rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: transparent;
+  color: #e6edf3;
+  text-decoration: none;
+  border: 1px solid #30363d;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+
+.ctaSecondary:hover {
+  border-color: #00acd7;
+  background: rgba(0, 172, 215, 0.08);
+  color: #e6edf3;
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.installBox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 0.65rem 1rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.875rem;
+  color: #79c0ff;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.installBox:hover {
+  border-color: #00acd7;
+}
+
+.installLabel {
+  color: #768390;
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+.installCmd {
+  color: #79c0ff;
+}
+
+.copyIcon {
+  margin-left: auto;
+  color: #545d68;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.copyIcon:hover {
+  color: #00d2ff;
+}
+
+/* Code panel */
+.heroCode {
+  position: relative;
+}
+
+.codePanel {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.codePanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #1c2128;
+  border-bottom: 1px solid #30363d;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.dotRed { background: #ff5f57; }
+.dotYellow { background: #febc2e; }
+.dotGreen { background: #28c840; }
+
+.codePanelFilename {
+  margin-left: 0.5rem;
+  font-size: 0.8rem;
+  color: #768390;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.codePanelBody {
+  padding: 1.25rem 1.5rem;
+  overflow-x: auto;
+}
+
+.codePanelBody pre {
+  margin: 0;
+  background: transparent !important;
+  padding: 0 !important;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: #cdd9e5;
+}
+
+/* Features section */
+.features {
+  padding: 5rem 0;
+  background: var(--ifm-background-color);
+}
+
+.sectionHeader {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #00acd7;
+  margin-bottom: 0.75rem;
+}
+
+.sectionTitle {
+  font-size: 2.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ifm-color-emphasis-900);
+  margin-bottom: 0.75rem;
+}
+
+[data-theme='dark'] .sectionTitle {
+  color: #e6edf3;
+}
+
+.sectionSubtitle {
+  font-size: 1.05rem;
+  color: var(--ifm-color-emphasis-600);
+  max-width: 560px;
+  margin: 0 auto;
+  line-height: 1.65;
+}
+
+.featuresGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+@media (max-width: 996px) {
+  .featuresGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .featuresGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.featureCard {
+  padding: 1.5rem;
+  border-radius: 10px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-background-surface-color, #fff);
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+.featureCard:hover {
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 172, 215, 0.1);
+}
+
+[data-theme='dark'] .featureCard {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+[data-theme='dark'] .featureCard:hover {
+  border-color: #00acd7;
+  box-shadow: 0 8px 24px rgba(0, 172, 215, 0.12);
+}
+
+.featureIcon {
+  font-size: 1.75rem;
+  margin-bottom: 0.9rem;
+  display: block;
+}
+
+.featureTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ifm-color-emphasis-900);
+  margin-bottom: 0.4rem;
+}
+
+[data-theme='dark'] .featureTitle {
+  color: #e6edf3;
+}
+
+.featureDesc {
+  font-size: 0.875rem;
+  color: var(--ifm-color-emphasis-600);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Providers section */
+.providers {
+  padding: 4rem 0;
+  background: var(--ifm-color-emphasis-100, #f6f8fa);
+}
+
+[data-theme='dark'] .providers {
+  background: #161b22;
+}
+
+.providersInner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.providersList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: center;
+  margin-top: 2rem;
+}
+
+.providerPill {
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-background-color);
+  color: var(--ifm-color-emphasis-700);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+[data-theme='dark'] .providerPill {
+  border-color: #30363d;
+  background: #0d1117;
+  color: #adbac7;
+}
+
+.providerPill:hover {
+  border-color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
+}
+
+/* Stats row */
+.stats {
+  display: flex;
+  gap: 3rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 3rem 1.5rem;
+  background: var(--ifm-background-color);
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .stats {
+  border-color: #30363d;
+}
+
+.stat {
+  text-align: center;
+}
+
+.statValue {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #00acd7;
+  display: block;
+}
+
+.statLabel {
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+  margin-top: 0.2rem;
+}
+
