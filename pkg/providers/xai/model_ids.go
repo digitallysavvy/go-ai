@@ -74,6 +74,13 @@ const (
 	ModelGrokLatest = "grok-latest"
 )
 
+// Realtime model ID constants for xAI realtime models. The TypeScript SDK keeps
+// realtime model IDs flexible; this starting-point constant is provided for
+// callers that want a named default while RealtimeModel accepts any string.
+const (
+	ModelGrok3Realtime = "grok-3"
+)
+
 // Image model ID constants for xAI Grok image generation models.
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.x.ai/docs for the full list.

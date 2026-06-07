@@ -11,8 +11,9 @@ import (
 
 // Provider implements the provider.Provider interface for xAI (Grok)
 type Provider struct {
-	config Config
-	client *http.Client
+	config          Config
+	client          *http.Client
+	realtimeBaseURL string
 }
 
 // Config contains configuration for the xAI provider
@@ -42,10 +43,16 @@ func getAPIKey(apiKey string) string {
 // If Config.APIKey is empty, the API key is loaded from the XAI_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
+	realtimeBaseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if realtimeBaseURL == "" {
+		realtimeBaseURL = "https://api.x.ai/v1"
+	}
+
 	baseURL := normalizeBaseURL(cfg.BaseURL)
 	cfg.BaseURL = baseURL
 
 	apiKey := getAPIKey(cfg.APIKey)
+	cfg.APIKey = apiKey
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -56,8 +63,9 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:          cfg,
+		client:          client,
+		realtimeBaseURL: realtimeBaseURL,
 	}
 }
 
