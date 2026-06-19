@@ -167,6 +167,9 @@ type ObjectOnStepFinishEvent struct {
 	ProviderMetadata map[string]interface{}
 }
 
+// ObjectOnStepEndEvent is the canonical name for ObjectOnStepFinishEvent.
+type ObjectOnStepEndEvent = ObjectOnStepFinishEvent
+
 // ObjectOnFinishEvent is fired when the entire operation completes, including
 // JSON parsing and schema validation. For GenerateObject, Error is always nil
 // (errors are returned instead). For StreamObject, Error may be set if

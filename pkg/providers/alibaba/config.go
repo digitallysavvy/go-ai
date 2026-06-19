@@ -20,6 +20,14 @@ type Config struct {
 	// Default: https://dashscope-intl.aliyuncs.com
 	// This is the DashScope native endpoint for Wan video models
 	VideoBaseURL string
+
+	// EmbeddingBaseURL is the base URL for the embedding API (optional)
+	// Default: https://dashscope-intl.aliyuncs.com/api/v1
+	// This is the DashScope native endpoint for embedding models
+	EmbeddingBaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // NewConfig creates a new Alibaba Cloud provider configuration

@@ -62,6 +62,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			"Content-Type": contentType,
 		},
 	}
+	headers, err := m.provider.requestHeaders(ctx, req.Headers)
+	if err != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	}
+	req.Headers = headers
 
 	resp, err := m.provider.client.Do(ctx, req)
 	if err != nil {

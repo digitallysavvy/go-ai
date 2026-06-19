@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -45,8 +46,17 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// Azure OpenAI image generation endpoint
 	path := m.provider.endpointPath(m.deploymentID, "/images/generations")
+	headers, err := m.provider.requestHeaders(ctx, opts.Headers)
+	if err != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	}
 
-	resp, err := m.provider.client.Post(ctx, path, reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
+		Method:  "POST",
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
+	})
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}

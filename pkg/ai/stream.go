@@ -54,6 +54,7 @@ type StreamTextOptions struct {
 	// Tools available for the model to call
 	Tools       []types.Tool
 	ToolChoice  types.ToolChoice
+	ToolOrder   []string
 	ActiveTools []string
 
 	// ToolApproval configures approval handling for tool execution.
@@ -185,7 +186,12 @@ type StreamTextOptions struct {
 	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
 
+	// OnStepEndEvent is called at the end of each LLM step.
+	OnStepEndEvent func(ctx context.Context, e OnStepFinishEvent)
+
 	// OnStepFinishEvent is called at the end of each LLM step.
+	//
+	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
 
 	// OnFinishEvent is called once when the stream fully completes.
@@ -421,6 +427,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	callID := internalGenerateCallID(opts.Internal)()
+	onStepEndEvent := opts.OnStepEndEvent
+	if onStepEndEvent == nil {
+		onStepEndEvent = opts.OnStepFinishEvent
+	}
 
 	// Emit OnStartEvent before streaming begins.
 	Notify(ctx, OnStartEvent{
@@ -455,6 +465,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	stepMessages := prompt.Messages
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 	stepToolChoice := opts.ToolChoice
+	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
 	stepSandbox := opts.ExperimentalSandbox
 	if opts.PrepareStep != nil {
@@ -474,6 +485,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 			Tools:               stepTools,
 			ToolChoice:          stepToolChoice,
 			ActiveTools:         opts.ActiveTools,
+			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
 			ExperimentalSandbox: stepSandbox,
 		})
@@ -494,6 +506,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		if prepared.ToolChoice.Type != "" {
 			stepToolChoice = prepared.ToolChoice
 		}
+		if prepared.ToolOrder != nil {
+			stepToolOrder = prepared.ToolOrder
+		}
 		if prepared.ProviderOptions != nil {
 			stepProviderOptions = prepared.ProviderOptions
 		}
@@ -508,6 +523,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 	}
 	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
+	stepTools = orderStepTools(stepTools, stepToolOrder)
 	opts.ExperimentalSandbox = stepSandbox
 
 	// Emit OnStepStartEvent for the first stream step.
@@ -609,7 +625,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		outputSpec:        outputSpec,
 		// Structured event callbacks
 		cbCallID:              callID,
-		cbOnStepFinishEvent:   opts.OnStepFinishEvent,
+		cbOnStepFinishEvent:   onStepEndEvent,
 		cbOnFinishEvent:       opts.OnFinishEvent,
 		cbOnToolCallStart:     opts.OnToolExecutionStart,
 		cbOnToolCallFinish:    opts.OnToolExecutionEnd,
@@ -635,7 +651,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// execution or multi-step continuation.
 	if opts.OnChunk != nil || opts.OnFinish != nil ||
 		opts.OnStepStart != nil ||
-		opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
+		opts.OnStepEndEvent != nil || opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
 		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
 		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil ||
 		opts.OnError != nil || opts.OnAbort != nil {
@@ -1109,7 +1125,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepFiles = append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 			}
 			r.mu.Unlock()
-			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
+			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
 				StepNumber:     stepIndex,
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
@@ -1213,6 +1229,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextMessages := currentMessages
 		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 		nextToolChoice := opts.ToolChoice
+		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
 		nextSandbox := opts.ExperimentalSandbox
 		if opts.PrepareStep != nil {
@@ -1232,6 +1249,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Tools:               nextTools,
 				ToolChoice:          nextToolChoice,
 				ActiveTools:         opts.ActiveTools,
+				ToolOrder:           nextToolOrder,
 				ProviderOptions:     nextProviderOptions,
 				ExperimentalSandbox: nextSandbox,
 				AccumulatedUsage:    r.usage,
@@ -1254,6 +1272,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.ToolChoice.Type != "" {
 				nextToolChoice = prepared.ToolChoice
 			}
+			if prepared.ToolOrder != nil {
+				nextToolOrder = prepared.ToolOrder
+			}
 			if prepared.ProviderOptions != nil {
 				nextProviderOptions = prepared.ProviderOptions
 			}
@@ -1268,6 +1289,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
+		nextTools = orderStepTools(nextTools, nextToolOrder)
 		r.cbModel = nextModel
 		r.cbModelProvider = nextModel.Provider()
 		r.cbModelID = nextModel.ModelID()

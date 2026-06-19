@@ -32,8 +32,8 @@ func TestProviderFactoriesAndUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpeechModel: %v", err)
 	}
-	if sm.ModelID() != "eleven_multilingual_v2" {
-		t.Fatalf("default model ID = %q", sm.ModelID())
+	if sm.ModelID() != "" {
+		t.Fatalf("model ID = %q", sm.ModelID())
 	}
 }
 
@@ -56,7 +56,7 @@ func TestSpeechModelBuildRequestBody(t *testing.T) {
 	if !ok {
 		t.Fatalf("voice_settings missing: %#v", body["voice_settings"])
 	}
-	if vs["stability"] != speed {
-		t.Fatalf("stability = %#v, want %v", vs["stability"], speed)
+	if vs["speed"] != speed {
+		t.Fatalf("speed = %#v, want %v", vs["speed"], speed)
 	}
 }

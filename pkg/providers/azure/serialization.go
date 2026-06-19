@@ -22,19 +22,23 @@ func deserializeModel(serialized provider.SerializedModel) (provider.LanguageMod
 	var cfg Config
 	data, _ := json.Marshal(serialized.Config)
 	_ = json.Unmarshal(data, &cfg)
-	return New(cfg).ChatModel(serialized.ModelID)
+	p, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return p.ChatModel(serialized.ModelID)
 }
 
 func deserializeResponsesModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {
 	var cfg openai.Config
 	data, _ := json.Marshal(serialized.Config)
 	_ = json.Unmarshal(data, &cfg)
-	return openai.New(cfg).ResponsesModel(serialized.ModelID)
+	return openai.NewResponsesLanguageModel(openai.New(cfg), serialized.ModelID), nil
 }
 
 func deserializeCompletionModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {
 	var cfg openai.Config
 	data, _ := json.Marshal(serialized.Config)
 	_ = json.Unmarshal(data, &cfg)
-	return openai.New(cfg).CompletionModel(serialized.ModelID)
+	return openai.NewCompletionModel(openai.New(cfg), serialized.ModelID), nil
 }

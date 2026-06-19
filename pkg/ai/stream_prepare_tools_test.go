@@ -59,6 +59,44 @@ func TestStreamText_DescriptionFuncResolvedAfterPrepareStep(t *testing.T) {
 	}
 }
 
+func TestStreamText_ToolOrderAppendsUnlistedAlphabetically(t *testing.T) {
+	t.Parallel()
+
+	var got []string
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			for _, tool := range opts.Tools {
+				got = append(got, tool.Name)
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		Tools: []types.Tool{
+			{Name: "zebra", Parameters: map[string]interface{}{"type": "object"}},
+			{Name: "alpha", Parameters: map[string]interface{}{"type": "object"}},
+			{Name: "middle", Parameters: map[string]interface{}{"type": "object"}},
+		},
+		ToolOrder: []string{"middle"},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	want := []string{"middle", "alpha", "zebra"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("tool order = %v, want %v", got, want)
+	}
+}
+
 func TestStreamText_OnStepFinishEventFiresPerStep(t *testing.T) {
 	t.Parallel()
 
@@ -116,6 +154,38 @@ func TestStreamText_OnStepFinishEventFiresPerStep(t *testing.T) {
 	}
 	if stepStartCount != 2 {
 		t.Fatalf("OnStepStart count = %d, want 2", stepStartCount)
+	}
+}
+
+func TestStreamText_OnStepEndEventTakesPrecedenceOverDeprecatedOnStepFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var stepEndCalls int
+	var stepFinishCalls int
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "go",
+		OnStepEndEvent: func(_ context.Context, _ OnStepFinishEvent) {
+			stepEndCalls++
+		},
+		OnStepFinishEvent: func(_ context.Context, _ OnStepFinishEvent) {
+			stepFinishCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	_ = result.Steps()
+	if stepEndCalls != 1 || stepFinishCalls != 0 {
+		t.Fatalf("callbacks: OnStepEndEvent=%d OnStepFinishEvent=%d", stepEndCalls, stepFinishCalls)
 	}
 }
 

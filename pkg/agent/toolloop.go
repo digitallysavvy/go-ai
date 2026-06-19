@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -45,14 +46,32 @@ func mergeCallbacks(settings AgentConfig, callOpts agentCallbacks) agentCallback
 	if settingsToolFinish == nil {
 		settingsToolFinish = settings.OnToolCallFinish
 	}
+	settingsStepEnd := settings.OnStepEndEvent
+	if settingsStepEnd == nil {
+		settingsStepEnd = settings.OnStepFinishEvent
+	}
 	return agentCallbacks{
 		onStart:          mergeListener(settings.OnStart, callOpts.onStart),
 		onStepStart:      mergeListener(settings.OnStepStartEvent, callOpts.onStepStart),
 		onToolCallStart:  mergeListener(settingsToolStart, callOpts.onToolCallStart),
 		onToolCallFinish: mergeListener(settingsToolFinish, callOpts.onToolCallFinish),
-		onStepFinish:     mergeListener(settings.OnStepFinishEvent, callOpts.onStepFinish),
+		onStepFinish:     mergeListener(settingsStepEnd, callOpts.onStepFinish),
 		onFinish:         mergeListener(settings.OnFinishEvent, callOpts.onFinish),
 	}
+}
+
+func resolveAgentOnStepEnd(opts AgentGenerateOptions) func(context.Context, ai.OnStepFinishEvent) {
+	if opts.OnStepEnd != nil {
+		return opts.OnStepEnd
+	}
+	return opts.OnStepFinish
+}
+
+func resolveAgentBasicOnStepEnd(config AgentConfig) func(types.StepResult) {
+	if config.OnStepEnd != nil {
+		return config.OnStepEnd
+	}
+	return config.OnStepFinish
 }
 
 func resolveAgentToolExecutionStart(opts AgentGenerateOptions) func(context.Context, ai.OnToolCallStartEvent) {
@@ -199,7 +218,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		onStepStart:      opts.OnStepStart,
 		onToolCallStart:  resolveAgentToolExecutionStart(opts),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
-		onStepFinish:     opts.OnStepFinish,
+		onStepFinish:     resolveAgentOnStepEnd(opts),
 		onFinish:         opts.OnFinish,
 	})
 	return ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -221,6 +240,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Tools:                       callConfig.Tools,
 		ActiveTools:                 callConfig.ActiveTools,
 		ToolChoice:                  defaultToolChoice(callConfig.ToolChoice),
+		ToolOrder:                   callConfig.ToolOrder,
 		ToolApproval:                callConfig.ToolApproval,
 		StopWhen:                    callConfig.StopWhen,
 		Timeout:                     config.Timeout,
@@ -270,7 +290,7 @@ func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOpt
 		onStepStart:      opts.OnStepStart,
 		onToolCallStart:  resolveAgentToolExecutionStart(opts),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
-		onStepFinish:     opts.OnStepFinish,
+		onStepFinish:     resolveAgentOnStepEnd(opts),
 		onFinish:         opts.OnFinish,
 	}
 	return callAgent.executeWithMessages(ctx, messages, cbs)
@@ -303,7 +323,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		onStepStart:      opts.OnStepStart,
 		onToolCallStart:  resolveAgentToolExecutionStart(opts.AgentGenerateOptions),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts.AgentGenerateOptions),
-		onStepFinish:     opts.OnStepFinish,
+		onStepFinish:     resolveAgentOnStepEnd(opts.AgentGenerateOptions),
 		onFinish:         opts.OnFinish,
 	})
 	streamOpts := ai.StreamTextOptions{
@@ -325,6 +345,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		Tools:                       callConfig.Tools,
 		ActiveTools:                 callConfig.ActiveTools,
 		ToolChoice:                  defaultToolChoice(callConfig.ToolChoice),
+		ToolOrder:                   callConfig.ToolOrder,
 		ToolApproval:                callConfig.ToolApproval,
 		StopWhen:                    callConfig.StopWhen,
 		Timeout:                     config.Timeout,
@@ -553,9 +574,9 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		result.Usage = result.Usage.Add(stepResult.Usage)
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 
-		// Call step finish callback (legacy)
-		if a.config.OnStepFinish != nil {
-			a.config.OnStepFinish(*stepResult)
+		// Call step end callback (legacy/basic).
+		if onStepEnd := resolveAgentBasicOnStepEnd(a.config); onStepEnd != nil {
+			onStepEnd(*stepResult)
 		}
 
 		// CB-T23: Emit OnStepFinishEvent (after tool execution so ToolResults is populated)
@@ -729,6 +750,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		Tools:                       a.config.Tools,
 		ActiveTools:                 a.config.ActiveTools,
 		ToolChoice:                  a.config.ToolChoice,
+		ToolOrder:                   a.config.ToolOrder,
 		ToolApproval:                a.config.ToolApproval,
 		SensitiveRuntimeContext:     a.config.SensitiveRuntimeContext,
 		Temperature:                 a.config.Temperature,
@@ -779,7 +801,42 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		callConfig.ToolsContext = a.config.ToolsContext
 	}
 	callConfig.Tools = resolveAgentStepTools(ctx, callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
+	callConfig.Tools = orderAgentStepTools(callConfig.Tools, callConfig.ToolOrder)
 	return callConfig
+}
+
+func orderAgentStepTools(tools []types.Tool, toolOrder []string) []types.Tool {
+	if toolOrder == nil {
+		return tools
+	}
+	byName := make(map[string]types.Tool, len(tools))
+	for _, tool := range tools {
+		if _, ok := byName[tool.Name]; !ok {
+			byName[tool.Name] = tool
+		}
+	}
+	ordered := make([]types.Tool, 0, len(tools))
+	seen := make(map[string]bool, len(tools))
+	for _, name := range toolOrder {
+		tool, ok := byName[name]
+		if !ok || seen[name] {
+			continue
+		}
+		ordered = append(ordered, tool)
+		seen[name] = true
+	}
+	remaining := make([]types.Tool, 0, len(tools)-len(ordered))
+	for _, tool := range tools {
+		if seen[tool.Name] {
+			continue
+		}
+		remaining = append(remaining, tool)
+		seen[tool.Name] = true
+	}
+	sort.SliceStable(remaining, func(i, j int) bool {
+		return remaining[i].Name < remaining[j].Name
+	})
+	return append(ordered, remaining...)
 }
 
 func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig {
@@ -814,6 +871,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if opts.ActiveTools != nil {
 		c.ActiveTools = opts.ActiveTools
+	}
+	if opts.ToolOrder != nil {
+		c.ToolOrder = opts.ToolOrder
 	}
 	if opts.ToolChoice.Type != "" {
 		c.ToolChoice = opts.ToolChoice

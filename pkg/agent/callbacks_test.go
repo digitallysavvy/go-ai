@@ -138,6 +138,33 @@ func TestMergeCallbacks_AllFieldsMerged(t *testing.T) {
 	}
 }
 
+func TestMergeCallbacks_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	var settingsEndCalls int
+	var settingsFinishCalls int
+	var callEndCalls int
+	settings := AgentConfig{
+		OnStepEndEvent: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			settingsEndCalls++
+		},
+		OnStepFinishEvent: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			settingsFinishCalls++
+		},
+	}
+	callOpts := agentCallbacks{
+		onStepFinish: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			callEndCalls++
+		},
+	}
+
+	merged := mergeCallbacks(settings, callOpts)
+	merged.onStepFinish(context.Background(), ai.OnStepFinishEvent{})
+	if settingsEndCalls != 1 || settingsFinishCalls != 0 || callEndCalls != 1 {
+		t.Fatalf("callbacks: settingsEnd=%d settingsFinish=%d callEnd=%d", settingsEndCalls, settingsFinishCalls, callEndCalls)
+	}
+}
+
 func TestMergeCallbacksPrefersToolExecutionNames(t *testing.T) {
 	var calls []string
 	settings := AgentConfig{

@@ -60,7 +60,7 @@ func TestEmbeddingModelDoEmbedManyAndDoEmbed(t *testing.T) {
 	if res.Usage.InputTokens != 6 || res.Usage.TotalTokens != 6 {
 		t.Fatalf("unexpected usage: %+v", res.Usage)
 	}
-	if len(res.Responses) != 1 || res.Responses[0].Headers["X-Req"][0] != "123" {
+	if len(res.Responses) != 1 || res.Responses[0].Headers["X-Req"] != "123" {
 		t.Fatalf("response headers not captured: %+v", res.Responses)
 	}
 

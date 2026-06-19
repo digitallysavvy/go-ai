@@ -7,6 +7,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for AI Gateway
@@ -74,7 +75,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
-	result.Response = types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers)}
+	result.Response = types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)}
 
 	return &result, nil
 }
@@ -104,7 +105,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
-	result.Responses = []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers)}}
+	result.Responses = []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers)}}
 
 	return &result, nil
 }

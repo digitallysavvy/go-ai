@@ -14,8 +14,11 @@ func TestSpeechModelBuildRequestBodyDefaultsAndOptions(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewSpeechModel(p, "tts-1")
 
-	defaultBody := m.buildRequestBody(&provider.SpeechGenerateOptions{Text: "hello"})
-	if defaultBody["voice"] != "alloy" || defaultBody["model"] != "tts-1" || defaultBody["input"] != "hello" {
+	defaultBody, warnings := m.buildRequestBody(&provider.SpeechGenerateOptions{Text: "hello"})
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if defaultBody["voice"] != "alloy" || defaultBody["model"] != "tts-1" || defaultBody["input"] != "hello" || defaultBody["response_format"] != "mp3" {
 		t.Fatalf("default body mismatch: %#v", defaultBody)
 	}
 	if _, ok := defaultBody["speed"]; ok {
@@ -23,9 +26,36 @@ func TestSpeechModelBuildRequestBodyDefaultsAndOptions(t *testing.T) {
 	}
 
 	speed := 1.25
-	customBody := m.buildRequestBody(&provider.SpeechGenerateOptions{Text: "hello", Voice: "nova", Speed: &speed})
-	if customBody["voice"] != "nova" || customBody["speed"] != 1.25 {
+	customBody, warnings := m.buildRequestBody(&provider.SpeechGenerateOptions{
+		Text:         "hello",
+		Voice:        "nova",
+		OutputFormat: "wav",
+		Speed:        &speed,
+		Instructions: "speak warmly",
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if customBody["voice"] != "nova" || customBody["speed"] != 1.25 || customBody["response_format"] != "wav" || customBody["instructions"] != "speak warmly" {
 		t.Fatalf("custom body mismatch: %#v", customBody)
+	}
+
+	warnBody, warnings := m.buildRequestBody(&provider.SpeechGenerateOptions{
+		Text:         "hello",
+		OutputFormat: "ogg",
+		Language:     "es",
+	})
+	if warnBody["response_format"] != "mp3" {
+		t.Fatalf("unsupported output format should keep mp3 fallback: %#v", warnBody)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if warnings[0].Type != "unsupported" || warnings[0].Feature != "outputFormat" || warnings[0].Details != "Unsupported output format: ogg. Using mp3 instead." {
+		t.Fatalf("outputFormat warning mismatch: %#v", warnings[0])
+	}
+	if warnings[1].Type != "unsupported" || warnings[1].Feature != "language" || warnings[1].Details != `OpenAI speech models do not support language selection. Language parameter "es" was ignored.` {
+		t.Fatalf("language warning mismatch: %#v", warnings[1])
 	}
 }
 
@@ -58,7 +88,10 @@ func TestSpeechModelDoGenerateSuccessAndError(t *testing.T) {
 	if seenBody["voice"] != "alloy" {
 		t.Fatalf("expected default voice in request body: %#v", seenBody)
 	}
-	if string(out.Audio) != "AUDIO" || out.MimeType != "audio/mpeg" || out.Usage.CharacterCount != 5 {
+	if seenBody["response_format"] != "mp3" {
+		t.Fatalf("expected default response_format in request body: %#v", seenBody)
+	}
+	if string(out.Audio) != "AUDIO" {
 		t.Fatalf("speech result mismatch: %#v", out)
 	}
 

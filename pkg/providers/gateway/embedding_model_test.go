@@ -60,7 +60,7 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 	if seenPath != "/v4/ai/embedding-model" || seenHeader != "yes" || seenBody["value"] != "hello" {
 		t.Fatalf("request mismatch path=%q header=%q body=%#v", seenPath, seenHeader, seenBody)
 	}
-	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"][0] != "r1" {
+	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
 	}
 
@@ -68,7 +68,7 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"][0] != "r1" {
+	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" {
 		t.Fatalf("many result mismatch: %#v", many)
 	}
 }

@@ -19,6 +19,7 @@ const (
 	DiagnosticEventOnToolExecutionStart     DiagnosticEventType = "onToolExecutionStart"
 	DiagnosticEventOnToolExecutionEnd       DiagnosticEventType = "onToolExecutionEnd"
 	DiagnosticEventOnChunk                  DiagnosticEventType = "onChunk"
+	DiagnosticEventOnStepEnd                DiagnosticEventType = "onStepEnd"
 	DiagnosticEventOnStepFinish             DiagnosticEventType = "onStepFinish"
 	DiagnosticEventOnObjectStepStart        DiagnosticEventType = "onObjectStepStart"
 	DiagnosticEventOnObjectStepFinish       DiagnosticEventType = "onObjectStepFinish"

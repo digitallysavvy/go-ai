@@ -54,7 +54,7 @@ func TestMistralEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if seenBody["model"] != "mistral-embed" || !ok || len(inputs) != 1 || inputs[0] != "hello" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
-	if len(one.Embedding) != 2 || one.Usage.InputTokens != 7 || one.Response.Headers["X-Request-Id"][0] != "req_1" {
+	if len(one.Embedding) != 2 || one.Usage.InputTokens != 7 || one.Response.Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbed result mismatch: %#v", one)
 	}
 
@@ -62,7 +62,7 @@ func TestMistralEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Usage.InputTokens != 7 || many.Responses[0].Headers["X-Request-Id"][0] != "req_1" {
+	if len(many.Embeddings) != 2 || many.Usage.InputTokens != 7 || many.Responses[0].Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbedMany result mismatch: %#v", many)
 	}
 }

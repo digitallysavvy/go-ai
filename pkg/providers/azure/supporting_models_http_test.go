@@ -17,8 +17,10 @@ import (
 func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	var seenURI string
 	var seenBody map[string]interface{}
+	var seenUserAgent string
 	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		seenURI = r.URL.RequestURI()
+		seenUserAgent = r.Header.Get("User-Agent")
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
 		if _, ok := seenBody["input"].([]interface{}); ok {
 			return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`, map[string]string{"X-Req": "r1"}), nil
@@ -34,15 +36,18 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" || seenBody["model"] != "dep" {
 		t.Fatalf("request mismatch uri=%q body=%#v", seenURI, seenBody)
 	}
-	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"][0] != "r1" {
+	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
+	}
+	if seenUserAgent != "go-ai/azure/0.5.0" {
+		t.Fatalf("User-Agent = %q", seenUserAgent)
 	}
 
 	many, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"][0] != "r1" {
+	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" {
 		t.Fatalf("many result mismatch: %#v", many)
 	}
 }
@@ -99,7 +104,7 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("speech DoGenerate error = %v", err)
 	}
-	if string(speech.Audio) != "AUDIO" || speech.MimeType != "audio/mpeg" {
+	if string(speech.Audio) != "AUDIO" {
 		t.Fatalf("speech result mismatch: %#v", speech)
 	}
 }
@@ -149,9 +154,133 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	}
 }
 
+func TestAzureADTokenProviderAuthenticatesEveryRequestSurface(t *testing.T) {
+	var tokenCalls int
+	var seenPaths []string
+	p := mustNewProvider(t, Config{
+		BaseURL:      "https://azure.example",
+		DeploymentID: "dep",
+		APIVersion:   "2024-10-21",
+		ADTokenProvider: func(ctx context.Context) (string, error) {
+			if ctx == nil {
+				t.Fatal("token provider received nil context")
+			}
+			tokenCalls++
+			return "entra-token", nil
+		},
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			seenPaths = append(seenPaths, r.URL.Path)
+			if got := r.Header.Get("Authorization"); got != "Bearer entra-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("api-key"); got != "" {
+				t.Fatalf("api-key should be omitted when ADTokenProvider is set, got %q", got)
+			}
+			switch r.URL.Path {
+			case "/v1/chat/completions":
+				return azureJSONResponse(200, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, nil), nil
+			case "/v1/embeddings":
+				return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, nil), nil
+			case "/v1/images/generations":
+				return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+			case "/v1/audio/speech":
+				return azureTextResponse(200, "AUDIO"), nil
+			case "/v1/audio/transcriptions":
+				return azureJSONResponse(200, `{"text":"hello"}`, nil), nil
+			default:
+				t.Fatalf("unexpected path %q", r.URL.Path)
+				return nil, nil
+			}
+		})},
+	})
+
+	if _, err := NewLanguageModel(p, "chat").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatalf("language DoGenerate error = %v", err)
+	}
+	if _, err := NewEmbeddingModel(p, "embed").DoEmbed(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("embedding DoEmbed error = %v", err)
+	}
+	if _, err := NewImageModel(p, "image").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"}); err != nil {
+		t.Fatalf("image DoGenerate error = %v", err)
+	}
+	if _, err := NewSpeechModel(p, "tts").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hello"}); err != nil {
+		t.Fatalf("speech DoGenerate error = %v", err)
+	}
+	if _, err := NewTranscriptionModel(p, "whisper").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("audio"), MimeType: "audio/mpeg"}); err != nil {
+		t.Fatalf("transcription DoTranscribe error = %v", err)
+	}
+	if tokenCalls != 5 {
+		t.Fatalf("token provider calls = %d, want 5; paths=%v", tokenCalls, seenPaths)
+	}
+}
+
+func TestAzureADTokenProviderDoesNotOverrideExplicitAuthorizationHeader(t *testing.T) {
+	var tokenCalls int
+	p := mustNewProvider(t, Config{
+		BaseURL:      "https://azure.example",
+		DeploymentID: "dep",
+		APIVersion:   "2024-10-21",
+		ADTokenProvider: func(ctx context.Context) (string, error) {
+			tokenCalls++
+			return "entra-token", nil
+		},
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("api-key"); got != "" {
+				t.Fatalf("api-key should be omitted when ADTokenProvider is set, got %q", got)
+			}
+			return azureJSONResponse(200, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, nil), nil
+		})},
+	})
+	_, err := NewLanguageModel(p, "chat").DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:  types.Prompt{Text: "hi"},
+		Headers: map[string]string{"Authorization": "Bearer caller-token"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if tokenCalls != 0 {
+		t.Fatalf("token provider calls = %d, want 0", tokenCalls)
+	}
+}
+
+func TestAzureADTokenProviderPreservesCallerAPIKeyHeader(t *testing.T) {
+	var tokenCalls int
+	p := mustNewProvider(t, Config{
+		BaseURL:      "https://azure.example",
+		DeploymentID: "dep",
+		APIVersion:   "2024-10-21",
+		ADTokenProvider: func(ctx context.Context) (string, error) {
+			tokenCalls++
+			return "entra-token", nil
+		},
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			if got := r.Header.Get("Authorization"); got != "Bearer entra-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("api-key"); got != "caller-api-key" {
+				t.Fatalf("api-key = %q", got)
+			}
+			return azureJSONResponse(200, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, nil), nil
+		})},
+	})
+	_, err := NewLanguageModel(p, "chat").DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:  types.Prompt{Text: "hi"},
+		Headers: map[string]string{"api-key": "caller-api-key"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token provider calls = %d, want 1", tokenCalls)
+	}
+}
+
 func TestAzureUseDeploymentBasedURLs(t *testing.T) {
 	var seenURI string
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:                 "k",
 		BaseURL:                "https://azure.example/openai",
 		DeploymentID:           "dep",
@@ -202,12 +331,21 @@ func (f azureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func newAzureProviderWithTransport(t *testing.T, rt azureRoundTripper) *Provider {
 	t.Helper()
-	p := New(Config{APIKey: "k", BaseURL: "https://azure.example", DeploymentID: "dep", APIVersion: "2024-10-21"})
+	p := mustNewProvider(t, Config{APIKey: "k", BaseURL: "https://azure.example", DeploymentID: "dep", APIVersion: "2024-10-21"})
 	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    "https://azure.example",
-		Headers:    map[string]string{"api-key": "k"},
+		Headers:    p.staticAuthHeaders(),
 		HTTPClient: &http.Client{Transport: rt},
 	})
+	return p
+}
+
+func mustNewProvider(t *testing.T, cfg Config) *Provider {
+	t.Helper()
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New azure provider: %v", err)
+	}
 	return p
 }
 

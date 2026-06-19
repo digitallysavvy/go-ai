@@ -62,8 +62,8 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	if perplexity.CreatePerplexity(perplexity.Config{}) == nil {
 		t.Fatal("CreatePerplexity returned nil")
 	}
-	if azure.CreateAzure(azure.Config{}) == nil {
-		t.Fatal("CreateAzure returned nil")
+	if p, err := azure.CreateAzure(azure.Config{}); p == nil || err != nil {
+		t.Fatalf("CreateAzure returned provider=%v err=%v", p, err)
 	}
 	if alibaba.CreateAlibaba(alibaba.Config{}) == nil {
 		t.Fatal("CreateAlibaba returned nil")

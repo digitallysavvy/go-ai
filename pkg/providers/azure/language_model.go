@@ -68,12 +68,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Make API request to Azure-specific endpoint
 	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
+	headers, err := m.provider.requestHeaders(ctx, opts.Headers)
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   path,
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -92,14 +97,18 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	// Make streaming API request to Azure-specific endpoint
 	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
+	headers, err := m.provider.requestHeaders(ctx, internalhttp.MergeHeaders(opts.Headers, map[string]string{
+		"Accept": "text/event-stream",
+	}))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   path,
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)

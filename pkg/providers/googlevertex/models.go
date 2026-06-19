@@ -9,6 +9,14 @@ const (
 	EmbeddingModelGeminiEmbedding2Preview = "gemini-embedding-2-preview"
 )
 
+// Gemini TTS speech model ID constants for Google Vertex AI.
+const (
+	SpeechModelGemini25FlashTTS            = "gemini-2.5-flash-tts"
+	SpeechModelGemini25ProTTS              = "gemini-2.5-pro-tts"
+	SpeechModelGemini25FlashLitePreviewTTS = "gemini-2.5-flash-lite-preview-tts"
+	SpeechModelGemini31FlashTTSPreview     = "gemini-3.1-flash-tts-preview"
+)
+
 const (
 	InteractionsAgentDeepResearchPreview042026 = "deep-research-preview-04-2026"
 	InteractionsAgentDeepResearchMax042026     = "deep-research-max-preview-04-2026"

@@ -24,6 +24,13 @@ func TestProvider_CreateAliasesAndName(t *testing.T) {
 	if p2.Name() != "custom-google" {
 		t.Fatalf("Name() = %q, want %q", p2.Name(), "custom-google")
 	}
+	speech, err := p2.SpeechModel(ModelGemini25FlashTTS)
+	if err != nil {
+		t.Fatalf("SpeechModel() error = %v", err)
+	}
+	if speech.Provider() != "custom-google.speech" {
+		t.Fatalf("custom speech provider = %q, want custom-google.speech", speech.Provider())
+	}
 }
 
 func TestProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
@@ -49,8 +56,19 @@ func TestProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 		t.Fatal("EmbeddingModel(\"\") expected error")
 	}
 
-	if _, err := p.SpeechModel("any"); err == nil {
-		t.Fatal("SpeechModel expected unsupported error")
+	speech, err := p.SpeechModel(ModelGemini25FlashTTS)
+	if err != nil {
+		t.Fatalf("SpeechModel() error = %v", err)
+	}
+	if speech.Provider() != "google.generative-ai.speech" || speech.ModelID() != ModelGemini25FlashTTS {
+		t.Fatalf("SpeechModel metadata = %s/%s", speech.Provider(), speech.ModelID())
+	}
+	emptySpeech, err := p.SpeechModel("")
+	if err != nil {
+		t.Fatalf("SpeechModel(\"\") should preserve the caller model ID, got error %v", err)
+	}
+	if emptySpeech.ModelID() != "" {
+		t.Fatalf("SpeechModel(\"\").ModelID() = %q, want empty string", emptySpeech.ModelID())
 	}
 	if _, err := p.TranscriptionModel("any"); err == nil {
 		t.Fatal("TranscriptionModel expected unsupported error")

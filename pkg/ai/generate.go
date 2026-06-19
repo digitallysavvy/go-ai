@@ -35,7 +35,10 @@ func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 
 func validateMaxRetries(maxRetries *int) error {
 	if maxRetries != nil && *maxRetries < 0 {
-		return fmt.Errorf("maxRetries must be >= 0")
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxRetries",
+			Message: "maxRetries must be >= 0",
+		}
 	}
 	return nil
 }
@@ -144,6 +147,10 @@ type GenerateTextOptions struct {
 	// Tools available for the model to call
 	Tools      []types.Tool
 	ToolChoice types.ToolChoice
+
+	// ToolOrder controls the order tools are sent to providers. Listed tools are
+	// sent first in listed order; unlisted tools follow alphabetically.
+	ToolOrder []string
 
 	// ActiveTools restricts the tools available for this generation.
 	ActiveTools []string
@@ -312,8 +319,12 @@ type GenerateTextOptions struct {
 	// Receives the user context if ExperimentalContext is set
 	PrepareStep func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions
 
-	// OnStepFinish is called after each generation step completes
-	// Receives the user context if ExperimentalContext is set
+	// OnStepEnd is called after each generation step completes.
+	OnStepEnd func(ctx context.Context, step types.StepResult, userContext interface{})
+
+	// OnStepFinish is called after each generation step completes.
+	//
+	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, step types.StepResult, userContext interface{})
 
 	// OnFinish is called when generation completes
@@ -345,8 +356,13 @@ type GenerateTextOptions struct {
 	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e OnToolCallFinishEvent)
 
+	// OnStepEndEvent is called at the end of each LLM step with a typed event.
+	OnStepEndEvent func(ctx context.Context, e OnStepFinishEvent)
+
 	// OnStepFinishEvent is called at the end of each LLM step with a typed
-	// OnStepFinishEvent. Use this instead of OnStepFinish for structured access.
+	// event.
+	//
+	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
 
 	// OnFinishEvent is called once when the entire generation completes with a
@@ -422,6 +438,7 @@ type PrepareStepOptions struct {
 	Tools       []types.Tool
 	ToolChoice  types.ToolChoice
 	ActiveTools []string
+	ToolOrder   []string
 
 	// ProviderOptions are provider-specific options for this step.
 	ProviderOptions map[string]interface{}
@@ -608,6 +625,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	callID = internalGenerateCallID(opts.Internal)()
 
 	// Emit OnStartEvent.
+	onStepEnd := opts.OnStepEnd
+	if onStepEnd == nil {
+		onStepEnd = opts.OnStepFinish
+	}
+	onStepEndEvent := opts.OnStepEndEvent
+	if onStepEndEvent == nil {
+		onStepEndEvent = opts.OnStepFinishEvent
+	}
 	Notify(ctx, OnStartEvent{
 		CallID:              callID,
 		OperationID:         "ai.generateText",
@@ -663,6 +688,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 		stepToolChoice := opts.ToolChoice
+		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
 
 		accumulatedResponseMessages := responseMessagesFromSteps(result.Steps)
@@ -683,6 +709,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Tools:               stepTools,
 				ToolChoice:          stepToolChoice,
 				ActiveTools:         opts.ActiveTools,
+				ToolOrder:           stepToolOrder,
 				ProviderOptions:     stepProviderOptions,
 				ExperimentalSandbox: stepSandbox,
 				AccumulatedUsage:    result.Usage,
@@ -705,6 +732,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.ToolChoice.Type != "" {
 				stepToolChoice = prepared.ToolChoice
 			}
+			if prepared.ToolOrder != nil {
+				stepToolOrder = prepared.ToolOrder
+			}
 			if prepared.ProviderOptions != nil {
 				stepProviderOptions = prepared.ProviderOptions
 			}
@@ -719,6 +749,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
+		stepTools = orderStepTools(stepTools, stepToolOrder)
 		instructionsForNextStep = stepSystem
 		toolsByName := make(map[string]*types.Tool, len(stepTools))
 		for i := range stepTools {
@@ -1088,8 +1119,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.FinalStep = stepResult
 
 		// Call step finish callback (v6.0: with user context)
-		if opts.OnStepFinish != nil {
-			opts.OnStepFinish(ctx, stepResult, runtimeContext)
+		if onStepEnd != nil {
+			onStepEnd(ctx, stepResult, runtimeContext)
 		}
 
 		// Emit structured OnStepFinishEvent.
@@ -1126,7 +1157,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
-		}, opts.OnStepFinishEvent)
+		}, onStepEndEvent)
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
 		{
@@ -1159,7 +1190,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 					}
 				}
 			}
-			telemetry.FireOnStepFinish(stepCtx, telemetry.TelemetryStepFinishEvent{
+			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
 				StepNumber:       stepIndex,
 				FinishReason:     string(genResult.FinishReason),
 				Usage:            stepTelUsage,

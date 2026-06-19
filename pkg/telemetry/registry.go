@@ -165,7 +165,9 @@ type TelemetryChunkEvent struct {
 	Text string
 }
 
-// TelemetryStepFinishEvent is passed to TelemetryIntegration.OnStepFinish.
+// TelemetryStepFinishEvent is the deprecated name for step-end telemetry.
+//
+// Deprecated: use TelemetryStepEndEvent.
 type TelemetryStepFinishEvent struct {
 	StepNumber   int
 	FinishReason string
@@ -203,6 +205,13 @@ type TelemetryStepFinishEvent struct {
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+}
+
+// TelemetryStepEndEvent is the canonical name for TelemetryStepFinishEvent.
+type TelemetryStepEndEvent = TelemetryStepFinishEvent
+
+type deprecatedStepFinishHandler interface {
+	OnStepFinish(ctx context.Context, e TelemetryStepFinishEvent)
 }
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
@@ -273,7 +282,7 @@ type TelemetryIntegration interface {
 
 	// OnStepStart is called at the beginning of each LLM step.
 	// Implementations that create a per-step child span should embed it in the
-	// returned context so OnStepFinish can retrieve and end it.
+	// returned context so OnStepEnd can retrieve and end it.
 	OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context
 
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
@@ -300,11 +309,11 @@ type TelemetryIntegration interface {
 	// OnChunk is retained for source compatibility with older integrations.
 	// New telemetry dispatchers do not emit chunk events.
 	//
-	// Deprecated: use OnStepFinish, OnLanguageModelCallEnd, and OnEnd.
+	// Deprecated: use OnStepEnd, OnLanguageModelCallEnd, and OnEnd.
 	OnChunk(ctx context.Context, e TelemetryChunkEvent)
 
-	// OnStepFinish is called after each LLM step completes.
-	OnStepFinish(ctx context.Context, e TelemetryStepFinishEvent)
+	// OnStepEnd is called after each LLM step completes.
+	OnStepEnd(ctx context.Context, e TelemetryStepEndEvent)
 
 	// OnFinish is called once when the AI operation completes successfully.
 	// OTel implementations should end the root span here.
@@ -396,11 +405,11 @@ func (NoopTelemetryIntegration) OnToolCallStart(ctx context.Context, _ Telemetry
 }
 func (NoopTelemetryIntegration) OnToolCallFinish(_ context.Context, _ TelemetryToolCallFinishEvent) {
 }
-func (NoopTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent)           {}
-func (NoopTelemetryIntegration) OnStepFinish(_ context.Context, _ TelemetryStepFinishEvent) {}
-func (NoopTelemetryIntegration) OnFinish(_ context.Context, _ TelemetryFinishEvent)         {}
-func (NoopTelemetryIntegration) OnError(_ context.Context, _ TelemetryErrorEvent)           {}
-func (NoopTelemetryIntegration) OnAbort(_ context.Context, _ TelemetryAbortEvent)           {}
+func (NoopTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent)     {}
+func (NoopTelemetryIntegration) OnStepEnd(_ context.Context, _ TelemetryStepEndEvent) {}
+func (NoopTelemetryIntegration) OnFinish(_ context.Context, _ TelemetryFinishEvent)   {}
+func (NoopTelemetryIntegration) OnError(_ context.Context, _ TelemetryErrorEvent)     {}
+func (NoopTelemetryIntegration) OnAbort(_ context.Context, _ TelemetryAbortEvent)     {}
 func (NoopTelemetryIntegration) ExecuteTool(
 	ctx context.Context,
 	_ string,
@@ -771,9 +780,9 @@ func (i OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e Teleme
 
 func (OTelTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
 
-// OnStepFinish records step-level OTel attributes on the child step span created
-// by OnStepStart and ends the span. Mirrors the TS SDK's onStepFinish behavior.
-func (OTelTelemetryIntegration) OnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
+// OnStepEnd records step-level OTel attributes on the child step span created
+// by OnStepStart and ends the span. Mirrors the TS SDK's onStepEnd behavior.
+func (OTelTelemetryIntegration) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
 	if !ok || !stepSpan.IsRecording() {
 		return
@@ -1248,15 +1257,26 @@ func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 func FireOnChunk(ctx context.Context, e TelemetryChunkEvent) {
 }
 
-// FireOnStepFinish calls OnStepFinish on every registered integration.
+// FireOnStepFinish emits a step-end event.
+//
+// Deprecated: use FireOnStepEnd.
 func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	PublishDiagnostic(ctx, DiagnosticEventOnStepEnd, e)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnStepFinish(ctx, e)
+		i.OnStepEnd(ctx, e)
+		if handler, ok := i.(deprecatedStepFinishHandler); ok {
+			handler.OnStepFinish(ctx, e)
+		}
 	}
+}
+
+// FireOnStepEnd calls OnStepEnd on every registered integration.
+func FireOnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
+	FireOnStepFinish(ctx, e)
 }
 
 // FireOnEnd calls OnEnd on every registered integration, falling back to the

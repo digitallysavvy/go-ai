@@ -289,19 +289,20 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
-		CallID:        callID,
-		OperationID:   "ai.embed",
-		Provider:      opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Value:         []string{opts.Input},
-		Embeddings:    [][]float64{embedResult.Embedding},
-		Usage:         embedResult.Usage,
-		Warnings:      embedResult.Warnings,
-		Responses:     []types.EmbeddingResponse{result.Response},
-		IsEnabled:     telEnabled,
-		RecordInputs:  telRecordInputs,
-		RecordOutputs: telRecordOutputs,
-		FunctionID:    telFuncID,
+		CallID:           callID,
+		OperationID:      "ai.embed",
+		Provider:         opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Value:            []string{opts.Input},
+		Embeddings:       [][]float64{embedResult.Embedding},
+		Usage:            embedResult.Usage,
+		Warnings:         embedResult.Warnings,
+		ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
+		Responses:        []types.EmbeddingResponse{result.Response},
+		IsEnabled:        telEnabled,
+		RecordInputs:     telRecordInputs,
+		RecordOutputs:    telRecordOutputs,
+		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
@@ -512,19 +513,20 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
-		CallID:        callID,
-		OperationID:   "ai.embedMany",
-		Provider:      opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Value:         opts.Inputs,
-		Embeddings:    embedResult.Embeddings,
-		Usage:         embedResult.Usage,
-		Warnings:      embedResult.Warnings,
-		Responses:     result.Responses,
-		IsEnabled:     telEnabled,
-		RecordInputs:  telRecordInputs,
-		RecordOutputs: telRecordOutputs,
-		FunctionID:    telFuncID,
+		CallID:           callID,
+		OperationID:      "ai.embedMany",
+		Provider:         opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Value:            opts.Inputs,
+		Embeddings:       embedResult.Embeddings,
+		Usage:            embedResult.Usage,
+		Warnings:         embedResult.Warnings,
+		ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
+		Responses:        result.Responses,
+		IsEnabled:        telEnabled,
+		RecordInputs:     telRecordInputs,
+		RecordOutputs:    telRecordOutputs,
+		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)

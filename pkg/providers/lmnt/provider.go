@@ -25,7 +25,7 @@ type Provider struct {
 // New creates a new LMNT provider instance
 func New(config Config) *Provider {
 	if config.BaseURL == "" {
-		config.BaseURL = "https://api.lmnt.com/v1"
+		config.BaseURL = "https://api.lmnt.com"
 	}
 
 	return &Provider{

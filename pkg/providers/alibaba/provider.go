@@ -2,20 +2,27 @@ package alibaba
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Alibaba Cloud (Qwen)
 type Provider struct {
-	config      Config
-	client      *http.Client
-	videoClient *http.Client
+	config          Config
+	client          *http.Client
+	videoClient     *http.Client
+	embeddingClient *http.Client
 }
 
 // New creates a new Alibaba Cloud provider with the given configuration
 func New(cfg Config) *Provider {
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("ALIBABA_API_KEY")
+	}
+
 	// Chat API base URL (OpenAI-compatible endpoint)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -27,29 +34,37 @@ func New(cfg Config) *Provider {
 	if videoBaseURL == "" {
 		videoBaseURL = "https://dashscope-intl.aliyuncs.com"
 	}
+	embeddingBaseURL := cfg.EmbeddingBaseURL
+	if embeddingBaseURL == "" {
+		embeddingBaseURL = "https://dashscope-intl.aliyuncs.com/api/v1"
+	}
+
+	headers := version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
+		"Authorization": "Bearer " + cfg.APIKey,
+		"Content-Type":  "application/json",
+	}, cfg.Headers), version.ProviderUserAgent("alibaba"))
 
 	// Create HTTP client for chat API
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
-			"Content-Type":  "application/json",
-		},
+		Headers: headers,
 	})
 
 	// Create HTTP client for video API
 	videoClient := http.NewClient(http.Config{
 		BaseURL: videoBaseURL,
-		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
-			"Content-Type":  "application/json",
-		},
+		Headers: headers,
+	})
+	embeddingClient := http.NewClient(http.Config{
+		BaseURL: embeddingBaseURL,
+		Headers: headers,
 	})
 
 	return &Provider{
-		config:      cfg,
-		client:      client,
-		videoClient: videoClient,
+		config:          cfg,
+		client:          client,
+		videoClient:     videoClient,
+		embeddingClient: embeddingClient,
 	}
 }
 
@@ -103,7 +118,12 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LAlibaba provider does not support embeddings")
+	return NewEmbeddingModel(p, modelID), nil
+}
+
+// Embedding returns an embedding model by ID.
+func (p *Provider) Embedding(modelID string) (provider.EmbeddingModel, error) {
+	return p.EmbeddingModel(modelID)
 }
 
 // ImageModel returns an image generation model by ID
@@ -134,4 +154,9 @@ func (p *Provider) Client() *http.Client {
 // VideoClient returns the HTTP client for video API requests
 func (p *Provider) VideoClient() *http.Client {
 	return p.videoClient
+}
+
+// EmbeddingClient returns the HTTP client for embedding API requests.
+func (p *Provider) EmbeddingClient() *http.Client {
+	return p.embeddingClient
 }

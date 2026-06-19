@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for Google Vertex AI.
@@ -135,7 +136,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		totalTokens += pred.Embeddings.Statistics.TokenCount
 	}
 
-	respEntry := types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers)}
+	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)}
 	responses := make([]types.EmbeddingResponse, len(inputs))
 	for i := range inputs {
 		responses[i] = respEntry

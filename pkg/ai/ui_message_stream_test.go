@@ -26,6 +26,30 @@ func TestReadUIMessageStream_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestCreateUIMessageStream_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T) {
+	var stepEndCalls int
+	var stepFinishCalls int
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "finish-step"})
+		},
+		OnStepEnd: func(event map[string]interface{}) {
+			stepEndCalls++
+		},
+		OnStepFinish: func(event map[string]interface{}) {
+			stepFinishCalls++
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if stepEndCalls != 1 || stepFinishCalls != 0 {
+		t.Fatalf("callbacks: OnStepEnd=%d OnStepFinish=%d", stepEndCalls, stepFinishCalls)
+	}
+}
+
 func TestPipeUIMessageStreamToResponse_AppendsDoneSentinel(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "hello"},

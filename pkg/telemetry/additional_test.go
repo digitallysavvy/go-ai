@@ -18,6 +18,7 @@ type eventSpy struct {
 	toolFinishes        int
 	chunks              int
 	stepFinishes        int
+	stepEnds            int
 	finishes            int
 	errs                int
 	lmCallStarts        int
@@ -65,6 +66,11 @@ func (s *eventSpy) OnChunk(_ context.Context, _ TelemetryChunkEvent) {
 func (s *eventSpy) OnStepFinish(_ context.Context, _ TelemetryStepFinishEvent) {
 	s.mu.Lock()
 	s.stepFinishes++
+	s.mu.Unlock()
+}
+func (s *eventSpy) OnStepEnd(_ context.Context, _ TelemetryStepEndEvent) {
+	s.mu.Lock()
+	s.stepEnds++
 	s.mu.Unlock()
 }
 func (s *eventSpy) OnFinish(_ context.Context, _ TelemetryFinishEvent) {
@@ -146,6 +152,18 @@ func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 		return nil
 	})
 	defer unsub()
+	var typedStepEnds int
+	unsubStepEnd := SubscribeDiagnosticTyped(DiagnosticEventOnStepEnd, func(_ context.Context, _ TelemetryStepEndEvent) error {
+		typedStepEnds++
+		return nil
+	})
+	defer unsubStepEnd()
+	var typedStepFinishes int
+	unsubStepFinish := SubscribeDiagnosticTyped(DiagnosticEventOnStepFinish, func(_ context.Context, _ TelemetryStepFinishEvent) error {
+		typedStepFinishes++
+		return nil
+	})
+	defer unsubStepFinish()
 
 	settings := &Settings{IsEnabled: Bool(true)}
 	ctx := FireOnStart(context.Background(), TelemetryStartEvent{
@@ -169,6 +187,12 @@ func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 	if typedStarts != 1 {
 		t.Fatalf("typed diagnostic start events = %d, want 1", typedStarts)
 	}
+	if typedStepEnds != 1 {
+		t.Fatalf("typed diagnostic step end events = %d, want 1", typedStepEnds)
+	}
+	if typedStepFinishes != 1 {
+		t.Fatalf("typed diagnostic step finish events = %d, want 1", typedStepFinishes)
+	}
 
 	spy.mu.Lock()
 	defer spy.mu.Unlock()
@@ -177,6 +201,9 @@ func TestFireEventFanOutAndDiagnosticsWrappers(t *testing.T) {
 	}
 	if spy.chunks != 0 || spy.stepFinishes != 1 || spy.finishes != 1 || spy.errs != 1 {
 		t.Fatalf("unexpected finish counters: %#v", spy)
+	}
+	if spy.stepEnds != 1 {
+		t.Fatalf("step end counters = %d, want 1", spy.stepEnds)
 	}
 	if spy.lmCallStarts != 1 || spy.lmCallEnds != 1 || spy.embedStarts != 1 || spy.embedFinishes != 1 {
 		t.Fatalf("unexpected optional event counters: %#v", spy)

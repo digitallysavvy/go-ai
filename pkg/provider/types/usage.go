@@ -173,6 +173,9 @@ func (u Usage) GetTotalTokens() int64 {
 
 // EmbeddingUsage represents usage for embedding operations
 type EmbeddingUsage struct {
+	// Tokens matches the TypeScript EmbeddingModelV4 usage field.
+	Tokens int `json:"tokens,omitempty"`
+
 	// Number of tokens in the input text
 	InputTokens int `json:"inputTokens"`
 
@@ -190,12 +193,6 @@ type ImageUsage struct {
 	InputTokens  int `json:"inputTokens,omitempty"`
 	OutputTokens int `json:"outputTokens,omitempty"`
 	TotalTokens  int `json:"totalTokens,omitempty"`
-}
-
-// SpeechUsage represents usage for speech synthesis operations
-type SpeechUsage struct {
-	// Number of characters processed
-	CharacterCount int `json:"characterCount"`
 }
 
 // TranscriptionUsage represents usage for speech-to-text operations
@@ -267,4 +264,7 @@ type ResponseMetadata struct {
 
 	// Headers are the raw HTTP response headers when available.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Body is the raw response body when the provider exposes it.
+	Body interface{} `json:"body,omitempty"`
 }

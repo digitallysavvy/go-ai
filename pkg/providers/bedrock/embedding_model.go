@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for AWS Bedrock
@@ -204,7 +205,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: map[string][]string(resp.Header)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(resp.Header)},
 	}, nil
 }
 

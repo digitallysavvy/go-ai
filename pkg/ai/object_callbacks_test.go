@@ -105,6 +105,38 @@ func TestGenerateObject_ExperimentalOnStepStart_IsFired(t *testing.T) {
 	}
 }
 
+func TestGenerateObject_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: `{"x":1}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	var stepEndCalls int
+	var stepFinishCalls int
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "gen",
+		Schema: testSchema,
+		OnStepEnd: func(_ context.Context, _ ObjectOnStepFinishEvent) {
+			stepEndCalls++
+		},
+		OnStepFinish: func(_ context.Context, _ ObjectOnStepFinishEvent) {
+			stepFinishCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stepEndCalls != 1 || stepFinishCalls != 0 {
+		t.Fatalf("callbacks: OnStepEnd=%d OnStepFinish=%d", stepEndCalls, stepFinishCalls)
+	}
+}
+
 func TestGenerateObject_OnStepFinish_IsFiredBeforeParse(t *testing.T) {
 	t.Parallel()
 

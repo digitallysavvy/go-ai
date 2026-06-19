@@ -175,6 +175,45 @@ func (e *InvalidArgumentError) Error() string {
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
 
+// TooManyEmbeddingValuesForCallError signals that a provider embedding model
+// received more values than it supports in one request.
+type TooManyEmbeddingValuesForCallError struct {
+	Provider             string
+	ModelID              string
+	MaxEmbeddingsPerCall int
+	Values               []string
+}
+
+func (e *TooManyEmbeddingValuesForCallError) Error() string {
+	return fmt.Sprintf("Too many values for a single embedding call. The %s model %q can only embed up to %d values per call, but %d values were provided.", e.Provider, e.ModelID, e.MaxEmbeddingsPerCall, len(e.Values))
+}
+
+// IsTooManyEmbeddingValuesForCallError checks if an error is a TooManyEmbeddingValuesForCallError.
+func IsTooManyEmbeddingValuesForCallError(err error) bool {
+	var target *TooManyEmbeddingValuesForCallError
+	return errors.As(err, &target)
+}
+
+// UnsupportedFunctionalityError signals that the requested SDK/provider
+// functionality cannot be represented by the current interface.
+type UnsupportedFunctionalityError struct {
+	Functionality string
+	Message       string
+}
+
+func (e *UnsupportedFunctionalityError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("%q functionality not supported.", e.Functionality)
+}
+
+// IsUnsupportedFunctionalityError checks if an error is an UnsupportedFunctionalityError.
+func IsUnsupportedFunctionalityError(err error) bool {
+	var target *UnsupportedFunctionalityError
+	return errors.As(err, &target)
+}
+
 // Error implements the error interface
 func (e *ValidationError) Error() string {
 	var contextPrefix string

@@ -7,9 +7,10 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for Hugging Face
@@ -87,7 +88,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: map[string][]string(resp.Headers)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(resp.Headers)},
 	}, nil
 }
 
@@ -125,7 +126,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 		embeddings = append(embeddings, embedding)
 		totalTokens += len(input) / 4
-		responses = append(responses, types.EmbeddingResponse{Headers: map[string][]string(resp.Headers)})
+		responses = append(responses, types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(resp.Headers)})
 	}
 
 	return &types.EmbeddingsResult{

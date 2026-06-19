@@ -939,6 +939,49 @@ func TestGenerateText_OnStepFinishCallback(t *testing.T) {
 	}
 }
 
+func TestGenerateText_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T) {
+	t.Parallel()
+
+	var stepEndCalls int
+	var stepFinishCalls int
+	var stepEndEventCalls int
+	var stepFinishEventCalls int
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "response",
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Hello",
+		OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+			stepEndCalls++
+		},
+		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+			stepFinishCalls++
+		},
+		OnStepEndEvent: func(ctx context.Context, e OnStepFinishEvent) {
+			stepEndEventCalls++
+		},
+		OnStepFinishEvent: func(ctx context.Context, e OnStepFinishEvent) {
+			stepFinishEventCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stepEndCalls != 1 || stepFinishCalls != 0 {
+		t.Fatalf("basic callbacks: OnStepEnd=%d OnStepFinish=%d", stepEndCalls, stepFinishCalls)
+	}
+	if stepEndEventCalls != 1 || stepFinishEventCalls != 0 {
+		t.Fatalf("event callbacks: OnStepEndEvent=%d OnStepFinishEvent=%d", stepEndEventCalls, stepFinishEventCalls)
+	}
+}
+
 func TestGenerateText_OnFinishCallback(t *testing.T) {
 	t.Parallel()
 

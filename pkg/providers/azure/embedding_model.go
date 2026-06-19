@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for Azure OpenAI
@@ -58,13 +59,17 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		"model": m.deploymentID,
 	}
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
+	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    path,
 		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -80,7 +85,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)},
 	}, nil
 }
 
@@ -91,13 +96,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		"model": m.deploymentID,
 	}
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
+	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    path,
 		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -114,7 +123,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers)}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers)}},
 	}, nil
 }
 

@@ -72,7 +72,7 @@ func TestEmbeddingModel_DoEmbed_SuccessAndHeaders(t *testing.T) {
 	if len(res.Embedding) != 3 {
 		t.Fatalf("embedding length = %d, want 3", len(res.Embedding))
 	}
-	if res.Response.Headers["X-Req-Id"][0] != "abc-123" && res.Response.Headers["X-Req-ID"][0] != "abc-123" {
+	if res.Response.Headers["X-Req-Id"] != "abc-123" && res.Response.Headers["X-Req-ID"] != "abc-123" {
 		t.Fatalf("expected X-Req-ID header to be preserved, got %#v", res.Response.Headers)
 	}
 	if string(res.Response.Body.(json.RawMessage)) == "" {

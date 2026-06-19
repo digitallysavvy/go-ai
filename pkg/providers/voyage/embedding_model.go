@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type EmbeddingModel struct {
@@ -90,7 +91,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage:      types.EmbeddingUsage{InputTokens: tokens, TotalTokens: tokens},
-		Responses:  []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers), Body: response}},
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
 	}, nil
 }
 

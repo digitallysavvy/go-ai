@@ -8,6 +8,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -54,12 +55,14 @@ func New(cfg Config) *Provider {
 		apiKey = os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
 	}
 
+	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
+		"Content-Type":   "application/json",
+		"x-goog-api-key": apiKey,
+	}, cfg.Headers), version.ProviderUserAgent("google"))
+
 	client := internalhttp.NewClient(internalhttp.Config{
-		BaseURL: baseURL,
-		Headers: internalhttp.MergeHeaders(map[string]string{
-			"Content-Type":   "application/json",
-			"x-goog-api-key": apiKey,
-		}, cfg.Headers),
+		BaseURL:    baseURL,
+		Headers:    headers,
 		HTTPClient: cfg.HTTPClient,
 	})
 
@@ -140,8 +143,12 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	// Google doesn't provide speech synthesis through this API
-	return nil, fmt.Errorf("LGoogle does not support speech synthesis through this API")
+	return NewSpeechModel(p, modelID), nil
+}
+
+// Speech returns a speech synthesis model by ID.
+func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
+	return p.SpeechModel(modelID)
 }
 
 // TranscriptionModel returns a speech-to-text model by ID

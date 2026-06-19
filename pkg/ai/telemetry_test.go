@@ -662,7 +662,7 @@ func (m *mockTelemetryIntegration) OnToolCallStart(ctx context.Context, _ teleme
 func (m *mockTelemetryIntegration) OnToolCallFinish(_ context.Context, _ telemetry.TelemetryToolCallFinishEvent) {
 }
 func (m *mockTelemetryIntegration) OnChunk(_ context.Context, _ telemetry.TelemetryChunkEvent) {}
-func (m *mockTelemetryIntegration) OnStepFinish(_ context.Context, _ telemetry.TelemetryStepFinishEvent) {
+func (m *mockTelemetryIntegration) OnStepEnd(_ context.Context, _ telemetry.TelemetryStepEndEvent) {
 }
 
 func (m *mockTelemetryIntegration) OnFinish(ctx context.Context, _ telemetry.TelemetryFinishEvent) {

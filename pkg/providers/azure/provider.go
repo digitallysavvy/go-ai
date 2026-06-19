@@ -1,18 +1,24 @@
 package azure
 
 import (
+	"context"
 	"fmt"
+	stdhttp "net/http"
+	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Azure OpenAI
 type Provider struct {
-	config Config
-	client *http.Client
+	config     Config
+	client     *http.Client
+	httpClient *stdhttp.Client
 }
 
 // Config contains configuration for the Azure OpenAI provider
@@ -20,11 +26,17 @@ type Config struct {
 	// APIKey is the Azure OpenAI API key
 	APIKey string
 
+	// ADTokenProvider returns a Microsoft Entra ID access token for each
+	// request. When set, Authorization: Bearer <token> is used instead of the
+	// api-key header. The request context is passed through to token acquisition.
+	ADTokenProvider func(ctx context.Context) (string, error) `json:"-"`
+
 	// ResourceName is the name of your Azure OpenAI resource
 	ResourceName string
 
-	// DeploymentID is the deployment ID of your model
-	// Note: Azure uses deployments instead of model IDs
+	// DeploymentID is retained for workflow compatibility with older Go configs.
+	// Azure model factories preserve the explicit modelID/deploymentID argument,
+	// matching the TypeScript SDK createAzure behavior.
 	DeploymentID string
 
 	// APIVersion is the Azure OpenAI API version (default: v1)
@@ -40,10 +52,26 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// HTTPClient overrides the HTTP client used for requests.
+	HTTPClient *stdhttp.Client `json:"-"`
 }
 
-// New creates a new Azure OpenAI provider with the given configuration
-func New(cfg Config) *Provider {
+// New creates a new Azure OpenAI provider with the given configuration.
+func New(cfg Config) (*Provider, error) {
+	if cfg.APIKey != "" && cfg.ADTokenProvider != nil {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "apiKey/tokenProvider",
+			Message: "Both apiKey and tokenProvider were provided. Please use only one authentication method.",
+		}
+	}
+	if cfg.APIKey == "" && cfg.ADTokenProvider == nil {
+		cfg.APIKey = os.Getenv("AZURE_API_KEY")
+	}
+	if cfg.ResourceName == "" {
+		cfg.ResourceName = os.Getenv("AZURE_RESOURCE_NAME")
+	}
+
 	apiVersion := cfg.APIVersion
 	if apiVersion == "" {
 		apiVersion = "v1"
@@ -56,35 +84,40 @@ func New(cfg Config) *Provider {
 		baseURL = fmt.Sprintf("https://%s.openai.azure.com/openai", cfg.ResourceName)
 	}
 
-	// Create HTTP client with API key header
-	headers := map[string]string{
-		"api-key": cfg.APIKey,
+	headers := map[string]string{}
+	if cfg.ADTokenProvider == nil {
+		headers["api-key"] = cfg.APIKey
 	}
+	httpClient := azureHTTPClient(cfg.HTTPClient, cfg.ADTokenProvider)
 
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: http.MergeHeaders(headers, cfg.Headers),
+		BaseURL:    baseURL,
+		Headers:    version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("azure")),
+		HTTPClient: httpClient,
 	})
 
 	return &Provider{
 		config: Config{
 			APIKey:                 cfg.APIKey,
+			ADTokenProvider:        cfg.ADTokenProvider,
 			ResourceName:           cfg.ResourceName,
 			DeploymentID:           cfg.DeploymentID,
 			APIVersion:             apiVersion,
 			BaseURL:                cfg.BaseURL,
 			UseDeploymentBasedURLs: cfg.UseDeploymentBasedURLs,
 			Headers:                cfg.Headers,
+			HTTPClient:             cfg.HTTPClient,
 		},
-		client: client,
-	}
+		client:     client,
+		httpClient: httpClient,
+	}, nil
 }
 
 // CreateAzure creates a new Azure OpenAI provider.
 //
 // It mirrors the TypeScript SDK createAzure export while New remains the
 // idiomatic Go constructor.
-func CreateAzure(cfg Config) *Provider {
+func CreateAzure(cfg Config) (*Provider, error) {
 	return New(cfg)
 }
 
@@ -101,73 +134,60 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // ChatModel returns a legacy deployment-based Chat Completions language model.
 func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
-	// Use the configured deployment ID if no modelID specified
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
+	return NewLanguageModel(p, modelID), nil
+}
 
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	return NewLanguageModel(p, deploymentID), nil
+// Chat returns a legacy deployment-based Chat Completions language model.
+func (p *Provider) Chat(modelID string) (provider.LanguageModel, error) {
+	return p.ChatModel(modelID)
 }
 
 // CompletionModel returns an Azure OpenAI Completions API language model by
 // deployment ID, matching the TypeScript Azure provider's completion factory.
 func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	headers := http.MergeHeaders(map[string]string{
-		"api-key": p.config.APIKey,
-	}, p.config.Headers)
+	headers := p.staticAuthHeaders()
 
 	completionProvider := openai.New(openai.Config{
 		Name:                          "azure",
-		BaseURL:                       p.responsesBaseURL(deploymentID),
+		BaseURL:                       p.responsesBaseURL(modelID),
 		Headers:                       headers,
 		CompletionProviderName:        "azure.completion",
 		CompletionProviderOptionsName: "azure",
 		CompletionQuery:               map[string]string{"api-version": p.config.APIVersion},
+		HTTPClient:                    p.httpClient,
 	})
 
-	return openai.NewCompletionModel(completionProvider, deploymentID), nil
+	return openai.NewCompletionModel(completionProvider, modelID), nil
+}
+
+// Completion returns an Azure OpenAI Completions API language model.
+func (p *Provider) Completion(modelID string) (provider.LanguageModel, error) {
+	return p.CompletionModel(modelID)
 }
 
 // ResponsesModel returns an Azure OpenAI Responses API language model by
 // deployment ID. Requests use /openai/v1/responses?api-version={version}, the
 // api-key header, and Azure's assistant- file ID compatibility prefix.
 func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error) {
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	headers := http.MergeHeaders(map[string]string{
-		"api-key": p.config.APIKey,
-	}, p.config.Headers)
+	headers := p.staticAuthHeaders()
 
 	responsesProvider := openai.New(openai.Config{
 		Name:                         "azure",
-		BaseURL:                      p.responsesBaseURL(deploymentID),
+		BaseURL:                      p.responsesBaseURL(modelID),
 		Headers:                      headers,
 		ResponsesProviderName:        "azure.responses",
 		ResponsesProviderOptionsName: "azure",
 		ResponsesQuery:               map[string]string{"api-version": p.config.APIVersion},
 		FileIDPrefixes:               []string{"assistant-"},
+		HTTPClient:                   p.httpClient,
 	})
 
-	return openai.NewResponsesLanguageModel(responsesProvider, deploymentID), nil
+	return openai.NewResponsesLanguageModel(responsesProvider, modelID), nil
+}
+
+// Responses returns an Azure OpenAI Responses API language model.
+func (p *Provider) Responses(modelID string) (provider.LanguageModel, error) {
+	return p.ResponsesModel(modelID)
 }
 
 func (p *Provider) responsesBaseURL(modelID string) string {
@@ -192,61 +212,103 @@ func (p *Provider) endpointPath(modelID, apiPath string) string {
 	return fmt.Sprintf("/v1%s?api-version=%s", apiPath, p.config.APIVersion)
 }
 
+func (p *Provider) staticAuthHeaders() map[string]string {
+	headers := map[string]string{}
+	if p.config.ADTokenProvider == nil {
+		headers["api-key"] = p.config.APIKey
+	}
+	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure"))
+}
+
+func (p *Provider) requestHeaders(_ context.Context, extra map[string]string) (map[string]string, error) {
+	return extra, nil
+}
+
+func azureHTTPClient(base *stdhttp.Client, tokenProvider func(context.Context) (string, error)) *stdhttp.Client {
+	if tokenProvider == nil {
+		return base
+	}
+	if base == nil {
+		base = http.DefaultHTTPClient
+	}
+	clone := *base
+	transport := base.Transport
+	if transport == nil {
+		transport = stdhttp.DefaultTransport
+	}
+	clone.Transport = azureTokenTransport{base: transport, tokenProvider: tokenProvider}
+	return &clone
+}
+
+type azureTokenTransport struct {
+	base          stdhttp.RoundTripper
+	tokenProvider func(context.Context) (string, error)
+}
+
+func (t azureTokenTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	clone := req.Clone(req.Context())
+	if clone.Header.Get("Authorization") == "" {
+		token, err := t.tokenProvider(req.Context())
+		if err != nil {
+			return nil, err
+		}
+		clone.Header.Set("Authorization", "Bearer "+token)
+	}
+	return t.base.RoundTrip(clone)
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	// Use the configured deployment ID if no modelID specified
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
+	return NewEmbeddingModel(p, modelID), nil
+}
 
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
+// Embedding returns an embedding model by ID.
+func (p *Provider) Embedding(modelID string) (provider.EmbeddingModel, error) {
+	return p.EmbeddingModel(modelID)
+}
 
-	return NewEmbeddingModel(p, deploymentID), nil
+// TextEmbedding returns an embedding model by ID.
+//
+// Deprecated: use Embedding.
+func (p *Provider) TextEmbedding(modelID string) (provider.EmbeddingModel, error) {
+	return p.EmbeddingModel(modelID)
+}
+
+// TextEmbeddingModel returns an embedding model by ID.
+//
+// Deprecated: use EmbeddingModel.
+func (p *Provider) TextEmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
+	return p.EmbeddingModel(modelID)
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
+	return NewImageModel(p, modelID), nil
+}
 
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	return NewImageModel(p, deploymentID), nil
+// Image returns an image generation model by ID.
+func (p *Provider) Image(modelID string) (provider.ImageModel, error) {
+	return p.ImageModel(modelID)
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
+	return NewSpeechModel(p, modelID), nil
+}
 
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	return NewSpeechModel(p, deploymentID), nil
+// Speech returns a speech synthesis model by ID.
+func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
+	return p.SpeechModel(modelID)
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	deploymentID := modelID
-	if deploymentID == "" {
-		deploymentID = p.config.DeploymentID
-	}
+	return NewTranscriptionModel(p, modelID), nil
+}
 
-	if deploymentID == "" {
-		return nil, fmt.Errorf("deployment ID is required for Azure OpenAI")
-	}
-
-	return NewTranscriptionModel(p, deploymentID), nil
+// Transcription returns a speech-to-text model by ID.
+func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, error) {
+	return p.TranscriptionModel(modelID)
 }
 
 // RerankingModel returns a reranking model by ID

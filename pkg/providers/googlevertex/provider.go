@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	stdhttp "net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	googleprovider "github.com/digitallysavvy/go-ai/pkg/providers/google"
 	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
 
@@ -98,6 +101,16 @@ func (t *authTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, erro
 
 // New creates a new Google Vertex AI provider with the given configuration
 func New(cfg Config) (*Provider, error) {
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("GOOGLE_VERTEX_API_KEY")
+	}
+	if cfg.Project == "" {
+		cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
+	}
+	if cfg.Location == "" {
+		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
+	}
+
 	baseURL := cfg.BaseURL
 	headers := map[string]string{
 		"Content-Type": "application/json",
@@ -122,8 +135,8 @@ func New(cfg Config) (*Provider, error) {
 			return nil, fmt.Errorf("access token is required for Google Vertex AI")
 		}
 		if baseURL == "" {
-			baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/publishers/google",
-				cfg.Location, cfg.Project, cfg.Location)
+			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
+				vertexHost(cfg.Location), cfg.Project, cfg.Location)
 		}
 
 		tokenCache := &cachedTokenSource{
@@ -168,7 +181,7 @@ func New(cfg Config) (*Provider, error) {
 
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    http.MergeHeaders(headers, cfg.Headers),
+		Headers:    version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex")),
 		HTTPClient: httpClient,
 	})
 
@@ -176,6 +189,17 @@ func New(cfg Config) (*Provider, error) {
 		config: cfg,
 		client: client,
 	}, nil
+}
+
+func vertexHost(location string) string {
+	switch location {
+	case "global":
+		return "aiplatform.googleapis.com"
+	case "eu", "us":
+		return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", location)
+	default:
+		return fmt.Sprintf("%s-aiplatform.googleapis.com", location)
+	}
 }
 
 // CreateGoogleVertex creates a new Google Vertex AI provider.
@@ -266,9 +290,22 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	return NewImageModel(p, modelID), nil
 }
 
-// SpeechModel returns a speech synthesis model by ID
+// SpeechModel returns a Gemini TTS speech synthesis model by ID.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LGoogle Vertex AI does not support speech synthesis through this API")
+	return googleprovider.NewSpeechModelWithConfig(modelID, googleprovider.SpeechModelConfig{
+		ProviderName:        "google.vertex.speech",
+		MetadataKey:         "google",
+		ProviderOptionsKeys: []string{"googleVertex", "vertex", "google"},
+		GeneratePath: func(id string) string {
+			return fmt.Sprintf("/models/%s:generateContent", id)
+		},
+		Client: p.client,
+	}), nil
+}
+
+// Speech returns a Gemini TTS speech synthesis model by ID.
+func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
+	return p.SpeechModel(modelID)
 }
 
 // TranscriptionModel returns a speech-to-text model by ID

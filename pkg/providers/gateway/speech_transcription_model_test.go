@@ -52,7 +52,7 @@ func TestGatewaySpeechModelDoGenerateWireFormat(t *testing.T) {
 	if seenModelID != "openai/tts" || seenBody["text"] != "hello" || seenBody["outputFormat"] != "wav" || seenBody["instructions"] != "warm" {
 		t.Fatalf("request mismatch model=%q body=%#v", seenModelID, seenBody)
 	}
-	if string(result.Audio) != "audio" || result.MimeType != "audio/wav" || len(result.Warnings) != 1 {
+	if string(result.Audio) != "audio" || len(result.Warnings) != 1 {
 		t.Fatalf("result mismatch: %#v", result)
 	}
 }

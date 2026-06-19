@@ -27,11 +27,11 @@ func (s *executionAliasSpy) OnToolExecutionStart(ctx context.Context, _ Telemetr
 func (s *executionAliasSpy) OnToolExecutionEnd(context.Context, TelemetryToolCallFinishEvent) {
 	s.ends++
 }
-func (s *executionAliasSpy) OnChunk(context.Context, TelemetryChunkEvent)           {}
-func (s *executionAliasSpy) OnStepFinish(context.Context, TelemetryStepFinishEvent) {}
-func (s *executionAliasSpy) OnFinish(context.Context, TelemetryFinishEvent)         {}
-func (s *executionAliasSpy) OnError(context.Context, TelemetryErrorEvent)           {}
-func (s *executionAliasSpy) OnAbort(context.Context, TelemetryAbortEvent)           {}
+func (s *executionAliasSpy) OnChunk(context.Context, TelemetryChunkEvent)     {}
+func (s *executionAliasSpy) OnStepEnd(context.Context, TelemetryStepEndEvent) {}
+func (s *executionAliasSpy) OnFinish(context.Context, TelemetryFinishEvent)   {}
+func (s *executionAliasSpy) OnError(context.Context, TelemetryErrorEvent)     {}
+func (s *executionAliasSpy) OnAbort(context.Context, TelemetryAbortEvent)     {}
 func (s *executionAliasSpy) ExecuteTool(ctx context.Context, _ string, args map[string]interface{}, execute func(context.Context, map[string]interface{}) (interface{}, error)) (interface{}, error) {
 	return execute(ctx, args)
 }

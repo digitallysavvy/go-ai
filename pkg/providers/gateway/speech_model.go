@@ -3,11 +3,15 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpeechModel implements the provider.SpeechModel interface for AI Gateway.
@@ -57,7 +61,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	headers = internalhttp.MergeHeaders(headers, opts.Headers)
 
 	var response gatewaySpeechResponse
-	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/speech-model",
 		Body:    body,
@@ -71,12 +75,20 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err != nil {
 		return nil, err
 	}
+	responseBody, err := parseGatewaySpeechRawBody(httpResp.Body)
+	if err != nil {
+		return nil, err
+	}
 	return &types.SpeechResult{
 		Audio:            audio,
-		MimeType:         speechMimeType(opts.OutputFormat),
 		Warnings:         response.Warnings,
 		ProviderMetadata: response.ProviderMetadata,
-		Usage:            types.SpeechUsage{CharacterCount: len(opts.Text)},
+		Response: &types.ResponseMetadata{
+			Timestamp: time.Now(),
+			ModelID:   m.modelID,
+			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
+			Body:      responseBody,
+		},
 	}, nil
 }
 
@@ -93,17 +105,10 @@ type gatewaySpeechResponse struct {
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
-func speechMimeType(format string) string {
-	switch format {
-	case "wav":
-		return "audio/wav"
-	case "opus":
-		return "audio/opus"
-	case "aac":
-		return "audio/aac"
-	case "flac":
-		return "audio/flac"
-	default:
-		return "audio/mpeg"
+func parseGatewaySpeechRawBody(body []byte) (interface{}, error) {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse Gateway speech response metadata: %w", err)
 	}
+	return raw, nil
 }

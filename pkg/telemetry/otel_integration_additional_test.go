@@ -59,7 +59,7 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	integration.OnChunk(ctx, TelemetryChunkEvent{Settings: settings, ChunkType: "text", Text: "partial"})
 
 	ts := time.Now().UTC()
-	integration.OnStepFinish(ctx, TelemetryStepFinishEvent{
+	integration.OnStepEnd(ctx, TelemetryStepEndEvent{
 		Settings:          settings,
 		StepNumber:        1,
 		FinishReason:      "stop",
@@ -179,7 +179,7 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 		ToolName:   "lookup",
 		DurationMs: 1,
 	})
-	integration.OnStepFinish(stepCtx, TelemetryStepFinishEvent{
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{
 		Settings:     settings,
 		StepNumber:   0,
 		FinishReason: "tool-calls",

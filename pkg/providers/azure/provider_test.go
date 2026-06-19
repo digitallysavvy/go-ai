@@ -3,21 +3,23 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func TestProviderDefaultsAndFactories(t *testing.T) {
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:       "k",
 		ResourceName: "my-resource",
-		DeploymentID: "dep-1",
 	})
 	if p.Name() != "azure-openai" {
 		t.Fatalf("Name = %q", p.Name())
@@ -26,42 +28,123 @@ func TestProviderDefaultsAndFactories(t *testing.T) {
 		t.Fatalf("default APIVersion = %q", p.APIVersion())
 	}
 
-	if _, err := p.LanguageModel(""); err != nil {
-		t.Fatalf("LanguageModel fallback deployment should work: %v", err)
+	if model, err := p.LanguageModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("LanguageModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
-	if _, err := p.CompletionModel(""); err != nil {
-		t.Fatalf("CompletionModel fallback deployment should work: %v", err)
+	if model, err := p.CompletionModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("CompletionModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
-	if _, err := p.EmbeddingModel(""); err != nil {
-		t.Fatalf("EmbeddingModel fallback deployment should work: %v", err)
+	if model, err := p.EmbeddingModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("EmbeddingModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
-	if _, err := p.ImageModel(""); err != nil {
-		t.Fatalf("ImageModel fallback deployment should work: %v", err)
+	if model, err := p.ImageModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("ImageModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
-	if _, err := p.SpeechModel(""); err != nil {
-		t.Fatalf("SpeechModel fallback deployment should work: %v", err)
+	if model, err := p.SpeechModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("SpeechModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
-	if _, err := p.TranscriptionModel(""); err != nil {
-		t.Fatalf("TranscriptionModel fallback deployment should work: %v", err)
+	if model, err := p.TranscriptionModel(""); err != nil || model.ModelID() != "" {
+		t.Fatalf("TranscriptionModel(\"\") should preserve empty model ID, model=%v err=%v", model, err)
 	}
 	if rm, err := p.RerankingModel("x"); rm != nil || err == nil {
 		t.Fatalf("RerankingModel expected unsupported error, got model=%v err=%v", rm, err)
 	}
 }
 
-func TestProviderRequiresDeploymentWhenUnset(t *testing.T) {
-	p := New(Config{APIKey: "k", ResourceName: "r"})
-	if _, err := p.LanguageModel(""); err == nil {
-		t.Fatal("expected deployment error")
+func TestProviderTypeScriptFactoryAliases(t *testing.T) {
+	p := mustNewProvider(t, Config{
+		APIKey:       "k",
+		ResourceName: "my-resource",
+	})
+
+	language, err := p.LanguageModel("dep")
+	if err != nil || language.Provider() != "azure.responses" || language.ModelID() != "dep" {
+		t.Fatalf("LanguageModel alias = %v err=%v", language, err)
 	}
-	if _, err := p.EmbeddingModel(""); err == nil {
-		t.Fatal("expected deployment error")
+	responses, err := p.Responses("dep")
+	if err != nil || responses.Provider() != "azure.responses" || responses.ModelID() != "dep" {
+		t.Fatalf("Responses alias = %v err=%v", responses, err)
 	}
-	if _, err := p.ImageModel(""); err == nil {
-		t.Fatal("expected deployment error")
+	chat, err := p.Chat("dep")
+	if err != nil || chat.Provider() != "azure.chat" || chat.ModelID() != "dep" {
+		t.Fatalf("Chat alias = %v err=%v", chat, err)
 	}
-	if _, err := p.CompletionModel(""); err == nil {
-		t.Fatal("expected deployment error")
+	completion, err := p.Completion("dep")
+	if err != nil || completion.Provider() != "azure.completion" || completion.ModelID() != "dep" {
+		t.Fatalf("Completion alias = %v err=%v", completion, err)
+	}
+	embedding, err := p.Embedding("dep")
+	if err != nil || embedding.Provider() != "azure.embeddings" || embedding.ModelID() != "dep" {
+		t.Fatalf("Embedding alias = %v err=%v", embedding, err)
+	}
+	textEmbedding, err := p.TextEmbedding("dep")
+	if err != nil || textEmbedding.Provider() != "azure.embeddings" || textEmbedding.ModelID() != "dep" {
+		t.Fatalf("TextEmbedding alias = %v err=%v", textEmbedding, err)
+	}
+	textEmbeddingModel, err := p.TextEmbeddingModel("dep")
+	if err != nil || textEmbeddingModel.Provider() != "azure.embeddings" || textEmbeddingModel.ModelID() != "dep" {
+		t.Fatalf("TextEmbeddingModel alias = %v err=%v", textEmbeddingModel, err)
+	}
+	image, err := p.Image("dep")
+	if err != nil || image.Provider() != "azure.image" || image.ModelID() != "dep" {
+		t.Fatalf("Image alias = %v err=%v", image, err)
+	}
+	speech, err := p.Speech("dep")
+	if err != nil || speech.Provider() != "azure.speech" || speech.ModelID() != "dep" {
+		t.Fatalf("Speech alias = %v err=%v", speech, err)
+	}
+	transcription, err := p.Transcription("dep")
+	if err != nil || transcription.Provider() != "azure.transcription" || transcription.ModelID() != "dep" {
+		t.Fatalf("Transcription alias = %v err=%v", transcription, err)
+	}
+}
+
+func TestProviderEnvironmentFallbacks(t *testing.T) {
+	const envKey = "env-azure-key"
+	const envResource = "env-resource"
+	origKey := os.Getenv("AZURE_API_KEY")
+	origResource := os.Getenv("AZURE_RESOURCE_NAME")
+	t.Cleanup(func() {
+		if origKey == "" {
+			_ = os.Unsetenv("AZURE_API_KEY")
+		} else {
+			_ = os.Setenv("AZURE_API_KEY", origKey)
+		}
+		if origResource == "" {
+			_ = os.Unsetenv("AZURE_RESOURCE_NAME")
+		} else {
+			_ = os.Setenv("AZURE_RESOURCE_NAME", origResource)
+		}
+	})
+	if err := os.Setenv("AZURE_API_KEY", envKey); err != nil {
+		t.Fatalf("Setenv AZURE_API_KEY failed: %v", err)
+	}
+	if err := os.Setenv("AZURE_RESOURCE_NAME", envResource); err != nil {
+		t.Fatalf("Setenv AZURE_RESOURCE_NAME failed: %v", err)
+	}
+
+	p := mustNewProvider(t, Config{})
+	if p.config.APIKey != envKey || p.config.ResourceName != envResource {
+		t.Fatalf("config = %#v", p.config)
+	}
+}
+
+func TestProviderRejectsAPIKeyAndADTokenProviderTogether(t *testing.T) {
+	_, err := New(Config{
+		APIKey: "explicit-api-key",
+		ADTokenProvider: func(ctx context.Context) (string, error) {
+			return "token", nil
+		},
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected InvalidArgumentError, got %T %v", err, err)
+	}
+	if invalid.Field != "apiKey/tokenProvider" {
+		t.Fatalf("Field = %q", invalid.Field)
+	}
+	if invalid.Message != "Both apiKey and tokenProvider were provided. Please use only one authentication method." {
+		t.Fatalf("Message = %q", invalid.Message)
 	}
 }
 
@@ -91,7 +174,7 @@ func TestCompletionModelUsesAzureCompletionURLHeadersAndOptions(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:     "azure-key",
 		BaseURL:    server.URL + "/openai",
 		APIVersion: "2025-04-01-preview",
@@ -159,7 +242,7 @@ func TestCompletionModelUsesDeploymentBasedAzureURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:                 "azure-key",
 		BaseURL:                server.URL + "/openai",
 		APIVersion:             "v1",
@@ -178,7 +261,7 @@ func TestCompletionModelUsesDeploymentBasedAzureURL(t *testing.T) {
 }
 
 func TestLanguageBuildRequestBodyAndUsageConversion(t *testing.T) {
-	p := New(Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
+	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
 	m := NewLanguageModel(p, "dep-1")
 	max := 77
 	temp := 0.2
@@ -241,7 +324,7 @@ func TestLanguageBuildRequestBodyAndUsageConversion(t *testing.T) {
 }
 
 func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
-	p := New(Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
+	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
 	emb := NewEmbeddingModel(p, "dep-1")
 	if emb.MaxEmbeddingsPerCall() != 2048 {
 		t.Fatalf("MaxEmbeddingsPerCall = %d", emb.MaxEmbeddingsPerCall())
@@ -290,7 +373,7 @@ func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
 }
 
 func TestImageAndSpeechBuildHelpers(t *testing.T) {
-	p := New(Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
+	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
 	im := NewImageModel(p, "img-dep")
 	n := 2
 	ib := im.buildRequestBody(&provider.ImageGenerateOptions{
@@ -322,10 +405,29 @@ func TestImageAndSpeechBuildHelpers(t *testing.T) {
 	if sb["voice"] != "nova" || sb["response_format"] != "mp3" {
 		t.Fatalf("speech body mismatch: %#v", sb)
 	}
+	sb, warnings := sm.buildRequestArgs(&provider.SpeechGenerateOptions{
+		Text:         "hello",
+		OutputFormat: "wav",
+		Instructions: "speak warmly",
+	})
+	if len(warnings) != 0 || sb["response_format"] != "wav" || sb["instructions"] != "speak warmly" {
+		t.Fatalf("speech custom body=%#v warnings=%#v", sb, warnings)
+	}
+	sb, warnings = sm.buildRequestArgs(&provider.SpeechGenerateOptions{
+		Text:         "hello",
+		OutputFormat: "ogg",
+		Language:     "es",
+	})
+	if sb["response_format"] != "mp3" {
+		t.Fatalf("speech unsupported format should keep mp3: %#v", sb)
+	}
+	if len(warnings) != 2 || warnings[0].Feature != "outputFormat" || warnings[1].Feature != "language" {
+		t.Fatalf("speech warnings mismatch: %#v", warnings)
+	}
 }
 
 func TestSerializeDeserializeLanguageModel(t *testing.T) {
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:       "k",
 		ResourceName: "r",
 		DeploymentID: "dep",
@@ -368,7 +470,7 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:     "test-api-key",
 		BaseURL:    server.URL + "/openai",
 		APIVersion: "v1",
@@ -451,7 +553,7 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := New(Config{
+	p := mustNewProvider(t, Config{
 		APIKey:                 "test-api-key",
 		BaseURL:                server.URL + "/openai",
 		UseDeploymentBasedURLs: true,
@@ -469,7 +571,7 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 }
 
 func TestConvertResponseMapsToolCalls(t *testing.T) {
-	p := New(Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
+	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
 	m := NewLanguageModel(p, "dep-1")
 	resp := azureResponse{
 		Choices: []struct {

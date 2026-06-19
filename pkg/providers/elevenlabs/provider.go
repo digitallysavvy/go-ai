@@ -65,10 +65,6 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	if modelID == "" {
-		modelID = "eleven_multilingual_v2"
-	}
-
 	return NewSpeechModel(p, modelID), nil
 }
 

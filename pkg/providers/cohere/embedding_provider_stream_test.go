@@ -69,7 +69,7 @@ func TestCohereEmbeddingModelDoEmbedMany(t *testing.T) {
 	if seenBody["model"] != "embed-v4" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
-	if len(out.Embeddings) != 2 || out.Usage.InputTokens != 7 || out.Responses[0].Headers["X-Request-Id"][0] != "req1" {
+	if len(out.Embeddings) != 2 || out.Usage.InputTokens != 7 || out.Responses[0].Headers["X-Request-Id"] != "req1" {
 		t.Fatalf("result mismatch: %#v", out)
 	}
 }

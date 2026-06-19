@@ -264,7 +264,7 @@ func TestGenerateSpeechAndTranscribe_Basic(t *testing.T) {
 			if opts.Text != "hello" {
 				t.Fatalf("text = %q, want hello", opts.Text)
 			}
-			return &types.SpeechResult{Audio: []byte("audio"), MimeType: "audio/mpeg"}, nil
+			return &types.SpeechResult{Audio: []byte("audio")}, nil
 		},
 	}
 	speech, err := GenerateSpeech(context.Background(), GenerateSpeechOptions{

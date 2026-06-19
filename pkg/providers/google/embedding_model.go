@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingPart is implemented by TextEmbeddingPart and ImageEmbeddingPart.
@@ -155,7 +156,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			InputTokens: 0,
 			TotalTokens: 0,
 		},
-		Response: types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
 	}, nil
 }
 
@@ -240,7 +241,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: 0,
 			TotalTokens: 0,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers), Body: json.RawMessage(httpResp.Body)}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)}},
 	}, nil
 }
 
@@ -278,7 +279,7 @@ func (m *EmbeddingModel) DoEmbedParts(ctx context.Context, text string, parts []
 	return &types.EmbeddingResult{
 		Embedding: response.Embedding.Values,
 		Usage:     types.EmbeddingUsage{},
-		Response:  types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
+		Response:  types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
 	}, nil
 }
 

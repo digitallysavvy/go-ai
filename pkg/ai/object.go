@@ -478,7 +478,12 @@ type GenerateObjectOptions struct {
 	// ExperimentalOnStepStart is called just before the provider is called.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
+	// OnStepEnd is called after the provider returns, before JSON parsing.
+	OnStepEnd func(ctx context.Context, e ObjectOnStepFinishEvent)
+
 	// OnStepFinish is called after the provider returns, before JSON parsing.
+	//
+	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
 
 	// OnFinishEvent is called when the operation completes with a typed event.
@@ -491,6 +496,13 @@ type GenerateObjectOptions struct {
 
 	// ExperimentalContext allows passing custom context through generation lifecycle
 	ExperimentalContext interface{}
+}
+
+func resolveObjectOnStepEnd(onStepEnd, onStepFinish func(context.Context, ObjectOnStepFinishEvent)) func(context.Context, ObjectOnStepFinishEvent) {
+	if onStepEnd != nil {
+		return onStepEnd
+	}
+	return onStepFinish
 }
 
 // GenerateObjectResult contains the result of object generation
@@ -797,7 +809,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Request:          reqMeta,
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnStepFinish)
+	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
 	if err != nil && opts.ExperimentalRepairText != nil {
@@ -929,7 +941,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Request:          arrReqMeta,
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnStepFinish)
+	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
 	if err != nil && opts.ExperimentalRepairText != nil {
@@ -1058,7 +1070,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Request:          enumReqMeta,
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnStepFinish)
+	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 	if err != nil && opts.ExperimentalRepairText != nil {
@@ -1181,7 +1193,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Request:          nsReqMeta,
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnStepFinish)
+	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
 	if err != nil && opts.ExperimentalRepairText != nil {
@@ -1316,7 +1328,12 @@ type StreamObjectOptions struct {
 	// ExperimentalOnStepStart is called just before the provider is called.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
+	// OnStepEnd is called after the provider returns, before JSON parsing.
+	OnStepEnd func(ctx context.Context, e ObjectOnStepFinishEvent)
+
 	// OnStepFinish is called after the provider returns, before JSON parsing.
+	//
+	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
 
 	// OnFinishEvent is called when the operation completes.
@@ -1515,7 +1532,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          fbReqMeta,
 			Response:         fbResMeta,
 			ProviderMetadata: result.ProviderMetadata,
-		}, opts.OnStepFinish)
+		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 		// Parse final JSON
 		finalObject, finalArray, finalEnum, parseErr := parseObjectResult(result, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
@@ -1705,7 +1722,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-		}, opts.OnStepFinish)
+		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 		Notify(ctx, ObjectOnFinishEvent{
 			CallID:           callID,
 			Object:           nil,
@@ -1736,7 +1753,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Request:          streamReqMeta,
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
-	}, opts.OnStepFinish)
+	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	// Parse final JSON
 	var finalObject interface{}

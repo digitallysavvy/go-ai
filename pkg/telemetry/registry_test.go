@@ -47,7 +47,7 @@ func (m *mockIntegration) OnToolCallStart(ctx context.Context, _ TelemetryToolCa
 }
 func (m *mockIntegration) OnToolCallFinish(_ context.Context, _ TelemetryToolCallFinishEvent) {}
 func (m *mockIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent)                   {}
-func (m *mockIntegration) OnStepFinish(_ context.Context, _ TelemetryStepFinishEvent)         {}
+func (m *mockIntegration) OnStepEnd(_ context.Context, _ TelemetryStepEndEvent)               {}
 
 func (m *mockIntegration) OnFinish(_ context.Context, _ TelemetryFinishEvent) {
 	m.mu.Lock()
@@ -122,7 +122,7 @@ func TestNoopTelemetryIntegration_NoPanics(t *testing.T) {
 	}
 	noop.OnToolCallFinish(ctx, TelemetryToolCallFinishEvent{})
 	noop.OnChunk(ctx, TelemetryChunkEvent{ChunkType: "text", Text: "hello"})
-	noop.OnStepFinish(ctx, TelemetryStepFinishEvent{})
+	noop.OnStepEnd(ctx, TelemetryStepEndEvent{})
 	noop.OnFinish(ctx, TelemetryFinishEvent{})
 	noop.OnError(ctx, TelemetryErrorEvent{})
 	// ExecuteTool must call execute and return its result.

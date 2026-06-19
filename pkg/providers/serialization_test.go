@@ -156,7 +156,11 @@ func TestProviderSerializationRoundTripMatrix(t *testing.T) {
 			return m
 		}},
 		{"azure-openai", func(t *testing.T) provider.LanguageModel {
-			m, err := azure.New(azure.Config{APIKey: "k", ResourceName: "r", DeploymentID: "gpt-4o-mini"}).LanguageModel("")
+			p, err := azure.New(azure.Config{APIKey: "k", ResourceName: "r"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := p.LanguageModel("gpt-4o-mini")
 			if err != nil {
 				t.Fatal(err)
 			}

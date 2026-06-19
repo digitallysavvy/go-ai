@@ -22,6 +22,9 @@ type UIMessageChunk map[string]interface{}
 // UIMessageStreamOnStepFinishCallback is invoked when a logical step finishes.
 type UIMessageStreamOnStepFinishCallback func(ctx map[string]interface{})
 
+// UIMessageStreamOnStepEndCallback is the canonical name for UIMessageStreamOnStepFinishCallback.
+type UIMessageStreamOnStepEndCallback = UIMessageStreamOnStepFinishCallback
+
 // UIMessageStreamOnFinishCallback is invoked when the UI stream finishes.
 type UIMessageStreamOnFinishCallback func(ctx map[string]interface{})
 
@@ -48,9 +51,11 @@ func (w UIMessageStreamWriter) Merge(stream <-chan UIMessageChunk) {
 
 // UIMessageStreamOptions configures custom UI-message stream creation.
 type UIMessageStreamOptions struct {
-	Execute           func(writer UIMessageStreamWriter)
-	OnError           func(error) string
-	OriginalMessages  []UIMessageChunk
+	Execute          func(writer UIMessageStreamWriter)
+	OnError          func(error) string
+	OriginalMessages []UIMessageChunk
+	OnStepEnd        UIMessageStreamOnStepEndCallback
+	// Deprecated: use OnStepEnd.
 	OnStepFinish      UIMessageStreamOnStepFinishCallback
 	OnFinish          UIMessageStreamOnFinishCallback
 	GenerateMessageID IDGenerator
@@ -67,9 +72,11 @@ type UIMessageStreamResultOptions struct {
 	SendSources       *bool
 	SendStart         *bool
 	SendFinish        *bool
-	OnStepFinish      UIMessageStreamOnStepFinishCallback
-	OnFinish          UIMessageStreamOnFinishCallback
-	OnError           func(error) string
+	OnStepEnd         UIMessageStreamOnStepEndCallback
+	// Deprecated: use OnStepEnd.
+	OnStepFinish UIMessageStreamOnStepFinishCallback
+	OnFinish     UIMessageStreamOnFinishCallback
+	OnError      func(error) string
 }
 
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
@@ -108,6 +115,13 @@ func appendErrorChunk(onError func(error) string, write func(UIMessageChunk), er
 		"type":      "error",
 		"errorText": onError(err),
 	})
+}
+
+func resolveUIMessageStreamOnStepEnd(onStepEnd, onStepFinish UIMessageStreamOnStepFinishCallback) UIMessageStreamOnStepFinishCallback {
+	if onStepEnd != nil {
+		return onStepEnd
+	}
+	return onStepFinish
 }
 
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
@@ -170,8 +184,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			options.OnFinish(finishEvent)
 		}
 
+		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
 		callOnStepFinish := func() {
-			if options.OnStepFinish == nil {
+			if onStepEnd == nil {
 				return
 			}
 			stepEvent := map[string]interface{}{
@@ -182,7 +197,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			defer func() {
 				_ = recover()
 			}()
-			options.OnStepFinish(stepEvent)
+			onStepEnd(stepEvent)
 		}
 		processAndEnqueue := func(part UIMessageChunk) {
 			uiState.apply(part, onError)
@@ -318,8 +333,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			options.OnFinish(finishEvent)
 		}
 
+		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
 		callOnStepFinish := func() {
-			if options.OnStepFinish == nil {
+			if onStepEnd == nil {
 				return
 			}
 			stepEvent := map[string]interface{}{
@@ -330,7 +346,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			defer func() {
 				_ = recover()
 			}()
-			options.OnStepFinish(stepEvent)
+			onStepEnd(stepEvent)
 		}
 
 		safeEnqueue := func(part UIMessageChunk) {

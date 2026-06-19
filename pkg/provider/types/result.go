@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StepModel identifies the model that produced a generation step.
 type StepModel struct {
@@ -133,7 +136,7 @@ type GenerateResult struct {
 // EmbeddingResponse contains metadata about the HTTP response from the embedding provider.
 type EmbeddingResponse struct {
 	// Headers are the raw response headers from the provider.
-	Headers map[string][]string `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// Body is the raw response body from the provider (for debugging).
 	Body interface{} `json:"body,omitempty"`
@@ -152,6 +155,9 @@ type EmbeddingResult struct {
 
 	// Response holds provider HTTP response metadata (headers, body).
 	Response EmbeddingResponse `json:"response,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata keyed by provider name.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // EmbeddingsResult contains the results of a batch embedding operation
@@ -168,6 +174,9 @@ type EmbeddingsResult struct {
 	// Responses holds per-request HTTP response metadata. One entry per batch call
 	// (most providers make a single call for the whole batch).
 	Responses []EmbeddingResponse `json:"responses,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata keyed by provider name.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // ImageResult contains the result of an image generation operation
@@ -213,17 +222,28 @@ type SpeechResult struct {
 	// Audio data
 	Audio []byte `json:"audio"`
 
-	// MIME type of the audio
-	MimeType string `json:"mimeType"`
-
-	// Usage information
-	Usage SpeechUsage `json:"usage"`
-
 	// Warnings from the provider
-	Warnings []Warning `json:"warnings,omitempty"`
+	Warnings []Warning `json:"warnings"`
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Request contains metadata about the provider request.
+	Request *StepRequest `json:"request,omitempty"`
+
+	// Response contains metadata about the provider response.
+	Response *ResponseMetadata `json:"response,omitempty"`
+}
+
+// MarshalJSON preserves the TypeScript SpeechModelV4Result shape where
+// warnings is always present as an array.
+func (r SpeechResult) MarshalJSON() ([]byte, error) {
+	type alias SpeechResult
+	out := alias(r)
+	if out.Warnings == nil {
+		out.Warnings = []Warning{}
+	}
+	return json.Marshal(out)
 }
 
 // TranscriptionResult contains the result of a speech-to-text operation

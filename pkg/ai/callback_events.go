@@ -404,5 +404,8 @@ type GenerateTextStepStartEvent = OnStepStartEvent
 // GenerateTextStepEndEvent is the canonical name for OnStepFinishEvent.
 type GenerateTextStepEndEvent = OnStepFinishEvent
 
+// OnStepEndEvent is the canonical name for OnStepFinishEvent.
+type OnStepEndEvent = OnStepFinishEvent
+
 // GenerateTextEndEvent is the canonical name for OnFinishEvent.
 type GenerateTextEndEvent = OnFinishEvent

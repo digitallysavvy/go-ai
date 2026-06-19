@@ -85,6 +85,7 @@ type AgentGenerateOptions struct {
 
 	Tools       []types.Tool
 	ToolChoice  types.ToolChoice
+	ToolOrder   []string
 	ActiveTools []string
 	StopWhen    []ai.StopCondition
 	MaxSteps    int
@@ -122,8 +123,10 @@ type AgentGenerateOptions struct {
 	OnToolCallStart func(ctx context.Context, e ai.OnToolCallStartEvent)
 	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
-	OnStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
-	OnFinish         func(ctx context.Context, e ai.OnFinishEvent)
+	OnStepEnd        func(ctx context.Context, e ai.OnStepFinishEvent)
+	// Deprecated: use OnStepEnd.
+	OnStepFinish func(ctx context.Context, e ai.OnStepFinishEvent)
+	OnFinish     func(ctx context.Context, e ai.OnFinishEvent)
 }
 
 // AgentStreamOptions contains per-call options for ToolLoopAgent.Stream.
@@ -231,6 +234,9 @@ type AgentConfig struct {
 
 	// ActiveTools restricts the available tools by name before model calls.
 	ActiveTools []string
+
+	// ToolOrder controls the order tools are sent to providers.
+	ToolOrder []string
 
 	// Skills are reusable agent behaviors
 	// Skills can be registered and executed by the agent
@@ -381,7 +387,9 @@ type AgentConfig struct {
 	// ========================================================================
 
 	// Legacy/Basic Callbacks
-	OnStepStart  func(stepNum int)
+	OnStepStart func(stepNum int)
+	OnStepEnd   func(step types.StepResult)
+	// Deprecated: use OnStepEnd.
 	OnStepFinish func(step types.StepResult)
 	OnToolCall   func(toolCall types.ToolCall)
 	OnToolResult func(toolResult types.ToolResult)
@@ -416,7 +424,12 @@ type AgentConfig struct {
 	// Deprecated: use OnToolExecutionEnd.
 	OnToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 
+	// OnStepEndEvent is called at the end of each LLM step.
+	OnStepEndEvent func(ctx context.Context, e ai.OnStepFinishEvent)
+
 	// OnStepFinishEvent is called at the end of each LLM step.
+	//
+	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e ai.OnStepFinishEvent)
 
 	// OnFinishEvent is called once when agent execution completes.
@@ -507,6 +520,9 @@ type PrepareCallConfig struct {
 
 	// ToolChoice controls how the model may call tools for this call.
 	ToolChoice types.ToolChoice
+
+	// ToolOrder controls the order tools are sent to providers for this call.
+	ToolOrder []string
 
 	// ToolApproval configures automatic approval handling for this call.
 	ToolApproval types.ToolApprovalConfig
