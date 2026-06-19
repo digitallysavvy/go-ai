@@ -518,11 +518,14 @@ func main() {
         log.Fatal("Missing Azure OpenAI configuration (resource name, key, or deployment)")
     }
 
-    provider := azure.New(azure.Config{
+    provider, err := azure.New(azure.Config{
         ResourceName:           resourceName,
         APIKey:                 apiKey,
         UseDeploymentBasedURLs: true,
     })
+    if err != nil {
+        log.Fatalf("Failed to create provider: %v", err)
+    }
 
     // Use the deployment name, not the model name
     model, err := provider.LanguageModel(deployment)

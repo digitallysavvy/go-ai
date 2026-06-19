@@ -180,11 +180,14 @@ provider := openai.New(openai.Config{
 ### Regional Configuration
 
 ```go
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     ResourceName:           os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:                 os.Getenv("AZURE_API_KEY"),
     UseDeploymentBasedURLs: true,
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Common Features

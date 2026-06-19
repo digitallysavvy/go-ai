@@ -28,10 +28,13 @@ export AZURE_RESOURCE_NAME=your-resource-name
 Create a Responses model:
 
 ```go
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     APIKey:       os.Getenv("AZURE_API_KEY"),
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 model, err := provider.LanguageModel("gpt-4o-deployment")
 if err != nil {
@@ -80,20 +83,26 @@ This matches the TypeScript `azure.tools` behavior by serializing provider-execu
 For the standard Azure URL format, set `ResourceName`. For custom regional, proxy, or private-link endpoints, set `BaseURL` to the Azure OpenAI `/openai` prefix:
 
 ```go
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     BaseURL: "https://your-resource-eastus.openai.azure.com/openai",
     APIKey:  os.Getenv("AZURE_API_KEY"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 The default URL shape matches TypeScript: `{baseURL}/v1{path}?api-version=v1`. Set `UseDeploymentBasedURLs` only for Azure deployments that still require `{baseURL}/deployments/{deployment}{path}`:
 
 ```go
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     ResourceName:           os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:                 os.Getenv("AZURE_API_KEY"),
     UseDeploymentBasedURLs: true,
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Other Model Types
@@ -113,13 +122,16 @@ transcriptionModel, err := provider.TranscriptionModel("whisper-1")
 Use `Headers` for request metadata that should be sent with every provider call:
 
 ```go
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
     Headers: map[string]string{
         "X-Request-ID": "unique-request-id",
     },
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 Per-call headers can also be supplied through generation options and override provider-level headers.

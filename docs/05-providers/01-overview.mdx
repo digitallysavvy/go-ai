@@ -153,11 +153,14 @@ provider := anthropic.New(anthropic.Config{
 
 ```go
 // Azure OpenAI with regional endpoint
-provider := azure.New(azure.Config{
+provider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
     APIVersion:   "v1",
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 // AWS Bedrock with region
 provider := bedrock.New(bedrock.Config{

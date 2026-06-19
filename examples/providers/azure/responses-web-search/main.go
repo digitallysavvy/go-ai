@@ -18,11 +18,14 @@ func main() {
 		return
 	}
 
-	provider := azure.New(azure.Config{
+	provider, err := azure.New(azure.Config{
 		APIKey:       os.Getenv("AZURE_API_KEY"),
 		ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
 		APIVersion:   env("AZURE_OPENAI_API_VERSION", "v1"),
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	model, err := provider.LanguageModel(env("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini"))
 	if err != nil {
 		log.Fatal(err)
