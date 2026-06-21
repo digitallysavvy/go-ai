@@ -145,8 +145,19 @@ func TestProvider_VideoModel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if model.SpecificationVersion() != "v3" {
-			t.Errorf("expected specification version 'v3', got '%s'", model.SpecificationVersion())
+		if model.SpecificationVersion() != "v4" {
+			t.Errorf("expected specification version 'v4', got '%s'", model.SpecificationVersion())
+		}
+	})
+
+	t.Run("model has max videos per call", func(t *testing.T) {
+		model, err := prov.VideoModel(string(ModelSeedance10Pro))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		maxVideos := model.MaxVideosPerCall()
+		if maxVideos == nil || *maxVideos != 1 {
+			t.Fatalf("expected max videos per call 1, got %#v", maxVideos)
 		}
 	})
 }

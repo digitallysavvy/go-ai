@@ -131,6 +131,15 @@ func makeSuccessStatusBody(taskID, videoURL string) string {
 	}`, taskID, videoURL)
 }
 
+func makeSuccessStatusBodyWithoutUsage(taskID, videoURL string) string {
+	return fmt.Sprintf(`{
+		"id": %q,
+		"model": "seedance-1-0-pro-250528",
+		"status": "succeeded",
+		"content": {"video_url": %q}
+	}`, taskID, videoURL)
+}
+
 // ─── Request Body Builder Tests ───────────────────────────────────────────────
 
 func TestBuildRequestBody_Prompt(t *testing.T) {
@@ -169,6 +178,30 @@ func TestBuildRequestBody_Prompt(t *testing.T) {
 	}
 	if item["text"] != "A cherry blossom tree in the wind" {
 		t.Errorf("expected text prompt, got %v", item["text"])
+	}
+}
+
+func TestBuildRequestBody_EmptyPromptOmittedForGoZeroValue(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "seedance-1-0-pro-250528")
+
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "",
+		N:      1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{"pollIntervalMs": 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, ok := ts.createBody["content"].([]interface{})
+	if !ok || len(content) != 0 {
+		t.Fatalf("Go zero-value prompt should map to TS omitted prompt behavior, got %v", ts.createBody["content"])
 	}
 }
 
@@ -244,6 +277,34 @@ func TestBuildRequestBody_Seed(t *testing.T) {
 	// JSON numbers decode as float64
 	if ts.createBody["seed"] != float64(42) {
 		t.Errorf("expected seed 42, got %v", ts.createBody["seed"])
+	}
+}
+
+func TestBuildRequestBody_ZeroDurationAndSeedOmitted(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "seedance-1-0-pro-250528")
+
+	zeroDuration := 0.0
+	zeroSeed := 0
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt:   "test prompt",
+		Duration: &zeroDuration,
+		Seed:     &zeroSeed,
+		N:        1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{"pollIntervalMs": 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, key := range []string{"duration", "seed"} {
+		if _, ok := ts.createBody[key]; ok {
+			t.Fatalf("%s=0 should be omitted to match TS truthy checks: %#v", key, ts.createBody)
+		}
 	}
 }
 
@@ -531,6 +592,15 @@ func TestProviderOptions_LastFrameImage(t *testing.T) {
 		t.Fatalf("expected 3 content items (text, image, last_frame), got %d", len(content))
 	}
 
+	firstFrame := content[1].(map[string]interface{})
+	if firstFrame["role"] != "first_frame" {
+		t.Errorf("expected prompt image role 'first_frame', got %v", firstFrame["role"])
+	}
+	firstFrameURL := firstFrame["image_url"].(map[string]interface{})
+	if firstFrameURL["url"] != "https://example.com/first-frame.png" {
+		t.Errorf("expected first frame URL, got %v", firstFrameURL["url"])
+	}
+
 	lastFrame := content[2].(map[string]interface{})
 	if lastFrame["role"] != "last_frame" {
 		t.Errorf("expected role 'last_frame', got %v", lastFrame["role"])
@@ -538,6 +608,130 @@ func TestProviderOptions_LastFrameImage(t *testing.T) {
 	imageURL := lastFrame["image_url"].(map[string]interface{})
 	if imageURL["url"] != "https://example.com/last-frame.png" {
 		t.Errorf("expected last frame URL, got %v", imageURL["url"])
+	}
+}
+
+func TestProviderOptions_FrameRoleCombinations(t *testing.T) {
+	tests := []struct {
+		name             string
+		image            *provider.VideoModelV3File
+		lastFrameImage   string
+		wantContentLen   int
+		wantPromptRole   interface{}
+		wantLastFrameURL string
+	}{
+		{
+			name: "prompt image only has no frame role",
+			image: &provider.VideoModelV3File{
+				Type: "url",
+				URL:  "https://example.com/prompt.png",
+			},
+			wantContentLen: 2,
+		},
+		{
+			name:             "last frame only emits last_frame",
+			lastFrameImage:   "https://example.com/last.png",
+			wantContentLen:   2,
+			wantLastFrameURL: "https://example.com/last.png",
+		},
+		{
+			name: "prompt image and last frame marks prompt as first_frame",
+			image: &provider.VideoModelV3File{
+				Type: "url",
+				URL:  "https://example.com/prompt.png",
+			},
+			lastFrameImage:   "https://example.com/last.png",
+			wantContentLen:   3,
+			wantPromptRole:   "first_frame",
+			wantLastFrameURL: "https://example.com/last.png",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+			defer ts.server.Close()
+
+			prov := providerForServer(t, ts.server.URL)
+			model := newVideoModel(prov, "seedance-1-5-pro-251215")
+
+			bytedanceOptions := map[string]interface{}{"pollIntervalMs": 10}
+			if tt.lastFrameImage != "" {
+				bytedanceOptions["lastFrameImage"] = tt.lastFrameImage
+			}
+			_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+				Prompt: "test",
+				Image:  tt.image,
+				N:      1,
+				ProviderOptions: map[string]interface{}{
+					"bytedance": bytedanceOptions,
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			content := ts.createBody["content"].([]interface{})
+			if len(content) != tt.wantContentLen {
+				t.Fatalf("content length = %d, want %d: %#v", len(content), tt.wantContentLen, content)
+			}
+			if tt.image != nil {
+				promptImage := content[1].(map[string]interface{})
+				if got := promptImage["role"]; got != tt.wantPromptRole {
+					t.Fatalf("prompt image role = %#v, want %#v", got, tt.wantPromptRole)
+				}
+			}
+			if tt.wantLastFrameURL != "" {
+				lastFrame := content[len(content)-1].(map[string]interface{})
+				if got := lastFrame["role"]; got != "last_frame" {
+					t.Fatalf("last frame role = %#v, want last_frame", got)
+				}
+				imageURL := lastFrame["image_url"].(map[string]interface{})
+				if got := imageURL["url"]; got != tt.wantLastFrameURL {
+					t.Fatalf("last frame URL = %#v, want %#v", got, tt.wantLastFrameURL)
+				}
+			}
+		})
+	}
+}
+
+func TestProviderOptions_EmptyLastFrameImageIsPreserved(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "seedance-1-5-pro-251215")
+
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test",
+		Image: &provider.VideoModelV3File{
+			Type: "url",
+			URL:  "https://example.com/prompt.png",
+		},
+		N: 1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{"pollIntervalMs": 10, "lastFrameImage": ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := ts.createBody["content"].([]interface{})
+	if len(content) != 3 {
+		t.Fatalf("content length = %d, want 3: %#v", len(content), content)
+	}
+	promptImage := content[1].(map[string]interface{})
+	if promptImage["role"] != "first_frame" {
+		t.Fatalf("prompt image role = %#v, want first_frame", promptImage["role"])
+	}
+	lastFrame := content[2].(map[string]interface{})
+	if lastFrame["role"] != "last_frame" {
+		t.Fatalf("last frame role = %#v, want last_frame", lastFrame["role"])
+	}
+	imageURL := lastFrame["image_url"].(map[string]interface{})
+	if imageURL["url"] != "" {
+		t.Fatalf("empty lastFrameImage should be preserved as empty URL, got %#v", imageURL["url"])
 	}
 }
 
@@ -669,6 +863,56 @@ func TestProviderOptions_Passthrough(t *testing.T) {
 	}
 }
 
+func TestProviderOptions_PollingValuesMustBePositive(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		value   int
+		wantErr string
+	}{
+		{
+			name:    "zero interval",
+			key:     "pollIntervalMs",
+			value:   0,
+			wantErr: "pollIntervalMs",
+		},
+		{
+			name:    "negative interval",
+			key:     "pollIntervalMs",
+			value:   -1,
+			wantErr: "pollIntervalMs",
+		},
+		{
+			name:    "zero timeout",
+			key:     "pollTimeoutMs",
+			value:   0,
+			wantErr: "pollTimeoutMs",
+		},
+		{
+			name:    "negative timeout",
+			key:     "pollTimeoutMs",
+			value:   -1,
+			wantErr: "pollTimeoutMs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := extractProviderOptions(map[string]interface{}{
+				"bytedance": map[string]interface{}{
+					tt.key: tt.value,
+				},
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to mention %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 // ─── Image-to-Video Tests ─────────────────────────────────────────────────────
 
 func TestImageToVideo_URLImage(t *testing.T) {
@@ -785,7 +1029,7 @@ func TestResponse_VideoURL(t *testing.T) {
 
 func TestResponse_ProviderMetadata(t *testing.T) {
 	ts := newTestServer(t, "test-task-id-123", []string{
-		makeSuccessStatusBody("test-task-id-123", "https://bytedance.cdn/files/video.mp4"),
+		makeSuccessStatusBodyWithoutUsage("test-task-id-123", "https://bytedance.cdn/files/video.mp4"),
 	})
 	defer ts.server.Close()
 
@@ -809,6 +1053,12 @@ func TestResponse_ProviderMetadata(t *testing.T) {
 	}
 	if meta["taskId"] != "test-task-id-123" {
 		t.Errorf("expected taskId 'test-task-id-123', got %v", meta["taskId"])
+	}
+	if _, ok := meta["usage"]; !ok {
+		t.Fatal("expected usage key to be present even when API omits usage")
+	}
+	if meta["usage"] != nil {
+		t.Fatalf("expected nil usage when API omits usage, got %#v", meta["usage"])
 	}
 }
 
@@ -859,12 +1109,36 @@ func TestWarnings_FPS(t *testing.T) {
 
 	found := false
 	for _, w := range result.Warnings {
-		if w.Type == "unsupported" && strings.Contains(w.Message, "FPS") {
+		if w.Type == "unsupported" && w.Feature == "fps" && w.Details == "ByteDance video models do not support custom FPS. Frame rate is fixed at 24 fps." {
 			found = true
 		}
 	}
 	if !found {
 		t.Error("expected FPS unsupported warning")
+	}
+}
+
+func TestWarnings_ZeroFPSDoesNotWarn(t *testing.T) {
+	ts := newTestServer(t, "task-123", []string{makeSuccessStatusBody("task-123", "https://cdn.example.com/video.mp4")})
+	defer ts.server.Close()
+
+	prov := providerForServer(t, ts.server.URL)
+	model := newVideoModel(prov, "seedance-1-0-pro-250528")
+
+	fps := 0
+	result, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test",
+		FPS:    &fps,
+		N:      1,
+		ProviderOptions: map[string]interface{}{
+			"bytedance": map[string]interface{}{"pollIntervalMs": 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("fps=0 should not warn because TS checks options.fps truthiness, got %#v", result.Warnings)
 	}
 }
 
@@ -888,7 +1162,7 @@ func TestWarnings_MultipleVideos(t *testing.T) {
 
 	found := false
 	for _, w := range result.Warnings {
-		if w.Type == "unsupported" && strings.Contains(w.Message, "multiple videos") {
+		if w.Type == "unsupported" && w.Feature == "n" && strings.Contains(w.Details, "multiple videos") {
 			found = true
 		}
 	}

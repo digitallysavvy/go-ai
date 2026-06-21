@@ -40,7 +40,7 @@ func New(cfg Config) (*Provider, error) {
 		apiKey = os.Getenv("ARK_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("LByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
+		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
 	}
 
 	baseURL := cfg.BaseURL
@@ -77,17 +77,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support language models")
+	return nil, fmt.Errorf("ByteDance provider does not support language models")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support embedding models")
+	return nil, fmt.Errorf("ByteDance provider does not support embedding models")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support image generation")
+	return nil, fmt.Errorf("ByteDance provider does not support image generation")
 }
 
 // VideoModel returns a video generation model by ID
@@ -100,15 +100,15 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support speech synthesis")
+	return nil, fmt.Errorf("ByteDance provider does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support transcription")
+	return nil, fmt.Errorf("ByteDance provider does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support reranking")
+	return nil, fmt.Errorf("ByteDance provider does not support reranking")
 }

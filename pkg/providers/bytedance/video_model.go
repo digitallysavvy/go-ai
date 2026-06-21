@@ -19,7 +19,7 @@ const (
 	defaultPollTimeoutMs  = 300000 // 5 minutes
 )
 
-// VideoModel implements the provider.VideoModelV3 interface for ByteDance
+// VideoModel implements the provider.VideoModelV3 interface for ByteDance.
 type VideoModel struct {
 	prov    *Provider
 	modelID string
@@ -35,7 +35,7 @@ func newVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -48,9 +48,10 @@ func (m *VideoModel) ModelID() string {
 	return m.modelID
 }
 
-// MaxVideosPerCall returns nil (ByteDance generates one video per call)
+// MaxVideosPerCall returns the maximum videos accepted per provider call.
 func (m *VideoModel) MaxVideosPerCall() *int {
-	return nil
+	maxVideos := 1
+	return &maxVideos
 }
 
 // DoGenerate performs video generation with async polling
@@ -64,17 +65,19 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	// Warn about unsupported standard options
-	if opts.FPS != nil {
+	if opts.FPS != nil && *opts.FPS != 0 {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Message: "ByteDance video models do not support custom FPS. Frame rate is fixed at 24 fps.",
+			Feature: "fps",
+			Details: "ByteDance video models do not support custom FPS. Frame rate is fixed at 24 fps.",
 		})
 	}
 
 	if opts.N > 1 {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Message: "ByteDance video models do not support generating multiple videos per call. Only 1 video will be generated.",
+			Feature: "n",
+			Details: "ByteDance video models do not support generating multiple videos per call. Only 1 video will be generated.",
 		})
 	}
 
@@ -137,11 +140,13 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	// Build provider metadata
+	var usage interface{}
+	if statusResp.Usage != nil {
+		usage = statusResp.Usage
+	}
 	providerMeta := map[string]interface{}{
 		"taskId": taskID,
-	}
-	if statusResp.Usage != nil {
-		providerMeta["usage"] = statusResp.Usage
+		"usage":  usage,
 	}
 
 	return &provider.VideoModelV3Response{
@@ -168,7 +173,8 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, error) {
 	content := []map[string]interface{}{}
 
-	// Add text prompt
+	// Go cannot distinguish an omitted optional string from an explicit empty
+	// string. Map the zero value to TS's omitted prompt behavior.
 	if opts.Prompt != "" {
 		content = append(content, map[string]interface{}{
 			"type": "text",
@@ -182,16 +188,20 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode image: %w", err)
 		}
-		content = append(content, map[string]interface{}{
+		imagePart := map[string]interface{}{
 			"type": "image_url",
 			"image_url": map[string]interface{}{
 				"url": imageURL,
 			},
-		})
+		}
+		if provOpts.LastFrameImage != nil {
+			imagePart["role"] = "first_frame"
+		}
+		content = append(content, imagePart)
 	}
 
 	// Add last frame image if provided
-	if provOpts.LastFrameImage != nil && *provOpts.LastFrameImage != "" {
+	if provOpts.LastFrameImage != nil {
 		content = append(content, map[string]interface{}{
 			"type": "image_url",
 			"image_url": map[string]interface{}{
@@ -244,11 +254,11 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		body["ratio"] = opts.AspectRatio
 	}
 
-	if opts.Duration != nil {
+	if opts.Duration != nil && *opts.Duration != 0 {
 		body["duration"] = *opts.Duration
 	}
 
-	if opts.Seed != nil {
+	if opts.Seed != nil && *opts.Seed != 0 {
 		body["seed"] = *opts.Seed
 	}
 
@@ -424,6 +434,12 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	var provOpts ProviderOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal bytedance provider options: %w", err)
+	}
+	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs <= 0 {
+		return nil, fmt.Errorf("invalid bytedance provider option pollIntervalMs: must be positive")
+	}
+	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs <= 0 {
+		return nil, fmt.Errorf("invalid bytedance provider option pollTimeoutMs: must be positive")
 	}
 
 	// Collect additional/passthrough options not in the struct
