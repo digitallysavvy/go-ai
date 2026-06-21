@@ -178,11 +178,18 @@ func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 		return "", fmt.Errorf("location is required for Google Vertex Anthropic")
 	}
 
-	host := "aiplatform.googleapis.com"
-	if location != "global" {
-		host = location + "-" + host
+	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models", vertexAnthropicHost(location), project, location), nil
+}
+
+func vertexAnthropicHost(location string) string {
+	switch location {
+	case "global":
+		return "aiplatform.googleapis.com"
+	case "eu", "us":
+		return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", location)
+	default:
+		return fmt.Sprintf("%s-aiplatform.googleapis.com", location)
 	}
-	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models", host, project, location), nil
 }
 
 func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {

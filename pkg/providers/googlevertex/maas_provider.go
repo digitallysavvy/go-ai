@@ -124,7 +124,7 @@ func (p *MaaSProvider) init() error {
 			location = "global"
 		}
 
-		baseURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi", project, location)
+		baseURL = maasBaseURL(project, location)
 	}
 
 	authToken := p.config.AuthToken
@@ -182,6 +182,10 @@ func (p *MaaSProvider) init() error {
 		ChatProviderName: "vertex.maas",
 	})
 	return nil
+}
+
+func maasBaseURL(project, location string) string {
+	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/endpoints/openapi", vertexHost(location), project, location)
 }
 
 func defaultMaasAuthToken(ctx context.Context) (string, error) {

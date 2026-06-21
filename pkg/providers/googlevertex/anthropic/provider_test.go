@@ -158,6 +158,18 @@ func TestBaseURLGlobalLocation(t *testing.T) {
 	}
 }
 
+func TestBaseURLEUMultiRegionLocation(t *testing.T) {
+	p := New(Options{Project: "test-project", Location: "eu", AuthToken: staticAuthToken("token")})
+	got, err := p.baseURL()
+	if err != nil {
+		t.Fatalf("baseURL error = %v", err)
+	}
+	want := "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/publishers/anthropic/models"
+	if got != want {
+		t.Fatalf("baseURL = %q, want %q", got, want)
+	}
+}
+
 func TestEnvProjectAndLocationDefaults(t *testing.T) {
 	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
 	t.Setenv("GOOGLE_VERTEX_LOCATION", "us-central1")

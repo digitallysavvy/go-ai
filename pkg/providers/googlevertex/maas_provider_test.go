@@ -68,6 +68,37 @@ func TestNewMaaS_CustomBaseURLDoesNotRequireProject(t *testing.T) {
 	}
 }
 
+func TestMaaSBaseURLUsesMultiRegionHosts(t *testing.T) {
+	tests := []struct {
+		location string
+		want     string
+	}{
+		{
+			location: "global",
+			want:     "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/endpoints/openapi",
+		},
+		{
+			location: "eu",
+			want:     "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/endpoints/openapi",
+		},
+		{
+			location: "us",
+			want:     "https://aiplatform.us.rep.googleapis.com/v1/projects/test-project/locations/us/endpoints/openapi",
+		},
+		{
+			location: "us-central1",
+			want:     "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/endpoints/openapi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.location, func(t *testing.T) {
+			if got := maasBaseURL("test-project", tt.location); got != tt.want {
+				t.Fatalf("maasBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewMaaS_ImageModel_RequiresModelID(t *testing.T) {
 	p := NewMaaS(MaaSConfig{
 		BaseURL:           "https://custom-endpoint.example.com",
