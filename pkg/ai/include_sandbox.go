@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"io"
 	"regexp"
 	"strings"
 
@@ -112,67 +111,32 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 	}
 }
 
-// Sandbox executes shell commands in an isolated environment.
-type Sandbox interface {
-	Description() string
-	RunCommand(ctx context.Context, opts SandboxRunCommandOptions) (SandboxRunCommandResult, error)
-	Spawn(ctx context.Context, opts SandboxSpawnOptions) (SandboxProcess, error)
-	ReadFile(ctx context.Context, path string) (io.ReadCloser, error)
-	ReadBinaryFile(ctx context.Context, path string) ([]byte, error)
-	ReadTextFile(ctx context.Context, opts SandboxReadTextFileOptions) (*string, error)
-	WriteFile(ctx context.Context, path string, content io.Reader) error
-	WriteBinaryFile(ctx context.Context, path string, content []byte) error
-	WriteTextFile(ctx context.Context, opts SandboxWriteTextFileOptions) error
-}
+// Experimental_SandboxSession mirrors the TypeScript SDK's exported
+// Experimental_SandboxSession alias.
+type Experimental_SandboxSession = providerutils.SandboxSession
 
-// SandboxRunCommandOptions are passed to Sandbox.RunCommand.
-type SandboxRunCommandOptions struct {
-	Command          string
-	WorkingDirectory string
-	Environment      map[string]string
-}
+// SandboxProcessOptions are passed to Experimental_SandboxSession.Run and
+// Experimental_SandboxSession.Spawn.
+type SandboxProcessOptions = providerutils.SandboxProcessOptions
 
-// SandboxSpawnOptions are passed to Sandbox.Spawn.
-type SandboxSpawnOptions struct {
-	Command          string
-	WorkingDirectory string
-}
+// SandboxRunResult is returned by Experimental_SandboxSession.Run.
+type SandboxRunResult = providerutils.SandboxRunResult
 
-// SandboxProcess is a handle to a process started by Sandbox.Spawn.
+// SandboxProcess is a handle to a process started by Experimental_SandboxSession.Spawn.
 type SandboxProcess = providerutils.SandboxProcess
+
+// Experimental_SandboxProcess mirrors the TypeScript SDK's exported
+// Experimental_SandboxProcess alias.
+type Experimental_SandboxProcess = SandboxProcess
 
 // SandboxProcessResult is returned by SandboxProcess.Wait.
 type SandboxProcessResult = providerutils.SandboxProcessResult
 
-// SandboxRunCommandResult is returned by Sandbox.RunCommand.
-type SandboxRunCommandResult struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-}
-
 // SandboxReadTextFileOptions controls text file reads.
-type SandboxReadTextFileOptions struct {
-	Path      string
-	Encoding  string
-	StartLine *int
-	EndLine   *int
-}
+type SandboxReadTextFileOptions = providerutils.SandboxReadTextFileOptions
 
 // SandboxWriteTextFileOptions controls text file writes.
-type SandboxWriteTextFileOptions struct {
-	Path     string
-	Content  string
-	Encoding string
-}
-
-// SandboxExecuteOptions is kept as a source-compatibility alias for older Go
-// callers. New code should use SandboxRunCommandOptions.
-type SandboxExecuteOptions = SandboxRunCommandOptions
-
-// SandboxExecuteResult is kept as a source-compatibility alias for older Go
-// callers. New code should use SandboxRunCommandResult.
-type SandboxExecuteResult = SandboxRunCommandResult
+type SandboxWriteTextFileOptions = providerutils.SandboxWriteTextFileOptions
 
 // ToolInputRefiner can adjust parsed tool input before approval, callbacks,
 // telemetry, tool execution, and response-message construction.

@@ -1,9 +1,13 @@
 package ai
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 func appendSandboxDescription(system string, sandbox interface{}) string {
-	sb, ok := sandbox.(Sandbox)
+	sb, ok := sandbox.(providerutils.SandboxSession)
 	if !ok || sb == nil {
 		return system
 	}

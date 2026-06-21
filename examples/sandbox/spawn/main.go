@@ -14,7 +14,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	process, err := ai.NewShellSandbox().Spawn(ctx, ai.SandboxSpawnOptions{
+	process, err := ai.NewShellSandbox().Spawn(ctx, ai.SandboxProcessOptions{
 		Command: "printf 'ready\\n'; sleep 1; printf 'done\\n'",
 	})
 	if err != nil {

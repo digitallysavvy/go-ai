@@ -132,7 +132,7 @@ agent.NewToolLoopAgent(agent.AgentConfig{
 
 ## Sandbox API
 
-Sandbox implementations now use the TypeScript SDK v7 naming and file helper surface.
+Sandbox implementations now use the TypeScript SDK v7 naming and file helper surface. Implement `ai.Experimental_SandboxSession` or `providerutils.SandboxSession`.
 
 Before:
 
@@ -145,13 +145,16 @@ result, err := sandbox.Execute(ctx, "go test ./...", ai.SandboxExecuteOptions{
 After:
 
 ```go
-result, err := sandbox.RunCommand(ctx, ai.SandboxRunCommandOptions{
+result, err := sandbox.Run(ctx, ai.SandboxProcessOptions{
     Command:          "go test ./...",
     WorkingDirectory: "/workspace",
+    Env: map[string]string{
+        "GOFLAGS": "-mod=mod",
+    },
 })
 ```
 
-The `ai.Sandbox` interface also includes `ReadFile`, `ReadBinaryFile`, `ReadTextFile`, `WriteFile`, `WriteBinaryFile`, and `WriteTextFile`. `SandboxExecuteOptions` and `SandboxExecuteResult` remain aliases for source compatibility, but new implementations should use the `RunCommand` names.
+The session interface also includes `ReadFile`, `ReadBinaryFile`, `ReadTextFile`, `WriteFile`, `WriteBinaryFile`, and `WriteTextFile`. The old Go-only `Sandbox`, `SandboxExecuteOptions`, and `SandboxExecuteResult` names are removed; use `Experimental_SandboxSession`, `SandboxProcessOptions`, and `SandboxRunResult`.
 
 ## OpenAI Responses Files
 
@@ -212,7 +215,7 @@ Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should co
 
 ## Sandbox Description
 
-`ai.Sandbox` now includes `Description() string`. When a sandbox is active, non-empty descriptions are appended to system instructions before provider calls, matching the TypeScript SDK sandbox instruction behavior.
+`ai.Experimental_SandboxSession` includes `Description() string`. When a sandbox is active, non-empty descriptions are appended to system instructions before provider calls, matching the TypeScript SDK sandbox instruction behavior.
 
 ```go
 sandbox := ai.NewShellSandbox(

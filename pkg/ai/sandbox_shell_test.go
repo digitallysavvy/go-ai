@@ -9,6 +9,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+var (
+	_ Experimental_SandboxSession = (*ShellSandbox)(nil)
+	_ Experimental_SandboxProcess
+	_ providerutils.Experimental_SandboxSession = (*ShellSandbox)(nil)
+	_ providerutils.Experimental_SandboxProcess
 )
 
 func TestShellSandboxWorkingDirectory(t *testing.T) {
@@ -16,29 +25,57 @@ func TestShellSandboxWorkingDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("ok"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	result, err := NewShellSandbox().RunCommand(context.Background(), SandboxRunCommandOptions{
+	result, err := NewShellSandbox().Run(context.Background(), SandboxProcessOptions{
 		Command:          "cat marker.txt",
 		WorkingDirectory: dir,
 	})
 	if err != nil {
-		t.Fatalf("RunCommand() error = %v stderr=%s", err, result.Stderr)
+		t.Fatalf("Run() error = %v stderr=%s", err, result.Stderr)
 	}
 	if strings.TrimSpace(result.Stdout) != "ok" {
 		t.Fatalf("stdout = %q, want ok", result.Stdout)
 	}
 }
 
+func TestShellSandboxRunEnv(t *testing.T) {
+	result, err := NewShellSandbox().Run(context.Background(), SandboxProcessOptions{
+		Command: "printf '%s:%s' \"$KEEP\" \"$TOKEN\"",
+		Env:     map[string]string{"KEEP": "base", "TOKEN": "new"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v stderr=%s", err, result.Stderr)
+	}
+	if result.Stdout != "base:new" {
+		t.Fatalf("stdout = %q, want base:new", result.Stdout)
+	}
+}
+
 func TestShellSandboxCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, err := NewShellSandbox().RunCommand(ctx, SandboxRunCommandOptions{Command: "sleep 1"})
+	_, err := NewShellSandbox().Run(ctx, SandboxProcessOptions{Command: "sleep 1"})
 	if err == nil {
-		t.Fatal("RunCommand() error = nil, want cancellation")
+		t.Fatal("Run() error = nil, want cancellation")
+	}
+}
+
+func TestShellSandboxRunReturnsNonZeroExitCodeWithoutError(t *testing.T) {
+	result, err := NewShellSandbox().Run(context.Background(), SandboxProcessOptions{
+		Command: "printf failed >&2; exit 7",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", result.ExitCode)
+	}
+	if result.Stderr != "failed" {
+		t.Fatalf("Stderr = %q, want failed", result.Stderr)
 	}
 }
 
 func TestShellSandboxSpawnReturnsBeforeProcessExitAndStreams(t *testing.T) {
-	process, err := NewShellSandbox().Spawn(context.Background(), SandboxSpawnOptions{
+	process, err := NewShellSandbox().Spawn(context.Background(), SandboxProcessOptions{
 		Command: "printf out; printf err >&2; sleep 0.2",
 	})
 	if err != nil {
@@ -94,8 +131,28 @@ func TestShellSandboxSpawnReturnsBeforeProcessExitAndStreams(t *testing.T) {
 	}
 }
 
+func TestShellSandboxSpawnEnv(t *testing.T) {
+	process, err := NewShellSandbox().Spawn(context.Background(), SandboxProcessOptions{
+		Command: "printf '%s' \"$SPAWN_TOKEN\"",
+		Env:     map[string]string{"SPAWN_TOKEN": "spawn-value"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	stdout, readErr := io.ReadAll(process.Stdout())
+	if readErr != nil {
+		t.Fatalf("ReadAll(stdout) error = %v", readErr)
+	}
+	if _, err := process.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	if string(stdout) != "spawn-value" {
+		t.Fatalf("stdout = %q, want spawn-value", string(stdout))
+	}
+}
+
 func TestShellSandboxSpawnKill(t *testing.T) {
-	process, err := NewShellSandbox().Spawn(context.Background(), SandboxSpawnOptions{Command: "sleep 5"})
+	process, err := NewShellSandbox().Spawn(context.Background(), SandboxProcessOptions{Command: "sleep 5"})
 	if err != nil {
 		t.Fatalf("Spawn() error = %v", err)
 	}
@@ -106,8 +163,8 @@ func TestShellSandboxSpawnKill(t *testing.T) {
 		t.Fatalf("second Kill() error = %v", err)
 	}
 	result, err := process.Wait()
-	if err == nil {
-		t.Fatal("Wait() error = nil after kill, want process error")
+	if err != nil {
+		t.Fatalf("Wait() error after kill = %v, want nil", err)
 	}
 	if result.ExitCode == 0 {
 		t.Fatalf("ExitCode = %d, want non-zero after kill", result.ExitCode)
@@ -116,7 +173,7 @@ func TestShellSandboxSpawnKill(t *testing.T) {
 
 func TestShellSandboxSpawnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	process, err := NewShellSandbox().Spawn(ctx, SandboxSpawnOptions{Command: "sleep 5"})
+	process, err := NewShellSandbox().Spawn(ctx, SandboxProcessOptions{Command: "sleep 5"})
 	if err != nil {
 		t.Fatalf("Spawn() error = %v", err)
 	}
@@ -129,7 +186,7 @@ func TestShellSandboxSpawnContextCancellation(t *testing.T) {
 
 func TestShellSandboxFileHelpers(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "notes.txt")
+	path := filepath.Join(dir, "nested", "notes.txt")
 	sb := NewShellSandbox()
 
 	if err := sb.WriteTextFile(context.Background(), SandboxWriteTextFileOptions{Path: path, Content: "one\ntwo\nthree"}); err != nil {
@@ -156,6 +213,37 @@ func TestShellSandboxFileHelpers(t *testing.T) {
 	}
 	if missing != nil {
 		t.Fatalf("ReadTextFile(missing) = %q, want nil", *missing)
+	}
+}
+
+func TestShellSandboxTextFileEncoding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latin1.txt")
+	sb := NewShellSandbox()
+
+	if err := sb.WriteTextFile(context.Background(), SandboxWriteTextFileOptions{
+		Path:     path,
+		Content:  "caf\u00e9",
+		Encoding: "iso-8859-1",
+	}); err != nil {
+		t.Fatalf("WriteTextFile() error = %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	if string(raw) != "caf\xe9" {
+		t.Fatalf("raw bytes = %q, want latin-1 caf\\xe9", string(raw))
+	}
+	text, err := sb.ReadTextFile(context.Background(), SandboxReadTextFileOptions{
+		Path:     path,
+		Encoding: "iso-8859-1",
+	})
+	if err != nil {
+		t.Fatalf("ReadTextFile() error = %v", err)
+	}
+	if text == nil || *text != "caf\u00e9" {
+		t.Fatalf("ReadTextFile() = %v, want café", text)
 	}
 }
 

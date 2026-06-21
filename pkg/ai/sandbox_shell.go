@@ -7,8 +7,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+
+	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/transform"
 )
 
 // ShellSandbox executes commands through the local shell. It is the default
@@ -45,11 +49,11 @@ func (s *ShellSandbox) Description() string {
 	return s.description
 }
 
-// RunCommand runs command in the configured shell.
-func (s *ShellSandbox) RunCommand(ctx context.Context, opts SandboxRunCommandOptions) (SandboxRunCommandResult, error) {
-	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Environment)
+// Run runs command in the configured shell.
+func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (SandboxRunResult, error) {
+	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Env)
 	if err != nil {
-		return SandboxRunCommandResult{}, err
+		return SandboxRunResult{}, err
 	}
 	var stdout, stderr bytes.Buffer
 	var copyWG sync.WaitGroup
@@ -64,7 +68,7 @@ func (s *ShellSandbox) RunCommand(ctx context.Context, opts SandboxRunCommandOpt
 	}()
 	waitResult, waitErr := process.Wait()
 	copyWG.Wait()
-	return SandboxRunCommandResult{
+	return SandboxRunResult{
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),
 		ExitCode: waitResult.ExitCode,
@@ -72,8 +76,8 @@ func (s *ShellSandbox) RunCommand(ctx context.Context, opts SandboxRunCommandOpt
 }
 
 // Spawn starts command in the configured shell and returns immediately with a process handle.
-func (s *ShellSandbox) Spawn(ctx context.Context, opts SandboxSpawnOptions) (SandboxProcess, error) {
-	return s.spawn(ctx, opts.Command, opts.WorkingDirectory, nil)
+func (s *ShellSandbox) Spawn(ctx context.Context, opts SandboxProcessOptions) (SandboxProcess, error) {
+	return s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Env)
 }
 
 func (s *ShellSandbox) spawn(ctx context.Context, command, workingDirectory string, environment map[string]string) (SandboxProcess, error) {
@@ -104,12 +108,6 @@ func (s *ShellSandbox) spawn(ctx context.Context, command, workingDirectory stri
 		return nil, err
 	}
 	return newShellSandboxProcess(ctx, cmd, stdout, stderr), nil
-}
-
-// Execute is a deprecated compatibility wrapper for older callers.
-func (s *ShellSandbox) Execute(ctx context.Context, command string, opts SandboxExecuteOptions) (SandboxExecuteResult, error) {
-	opts.Command = command
-	return s.RunCommand(ctx, opts)
 }
 
 // ReadFile opens a file for streaming. It returns nil when the file does not exist.
@@ -146,7 +144,10 @@ func (s *ShellSandbox) ReadTextFile(ctx context.Context, opts SandboxReadTextFil
 	if err != nil || data == nil {
 		return nil, err
 	}
-	text := string(data)
+	text, err := decodeSandboxText(data, opts.Encoding)
+	if err != nil {
+		return nil, err
+	}
 	if opts.StartLine != nil || opts.EndLine != nil {
 		lines := strings.Split(text, "\n")
 		start := 1
@@ -173,6 +174,11 @@ func (s *ShellSandbox) WriteFile(ctx context.Context, path string, content io.Re
 		return ctx.Err()
 	default:
 	}
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -189,7 +195,38 @@ func (s *ShellSandbox) WriteBinaryFile(ctx context.Context, path string, content
 
 // WriteTextFile writes text to a path.
 func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextFileOptions) error {
-	return s.WriteFile(ctx, opts.Path, strings.NewReader(opts.Content))
+	data, err := encodeSandboxText(opts.Content, opts.Encoding)
+	if err != nil {
+		return err
+	}
+	return s.WriteFile(ctx, opts.Path, bytes.NewReader(data))
+}
+
+func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
+	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
+		return string(data), nil
+	}
+	enc, err := htmlindex.Get(encodingLabel)
+	if err != nil {
+		return "", err
+	}
+	decoded, _, err := transform.Bytes(enc.NewDecoder(), data)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+func encodeSandboxText(text string, encodingLabel string) ([]byte, error) {
+	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
+		return []byte(text), nil
+	}
+	enc, err := htmlindex.Get(encodingLabel)
+	if err != nil {
+		return nil, err
+	}
+	encoded, _, err := transform.Bytes(enc.NewEncoder(), []byte(text))
+	return encoded, err
 }
 
 type shellSandboxProcess struct {
@@ -244,6 +281,11 @@ func (p *shellSandboxProcess) Wait() (SandboxProcessResult, error) {
 		}
 		if ctxErr := p.ctx.Err(); ctxErr != nil && exitCode != 0 {
 			err = ctxErr
+		} else {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				err = nil
+			}
 		}
 		p.mu.Lock()
 		p.exitCode = exitCode
