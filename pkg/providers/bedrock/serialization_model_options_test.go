@@ -26,7 +26,7 @@ func TestBedrockSerializeDeserializeWithModelOptions(t *testing.T) {
 	model := modelAny.(*LanguageModel)
 
 	serialized := model.Serialize()
-	if serialized.Provider != "aws-bedrock" || serialized.ModelID == "" {
+	if serialized.Provider != "amazon-bedrock" || serialized.ModelID == "" {
 		t.Fatalf("serialized mismatch: %#v", serialized)
 	}
 	rawOpts, ok := serialized.Config["modelOptions"].(map[string]interface{})
@@ -38,7 +38,7 @@ func TestBedrockSerializeDeserializeWithModelOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "aws-bedrock" || restored.ModelID() != "anthropic.claude-3-haiku-20240307-v1:0" {
+	if restored.Provider() != "amazon-bedrock" || restored.ModelID() != "anthropic.claude-3-haiku-20240307-v1:0" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

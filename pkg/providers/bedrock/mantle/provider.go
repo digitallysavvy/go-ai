@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
@@ -20,6 +21,11 @@ type ProviderSettings struct {
 	BaseURL         string
 	Headers         map[string]string
 	HTTPClient      *http.Client
+
+	// CredentialProvider returns dynamic AWS credentials for SigV4 signing.
+	// When set, it takes precedence over AccessKeyID, SecretAccessKey,
+	// SessionToken, and AWS credential environment variables.
+	CredentialProvider bedrock.CredentialProvider
 }
 
 // BedrockMantleProvider exposes OpenAI-compatible Chat Completions and
@@ -31,22 +37,31 @@ type BedrockMantleProvider struct {
 
 // CreateBedrockMantle creates a Bedrock Mantle provider.
 func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
-	region := firstNonEmpty(settings.Region, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"), "us-east-1")
+	region := firstNonEmpty(settings.Region, os.Getenv("AWS_REGION"))
 	baseURL := settings.BaseURL
-	if baseURL == "" {
+	if baseURL == "" && region != "" {
 		baseURL = fmt.Sprintf("https://bedrock-mantle.%s.api.aws/v1", region)
 	}
+	settings.Region = region
+	settings.BaseURL = baseURL
 
 	apiKey := firstNonEmpty(settings.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK"))
 	httpClient := settings.HTTPClient
 	headers := copyHeaders(settings.Headers)
 	if apiKey == "" {
-		httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSigner(
-			firstNonEmpty(settings.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID")),
-			firstNonEmpty(settings.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY")),
-			firstNonEmpty(settings.SessionToken, os.Getenv("AWS_SESSION_TOKEN")),
-			region,
-		))
+		if settings.CredentialProvider != nil {
+			httpClient = withCredentialProviderSigV4Transport(httpClient, settings.CredentialProvider, region)
+		} else {
+			accessKeyID := firstNonEmpty(settings.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
+			secretAccessKey := firstNonEmpty(settings.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
+			sessionToken := firstNonEmpty(settings.SessionToken, os.Getenv("AWS_SESSION_TOKEN"))
+			httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSigner(
+				accessKeyID,
+				secretAccessKey,
+				sessionToken,
+				region,
+			))
+		}
 	}
 
 	return &BedrockMantleProvider{
@@ -77,6 +92,9 @@ func (p *BedrockMantleProvider) LanguageModel(modelID string) (provider.Language
 
 // Chat returns a chat-completions-compatible model.
 func (p *BedrockMantleProvider) Chat(modelID string) (provider.LanguageModel, error) {
+	if p.settings.BaseURL == "" {
+		return nil, fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	}
 	return p.openai.ChatModel(modelID)
 }
 
@@ -87,6 +105,9 @@ func (p *BedrockMantleProvider) ChatModel(modelID string) (provider.LanguageMode
 
 // Responses returns a Responses API-compatible model.
 func (p *BedrockMantleProvider) Responses(modelID string) (provider.LanguageModel, error) {
+	if p.settings.BaseURL == "" {
+		return nil, fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	}
 	return p.openai.ResponsesModel(modelID)
 }
 
@@ -97,12 +118,12 @@ func (p *BedrockMantleProvider) ResponsesModel(modelID string) (provider.Languag
 
 // EmbeddingModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support embedding models")
+	return nil, noSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support image models")
+	return nil, noSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel is not supported by Bedrock Mantle.
@@ -132,6 +153,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func noSuchModelError(modelID, modelType string) error {
+	return fmt.Errorf("%w: bedrock-mantle %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+}
+
 func copyHeaders(headers map[string]string) map[string]string {
 	if headers == nil {
 		return nil
@@ -144,6 +169,14 @@ func copyHeaders(headers map[string]string) map[string]string {
 }
 
 func withSigV4Transport(client *http.Client, signer *bedrock.AWSSigner) *http.Client {
+	return withSigV4TransportConfig(client, signer, nil, "")
+}
+
+func withCredentialProviderSigV4Transport(client *http.Client, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
+	return withSigV4TransportConfig(client, nil, credentialProvider, region)
+}
+
+func withSigV4TransportConfig(client *http.Client, signer *bedrock.AWSSigner, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
 	if client == nil {
 		client = &http.Client{}
 	} else {
@@ -154,6 +187,11 @@ func withSigV4Transport(client *http.Client, signer *bedrock.AWSSigner) *http.Cl
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	client.Transport = &sigV4Transport{base: base, signer: signer}
+	client.Transport = &sigV4Transport{
+		base:               base,
+		signer:             signer,
+		credentialProvider: credentialProvider,
+		region:             region,
+	}
 	return client
 }

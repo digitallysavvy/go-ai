@@ -43,7 +43,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "aws-bedrock"
+	return "amazon-bedrock"
 }
 
 // ModelID returns the model ID
@@ -82,9 +82,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Determine the model provider (Claude, Llama, etc.)
 	endpoint := m.getInvokeEndpoint()
+	baseURL, err := m.provider.runtimeBaseURL()
+	if err != nil {
+		return nil, err
+	}
 
 	// Create HTTP request
-	url := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com%s", m.provider.config.Region, endpoint)
+	url := fmt.Sprintf("%s%s", baseURL, endpoint)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -92,29 +96,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	m.provider.applyRequestHeaders(req, nil)
 
-	creds, err := m.provider.resolveCredentials(ctx)
-	if err != nil {
+	if err := m.provider.authenticateRequest(ctx, req, bodyBytes); err != nil {
 		return nil, err
-	}
-
-	// Sign the request with AWS Signature V4
-	signer := NewAWSSigner(
-		creds.AccessKeyID,
-		creds.SecretAccessKey,
-		creds.SessionToken,
-		m.provider.config.Region,
-	)
-
-	if err := signer.SignRequest(req, bodyBytes); err != nil {
-		return nil, fmt.Errorf("failed to sign request: %w", err)
 	}
 
 	// Make the request using provider-scoped transport so telemetry/patching applies.
 	httpClient := m.provider.Client().HTTPClient()
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, providererrors.NewProviderError("aws-bedrock", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -124,7 +116,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LAWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("AWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	result, err := m.convertResponse(respBody)
@@ -315,6 +307,11 @@ func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[
 	}
 	if m.options != nil {
 		for k, v := range m.options.AdditionalModelRequestFields {
+			reqBody[k] = v
+		}
+	}
+	if additional, ok := m.additionalModelRequestFields(opts); ok {
+		for k, v := range additional {
 			reqBody[k] = v
 		}
 	}
@@ -1001,6 +998,11 @@ func (m *LanguageModel) buildGenericRequest(opts *provider.GenerateOptions) (map
 	if opts.Temperature != nil {
 		reqBody["temperature"] = *opts.Temperature
 	}
+	if additional, ok := m.additionalModelRequestFields(opts); ok {
+		for k, v := range additional {
+			reqBody[k] = v
+		}
+	}
 
 	return reqBody, nil
 }
@@ -1050,6 +1052,11 @@ func (m *LanguageModel) buildNovaRequest(opts *provider.GenerateOptions) (map[st
 	if serviceTier := m.serviceTier(opts); serviceTier != "" {
 		reqBody["serviceTier"] = map[string]interface{}{"type": serviceTier}
 	}
+	if additional, ok := m.additionalModelRequestFields(opts); ok {
+		for k, v := range additional {
+			reqBody[k] = v
+		}
+	}
 
 	return reqBody, nil
 }
@@ -1077,6 +1084,15 @@ func (m *LanguageModel) serviceTier(opts *provider.GenerateOptions) string {
 		return m.options.ServiceTier
 	}
 	return ""
+}
+
+func (m *LanguageModel) additionalModelRequestFields(opts *provider.GenerateOptions) (map[string]interface{}, bool) {
+	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
+		if additional, ok := provOpts["additionalModelRequestFields"].(map[string]interface{}); ok {
+			return additional, true
+		}
+	}
+	return nil, false
 }
 
 func (m *LanguageModel) mergedReasoningConfig(opts *provider.GenerateOptions, derived interface{}) map[string]interface{} {

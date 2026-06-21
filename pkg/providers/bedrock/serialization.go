@@ -7,6 +7,7 @@ import (
 )
 
 func init() {
+	provider.RegisterModelDeserializer("amazon-bedrock", deserializeModel)
 	provider.RegisterModelDeserializer("bedrock", deserializeModel)
 	provider.RegisterModelDeserializer("aws-bedrock", deserializeModel)
 }

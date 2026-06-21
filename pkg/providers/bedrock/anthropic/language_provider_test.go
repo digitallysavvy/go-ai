@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	bedrock "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 )
 
 func TestBedrockAnthropicProviderSurface(t *testing.T) {
@@ -23,17 +27,17 @@ func TestBedrockAnthropicProviderSurface(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	lm := lmAny.(*BedrockAnthropicLanguageModel)
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "bedrock-anthropic" || lm.ModelID() != "anthropic.claude-3-5-sonnet" {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "bedrock-anthropic" || lm.ModelID() != "anthropic.claude-3-5-sonnet" {
 		t.Fatalf("model metadata mismatch")
 	}
 	if !lm.SupportsTools() || lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {
 		t.Fatalf("capabilities mismatch")
 	}
-	if _, err := p.EmbeddingModel("x"); err == nil {
-		t.Fatal("expected unsupported embedding")
+	if _, err := p.EmbeddingModel("x"); !errors.Is(err, providererrors.ErrModelNotFound) {
+		t.Fatalf("EmbeddingModel error = %v, want ErrModelNotFound", err)
 	}
-	if _, err := p.ImageModel("x"); err == nil {
-		t.Fatal("expected unsupported image")
+	if _, err := p.ImageModel("x"); !errors.Is(err, providererrors.ErrModelNotFound) {
+		t.Fatalf("ImageModel error = %v, want ErrModelNotFound", err)
 	}
 	if _, err := p.SpeechModel("x"); err == nil {
 		t.Fatal("expected unsupported speech")
@@ -144,6 +148,114 @@ func TestBedrockAnthropicAuthenticateAndErrorHandling(t *testing.T) {
 	})
 	if errPlain == nil || !strings.Contains(errPlain.Error(), "HTTP 500") {
 		t.Fatalf("expected fallback HTTP error, got %v", errPlain)
+	}
+}
+
+func TestBedrockAnthropicProviderEnvFallbacksMatchTS(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-west-2")
+	t.Setenv("AWS_DEFAULT_REGION", "us-east-2")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", " env-bearer ")
+
+	p := New(Config{})
+	if p.region != "us-west-2" {
+		t.Fatalf("region should prefer AWS_REGION, got %q", p.region)
+	}
+	if p.bearerToken != "env-bearer" {
+		t.Fatalf("bearer token env fallback mismatch: %q", p.bearerToken)
+	}
+	if p.baseURL != fmt.Sprintf(BaseURLFormat, "us-west-2") {
+		t.Fatalf("base URL should derive from env region, got %q", p.baseURL)
+	}
+}
+
+func TestBedrockAnthropicRequiresRegionLikeTS(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "us-east-2")
+
+	p := New(Config{BearerToken: "tok"})
+	if p.region != "" || p.baseURL != "" {
+		t.Fatalf("provider should not fall back to AWS_DEFAULT_REGION, region=%q baseURL=%q", p.region, p.baseURL)
+	}
+	if _, err := p.runtimeBaseURL(); err == nil {
+		t.Fatal("expected missing region error")
+	}
+}
+
+func TestBedrockAnthropicCredentialProviderWinsAndIsDynamic(t *testing.T) {
+	calls := 0
+	p := New(Config{
+		Region: "us-east-1",
+		Credentials: &AWSCredentials{
+			AccessKeyID:     "static-akid",
+			SecretAccessKey: "static-secret",
+		},
+		CredentialProvider: func(ctx context.Context) (bedrock.Credentials, error) {
+			calls++
+			return bedrock.Credentials{
+				AccessKeyID:     fmt.Sprintf("dynamic-akid-%d", calls),
+				SecretAccessKey: "dynamic-secret",
+				SessionToken:    "dynamic-session",
+			}, nil
+		},
+	})
+
+	first, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("first resolveCredentials error = %v", err)
+	}
+	second, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("second resolveCredentials error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("credential provider should be called once per request, got %d", calls)
+	}
+	if first.AccessKeyID != "dynamic-akid-1" || second.AccessKeyID != "dynamic-akid-2" {
+		t.Fatalf("dynamic credentials not used: first=%#v second=%#v", first, second)
+	}
+	if first.SessionToken != "dynamic-session" || second.SecretAccessKey != "dynamic-secret" {
+		t.Fatalf("dynamic credential fields not preserved: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestBedrockAnthropicStaticCredentialsUseEnvSessionTokenLikeTS(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	p := New(Config{
+		Region: "us-east-1",
+		Credentials: &AWSCredentials{
+			AccessKeyID:     "akid",
+			SecretAccessKey: "secret",
+		},
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials error = %v", err)
+	}
+	if creds.SessionToken != "env-session" {
+		t.Fatalf("session token should fall back to env like TS, got %q", creds.SessionToken)
+	}
+}
+
+func TestBedrockAnthropicBearerTokenWinsOverCredentialProvider(t *testing.T) {
+	calls := 0
+	p := New(Config{
+		BearerToken: "tok",
+		CredentialProvider: func(ctx context.Context) (bedrock.Credentials, error) {
+			calls++
+			return bedrock.Credentials{AccessKeyID: "akid", SecretAccessKey: "secret"}, nil
+		},
+	})
+	m := &BedrockAnthropicLanguageModel{provider: p}
+	req, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	if err := m.authenticateRequest(req, nil); err != nil {
+		t.Fatalf("authenticateRequest bearer error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("credential provider should not run when bearer token is configured, got %d calls", calls)
+	}
+	if req.Header.Get("Authorization") != "Bearer tok" {
+		t.Fatalf("missing bearer auth header")
 	}
 }
 

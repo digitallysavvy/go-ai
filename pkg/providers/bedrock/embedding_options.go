@@ -13,6 +13,9 @@ type EmbeddingOptions struct {
 
 	// Titan-specific options (for amazon.titan-embed-* models)
 	TitanOptions *TitanEmbeddingOptions
+
+	// Nova-specific options (for amazon.nova-* embed models)
+	NovaOptions *NovaEmbeddingOptions
 }
 
 // CohereEmbeddingOptions extends options for Cohere embedding models on Bedrock
@@ -51,6 +54,46 @@ type TitanEmbeddingOptions struct {
 	// Only supported in amazon.titan-embed-text-v2:0
 	// Default: true
 	Normalize *bool
+}
+
+// NovaEmbeddingOptions configures Amazon Nova embedding models on Bedrock.
+type NovaEmbeddingOptions struct {
+	// EmbeddingDimension specifies the number of dimensions for Nova embeddings.
+	// Supported values: 256, 384, 1024, 3072. Default: 1024.
+	EmbeddingDimension *int
+
+	// EmbeddingPurpose specifies the embedding purpose. Default: GENERIC_INDEX.
+	EmbeddingPurpose string
+
+	// Truncate specifies how to handle inputs longer than the maximum token length.
+	// Default: END.
+	Truncate cohere.TruncateMode
+}
+
+// Validate validates Nova embedding options.
+func (o *NovaEmbeddingOptions) Validate() error {
+	if o.EmbeddingDimension != nil {
+		switch *o.EmbeddingDimension {
+		case 256, 384, 1024, 3072:
+		default:
+			return fmt.Errorf("invalid Nova embedding dimension: %d (must be 256, 384, 1024, or 3072)", *o.EmbeddingDimension)
+		}
+	}
+	if o.EmbeddingPurpose != "" {
+		switch o.EmbeddingPurpose {
+		case "GENERIC_INDEX", "TEXT_RETRIEVAL", "IMAGE_RETRIEVAL", "VIDEO_RETRIEVAL", "DOCUMENT_RETRIEVAL", "AUDIO_RETRIEVAL", "GENERIC_RETRIEVAL", "CLASSIFICATION", "CLUSTERING":
+		default:
+			return fmt.Errorf("invalid Nova embedding purpose: %s", o.EmbeddingPurpose)
+		}
+	}
+	if o.Truncate != "" {
+		switch o.Truncate {
+		case cohere.TruncateNone, cohere.TruncateStart, cohere.TruncateEnd:
+		default:
+			return fmt.Errorf("invalid truncate mode: %s", o.Truncate)
+		}
+	}
+	return nil
 }
 
 // Validate validates the embedding options

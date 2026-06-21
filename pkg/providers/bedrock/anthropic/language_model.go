@@ -26,7 +26,7 @@ type BedrockAnthropicLanguageModel struct {
 
 // SpecificationVersion returns the specification version
 func (m *BedrockAnthropicLanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -62,7 +62,11 @@ func (m *BedrockAnthropicLanguageModel) DoGenerate(ctx context.Context, opts *pr
 	reqBody := m.buildRequestBody(opts, false)
 
 	// Build URL
-	endpoint := fmt.Sprintf("%s/model/%s/invoke", m.provider.baseURL, url.PathEscape(m.modelID))
+	baseURL, err := m.provider.runtimeBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("%s/model/%s/invoke", baseURL, url.PathEscape(m.modelID))
 
 	// Create HTTP request
 	bodyBytes, err := json.Marshal(reqBody)
@@ -117,7 +121,11 @@ func (m *BedrockAnthropicLanguageModel) DoStream(ctx context.Context, opts *prov
 	reqBody := m.buildRequestBody(opts, true)
 
 	// Build streaming URL
-	endpoint := fmt.Sprintf("%s/model/%s/invoke-with-response-stream", m.provider.baseURL, url.PathEscape(m.modelID))
+	baseURL, err := m.provider.runtimeBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("%s/model/%s/invoke-with-response-stream", baseURL, url.PathEscape(m.modelID))
 
 	// Create HTTP request
 	bodyBytes, err := json.Marshal(reqBody)
@@ -298,14 +306,18 @@ func (m *BedrockAnthropicLanguageModel) authenticateRequest(req *http.Request, p
 	}
 
 	// Fall back to SigV4
-	if m.provider.credentials == nil {
+	credentials, err := m.provider.resolveCredentials(req.Context())
+	if err != nil {
+		return err
+	}
+	if credentials.AccessKeyID == "" || credentials.SecretAccessKey == "" {
 		return fmt.Errorf("no credentials provided: set either BearerToken or Credentials")
 	}
 
 	signer := bedrock.NewAWSSigner(
-		m.provider.credentials.AccessKeyID,
-		m.provider.credentials.SecretAccessKey,
-		m.provider.credentials.SessionToken,
+		credentials.AccessKeyID,
+		credentials.SecretAccessKey,
+		credentials.SessionToken,
 		m.provider.region,
 	)
 

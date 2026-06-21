@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func newTestBedrockModelWithID(modelID string) *LanguageModel {
 	return NewLanguageModel(p, modelID)
 }
 
-func TestResolveCredentialsEnvWins(t *testing.T) {
+func TestResolveCredentialsConfigWinsOverEnv(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
 	t.Setenv("AWS_SESSION_TOKEN", "env-session")
@@ -45,8 +46,126 @@ func TestResolveCredentialsEnvWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveCredentials: %v", err)
 	}
-	if creds.AccessKeyID != "env-key" || creds.SecretAccessKey != "env-secret" || creds.SessionToken != "env-session" {
-		t.Fatalf("creds = %#v, want env credentials", creds)
+	if creds.AccessKeyID != "config-key" || creds.SecretAccessKey != "config-secret" || creds.SessionToken != "config-session" {
+		t.Fatalf("creds = %#v, want config credentials", creds)
+	}
+}
+
+func TestResolveCredentialsProviderWinsOverStaticCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	calls := 0
+	p := New(Config{
+		AWSAccessKeyID:     "static-key",
+		AWSSecretAccessKey: "static-secret",
+		SessionToken:       "static-session",
+		Region:             "us-east-1",
+		CredentialProvider: func(ctx context.Context) (Credentials, error) {
+			calls++
+			return Credentials{
+				AccessKeyID:     "dynamic-key",
+				SecretAccessKey: "dynamic-secret",
+				SessionToken:    "dynamic-session",
+			}, nil
+		},
+	})
+
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("credential provider calls = %d, want 1", calls)
+	}
+	if creds.AccessKeyID != "dynamic-key" || creds.SecretAccessKey != "dynamic-secret" || creds.SessionToken != "dynamic-session" {
+		t.Fatalf("creds = %#v, want dynamic credentials", creds)
+	}
+}
+
+func TestResolveCredentialsProviderIsCalledEachTimeLikeTS(t *testing.T) {
+	calls := 0
+	p := New(Config{
+		Region: "us-east-1",
+		CredentialProvider: func(ctx context.Context) (Credentials, error) {
+			calls++
+			return Credentials{
+				AccessKeyID:     fmt.Sprintf("dynamic-key-%d", calls),
+				SecretAccessKey: "dynamic-secret",
+			}, nil
+		},
+	})
+
+	first, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("first resolveCredentials: %v", err)
+	}
+	second, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("second resolveCredentials: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("credential provider calls = %d, want 2", calls)
+	}
+	if first.AccessKeyID != "dynamic-key-1" || second.AccessKeyID != "dynamic-key-2" {
+		t.Fatalf("credentials = %#v then %#v, want fresh provider values", first, second)
+	}
+}
+
+func TestNewUsesAWSRegionLikeTS(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-west-2")
+
+	p := New(Config{APIKey: "bearer"})
+	if p.Region() != "us-west-2" {
+		t.Fatalf("Region = %q, want AWS_REGION", p.Region())
+	}
+	baseURL, err := p.runtimeBaseURL()
+	if err != nil {
+		t.Fatalf("runtimeBaseURL error = %v", err)
+	}
+	if baseURL != "https://bedrock-runtime.us-west-2.amazonaws.com" {
+		t.Fatalf("baseURL = %q, want AWS_REGION endpoint", baseURL)
+	}
+}
+
+func TestRuntimeBaseURLRequiresRegionLikeTS(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+
+	p := New(Config{APIKey: "bearer"})
+	if _, err := p.runtimeBaseURL(); err == nil {
+		t.Fatal("expected missing region error")
+	}
+}
+
+func TestAuthenticateRequestAPIKeyWinsOverSigV4LikeTS(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", " env-bearer ")
+
+	calls := 0
+	p := New(Config{
+		Region:             "us-east-1",
+		AWSAccessKeyID:     "static-key",
+		AWSSecretAccessKey: "static-secret",
+		CredentialProvider: func(ctx context.Context) (Credentials, error) {
+			calls++
+			return Credentials{AccessKeyID: "dynamic-key", SecretAccessKey: "dynamic-secret"}, nil
+		},
+	})
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/test/invoke", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	if err := p.authenticateRequest(context.Background(), req, []byte("{}")); err != nil {
+		t.Fatalf("authenticateRequest error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("credential provider calls = %d, want 0 with bearer auth", calls)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer env-bearer" {
+		t.Fatalf("Authorization = %q, want bearer env token", got)
+	}
+	if req.Header.Get("X-Amz-Date") != "" {
+		t.Fatalf("SigV4 headers should not be set when bearer auth is used")
 	}
 }
 
@@ -69,6 +188,44 @@ func TestResolveCredentialsConfigDoesNotUseEnvSessionToken(t *testing.T) {
 	}
 	if creds.SessionToken != "" {
 		t.Fatalf("SessionToken = %q, want empty", creds.SessionToken)
+	}
+}
+
+func TestResolveCredentialsMixesConfigAndEnvLikeTS(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	p := New(Config{
+		AWSAccessKeyID: "config-key",
+		Region:         "us-east-1",
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "config-key" || creds.SecretAccessKey != "env-secret" || creds.SessionToken != "env-session" {
+		t.Fatalf("creds = %#v, want mixed config/env credentials", creds)
+	}
+}
+
+func TestResolveCredentialsExplicitSessionTokenWins(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-session")
+
+	p := New(Config{
+		AWSAccessKeyID:     "config-key",
+		AWSSecretAccessKey: "config-secret",
+		SessionToken:       "config-session",
+		Region:             "us-east-1",
+	})
+	creds, err := p.resolveCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("resolveCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "config-key" || creds.SecretAccessKey != "config-secret" || creds.SessionToken != "config-session" {
+		t.Fatalf("creds = %#v, want explicit config credentials", creds)
 	}
 }
 
@@ -1567,6 +1724,82 @@ func TestBuildClaudeRequest_ServiceTier(t *testing.T) {
 	}
 	if serviceTier["type"] != "priority" {
 		t.Errorf("serviceTier.type = %v, want priority", serviceTier["type"])
+	}
+}
+
+func TestBuildClaudeRequest_AdditionalModelRequestFieldsFromProviderOptions(t *testing.T) {
+	model := newTestBedrockModel()
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"additionalModelRequestFields": map[string]interface{}{
+					"anthropic_beta": []interface{}{"beta-a"},
+					"custom":         map[string]interface{}{"enabled": true},
+				},
+			},
+		},
+	}
+
+	body, err := model.buildClaudeRequest(opts)
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	if beta, ok := body["anthropic_beta"].([]interface{}); !ok || len(beta) != 1 || beta[0] != "beta-a" {
+		t.Fatalf("anthropic_beta = %#v, want forwarded provider option", body["anthropic_beta"])
+	}
+	custom, ok := body["custom"].(map[string]interface{})
+	if !ok || custom["enabled"] != true {
+		t.Fatalf("custom = %#v, want forwarded provider option", body["custom"])
+	}
+}
+
+func TestBuildClaudeRequest_AdditionalModelRequestFieldsPreferAmazonBedrockNamespace(t *testing.T) {
+	model := newTestBedrockModel()
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"additionalModelRequestFields": map[string]interface{}{
+					"source": "current",
+				},
+			},
+			"bedrock": map[string]interface{}{
+				"additionalModelRequestFields": map[string]interface{}{
+					"source": "legacy",
+				},
+			},
+		},
+	}
+
+	body, err := model.buildClaudeRequest(opts)
+	if err != nil {
+		t.Fatalf("buildClaudeRequest: %v", err)
+	}
+
+	if body["source"] != "current" {
+		t.Fatalf("source = %#v, want current namespace precedence", body["source"])
+	}
+}
+
+func TestBuildNovaRequest_AdditionalModelRequestFieldsFromProviderOptions(t *testing.T) {
+	model := newTestBedrockModelWithID("amazon.nova-pro-v1:0")
+	body, err := model.buildNovaRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"additionalModelRequestFields": map[string]interface{}{
+					"reasoning_effort": "high",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildNovaRequest: %v", err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want forwarded provider option", body["reasoning_effort"])
 	}
 }
 
