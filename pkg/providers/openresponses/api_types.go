@@ -113,6 +113,7 @@ type FunctionCallItem struct {
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	Namespace string `json:"namespace,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Status    string `json:"status,omitempty"`
 }
@@ -168,6 +169,7 @@ type OutputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// For custom_tool_call type
 	Input string `json:"input,omitempty"`

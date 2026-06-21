@@ -97,6 +97,34 @@ func TestConvertResponse_ReasoningWithNoIDNoEncryptedContent(t *testing.T) {
 	}
 }
 
+func TestConvertResponse_FunctionCallPreservesProviderMetadata(t *testing.T) {
+	response := OpenResponsesResponse{
+		Output: []OutputItem{
+			{
+				ID:        "fc_item_1",
+				Type:      "function_call",
+				CallID:    "call_1",
+				Name:      "weather",
+				Arguments: `{"city":"nyc"}`,
+				Namespace: "weather",
+			},
+		},
+	}
+
+	lm := &LanguageModel{}
+	result := lm.convertResponse(response)
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %+v, want one", result.ToolCalls)
+	}
+	metadata, ok := result.ToolCalls[0].ProviderMetadata["open-responses"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("provider metadata = %+v, want open-responses payload", result.ToolCalls[0].ProviderMetadata)
+	}
+	if metadata["itemId"] != "fc_item_1" || metadata["namespace"] != "weather" {
+		t.Fatalf("provider metadata payload = %+v", metadata)
+	}
+}
+
 // TestConvertResponse_ReasoningPopulatesContentWithEncryptedContent verifies
 // that convertResponse stores the reasoning block in result.Content as a
 // ReasoningContent with EncryptedContent set, enabling the input-side
@@ -153,14 +181,14 @@ func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.
 
 func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
-	m := NewLanguageModel(p, "lmstudio")
+	m := NewLanguageModel(p, "gpt-5")
 	reasoning := types.ReasoningMedium
 
 	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt:    types.Prompt{Text: "hello"},
 		Reasoning: &reasoning,
 		ProviderOptions: map[string]interface{}{
-			"openResponses": map[string]interface{}{
+			"openai": map[string]interface{}{
 				"reasoningSummary": "detailed",
 			},
 		},
@@ -183,7 +211,20 @@ func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
 
 func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
-	m := NewLanguageModel(p, "lmstudio")
+	m := NewLanguageModel(p, "gpt-5")
+
+	minimal := types.ReasoningMinimal
+	bodyMinimal, _, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &minimal,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody(minimal) error = %v", err)
+	}
+	reasoningMinimal := bodyMinimal["reasoning"].(map[string]interface{})
+	if reasoningMinimal["effort"] != "minimal" {
+		t.Fatalf("minimal effort = %v, want minimal", reasoningMinimal["effort"])
+	}
 
 	high := types.ReasoningHigh
 	bodyHigh, _, err := m.buildRequestBody(&provider.GenerateOptions{

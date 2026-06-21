@@ -331,14 +331,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 			}
 			continue
 		}
-		if opts.Store && itemID != "" {
-			if opts.HasPreviousResponseID {
-				continue
-			}
-			items = append(items, map[string]interface{}{
-				"type": "item_reference",
-				"id":   itemID,
-			})
+		if opts.HasPreviousResponseID && opts.Store && itemID != "" {
 			continue
 		}
 		args := tc.Arguments
@@ -354,7 +347,6 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 		}
 		items = append(items, FunctionCallItem{
 			Type:      "function_call",
-			ID:        itemID,
 			CallID:    tc.ID,
 			Name:      tc.ToolName,
 			Namespace: namespace,
@@ -384,14 +376,8 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	if item, handled := convertAssistantToolCallItem(tc, itemID, opts); handled {
 		return item
 	}
-	if opts.Store && itemID != "" {
-		if opts.HasPreviousResponseID {
-			return nil
-		}
-		return map[string]interface{}{
-			"type": "item_reference",
-			"id":   itemID,
-		}
+	if opts.HasPreviousResponseID && opts.Store && itemID != "" {
+		return nil
 	}
 	namespace := ""
 	if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -401,7 +387,6 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	}
 	return FunctionCallItem{
 		Type:      "function_call",
-		ID:        itemID,
 		CallID:    tc.ID,
 		Name:      tc.ToolName,
 		Namespace: namespace,
@@ -462,7 +447,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}
 		return nil, true
 	}
-	if opts.Store && itemID != "" {
+	if opts.Store && itemID != "" && isProviderDefinedResponsesTool(toolName, tc.ToolName, opts) {
 		if opts.HasPreviousResponseID {
 			return nil, true
 		}
@@ -512,6 +497,14 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}, true
 	}
 	return nil, false
+}
+
+func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string, opts ConvertOptions) bool {
+	return (opts.HasLocalShellTool && normalizedToolName == "local_shell") ||
+		(opts.HasShellTool && normalizedToolName == "shell") ||
+		(opts.HasApplyPatchTool && normalizedToolName == "apply_patch") ||
+		opts.CustomToolNames[originalToolName] ||
+		opts.CustomToolNames[normalizedToolName]
 }
 
 func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) interface{} {

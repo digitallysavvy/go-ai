@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -392,7 +393,7 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 	}
 }
 
-func TestConvertPromptToInputResponsesStoredAssistantTextAndFunctionCalls(t *testing.T) {
+func TestConvertPromptToInputResponsesStoredAssistantTextAndClientFunctionCalls(t *testing.T) {
 	prompt := types.Prompt{Messages: []types.Message{{
 		Role: types.RoleAssistant,
 		Content: []types.ContentPart{
@@ -420,15 +421,15 @@ func TestConvertPromptToInputResponsesStoredAssistantTextAndFunctionCalls(t *tes
 		t.Fatalf("ConvertPromptToInputWithOptions store=true: %v", err)
 	}
 	if len(input) != 2 {
-		t.Fatalf("input length = %d, want two item references: %#v", len(input), input)
+		t.Fatalf("input length = %d, want text reference plus full client function call: %#v", len(input), input)
 	}
 	textRef := input[0].(map[string]interface{})
-	callRef := input[1].(map[string]interface{})
+	callItem := input[1].(FunctionCallItem)
 	if textRef["type"] != "item_reference" || textRef["id"] != "msg_123" {
 		t.Fatalf("text item = %#v, want item_reference msg_123", textRef)
 	}
-	if callRef["type"] != "item_reference" || callRef["id"] != "fc_123" {
-		t.Fatalf("function call item = %#v, want item_reference fc_123", callRef)
+	if callItem.ID != "" || callItem.CallID != "call_1" || callItem.Name != "lookup" {
+		t.Fatalf("function call item = %#v, want full client function_call without item id", callItem)
 	}
 
 	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasConversation: true, Store: true})
@@ -448,8 +449,8 @@ func TestConvertPromptToInputResponsesStoredAssistantTextAndFunctionCalls(t *tes
 		t.Fatalf("assistant message metadata = %#v, want id and phase", msg)
 	}
 	call := input[1].(FunctionCallItem)
-	if call.ID != "fc_123" {
-		t.Fatalf("function call ID = %q, want fc_123", call.ID)
+	if call.ID != "" {
+		t.Fatalf("function call ID = %q, want empty for client-executed call", call.ID)
 	}
 }
 
@@ -950,8 +951,8 @@ func TestConvertPromptToInput_AssistantToolCallContentParts(t *testing.T) {
 		t.Fatalf("input len = %d, want three tool-call content items: %#v", len(input), input)
 	}
 	call, ok := input[0].(FunctionCallItem)
-	if !ok || call.ID != "fc_123" || call.Namespace != "ns1" || call.Arguments != `{"city":"SF"}` {
-		t.Fatalf("input[0] = %#v, want function_call with metadata", input[0])
+	if !ok || call.ID != "" || call.Namespace != "ns1" || call.Arguments != `{"city":"SF"}` {
+		t.Fatalf("input[0] = %#v, want client function_call without item id and with namespace", input[0])
 	}
 	custom, ok := input[1].(CustomToolCallItem)
 	if !ok || custom.Type != "custom_tool_call" || custom.Input != "raw input" {
@@ -995,8 +996,83 @@ func TestConvertPromptToInput_AssistantToolCallContentDeduplicatesTopLevelToolCa
 	if len(input) != 1 {
 		t.Fatalf("input len = %d, want one deduplicated function_call: %#v", len(input), input)
 	}
-	if call, ok := input[0].(FunctionCallItem); !ok || call.ID != "fc_123" || call.CallID != "call-1" {
-		t.Fatalf("input[0] = %#v, want function_call from content part", input[0])
+	if call, ok := input[0].(FunctionCallItem); !ok || call.ID != "" || call.CallID != "call-1" {
+		t.Fatalf("input[0] = %#v, want client function_call from content part without item id", input[0])
+	}
+}
+
+func TestConvertPromptToInput_ClientExecutedToolCallsDoNotUseItemIDs(t *testing.T) {
+	t.Parallel()
+
+	for _, store := range []bool{false, true} {
+		t.Run(fmt.Sprintf("store=%v", store), func(t *testing.T) {
+			t.Parallel()
+
+			input, err := ConvertPromptToInputWithOptions(types.Prompt{
+				Messages: []types.Message{
+					{
+						Role: types.RoleAssistant,
+						Content: []types.ContentPart{
+							types.ToolCallContent{
+								ToolCallID: "call_a",
+								ToolName:   "search",
+								Arguments:  map[string]interface{}{"query": "first"},
+								ProviderOptions: map[string]interface{}{
+									"openai": map[string]interface{}{"itemId": "fc_a"},
+								},
+							},
+							types.ToolCallContent{
+								ToolCallID: "call_b",
+								ToolName:   "search",
+								Arguments:  map[string]interface{}{"query": "second"},
+								ProviderOptions: map[string]interface{}{
+									"openai": map[string]interface{}{"itemId": "fc_b"},
+								},
+							},
+						},
+					},
+					{
+						Role: types.RoleTool,
+						Content: []types.ContentPart{
+							types.ToolResultContent{
+								ToolCallID: "call_a",
+								ToolName:   "search",
+								Output:     &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"results": []interface{}{}}},
+							},
+							types.ToolResultContent{
+								ToolCallID: "call_b",
+								ToolName:   "search",
+								Output:     &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"results": []interface{}{"x"}}},
+							},
+						},
+					},
+				},
+			}, "system", ConvertOptions{Store: store})
+			if err != nil {
+				t.Fatalf("conversion failed: %v", err)
+			}
+			if len(input) != 4 {
+				t.Fatalf("input len = %d, want four function call/output items: %#v", len(input), input)
+			}
+			for i, wantCallID := range []string{"call_a", "call_b"} {
+				call, ok := input[i].(FunctionCallItem)
+				if !ok {
+					t.Fatalf("input[%d] = %#v, want FunctionCallItem", i, input[i])
+				}
+				if call.ID != "" || call.CallID != wantCallID || call.Name != "search" {
+					t.Fatalf("input[%d] = %#v, want client function_call without item id", i, input[i])
+				}
+			}
+			for i, wantCallID := range []string{"call_a", "call_b"} {
+				output, ok := input[i+2].(FunctionCallOutputItem)
+				if !ok {
+					t.Fatalf("input[%d] = %#v, want FunctionCallOutputItem", i+2, input[i+2])
+				}
+				if output.CallID != wantCallID {
+					t.Fatalf("input[%d] = %#v, want output for %s", i+2, input[i+2], wantCallID)
+				}
+			}
+		})
 	}
 }
 

@@ -16,14 +16,17 @@ func TestOpenResponsesModelMetadataAndErrorWrap(t *testing.T) {
 
 	p := New(Config{BaseURL: "http://localhost:1234/v1", Name: "open-responses"})
 	m := NewLanguageModel(p, "local-model")
-	if m.SpecificationVersion() != "v3" {
+	if m.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", m.SpecificationVersion())
 	}
-	if m.Provider() != "open-responses" || m.ModelID() != "local-model" {
+	if m.Provider() != "open-responses.responses" || m.ModelID() != "local-model" {
 		t.Fatalf("provider/model mismatch: %s/%s", m.Provider(), m.ModelID())
 	}
 	if !m.SupportsTools() || !m.SupportsStructuredOutput() || !m.SupportsImageInput() {
 		t.Fatal("model capability flags should all be true")
+	}
+	if urls := m.SupportedURLs(); len(urls["image/*"]) != 1 || urls["image/*"][0] != `^https?://.*$` {
+		t.Fatalf("SupportedURLs() = %#v", urls)
 	}
 	if err := m.handleError(io.EOF); err == nil || !strings.Contains(err.Error(), "open-responses provider error") {
 		t.Fatalf("handleError mismatch: %v", err)
@@ -104,7 +107,7 @@ func TestOpenResponsesConvertUserAndFileHelpers(t *testing.T) {
 		t.Fatalf("convertFileToImageURL mismatch: %q", fileURL)
 	}
 
-	msgParts, err := convertUserContent([]types.ContentPart{
+	_, err := convertUserContent([]types.ContentPart{
 		types.TextContent{Text: "hello"},
 		types.FileContent{
 			FileData: types.FileData{
@@ -114,11 +117,8 @@ func TestOpenResponsesConvertUserAndFileHelpers(t *testing.T) {
 			MediaType: "application/pdf",
 		},
 	}, &[]types.Warning{}, "open-responses")
-	if err != nil {
-		t.Fatalf("convertUserContent() error = %v", err)
-	}
-	if len(msgParts) != 2 {
-		t.Fatalf("expected 2 converted parts, got %d", len(msgParts))
+	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+		t.Fatalf("convertUserContent() error = %v, want unsupported provider reference", err)
 	}
 }
 

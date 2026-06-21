@@ -2,10 +2,9 @@ package openresponses
 
 import (
 	"encoding/json"
-	"errors"
+	"strings"
 	"testing"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -21,7 +20,7 @@ func TestConvertAssistantContent_ReasoningWithEncryptedContent(t *testing.T) {
 		},
 	}
 
-	textParts, separateItems := convertAssistantContent(content)
+	textParts, separateItems := convertAssistantContent(content, "openai")
 
 	// No text content should be added to the message body.
 	if len(textParts) != 0 {
@@ -62,7 +61,7 @@ func TestConvertAssistantContent_ReasoningWithoutEncryptedContent(t *testing.T) 
 		types.TextContent{Text: "final answer"},
 	}
 
-	textParts, separateItems := convertAssistantContent(content)
+	textParts, separateItems := convertAssistantContent(content, "openai")
 
 	// Text content should appear.
 	if len(textParts) != 1 {
@@ -85,7 +84,7 @@ func TestConvertAssistantContent_ReasoningEmptySummaryWhenNoText(t *testing.T) {
 		},
 	}
 
-	_, separateItems := convertAssistantContent(content)
+	_, separateItems := convertAssistantContent(content, "openai")
 
 	if len(separateItems) != 1 {
 		t.Fatalf("expected 1 separate item, got %d", len(separateItems))
@@ -106,7 +105,7 @@ func TestConvertAssistantContent_ReasoningInputItemSerializesCorrectly(t *testin
 		},
 	}
 
-	_, separateItems := convertAssistantContent(content)
+	_, separateItems := convertAssistantContent(content, "openai")
 	if len(separateItems) == 0 {
 		t.Fatal("expected a separate item")
 	}
@@ -214,7 +213,7 @@ func TestConvertToOpenResponsesInput_ToolResultContentFileParts(t *testing.T) {
 	}
 }
 
-func TestConvertToOpenResponsesInput_ReferenceResolvesProviderKey(t *testing.T) {
+func TestConvertToOpenResponsesInput_ReferenceFilePartsAreUnsupportedLikeTS(t *testing.T) {
 	msgs := []types.Message{
 		{
 			Role: types.RoleUser,
@@ -233,29 +232,21 @@ func TestConvertToOpenResponsesInput_ReferenceResolvesProviderKey(t *testing.T) 
 		},
 	}
 
-	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	if err != nil {
-		t.Fatalf("ConvertToOpenResponsesInput() error = %v", err)
-	}
-	items := input.([]interface{})
-	msg := items[0].(MessageItem)
-	parts := msg.Content.([]interface{})
-	file := parts[0].(InputFileContent)
-	if file.FileID != "file-openresponses" {
-		t.Fatalf("FileID = %q, want provider-specific reference", file.FileID)
+	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
+	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+		t.Fatalf("error = %v, want unsupported provider reference", err)
 	}
 }
 
-func TestConvertToOpenResponsesInput_ReferenceMissingProviderReturnsError(t *testing.T) {
+func TestConvertToOpenResponsesInput_TextFilePartsAreUnsupportedLikeTS(t *testing.T) {
 	msgs := []types.Message{
 		{
 			Role: types.RoleUser,
 			Content: []types.ContentPart{
 				types.FileContent{
-					MediaType: "application/pdf",
 					FileData: types.FileData{
-						Type:      types.FileDataTypeReference,
-						Reference: types.ProviderReference{"openai": "file-openai"},
+						Type: types.FileDataTypeText,
+						Text: "inline text file",
 					},
 				},
 			},
@@ -263,16 +254,12 @@ func TestConvertToOpenResponsesInput_ReferenceMissingProviderReturnsError(t *tes
 	}
 
 	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	var refErr *providererrors.NoSuchProviderReferenceError
-	if !errors.As(err, &refErr) {
-		t.Fatalf("error = %T, want NoSuchProviderReferenceError", err)
-	}
-	if refErr.Provider != "open-responses" {
-		t.Fatalf("Provider = %q, want open-responses", refErr.Provider)
+	if err == nil || !strings.Contains(err.Error(), "text file parts are not supported") {
+		t.Fatalf("error = %v, want unsupported text file", err)
 	}
 }
 
-func TestConvertToOpenResponsesInput_ToolResultReferenceResolvesProviderKey(t *testing.T) {
+func TestConvertToOpenResponsesInput_ToolResultReferenceAndTextFilePartsWarnLikeTS(t *testing.T) {
 	msgs := []types.Message{
 		{
 			Role: types.RoleTool,
@@ -293,6 +280,13 @@ func TestConvertToOpenResponsesInput_ToolResultReferenceResolvesProviderKey(t *t
 									},
 								},
 							},
+							types.FileContentBlock{
+								MediaType: "text/plain",
+								FileData: types.FileData{
+									Type: types.FileDataTypeText,
+									Text: "text-file",
+								},
+							},
 						},
 					},
 				},
@@ -300,15 +294,134 @@ func TestConvertToOpenResponsesInput_ToolResultReferenceResolvesProviderKey(t *t
 		},
 	}
 
-	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
+	input, _, warnings, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
 	if err != nil {
 		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %#v, want 2 unsupported file-data warnings", warnings)
 	}
 	items := input.([]interface{})
 	output := items[0].(FunctionCallOutputItem)
 	parts := output.Output.([]interface{})
-	file := parts[0].(InputFileContent)
-	if file.FileID != "file-openresponses" {
-		t.Fatalf("FileID = %q, want provider-specific reference", file.FileID)
+	if len(parts) != 0 {
+		t.Fatalf("unsupported file blocks should be skipped, got %#v", parts)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ToolCallWithNamespaceFromProviderOptions(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID: "call_123",
+					ToolName:   "get_weather",
+					Arguments:  map[string]interface{}{"city": "San Francisco"},
+					ProviderOptions: map[string]interface{}{
+						"openai": map[string]interface{}{"namespace": "weather"},
+					},
+				},
+			},
+		},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "openai")
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
+	}
+
+	items := input.([]interface{})
+	call := items[0].(FunctionCallItem)
+	if call.Type != "function_call" {
+		t.Fatalf("Type = %q, want function_call", call.Type)
+	}
+	if call.CallID != "call_123" || call.Name != "get_weather" {
+		t.Fatalf("call = %#v", call)
+	}
+	if call.Arguments != `{"city":"San Francisco"}` {
+		t.Fatalf("Arguments = %q", call.Arguments)
+	}
+	if call.Namespace != "weather" {
+		t.Fatalf("Namespace = %q, want weather", call.Namespace)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ToolCallWithNamespaceFromProviderMetadata(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID:       "call_456",
+					ToolName:         "get_weather",
+					Input:            `{"city":"Paris"}`,
+					ProviderMetadata: json.RawMessage(`{"openai":{"namespace":"weather-metadata"}}`),
+				},
+			},
+		},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "openai")
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
+	}
+
+	items := input.([]interface{})
+	call := items[0].(FunctionCallItem)
+	if call.CallID != "call_456" || call.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("call = %#v", call)
+	}
+	if call.Namespace != "weather-metadata" {
+		t.Fatalf("Namespace = %q, want weather-metadata", call.Namespace)
+	}
+}
+
+func TestConvertToOpenResponsesInput_ClientAndProviderExecutedToolCalls(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID:       "call_provider",
+					ToolName:         "server_tool",
+					Input:            `{"server":true}`,
+					ProviderExecuted: true,
+				},
+				types.ToolCallContent{
+					ToolCallID: "call_client",
+					ToolName:   "client_tool",
+					Input:      `{"client":true}`,
+				},
+			},
+		},
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call_client",
+					ToolName:   "client_tool",
+					Result:     "ok",
+				},
+			},
+		},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "openai")
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
+	}
+
+	items := input.([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("items = %#v, want client function_call plus output", items)
+	}
+	call := items[0].(FunctionCallItem)
+	if call.CallID != "call_client" || call.Name != "client_tool" {
+		t.Fatalf("call = %#v", call)
+	}
+	output := items[1].(FunctionCallOutputItem)
+	if output.CallID != "call_client" || output.Output != "ok" {
+		t.Fatalf("output = %#v", output)
 	}
 }

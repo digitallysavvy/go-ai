@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -59,7 +60,7 @@ func ConvertToOpenResponsesInputForProvider(messages []types.Message, system str
 			})
 
 		case types.RoleAssistant:
-			assistantContent, toolCalls := convertAssistantContent(msg.Content)
+			assistantContent, toolCalls := convertAssistantContent(msg.Content, providerName)
 
 			// Add assistant message if it has text content
 			if len(assistantContent) > 0 {
@@ -114,7 +115,7 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			}
 
 		case types.FileContent:
-			file, err := normalizeFileContentData(p, providerName)
+			file, err := normalizeFileContentData(p)
 			if err != nil {
 				return nil, err
 			}
@@ -196,7 +197,7 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 	return ""
 }
 
-func normalizeFileContentData(file types.FileContent, providerName string) (types.FileContent, error) {
+func normalizeFileContentData(file types.FileContent) (types.FileContent, error) {
 	if file.FileData.IsZero() {
 		return file, nil
 	}
@@ -206,13 +207,9 @@ func normalizeFileContentData(file types.FileContent, providerName string) (type
 	case types.FileDataTypeURL:
 		file.URL = file.FileData.URL
 	case types.FileDataTypeReference:
-		ref, err := providerutils.ResolveProviderReference(file.FileData.Reference, providerName)
-		if err != nil {
-			return types.FileContent{}, err
-		}
-		file.Reference = ref
+		return types.FileContent{}, fmt.Errorf("openresponses: file parts with provider references are not supported")
 	case types.FileDataTypeText:
-		file.Text = file.FileData.Text
+		return types.FileContent{}, fmt.Errorf("openresponses: text file parts are not supported")
 	}
 	if file.FileData.MediaType != "" && file.MediaType == "" {
 		file.MediaType = file.FileData.MediaType
@@ -228,7 +225,7 @@ func mediaTypeOrDefault(mediaType string) string {
 }
 
 // convertAssistantContent converts assistant message content
-func convertAssistantContent(content []types.ContentPart) ([]interface{}, []interface{}) {
+func convertAssistantContent(content []types.ContentPart, providerName string) ([]interface{}, []interface{}) {
 	var textContent []interface{}
 	var toolCalls []interface{}
 
@@ -262,10 +259,98 @@ func convertAssistantContent(content []types.ContentPart) ([]interface{}, []inte
 				// No EncryptedContent: skip (e.g. Anthropic reasoning blocks, or
 				// reasoning from a provider that doesn't use this field).
 			}
+
+		case "tool-call":
+			if toolCall, ok := part.(types.ToolCallContent); ok {
+				if toolCall.ProviderExecuted {
+					continue
+				}
+				toolCalls = append(toolCalls, FunctionCallItem{
+					Type:      "function_call",
+					CallID:    toolCall.ToolCallID,
+					Name:      toolCall.ToolName,
+					Arguments: serializeToolCallArguments(toolCall),
+					Namespace: openResponsesMetadataString(toolCall.ProviderOptions, toolCall.ProviderMetadata, providerName, "namespace"),
+				})
+			}
 		}
 	}
 
 	return textContent, toolCalls
+}
+
+func serializeToolCallArguments(toolCall types.ToolCallContent) string {
+	if toolCall.Input != "" {
+		if json.Valid([]byte(toolCall.Input)) {
+			return toolCall.Input
+		}
+		data, err := json.Marshal(toolCall.Input)
+		if err == nil {
+			return string(data)
+		}
+	}
+	if toolCall.Arguments != nil {
+		data, err := json.Marshal(toolCall.Arguments)
+		if err == nil {
+			return string(data)
+		}
+	}
+	return "{}"
+}
+
+func openResponsesMetadataString(providerOptions map[string]interface{}, providerMetadata json.RawMessage, providerName, field string) string {
+	for _, key := range []string{providerName, "openai", "openResponses", "open-responses"} {
+		if value := nestedString(providerOptions, key, field); value != "" {
+			return value
+		}
+		if value := nestedRawString(providerMetadata, key, field); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nestedString(values map[string]interface{}, key, field string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	nested, ok := values[key]
+	if !ok {
+		return ""
+	}
+	switch typed := nested.(type) {
+	case map[string]interface{}:
+		if value, ok := typed[field].(string); ok {
+			return value
+		}
+	case map[string]string:
+		return typed[field]
+	default:
+		rv := reflect.ValueOf(nested)
+		if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+			value := rv.MapIndex(reflect.ValueOf(field))
+			if value.IsValid() && value.Kind() == reflect.String {
+				return value.String()
+			}
+		}
+	}
+	return ""
+}
+
+func nestedRawString(raw json.RawMessage, key, field string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var values map[string]map[string]interface{}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return ""
+	}
+	if nested, ok := values[key]; ok {
+		if value, ok := nested[field].(string); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 // convertToolResults converts tool results to Open Responses format
@@ -380,6 +465,20 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 }
 
 func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types.Warning, providerName string) (interface{}, bool, error) {
+	if block.FileData.Type == types.FileDataTypeReference || (block.FileData.Type == "" && len(block.FileData.Reference) > 0) || block.Reference != "" {
+		*warnings = append(*warnings, types.Warning{
+			Type:    "other",
+			Message: "unsupported tool content part type: file with data type: reference",
+		})
+		return nil, false, nil
+	}
+	if block.FileData.Type == types.FileDataTypeText || (block.FileData.Type == "" && block.FileData.Text != "") || block.Text != "" {
+		*warnings = append(*warnings, types.Warning{
+			Type:    "other",
+			Message: "unsupported tool content part type: file with data type: text",
+		})
+		return nil, false, nil
+	}
 	file, err := normalizeFileContentBlockData(block, providerName)
 	if err != nil {
 		return nil, false, err

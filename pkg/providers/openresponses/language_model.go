@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -21,7 +22,12 @@ type LanguageModel struct {
 }
 
 type OpenResponsesProviderOptions struct {
-	ReasoningSummary string `json:"reasoningSummary,omitempty"`
+	ReasoningSummary string                 `json:"reasoningSummary,omitempty"`
+	ReasoningEffort  string                 `json:"reasoningEffort,omitempty"`
+	ForceReasoning   *bool                  `json:"forceReasoning,omitempty"`
+	StrictJSONSchema *bool                  `json:"strictJsonSchema,omitempty"`
+	TextVerbosity    string                 `json:"textVerbosity,omitempty"`
+	Raw              map[string]interface{} `json:"-"`
 }
 
 // NewLanguageModel creates a new Open Responses language model
@@ -34,12 +40,12 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return m.provider.config.Name
+	return m.provider.config.Name + ".responses"
 }
 
 // ModelID returns the model ID
@@ -64,6 +70,13 @@ func (m *LanguageModel) SupportsImageInput() bool {
 	// Image support depends on the underlying model
 	// Return true for vision models (users need to verify their model supports it)
 	return true
+}
+
+// SupportedURLs reports the URL patterns this model can receive directly.
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	return map[string][]string{
+		"image/*": {`^https?://.*$`},
+	}
 }
 
 // DoGenerate performs non-streaming text generation
@@ -115,12 +128,20 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newOpenResponsesStream(httpResp.Body, warnings), nil
+	return newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
+	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
+	if openResponsesTruthyString(provOpts.Raw["conversation"]) && openResponsesTruthyString(provOpts.Raw["previousResponseId"]) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "conversation",
+			Details: "conversation and previousResponseId cannot be used together",
+		})
+	}
 
 	// Convert messages to Open Responses format
 	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProvider(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name)
@@ -130,9 +151,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	warnings = append(warnings, conversionWarnings...)
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"input":  input,
-		"stream": stream,
+		"model": m.modelID,
+		"input": input,
+	}
+	if stream {
+		body["stream"] = true
 	}
 
 	// Add instructions if present
@@ -150,56 +173,80 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
+	// Note: Open Responses doesn't support frequencyPenalty, presencePenalty,
+	// stopSequences, topK, or seed. These are ignored with TS-shaped warnings.
 	if opts.FrequencyPenalty != nil {
-		body["frequency_penalty"] = *opts.FrequencyPenalty
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "frequencyPenalty",
+		})
 	}
 	if opts.PresencePenalty != nil {
-		body["presence_penalty"] = *opts.PresencePenalty
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "presencePenalty",
+		})
 	}
 
-	// Note: Open Responses doesn't support stopSequences, topK, or seed
 	// These are ignored with warnings
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "stopSequences not supported by Open Responses API",
+			Type:    "unsupported",
+			Feature: "stopSequences",
 		})
 	}
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "topK not supported by Open Responses API",
+			Type:    "unsupported",
+			Feature: "topK",
 		})
 	}
 	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "seed not supported by Open Responses API",
+			Type:    "unsupported",
+			Feature: "seed",
 		})
 	}
 
-	// Add tools if present
-	if len(opts.Tools) > 0 {
-		openResponsesTools := convertToolsToOpenResponses(opts.Tools)
-		body["tools"] = openResponsesTools
+	// TS prepareResponsesTools returns an empty tools array even when no tools
+	// are configured, and getArgs includes it in the request body.
+	body["tools"] = convertToolsToOpenResponses(opts.Tools)
 
-		// Convert tool choice
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice)
-		}
+	// Convert tool choice
+	if allowedToolsChoice := openResponsesAllowedToolsChoice(provOpts.Raw); allowedToolsChoice != nil {
+		body["tool_choice"] = allowedToolsChoice
+	} else if opts.ToolChoice.Type != "" {
+		body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice)
 	}
 
-	// Add response format if present
-	if opts.ResponseFormat != nil {
-		textConfig := map[string]interface{}{
-			"format": map[string]interface{}{
-				"type": "json_schema",
-			},
+	// Add response format if present. TS only serializes responseFormat when
+	// responseFormat.type === "json"; text verbosity may create text by itself.
+	hasJSONResponseFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
+	if hasJSONResponseFormat || provOpts.TextVerbosity != "" {
+		textConfig := map[string]interface{}{}
+		if hasJSONResponseFormat {
+			format := map[string]interface{}{"type": "json_object"}
+			if opts.ResponseFormat.Schema != nil {
+				format["type"] = "json_schema"
+				name := opts.ResponseFormat.Name
+				if name == "" {
+					name = "response"
+				}
+				format["name"] = name
+				if opts.ResponseFormat.Description != "" {
+					format["description"] = opts.ResponseFormat.Description
+				}
+				format["schema"] = opts.ResponseFormat.Schema
+				strict := true
+				if provOpts.StrictJSONSchema != nil {
+					strict = *provOpts.StrictJSONSchema
+				}
+				format["strict"] = strict
+			}
+			textConfig["format"] = format
 		}
-		if opts.ResponseFormat.Schema != nil {
-			textConfig["format"].(map[string]interface{})["name"] = "response"
-			textConfig["format"].(map[string]interface{})["schema"] = opts.ResponseFormat.Schema
-			textConfig["format"].(map[string]interface{})["strict"] = true
+		if provOpts.TextVerbosity != "" {
+			textConfig["verbosity"] = provOpts.TextVerbosity
 		}
 		body["text"] = textConfig
 	}
@@ -211,7 +258,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			reasoningEffort = "none"
-		case types.ReasoningMinimal, types.ReasoningLow:
+		case types.ReasoningMinimal:
+			reasoningEffort = "minimal"
+		case types.ReasoningLow:
 			reasoningEffort = "low"
 		case types.ReasoningMedium:
 			reasoningEffort = "medium"
@@ -222,8 +271,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			// ReasoningDefault: omit
 		}
 	}
-	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
-	if reasoningEffort != "" || provOpts.ReasoningSummary != "" {
+	if provOpts.ReasoningEffort != "" {
+		reasoningEffort = provOpts.ReasoningEffort
+	}
+	isReasoningModel := openResponsesIsReasoningModel(m.modelID)
+	if provOpts.ForceReasoning != nil {
+		isReasoningModel = *provOpts.ForceReasoning
+	}
+	if isReasoningModel && (reasoningEffort != "" || provOpts.ReasoningSummary != "") {
 		reasoning := map[string]interface{}{}
 		if reasoningEffort != "" {
 			reasoning["effort"] = reasoningEffort
@@ -232,16 +287,110 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoning["summary"] = provOpts.ReasoningSummary
 		}
 		body["reasoning"] = reasoning
+	} else if !isReasoningModel {
+		if provOpts.ReasoningEffort != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffort",
+				Details: "reasoningEffort is not supported for non-reasoning models",
+			})
+		}
+		if provOpts.ReasoningSummary != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningSummary",
+				Details: "reasoningSummary is not supported for non-reasoning models",
+			})
+		}
+	}
+	if isReasoningModel && !(reasoningEffort == "none" && openResponsesSupportsNonReasoningParameters(m.modelID)) {
+		if _, ok := body["temperature"]; ok {
+			delete(body, "temperature")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "temperature",
+				Details: "temperature is not supported for reasoning models",
+			})
+		}
+		if _, ok := body["top_p"]; ok {
+			delete(body, "top_p")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "topP",
+				Details: "topP is not supported for reasoning models",
+			})
+		}
+	}
+	addOpenResponsesProviderOptionBodyFields(body, provOpts.Raw)
+	if store, ok := provOpts.Raw["store"].(bool); ok && !store && isReasoningModel {
+		addOpenResponsesInclude(body, "reasoning.encrypted_content")
+	}
+	if serviceTier, ok := body["service_tier"].(string); ok {
+		switch serviceTier {
+		case "flex":
+			if !openResponsesSupportsFlexProcessing(m.modelID) {
+				delete(body, "service_tier")
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "serviceTier",
+					Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
+				})
+			}
+		case "priority":
+			if !openResponsesSupportsPriorityProcessing(m.modelID) {
+				delete(body, "service_tier")
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "serviceTier",
+					Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
+				})
+			}
+		}
 	}
 
 	return body, warnings, nil
+}
+
+func openResponsesIsReasoningModel(modelID string) bool {
+	if modelID == "" {
+		return false
+	}
+	return strings.HasPrefix(modelID, "o1") ||
+		strings.HasPrefix(modelID, "o1-") ||
+		strings.HasPrefix(modelID, "o3") ||
+		strings.HasPrefix(modelID, "o4-mini") ||
+		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
+}
+
+func openResponsesSupportsNonReasoningParameters(modelID string) bool {
+	return strings.HasPrefix(modelID, "gpt-5.1") ||
+		strings.HasPrefix(modelID, "gpt-5.2") ||
+		strings.HasPrefix(modelID, "gpt-5.3") ||
+		strings.HasPrefix(modelID, "gpt-5.4") ||
+		strings.HasPrefix(modelID, "gpt-5.5")
+}
+
+func openResponsesSupportsFlexProcessing(modelID string) bool {
+	return strings.HasPrefix(modelID, "o3") ||
+		strings.HasPrefix(modelID, "o4-mini") ||
+		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
+}
+
+func openResponsesSupportsPriorityProcessing(modelID string) bool {
+	return strings.HasPrefix(modelID, "gpt-4") ||
+		(strings.HasPrefix(modelID, "gpt-5") &&
+			!strings.HasPrefix(modelID, "gpt-5-nano") &&
+			!strings.HasPrefix(modelID, "gpt-5-chat") &&
+			!strings.HasPrefix(modelID, "gpt-5.4-nano")) ||
+		strings.HasPrefix(modelID, "o3") ||
+		strings.HasPrefix(modelID, "o4-mini")
 }
 
 func extractOpenResponsesProviderOptions(providerOptions map[string]interface{}, providerName string) OpenResponsesProviderOptions {
 	if providerOptions == nil {
 		return OpenResponsesProviderOptions{}
 	}
-	keys := []string{"openResponses", "open-responses", providerName}
+	keys := []string{"openai", providerName, "openResponses", "open-responses"}
 	for _, key := range keys {
 		raw, ok := providerOptions[key]
 		if !ok {
@@ -253,10 +402,191 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 		}
 		var opts OpenResponsesProviderOptions
 		if err := json.Unmarshal(data, &opts); err == nil {
+			if values, ok := raw.(map[string]interface{}); ok {
+				opts.Raw = values
+			}
 			return opts
 		}
 	}
 	return OpenResponsesProviderOptions{}
+}
+
+func addOpenResponsesProviderOptionBodyFields(body map[string]interface{}, raw map[string]interface{}) {
+	if raw == nil {
+		return
+	}
+	mappings := map[string]string{
+		"conversation":         "conversation",
+		"maxToolCalls":         "max_tool_calls",
+		"metadata":             "metadata",
+		"parallelToolCalls":    "parallel_tool_calls",
+		"previousResponseId":   "previous_response_id",
+		"store":                "store",
+		"user":                 "user",
+		"instructions":         "instructions",
+		"serviceTier":          "service_tier",
+		"include":              "include",
+		"promptCacheKey":       "prompt_cache_key",
+		"promptCacheRetention": "prompt_cache_retention",
+		"safetyIdentifier":     "safety_identifier",
+		"truncation":           "truncation",
+	}
+	for optionKey, bodyKey := range mappings {
+		if value, ok := raw[optionKey]; ok {
+			body[bodyKey] = value
+		}
+	}
+	if topLogprobs, ok := openResponsesTopLogprobs(raw["logprobs"]); ok {
+		body["top_logprobs"] = topLogprobs
+		addOpenResponsesInclude(body, "message.output_text.logprobs")
+	}
+	if value, ok := raw["contextManagement"]; ok {
+		if entries := openResponsesContextManagementEntries(value); len(entries) > 0 {
+			out := make([]map[string]interface{}, 0, len(entries))
+			for _, entry := range entries {
+				mapped := map[string]interface{}{}
+				if v, ok := entry["type"]; ok {
+					mapped["type"] = v
+				}
+				if v, ok := entry["compactThreshold"]; ok {
+					mapped["compact_threshold"] = v
+				}
+				out = append(out, mapped)
+			}
+			body["context_management"] = out
+		}
+	}
+}
+
+func openResponsesContextManagementEntries(value interface{}) []map[string]interface{} {
+	switch entries := value.(type) {
+	case []map[string]interface{}:
+		return entries
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(entries))
+		for _, entry := range entries {
+			if values, ok := entry.(map[string]interface{}); ok {
+				out = append(out, values)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openResponsesTopLogprobs(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return 20, true
+		}
+	case int:
+		if v != 0 {
+			return v, true
+		}
+	case int64:
+		if v != 0 {
+			return v, true
+		}
+	case float64:
+		if v != 0 {
+			return v, true
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil && i != 0 {
+			return i, true
+		}
+	}
+	return nil, false
+}
+
+func addOpenResponsesInclude(body map[string]interface{}, include string) {
+	existing := openResponsesIncludeValues(body["include"])
+	for _, value := range existing {
+		if value == include {
+			return
+		}
+	}
+	body["include"] = append(existing, include)
+}
+
+func openResponsesIncludeValues(value interface{}) []interface{} {
+	switch values := value.(type) {
+	case []interface{}:
+		return values
+	case []string:
+		out := make([]interface{}, 0, len(values))
+		for _, value := range values {
+			out = append(out, value)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openResponsesAllowedToolsChoice(raw map[string]interface{}) map[string]interface{} {
+	if raw == nil {
+		return nil
+	}
+	value, ok := raw["allowedTools"]
+	if !ok || value == nil {
+		return nil
+	}
+	allowedTools, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	names := openResponsesStringList(allowedTools["toolNames"])
+	if len(names) == 0 {
+		return nil
+	}
+	mode, _ := allowedTools["mode"].(string)
+	if mode == "" {
+		mode = "auto"
+	}
+	tools := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		tools = append(tools, map[string]interface{}{
+			"type": "function",
+			"name": name,
+		})
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"type":  "allowed_tools",
+		"mode":  mode,
+		"tools": tools,
+	}
+}
+
+func openResponsesStringList(value interface{}) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			text, ok := value.(string)
+			if ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openResponsesTruthyString(value interface{}) bool {
+	text, ok := value.(string)
+	return ok && text != ""
 }
 
 // convertToolsToOpenResponses converts AI SDK tools to Open Responses format
@@ -363,9 +693,10 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 			}
 
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: args,
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        args,
+				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, item.Namespace),
 			})
 
 		case "custom_tool_call":
@@ -465,10 +796,11 @@ func (m *LanguageModel) handleError(err error) error {
 
 // openResponsesStream implements provider.TextStream for Open Responses streaming
 type openResponsesStream struct {
-	reader   io.ReadCloser
-	parser   *streaming.SSEParser
-	err      error
-	warnings []types.Warning
+	reader       io.ReadCloser
+	parser       *streaming.SSEParser
+	err          error
+	warnings     []types.Warning
+	providerName string
 
 	// Track state for tool calls and finish reason
 	toolCallsByItemID map[string]*toolCallState
@@ -478,17 +810,23 @@ type openResponsesStream struct {
 
 // toolCallState tracks the state of a tool call during streaming
 type toolCallState struct {
-	ID       string
-	ToolName string
-	ArgsJSON string // Accumulated JSON string
+	ID               string
+	ToolName         string
+	ArgsJSON         string // Accumulated JSON string
+	ProviderMetadata map[string]interface{}
 }
 
 // newOpenResponsesStream creates a new Open Responses stream
-func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning) *openResponsesStream {
+func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, providerName ...string) *openResponsesStream {
+	name := "open-responses"
+	if len(providerName) > 0 && providerName[0] != "" {
+		name = providerName[0]
+	}
 	return &openResponsesStream{
 		reader:            reader,
 		parser:            streaming.NewSSEParser(reader),
 		warnings:          warnings,
+		providerName:      name,
 		toolCallsByItemID: make(map[string]*toolCallState),
 		finishReason:      types.FinishReasonOther,
 	}
@@ -541,9 +879,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
 			s.toolCallsByItemID[event.Item.ID] = &toolCallState{
-				ID:       event.Item.CallID,
-				ToolName: event.Item.Name,
-				ArgsJSON: "",
+				ID:               event.Item.CallID,
+				ToolName:         event.Item.Name,
+				ArgsJSON:         "",
+				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
 			}
 		}
 		// Don't emit a chunk for this event
@@ -589,9 +928,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeToolCall,
 					ToolCall: &types.ToolCall{
-						ID:        toolCallState.ID,
-						ToolName:  toolCallState.ToolName,
-						Arguments: args,
+						ID:               toolCallState.ID,
+						ToolName:         toolCallState.ToolName,
+						Arguments:        args,
+						ProviderMetadata: toolCallState.ProviderMetadata,
 					},
 				}, nil
 			}
@@ -617,7 +957,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if event.Item.ID != "" {
 				meta["itemId"] = event.Item.ID
 			}
-			providerMeta, _ := json.Marshal(map[string]interface{}{"openresponses": meta})
+			providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 			return &provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoningEnd,
 				ID:               "reasoning-" + event.Item.ID,
@@ -667,6 +1007,27 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// Unknown event type, skip
 		return s.Next()
 	}
+}
+
+func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
+	if itemID == "" && namespace == "" {
+		return nil
+	}
+	payload := map[string]interface{}{}
+	if itemID != "" {
+		payload["itemId"] = itemID
+	}
+	if namespace != "" {
+		payload["namespace"] = namespace
+	}
+	return map[string]interface{}{providerName: payload}
+}
+
+func (m *LanguageModel) providerName() string {
+	if m != nil && m.provider != nil && m.provider.config.Name != "" {
+		return m.provider.config.Name
+	}
+	return "open-responses"
 }
 
 // Err returns any error that occurred during streaming
