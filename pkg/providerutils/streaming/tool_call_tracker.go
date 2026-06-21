@@ -76,8 +76,9 @@ func NewStreamingToolCallTrackerWithIDGenerator(generateID func() string) *Strea
 	}
 }
 
-// Track records a streaming tool call delta. It does not emit partial tool
-// calls; callers should emit Flush results when the provider stream finishes.
+// Track records a streaming tool call delta. It emits tool input lifecycle
+// chunks once the tool name is known; callers should emit Flush results when the
+// provider stream finishes to close inputs and emit final tool-call chunks.
 func (t *StreamingToolCallTracker) Track(index *int, id, name, delta string) []ToolCallChunk {
 	return t.TrackDelta(ToolCallDelta{
 		Index:          index,
@@ -147,6 +148,17 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 		if id == "" {
 			id = t.generateIDFunc()
 			call.id = id
+		}
+		if call.name == "" {
+			chunks = append(chunks, provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: "Expected 'function.name' to be a string.",
+				ToolCall: &types.ToolCall{
+					ID:           id,
+					RawArguments: call.args,
+				},
+			})
+			continue
 		}
 		if call.inputStarted {
 			chunks = append(chunks, provider.StreamChunk{

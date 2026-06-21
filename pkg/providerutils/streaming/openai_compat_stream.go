@@ -82,10 +82,10 @@ func (s *OpenAICompatStream) Err() error {
 
 // Next returns the next chunk from the stream.
 //
-// Text deltas are returned immediately. Tool call deltas are silently
-// accumulated; when finish_reason is received, all accumulated tool calls are
-// enqueued followed by a finish chunk, and the queue is drained one chunk per
-// call.
+// Text deltas are returned immediately. Tool call argument deltas are buffered
+// only until function.name is available, then tool input start/delta chunks are
+// emitted live. When finish_reason is received, open tool inputs are closed and
+// finalized tool-call chunks are enqueued before the finish chunk.
 func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 	// Drain any fully-assembled chunks before reading more SSE events.
 	if len(s.flushQueue) > 0 {
@@ -290,6 +290,9 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
+		if c.Type == provider.ChunkTypeError {
+			return
+		}
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:         provider.ChunkTypeFinish,

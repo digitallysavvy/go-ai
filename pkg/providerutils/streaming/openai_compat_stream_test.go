@@ -298,6 +298,71 @@ data: [DONE]
 	}
 }
 
+func TestOpenAICompatStream_EmitsToolDeltasAsSoonAsNameArrives(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_late","type":"function","function":{"arguments":"{\""}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"lookup","arguments":"q"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\":\"docs\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	first, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first Next error: %v", err)
+	}
+	if first.Type != provider.ChunkTypeToolInputStart || first.ToolCall.ID != "call_late" || first.ToolCall.ToolName != "lookup" {
+		t.Fatalf("first chunk = %#v, want live tool-input-start once name arrives", first)
+	}
+	second, err := stream.Next()
+	if err != nil {
+		t.Fatalf("second Next error: %v", err)
+	}
+	if second.Type != provider.ChunkTypeToolInputDelta || second.Text != `{"q` {
+		t.Fatalf("second chunk = %#v, want buffered plus named argument delta", second)
+	}
+	third, err := stream.Next()
+	if err != nil {
+		t.Fatalf("third Next error: %v", err)
+	}
+	if third.Type != provider.ChunkTypeToolInputDelta || third.Text != `":"docs"}` {
+		t.Fatalf("third chunk = %#v, want subsequent live argument delta", third)
+	}
+}
+
+func TestOpenAICompatStream_ErrorsWhenToolCallNameNeverArrives(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %d in %#v", len(errorChunks), chunks)
+	}
+	if errorChunks[0].Text != "Expected 'function.name' to be a string." {
+		t.Fatalf("error text = %q", errorChunks[0].Text)
+	}
+	if toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall); len(toolCalls) != 0 {
+		t.Fatalf("expected no tool-call chunks, got %#v", toolCalls)
+	}
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 0 {
+		t.Fatalf("expected no finish chunks after invalid tool call, got %#v", finishes)
+	}
+}
+
 func TestOpenAICompatStream_UsesIDFallbackWhenIndexMissing(t *testing.T) {
 	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\""}}]},"finish_reason":null}]}
 

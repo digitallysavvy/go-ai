@@ -252,3 +252,83 @@ func TestHTTPTransportDeduplicatesConcurrentOAuthRefresh(t *testing.T) {
 		t.Fatalf("refresh count = %d, want 1", got)
 	}
 }
+
+type countingSSEClient struct {
+	calls int32
+}
+
+func (c *countingSSEClient) Do(req *http.Request) (*http.Response, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
+	}, nil
+}
+
+func TestHTTPTransportInitialOAuthFetchCompletesBeforeConnectReturns(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL: "http://localhost:9999/mcp",
+		OAuth: &OAuthConfig{
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				close(started)
+				select {
+				case <-release:
+					return "initial-token", time.Hour, nil
+				case <-ctx.Done():
+					return "", 0, ctx.Err()
+				}
+			},
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.Connect(t.Context())
+	}()
+
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("Connect returned before OAuth token fetch completed: %v", err)
+	default:
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Connect error = %v", err)
+	}
+	if transport.oauth.AccessToken != "initial-token" {
+		t.Fatalf("access token = %q", transport.oauth.AccessToken)
+	}
+}
+
+func TestHTTPTransportRefreshWaitsAndDoesNotSendAfterAuthFailure(t *testing.T) {
+	sse := &countingSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OAuth: &OAuthConfig{
+			AccessToken: "expired",
+			ExpiresAt:   time.Now().Add(-time.Minute),
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				return "", 0, errors.New("auth failed")
+			},
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	err = transport.Send(t.Context(), msg)
+	if err == nil || !strings.Contains(err.Error(), "auth failed") {
+		t.Fatalf("Send error = %v, want auth failed", err)
+	}
+	if got := atomic.LoadInt32(&sse.calls); got != 0 {
+		t.Fatalf("HTTP request count = %d, want 0", got)
+	}
+}

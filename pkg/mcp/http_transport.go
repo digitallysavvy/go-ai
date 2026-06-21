@@ -132,14 +132,15 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 // Connect establishes a connection to the HTTP server
 func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.connected {
+		t.mu.Unlock()
 		return fmt.Errorf("already connected")
 	}
+	hasOAuth := t.oauth != nil
+	t.mu.Unlock()
 
 	// If OAuth is configured, get access token
-	if t.oauth != nil {
+	if hasOAuth {
 		if err := t.refreshOAuthToken(ctx); err != nil {
 			return NewTransportError("failed to get OAuth token", err)
 		}
@@ -147,6 +148,11 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 
 	// Test connection with a ping
 	// For now, just mark as connected
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.connected {
+		return fmt.Errorf("already connected")
+	}
 	t.connected = true
 	return nil
 }
@@ -194,14 +200,16 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 	}
 
 	// Set OAuth token if available
-	if t.oauth != nil && t.oauth.AccessToken != "" {
-		// Check if token is expired
-		if time.Now().After(t.oauth.ExpiresAt) {
+	if token, expired, ok := t.oauthTokenSnapshot(); ok {
+		if expired {
 			if err := t.refreshOAuthToken(ctx); err != nil {
 				return NewTransportError("failed to refresh OAuth token", err)
 			}
+			token, _, ok = t.oauthTokenSnapshot()
 		}
-		req.Header.Set("Authorization", "Bearer "+t.oauth.AccessToken)
+		if ok && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 
 	var resp *http.Response
@@ -220,7 +228,7 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		if resp.Body == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
-		if resp.StatusCode != http.StatusUnauthorized || t.oauth == nil || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
 			break
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -237,7 +245,9 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		for k, v := range t.config.Headers {
 			req.Header.Set(k, v)
 		}
-		req.Header.Set("Authorization", "Bearer "+t.oauth.AccessToken)
+		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -362,10 +372,13 @@ func (t *HTTPTransport) refreshOAuthToken(ctx context.Context) error {
 }
 
 func (t *HTTPTransport) doRefreshOAuthToken(ctx context.Context) error {
-	if t.oauth.RefreshTokenFunc == nil {
+	t.mu.Lock()
+	oauth := t.oauth
+	t.mu.Unlock()
+	if oauth == nil || oauth.RefreshTokenFunc == nil {
 		return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
 	}
-	token, expiresIn, err := t.oauth.RefreshTokenFunc(ctx, t.oauth)
+	token, expiresIn, err := oauth.RefreshTokenFunc(ctx, oauth)
 	if err != nil {
 		return err
 	}
@@ -375,15 +388,36 @@ func (t *HTTPTransport) doRefreshOAuthToken(ctx context.Context) error {
 	if expiresIn <= 0 {
 		expiresIn = time.Hour
 	}
-	t.oauth.AccessToken = token
-	t.oauth.ExpiresAt = time.Now().Add(expiresIn)
+	t.mu.Lock()
+	if t.oauth != nil {
+		t.oauth.AccessToken = token
+		t.oauth.ExpiresAt = time.Now().Add(expiresIn)
+	}
+	t.mu.Unlock()
 	return nil
 }
 
 // SetAccessToken sets the OAuth access token manually
 func (t *HTTPTransport) SetAccessToken(token string, expiresIn time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.oauth != nil {
 		t.oauth.AccessToken = token
 		t.oauth.ExpiresAt = time.Now().Add(expiresIn)
 	}
+}
+
+func (t *HTTPTransport) oauthConfigured() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.oauth != nil
+}
+
+func (t *HTTPTransport) oauthTokenSnapshot() (token string, expired bool, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.oauth == nil || t.oauth.AccessToken == "" {
+		return "", false, false
+	}
+	return t.oauth.AccessToken, time.Now().After(t.oauth.ExpiresAt), true
 }
