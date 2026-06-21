@@ -521,8 +521,11 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 	if capturedBody["model"] != "test-deployment" {
 		t.Fatalf("model body = %#v", capturedBody["model"])
 	}
-	if capturedBody["service_tier"] != "priority" {
-		t.Fatalf("service_tier body = %#v, want priority", capturedBody["service_tier"])
+	if _, ok := capturedBody["service_tier"]; ok {
+		t.Fatalf("service_tier body = %#v, want omitted for unsupported deployment name", capturedBody["service_tier"])
+	}
+	if len(result.Warnings) == 0 || result.Warnings[0].Type != "unsupported" || result.Warnings[0].Feature != "serviceTier" {
+		t.Fatalf("warnings = %#v, want unsupported serviceTier", result.Warnings)
 	}
 	if _, ok := capturedBody["input"]; !ok {
 		t.Fatalf("responses body missing input: %#v", capturedBody)

@@ -208,6 +208,9 @@ type FunctionToolDef struct {
 
 	// Strict enables strict schema validation.
 	Strict *bool `json:"strict,omitempty"`
+
+	// DeferLoading marks the function as deferred for OpenAI tool_search.
+	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
 // LocalShellToolDef represents the local_shell tool in an API request.

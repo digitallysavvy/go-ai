@@ -345,6 +345,69 @@ func TestResponsesLanguageModel_AllowedToolsProviderOption(t *testing.T) {
 	}
 }
 
+func TestResponsesLanguageModel_AllowedToolsMapsProviderToolNames(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Search?"}}},
+		}},
+		Tools: []types.Tool{{
+			Type:       types.ToolTypeProviderDefined,
+			Name:       "browser_search",
+			ProviderID: "openai.web_search",
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"browser_search"},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
+	if choice.Tools[0].Name != "web_search" {
+		t.Fatalf("allowed tool name = %q, want provider mapped web_search", choice.Tools[0].Name)
+	}
+}
+
+func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing.T) {
+	webSearchItem, _ := json.Marshal(WebSearchCallItem{
+		Type:   "web_search_call",
+		ID:     "ws_custom",
+		Status: "completed",
+		Action: &WebSearchAction{Type: "search", Queries: []string{"go"}},
+	})
+
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       "browser_search",
+		ProviderID: "openai.web_search",
+	}}
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		ID:     "resp_web",
+		Model:  "gpt-4o",
+		Output: []json.RawMessage{webSearchItem},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(tools))
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if result.ToolCalls[0].ToolName != "browser_search" {
+		t.Fatalf("tool call name = %q, want caller-facing browser_search", result.ToolCalls[0].ToolName)
+	}
+	toolResult := result.Content[1].(types.ToolResultContent)
+	if toolResult.ToolName != "browser_search" {
+		t.Fatalf("tool result name = %q, want caller-facing browser_search", toolResult.ToolName)
+	}
+}
+
 func TestResponsesLanguageModel_HasToolMatchesProviderID(t *testing.T) {
 	tools := []types.Tool{{
 		Type:       types.ToolTypeProviderDefined,
@@ -1171,6 +1234,290 @@ func TestResponsesLanguageModel_NoTextVerbosity(t *testing.T) {
 	}
 }
 
+func TestResponsesLanguageModel_ResponsesRequestParityOptions(t *testing.T) {
+	temp := 0.7
+	topP := 0.9
+	topK := 40
+	seed := 123
+	presencePenalty := 0.2
+	frequencyPenalty := 0.3
+
+	tests := []struct {
+		name          string
+		modelID       string
+		opts          provider.GenerateOptions
+		stream        bool
+		assertBody    func(t *testing.T, body map[string]interface{})
+		assertWarning func(t *testing.T, warnings []types.Warning)
+	}{
+		{
+			name:    "non-stream requests omit stream false",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{Prompt: types.Prompt{
+				Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
+			}},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if _, ok := body["stream"]; ok {
+					t.Fatalf("stream = %#v, want omitted for doGenerate parity", body["stream"])
+				}
+			},
+		},
+		{
+			name:    "stream requests set stream true",
+			modelID: "gpt-4o",
+			stream:  true,
+			opts: provider.GenerateOptions{Prompt: types.Prompt{
+				Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
+			}},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["stream"] != true {
+					t.Fatalf("stream = %#v, want true", body["stream"])
+				}
+			},
+		},
+		{
+			name:    "text response format does not create text object",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt:         types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ResponseFormat: &provider.ResponseFormat{Type: "text"},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if _, ok := body["text"]; ok {
+					t.Fatalf("text = %#v, want omitted for responseFormat text", body["text"])
+				}
+			},
+		},
+		{
+			name:    "json response format without schema uses json_object",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt:         types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ResponseFormat: &provider.ResponseFormat{Type: "json"},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				textObj := body["text"].(map[string]interface{})
+				format := textObj["format"].(map[string]interface{})
+				if format["type"] != "json_object" {
+					t.Fatalf("text.format = %#v, want json_object", format)
+				}
+			},
+		},
+		{
+			name:    "json schema honors strictJsonSchema false name description and verbosity",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ResponseFormat: &provider.ResponseFormat{
+					Type:        "json",
+					Name:        "weather",
+					Description: "weather answer",
+					Schema: map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}},
+					},
+				},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"strictJsonSchema": false, "textVerbosity": "high"},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				textObj := body["text"].(map[string]interface{})
+				if textObj["verbosity"] != "high" {
+					t.Fatalf("text.verbosity = %#v, want high", textObj["verbosity"])
+				}
+				format := textObj["format"].(map[string]interface{})
+				if format["type"] != "json_schema" || format["strict"] != false || format["name"] != "weather" || format["description"] != "weather answer" {
+					t.Fatalf("text.format = %#v", format)
+				}
+			},
+		},
+		{
+			name:    "non-reasoning model warns and omits provider reasoning",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"reasoningEffort": "high", "reasoningSummary": "auto"},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if _, ok := body["reasoning"]; ok {
+					t.Fatalf("reasoning = %#v, want omitted for non-reasoning model", body["reasoning"])
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				assertHasWarning(t, warnings, "reasoningEffort")
+				assertHasWarning(t, warnings, "reasoningSummary")
+			},
+		},
+		{
+			name:    "reasoning model removes sampling unless effort none is supported",
+			modelID: "o3",
+			opts: provider.GenerateOptions{
+				Prompt:      types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				Temperature: &temp,
+				TopP:        &topP,
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if _, ok := body["temperature"]; ok {
+					t.Fatalf("temperature = %#v, want omitted", body["temperature"])
+				}
+				if _, ok := body["top_p"]; ok {
+					t.Fatalf("top_p = %#v, want omitted", body["top_p"])
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				assertHasWarning(t, warnings, "temperature")
+				assertHasWarning(t, warnings, "topP")
+			},
+		},
+		{
+			name:    "gpt-5.2 reasoning none keeps sampling",
+			modelID: "gpt-5.2",
+			opts: provider.GenerateOptions{
+				Prompt:      types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				Temperature: &temp,
+				TopP:        &topP,
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"reasoningEffort": "none"},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["temperature"] != temp || body["top_p"] != topP {
+					t.Fatalf("sampling = %#v/%#v, want preserved", body["temperature"], body["top_p"])
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				assertNoWarning(t, warnings, "temperature")
+				assertNoWarning(t, warnings, "topP")
+			},
+		},
+		{
+			name:    "unsupported top-level settings warn and omit",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt:           types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				TopK:             &topK,
+				Seed:             &seed,
+				PresencePenalty:  &presencePenalty,
+				FrequencyPenalty: &frequencyPenalty,
+				StopSequences:    []string{},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for _, key := range []string{"top_k", "seed", "presence_penalty", "frequency_penalty", "stop"} {
+					if _, ok := body[key]; ok {
+						t.Fatalf("%s = %#v, want omitted", key, body[key])
+					}
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				for _, feature := range []string{"topK", "seed", "presencePenalty", "frequencyPenalty", "stopSequences"} {
+					assertHasWarning(t, warnings, feature)
+				}
+			},
+		},
+		{
+			name:    "provider options preserve nulls zeroes and derived includes",
+			modelID: "o3",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				Tools:  []types.Tool{openaitool.CodeInterpreter(openaitool.CodeInterpreterConfig{})},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{
+						"conversation":       nil,
+						"metadata":           nil,
+						"store":              false,
+						"previousResponseId": nil,
+						"promptCacheKey":     "cache-key",
+						"serviceTier":        nil,
+						"parallelToolCalls":  nil,
+						"maxToolCalls":       0,
+						"logprobs":           5,
+						"contextManagement":  []interface{}{map[string]interface{}{"type": "auto", "compactThreshold": 0.75}},
+					},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if _, ok := body["conversation"]; !ok || body["conversation"] != nil {
+					t.Fatalf("conversation = %#v, want explicit nil", body["conversation"])
+				}
+				if _, ok := body["metadata"]; !ok || body["metadata"] != nil {
+					t.Fatalf("metadata = %#v, want explicit nil", body["metadata"])
+				}
+				if body["store"] != false {
+					t.Fatalf("store = %#v, want false", body["store"])
+				}
+				if body["prompt_cache_key"] != "cache-key" {
+					t.Fatalf("prompt_cache_key = %#v", body["prompt_cache_key"])
+				}
+				if body["max_tool_calls"] != 0 {
+					t.Fatalf("max_tool_calls = %#v, want 0", body["max_tool_calls"])
+				}
+				if body["top_logprobs"] != 5 {
+					t.Fatalf("top_logprobs = %#v, want 5", body["top_logprobs"])
+				}
+				includes := body["include"].([]string)
+				for _, include := range []string{"reasoning.encrypted_content", "code_interpreter_call.outputs", "message.output_text.logprobs"} {
+					if !containsString(includes, include) {
+						t.Fatalf("include = %#v, missing %s", includes, include)
+					}
+				}
+				cm := body["context_management"].([]map[string]interface{})
+				if cm[0]["compact_threshold"] != 0.75 {
+					t.Fatalf("context_management = %#v", cm)
+				}
+				if _, ok := body["service_tier"]; !ok || body["service_tier"] != nil {
+					t.Fatalf("service_tier = %#v, want explicit nil", body["service_tier"])
+				}
+				if _, ok := body["parallel_tool_calls"]; !ok || body["parallel_tool_calls"] != nil {
+					t.Fatalf("parallel_tool_calls = %#v, want explicit nil", body["parallel_tool_calls"])
+				}
+			},
+		},
+		{
+			name:    "explicit empty include and contextManagement arrays are preserved",
+			modelID: "gpt-4o",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{
+						"include":           []interface{}{},
+						"contextManagement": []interface{}{},
+					},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				includes, ok := body["include"].([]string)
+				if !ok || len(includes) != 0 {
+					t.Fatalf("include = %#v, want explicit empty []", body["include"])
+				}
+				cm, ok := body["context_management"].([]map[string]interface{})
+				if !ok || len(cm) != 0 {
+					t.Fatalf("context_management = %#v, want explicit empty []", body["context_management"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(Config{APIKey: "test-key"})
+			model := NewResponsesLanguageModel(p, tt.modelID)
+			body, _, warnings, err := model.buildRequest(&tt.opts, tt.stream)
+			if err != nil {
+				t.Fatalf("buildRequest failed: %v", err)
+			}
+			if tt.assertBody != nil {
+				tt.assertBody(t, body)
+			}
+			if tt.assertWarning != nil {
+				tt.assertWarning(t, warnings)
+			}
+		})
+	}
+}
+
 func TestResponsesLanguageModel_DefaultFileIDPrefixes(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
@@ -1218,6 +1565,34 @@ func TestResponsesLanguageModel_DefaultFileIDPrefixes(t *testing.T) {
 	if file["file_id"] != nil || !strings.HasPrefix(file["file_data"].(string), "data:application/pdf;base64,file-12345") {
 		t.Fatalf("file part with disabled prefixes = %#v, want file_data", file)
 	}
+}
+
+func assertHasWarning(t *testing.T, warnings []types.Warning, feature string) {
+	t.Helper()
+	for _, warning := range warnings {
+		if warning.Type == "unsupported" && warning.Feature == feature {
+			return
+		}
+	}
+	t.Fatalf("warnings = %#v, missing unsupported %s", warnings, feature)
+}
+
+func assertNoWarning(t *testing.T, warnings []types.Warning, feature string) {
+	t.Helper()
+	for _, warning := range warnings {
+		if warning.Type == "unsupported" && warning.Feature == feature {
+			t.Fatalf("warnings = %#v, unexpectedly included unsupported %s", warnings, feature)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestResponsesModel_Factory verifies the provider factory creates a valid model.

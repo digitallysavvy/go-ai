@@ -68,6 +68,39 @@ func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_FunctionTool_DeferLoading(t *testing.T) {
+	tool := types.Tool{
+		Name:        "get_weather",
+		Description: "Get weather",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"deferLoading": true,
+			},
+		},
+	}
+
+	result := PrepareTools([]types.Tool{tool})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	if def.DeferLoading == nil || !*def.DeferLoading {
+		t.Fatalf("defer_loading = %#v, want true", def.DeferLoading)
+	}
+
+	data, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if raw["defer_loading"] != true {
+		t.Fatalf("wire def = %#v, want defer_loading true", raw)
+	}
+}
+
 func TestPrepareTools_FunctionTool_DefaultParametersIncludeObjectType(t *testing.T) {
 	result := PrepareTools([]types.Tool{{Name: "empty_tool"}})
 	def, ok := result[0].(FunctionToolDef)
@@ -131,6 +164,49 @@ func TestPrepareTools_WebSearch(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_ProviderDefinedDispatchesByProviderID(t *testing.T) {
+	external := false
+	result := PrepareTools([]types.Tool{
+		{
+			Type:       types.ToolTypeProviderDefined,
+			Name:       "browser_search",
+			ProviderID: "openai.web_search",
+			ProviderOptions: openaitool.WebSearchConfig{
+				ExternalWebAccess: &external,
+				SearchContextSize: "low",
+			},
+		},
+		{
+			Type:       types.ToolTypeProviderDefined,
+			Name:       "python",
+			ProviderID: "openai.code_interpreter",
+			ProviderOptions: openaitool.CodeInterpreterConfig{
+				Container: openaitool.CodeInterpreterContainer{FileIDs: []string{"file_1"}},
+			},
+		},
+	})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(result))
+	}
+
+	webSearch, ok := result[0].(WebSearchToolDef)
+	if !ok {
+		t.Fatalf("expected WebSearchToolDef from ProviderID dispatch, got %T", result[0])
+	}
+	if webSearch.Type != "web_search" || webSearch.SearchContextSize != "low" || webSearch.ExternalWebAccess == nil || *webSearch.ExternalWebAccess {
+		t.Fatalf("web search def = %#v", webSearch)
+	}
+
+	code, ok := result[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected code interpreter map from ProviderID dispatch, got %T", result[1])
+	}
+	container := code["container"].(map[string]interface{})
+	if code["type"] != "code_interpreter" || container["file_ids"].([]string)[0] != "file_1" {
+		t.Fatalf("code interpreter def = %#v", code)
+	}
+}
+
 func TestPrepareTools_WebSearchPreview(t *testing.T) {
 	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{
 		SearchContextSize: "low",
@@ -141,6 +217,83 @@ func TestPrepareTools_WebSearchPreview(t *testing.T) {
 	}
 	if def.Type != "web_search_preview" || def.SearchContextSize != "low" {
 		t.Fatalf("web search preview def = %#v", def)
+	}
+}
+
+func TestPrepareTools_MCP(t *testing.T) {
+	readOnly := true
+	result := PrepareTools([]types.Tool{openaitool.MCP(openaitool.MCPConfig{
+		ServerLabel:       "docs",
+		AllowedTools:      openaitool.MCPAllowedTools{ReadOnly: &readOnly, ToolNames: []string{"search_docs"}},
+		Authorization:     "Bearer token",
+		ConnectorID:       "conn_123",
+		Headers:           map[string]string{"x-team": "sdk"},
+		RequireApproval:   openaitool.MCPRequireApproval{Never: &openaitool.MCPApprovalFilter{ToolNames: []string{"search_docs"}}},
+		ServerDescription: "Documentation search",
+		ServerURL:         "https://mcp.example.com",
+	})})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result))
+	}
+	def, ok := result[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected MCP map, got %T", result[0])
+	}
+	if def["type"] != "mcp" || def["server_label"] != "docs" || def["authorization"] != "Bearer token" || def["connector_id"] != "conn_123" || def["server_url"] != "https://mcp.example.com" {
+		t.Fatalf("mcp def = %#v", def)
+	}
+	allowed := def["allowed_tools"].(map[string]interface{})
+	if allowed["read_only"] != true || allowed["tool_names"].([]string)[0] != "search_docs" {
+		t.Fatalf("allowed_tools = %#v", allowed)
+	}
+	approval := def["require_approval"].(map[string]interface{})
+	never := approval["never"].(map[string]interface{})
+	if never["tool_names"].([]string)[0] != "search_docs" {
+		t.Fatalf("require_approval = %#v", approval)
+	}
+}
+
+func TestPrepareTools_MCP_DefaultRequireApprovalNever(t *testing.T) {
+	result := PrepareTools([]types.Tool{openaitool.MCP(openaitool.MCPConfig{
+		ServerLabel: "docs",
+		ServerURL:   "https://mcp.example.com",
+	})})
+	def := result[0].(map[string]interface{})
+	if def["require_approval"] != "never" {
+		t.Fatalf("require_approval = %#v, want never", def["require_approval"])
+	}
+
+	result = PrepareTools([]types.Tool{openaitool.MCP(openaitool.MCPConfig{
+		ServerLabel:     "docs",
+		ServerURL:       "https://mcp.example.com",
+		RequireApproval: openaitool.MCPRequireApproval{},
+	})})
+	def = result[0].(map[string]interface{})
+	if def["require_approval"] != "never" {
+		t.Fatalf("empty require_approval object = %#v, want never", def["require_approval"])
+	}
+
+	result = PrepareTools([]types.Tool{openaitool.MCP(openaitool.MCPConfig{
+		ServerLabel:     "docs",
+		ServerURL:       "https://mcp.example.com",
+		RequireApproval: openaitool.MCPRequireApproval{Never: &openaitool.MCPApprovalFilter{}},
+	})})
+	def = result[0].(map[string]interface{})
+	approval := def["require_approval"].(map[string]interface{})
+	never := approval["never"].(map[string]interface{})
+	if _, ok := never["tool_names"]; ok {
+		t.Fatalf("require_approval.never = %#v, want tool_names omitted when unset", never)
+	}
+}
+
+func TestPrepareTools_UnknownProviderToolProducesEmptyToolList(t *testing.T) {
+	result := PrepareTools([]types.Tool{{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       "unknown",
+		ProviderID: "openai.unknown",
+	}})
+	if result == nil || len(result) != 0 {
+		t.Fatalf("result = %#v, want explicit empty list for unknown provider tool", result)
 	}
 }
 

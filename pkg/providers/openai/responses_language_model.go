@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -116,21 +117,33 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	conversation := ""
 	previousResponseID := ""
 	promptCacheRetention := ""
+	promptCacheKey := ""
 	reasoningEffort := ""
 	reasoningSummary := ""
+	strictJSONSchema := true
 	textVerbosity := ""
 	serviceTier := ""
 	user := ""
+	instructions := ""
+	safetyIdentifier := ""
 	passThroughUnsupportedFiles := false
-	maxToolCalls := 0
+	forceReasoning := (*bool)(nil)
+	maxToolCalls := (*int)(nil)
 	parallelToolCalls := (*bool)(nil)
 	truncation := ""
 	includeFields := []string(nil)
+	includeExplicit := false
+	var metadata interface{}
+	var topLogprobs interface{}
+	var contextManagement []map[string]interface{}
+	contextManagementExplicit := false
 	var allowedTools *responses.AllowedToolsToolChoice
 	providerOptionsName := m.provider.responsesProviderOptionsName()
+	var openaiOpts map[string]interface{}
 
 	if opts.ProviderOptions != nil {
-		openaiOpts, ok := opts.ProviderOptions[providerOptionsName].(map[string]interface{})
+		var ok bool
+		openaiOpts, ok = opts.ProviderOptions[providerOptionsName].(map[string]interface{})
 		if !ok && providerOptionsName != "openai" {
 			openaiOpts, ok = opts.ProviderOptions["openai"].(map[string]interface{})
 		}
@@ -148,11 +161,17 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["promptCacheRetention"].(string); ok {
 				promptCacheRetention = v
 			}
+			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
+				promptCacheKey = v
+			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
 				reasoningEffort = v
 			}
 			if v, ok := openaiOpts["reasoningSummary"].(string); ok {
 				reasoningSummary = v
+			}
+			if v, ok := openaiOpts["strictJsonSchema"].(bool); ok {
+				strictJSONSchema = v
 			}
 			if v, ok := openaiOpts["textVerbosity"].(string); ok {
 				textVerbosity = v
@@ -163,26 +182,61 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["user"].(string); ok {
 				user = v
 			}
+			if v, ok := openaiOpts["instructions"].(string); ok {
+				instructions = v
+			}
+			if v, ok := openaiOpts["safetyIdentifier"].(string); ok {
+				safetyIdentifier = v
+			}
 			if v, ok := openaiOpts["passThroughUnsupportedFiles"].(bool); ok {
 				passThroughUnsupportedFiles = v
 			}
-			if v, ok := openaiOpts["maxToolCalls"].(int); ok {
-				maxToolCalls = v
+			if v, ok := intFromInterface(openaiOpts["maxToolCalls"]); ok {
+				maxToolCalls = &v
 			}
 			if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
 				parallelToolCalls = &v
 			}
+			if v, ok := openaiOpts["forceReasoning"].(bool); ok {
+				forceReasoning = &v
+			}
 			if v, ok := openaiOpts["truncation"].(string); ok {
 				truncation = v
 			}
-			if v, ok := openaiOpts["include"].([]string); ok {
+			if _, ok := openaiOpts["include"]; ok {
+				includeExplicit = true
+			}
+			if v := stringSliceFromInterface(openaiOpts["include"]); includeExplicit {
 				includeFields = v
 			}
-			allowedTools = parseAllowedTools(openaiOpts["allowedTools"])
+			metadata = openaiOpts["metadata"]
+			topLogprobs, _ = responsesTopLogprobs(openaiOpts["logprobs"])
+			if _, ok := openaiOpts["contextManagement"]; ok && openaiOpts["contextManagement"] != nil {
+				contextManagementExplicit = true
+			}
+			if contextManagementExplicit {
+				contextManagement = responsesContextManagement(openaiOpts["contextManagement"])
+			}
+			allowedTools = parseAllowedTools(openaiOpts["allowedTools"], opts.Tools)
 		}
 	}
 
 	var warnings []types.Warning
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	if opts.PresencePenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+	}
+	if opts.FrequencyPenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+	}
+	if opts.StopSequences != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
+	}
 	if conversation != "" && previousResponseID != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -191,10 +245,18 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		})
 	}
 
+	isReasoning := isReasoningModel(m.modelID)
+	if forceReasoning != nil {
+		isReasoning = *forceReasoning
+	}
+
 	// Determine system message mode based on model type.
 	systemMsgMode := "system"
-	if isReasoningModel(m.modelID) {
+	if isReasoning {
 		systemMsgMode = "developer"
+	}
+	if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
+		systemMsgMode = v
 	}
 
 	// Convert prompt to Responses API input format.
@@ -215,9 +277,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
-		"input":  input,
+		"model": m.modelID,
+		"input": input,
+	}
+	if stream {
+		body["stream"] = true
 	}
 
 	// Reasoning effort (from top-level Reasoning param or provider options).
@@ -242,7 +306,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if reasoningEffort != "" {
 		effort = reasoningEffort
 	}
-	if effort != "" || reasoningSummary != "" {
+	if isReasoning && (effort != "" || reasoningSummary != "") {
 		reasoning := map[string]interface{}{}
 		if effort != "" {
 			reasoning["effort"] = effort
@@ -251,17 +315,47 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			reasoning["summary"] = reasoningSummary
 		}
 		body["reasoning"] = reasoning
+	} else if !isReasoning {
+		if reasoningEffort != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffort",
+				Details: "reasoningEffort is not supported for non-reasoning models",
+			})
+		}
+		if reasoningSummary != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningSummary",
+				Details: "reasoningSummary is not supported for non-reasoning models",
+			})
+		}
 	}
 
 	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
 	// later families when reasoning effort is disabled.
-	supportsNonReasoningParams := !isReasoningModel(m.modelID) || (effort == "none" && supportsNonReasoningParameters(m.modelID))
+	supportsNonReasoningParams := !isReasoning || (effort == "none" && supportsNonReasoningParameters(m.modelID))
 	if supportsNonReasoningParams {
 		if opts.Temperature != nil {
 			body["temperature"] = *opts.Temperature
 		}
 		if opts.TopP != nil {
 			body["top_p"] = *opts.TopP
+		}
+	} else {
+		if opts.Temperature != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "temperature",
+				Details: "temperature is not supported for reasoning models",
+			})
+		}
+		if opts.TopP != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "topP",
+				Details: "topP is not supported for reasoning models",
+			})
 		}
 	}
 
@@ -270,13 +364,27 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Response format and/or text verbosity → "text" object.
-	// The text object is created when either a response format or textVerbosity is set.
-	hasFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type != ""
-	if hasFormat || textVerbosity != "" {
+	// TS only creates text.format for responseFormat.type === "json".
+	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
+	if hasJSONFormat || textVerbosity != "" {
 		textObj := map[string]interface{}{}
-		if hasFormat {
-			textObj["format"] = map[string]interface{}{
-				"type": opts.ResponseFormat.Type,
+		if hasJSONFormat {
+			if opts.ResponseFormat.Schema != nil {
+				format := map[string]interface{}{
+					"type":   "json_schema",
+					"strict": strictJSONSchema,
+					"name":   opts.ResponseFormat.Name,
+					"schema": opts.ResponseFormat.Schema,
+				}
+				if format["name"] == "" {
+					format["name"] = "response"
+				}
+				if opts.ResponseFormat.Description != "" {
+					format["description"] = opts.ResponseFormat.Description
+				}
+				textObj["format"] = format
+			} else {
+				textObj["format"] = map[string]interface{}{"type": "json_object"}
 			}
 		}
 		if textVerbosity != "" {
@@ -298,49 +406,124 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// Build include list — always add reasoning.encrypted_content when
 	// store=false and we have a reasoning model, so multi-turn works without
 	// server-side persistence.
-	if !store && isReasoningModel(m.modelID) {
+	if !store && isReasoning {
 		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
 	}
 	if hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview") {
 		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
 	}
+	if hasTool(opts.Tools, "openai.code_interpreter") {
+		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
+	}
+	if topLogprobs != nil {
+		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
+	}
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
+	} else if hasNilProviderOption(openaiOpts, "include") {
+		body["include"] = nil
+	} else if includeExplicit {
+		body["include"] = []string{}
+	}
+	if topLogprobs != nil {
+		body["top_logprobs"] = topLogprobs
 	}
 
 	// Provider options fields.
 	if conversation != "" {
 		body["conversation"] = conversation
+	} else if hasNilProviderOption(openaiOpts, "conversation") {
+		body["conversation"] = nil
+	}
+	if metadata != nil || hasNilProviderOption(openaiOpts, "metadata") {
+		body["metadata"] = metadata
 	}
 	if storeExplicit {
 		body["store"] = store
+	} else if hasNilProviderOption(openaiOpts, "store") {
+		body["store"] = nil
 	}
 	if previousResponseID != "" {
 		body["previous_response_id"] = previousResponseID
+	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
+		body["previous_response_id"] = nil
 	}
 	if promptCacheRetention != "" {
 		body["prompt_cache_retention"] = promptCacheRetention
+	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
+		body["prompt_cache_retention"] = nil
+	}
+	if promptCacheKey != "" {
+		body["prompt_cache_key"] = promptCacheKey
+	} else if hasNilProviderOption(openaiOpts, "promptCacheKey") {
+		body["prompt_cache_key"] = nil
 	}
 	if serviceTier != "" {
-		body["service_tier"] = serviceTier
+		switch serviceTier {
+		case "flex":
+			if supportsFlexProcessing(m.modelID) {
+				body["service_tier"] = serviceTier
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "serviceTier",
+					Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
+				})
+			}
+		case "priority":
+			if supportsPriorityProcessing(m.modelID) {
+				body["service_tier"] = serviceTier
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "serviceTier",
+					Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
+				})
+			}
+		default:
+			body["service_tier"] = serviceTier
+		}
+	} else if hasNilProviderOption(openaiOpts, "serviceTier") {
+		body["service_tier"] = nil
 	}
 	if user != "" {
 		body["user"] = user
+	} else if hasNilProviderOption(openaiOpts, "user") {
+		body["user"] = nil
 	}
-	if maxToolCalls > 0 {
-		body["max_tool_calls"] = maxToolCalls
+	if instructions != "" {
+		body["instructions"] = instructions
+	} else if hasNilProviderOption(openaiOpts, "instructions") {
+		body["instructions"] = nil
+	}
+	if safetyIdentifier != "" {
+		body["safety_identifier"] = safetyIdentifier
+	} else if hasNilProviderOption(openaiOpts, "safetyIdentifier") {
+		body["safety_identifier"] = nil
+	}
+	if maxToolCalls != nil {
+		body["max_tool_calls"] = *maxToolCalls
+	} else if hasNilProviderOption(openaiOpts, "maxToolCalls") {
+		body["max_tool_calls"] = nil
 	}
 	if parallelToolCalls != nil {
 		body["parallel_tool_calls"] = *parallelToolCalls
+	} else if hasNilProviderOption(openaiOpts, "parallelToolCalls") {
+		body["parallel_tool_calls"] = nil
 	}
 	if truncation != "" {
 		body["truncation"] = truncation
+	} else if hasNilProviderOption(openaiOpts, "truncation") {
+		body["truncation"] = nil
+	}
+	if len(contextManagement) > 0 || contextManagementExplicit {
+		body["context_management"] = contextManagement
 	}
 
 	return body, store, warnings, nil
 }
 
-func parseAllowedTools(value interface{}) *responses.AllowedToolsToolChoice {
+func parseAllowedTools(value interface{}, tools []types.Tool) *responses.AllowedToolsToolChoice {
 	raw, ok := value.(map[string]interface{})
 	if !ok {
 		return nil
@@ -353,14 +536,15 @@ func parseAllowedTools(value interface{}) *responses.AllowedToolsToolChoice {
 	if mode == "" {
 		mode = "auto"
 	}
-	tools := make([]responses.AllowedToolsToolEntry, len(names))
+	entries := make([]responses.AllowedToolsToolEntry, len(names))
 	for i, name := range names {
-		tools[i] = responses.AllowedToolsToolEntry{Type: "function", Name: name}
+		mapped, _ := resolveResponsesToolChoiceName(name, tools)
+		entries[i] = responses.AllowedToolsToolEntry{Type: "function", Name: mapped}
 	}
 	return &responses.AllowedToolsToolChoice{
 		Type:  "allowed_tools",
 		Mode:  mode,
-		Tools: tools,
+		Tools: entries,
 	}
 }
 
@@ -379,6 +563,103 @@ func stringSliceFromInterface(value interface{}) []string {
 	default:
 		return nil
 	}
+}
+
+func intFromInterface(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
+		}
+	}
+	return 0, false
+}
+
+func responsesTopLogprobs(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return 20, true
+		}
+	case int:
+		if v > 0 {
+			return v, true
+		}
+	case int64:
+		if v > 0 {
+			return v, true
+		}
+	case float64:
+		if v > 0 {
+			return v, true
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			if i > 0 {
+				return i, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func responsesContextManagement(value interface{}) []map[string]interface{} {
+	var entries []map[string]interface{}
+	switch v := value.(type) {
+	case []map[string]interface{}:
+		entries = v
+	case []interface{}:
+		entries = make([]map[string]interface{}, 0, len(v))
+		for _, entry := range v {
+			if m, ok := entry.(map[string]interface{}); ok {
+				entries = append(entries, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		mapped := map[string]interface{}{}
+		if v, ok := entry["type"]; ok {
+			mapped["type"] = v
+		}
+		if v, ok := entry["compactThreshold"]; ok {
+			mapped["compact_threshold"] = v
+		}
+		out = append(out, mapped)
+	}
+	return out
+}
+
+func hasNilProviderOption(options map[string]interface{}, key string) bool {
+	if options == nil {
+		return false
+	}
+	value, ok := options[key]
+	return ok && value == nil
+}
+
+func supportsFlexProcessing(modelID string) bool {
+	return strings.HasPrefix(modelID, "o3") ||
+		strings.HasPrefix(modelID, "o4-mini") ||
+		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
+}
+
+func supportsPriorityProcessing(modelID string) bool {
+	return strings.HasPrefix(modelID, "gpt-4") ||
+		(strings.HasPrefix(modelID, "gpt-5") &&
+			!strings.HasPrefix(modelID, "gpt-5-nano") &&
+			!strings.HasPrefix(modelID, "gpt-5-chat") &&
+			!strings.HasPrefix(modelID, "gpt-5.4-nano")) ||
+		strings.HasPrefix(modelID, "o3") ||
+		strings.HasPrefix(modelID, "o4-mini")
 }
 
 // convertResponsesToolChoice maps a types.ToolChoice to the Responses API format.
@@ -486,9 +767,19 @@ func hasTool(tools []types.Tool, name string) bool {
 func responsesWebSearchToolName(tools []types.Tool) string {
 	for _, tool := range tools {
 		switch {
-		case tool.Name == "openai.web_search_preview" || tool.ProviderID == "openai.web_search_preview":
+		case tool.ProviderID == "openai.web_search_preview":
+			if tool.Name != "" && tool.Name != "openai.web_search_preview" {
+				return tool.Name
+			}
 			return "web_search_preview"
-		case tool.Name == "openai.web_search" || tool.ProviderID == "openai.web_search":
+		case tool.Name == "openai.web_search_preview":
+			return "web_search_preview"
+		case tool.ProviderID == "openai.web_search":
+			if tool.Name != "" && tool.Name != "openai.web_search" {
+				return tool.Name
+			}
+			return "web_search"
+		case tool.Name == "openai.web_search":
 			return "web_search"
 		}
 	}

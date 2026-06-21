@@ -23,7 +23,10 @@ func PrepareTools(tools []types.Tool) []interface{} {
 
 	result := make([]interface{}, 0, len(tools))
 	for _, t := range tools {
-		result = append(result, convertTool(t))
+		def := convertTool(t)
+		if def != nil {
+			result = append(result, def)
+		}
 	}
 	return result
 }
@@ -35,7 +38,11 @@ func convertTool(t types.Tool) interface{} {
 	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
 		return convertCustomTool(t)
 	}
-	switch t.Name {
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
 	case "openai.local_shell":
 		return LocalShellToolDef{Type: "local_shell"}
 	case "openai.shell":
@@ -52,9 +59,14 @@ func convertTool(t types.Tool) interface{} {
 		return convertWebSearchTool(t)
 	case "openai.web_search_preview":
 		return convertWebSearchPreviewTool(t)
+	case "openai.mcp":
+		return convertMCPTool(t)
 	case "openai.tool_search":
 		return convertToolSearchTool(t)
 	default:
+		if t.Type == types.ToolTypeProviderDefined {
+			return nil
+		}
 		return convertFunctionTool(t)
 	}
 }
@@ -200,6 +212,84 @@ func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
 	return def
 }
 
+func convertMCPTool(t types.Tool) map[string]interface{} {
+	cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+	def := map[string]interface{}{
+		"type":             "mcp",
+		"server_label":     cfg.ServerLabel,
+		"require_approval": "never",
+	}
+	if cfg.AllowedTools != nil {
+		def["allowed_tools"] = mcpAllowedTools(cfg.AllowedTools)
+	}
+	if cfg.Authorization != "" {
+		def["authorization"] = cfg.Authorization
+	}
+	if cfg.ConnectorID != "" {
+		def["connector_id"] = cfg.ConnectorID
+	}
+	if len(cfg.Headers) > 0 {
+		def["headers"] = cfg.Headers
+	}
+	if cfg.RequireApproval != nil {
+		def["require_approval"] = mcpRequireApproval(cfg.RequireApproval)
+	}
+	if cfg.ServerDescription != "" {
+		def["server_description"] = cfg.ServerDescription
+	}
+	if cfg.ServerURL != "" {
+		def["server_url"] = cfg.ServerURL
+	}
+	return def
+}
+
+func mcpAllowedTools(value interface{}) interface{} {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case openaitool.MCPAllowedTools:
+		out := map[string]interface{}{}
+		if v.ReadOnly != nil {
+			out["read_only"] = *v.ReadOnly
+		}
+		if v.ToolNames != nil {
+			out["tool_names"] = v.ToolNames
+		}
+		return out
+	case *openaitool.MCPAllowedTools:
+		if v == nil {
+			return nil
+		}
+		return mcpAllowedTools(*v)
+	default:
+		return v
+	}
+}
+
+func mcpRequireApproval(value interface{}) interface{} {
+	switch v := value.(type) {
+	case string:
+		return v
+	case openaitool.MCPRequireApproval:
+		if v.Never == nil {
+			return "never"
+		}
+		never := map[string]interface{}{}
+		if v.Never.ToolNames != nil {
+			never["tool_names"] = v.Never.ToolNames
+		}
+		out := map[string]interface{}{"never": never}
+		return out
+	case *openaitool.MCPRequireApproval:
+		if v == nil {
+			return "never"
+		}
+		return mcpRequireApproval(*v)
+	default:
+		return v
+	}
+}
+
 func webSearchLocation(loc *openaitool.WebSearchLocation) interface{} {
 	if loc == nil {
 		return nil
@@ -295,8 +385,28 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		strict := true
 		def.Strict = &strict
 	}
+	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
+		def.DeferLoading = &deferLoading
+	}
 
 	return def
+}
+
+func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
+	options, ok := providerOptions.(map[string]interface{})
+	if !ok {
+		return false, false
+	}
+	openaiRaw, ok := options["openai"]
+	if !ok {
+		return false, false
+	}
+	openaiOptions, ok := openaiRaw.(map[string]interface{})
+	if !ok {
+		return false, false
+	}
+	deferLoading, ok := openaiOptions["deferLoading"].(bool)
+	return deferLoading, ok
 }
 
 func defaultFunctionParameters(parameters interface{}) interface{} {
