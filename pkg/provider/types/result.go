@@ -271,6 +271,9 @@ type TranscriptionResult struct {
 
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Response contains provider response metadata such as model ID and headers.
+	Response *ResponseMetadata `json:"response,omitempty"`
 }
 
 // TranscriptionTimestamp represents a timestamp in a transcription

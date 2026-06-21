@@ -185,6 +185,50 @@ func TestWorkflowTelemetryOptionsOverrideConstructor(t *testing.T) {
 	}
 }
 
+func TestWorkflowOnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T) {
+	model := &wfMockModel{}
+	constructorEndCalls := 0
+	constructorFinishCalls := 0
+	callEndCalls := 0
+	callFinishCalls := 0
+
+	agent, _ := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "t1",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		OnStepEnd: func(context.Context, ai.OnStepFinishEvent) {
+			constructorEndCalls++
+		},
+		OnStepFinish: func(context.Context, ai.OnStepFinishEvent) {
+			constructorFinishCalls++
+		},
+	})
+
+	_, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{
+		Prompt: "hello",
+		OnStepEnd: func(context.Context, ai.OnStepFinishEvent) {
+			callEndCalls++
+		},
+		OnStepFinish: func(context.Context, ai.OnStepFinishEvent) {
+			callFinishCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	if constructorEndCalls == 0 || callEndCalls == 0 {
+		t.Fatalf("expected OnStepEnd callbacks, constructor=%d call=%d", constructorEndCalls, callEndCalls)
+	}
+	if constructorFinishCalls != 0 || callFinishCalls != 0 {
+		t.Fatalf("deprecated OnStepFinish should not run when OnStepEnd is set, constructor=%d call=%d", constructorFinishCalls, callFinishCalls)
+	}
+}
+
 func TestWorkflowStructuredOutputGenerateAndToolSet(t *testing.T) {
 	model := &wfJSONModel{}
 	agent, err := NewWorkflowAgent(WorkflowAgent{

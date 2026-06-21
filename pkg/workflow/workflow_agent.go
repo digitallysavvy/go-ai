@@ -12,7 +12,12 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
+// StepEndCallback is called after each completed step.
+type StepEndCallback func(ctx context.Context, e ai.OnStepFinishEvent)
+
 // StepFinishCallback is called after each completed step.
+//
+// Deprecated: use StepEndCallback.
 type StepFinishCallback func(ctx context.Context, e ai.OnStepFinishEvent)
 
 // FinishCallback is called once after workflow completion.
@@ -91,10 +96,12 @@ type WorkflowAgent struct {
 	OnStepStart          StepStartCallback
 	OnToolExecutionStart ToolExecutionStartCallback
 	OnToolExecutionEnd   ToolExecutionEndCallback
-	OnStepFinish         StepFinishCallback
-	OnFinish             FinishCallback
-	OnError              ErrorCallback
-	OnAbort              AbortCallback
+	OnStepEnd            StepEndCallback
+	// Deprecated: use OnStepEnd.
+	OnStepFinish StepFinishCallback
+	OnFinish     FinishCallback
+	OnError      ErrorCallback
+	OnAbort      AbortCallback
 
 	PrepareCall       PrepareCallHook
 	PrepareStep       PrepareStepHook
@@ -143,10 +150,12 @@ type WorkflowGenerateOptions struct {
 	OnStepStart          StepStartCallback
 	OnToolExecutionStart ToolExecutionStartCallback
 	OnToolExecutionEnd   ToolExecutionEndCallback
-	OnStepFinish         StepFinishCallback
-	OnFinish             FinishCallback
-	OnError              ErrorCallback
-	OnAbort              AbortCallback
+	OnStepEnd            StepEndCallback
+	// Deprecated: use OnStepEnd.
+	OnStepFinish StepFinishCallback
+	OnFinish     FinishCallback
+	OnError      ErrorCallback
+	OnAbort      AbortCallback
 }
 
 // WorkflowStreamOptions configures a single stream invocation.
@@ -172,10 +181,12 @@ type WorkflowStreamOptions struct {
 	OnStepStart          StepStartCallback
 	OnToolExecutionStart ToolExecutionStartCallback
 	OnToolExecutionEnd   ToolExecutionEndCallback
-	OnStepFinish         StepFinishCallback
-	OnFinish             FinishCallback
-	OnError              ErrorCallback
-	OnAbort              AbortCallback
+	OnStepEnd            StepEndCallback
+	// Deprecated: use OnStepEnd.
+	OnStepFinish StepFinishCallback
+	OnFinish     FinishCallback
+	OnError      ErrorCallback
+	OnAbort      AbortCallback
 }
 
 // WorkflowResult is the final non-streaming workflow result.
@@ -302,6 +313,12 @@ func mergeStepFinish(a, b StepFinishCallback) StepFinishCallback {
 		return a
 	}
 	return func(ctx context.Context, e ai.OnStepFinishEvent) { a(ctx, e); b(ctx, e) }
+}
+func resolveStepEnd(onStepEnd StepEndCallback, onStepFinish StepFinishCallback) StepFinishCallback {
+	if onStepEnd != nil {
+		return func(ctx context.Context, e ai.OnStepFinishEvent) { onStepEnd(ctx, e) }
+	}
+	return onStepFinish
 }
 func mergeFinish(a, b FinishCallback) FinishCallback {
 	if a == nil {
@@ -463,7 +480,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepStartEvent:            mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
 		OnToolExecutionStart:        mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:          mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
-		OnStepFinishEvent:           mergeStepFinish(w.OnStepFinish, mergeStepFinish(govr.OnStepFinish, ovr.OnStepFinish)),
+		OnStepFinishEvent:           mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
 		OnFinishEvent:               mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
 	})
 }
@@ -496,6 +513,7 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 		if legacy.OnToolExecutionEnd == nil {
 			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
 		}
+		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish
 		legacy.OnFinish = opts.OnFinish
 	}
@@ -561,6 +579,7 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		if legacy.OnToolExecutionEnd == nil {
 			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
 		}
+		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish
 		legacy.OnFinish = opts.OnFinish
 	}
