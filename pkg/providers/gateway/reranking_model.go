@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -49,7 +48,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts.TopN != nil {
 		body["topN"] = *opts.TopN
 	}
-	if len(opts.ProviderOptions) > 0 {
+	if opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
@@ -73,12 +72,11 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	return &types.RerankResult{
 		Ranking:          response.Ranking,
+		Warnings:         []types.Warning{},
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.RerankResponse{
-			Timestamp: time.Now(),
-			ModelID:   m.modelID,
-			Headers:   map[string][]string(httpResp.Headers),
-			Body:      response,
+			Headers: map[string][]string(httpResp.Headers),
+			Body:    rawJSONBody(httpResp.Body),
 		},
 	}, nil
 }

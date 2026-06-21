@@ -20,11 +20,11 @@ func TestGatewayEmbeddingModelMetadataAndHeaders(t *testing.T) {
 	if m.SpecificationVersion() != "v4" || m.Provider() != "gateway" || m.ModelID() != "openai/text-embedding-3-small" {
 		t.Fatalf("metadata mismatch")
 	}
-	if m.MaxEmbeddingsPerCall() != 100 || !m.SupportsParallelCalls() {
+	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {
 		t.Fatalf("limits mismatch")
 	}
 	headers := m.getModelConfigHeaders()
-	if headers["ai-embedding-model-specification-version"] != "4" || headers["ai-embedding-model-id"] != "openai/text-embedding-3-small" {
+	if headers["ai-embedding-model-specification-version"] != "4" || headers["ai-model-id"] != "openai/text-embedding-3-small" {
 		t.Fatalf("config headers mismatch: %#v", headers)
 	}
 }
@@ -39,11 +39,12 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
 		w.Header().Set("X-Req", "r1")
 		w.Header().Set("Content-Type", "application/json")
-		if _, ok := seenBody["values"]; ok {
-			_, _ = w.Write([]byte(`{"embeddings":[[1,2],[3,4]],"usage":{"inputTokens":2,"totalTokens":2}}`))
+		values := seenBody["values"].([]interface{})
+		if len(values) == 1 {
+			_, _ = w.Write([]byte(`{"embeddings":[[1,2,3]],"usage":{"tokens":1},"providerMetadata":{"gateway":{"id":"one"}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"embedding":[1,2,3],"usage":{"inputTokens":1,"totalTokens":1}}`))
+		_, _ = w.Write([]byte(`{"embeddings":[[1,2],[3,4]],"usage":{"tokens":2},"providerMetadata":{"gateway":{"id":"many"}}}`))
 	}))
 	defer closeServer()
 
@@ -53,14 +54,22 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 	}
 	m := NewEmbeddingModel(p, "openai/text-embedding-3-small")
 
-	one, err := m.DoEmbed(context.Background(), "hello", &provider.EmbedModelOptions{Headers: map[string]string{"X-Test": "yes"}})
+	one, err := m.DoEmbed(context.Background(), "hello", &provider.EmbedModelOptions{
+		Headers: map[string]string{"X-Test": "yes"},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"dimensions": 128},
+		},
+	})
 	if err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if seenPath != "/v4/ai/embedding-model" || seenHeader != "yes" || seenBody["value"] != "hello" {
+	if seenPath != "/v4/ai/embedding-model" || seenHeader != "yes" || seenBody["values"].([]interface{})[0] != "hello" {
 		t.Fatalf("request mismatch path=%q header=%q body=%#v", seenPath, seenHeader, seenBody)
 	}
-	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"] != "r1" {
+	if seenBody["providerOptions"].(map[string]interface{})["openai"].(map[string]interface{})["dimensions"] != float64(128) {
+		t.Fatalf("providerOptions mismatch: %#v", seenBody)
+	}
+	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"] != "r1" || one.Response.Body == nil || one.Usage.Tokens != 1 || one.ProviderMetadata["gateway"] == nil || one.Warnings == nil || len(one.Warnings) != 0 {
 		t.Fatalf("result mismatch: %#v", one)
 	}
 
@@ -68,8 +77,32 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" {
+	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" || many.Responses[0].Body == nil || many.Usage.Tokens != 2 || many.ProviderMetadata["gateway"] == nil || many.Warnings == nil || len(many.Warnings) != 0 {
 		t.Fatalf("many result mismatch: %#v", many)
+	}
+}
+
+func TestGatewayEmbeddingModelPreservesEmptyProviderOptions(t *testing.T) {
+	var seenBody map[string]interface{}
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[[1]],"usage":{"tokens":1}}`))
+	}))
+	defer closeServer()
+
+	p, err := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	_, err = NewEmbeddingModel(p, "openai/text-embedding-3-small").DoEmbed(context.Background(), "hello", &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{},
+	})
+	if err != nil {
+		t.Fatalf("DoEmbed error = %v", err)
+	}
+	if providerOptions, ok := seenBody["providerOptions"].(map[string]interface{}); !ok || len(providerOptions) != 0 {
+		t.Fatalf("empty providerOptions should be preserved when provided: %#v", seenBody)
 	}
 }
 

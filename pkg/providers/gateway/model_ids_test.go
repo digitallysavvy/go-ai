@@ -30,7 +30,7 @@ func TestGatewayModelIDConstantsMatchRefreshedSettings(t *testing.T) {
 }
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
-	if len(GatewayLanguageModelIDs) != 198 {
+	if len(GatewayLanguageModelIDs) != 204 {
 		t.Fatalf("language catalog length = %d, want refreshed TS catalog", len(GatewayLanguageModelIDs))
 	}
 	if len(GatewayEmbeddingModelIDs) != 24 {
@@ -39,10 +39,37 @@ func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	if len(GatewayImageModelIDs) != 27 {
 		t.Fatalf("image catalog length = %d, want refreshed TS catalog", len(GatewayImageModelIDs))
 	}
-	if len(GatewayVideoModelIDs) != 25 {
+	if len(GatewayVideoModelIDs) != 26 {
 		t.Fatalf("video catalog length = %d, want refreshed TS catalog", len(GatewayVideoModelIDs))
 	}
 	if len(GatewayRerankingModelIDs) != 5 {
 		t.Fatalf("reranking catalog length = %d, want refreshed TS catalog", len(GatewayRerankingModelIDs))
+	}
+}
+
+func TestGatewayModelIDCatalogIncludesJune6Additions(t *testing.T) {
+	languageIDs := map[GatewayLanguageModelID]bool{}
+	for _, id := range GatewayLanguageModelIDs {
+		languageIDs[id] = true
+	}
+	for _, id := range []GatewayLanguageModelID{
+		GatewayLanguageModelAlibabaQwen37Plus,
+		GatewayLanguageModelGoogleGemini31FlashImage,
+		GatewayLanguageModelMinimaxMinimaxM3,
+		GatewayLanguageModelNvidiaNemotron3Ultra550bA55b,
+		GatewayLanguageModelStepfunStep35Flash,
+		GatewayLanguageModelStepfunStep37Flash,
+	} {
+		if !languageIDs[id] {
+			t.Fatalf("language catalog missing %q", id)
+		}
+	}
+
+	videoIDs := map[GatewayVideoModelID]bool{}
+	for _, id := range GatewayVideoModelIDs {
+		videoIDs[id] = true
+	}
+	if !videoIDs[GatewayVideoModelXaiGrokImagineVideo15Preview] {
+		t.Fatalf("video catalog missing %q", GatewayVideoModelXaiGrokImagineVideo15Preview)
 	}
 }

@@ -70,6 +70,7 @@ func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		w.Header().Set("X-Transcription", "ok")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"text": "hello",
 			"segments": []map[string]interface{}{
@@ -98,5 +99,11 @@ func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
 	}
 	if result.Text != "hello" || result.Language != "en" || result.DurationInSeconds == nil || *result.DurationInSeconds != 1.5 || len(result.Segments) != 1 {
 		t.Fatalf("result mismatch: %#v", result)
+	}
+	if result.Response == nil || result.Response.ModelID != "openai/whisper" || result.Response.Headers["X-Transcription"] != "ok" || result.Response.Body == nil {
+		t.Fatalf("response metadata mismatch: %#v", result.Response)
+	}
+	if result.Warnings == nil || len(result.Warnings) != 0 {
+		t.Fatalf("warnings should be an explicit empty slice to match TS, got %#v", result.Warnings)
 	}
 }

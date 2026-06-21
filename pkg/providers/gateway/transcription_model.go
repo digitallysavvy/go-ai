@@ -3,7 +3,10 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -43,7 +46,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	headers = internalhttp.MergeHeaders(headers, opts.Headers)
 
 	var response gatewayTranscriptionResponse
-	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/transcription-model",
 		Body:    body,
@@ -62,14 +65,24 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		})
 	}
 
+	warnings := response.Warnings
+	if warnings == nil {
+		warnings = []types.Warning{}
+	}
 	return &types.TranscriptionResult{
 		Text:              response.Text,
 		Segments:          segments,
 		Language:          response.Language,
 		DurationInSeconds: response.DurationInSeconds,
 		Timestamps:        segments,
-		Warnings:          response.Warnings,
+		Warnings:          warnings,
 		ProviderMetadata:  response.ProviderMetadata,
+		Response: &types.ResponseMetadata{
+			Timestamp: time.Now(),
+			ModelID:   m.modelID,
+			Headers:   flattenHeaders(httpResp.Headers),
+			Body:      parseGatewayTranscriptionRawBody(httpResp.Body),
+		},
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: durationValue(response.DurationInSeconds),
 		},
@@ -103,4 +116,12 @@ func durationValue(duration *float64) float64 {
 		return 0
 	}
 	return *duration
+}
+
+func parseGatewayTranscriptionRawBody(body []byte) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return fmt.Sprintf("%s", body)
+	}
+	return raw
 }

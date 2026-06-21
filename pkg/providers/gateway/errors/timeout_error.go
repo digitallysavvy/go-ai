@@ -29,6 +29,11 @@ type GatewayTimeoutError struct {
 
 	// GenerationID identifies the failed gateway generation when available.
 	GenerationID string
+
+	// RawType, Code, and Param preserve Gateway response payload details.
+	RawType string
+	Code    interface{}
+	Param   interface{}
 }
 
 // Error implements the error interface
@@ -54,6 +59,12 @@ func (e *GatewayTimeoutError) GetStatusCode() int { return e.StatusCode }
 func (e *GatewayTimeoutError) GetType() string { return "timeout_error" }
 
 func (e *GatewayTimeoutError) GetGenerationID() string { return e.GenerationID }
+
+func (e *GatewayTimeoutError) GetRawType() string { return e.RawType }
+
+func (e *GatewayTimeoutError) GetCode() interface{} { return e.Code }
+
+func (e *GatewayTimeoutError) GetParam() interface{} { return e.Param }
 
 func (e *GatewayTimeoutError) IsRetryable() bool {
 	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusConflict || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= http.StatusInternalServerError

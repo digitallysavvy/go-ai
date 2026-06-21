@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -62,6 +63,13 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool {
 	// Gateway passes through to underlying models, assume image input is supported
 	return true
+}
+
+// SupportedURLs reports that Gateway can pass through direct file URLs.
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	return map[string][]string{
+		"*/*": {`.*`},
+	}
 }
 
 // DoGenerate performs non-streaming text generation
@@ -125,24 +133,28 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream := streaming.NewSSEParser(httpResp.Body)
 
 	return &gatewayTextStream{
-		parser: stream,
-		body:   httpResp.Body,
+		parser:           stream,
+		body:             httpResp.Body,
+		includeRawChunks: opts.IncludeRawChunks,
 	}, nil
 }
 
 // gatewayTextStream implements provider.TextStream for Gateway provider
 type gatewayTextStream struct {
-	parser *streaming.SSEParser
-	body   io.ReadCloser
-	err    error
+	parser           *streaming.SSEParser
+	body             io.ReadCloser
+	err              error
+	includeRawChunks bool
 }
 
 // gatewayStreamChunk represents a chunk from the Gateway streaming API
 // This follows the LanguageModelV3StreamPart format
 type gatewayStreamChunk struct {
 	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
 
 	// For text-delta chunks
+	Delta     string `json:"delta,omitempty"`
 	TextDelta string `json:"textDelta,omitempty"`
 
 	// For reasoning-delta chunks
@@ -168,6 +180,28 @@ type gatewayStreamChunk struct {
 
 	// For error chunks
 	Error string `json:"error,omitempty"`
+
+	Warnings []types.Warning `json:"warnings,omitempty"`
+
+	// For response-metadata chunks
+	ModelID   string `json:"modelId,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+
+	// For source chunks
+	SourceType       string          `json:"sourceType,omitempty"`
+	SourceID         string          `json:"sourceId,omitempty"`
+	URL              string          `json:"url,omitempty"`
+	MediaType        string          `json:"mediaType,omitempty"`
+	Title            string          `json:"title,omitempty"`
+	Filename         string          `json:"filename,omitempty"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// For file/custom chunks
+	Data            json.RawMessage        `json:"data,omitempty"`
+	Kind            string                 `json:"kind,omitempty"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+
+	raw map[string]interface{}
 }
 
 // Read implements io.Reader
@@ -205,6 +239,7 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 		s.err = fmt.Errorf("failed to parse stream chunk: %w", err)
 		return nil, s.err
 	}
+	_ = json.Unmarshal([]byte(event.Data), &chunk.raw)
 
 	// Convert Gateway chunk to provider StreamChunk
 	return s.convertChunk(&chunk)
@@ -213,16 +248,86 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 // convertChunk converts a Gateway stream chunk to a provider StreamChunk
 func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.StreamChunk, error) {
 	switch chunk.Type {
-	case "text-delta":
+	case "stream-start":
 		return &provider.StreamChunk{
-			Type: provider.ChunkTypeText,
-			Text: chunk.TextDelta,
+			Type:     provider.ChunkTypeStreamStart,
+			Warnings: chunk.Warnings,
+		}, nil
+
+	case "raw":
+		if !s.includeRawChunks {
+			return s.Next()
+		}
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeRaw,
+			Raw:  chunk.raw,
+		}, nil
+
+	case "response-metadata":
+		metadata := &provider.ResponseMetadata{
+			ID:      chunk.ID,
+			ModelID: chunk.ModelID,
+		}
+		if chunk.Timestamp != "" {
+			if parsed, err := time.Parse(time.RFC3339, chunk.Timestamp); err == nil {
+				metadata.Timestamp = parsed
+			}
+		}
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: metadata,
+		}, nil
+
+	case "text-start":
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeTextStart,
+			ID:               chunk.ID,
+			ProviderMetadata: chunk.ProviderMetadata,
+		}, nil
+
+	case "text-delta":
+		text := chunk.TextDelta
+		if text == "" {
+			text = chunk.Delta
+		}
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeText,
+			ID:               chunk.ID,
+			Text:             text,
+			ProviderMetadata: chunk.ProviderMetadata,
+		}, nil
+
+	case "text-end":
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeTextEnd,
+			ID:               chunk.ID,
+			ProviderMetadata: chunk.ProviderMetadata,
+		}, nil
+
+	case "reasoning-start":
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeReasoningStart,
+			ID:               chunk.ID,
+			ProviderMetadata: chunk.ProviderMetadata,
 		}, nil
 
 	case "reasoning-delta":
+		reasoning := chunk.ReasoningDelta
+		if reasoning == "" {
+			reasoning = chunk.Delta
+		}
 		return &provider.StreamChunk{
-			Type:      provider.ChunkTypeReasoning,
-			Reasoning: chunk.ReasoningDelta,
+			Type:             provider.ChunkTypeReasoning,
+			ID:               chunk.ID,
+			Reasoning:        reasoning,
+			ProviderMetadata: chunk.ProviderMetadata,
+		}, nil
+
+	case "reasoning-end":
+		return &provider.StreamChunk{
+			Type:             provider.ChunkTypeReasoningEnd,
+			ID:               chunk.ID,
+			ProviderMetadata: chunk.ProviderMetadata,
 		}, nil
 
 	case "tool-call", "tool-call-delta":
@@ -259,6 +364,58 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		}
 
 		return result, nil
+
+	case "source":
+		sourceID := chunk.SourceID
+		if sourceID == "" {
+			sourceID = chunk.ID
+		}
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeSource,
+			SourceContent: &types.SourceContent{
+				SourceType:       chunk.SourceType,
+				ID:               sourceID,
+				URL:              chunk.URL,
+				MediaType:        chunk.MediaType,
+				Title:            chunk.Title,
+				Filename:         chunk.Filename,
+				ProviderMetadata: chunk.ProviderMetadata,
+			},
+		}, nil
+
+	case "file":
+		file := &types.GeneratedFileContent{
+			MediaType:        chunk.MediaType,
+			URL:              chunk.URL,
+			ProviderMetadata: chunk.ProviderMetadata,
+			ProviderOptions:  chunk.ProviderOptions,
+		}
+		if len(chunk.Data) > 0 {
+			var dataString string
+			if json.Unmarshal(chunk.Data, &dataString) == nil {
+				file.FileData = types.FileData{Type: types.FileDataTypeData, DataString: dataString, MediaType: chunk.MediaType}
+			} else {
+				var fileData types.FileData
+				if json.Unmarshal(chunk.Data, &fileData) == nil {
+					file.FileData = fileData
+					file.URL = fileData.URL
+				}
+			}
+		}
+		return &provider.StreamChunk{
+			Type:                 provider.ChunkTypeFile,
+			GeneratedFileContent: file,
+		}, nil
+
+	case "custom":
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeCustom,
+			CustomContent: &types.CustomContent{
+				Kind:             chunk.Kind,
+				ProviderOptions:  chunk.ProviderOptions,
+				ProviderMetadata: chunk.ProviderMetadata,
+			},
+		}, nil
 
 	case "usage":
 		if chunk.Usage != nil {
@@ -319,10 +476,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 
 			messages = append(messages, message)
 		}
-		body["messages"] = messages
+		body["prompt"] = messages
 	} else if opts.Prompt.IsSimple() {
 		// Simple text prompt - convert to user message
-		body["messages"] = []map[string]interface{}{
+		body["prompt"] = []map[string]interface{}{
 			{
 				"role": "user",
 				"content": []map[string]interface{}{
@@ -526,10 +683,13 @@ func cloneMapStringInterface(in map[string]interface{}) map[string]interface{} {
 func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]interface{}, error) {
 	switch v := part.(type) {
 	case types.TextContent:
-		return map[string]interface{}{
+		result := map[string]interface{}{
 			"type": "text",
 			"text": v.Text,
-		}, nil
+		}
+		addProviderOptions(result, v.ProviderOptions)
+		addProviderMetadata(result, v.ProviderMetadata)
+		return result, nil
 
 	case types.ImageContent:
 		result := map[string]interface{}{
@@ -549,31 +709,234 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 			result["image"] = fmt.Sprintf("data:%s;base64,%s", mediaType, encoded)
 		}
 
+		addProviderOptions(result, v.ProviderOptions)
 		return result, nil
 
 	case types.FileContent:
+		data, err := gatewayFileDataMap(v.FileData, v.Data, v.URL, v.Reference, v.Text)
+		if err != nil {
+			return nil, err
+		}
 		result := map[string]interface{}{
 			"type": "file",
+			"data": data,
 		}
 
-		// Handle file data as typed data payload (TS parity):
-		// { type: "data", data: "<base64>" } instead of a data: URL string.
-		if len(v.Data) > 0 {
-			encoded := base64.StdEncoding.EncodeToString(v.Data)
-			result["data"] = map[string]interface{}{
-				"type": "data",
-				"data": encoded,
-			}
+		mediaType := v.MediaType
+		if mediaType == "" {
+			mediaType = v.MimeType
 		}
-
-		if v.MimeType != "" {
-			result["mimeType"] = v.MimeType
+		if mediaType != "" {
+			result["mediaType"] = mediaType
 		}
+		if v.Filename != "" {
+			result["filename"] = v.Filename
+		}
+		addProviderOptions(result, v.ProviderOptions)
+		addProviderMetadata(result, v.ProviderMetadata)
 
 		return result, nil
 
+	case types.ReasoningFileContent:
+		data, err := gatewayFileDataMap(v.FileData, v.Data, "", "", "")
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]interface{}{
+			"type":      "reasoning-file",
+			"data":      data,
+			"mediaType": v.MediaType,
+		}
+		addProviderOptions(result, v.ProviderOptions)
+		addProviderMetadata(result, v.ProviderMetadata)
+		return result, nil
+
+	case types.ToolResultContent:
+		return gatewayToolResultMap(v)
+
 	default:
-		return nil, fmt.Errorf("unsupported content part type: %T", part)
+		return nil, fmt.Errorf("unsupported content part type: %s", part.ContentType())
+	}
+}
+
+func gatewayFileDataMap(fileData types.FileData, legacyData []byte, legacyURL, legacyReference, legacyText string) (map[string]interface{}, error) {
+	fileType := fileData.Type
+	switch {
+	case fileType == "" && fileData.DataString != "":
+		fileType = types.FileDataTypeData
+	case fileType == "" && len(fileData.Data) > 0:
+		fileType = types.FileDataTypeData
+	case fileType == "" && len(legacyData) > 0:
+		fileType = types.FileDataTypeData
+	case fileType == "" && fileData.URL != "":
+		fileType = types.FileDataTypeURL
+	case fileType == "" && legacyURL != "":
+		fileType = types.FileDataTypeURL
+	case fileType == "" && len(fileData.Reference) > 0:
+		fileType = types.FileDataTypeReference
+	case fileType == "" && legacyReference != "":
+		fileType = types.FileDataTypeReference
+	case fileType == "" && fileData.Text != "":
+		fileType = types.FileDataTypeText
+	case fileType == "" && legacyText != "":
+		fileType = types.FileDataTypeText
+	}
+
+	switch fileType {
+	case types.FileDataTypeData, "":
+		dataString := fileData.DataString
+		if dataString == "" {
+			data := fileData.Data
+			if len(data) == 0 {
+				data = legacyData
+			}
+			dataString = base64.StdEncoding.EncodeToString(data)
+		}
+		return map[string]interface{}{"type": "data", "data": dataString}, nil
+	case types.FileDataTypeURL:
+		url := fileData.URL
+		if url == "" {
+			url = legacyURL
+		}
+		return map[string]interface{}{"type": "url", "url": url}, nil
+	case types.FileDataTypeReference:
+		reference := fileData.Reference
+		if len(reference) == 0 && legacyReference != "" {
+			reference = types.ProviderReference{"provider": legacyReference}
+		}
+		return map[string]interface{}{"type": "reference", "reference": reference}, nil
+	case types.FileDataTypeText:
+		text := fileData.Text
+		if text == "" {
+			text = legacyText
+		}
+		return map[string]interface{}{"type": "text", "text": text}, nil
+	default:
+		return nil, fmt.Errorf("unsupported file data type: %s", fileType)
+	}
+}
+
+func gatewayToolResultMap(part types.ToolResultContent) (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"type":       "tool-result",
+		"toolCallId": part.ToolCallID,
+		"toolName":   part.ToolName,
+	}
+	if part.Title != "" {
+		result["title"] = part.Title
+	}
+	if part.Input != nil {
+		result["input"] = part.Input
+	}
+	if part.ProviderExecuted {
+		result["providerExecuted"] = true
+	}
+	if part.Dynamic {
+		result["dynamic"] = true
+	}
+	if part.Preliminary {
+		result["preliminary"] = true
+	}
+	if part.ToolMetadata != nil {
+		result["toolMetadata"] = part.ToolMetadata
+	}
+	addProviderOptions(result, part.ProviderOptions)
+	addProviderMetadata(result, part.ProviderMetadata)
+
+	switch {
+	case part.Output != nil:
+		output, err := gatewayToolResultOutputMap(*part.Output)
+		if err != nil {
+			return nil, err
+		}
+		result["output"] = output
+	case part.Error != "":
+		result["output"] = map[string]interface{}{"type": "error-text", "value": part.Error}
+	case part.Result != nil:
+		result["output"] = map[string]interface{}{"type": "json", "value": part.Result}
+	}
+
+	return result, nil
+}
+
+func gatewayToolResultOutputMap(output types.ToolResultOutput) (map[string]interface{}, error) {
+	result := map[string]interface{}{"type": string(output.Type)}
+	if output.Value != nil {
+		result["value"] = output.Value
+	}
+	if output.Reason != "" {
+		result["reason"] = output.Reason
+	}
+	addProviderOptions(result, output.ProviderOptions)
+
+	if len(output.Content) > 0 {
+		content := make([]map[string]interface{}, 0, len(output.Content))
+		for _, block := range output.Content {
+			converted, err := gatewayToolResultContentBlockMap(block)
+			if err != nil {
+				return nil, err
+			}
+			content = append(content, converted)
+		}
+		result["value"] = content
+	}
+	return result, nil
+}
+
+func gatewayToolResultContentBlockMap(block types.ToolResultContentBlock) (map[string]interface{}, error) {
+	switch b := block.(type) {
+	case types.TextContentBlock:
+		result := map[string]interface{}{"type": "text", "text": b.Text}
+		addProviderOptions(result, b.ProviderOptions)
+		return result, nil
+	case types.ImageContentBlock:
+		result := map[string]interface{}{
+			"type":      "image",
+			"data":      base64.StdEncoding.EncodeToString(b.Data),
+			"mediaType": b.MediaType,
+		}
+		addProviderOptions(result, b.ProviderOptions)
+		return result, nil
+	case types.FileContentBlock:
+		data, err := gatewayFileDataMap(b.FileData, b.Data, b.URL, b.Reference, b.Text)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]interface{}{
+			"type": "file",
+			"data": data,
+		}
+		if b.MediaType != "" {
+			result["mediaType"] = b.MediaType
+		}
+		if b.Filename != "" {
+			result["filename"] = b.Filename
+		}
+		addProviderOptions(result, b.ProviderOptions)
+		return result, nil
+	case types.CustomContentBlock:
+		return map[string]interface{}{
+			"type":            "custom",
+			"providerOptions": b.ProviderOptions,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported tool result content block type: %s", block.ToolResultContentType())
+	}
+}
+
+func addProviderOptions(result map[string]interface{}, options map[string]interface{}) {
+	if len(options) > 0 {
+		result["providerOptions"] = options
+	}
+}
+
+func addProviderMetadata(result map[string]interface{}, metadata json.RawMessage) {
+	if len(metadata) == 0 {
+		return
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(metadata, &decoded); err == nil {
+		result["providerMetadata"] = decoded
 	}
 }
 

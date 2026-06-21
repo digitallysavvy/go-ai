@@ -33,6 +33,7 @@ const (
 	GatewayLanguageModelAlibabaQwen3627b                GatewayLanguageModelID = "alibaba/qwen3.6-27b"
 	GatewayLanguageModelAlibabaQwen36Plus               GatewayLanguageModelID = "alibaba/qwen3.6-plus"
 	GatewayLanguageModelAlibabaQwen37Max                GatewayLanguageModelID = "alibaba/qwen3.7-max"
+	GatewayLanguageModelAlibabaQwen37Plus               GatewayLanguageModelID = "alibaba/qwen3.7-plus"
 	GatewayLanguageModelAmazonNova2Lite                 GatewayLanguageModelID = "amazon/nova-2-lite"
 	GatewayLanguageModelAmazonNovaLite                  GatewayLanguageModelID = "amazon/nova-lite"
 	GatewayLanguageModelAmazonNovaMicro                 GatewayLanguageModelID = "amazon/nova-micro"
@@ -72,6 +73,7 @@ const (
 	GatewayLanguageModelGoogleGemini3Flash              GatewayLanguageModelID = "google/gemini-3-flash"
 	GatewayLanguageModelGoogleGemini3ProImage           GatewayLanguageModelID = "google/gemini-3-pro-image"
 	GatewayLanguageModelGoogleGemini3ProPreview         GatewayLanguageModelID = "google/gemini-3-pro-preview"
+	GatewayLanguageModelGoogleGemini31FlashImage        GatewayLanguageModelID = "google/gemini-3.1-flash-image"
 	GatewayLanguageModelGoogleGemini31FlashImagePreview GatewayLanguageModelID = "google/gemini-3.1-flash-image-preview"
 	GatewayLanguageModelGoogleGemini31FlashLite         GatewayLanguageModelID = "google/gemini-3.1-flash-lite"
 	GatewayLanguageModelGoogleGemini31FlashLitePreview  GatewayLanguageModelID = "google/gemini-3.1-flash-lite-preview"
@@ -101,6 +103,7 @@ const (
 	GatewayLanguageModelMinimaxMinimaxM25Highspeed      GatewayLanguageModelID = "minimax/minimax-m2.5-highspeed"
 	GatewayLanguageModelMinimaxMinimaxM27               GatewayLanguageModelID = "minimax/minimax-m2.7"
 	GatewayLanguageModelMinimaxMinimaxM27Highspeed      GatewayLanguageModelID = "minimax/minimax-m2.7-highspeed"
+	GatewayLanguageModelMinimaxMinimaxM3                GatewayLanguageModelID = "minimax/minimax-m3"
 	GatewayLanguageModelMistralCodestral                GatewayLanguageModelID = "mistral/codestral"
 	GatewayLanguageModelMistralDevstral2                GatewayLanguageModelID = "mistral/devstral-2"
 	GatewayLanguageModelMistralDevstralSmall            GatewayLanguageModelID = "mistral/devstral-small"
@@ -127,6 +130,7 @@ const (
 	GatewayLanguageModelMorphMorphV3Large               GatewayLanguageModelID = "morph/morph-v3-large"
 	GatewayLanguageModelNvidiaNemotron3Nano30bA3b       GatewayLanguageModelID = "nvidia/nemotron-3-nano-30b-a3b"
 	GatewayLanguageModelNvidiaNemotron3Super120bA12b    GatewayLanguageModelID = "nvidia/nemotron-3-super-120b-a12b"
+	GatewayLanguageModelNvidiaNemotron3Ultra550bA55b    GatewayLanguageModelID = "nvidia/nemotron-3-ultra-550b-a55b"
 	GatewayLanguageModelNvidiaNemotronNano12bV2Vl       GatewayLanguageModelID = "nvidia/nemotron-nano-12b-v2-vl"
 	GatewayLanguageModelNvidiaNemotronNano9bV2          GatewayLanguageModelID = "nvidia/nemotron-nano-9b-v2"
 	GatewayLanguageModelOpenaiGpt35Turbo                GatewayLanguageModelID = "openai/gpt-3.5-turbo"
@@ -173,6 +177,8 @@ const (
 	GatewayLanguageModelPerplexitySonar                 GatewayLanguageModelID = "perplexity/sonar"
 	GatewayLanguageModelPerplexitySonarPro              GatewayLanguageModelID = "perplexity/sonar-pro"
 	GatewayLanguageModelPerplexitySonarReasoningPro     GatewayLanguageModelID = "perplexity/sonar-reasoning-pro"
+	GatewayLanguageModelStepfunStep35Flash              GatewayLanguageModelID = "stepfun/step-3.5-flash"
+	GatewayLanguageModelStepfunStep37Flash              GatewayLanguageModelID = "stepfun/step-3.7-flash"
 	GatewayLanguageModelXaiGrok3                        GatewayLanguageModelID = "xai/grok-3"
 	GatewayLanguageModelXaiGrok3Fast                    GatewayLanguageModelID = "xai/grok-3-fast"
 	GatewayLanguageModelXaiGrok3Mini                    GatewayLanguageModelID = "xai/grok-3-mini"
@@ -235,6 +241,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAlibabaQwen3627b,
 	GatewayLanguageModelAlibabaQwen36Plus,
 	GatewayLanguageModelAlibabaQwen37Max,
+	GatewayLanguageModelAlibabaQwen37Plus,
 	GatewayLanguageModelAmazonNova2Lite,
 	GatewayLanguageModelAmazonNovaLite,
 	GatewayLanguageModelAmazonNovaMicro,
@@ -274,6 +281,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelGoogleGemini3Flash,
 	GatewayLanguageModelGoogleGemini3ProImage,
 	GatewayLanguageModelGoogleGemini3ProPreview,
+	GatewayLanguageModelGoogleGemini31FlashImage,
 	GatewayLanguageModelGoogleGemini31FlashImagePreview,
 	GatewayLanguageModelGoogleGemini31FlashLite,
 	GatewayLanguageModelGoogleGemini31FlashLitePreview,
@@ -303,6 +311,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMinimaxMinimaxM25Highspeed,
 	GatewayLanguageModelMinimaxMinimaxM27,
 	GatewayLanguageModelMinimaxMinimaxM27Highspeed,
+	GatewayLanguageModelMinimaxMinimaxM3,
 	GatewayLanguageModelMistralCodestral,
 	GatewayLanguageModelMistralDevstral2,
 	GatewayLanguageModelMistralDevstralSmall,
@@ -329,6 +338,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMorphMorphV3Large,
 	GatewayLanguageModelNvidiaNemotron3Nano30bA3b,
 	GatewayLanguageModelNvidiaNemotron3Super120bA12b,
+	GatewayLanguageModelNvidiaNemotron3Ultra550bA55b,
 	GatewayLanguageModelNvidiaNemotronNano12bV2Vl,
 	GatewayLanguageModelNvidiaNemotronNano9bV2,
 	GatewayLanguageModelOpenaiGpt35Turbo,
@@ -375,6 +385,8 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelPerplexitySonar,
 	GatewayLanguageModelPerplexitySonarPro,
 	GatewayLanguageModelPerplexitySonarReasoningPro,
+	GatewayLanguageModelStepfunStep35Flash,
+	GatewayLanguageModelStepfunStep37Flash,
 	GatewayLanguageModelXaiGrok3,
 	GatewayLanguageModelXaiGrok3Fast,
 	GatewayLanguageModelXaiGrok3Mini,
@@ -557,6 +569,7 @@ const (
 	GatewayVideoModelKlingaiKlingV30I2v           GatewayVideoModelID = "klingai/kling-v3.0-i2v"
 	GatewayVideoModelKlingaiKlingV30T2v           GatewayVideoModelID = "klingai/kling-v3.0-t2v"
 	GatewayVideoModelXaiGrokImagineVideo          GatewayVideoModelID = "xai/grok-imagine-video"
+	GatewayVideoModelXaiGrokImagineVideo15Preview GatewayVideoModelID = "xai/grok-imagine-video-1.5-preview"
 )
 
 // GatewayVideoModelIDs lists the known gateway video model IDs from the refreshed settings catalog.
@@ -586,6 +599,7 @@ var GatewayVideoModelIDs = []GatewayVideoModelID{
 	GatewayVideoModelKlingaiKlingV30I2v,
 	GatewayVideoModelKlingaiKlingV30T2v,
 	GatewayVideoModelXaiGrokImagineVideo,
+	GatewayVideoModelXaiGrokImagineVideo15Preview,
 }
 
 // GatewayRerankingModelID constants mirror gateway-reranking-model-settings.ts.

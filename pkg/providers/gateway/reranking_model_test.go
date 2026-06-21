@@ -106,11 +106,49 @@ func TestRerankingModel_DoRerank_RequestAndResponseParity(t *testing.T) {
 	if len(result.Ranking) != 2 || result.Ranking[0].Index != 0 || result.Ranking[0].RelevanceScore != 0.89 {
 		t.Fatalf("ranking = %#v", result.Ranking)
 	}
+	if result.Warnings == nil || len(result.Warnings) != 0 {
+		t.Fatalf("warnings should be an explicit empty slice to match TS, got %#v", result.Warnings)
+	}
 	if http.Header(result.Response.Headers).Get("x-request-id") != "req-123" {
 		t.Fatalf("response header x-request-id = %q, want req-123", http.Header(result.Response.Headers).Get("x-request-id"))
 	}
+	if !result.Response.Timestamp.IsZero() || result.Response.ModelID != "" || result.Response.Body == nil {
+		t.Fatalf("response metadata should be TS headers/body only, got %#v", result.Response)
+	}
 	if result.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata missing")
+	}
+}
+
+func TestRerankingModel_DoRerank_PreservesEmptyProviderOptions(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ranking":[{"index":0,"relevanceScore":1}]}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.RerankingModel("cohere/rerank-v3.5")
+	if err != nil {
+		t.Fatalf("RerankingModel error = %v", err)
+	}
+	_, err = model.DoRerank(context.Background(), &provider.RerankOptions{
+		Documents:       []string{"Paris"},
+		Query:           "capital",
+		ProviderOptions: map[string]interface{}{},
+	})
+	if err != nil {
+		t.Fatalf("DoRerank error = %v", err)
+	}
+	if providerOptions, ok := body["providerOptions"].(map[string]interface{}); !ok || len(providerOptions) != 0 {
+		t.Fatalf("empty providerOptions should be preserved when provided: %#v", body)
 	}
 }
 

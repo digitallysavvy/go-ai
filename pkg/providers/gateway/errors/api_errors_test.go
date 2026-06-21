@@ -156,6 +156,42 @@ func TestCreateGatewayErrorFromResponseTypedCases(t *testing.T) {
 		t.Fatalf("auth error message = %q", authErr.Error())
 	}
 
+	var internalErr *GatewayInternalServerError
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"upstream rate","type":"AI_APICallError","param":{"provider":"x"},"code":"too_many"},"generationId":"gen_rate"}`),
+		429,
+		"default",
+		cause,
+		"api-key",
+	)
+	if !errors.As(err, &internalErr) {
+		t.Fatalf("error type = %T, want *GatewayInternalServerError for unknown TS error type", err)
+	}
+	var details GatewayErrorDetails
+	if !errors.As(err, &details) {
+		t.Fatalf("error type = %T, want GatewayErrorDetails", err)
+	}
+	if details.GetRawType() != "AI_APICallError" || details.GetCode() != "too_many" {
+		t.Fatalf("raw details = type:%#v code:%#v", details.GetRawType(), details.GetCode())
+	}
+	if internalErr.GetGenerationID() != "gen_rate" {
+		t.Fatalf("generationID = %q", internalErr.GetGenerationID())
+	}
+
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"upstream bad","type":"AI_APICallError","code":400}}`),
+		400,
+		"default",
+		cause,
+		"api-key",
+	)
+	if !errors.As(err, &internalErr) {
+		t.Fatalf("error type = %T, want *GatewayInternalServerError for unknown TS error type", err)
+	}
+	if !errors.As(err, &details) || details.GetRawType() != "AI_APICallError" || details.GetCode() != float64(400) {
+		t.Fatalf("invalid raw details = %#v", details)
+	}
+
 	err = CreateGatewayErrorFromResponse(
 		[]byte(`{"error":{"message":"unknown","type":"new_type","param":null}}`),
 		500,
@@ -163,9 +199,24 @@ func TestCreateGatewayErrorFromResponseTypedCases(t *testing.T) {
 		cause,
 		"api-key",
 	)
-	var internalErr *GatewayInternalServerError
 	if !errors.As(err, &internalErr) {
 		t.Fatalf("error type = %T, want *GatewayInternalServerError", err)
+	}
+
+	for _, rawType := range []string{"timeout", "failed_dependency"} {
+		err = CreateGatewayErrorFromResponse(
+			[]byte(`{"error":{"message":"unknown gateway type","type":"`+rawType+`","param":null}}`),
+			504,
+			"default",
+			cause,
+			"api-key",
+		)
+		if !errors.As(err, &internalErr) {
+			t.Fatalf("error type for %s = %T, want *GatewayInternalServerError", rawType, err)
+		}
+		if !errors.As(err, &details) || details.GetRawType() != rawType {
+			t.Fatalf("raw details for %s = %#v", rawType, details.GetRawType())
+		}
 	}
 }
 

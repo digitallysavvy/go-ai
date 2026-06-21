@@ -2,12 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for AI Gateway
@@ -41,8 +41,7 @@ func (m *EmbeddingModel) ModelID() string {
 
 // MaxEmbeddingsPerCall returns the maximum number of embeddings that can be generated in a single call
 func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
-	// Gateway passes through to underlying models, use a conservative default
-	return 100
+	return 2048
 }
 
 // SupportsParallelCalls returns whether the model supports parallel embedding calls
@@ -53,7 +52,10 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 // DoEmbed generates an embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
 	body := map[string]interface{}{
-		"value": input,
+		"values": []string{input},
+	}
+	if opts != nil && opts.ProviderOptions != nil {
+		body["providerOptions"] = opts.ProviderOptions
 	}
 
 	headers := m.getModelConfigHeaders()
@@ -65,19 +67,31 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		}
 	}
 
-	var result types.EmbeddingResult
+	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/embedding-model",
 		Body:    body,
 		Headers: headers,
-	}, &result)
+	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
-	result.Response = types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)}
+	rawBody := rawJSONBody(httpResp.Body)
+	result := &types.EmbeddingResult{
+		Usage:            response.Usage,
+		Warnings:         []types.Warning{},
+		ProviderMetadata: response.ProviderMetadata,
+		Response: types.EmbeddingResponse{
+			Headers: flattenHeaders(httpResp.Headers),
+			Body:    rawBody,
+		},
+	}
+	if len(response.Embeddings) > 0 {
+		result.Embedding = response.Embeddings[0]
+	}
 
-	return &result, nil
+	return result, nil
 }
 
 // DoEmbedMany generates embeddings for multiple inputs
@@ -85,6 +99,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	body := map[string]interface{}{
 		"values": inputs,
 	}
+	if opts != nil && opts.ProviderOptions != nil {
+		body["providerOptions"] = opts.ProviderOptions
+	}
 
 	headers := m.getModelConfigHeaders()
 	o11y := GetO11yHeaders(ctx)
@@ -95,27 +112,47 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
-	var result types.EmbeddingsResult
+	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/embedding-model",
 		Body:    body,
 		Headers: headers,
-	}, &result)
+	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
-	result.Responses = []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers)}}
+	result := &types.EmbeddingsResult{
+		Embeddings:       response.Embeddings,
+		Usage:            response.Usage,
+		Warnings:         []types.Warning{},
+		ProviderMetadata: response.ProviderMetadata,
+		Responses:        []types.EmbeddingResponse{{Headers: flattenHeaders(httpResp.Headers), Body: rawJSONBody(httpResp.Body)}},
+	}
 
-	return &result, nil
+	return result, nil
 }
 
 // getModelConfigHeaders returns headers specific to the gateway model configuration
 func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
 		"ai-embedding-model-specification-version": "4",
-		"ai-embedding-model-id":                    m.modelID,
+		"ai-model-id": m.modelID,
 	}
+}
+
+type gatewayEmbeddingResponse struct {
+	Embeddings       [][]float64            `json:"embeddings"`
+	Usage            types.EmbeddingUsage   `json:"usage"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+func rawJSONBody(body []byte) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	return raw
 }
 
 // handleError converts errors to appropriate provider errors

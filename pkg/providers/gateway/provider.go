@@ -18,6 +18,7 @@ import (
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -333,6 +334,7 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if cfg.TeamIDOrSlug != "" {
 		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
+	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 
 	httpClient := newGatewayHTTPClient(cfg.HTTPClient, authResolver)
 
