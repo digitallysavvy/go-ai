@@ -12,6 +12,8 @@ This package provides access to Google Vertex AI models, including **Gemini lang
 - ✅ **Text-to-Image Generation**: Create images from text prompts
 - ✅ **Aspect Ratio Control**: 1:1, 4:3, 3:4, 16:9, 9:16
 - ✅ **Image Editing**: Vertex Imagen source images, masks, and edit options
+- ✅ **Gemini TTS Speech Models**: `gemini-2.5-flash-tts`, `gemini-2.5-pro-tts`, `gemini-2.5-flash-lite-preview-tts`, `gemini-3.1-flash-tts-preview`
+- ✅ **EU/US Multi-Region Routing**: `eu` and `us` locations use regional REP hosts
 
 ## Installation
 
@@ -65,6 +67,12 @@ export GOOGLE_VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token)
 ### Gemini Image Models
 - `gemini-2.5-flash-image` - Fast Gemini image generation
 - `gemini-3-pro-image-preview` - Advanced Gemini generation
+
+### Gemini TTS Speech Models
+- `gemini-2.5-flash-tts` - Fast Gemini speech synthesis
+- `gemini-2.5-pro-tts` - Higher quality Gemini speech synthesis
+- `gemini-2.5-flash-lite-preview-tts` - Lightweight preview Gemini speech synthesis
+- `gemini-3.1-flash-tts-preview` - Gemini 3.1 Flash preview speech synthesis
 
 ## Usage
 
@@ -306,6 +314,39 @@ result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOpt
 })
 ```
 
+### Speech Generation
+
+Vertex exposes Gemini TTS through `Provider.SpeechModel` and `Provider.Speech`.
+
+```go
+speechModel, err := prov.SpeechModel(googlevertex.SpeechModelGemini25FlashTTS)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Vertex Gemini can synthesize speech.",
+    Voice: "Kore",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("generated %s audio\n", result.Audio.MediaType)
+```
+
+Provider metadata for Vertex speech is keyed as `google`, matching the TypeScript SDK's reuse of `GoogleSpeechModel`.
+
+### EU And US Multi-Region Routing
+
+When `Location` is `eu` or `us`, Gemini, MaaS, and Anthropic-on-Vertex requests use the regional REP hosts:
+
+- `aiplatform.eu.rep.googleapis.com`
+- `aiplatform.us.rep.googleapis.com`
+
+Set `BaseURL` to override this endpoint selection explicitly.
+
 ### Different Aspect Ratios
 
 ```go
@@ -424,6 +465,7 @@ type ImageUsage struct {
 See the [examples/providers/googlevertex](../../../examples/providers/googlevertex) directory:
 
 - `01-basic-chat.go` - Basic text generation with Gemini
+- `../../speech/vertex_tts.go` - Vertex Gemini TTS generation
 
 See also [examples/image-generation](../../../examples/image-generation):
 

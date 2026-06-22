@@ -72,6 +72,37 @@ export ALIBABA_API_KEY=sk-...
 | wan2.6-r2v | Reference-to-video | 5-6s | Style transfer from reference |
 | wan2.6-r2v-flash | Reference-to-video | 5-6s | Faster style transfer |
 
+### Embedding Models
+
+Alibaba DashScope text embeddings are exposed through `Provider.EmbeddingModel` and `Provider.Embedding`.
+
+| Model ID | Go constant | Notes |
+|----------|-------------|-------|
+| text-embedding-v4 | `alibaba.AlibabaEmbeddingTextV4` | Dense, sparse, or dense+sparse output |
+| text-embedding-v3 | `alibaba.AlibabaEmbeddingTextV3` | Dense text embeddings |
+
+```go
+embeddingModel, err := provider.EmbeddingModel(alibaba.AlibabaEmbeddingTextV4)
+if err != nil {
+    log.Fatal(err)
+}
+
+dimension := 1024.0
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: []string{"first document", "second document"},
+    ProviderOptions: map[string]interface{}{
+        "alibaba": alibaba.AlibabaEmbeddingModelOptions{
+            TextType:   "document",
+            Dimension:  &dimension,
+            OutputType: alibaba.AlibabaEmbeddingOutputDense,
+        },
+    },
+})
+```
+
+`OutputType` accepts `dense`, `sparse`, or `dense&sparse`. Sparse-only responses are reported as unsupported for the SDK's dense embedding result contract; dense+sparse responses preserve sparse vectors in provider metadata.
+
 ## Provider-Specific Features
 
 ### Thinking/Reasoning

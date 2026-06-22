@@ -16,6 +16,7 @@ The Google provider is included in the Go-AI SDK:
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    providerapi "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
 )
 ```
@@ -110,6 +111,61 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 | gemini-embedding-001 | 3072 | See Google pricing | Multimodal semantic search |
 | gemini-embedding-2 | 3072 | See Google pricing | Stable Gemini embedding workloads |
 | gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
+
+### Gemini TTS Speech Models
+
+Google Gemini TTS is exposed through `Provider.SpeechModel` and `Provider.Speech`.
+
+| Model ID | Go constant |
+|----------|-------------|
+| gemini-2.5-flash-preview-tts | `google.ModelGemini25FlashTTS` |
+| gemini-2.5-pro-preview-tts | `google.ModelGemini25ProTTS` |
+| gemini-3.1-flash-tts-preview | `google.ModelGemini31FlashTTSPreview` |
+
+```go
+speechModel, err := googleProvider.SpeechModel(google.ModelGemini25FlashTTS)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Welcome to Go-AI.",
+    Voice: "Kore",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Audio.MediaType)
+```
+
+Gemini TTS defaults to the `Kore` voice when no voice is supplied. Use `ProviderOptions["google"]` with `google.GoogleSpeechModelOptions` to pass Gemini-specific speech options such as multi-speaker voice configuration.
+
+### Realtime Models
+
+Gemini Live is exposed through `Provider.RealtimeModel`,
+`ExperimentalRealtimeModel`, and `GetRealtimeToken`. Model IDs are strings, matching
+the TypeScript `GoogleRealtimeModelId` surface.
+
+```go
+model, err := googleProvider.RealtimeModel("gemini-3.1-flash-live-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+token, err := model.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
+if err != nil {
+    log.Fatal(err)
+}
+
+ws := model.GetWebSocketConfig(token.Token, token.URL)
+fmt.Println(ws.URL)
+```
+
+Use `ai.ConnectRealtime` for a provider-neutral Go session helper. Browser-only
+TypeScript pieces such as `BrowserRealtimeTransport`, `BrowserRealtimeAudio`,
+and `useRealtime` are not part of the Go runtime.
 
 ## Provider-Specific Features
 

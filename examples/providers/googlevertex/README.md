@@ -161,6 +161,7 @@ if result.Usage.OutputDetails != nil {
 - `gemini-1.5-flash-8b` - Lightweight, high-volume tasks
 - `gemini-2.0-flash-exp` - Experimental next-gen model
 - `gemini-2.5-flash-preview-04-17` - Preview with reasoning capabilities
+- `gemini-2.5-flash-tts` and `gemini-2.5-pro-tts` - Gemini TTS speech models
 - `gemini-embedding-2` - Stable Gemini embedding model
 - `deep-research-preview-04-2026` and `deep-research-max-preview-04-2026` - April 2026 Deep Research agent IDs
 
@@ -172,6 +173,17 @@ Key differences when using Vertex AI:
 2. **Endpoints**: Regional endpoints (`{region}-aiplatform.googleapis.com`)
 3. **GCS URLs**: Supports `gs://` URLs for file inputs
 4. **Enterprise features**: Access to grounding, code execution, etc.
+5. **EU/US multi-region routing**: Use `GOOGLE_VERTEX_LOCATION=eu` or `us` to route through regional REP hosts.
+
+## Speech
+
+Use `examples/speech/vertex_tts.go` for Vertex Gemini TTS:
+
+```bash
+GO_AI_RUN_LIVE_EXAMPLES=1 GOOGLE_VERTEX_PROJECT=... GOOGLE_VERTEX_ACCESS_TOKEN=... go run ../../speech/vertex_tts.go
+```
+
+The example uses `Provider.SpeechModel(googlevertex.SpeechModelGemini25FlashTTS)` and `ai.GenerateSpeech`, matching the TypeScript Vertex speech surface.
 
 ## Resources
 

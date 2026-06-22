@@ -44,6 +44,24 @@ if err != nil {
 
 `LanguageModel` matches the TypeScript Azure provider default and uses the Responses API at `/openai/v1/responses?api-version=v1`. Use `ChatModel` when you need the Chat Completions endpoint or `CompletionModel` when you need the legacy Completions endpoint.
 
+## Microsoft Entra ID Authentication
+
+Use `ADTokenProvider` when Azure OpenAI should authenticate with Microsoft Entra ID instead of an API key. The token provider is called with the request context and sets `Authorization: Bearer <token>` across Responses, Chat Completions, Completions, embeddings, image, speech, and transcription request surfaces.
+
+```go
+provider, err := azure.New(azure.Config{
+    ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
+    ADTokenProvider: func(ctx context.Context) (string, error) {
+        return acquireToken(ctx)
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+Passing both `APIKey` and `ADTokenProvider` returns an invalid-argument error, matching the TypeScript `createAzure` validation.
+
 ## Responses Provider Tools
 
 Azure exposes the OpenAI Responses provider tools as Azure helpers:

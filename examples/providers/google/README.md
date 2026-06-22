@@ -107,6 +107,26 @@ result, err := embeddingModel.DoEmbed(ctx, "caption", &provider.EmbedModelOption
 })
 ```
 
+## Speech
+
+Google Gemini TTS is exposed through `Provider.SpeechModel` and `Provider.Speech`.
+
+| Constant | Model ID |
+|---|---|
+| `google.ModelGemini25FlashTTS` | `gemini-2.5-flash-preview-tts` |
+| `google.ModelGemini25ProTTS` | `gemini-2.5-pro-preview-tts` |
+| `google.ModelGemini31FlashTTSPreview` | `gemini-3.1-flash-tts-preview` |
+
+Run `examples/speech/google_tts.go` for a live example.
+
+## Realtime
+
+Gemini Live is exposed through `Provider.RealtimeModel`, `ExperimentalRealtimeModel`, and `GetRealtimeToken`. Use model ID `gemini-3.1-flash-live-preview` for the June 6 example surface:
+
+```bash
+GO_AI_RUN_LIVE_EXAMPLES=1 GOOGLE_GENERATIVE_AI_API_KEY=... go run ../../realtime/google_realtime.go
+```
+
 ## Image Models
 
 ### Imagen models (use `:predict` API)

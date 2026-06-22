@@ -14,17 +14,21 @@ Google Vertex AI provides enterprise-grade AI platform with Gemini models, custo
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us-central1",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 model, err := provider.LanguageModel("gemini-2.0-flash")
 ```
@@ -71,6 +75,41 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 |----------|-----------|-------|----------|
 | textembedding-gecko | 768 | Free | Semantic search |
 
+### Gemini TTS Speech Models
+
+Vertex reuses the Gemini speech model implementation and exposes it through `Provider.SpeechModel` and `Provider.Speech`.
+
+| Model ID | Go constant |
+|----------|-------------|
+| `gemini-2.5-flash-tts` | `googlevertex.SpeechModelGemini25FlashTTS` |
+| `gemini-2.5-pro-tts` | `googlevertex.SpeechModelGemini25ProTTS` |
+| `gemini-2.5-flash-lite-preview-tts` | `googlevertex.SpeechModelGemini25FlashLitePreviewTTS` |
+| `gemini-3.1-flash-tts-preview` | `googlevertex.SpeechModelGemini31FlashTTSPreview` |
+
+```go
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us-central1",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+speechModel, err := provider.SpeechModel(googlevertex.SpeechModelGemini25FlashTTS)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Vertex Gemini can synthesize speech.",
+    Voice: "Kore",
+})
+```
+
+Provider metadata for Vertex speech is keyed as `google`, matching the TypeScript SDK's reuse of `GoogleSpeechModel`.
+
 ### Image Generation Models
 
 | Model ID | Aspect Ratios | Price | Best For |
@@ -82,6 +121,15 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 | gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
 
 ## Provider-Specific Features
+
+### EU And US Multi-Region Routing
+
+When `Location` is `eu` or `us`, standard Gemini, MaaS, and Anthropic-on-Vertex requests use the regional REP hosts:
+
+- `aiplatform.eu.rep.googleapis.com`
+- `aiplatform.us.rep.googleapis.com`
+
+Explicit `BaseURL` values still take precedence.
 
 ### PayGo Request Type
 
@@ -101,13 +149,9 @@ result, err := ai.GenerateText(model, "hello",
 
 ### Enterprise Security
 
-```go
-provider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
-    VPCNetwork: "projects/my-project/global/networks/my-vpc",
-})
-```
+Configure IAM, VPC Service Controls, CMEK, and audit logging in Google Cloud.
+The SDK sends requests through the Vertex endpoint selected by `Project`,
+`Location`, and optional `BaseURL`.
 
 ### Model Garden
 
@@ -118,33 +162,11 @@ Access hundreds of models from Model Garden:
 model, err := provider.LanguageModel("publishers/google/models/gemini-2.0-flash")
 ```
 
-### Batch Prediction
+### Batch Prediction And Custom Training
 
-Process large datasets efficiently:
-
-```go
-batch := vertex.NewBatchPrediction(vertex.BatchConfig{
-    InputURI:  "gs://bucket/input.jsonl",
-    OutputURI: "gs://bucket/output/",
-    Model:     "gemini-2.0-flash",
-})
-
-job, err := batch.Create()
-```
-
-### Custom Training
-
-Fine-tune models on your data:
-
-```go
-training := vertex.NewTrainingJob(vertex.TrainingConfig{
-    DisplayName:    "my-fine-tune",
-    BaseModel:      "gemini-2.0-flash",
-    TrainingDataURI: "gs://bucket/training-data/",
-})
-
-job, err := training.Create()
-```
+Use Google Cloud Vertex AI client libraries for batch prediction and custom
+training jobs. Go-AI focuses on the AI SDK provider surfaces for generation,
+embedding, image, speech, MaaS, and Anthropic-on-Vertex requests.
 
 ### Image Generation
 
@@ -280,14 +302,18 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 )
 
 func main() {
-    provider := vertex.New(vertex.Config{
-        ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-        Location:  "us-central1",
+    provider, err := googlevertex.New(googlevertex.Config{
+        Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+        Location:    "us-central1",
+        AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
     model, err := provider.LanguageModel("gemini-2.0-flash")
     if err != nil {
@@ -307,15 +333,23 @@ func main() {
 
 ```go
 // Deploy across regions for high availability
-usProvider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
+usProvider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
-euProvider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "europe-west4",
+euProvider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "eu",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 // Try primary region first
 result, err := generateWithFallback(usProvider, euProvider, prompt)

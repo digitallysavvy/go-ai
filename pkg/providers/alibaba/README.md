@@ -3,6 +3,7 @@
 This package provides support for Alibaba Cloud's AI services through the Go-AI SDK, including:
 - **Qwen language models** (chat and vision)
 - **Wan video generation models** (text-to-video, image-to-video, reference-to-video)
+- **DashScope text embeddings** (`text-embedding-v4`, `text-embedding-v3`)
 - **Prompt caching** for cost optimization
 - **Thinking/reasoning** capabilities
 - **Tool calling** for function execution
@@ -59,6 +60,13 @@ provider := alibaba.New(config)
 | `wan2.6-i2v-flash` | Image-to-video | Faster generation |
 | `wan2.6-r2v` | Reference-to-video | Style transfer from reference |
 | `wan2.6-r2v-flash` | Reference-to-video | Faster style transfer |
+
+### Embedding Models
+
+| Model ID | Go constant | Notes |
+|----------|-------------|-------|
+| `text-embedding-v4` | `alibaba.AlibabaEmbeddingTextV4` | Dense, sparse, or dense+sparse output |
+| `text-embedding-v3` | `alibaba.AlibabaEmbeddingTextV3` | Dense text embeddings |
 
 ## Features
 
@@ -237,6 +245,28 @@ result, err = model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 })
 ```
 
+### Text Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel(alibaba.AlibabaEmbeddingTextV4)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: []string{"first document", "second document"},
+    ProviderOptions: map[string]interface{}{
+        "alibaba": alibaba.AlibabaEmbeddingModelOptions{
+            TextType:   "document",
+            OutputType: alibaba.AlibabaEmbeddingOutputDense,
+        },
+    },
+})
+```
+
+`OutputType` accepts `dense`, `sparse`, or `dense&sparse`. Sparse-only responses return an unsupported-functionality error because the SDK embedding result contract requires dense vectors. Dense+sparse responses keep the sparse vectors in provider metadata under `alibaba.sparseEmbeddings`, matching the TypeScript provider behavior.
+
 ## API Endpoints
 
 - **Chat API**: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (OpenAI-compatible)
@@ -249,13 +279,14 @@ result, err = model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 Features:
 - ✅ All 5 Qwen chat models (plus, turbo, max, qwq-32b-preview, vl-max)
 - ✅ All 6 Wan video models (text-to-video, image-to-video, reference-to-video)
+- ✅ Alibaba text embeddings with provider options and sparse metadata preservation
 - ✅ Thinking/reasoning with token tracking
 - ✅ Prompt caching with hit/miss reporting
 - ✅ Tool calling (single and parallel)
 - ✅ Vision support (images)
 - ✅ Streaming support
 - ✅ Comprehensive test coverage
-- ✅ Complete documentation with 8 examples
+- ✅ Complete documentation with provider and example coverage
 
 ## Resources
 
