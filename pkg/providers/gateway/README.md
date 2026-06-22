@@ -422,15 +422,37 @@ Examples:
 
 - `gateway.GatewayLanguageModelOpenaiGpt55`
 - `gateway.GatewayLanguageModelAnthropicClaudeOpus47`
+- `gateway.GatewayLanguageModelAlibabaQwen37Plus`
+- `gateway.GatewayLanguageModelStepfunStep35Flash`
+- `gateway.GatewayLanguageModelStepfunStep37Flash`
 - `gateway.GatewayEmbeddingModelGoogleGeminiEmbedding2`
 - `gateway.GatewayVideoModelXaiGrokImagineVideo`
 - `gateway.GatewayRerankingModelCohereRerankV4Pro`
 
+June 6 catalog additions include `alibaba/qwen3.7-plus`, `google/gemini-3.1-flash-image`, `minimax/minimax-m3`, `nvidia/nemotron-3-ultra-550b-a55b`, `stepfun/step-3.5-flash`, `stepfun/step-3.7-flash`, and `xai/grok-imagine-video-1.5-preview`.
+
 Check available models using `provider.GetAvailableModels()`.
+
+## Inline File Encoding
+
+Inline `[]byte` file data in Gateway language-model requests is base64-encoded exactly once for file, reasoning-file, and tool-result file parts. URL, provider-reference, and text file data are preserved in their provider-native form. This matches the TypeScript Gateway provider's June 6 file-part behavior.
 
 ## Error Handling
 
-The gateway provider returns standard provider errors:
+Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types preserve the raw type through `GatewayErrorDetails`.
+
+```go
+var gatewayErr gatewayerrors.GatewayError
+if errors.As(err, &gatewayErr) {
+    log.Printf("gateway type=%s status=%d retryable=%v",
+        gatewayErr.GetType(),
+        gatewayErr.GetStatusCode(),
+        gatewayErr.IsRetryable(),
+    )
+}
+```
+
+The gateway provider also returns standard provider errors:
 
 - `AuthenticationError`: Invalid or missing API key
 - `RateLimitError`: Rate limit exceeded

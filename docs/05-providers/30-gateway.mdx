@@ -92,11 +92,26 @@ provider, _ := gateway.New(gateway.Config{
 model, _ := provider.LanguageModel(string(gateway.GatewayLanguageModelAnthropicClaudeSonnet45))
 
 // Generate text
+maxTokens := 200
 result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
     Prompt: "Explain quantum computing in simple terms.",
-    MaxTokens: ptr(200),
+    MaxTokens: &maxTokens,
 })
 ```
+
+### June 6 Model IDs
+
+The generated Gateway model catalog includes the June 6 TypeScript updates, including:
+
+- `alibaba/qwen3.7-plus`
+- `google/gemini-3.1-flash-image`
+- `minimax/minimax-m3`
+- `nvidia/nemotron-3-ultra-550b-a55b`
+- `stepfun/step-3.5-flash`
+- `stepfun/step-3.7-flash`
+- `xai/grok-imagine-video-1.5-preview`
+
+Use the generated constants in `pkg/providers/gateway/model_ids.go` when you want compile-time names, or pass the raw Gateway model ID string.
 
 ## Video Generation
 
@@ -110,13 +125,14 @@ if err != nil {
 }
 
 // Generate video
+duration := 4.0
 result, err := ai.GenerateVideo(context.Background(), ai.GenerateVideoOptions{
     Model: videoModel,
     Prompt: ai.VideoPrompt{
         Text: "A cat playing with a ball of yarn",
     },
     AspectRatio: "16:9",
-    Duration:    ptr(4.0), // 4 seconds
+    Duration:    &duration,
 })
 ```
 
@@ -141,14 +157,16 @@ The gateway can route video requests to:
 ```go
 videoModel, _ := provider.VideoModel("google/veo-3.1-generate-001")
 
+duration := 4.0
+fps := 30
 result, err := ai.GenerateVideo(context.Background(), ai.GenerateVideoOptions{
     Model: videoModel,
     Prompt: ai.VideoPrompt{
         Text: "A serene ocean sunset with waves",
     },
     AspectRatio: "16:9",
-    Duration:    ptr(4.0),
-    FPS:         ptr(30),
+    Duration:    &duration,
+    FPS:         &fps,
     ProviderOptions: map[string]interface{}{
         "enhancePrompt": true,
     },
@@ -166,10 +184,11 @@ for _, video := range result.Videos {
 ```go
 imageModel, _ := provider.ImageModel(string(gateway.GatewayImageModelOpenaiGptImage2))
 
+n := 1
 result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
     Model:  imageModel,
     Prompt: "A futuristic cityscape at sunset",
-    N:      ptr(1),
+    N:      &n,
     Size:   "1024x1024",
 })
 ```
@@ -239,6 +258,26 @@ res, err := reranker.DoRerank(ctx, &goprovider.RerankOptions{
 ## Timeout Handling
 
 The Gateway SDK provides enhanced timeout error handling with troubleshooting guidance.
+
+### Typed Error Classification
+
+Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types are classified the same way as the TypeScript SDK while preserving the raw type through `GatewayErrorDetails`.
+
+```go
+var gatewayErr gatewayerrors.GatewayError
+if errors.As(err, &gatewayErr) {
+    fmt.Println(gatewayErr.GetType(), gatewayErr.GetStatusCode(), gatewayErr.IsRetryable())
+}
+
+var details gatewayerrors.GatewayErrorDetails
+if errors.As(err, &details) {
+    fmt.Println(details.GetRawType(), details.GetCode(), details.GetParam())
+}
+```
+
+Inline `[]byte` file data in Gateway language-model requests is base64-encoded exactly once for file, reasoning-file, and tool-result file parts. URL, provider-reference, and text file data are preserved in their provider-native form.
+
+Gateway realtime is not implemented in this SDK because the June 6 TypeScript range did not add a Gateway realtime factory or model implementation.
 
 ### Setting Timeouts
 
