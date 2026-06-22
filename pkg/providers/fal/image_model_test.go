@@ -28,11 +28,7 @@ func TestImageModelBuildRequestBody(t *testing.T) {
 }
 
 func TestImageModelConvertResponseAndDownload(t *testing.T) {
-	imageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write([]byte{0x89, 'P', 'N', 'G'})
-	}))
-	defer imageSrv.Close()
+	imageURL := "data:image/png;base64,iVBORw=="
 
 	p := New(Config{APIKey: "k"})
 	m := NewImageModel(p, "fal-fast")
@@ -44,13 +40,13 @@ func TestImageModelConvertResponseAndDownload(t *testing.T) {
 			Height      int    `json:"height"`
 			ContentType string `json:"content_type"`
 		}{
-			{URL: imageSrv.URL, ContentType: "image/png"},
+			{URL: imageURL, ContentType: "image/png"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("convertResponse() error = %v", err)
 	}
-	if res.URL != imageSrv.URL || len(res.Image) == 0 || res.Usage.ImageCount != 1 {
+	if res.URL != imageURL || len(res.Image) == 0 || res.Usage.ImageCount != 1 {
 		t.Fatalf("unexpected image result: %+v", res)
 	}
 
@@ -61,11 +57,6 @@ func TestImageModelConvertResponseAndDownload(t *testing.T) {
 }
 
 func TestImageModelDoGenerate(t *testing.T) {
-	imageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("fakeimage"))
-	}))
-	defer imageSrv.Close()
-
 	var status int
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/fal-fast" {
@@ -73,7 +64,7 @@ func TestImageModelDoGenerate(t *testing.T) {
 		}
 		w.WriteHeader(status)
 		if status == 200 {
-			_, _ = w.Write([]byte(`{"images":[{"url":"` + imageSrv.URL + `","content_type":"image/png"}]}`))
+			_, _ = w.Write([]byte(`{"images":[{"url":"data:image/png;base64,ZmFrZWltYWdl","content_type":"image/png"}]}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"error":"boom"}`))

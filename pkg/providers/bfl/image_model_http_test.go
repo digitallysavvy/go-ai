@@ -29,22 +29,17 @@ func TestBFLImageModel_MetadataAndClient(t *testing.T) {
 func TestBFLImageModel_DoGenerateSuccess(t *testing.T) {
 	t.Parallel()
 
-	image := []byte{0x89, 0x50, 0x4E, 0x47}
-	var serverURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/flux-pro":
 			_, _ = w.Write([]byte(`{"id":"req-1"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/get_result":
-			_, _ = w.Write([]byte(`{"id":"req-1","status":"Ready","result":{"sample":"` + serverURL + `/image.png"}}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/image.png":
-			_, _ = w.Write(image)
+			_, _ = w.Write([]byte(`{"id":"req-1","status":"Ready","result":{"sample":"data:image/png;base64,iVBORw=="}}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	serverURL = server.URL
 
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
 	m := NewImageModel(p, "flux-pro")

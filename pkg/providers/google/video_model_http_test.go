@@ -14,9 +14,7 @@ import (
 func TestVideoModel_DoGenerate_Success(t *testing.T) {
 	t.Parallel()
 
-	videoBytes := []byte{0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D}
 	pollCount := 0
-	var serverURL string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -33,20 +31,16 @@ func TestVideoModel_DoGenerate_Success(t *testing.T) {
 				"done": true,
 				"response": map[string]interface{}{
 					"generatedVideos": []map[string]interface{}{
-						{"videoUri": serverURL + "/video.mp4"},
+						{"videoUri": "data:video/mp4;base64,AAAAGGZ0eXBpc29t"},
 					},
 				},
 			}
 			_ = json.NewEncoder(w).Encode(resp)
-		case r.Method == http.MethodGet && r.URL.Path == "/video.mp4":
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write(videoBytes)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	serverURL = server.URL
 
 	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	m := NewVideoModel(p, "veo-3.0-generate-preview")
@@ -163,14 +157,9 @@ func TestVideoModel_DoGenerate_ErrorPaths(t *testing.T) {
 func TestVideoModel_DownloadVideo_DefaultTypeOnUnknown(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte{0x01, 0x02, 0x03, 0x04})
-	}))
-	defer server.Close()
-
 	p := New(Config{APIKey: "test-key"})
 	m := NewVideoModel(p, "veo")
-	data, mediaType, err := m.downloadVideo(context.Background(), server.URL)
+	data, mediaType, err := m.downloadVideo(context.Background(), "data:video/mp4;base64,AQIDBA==")
 	if err != nil {
 		t.Fatalf("downloadVideo() error = %v", err)
 	}

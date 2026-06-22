@@ -2,9 +2,13 @@ package fileutil
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -40,9 +44,10 @@ type DownloadOptions struct {
 // DefaultDownloadOptions returns default download options
 func DefaultDownloadOptions() DownloadOptions {
 	return DownloadOptions{
-		Timeout: 60 * time.Second,
-		Headers: make(map[string]string),
-		MaxSize: DefaultMaxDownloadSize,
+		Timeout:      60 * time.Second,
+		Headers:      make(map[string]string),
+		MaxSize:      DefaultMaxDownloadSize,
+		URLValidator: ValidateDownloadURL,
 	}
 }
 
@@ -65,6 +70,16 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 			return nil, err
 		}
 	}
+	if strings.HasPrefix(strings.ToLower(url), "data:") {
+		data, err := decodeDataURL(url)
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) > opts.MaxSize {
+			return nil, providererrors.NewDownloadError(url, 0, "", fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize), nil)
+		}
+		return data, nil
+	}
 
 	// Create HTTP client with timeout and optional post-redirect URL validation.
 	client := &http.Client{
@@ -73,10 +88,13 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 	if opts.URLValidator != nil {
 		validator := opts.URLValidator
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
+			if len(via) > 10 {
+				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
 			}
-			return validator(req.URL.String())
+			if err := validator(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
 
@@ -94,29 +112,31 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, providererrors.NewDownloadError(url, 0, "", "", err)
+		return nil, downloadRequestError(url, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check status code
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
 		return nil, providererrors.NewDownloadError(
 			url,
 			resp.StatusCode,
-			resp.Status,
+			responseStatusText(resp),
 			"",
 			nil,
 		)
 	}
 
 	// Early rejection based on Content-Length header
-	if resp.ContentLength > 0 && resp.ContentLength > opts.MaxSize {
+	if contentLength, ok := responseContentLength(resp); ok && contentLength > opts.MaxSize {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
 		return nil, providererrors.NewDownloadError(
 			url,
 			0,
 			"",
-			fmt.Sprintf("download of %s exceeded maximum size of %d bytes (Content-Length: %d)",
-				url, opts.MaxSize, resp.ContentLength),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).",
+				url, opts.MaxSize, contentLength),
 			nil,
 		)
 	}
@@ -135,7 +155,7 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 			url,
 			0,
 			"",
-			fmt.Sprintf("download of %s exceeded maximum size of %d bytes", url, opts.MaxSize),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize),
 			nil,
 		)
 	}
@@ -160,6 +180,17 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 			return err
 		}
 	}
+	if strings.HasPrefix(strings.ToLower(url), "data:") {
+		data, err := decodeDataURL(url)
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) > opts.MaxSize {
+			return providererrors.NewDownloadError(url, 0, "", fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize), nil)
+		}
+		_, err = writer.Write(data)
+		return err
+	}
 
 	// Create HTTP client with timeout and optional post-redirect URL validation.
 	client := &http.Client{
@@ -168,10 +199,13 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 	if opts.URLValidator != nil {
 		validator := opts.URLValidator
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
+			if len(via) > 10 {
+				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
 			}
-			return validator(req.URL.String())
+			if err := validator(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
 
@@ -189,29 +223,31 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
-		return providererrors.NewDownloadError(url, 0, "", "", err)
+		return downloadRequestError(url, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check status code
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
 		return providererrors.NewDownloadError(
 			url,
 			resp.StatusCode,
-			resp.Status,
+			responseStatusText(resp),
 			"",
 			nil,
 		)
 	}
 
 	// Early rejection based on Content-Length header
-	if resp.ContentLength > 0 && resp.ContentLength > opts.MaxSize {
+	if contentLength, ok := responseContentLength(resp); ok && contentLength > opts.MaxSize {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
 		return providererrors.NewDownloadError(
 			url,
 			0,
 			"",
-			fmt.Sprintf("download of %s exceeded maximum size of %d bytes (Content-Length: %d)",
-				url, opts.MaxSize, resp.ContentLength),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).",
+				url, opts.MaxSize, contentLength),
 			nil,
 		)
 	}
@@ -230,12 +266,90 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 			url,
 			0,
 			"",
-			fmt.Sprintf("download of %s exceeded maximum size of %d bytes", url, opts.MaxSize),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize),
 			nil,
 		)
 	}
 
 	return nil
+}
+
+func responseStatusText(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	prefix := fmt.Sprintf("%d ", resp.StatusCode)
+	if strings.HasPrefix(resp.Status, prefix) {
+		return strings.TrimPrefix(resp.Status, prefix)
+	}
+	return http.StatusText(resp.StatusCode)
+}
+
+func responseContentLength(resp *http.Response) (int64, bool) {
+	if resp == nil {
+		return 0, false
+	}
+	raw := resp.Header.Get("Content-Length")
+	if raw == "" {
+		if resp.ContentLength > 0 {
+			return resp.ContentLength, true
+		}
+		return 0, false
+	}
+	raw = strings.TrimLeft(raw, " \t\n\r\f\v")
+	sign := int64(1)
+	if strings.HasPrefix(raw, "+") {
+		raw = raw[1:]
+	} else if strings.HasPrefix(raw, "-") {
+		sign = -1
+		raw = raw[1:]
+	}
+	var value int64
+	digits := 0
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			break
+		}
+		digits++
+		if value <= (1<<63-1-int64(r-'0'))/10 {
+			value = value*10 + int64(r-'0')
+		} else {
+			value = 1<<63 - 1
+		}
+	}
+	if digits == 0 {
+		return 0, false
+	}
+	return sign * value, true
+}
+
+func downloadRequestError(raw string, err error) *providererrors.DownloadError {
+	var downloadErr *providererrors.DownloadError
+	if errors.As(err, &downloadErr) {
+		return downloadErr
+	}
+	return providererrors.NewDownloadError(raw, 0, "", "", err)
+}
+
+func decodeDataURL(raw string) ([]byte, error) {
+	comma := strings.IndexByte(raw, ',')
+	if comma < 0 {
+		return nil, providererrors.NewDownloadError(raw, 0, "", fmt.Sprintf("Invalid URL: %s", raw), nil)
+	}
+	meta := raw[len("data:"):comma]
+	payload := raw[comma+1:]
+	if strings.HasSuffix(strings.ToLower(meta), ";base64") {
+		data, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
+		}
+		return data, nil
+	}
+	data, err := url.QueryUnescape(payload)
+	if err != nil {
+		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
+	}
+	return []byte(data), nil
 }
 
 // GetContentType retrieves the Content-Type header from a URL without downloading the body

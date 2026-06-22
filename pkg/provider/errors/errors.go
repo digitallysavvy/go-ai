@@ -520,12 +520,12 @@ func (e *DownloadError) Error() string {
 		return e.Message
 	}
 	if e.StatusCode > 0 {
-		return fmt.Sprintf("failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
+		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
 	}
 	if e.Cause != nil {
-		return fmt.Sprintf("failed to download %s: %v", e.URL, e.Cause)
+		return fmt.Sprintf("Failed to download %s: %v", e.URL, e.Cause)
 	}
-	return fmt.Sprintf("failed to download %s", e.URL)
+	return fmt.Sprintf("Failed to download %s", e.URL)
 }
 
 // Unwrap returns the underlying cause
