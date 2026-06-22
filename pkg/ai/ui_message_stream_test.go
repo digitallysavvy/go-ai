@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1168,5 +1169,239 @@ func TestPipeUIMessageStreamToResponse_WithConsumeSSEStream(t *testing.T) {
 	}
 	if got := consumeBuf.Len(); got == 0 {
 		t.Fatalf("consume stream body is empty")
+	}
+}
+
+func TestToUIMessageChunkRedactsErrorByDefault(t *testing.T) {
+	chunk, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: "database password leaked",
+	}, UIMessageStreamResultOptions{})
+	if !ok {
+		t.Fatal("expected error chunk")
+	}
+	if chunk["errorText"] != "An error occurred." {
+		t.Fatalf("errorText = %#v, want redacted default", chunk["errorText"])
+	}
+
+	chunk, ok = ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: "database password leaked",
+	}, UIMessageStreamResultOptions{OnError: func(err error) string { return "handled: " + err.Error() }})
+	if !ok {
+		t.Fatal("expected error chunk")
+	}
+	if chunk["errorText"] != "handled: database password leaked" {
+		t.Fatalf("custom errorText = %#v", chunk["errorText"])
+	}
+}
+
+func TestCreateUIMessageStreamPropagatesApprovalSignature(t *testing.T) {
+	var responseMessage UIMessageChunk
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		OnFinish: func(event map[string]interface{}) {
+			responseMessage, _ = event["responseMessage"].(UIMessageChunk)
+		},
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "tool-input-available", "toolCallId": "call-1", "toolName": "lookup", "input": map[string]interface{}{"q": "docs"}})
+			writer.Write(UIMessageChunk{"type": "tool-approval-request", "toolCallId": "call-1", "approvalId": "approval-1", "signature": "test-sig"})
+		},
+	})
+
+	for range chunks {
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	for _, part := range uiParts(responseMessage) {
+		m, _ := part.(UIMessageChunk)
+		if m == nil {
+			if asMap, ok := part.(map[string]interface{}); ok {
+				m = UIMessageChunk(asMap)
+			}
+		}
+		if m == nil || m["type"] != "tool-lookup" {
+			continue
+		}
+		approval, ok := m["approval"].(UIMessageChunk)
+		if !ok {
+			if asMap, ok := m["approval"].(map[string]interface{}); ok {
+				approval = UIMessageChunk(asMap)
+			}
+		}
+		if approval == nil || approval["signature"] != "test-sig" {
+			t.Fatalf("approval signature not propagated: %#v", m["approval"])
+		}
+		return
+	}
+	t.Fatalf("tool part not found in response message: %#v", responseMessage)
+}
+
+func TestToolApprovalResultExpandsToTSUIChunks(t *testing.T) {
+	reason := "policy"
+	tests := []struct {
+		name   string
+		result types.ToolResult
+		want   []UIMessageChunk
+	}{
+		{
+			name: "user approval request",
+			result: types.ToolResult{
+				ToolCallID:        "call-1",
+				ApprovalID:        "approval-1",
+				ToolName:          "lookup",
+				Input:             map[string]interface{}{"q": "docs"},
+				ApprovalStatus:    types.ToolApprovalStatusUserApproval,
+				ApprovalSignature: "sig-1",
+			},
+			want: []UIMessageChunk{{
+				"type":       "tool-approval-request",
+				"approvalId": "approval-1",
+				"toolCallId": "call-1",
+				"signature":  "sig-1",
+			}},
+		},
+		{
+			name: "automatic approval",
+			result: types.ToolResult{
+				ToolCallID:        "call-2",
+				ApprovalID:        "approval-2",
+				ToolName:          "lookup",
+				Result:            map[string]interface{}{"ok": true},
+				ApprovalStatus:    types.ToolApprovalStatusApproved,
+				ApprovalReason:    &reason,
+				ApprovalSignature: "sig-2",
+			},
+			want: []UIMessageChunk{
+				{
+					"type":        "tool-approval-request",
+					"approvalId":  "approval-2",
+					"toolCallId":  "call-2",
+					"isAutomatic": true,
+					"signature":   "sig-2",
+				},
+				{
+					"type":       "tool-approval-response",
+					"approvalId": "approval-2",
+					"approved":   true,
+					"reason":     "policy",
+				},
+				{
+					"type":       "tool-output-available",
+					"toolCallId": "call-2",
+					"output":     map[string]interface{}{"ok": true},
+				},
+			},
+		},
+		{
+			name: "automatic denial",
+			result: types.ToolResult{
+				ToolCallID:        "call-3",
+				ApprovalID:        "approval-3",
+				ToolName:          "lookup",
+				ApprovalStatus:    types.ToolApprovalStatusDenied,
+				ApprovalReason:    &reason,
+				ApprovalSignature: "sig-3",
+			},
+			want: []UIMessageChunk{
+				{
+					"type":        "tool-approval-request",
+					"approvalId":  "approval-3",
+					"toolCallId":  "call-3",
+					"isAutomatic": true,
+					"signature":   "sig-3",
+				},
+				{
+					"type":       "tool-approval-response",
+					"approvalId": "approval-3",
+					"approved":   false,
+					"reason":     "policy",
+				},
+				{
+					"type":       "tool-output-denied",
+					"toolCallId": "call-3",
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toUIMessageChunks(provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: &tc.result,
+			}, UIMessageStreamResultOptions{})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("chunks = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateUIMessageStreamAcceptsPrototypeNameStateIDs(t *testing.T) {
+	var seenErrors []string
+	var responseMessage UIMessageChunk
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		OnError: func(err error) string {
+			seenErrors = append(seenErrors, err.Error())
+			return "redacted"
+		},
+		OnFinish: func(event map[string]interface{}) {
+			responseMessage, _ = event["responseMessage"].(UIMessageChunk)
+		},
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-start", "id": "__proto__"})
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "__proto__", "delta": "polluted"})
+			writer.Write(UIMessageChunk{"type": "text-end", "id": "__proto__"})
+			writer.Write(UIMessageChunk{"type": "reasoning-start", "id": "constructor"})
+			writer.Write(UIMessageChunk{"type": "reasoning-delta", "id": "constructor", "delta": "because"})
+			writer.Write(UIMessageChunk{"type": "reasoning-end", "id": "constructor"})
+			writer.Write(UIMessageChunk{"type": "tool-input-start", "toolCallId": "prototype", "toolName": "lookup"})
+			writer.Write(UIMessageChunk{"type": "tool-input-delta", "toolCallId": "prototype", "inputTextDelta": `{"q":"docs"}`})
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	if len(seenErrors) != 0 {
+		t.Fatalf("prototype-name IDs should be accepted like TS null-prototype maps, got errors: %v", seenErrors)
+	}
+	var sawText, sawReasoning, sawTool bool
+	for _, part := range uiParts(responseMessage) {
+		m, _ := part.(UIMessageChunk)
+		if m == nil {
+			if asMap, ok := part.(map[string]interface{}); ok {
+				m = UIMessageChunk(asMap)
+			}
+		}
+		if m == nil {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			sawText = m["text"] == "polluted" && m["state"] == "done"
+		case "reasoning":
+			sawReasoning = m["text"] == "because" && m["state"] == "done"
+		case "tool-lookup":
+			input := map[string]interface{}{}
+			switch v := m["input"].(type) {
+			case UIMessageChunk:
+				input = v
+			case map[string]interface{}:
+				input = v
+			}
+			sawTool = m["toolCallId"] == "prototype" && m["state"] == "input-streaming" && input["q"] == "docs"
+		}
+	}
+	if !sawText || !sawReasoning || !sawTool {
+		t.Fatalf("prototype-name IDs were not stored as ordinary map keys: %#v", responseMessage)
 	}
 }

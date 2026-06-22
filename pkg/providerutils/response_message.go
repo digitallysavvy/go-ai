@@ -410,10 +410,17 @@ func responseFileContent(part types.FileContent) types.FileContent {
 	return part
 }
 
-func responseGeneratedFileContent(part types.GeneratedFileContent) types.GeneratedFileContent {
-	part.ProviderOptions = providerMetadataOptions(part.ProviderMetadata)
-	part.ProviderMetadata = nil
-	return part
+func responseGeneratedFileContent(part types.GeneratedFileContent) types.FileContent {
+	file := types.FileContent{
+		MediaType:        part.MediaType,
+		Data:             generatedFileReplayData(part),
+		ProviderOptions:  providerMetadataOptions(part.ProviderMetadata),
+		ProviderMetadata: nil,
+	}
+	if len(file.Data) == 0 && part.FileData.Type != "" {
+		file.FileData = part.FileData
+	}
+	return file
 }
 
 func responseCustomContent(part types.CustomContent) types.CustomContent {
@@ -426,6 +433,21 @@ func responseReasoningFileContent(part types.ReasoningFileContent) types.Reasoni
 	part.ProviderOptions = providerMetadataOptions(part.ProviderMetadata)
 	part.ProviderMetadata = nil
 	return part
+}
+
+func generatedFileReplayData(part types.GeneratedFileContent) []byte {
+	if len(part.Data) > 0 {
+		return part.Data
+	}
+	if len(part.FileData.Data) > 0 {
+		return part.FileData.Data
+	}
+	if part.FileData.DataString != "" {
+		if decoded, err := types.DecodeFileDataString(part.FileData.DataString); err == nil {
+			return decoded
+		}
+	}
+	return nil
 }
 
 func responseToolCallContent(part types.ToolCallContent) types.ToolCallContent {
@@ -448,6 +470,7 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 	return types.ToolApprovalRequestContent{
 		ApprovalID:  part.ApprovalID,
 		ToolCallID:  toolCallID,
+		Signature:   part.Signature,
 		IsAutomatic: part.IsAutomatic,
 	}
 }

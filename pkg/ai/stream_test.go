@@ -1492,6 +1492,76 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 }
 
+func TestStreamText_ToolApprovalEmitsTSApprovalChunks(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "danger",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("user-approval stream tool should not execute")
+			return nil, nil
+		},
+	}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "call_1",
+					ToolName:  "danger",
+					Arguments: map[string]interface{}{"x": 1},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	maxSteps := 1
+	var chunks []provider.StreamChunk
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:                          model,
+		Tools:                          []types.Tool{tool},
+		MaxSteps:                       &maxSteps,
+		ExperimentalToolApprovalSecret: []byte{},
+		ToolApproval: map[string]types.ToolApprovalValue{
+			"danger": types.ToolApprovalStatusUserApproval,
+		},
+		OnChunk: func(chunk provider.StreamChunk) {
+			chunks = append(chunks, chunk)
+		},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	<-done
+
+	var approval *types.ToolApprovalRequestContent
+	for i := range chunks {
+		if chunks[i].Type == provider.ChunkTypeToolResult {
+			t.Fatalf("user approval emitted legacy tool-result chunk: %#v", chunks[i])
+		}
+		if chunks[i].Type == provider.ChunkTypeToolApprovalRequest {
+			approval = chunks[i].ToolApprovalRequest
+		}
+	}
+	if approval == nil {
+		t.Fatalf("missing tool-approval-request chunk in %#v", chunks)
+	}
+	if approval.ApprovalID == "" || approval.ApprovalID == "call_1" {
+		t.Fatalf("approval id = %q, want generated id distinct from tool call id", approval.ApprovalID)
+	}
+	if approval.Signature == "" {
+		t.Fatal("expected signed approval request chunk")
+	}
+	valid, err := VerifyToolApprovalSignature([]byte{}, approval.Signature, approval.ApprovalID, approval.ToolCallID, approval.ToolCall.ToolName, approval.ToolCall.Arguments)
+	if err != nil || !valid {
+		t.Fatalf("signature valid = %v, err = %v", valid, err)
+	}
+}
+
 func TestStreamText_ContinuesWhenToolCallFinishesWithStop(t *testing.T) {
 	t.Parallel()
 

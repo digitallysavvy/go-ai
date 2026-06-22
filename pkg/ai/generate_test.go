@@ -1482,8 +1482,58 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected approval request output, got %T", result.ToolResults[0].Result)
 	}
-	if request["type"] != "tool-approval-request" || request["approvalId"] != "call_1" {
+	if request["type"] != "tool-approval-request" || request["approvalId"] == "" || request["approvalId"] == "call_1" {
 		t.Fatalf("unexpected approval request output: %#v", request)
+	}
+	if result.ToolResults[0].ApprovalID != request["approvalId"] {
+		t.Fatalf("tool result ApprovalID = %q, want %q", result.ToolResults[0].ApprovalID, request["approvalId"])
+	}
+}
+
+func TestGenerateText_ToolApprovalEmptySecretStillSigns(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name: "needs_human",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("tool should pause for user approval")
+			return nil, nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "needs_human", Arguments: map[string]interface{}{"value": "test"}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:                          model,
+		Tools:                          []types.Tool{tool},
+		ToolApproval:                   map[string]types.ToolApprovalValue{"needs_human": types.ToolApprovalStatusUserApproval},
+		ExperimentalToolApprovalSecret: []byte{},
+		StopWhen:                       []StopCondition{StepCountIs(1)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("content len = %d, want 2: %#v", len(result.Content), result.Content)
+	}
+	req, ok := result.Content[1].(types.ToolApprovalRequestContent)
+	if !ok {
+		t.Fatalf("content[1] = %T, want ToolApprovalRequestContent", result.Content[1])
+	}
+	if req.Signature == "" {
+		t.Fatal("expected empty-but-configured secret to sign generated approval request")
+	}
+	valid, err := VerifyToolApprovalSignature([]byte{}, req.Signature, req.ApprovalID, req.ToolCallID, req.ToolCall.ToolName, req.ToolCall.Arguments)
+	if err != nil || !valid {
+		t.Fatalf("signature valid = %v, err = %v", valid, err)
 	}
 }
 

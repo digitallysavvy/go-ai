@@ -203,9 +203,81 @@ func contentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
-func toolResultsToContentParts(results []types.ToolResult) []types.ContentPart {
+func attachToolApprovalSignatures(results []types.ToolResult, secret []byte) {
+	if secret == nil {
+		return
+	}
+	for i := range results {
+		switch results[i].ApprovalStatus {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		default:
+			continue
+		}
+		if results[i].ApprovalSignature != "" {
+			continue
+		}
+		approvalID := results[i].ApprovalID
+		if approvalID == "" {
+			approvalID = results[i].ToolCallID
+		}
+		signature, err := SignToolApproval(secret, approvalID, results[i].ToolCallID, results[i].ToolName, results[i].Input)
+		if err == nil {
+			results[i].ApprovalSignature = signature
+		}
+	}
+}
+
+func approvalIDForToolResult(tr types.ToolResult) string {
+	if tr.ApprovalID != "" {
+		return tr.ApprovalID
+	}
+	return tr.ToolCallID
+}
+
+func toolCallForToolResult(tr types.ToolResult) types.ToolCall {
+	return types.ToolCall{
+		ID:               tr.ToolCallID,
+		ToolName:         tr.ToolName,
+		Title:            tr.Title,
+		Arguments:        tr.Input,
+		ProviderExecuted: tr.ProviderExecuted,
+		ProviderMetadata: tr.ProviderMetadata,
+		ToolMetadata:     tr.ToolMetadata,
+		Dynamic:          tr.Dynamic,
+	}
+}
+
+func toolApprovalRequestFromToolResult(tr types.ToolResult) types.ToolApprovalRequestContent {
+	return types.ToolApprovalRequestContent{
+		ApprovalID:  approvalIDForToolResult(tr),
+		ToolCallID:  tr.ToolCallID,
+		ToolCall:    toolCallForToolResult(tr),
+		Signature:   tr.ApprovalSignature,
+		IsAutomatic: tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied,
+	}
+}
+
+func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalResponseContent {
+	reason := ""
+	if tr.ApprovalReason != nil {
+		reason = *tr.ApprovalReason
+	}
+	return types.ToolApprovalResponseContent{
+		ApprovalID:       approvalIDForToolResult(tr),
+		ToolCallID:       tr.ToolCallID,
+		ToolCall:         toolCallForToolResult(tr),
+		Approved:         tr.ApprovalStatus == types.ToolApprovalStatusApproved,
+		Reason:           reason,
+		ProviderExecuted: tr.ProviderExecuted,
+	}
+}
+
+func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
+	}
+	if len(secret) > 0 && secret[0] != nil {
+		attachToolApprovalSignatures(results, secret[0])
 	}
 	toolOutputsWithoutApproval := make([]types.ContentPart, 0, len(results))
 	approvalRequests := make([]types.ContentPart, 0)
@@ -218,58 +290,20 @@ func toolResultsToContentParts(results []types.ToolResult) []types.ContentPart {
 		if tr.ProviderExecuted && !hasApproval {
 			continue
 		}
-		approvalID := tr.ToolCallID
-		toolCall := types.ToolCall{
-			ID:               tr.ToolCallID,
-			ToolName:         tr.ToolName,
-			Title:            tr.Title,
-			Arguments:        tr.Input,
-			ProviderExecuted: tr.ProviderExecuted,
-			ProviderMetadata: tr.ProviderMetadata,
-			ToolMetadata:     tr.ToolMetadata,
-			Dynamic:          tr.Dynamic,
-		}
-		approvalRequest := types.ToolApprovalRequestContent{
-			ApprovalID:  approvalID,
-			ToolCallID:  tr.ToolCallID,
-			ToolCall:    toolCall,
-			IsAutomatic: tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied,
-		}
+		approvalRequest := toolApprovalRequestFromToolResult(tr)
 		switch tr.ApprovalStatus {
 		case types.ToolApprovalStatusUserApproval:
 			approvalRequests = append(approvalRequests, approvalRequest)
 			continue
 		case types.ToolApprovalStatusApproved:
 			approvalRequests = append(approvalRequests, approvalRequest)
-			reason := ""
-			if tr.ApprovalReason != nil {
-				reason = *tr.ApprovalReason
-			}
-			approvalResponses = append(approvalResponses, types.ToolApprovalResponseContent{
-				ApprovalID:       approvalID,
-				ToolCallID:       tr.ToolCallID,
-				ToolCall:         toolCall,
-				Approved:         true,
-				Reason:           reason,
-				ProviderExecuted: tr.ProviderExecuted,
-			})
+			approvalResponses = append(approvalResponses, toolApprovalResponseFromToolResult(tr))
 			if tr.ProviderExecuted {
 				continue
 			}
 		case types.ToolApprovalStatusDenied:
 			approvalRequests = append(approvalRequests, approvalRequest)
-			reason := ""
-			if tr.ApprovalReason != nil {
-				reason = *tr.ApprovalReason
-			}
-			approvalResponses = append(approvalResponses, types.ToolApprovalResponseContent{
-				ApprovalID:       approvalID,
-				ToolCallID:       tr.ToolCallID,
-				ToolCall:         toolCall,
-				Approved:         false,
-				Reason:           reason,
-				ProviderExecuted: tr.ProviderExecuted,
-			})
+			approvalResponses = append(approvalResponses, toolApprovalResponseFromToolResult(tr))
 			continue
 		}
 		part := types.ToolResultContent{

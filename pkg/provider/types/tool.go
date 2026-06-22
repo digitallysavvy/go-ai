@@ -325,6 +325,15 @@ type ToolResult struct {
 	// user-approval pending tool calls.
 	ApprovalStatus ToolApprovalStatus `json:"approvalStatus,omitempty"`
 
+	// ApprovalID identifies the approval request associated with this tool
+	// result. It is distinct from ToolCallID when the request was created by
+	// the SDK, matching the TypeScript SDK's generated approval IDs.
+	ApprovalID string `json:"approvalId,omitempty"`
+
+	// ApprovalSignature carries the server-issued signature for approval
+	// requests when a tool approval secret is configured.
+	ApprovalSignature string `json:"-"`
+
 	// ApprovalReason contains the optional approval reason for denied or
 	// approved tool calls.
 	ApprovalReason *string `json:"approvalReason,omitempty"`

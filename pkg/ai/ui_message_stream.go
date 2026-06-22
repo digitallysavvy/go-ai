@@ -91,10 +91,7 @@ type UIMessageStreamResponseInit struct {
 func getDefaultMessageErrorHandler(onError func(error) string) func(error) string {
 	if onError == nil {
 		return func(err error) string {
-			if err == nil {
-				return "unknown error"
-			}
-			return err.Error()
+			return "An error occurred."
 		}
 	}
 	return onError
@@ -506,9 +503,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			case provider.ChunkTypeFinish:
 				closeOpenParts()
 			}
-			converted, ok := ToUIMessageChunk(chunkForConversion, options)
-			if ok {
-				processChunk(converted)
+			converted := toUIMessageChunks(chunkForConversion, options)
+			for _, uiChunk := range converted {
+				processChunk(uiChunk)
 			}
 			if options.MessageMetadata != nil && chunk.Type != provider.ChunkTypeStreamStart && chunk.Type != provider.ChunkTypeStreamFinish {
 				metadata := options.MessageMetadata(map[string]interface{}{
@@ -550,21 +547,28 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 // chunk. The boolean return is false for stream parts that do not produce UI
 // message chunks, matching TypeScript's undefined result.
 func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
+	chunks := toUIMessageChunks(part, opts)
+	if len(chunks) == 0 {
+		return nil, false
+	}
+	return chunks[0], true
+}
+
+func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOptions) []UIMessageChunk {
 	onError := getDefaultMessageErrorHandler(opts.OnError)
 	sendReasoning := boolOption(opts.SendReasoning, true)
 	sendSources := boolOption(opts.SendSources, false)
-
 	switch part.Type {
 	case provider.ChunkTypeStreamStart:
-		return UIMessageChunk{"type": "start-step"}, true
+		return []UIMessageChunk{{"type": "start-step"}}
 	case provider.ChunkTypeFinish:
-		return UIMessageChunk{"type": "finish-step"}, true
+		return []UIMessageChunk{{"type": "finish-step"}}
 	case provider.ChunkTypeAbort:
 		chunk := UIMessageChunk{"type": "abort"}
 		if part.AbortReason != "" {
 			chunk["reason"] = part.AbortReason
 		}
-		return chunk, true
+		return []UIMessageChunk{chunk}
 	}
 
 	chunks := convertProviderChunkToUIMessageChunks(part, resultChunkConversionOptions{
@@ -573,13 +577,7 @@ func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptio
 		OnError:       onError,
 		Tools:         opts.Tools,
 	})
-	if len(chunks) == 0 {
-		if part.Type == provider.ChunkTypeRaw || part.Type == provider.ChunkTypeToolInputEnd {
-			return nil, false
-		}
-		return nil, false
-	}
-	return chunks[0], true
+	return chunks
 }
 
 func responseUIMessageID(options UIMessageStreamResultOptions) string {
@@ -846,6 +844,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			if auto, ok := chunk["isAutomatic"].(bool); ok && auto {
 				approval["isAutomatic"] = true
 			}
+			copyIfPresent(approval, chunk, "signature", "signature")
 			part["approval"] = approval
 		} else {
 			reportMissingToolInvocation(onError, toolCallID)
@@ -1504,9 +1503,99 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		out = append(out, part)
 	case provider.ChunkTypeToolInputEnd:
 		break
+	case provider.ChunkTypeToolApprovalRequest:
+		if chunk.ToolApprovalRequest == nil {
+			break
+		}
+		part := map[string]interface{}{
+			"type":       "tool-approval-request",
+			"approvalId": chunk.ToolApprovalRequest.ApprovalID,
+			"toolCallId": chunk.ToolApprovalRequest.ToolCallID,
+		}
+		if part["toolCallId"] == "" {
+			part["toolCallId"] = chunk.ToolApprovalRequest.ToolCall.ID
+		}
+		if chunk.ToolApprovalRequest.IsAutomatic {
+			part["isAutomatic"] = true
+		}
+		if chunk.ToolApprovalRequest.Signature != "" {
+			part["signature"] = chunk.ToolApprovalRequest.Signature
+		}
+		out = append(out, part)
+	case provider.ChunkTypeToolApprovalResponse:
+		if chunk.ToolApprovalResponse == nil {
+			break
+		}
+		part := map[string]interface{}{
+			"type":       "tool-approval-response",
+			"approvalId": chunk.ToolApprovalResponse.ApprovalID,
+			"approved":   chunk.ToolApprovalResponse.Approved,
+		}
+		if chunk.ToolApprovalResponse.Reason != "" {
+			part["reason"] = chunk.ToolApprovalResponse.Reason
+		}
+		if chunk.ToolApprovalResponse.ProviderExecuted {
+			part["providerExecuted"] = true
+		}
+		out = append(out, part)
+	case provider.ChunkTypeToolOutputDenied:
+		toolCallID := ""
+		if chunk.ToolResult != nil {
+			toolCallID = chunk.ToolResult.ToolCallID
+		}
+		out = append(out, map[string]interface{}{
+			"type":       "tool-output-denied",
+			"toolCallId": toolCallID,
+		})
 	case provider.ChunkTypeToolResult:
 		if chunk.ToolResult == nil {
 			break
+		}
+		approvalID := chunk.ToolResult.ApprovalID
+		if approvalID == "" {
+			approvalID = chunk.ToolResult.ToolCallID
+		}
+		if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
+			chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusApproved ||
+			chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
+			request := map[string]interface{}{
+				"type":       "tool-approval-request",
+				"approvalId": approvalID,
+				"toolCallId": chunk.ToolResult.ToolCallID,
+			}
+			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusApproved ||
+				chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
+				request["isAutomatic"] = true
+			}
+			if chunk.ToolResult.ApprovalSignature != "" {
+				request["signature"] = chunk.ToolResult.ApprovalSignature
+			}
+			out = append(out, request)
+			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+				break
+			}
+			response := map[string]interface{}{
+				"type":       "tool-approval-response",
+				"approvalId": approvalID,
+				"approved":   chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusApproved,
+			}
+			if chunk.ToolResult.ApprovalReason != nil {
+				response["reason"] = *chunk.ToolResult.ApprovalReason
+			}
+			if chunk.ToolResult.ProviderExecuted {
+				response["providerExecuted"] = true
+			}
+			out = append(out, response)
+			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
+				out = append(out, map[string]interface{}{
+					"type":       "tool-output-denied",
+					"toolCallId": chunk.ToolResult.ToolCallID,
+				})
+				break
+			}
+			if chunk.ToolResult.ProviderExecuted && chunk.ToolResult.Result == nil && chunk.ToolResult.Error == nil {
+				break
+			}
 		}
 		if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
 			part := map[string]interface{}{

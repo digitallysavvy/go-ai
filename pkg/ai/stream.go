@@ -60,6 +60,10 @@ type StreamTextOptions struct {
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
 
+	// ExperimentalToolApprovalSecret signs server-issued approval requests so
+	// resumed approval responses can be verified before execution.
+	ExperimentalToolApprovalSecret []byte
+
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
 	// Deprecated: use StopWhen with StepCountIs instead.
 	// If StopWhen is set, MaxSteps is ignored.
@@ -987,6 +991,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolResults, _ = executeTools(ctx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
+			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		hasUserApproval := false
 		for _, tr := range stepToolResults {
@@ -997,21 +1002,50 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 
-		// Forward tool-result chunks to OnChunk consumers after execution.
+		// Forward tool execution chunks to OnChunk consumers after execution.
 		for i := range stepToolResults {
-			resultChunk := provider.StreamChunk{
+			tr := &stepToolResults[i]
+			emitChunk := func(resultChunk provider.StreamChunk) {
+				if onChunk != nil {
+					onChunk(resultChunk)
+				}
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(resultChunk.Type),
+				})
+			}
+			switch tr.ApprovalStatus {
+			case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+				request := toolApprovalRequestFromToolResult(*tr)
+				emitChunk(provider.StreamChunk{
+					Type:                provider.ChunkTypeToolApprovalRequest,
+					ToolApprovalRequest: &request,
+				})
+				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+					continue
+				}
+				response := toolApprovalResponseFromToolResult(*tr)
+				emitChunk(provider.StreamChunk{
+					Type:                 provider.ChunkTypeToolApprovalResponse,
+					ToolApprovalResponse: &response,
+				})
+				if tr.ApprovalStatus == types.ToolApprovalStatusDenied {
+					emitChunk(provider.StreamChunk{
+						Type:       provider.ChunkTypeToolOutputDenied,
+						ToolResult: tr,
+					})
+					continue
+				}
+				if tr.ProviderExecuted && tr.Result == nil && tr.Error == nil {
+					continue
+				}
+			}
+			emitChunk(provider.StreamChunk{
 				Type:       provider.ChunkTypeToolResult,
-				ToolResult: &stepToolResults[i],
-			}
-			if onChunk != nil {
-				onChunk(resultChunk)
-			}
-			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-				Settings:  r.telemetrySettings,
-				ChunkType: string(provider.ChunkTypeToolResult),
+				ToolResult: tr,
 			})
 		}
-		stepContent = append(stepContent, toolResultsToContentParts(stepToolResults)...)
+		stepContent = append(stepContent, toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret)...)
 
 		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.

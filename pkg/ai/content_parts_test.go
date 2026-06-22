@@ -198,6 +198,7 @@ func TestToolResultsToContentPartsIncludesToolResultInputAndMetadata(t *testing.
 func TestToolResultsToContentPartsIncludesUserApprovalRequestOnly(t *testing.T) {
 	parts := toolResultsToContentParts([]types.ToolResult{{
 		ToolCallID:     "call-1",
+		ApprovalID:     "approval-1",
 		ToolName:       "lookup",
 		Input:          map[string]interface{}{"city": "Tokyo"},
 		ApprovalStatus: types.ToolApprovalStatusUserApproval,
@@ -210,7 +211,7 @@ func TestToolResultsToContentPartsIncludesUserApprovalRequestOnly(t *testing.T) 
 	if !ok {
 		t.Fatalf("part type = %T, want ToolApprovalRequestContent", parts[0])
 	}
-	if req.ApprovalID != "call-1" || req.ToolCall.ID != "call-1" || req.ToolCall.ToolName != "lookup" {
+	if req.ApprovalID != "approval-1" || req.ToolCall.ID != "call-1" || req.ToolCall.ToolName != "lookup" {
 		t.Fatalf("unexpected approval request: %+v", req)
 	}
 	if req.IsAutomatic {
@@ -227,7 +228,10 @@ func TestToolResultsToContentPartsIncludesUserApprovalRequestOnly(t *testing.T) 
 	if _, ok := requestObject["toolCallId"]; ok {
 		t.Fatalf("public approval request JSON should not include top-level toolCallId, got %s", requestJSON)
 	}
-	if !strings.Contains(string(requestJSON), `"toolCall":{"toolCallId":"call-1","toolName":"lookup","input":{"city":"Tokyo"}}`) {
+	if requestObject["type"] != "tool-approval-request" {
+		t.Fatalf("public approval request JSON missing TS type discriminator: %s", requestJSON)
+	}
+	if !strings.Contains(string(requestJSON), `"toolCall":{"type":"tool-call","toolCallId":"call-1","toolName":"lookup","input":{"city":"Tokyo"}}`) {
 		t.Fatalf("public approval request JSON should use TS nested toolCall shape, got %s", requestJSON)
 	}
 }
@@ -271,6 +275,9 @@ func TestToolResultsToContentPartsOrdersAutomaticApprovalBeforeResult(t *testing
 	}
 	if _, ok := responseObject["toolCallId"]; ok {
 		t.Fatalf("public approval response JSON should not include top-level toolCallId, got %s", responseJSON)
+	}
+	if responseObject["type"] != "tool-approval-response" {
+		t.Fatalf("public approval response JSON missing TS type discriminator: %s", responseJSON)
 	}
 	toolCallObject, _ := responseObject["toolCall"].(map[string]interface{})
 	if toolCallObject["toolCallId"] != "call-1" || toolCallObject["toolName"] != "lookup" {

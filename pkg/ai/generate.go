@@ -158,6 +158,10 @@ type GenerateTextOptions struct {
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
 
+	// ExperimentalToolApprovalSecret signs server-issued approval requests so
+	// resumed approval responses can be verified before execution.
+	ExperimentalToolApprovalSecret []byte
+
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
 	// Deprecated: use StopWhen with StepCountIs instead.
 	// If StopWhen is set, MaxSteps is ignored.
@@ -1011,7 +1015,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
-			stepResult.Content = append(stepResult.Content, toolResultsToContentParts(toolResults)...)
+			stepResult.Content = append(stepResult.Content, toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret)...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -1472,6 +1476,12 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 		approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+		approvalID := ""
+		if approval.Status == types.ToolApprovalStatusUserApproval ||
+			approval.Status == types.ToolApprovalStatusApproved ||
+			approval.Status == types.ToolApprovalStatusDenied {
+			approvalID = newCallID()
+		}
 		if approvalErr != nil {
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
@@ -1498,6 +1508,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Input:            call.Arguments,
 				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
+				ApprovalID:       approvalID,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
 				ProviderMetadata: providerMetadata,
@@ -1510,8 +1521,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
-				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
 				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+				ApprovalID:       approvalID,
 				ProviderExecuted: providerExecuted,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
@@ -1529,6 +1541,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Result:           nil,
 				Error:            nil,
 				ApprovalStatus:   approval.Status,
+				ApprovalID:       approvalID,
 				ApprovalReason:   approval.Reason,
 				ProviderExecuted: true,
 				ProviderMetadata: providerMetadata,
@@ -1628,6 +1641,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Result:           toolResult,
 				Error:            toolErr,
 				ApprovalStatus:   approvalStatus,
+				ApprovalID:       approvalID,
 				ApprovalReason:   approvalReason,
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,

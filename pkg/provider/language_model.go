@@ -209,6 +209,12 @@ type StreamChunk struct {
 	// Synthetic chunks emitted by streamText after deferred tool execution.
 	ToolResult *types.ToolResult
 
+	// Tool approval request (when Type is ChunkTypeToolApprovalRequest).
+	ToolApprovalRequest *types.ToolApprovalRequestContent
+
+	// Tool approval response (when Type is ChunkTypeToolApprovalResponse).
+	ToolApprovalResponse *types.ToolApprovalResponseContent
+
 	// Usage information (when Type is ChunkTypeUsage or ChunkTypeFinish)
 	Usage *types.Usage
 
@@ -309,6 +315,18 @@ const (
 	// forwarded to OnChunk consumers just like any other chunk, matching the
 	// TypeScript AI SDK's tool-result forwarding behaviour.
 	ChunkTypeToolResult ChunkType = "tool-result"
+
+	// ChunkTypeToolApprovalRequest indicates that a tool call requires
+	// approval before execution.
+	ChunkTypeToolApprovalRequest ChunkType = "tool-approval-request"
+
+	// ChunkTypeToolApprovalResponse indicates that a tool approval was granted
+	// or denied.
+	ChunkTypeToolApprovalResponse ChunkType = "tool-approval-response"
+
+	// ChunkTypeToolOutputDenied indicates that a denied approval prevented tool
+	// execution.
+	ChunkTypeToolOutputDenied ChunkType = "tool-output-denied"
 
 	// ChunkTypeTextStart marks the beginning of a text content block.
 	// ID identifies which block subsequent ChunkTypeText and ChunkTypeTextEnd

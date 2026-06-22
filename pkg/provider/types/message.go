@@ -64,6 +64,18 @@ func (t TextContent) ContentType() string {
 	return "text"
 }
 
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (t TextContent) MarshalJSON() ([]byte, error) {
+	type textContentAlias TextContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		textContentAlias
+	}{
+		Type:             t.ContentType(),
+		textContentAlias: textContentAlias(t),
+	})
+}
+
 // ReasoningContent represents reasoning/thinking content in a message.
 // This is used by models that expose their reasoning process (e.g., OpenAI o1, Anthropic Claude with thinking).
 //
@@ -102,6 +114,18 @@ func (r ReasoningContent) ContentType() string {
 	return "reasoning"
 }
 
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (r ReasoningContent) MarshalJSON() ([]byte, error) {
+	type reasoningContentAlias ReasoningContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		reasoningContentAlias
+	}{
+		Type:                  r.ContentType(),
+		reasoningContentAlias: reasoningContentAlias(r),
+	})
+}
+
 // ImageContent represents image content in a message
 type ImageContent struct {
 	// Image data as bytes
@@ -120,6 +144,18 @@ type ImageContent struct {
 // ContentType implements ContentPart interface
 func (i ImageContent) ContentType() string {
 	return "image"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (i ImageContent) MarshalJSON() ([]byte, error) {
+	type imageContentAlias ImageContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		imageContentAlias
+	}{
+		Type:              i.ContentType(),
+		imageContentAlias: imageContentAlias(i),
+	})
 }
 
 // FileContent represents file content in a message
@@ -163,6 +199,18 @@ func (f FileContent) ContentType() string {
 	return "file"
 }
 
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (f FileContent) MarshalJSON() ([]byte, error) {
+	type fileContentAlias FileContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		fileContentAlias
+	}{
+		Type:             f.ContentType(),
+		fileContentAlias: fileContentAlias(f),
+	})
+}
+
 // SourceContent is a source reference generated alongside model output —
 // typically a citation or grounding reference.
 // Matches LanguageModelV4Source in the TypeScript SDK.
@@ -196,6 +244,18 @@ type SourceContent struct {
 // ContentType implements ContentPart interface
 func (s SourceContent) ContentType() string {
 	return "source"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (s SourceContent) MarshalJSON() ([]byte, error) {
+	type sourceContentAlias SourceContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		sourceContentAlias
+	}{
+		Type:               s.ContentType(),
+		sourceContentAlias: sourceContentAlias(s),
+	})
 }
 
 // GeneratedFileContent is a file produced by the model as part of its response
@@ -239,6 +299,7 @@ func (f GeneratedFileContent) ContentType() string {
 // { mediaType, data: { type: "data"|"url", ... }, providerMetadata? }.
 func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 	type generatedFileJSON struct {
+		Type             string                 `json:"type"`
 		MediaType        string                 `json:"mediaType"`
 		Data             interface{}            `json:"data"`
 		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
@@ -259,6 +320,7 @@ func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 		data = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.Data)}
 	}
 	return json.Marshal(generatedFileJSON{
+		Type:             f.ContentType(),
 		MediaType:        f.MediaType,
 		Data:             data,
 		ProviderMetadata: f.ProviderMetadata,
@@ -356,7 +418,7 @@ func (t ToolCallContent) ContentType() string {
 // available to Go callers and provider converters, but JSON uses input.
 func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 	type toolCallContentJSON struct {
-		Type             string                 `json:"type,omitempty"`
+		Type             string                 `json:"type"`
 		ToolCallID       string                 `json:"toolCallId"`
 		ToolName         string                 `json:"toolName"`
 		Title            string                 `json:"title,omitempty"`
@@ -371,6 +433,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 	}
 	return json.Marshal(toolCallContentJSON{
+		Type:             t.ContentType(),
 		ToolCallID:       t.ToolCallID,
 		ToolName:         t.ToolName,
 		Title:            t.Title,
@@ -428,6 +491,18 @@ func (c CustomContent) ContentType() string {
 	return "custom"
 }
 
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (c CustomContent) MarshalJSON() ([]byte, error) {
+	type customContentAlias CustomContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		customContentAlias
+	}{
+		Type:               c.ContentType(),
+		customContentAlias: customContentAlias(c),
+	})
+}
+
 // ReasoningFileContent is a file generated by the model during reasoning.
 // Data is []byte; encoding/json automatically base64-encodes it when marshaling
 // and decodes base64 back to []byte when unmarshaling — no DataBase64 field needed.
@@ -461,6 +536,18 @@ type ReasoningFileContent struct {
 // ContentType implements ContentPart interface
 func (r ReasoningFileContent) ContentType() string {
 	return "reasoning-file"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+func (r ReasoningFileContent) MarshalJSON() ([]byte, error) {
+	type reasoningFileContentAlias ReasoningFileContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		reasoningFileContentAlias
+	}{
+		Type:                      r.ContentType(),
+		reasoningFileContentAlias: reasoningFileContentAlias(r),
+	})
 }
 
 // ToolResultContent represents a tool execution result in a message
@@ -514,6 +601,43 @@ func (t ToolResultContent) ContentType() string {
 	return "tool-result"
 }
 
+// MarshalJSON emits the TypeScript SDK content-part shape. Result is retained
+// as a deprecated Go field, but JSON uses output when present.
+func (t ToolResultContent) MarshalJSON() ([]byte, error) {
+	type toolResultContentJSON struct {
+		Type             string                 `json:"type"`
+		ToolCallID       string                 `json:"toolCallId"`
+		ToolName         string                 `json:"toolName"`
+		Title            string                 `json:"title,omitempty"`
+		Input            map[string]interface{} `json:"input,omitempty"`
+		Result           interface{}            `json:"result,omitempty"`
+		Error            string                 `json:"error,omitempty"`
+		Output           *ToolResultOutput      `json:"output,omitempty"`
+		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+		ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
+		Dynamic          bool                   `json:"dynamic,omitempty"`
+		Preliminary      bool                   `json:"preliminary,omitempty"`
+	}
+	return json.Marshal(toolResultContentJSON{
+		Type:             t.ContentType(),
+		ToolCallID:       t.ToolCallID,
+		ToolName:         t.ToolName,
+		Title:            t.Title,
+		Input:            t.Input,
+		Result:           t.Result,
+		Error:            t.Error,
+		Output:           t.Output,
+		ProviderExecuted: t.ProviderExecuted,
+		ProviderOptions:  t.ProviderOptions,
+		ProviderMetadata: t.ProviderMetadata,
+		ToolMetadata:     t.ToolMetadata,
+		Dynamic:          t.Dynamic,
+		Preliminary:      t.Preliminary,
+	})
+}
+
 // ToolErrorContent represents a failed tool execution in ordered content.
 type ToolErrorContent struct {
 	ToolCallID       string                 `json:"toolCallId"`
@@ -537,6 +661,7 @@ type ToolApprovalRequestContent struct {
 	ApprovalID  string   `json:"approvalId"`
 	ToolCallID  string   `json:"toolCallId"`
 	ToolCall    ToolCall `json:"toolCall,omitempty"`
+	Signature   string   `json:"signature,omitempty"`
 	IsAutomatic bool     `json:"isAutomatic,omitempty"`
 }
 
@@ -548,13 +673,17 @@ func (t ToolApprovalRequestContent) ContentType() string {
 // provider replay. Public result content still includes ToolCall when present.
 func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	type toolApprovalRequestContentJSON struct {
+		Type        string           `json:"type"`
 		ApprovalID  string           `json:"approvalId"`
 		ToolCallID  string           `json:"toolCallId,omitempty"`
 		ToolCall    *ToolCallContent `json:"toolCall,omitempty"`
+		Signature   string           `json:"signature,omitempty"`
 		IsAutomatic bool             `json:"isAutomatic,omitempty"`
 	}
 	out := toolApprovalRequestContentJSON{
+		Type:        t.ContentType(),
 		ApprovalID:  t.ApprovalID,
+		Signature:   t.Signature,
 		IsAutomatic: t.IsAutomatic,
 	}
 	if !toolCallIsZero(t.ToolCall) {
@@ -584,6 +713,7 @@ func (t ToolApprovalResponseContent) ContentType() string {
 // provider replay. Public result content still includes ToolCall when present.
 func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 	type toolApprovalResponseContentJSON struct {
+		Type             string           `json:"type"`
 		ApprovalID       string           `json:"approvalId"`
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
 		Approved         bool             `json:"approved"`
@@ -591,6 +721,7 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		ProviderExecuted bool             `json:"providerExecuted,omitempty"`
 	}
 	out := toolApprovalResponseContentJSON{
+		Type:             t.ContentType(),
 		ApprovalID:       t.ApprovalID,
 		Approved:         t.Approved,
 		Reason:           t.Reason,

@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -85,11 +86,6 @@ func TestConvertToResponseMessageMapsProviderMetadataToProviderOptions(t *testin
 			if p.ProviderMetadata != nil {
 				t.Fatalf("content[%d] retained providerMetadata: %s", i, p.ProviderMetadata)
 			}
-		case types.GeneratedFileContent:
-			opts = p.ProviderOptions
-			if p.ProviderMetadata != nil {
-				t.Fatalf("content[%d] retained providerMetadata: %s", i, p.ProviderMetadata)
-			}
 		case types.CustomContent:
 			opts = p.ProviderOptions
 			if p.ProviderMetadata != nil {
@@ -110,6 +106,57 @@ func TestConvertToResponseMessageMapsProviderMetadataToProviderOptions(t *testin
 		}
 		if opts == nil || opts["openai"] == nil {
 			t.Fatalf("content[%d] providerOptions = %+v, want forwarded metadata", i, opts)
+		}
+	}
+}
+
+func TestConvertToResponseMessageContentJSONUsesTSDiscriminators(t *testing.T) {
+	msg := ConvertToResponseMessage(nil, []types.ContentPart{
+		types.TextContent{Text: "hello"},
+		types.ReasoningContent{Text: "thinking"},
+		types.FileContent{MediaType: "text/plain", Data: []byte("file")},
+		types.GeneratedFileContent{MediaType: "image/png", Data: []byte("png")},
+		types.CustomContent{Kind: "xai-citation"},
+		types.ReasoningFileContent{MediaType: "text/plain", Data: []byte("reasoning")},
+		types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookup"},
+	})
+
+	wantTypes := []string{
+		"text",
+		"reasoning",
+		"file",
+		"file",
+		"custom",
+		"reasoning-file",
+		"tool-call",
+	}
+	if len(msg.Content) != len(wantTypes) {
+		t.Fatalf("content len = %d, want %d", len(msg.Content), len(wantTypes))
+	}
+	for i, part := range msg.Content {
+		data, err := json.Marshal(part)
+		if err != nil {
+			t.Fatalf("json.Marshal content[%d] failed: %v", i, err)
+		}
+		var got map[string]json.RawMessage
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("json.Unmarshal content[%d] failed: %v", i, err)
+		}
+		var typ string
+		if err := json.Unmarshal(got["type"], &typ); err != nil {
+			t.Fatalf("content[%d] missing TS type discriminator in %s", i, data)
+		}
+		if typ != wantTypes[i] {
+			t.Fatalf("content[%d] type = %q, want %q in %s", i, typ, wantTypes[i], data)
+		}
+		if i == 3 {
+			var replayData string
+			if err := json.Unmarshal(got["data"], &replayData); err != nil {
+				t.Fatalf("generated file replay data = %s, want TS base64 string", got["data"])
+			}
+			if replayData != "cG5n" {
+				t.Fatalf("generated file replay data = %q, want cG5n", replayData)
+			}
 		}
 	}
 }
@@ -176,7 +223,7 @@ func TestConvertToResponseMessageSanitizesToolCallContentInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal tool-call content: %v", err)
 	}
-	if got, want := string(goodJSON), `{"toolCallId":"good","toolName":"lookup","input":{"q":"docs"}}`; got != want {
+	if got, want := string(goodJSON), `{"type":"tool-call","toolCallId":"good","toolName":"lookup","input":{"q":"docs"}}`; got != want {
 		t.Fatalf("tool-call content json = %s, want %s", got, want)
 	}
 }
@@ -255,7 +302,7 @@ func TestConvertToResponseMessagesUsesFullStepContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal approval request: %v", err)
 	}
-	if got, want := string(requestJSON), `{"approvalId":"call-1","toolCallId":"call-1","isAutomatic":true}`; got != want {
+	if got, want := string(requestJSON), `{"type":"tool-approval-request","approvalId":"call-1","toolCallId":"call-1","isAutomatic":true}`; got != want {
 		t.Fatalf("approval request json = %s, want %s", got, want)
 	}
 	if messages[1].Role != types.RoleTool {
@@ -275,7 +322,7 @@ func TestConvertToResponseMessagesUsesFullStepContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal approval response: %v", err)
 	}
-	if got, want := string(responseJSON), `{"approvalId":"call-1","approved":true,"reason":"safe"}`; got != want {
+	if got, want := string(responseJSON), `{"type":"tool-approval-response","approvalId":"call-1","approved":true,"reason":"safe"}`; got != want {
 		t.Fatalf("approval response json = %s, want %s", got, want)
 	}
 	tr, ok := messages[1].Content[1].(types.ToolResultContent)
@@ -284,6 +331,13 @@ func TestConvertToResponseMessagesUsesFullStepContent(t *testing.T) {
 	}
 	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "sunny" {
 		t.Fatalf("tool result output = %+v, want text sunny", tr.Output)
+	}
+	resultJSON, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("marshal tool result: %v", err)
+	}
+	if !strings.Contains(string(resultJSON), `"type":"tool-result"`) {
+		t.Fatalf("tool result JSON missing TS type discriminator: %s", resultJSON)
 	}
 }
 
@@ -312,6 +366,13 @@ func TestConvertToResponseMessagesSynthesizesDeniedApprovalResult(t *testing.T) 
 	}
 	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputExecutionDenied || tr.Output.Reason != "policy" {
 		t.Fatalf("output = %+v, want execution-denied policy", tr.Output)
+	}
+	resultJSON, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("marshal denied tool result: %v", err)
+	}
+	if !strings.Contains(string(resultJSON), `"type":"tool-result"`) {
+		t.Fatalf("denied tool result JSON missing TS type discriminator: %s", resultJSON)
 	}
 }
 
