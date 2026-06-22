@@ -11,12 +11,6 @@ const (
 	defaultJSONMaxFields = 4096
 )
 
-var unsafeJSONKeys = map[string]struct{}{
-	"__proto__":   {},
-	"constructor": {},
-	"prototype":   {},
-}
-
 func unmarshalSafeJSON(data []byte, target interface{}) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
@@ -47,13 +41,10 @@ func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fie
 
 	switch v := value.(type) {
 	case map[string]interface{}:
-		for key, nested := range v {
+		for _, nested := range v {
 			*fields = *fields + 1
 			if *fields > maxFields {
 				return fmt.Errorf("JSON field count exceeds maximum %d", maxFields)
-			}
-			if _, unsafe := unsafeJSONKeys[key]; unsafe {
-				return fmt.Errorf("unsafe JSON object key %q", key)
 			}
 			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields); err != nil {
 				return err

@@ -141,8 +141,11 @@ func TestParseParamsAndResultEmptyAndInvalid(t *testing.T) {
 	}
 
 	msg.Params = []byte(`{"__proto__":"x"}`)
-	if err := ParseParams(msg, &target); err == nil {
-		t.Fatal("expected ParseParams to reject unsafe JSON keys")
+	if err := ParseParams(msg, &target); err != nil {
+		t.Fatalf("expected ParseParams to preserve prototype-named own keys, got %v", err)
+	}
+	if target["__proto__"] != "x" {
+		t.Fatalf("prototype-named key was not preserved: %#v", target)
 	}
 
 	msg.Result = []byte(`{"bad":`)

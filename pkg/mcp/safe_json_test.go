@@ -6,20 +6,30 @@ import (
 	"testing"
 )
 
-func TestUnmarshalSafeJSONRejectsUnsafeKeys(t *testing.T) {
+func TestUnmarshalSafeJSONPreservesPrototypeNamedOwnKeys(t *testing.T) {
 	var target map[string]interface{}
-	err := unmarshalSafeJSON([]byte(`{"params":{"__proto__":{"polluted":true}}}`), &target)
-	if err == nil {
-		t.Fatal("expected unsafe key error")
+	err := unmarshalSafeJSON([]byte(`{"params":{"__proto__":{"polluted":true},"constructor":{"prototype":{"ok":true}}}}`), &target)
+	if err != nil {
+		t.Fatalf("expected prototype-named keys to parse as ordinary Go map keys, got %v", err)
+	}
+	params, _ := target["params"].(map[string]interface{})
+	if params == nil || params["__proto__"] == nil || params["constructor"] == nil {
+		t.Fatalf("prototype-named keys were not preserved: %#v", target)
 	}
 }
 
-func TestParseResultUsesSafeJSON(t *testing.T) {
+func TestParseResultPreservesPrototypeNamedSchemaKeys(t *testing.T) {
 	msg := &MCPMessage{Result: []byte(`{"tools":[{"name":"bad","inputSchema":{"constructor":{}}}]}`)}
 	var result ListToolsResult
 	err := ParseResult(msg, &result)
-	if err == nil {
-		t.Fatal("expected unsafe key error")
+	if err != nil {
+		t.Fatalf("expected schema key to parse as ordinary Go map key, got %v", err)
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(result.Tools))
+	}
+	if _, ok := result.Tools[0].InputSchema["constructor"]; !ok {
+		t.Fatalf("schema constructor key was not preserved: %#v", result.Tools[0].InputSchema)
 	}
 }
 
