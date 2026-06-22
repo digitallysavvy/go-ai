@@ -150,6 +150,34 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### ToolOrder
+
+`ToolOrder` controls the order tools are sent to providers after active-tool filtering, middleware transforms, and `PrepareStep` updates. Listed names are sent first in the provided order; unlisted tools follow alphabetically.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Inspect the user account.",
+    Tools:     tools,
+    ToolOrder: []string{"readProfile", "listOrders"},
+})
+```
+
+### OnStepEnd
+
+`OnStepEnd` is the canonical callback name for step completion. `OnStepFinish` remains as a deprecated compatibility alias; when both are set, `OnStepEnd` wins. The same migration applies to typed event callbacks: use `OnStepEndEvent` instead of `OnStepFinishEvent`.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Use a tool, then summarize.",
+    Tools:  tools,
+    OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        fmt.Println(step.StepNumber, step.FinishReason, step.Usage)
+    },
+})
+```
+
 ## StreamText
 
 Depending on your model and prompt, it can take a large language model (LLM) up to a minute to finish generating its response. This delay can be unacceptable for interactive use cases such as chatbots or real-time applications, where users expect immediate responses.

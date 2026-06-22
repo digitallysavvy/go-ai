@@ -156,6 +156,8 @@ result, err := sandbox.Run(ctx, ai.SandboxProcessOptions{
 
 The session interface also includes `ReadFile`, `ReadBinaryFile`, `ReadTextFile`, `WriteFile`, `WriteBinaryFile`, and `WriteTextFile`. The old Go-only `Sandbox`, `SandboxExecuteOptions`, and `SandboxExecuteResult` names are removed; use `Experimental_SandboxSession`, `SandboxProcessOptions`, and `SandboxRunResult`.
 
+`SandboxProcessOptions.Env` is forwarded to both `Run` and `Spawn`, matching the TypeScript `Experimental_SandboxSession` process options shape.
+
 ## OpenAI Responses Files
 
 OpenAI Responses now matches the TypeScript SDK default for file parts: images and PDFs are accepted by default, while unsupported file media types require an explicit opt-in.

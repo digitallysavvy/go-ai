@@ -133,6 +133,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 Telemetry integrations should implement `OnEnd`, `OnEmbedEnd`, and `OnRerankEnd`. The older `OnFinish`, `OnEmbedFinish`, and `OnRerankFinish` names are kept as deprecated compatibility fallbacks. Streaming `OnChunk` telemetry is no longer emitted; application-level `StreamTextOptions.OnChunk` callbacks still receive stream chunks.
 
+Step lifecycle telemetry uses `OnStepEnd` as the canonical name. `OnStepFinish` is still emitted as a deprecated compatibility event for migration, and `OnStepEnd` takes precedence when both callback names are configured.
+
 ### Abort and Performance Events
 
 Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when generation is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open.
