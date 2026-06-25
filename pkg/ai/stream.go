@@ -164,7 +164,12 @@ type StreamTextOptions struct {
 	Internal *InternalOptions
 
 	// Callbacks
-	OnChunk  func(chunk provider.StreamChunk)
+	OnChunk func(chunk provider.StreamChunk)
+	// OnEnd is called when the stream is fully consumed.
+	OnEnd func(result *StreamTextResult)
+	// OnFinish is called when the stream is fully consumed.
+	//
+	// Deprecated: use OnEnd.
 	OnFinish func(result *StreamTextResult)
 
 	// ========================================================================
@@ -198,7 +203,12 @@ type StreamTextOptions struct {
 	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
 
+	// OnEndEvent is called once when the stream fully completes.
+	OnEndEvent func(ctx context.Context, e OnFinishEvent)
+
 	// OnFinishEvent is called once when the stream fully completes.
+	//
+	// Deprecated: use OnEndEvent.
 	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
 
 	// OnError is called when an error chunk is received from the provider during
@@ -240,6 +250,40 @@ const (
 	// StreamStatusDone indicates the stream has completed successfully.
 	StreamStatusDone StreamStatus = "done"
 )
+
+// NoOutputGeneratedError is returned when a model stream ends before producing
+// any model output and without a finish chunk.
+type NoOutputGeneratedError struct {
+	Message string
+	Cause   error
+}
+
+func (e *NoOutputGeneratedError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
+	return e.Message
+}
+
+func (e *NoOutputGeneratedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// IsNoOutputGeneratedError reports whether err is a NoOutputGeneratedError.
+func IsNoOutputGeneratedError(err error) bool {
+	var target *NoOutputGeneratedError
+	return errors.As(err, &target)
+}
+
+func newIncompleteModelStreamError() error {
+	return &NoOutputGeneratedError{Message: "No output generated. The model stream ended without a finish chunk."}
+}
 
 // StreamTextResult contains the result of streaming text generation
 type StreamTextResult struct {
@@ -295,6 +339,11 @@ type StreamTextResult struct {
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
 
+	// initialStepCtx/Cancel keep the first step timeout alive across StreamText
+	// returning and the lazy stream consumer starting.
+	initialStepCtx    context.Context
+	initialStepCancel context.CancelFunc
+
 	// telemetryCtx is the context returned by FireOnStart, with any integration
 	// spans embedded.  processStream and ReadAll call FireOnFinish / FireOnError
 	// using this context so OTel spans are correctly closed.
@@ -335,8 +384,9 @@ type StreamTextResult struct {
 	// Structured event callbacks (v6.1)
 	// Stored here so processStream can fire them when the stream completes.
 	cbCallID              string
+	cbOnEnd               func(result *StreamTextResult)
 	cbOnStepFinishEvent   func(ctx context.Context, e OnStepFinishEvent)
-	cbOnFinishEvent       func(ctx context.Context, e OnFinishEvent)
+	cbOnEndEvent          func(ctx context.Context, e OnFinishEvent)
 	cbOnToolCallStart     func(ctx context.Context, e OnToolCallStartEvent)
 	cbOnToolCallFinish    func(ctx context.Context, e OnToolCallFinishEvent)
 	cbFuncID              string
@@ -435,6 +485,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if onStepEndEvent == nil {
 		onStepEndEvent = opts.OnStepFinishEvent
 	}
+	onEnd := opts.OnEnd
+	if onEnd == nil {
+		onEnd = opts.OnFinish
+	}
+	onEndEvent := opts.OnEndEvent
+	if onEndEvent == nil {
+		onEndEvent = opts.OnFinishEvent
+	}
 
 	// Emit OnStartEvent before streaming begins.
 	Notify(ctx, OnStartEvent{
@@ -530,8 +588,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	stepTools = orderStepTools(stepTools, stepToolOrder)
 	opts.ExperimentalSandbox = stepSandbox
 
+	stepCtx := ctx
+	var stepCancel context.CancelFunc
+	if opts.Timeout != nil && opts.Timeout.HasPerStep() {
+		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+	}
+
 	// Emit OnStepStartEvent for the first stream step.
-	Notify(ctx, OnStepStartEvent{
+	Notify(stepCtx, OnStepStartEvent{
 		CallID:              callID,
 		StepNumber:          0,
 		ModelProvider:       stepModel.Provider(),
@@ -552,8 +616,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if op, ok := opts.Output.(outputProcessor); ok {
 		outputSpec = op
 		if responseFormat == nil {
-			rf, rfErr := op.ResponseFormat(ctx)
+			rf, rfErr := op.ResponseFormat(stepCtx)
 			if rfErr != nil {
+				if stepCancel != nil {
+					stepCancel()
+				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: rfErr})
 				return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
 			}
@@ -561,8 +628,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 	}
 
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
+		if stepCancel != nil {
+			stepCancel()
+		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
 		return nil, fmt.Errorf("prompt normalization failed: %w", normErr)
 	}
@@ -593,7 +663,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		Telemetry:             telemetrySettings,
 	}
 
-	telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
+	telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:      telemetrySettings,
 		CallID:        callID,
 		ModelProvider: stepModel.Provider(),
@@ -603,14 +673,19 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	})
 
 	// Start streaming
-	stream, err := doStreamWithGatewayRetry(ctx, stepModel, genOpts, opts.MaxRetries)
+	stream, err := doStreamWithGatewayRetry(stepCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
-		if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+		if stepCancel != nil {
+			stepCancel()
+		}
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
+			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
-		if isAbortErr(ctx, err) {
+		if isAbortErr(stepCtx, err) {
 			if opts.OnAbort != nil {
-				opts.OnAbort(ctx, nil)
+				opts.OnAbort(stepCtx, nil)
 			}
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err})
 		} else {
@@ -624,13 +699,16 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		stream:            stream,
 		status:            StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:           opts.Timeout,
+		initialStepCtx:    stepCtx,
+		initialStepCancel: stepCancel,
 		telemetryCtx:      telemetryCtx,
 		telemetrySettings: telemetrySettings,
 		outputSpec:        outputSpec,
 		// Structured event callbacks
 		cbCallID:              callID,
+		cbOnEnd:               onEnd,
 		cbOnStepFinishEvent:   onStepEndEvent,
-		cbOnFinishEvent:       opts.OnFinishEvent,
+		cbOnEndEvent:          onEndEvent,
 		cbOnToolCallStart:     opts.OnToolExecutionStart,
 		cbOnToolCallFinish:    opts.OnToolExecutionEnd,
 		cbFuncID:              cbFuncID,
@@ -653,14 +731,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 	// Start the processing loop when any callback depends on post-stream tool
 	// execution or multi-step continuation.
-	if opts.OnChunk != nil || opts.OnFinish != nil ||
+	if opts.OnChunk != nil || onEnd != nil ||
 		opts.OnStepStart != nil ||
-		opts.OnStepEndEvent != nil || opts.OnStepFinishEvent != nil || opts.OnFinishEvent != nil ||
+		opts.OnStepEndEvent != nil || opts.OnStepFinishEvent != nil || onEndEvent != nil ||
 		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
 		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil ||
 		opts.OnError != nil || opts.OnAbort != nil {
 		result.processingDone = make(chan struct{})
-		go result.processStream(ctx, opts.OnChunk, opts.OnFinish)
+		go result.processStream(ctx, opts.OnChunk, onEnd)
 	}
 
 	return result, nil
@@ -692,10 +770,47 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
 	var accumulatedTextParts []string
+	pendingStepCtx := r.initialStepCtx
+	pendingStepCancel := r.initialStepCancel
+	abortFired := false
+	fireAbort := func(reason error) {
+		if abortFired {
+			return
+		}
+		abortFired = true
+		if opts.OnAbort != nil {
+			opts.OnAbort(ctx, allSteps)
+		}
+		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
+			Settings: r.telemetrySettings,
+			CallID:   r.cbCallID,
+			Reason:   reason,
+			Steps:    append([]types.StepResult(nil), allSteps...),
+		})
+		if onChunk != nil {
+			abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+			if reason != nil {
+				abortChunk.AbortReason = reason.Error()
+			}
+			onChunk(abortChunk)
+		}
+	}
 
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
 		stepStart := time.Now()
+		stepCtx := ctx
+		cancelStep := func() {}
+		if pendingStepCtx != nil {
+			stepCtx = pendingStepCtx
+			if pendingStepCancel != nil {
+				cancelStep = pendingStepCancel
+			}
+			pendingStepCtx = nil
+			pendingStepCancel = nil
+		} else if r.timeout != nil && r.timeout.HasPerStep() {
+			stepCtx, cancelStep = r.timeout.CreateTimeoutContext(ctx, "step")
+		}
 		var firstTokenAt *time.Time
 		var previousOutputChunkAt *time.Time
 		var outputChunkGapsMs []int64
@@ -707,7 +822,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			toolsByName[stepTools[i].Name] = &stepTools[i]
 		}
 		// Fire step-start telemetry. OTel implementations create a child step span.
-		stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
+		telemetryStepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
 			StepNumber:     stepIndex,
@@ -731,32 +846,33 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		var stepUsage types.Usage
+		var stepSawTerminal bool
+		var stepSawFinish bool
+		var stepSawOutput bool
 		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
 		// result inline in this step's stream (used for the deferred hasResult check).
 		streamedToolResultIDs := make(map[string]bool)
 
 		for {
-			chunk, err := r.nextChunk(ctx)
+			chunk, err := r.nextChunk(stepCtx)
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
+				if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
+					err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+				}
 				r.err = err
 				if isAbortErr(ctx, err) {
-					if opts.OnAbort != nil {
-						opts.OnAbort(ctx, allSteps)
-					}
-					telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
-						Settings: r.telemetrySettings,
-						CallID:   r.cbCallID,
-						Reason:   err,
-						Steps:    append([]types.StepResult(nil), allSteps...),
-					})
+					fireAbort(err)
 				}
 				break
 			}
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
+				forwardChunk = false
+			}
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
 				forwardChunk = false
 			}
 
@@ -787,6 +903,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				})
 			}
 
+			if isModelOutputChunkType(chunk.Type) {
+				stepSawOutput = true
+			}
+
 			// Accumulate warnings from stream-start chunks
 			if chunk.Type == provider.ChunkTypeStreamStart {
 				r.warnings = append(r.warnings, chunk.Warnings...)
@@ -803,9 +923,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// matching the TypeScript SDK's deduplication behavior.
 				if r.outputSpec != nil {
 					currentText := strings.Join(accumulatedTextParts, "")
-					partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+					partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 						Text: currentText,
 					})
+					if partialErr != nil {
+						r.err = partialErr
+						break
+					}
 					if partial != nil {
 						newJSONStr, ok := partialOutputDedupKey(partial)
 						if ok && newJSONStr != r.lastPartialJSON {
@@ -862,6 +986,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Update finish reason and context management
 			if chunk.Type == provider.ChunkTypeFinish {
+				stepSawTerminal = true
+				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
 				if chunk.ContextManagement != nil {
 					r.contextManagement = chunk.ContextManagement
@@ -918,8 +1044,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Call OnError for error chunks before forwarding.
-			if chunk.Type == provider.ChunkTypeError && opts.OnError != nil {
-				opts.OnError(ctx, errors.New(chunk.Text))
+			if chunk.Type == provider.ChunkTypeError {
+				stepSawTerminal = true
+				if r.finishReason == "" {
+					r.finishReason = types.FinishReasonError
+				}
+				if opts.OnError != nil {
+					opts.OnError(ctx, errors.New(chunk.Text))
+				}
 			}
 
 			// Apply experimental transforms to produce the consumer-facing chunks.
@@ -949,7 +1081,38 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 		if r.err != nil {
+			cancelStep()
 			break
+		}
+		if !stepSawTerminal {
+			if !stepSawOutput {
+				r.err = newIncompleteModelStreamError()
+				errorChunk := provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: r.err.Error(),
+				}
+				if onChunk != nil {
+					onChunk(errorChunk)
+				}
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(errorChunk.Type),
+					Text:      errorChunk.Text,
+				})
+				cancelStep()
+				break
+			}
+			r.finishReason = types.FinishReasonOther
+		}
+		if !stepSawFinish && r.finishReason != "" {
+			finishChunk := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: r.finishReason}
+			if onChunk != nil {
+				onChunk(finishChunk)
+			}
+			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+				Settings:  r.telemetrySettings,
+				ChunkType: string(finishChunk.Type),
+			})
 		}
 		stepText := strings.Join(stepTextParts, "")
 		r.text = strings.Join(accumulatedTextParts, "")
@@ -990,8 +1153,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				toolExecutionMs:     toolExecutionMs,
 			}
 			usageForTools := r.usage.Add(stepUsage)
-			stepToolResults, _ = executeTools(ctx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
+			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
+		}
+		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
+			r.err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+			fireAbort(r.err)
+			cancelStep()
+			break
 		}
 		hasUserApproval := false
 		for _, tr := range stepToolResults {
@@ -1159,7 +1328,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepFiles = append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 			}
 			r.mu.Unlock()
-			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
+			telemetry.FireOnStepEnd(telemetryStepCtx, telemetry.TelemetryStepEndEvent{
 				StepNumber:     stepIndex,
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
@@ -1218,6 +1387,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, r.cbOnStepFinishEvent)
+		cancelStep()
 
 		if hasUserApproval {
 			break
@@ -1330,7 +1500,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbSystem = nextSystem
 		currentTools = append([]types.Tool(nil), nextTools...)
 		opts.ExperimentalSandbox = nextSandbox
-		Notify(ctx, OnStepStartEvent{
+		nextStepCtx := ctx
+		nextStepCancel := func() {}
+		if r.timeout != nil && r.timeout.HasPerStep() {
+			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
+		}
+		Notify(nextStepCtx, OnStepStartEvent{
 			CallID:              r.cbCallID,
 			StepNumber:          stepNum,
 			ModelProvider:       nextModel.Provider(),
@@ -1345,11 +1520,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, opts.OnStepStart)
-		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{
+		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: nextMessages,
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
+			nextStepCancel()
 			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
 			break
 		}
@@ -1377,7 +1553,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ProviderOptions:       nextProviderOptions,
 			Telemetry:             r.telemetrySettings,
 		}
-		telemetry.FireOnLanguageModelCallStart(ctx, telemetry.LanguageModelCallStartEvent{
+		telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
 			Settings:      r.telemetrySettings,
 			CallID:        r.cbCallID,
 			ModelProvider: nextModel.Provider(),
@@ -1385,14 +1561,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Prompt:        nextGenOpts.Prompt,
 			Tools:         nextGenOpts.Tools,
 		})
-		newStream, err := nextModel.DoStream(ctx, nextGenOpts)
+		newStream, err := nextModel.DoStream(nextStepCtx, nextGenOpts)
 		if err != nil {
-			if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
+			nextStepCancel()
+			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
+				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
+			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
 			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
+			if isAbortErr(nextStepCtx, r.err) {
+				fireAbort(r.err)
+			}
 			break
 		}
+		pendingStepCtx = nextStepCtx
+		pendingStepCancel = nextStepCancel
 		r.stream = newStream
 	}
 
@@ -1407,6 +1591,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		})
 	}
 	if r.err != nil {
+		if isAbortErr(ctx, r.err) {
+			fireAbort(r.err)
+		}
+		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
+			opts.OnError(ctx, r.err)
+		}
 		if !isAbortErr(ctx, r.err) {
 			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
 				Settings: r.telemetrySettings,
@@ -1559,7 +1749,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		ExperimentalContext: r.cbExperimentalCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
-	}, r.cbOnFinishEvent)
+	}, r.cbOnEndEvent)
 }
 
 // Stream returns the underlying text stream
@@ -1862,6 +2052,9 @@ func (r *StreamTextResult) ensureConsumed() error {
 
 // Close closes the stream
 func (r *StreamTextResult) Close() error {
+	if r.initialStepCancel != nil {
+		r.initialStepCancel()
+	}
 	return r.stream.Close()
 }
 
@@ -1870,6 +2063,17 @@ func (r *StreamTextResult) Close() error {
 // called — use StreamText with callbacks for tool execution.
 func (r *StreamTextResult) ReadAll() (string, error) {
 	ctx := context.Background()
+	stepCtx := ctx
+	cancelStep := func() {}
+	if r.initialStepCtx != nil {
+		stepCtx = r.initialStepCtx
+		if r.initialStepCancel != nil {
+			cancelStep = r.initialStepCancel
+		}
+	} else if r.timeout != nil && r.timeout.HasPerStep() {
+		stepCtx, cancelStep = r.timeout.CreateTimeoutContext(ctx, "step")
+	}
+	defer cancelStep()
 	stepStart := time.Now()
 	var firstTokenAt *time.Time
 	var previousOutputChunkAt *time.Time
@@ -1878,13 +2082,19 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	var pendingToolCalls []types.ToolCall
 	var stepContent []types.ContentPart
 	var stepReasoning []types.ReasoningContent
+	var sawTerminal bool
+	var sawOutput bool
 
 	for {
-		chunk, err := r.nextChunk(ctx)
+		chunk, err := r.nextChunk(stepCtx)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
+				err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+			}
+			r.err = err
 			if isAbortErr(ctx, err) {
 				telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 					Settings: r.telemetrySettings,
@@ -1894,6 +2104,10 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 				})
 			}
 			return "", err
+		}
+
+		if isModelOutputChunkType(chunk.Type) {
+			sawOutput = true
 		}
 
 		if isOutputChunkForTiming(*chunk) {
@@ -1929,9 +2143,13 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 
 			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
-				partial := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+				partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 					Text: r.text,
 				})
+				if partialErr != nil {
+					r.err = partialErr
+					return "", partialErr
+				}
 				if partial != nil {
 					newJSONStr, ok := partialOutputDedupKey(partial)
 					if ok && newJSONStr != r.lastPartialJSON {
@@ -1982,6 +2200,7 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 
 		// Update finish reason, usage, and context management
 		if chunk.Type == provider.ChunkTypeFinish {
+			sawTerminal = true
 			r.finishReason = chunk.FinishReason
 			if chunk.ContextManagement != nil {
 				r.contextManagement = chunk.ContextManagement
@@ -2020,6 +2239,21 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 				Headers:   chunk.ResponseMetadata.Headers,
 			}
 		}
+		if chunk.Type == provider.ChunkTypeError {
+			sawTerminal = true
+			if r.finishReason == "" {
+				r.finishReason = types.FinishReasonError
+			}
+		}
+	}
+
+	if !sawTerminal {
+		if !sawOutput {
+			err := newIncompleteModelStreamError()
+			r.err = err
+			return "", err
+		}
+		r.finishReason = types.FinishReasonOther
 	}
 
 	// Store collected tool calls.
@@ -2126,6 +2360,45 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 
+	if r.cbOnEnd != nil {
+		r.cbOnEnd(r)
+	}
+	Notify(ctx, OnFinishEvent{
+		CallID:             r.cbCallID,
+		StepNumber:         step.StepNumber,
+		Model:              step.Model,
+		ModelProvider:      step.Model.Provider,
+		ModelID:            step.Model.ModelID,
+		Text:               r.text,
+		Reasoning:          step.Reasoning,
+		ReasoningText:      step.ReasoningText,
+		ToolCalls:          step.ToolCalls,
+		StaticToolCalls:    step.StaticToolCalls,
+		DynamicToolCalls:   step.DynamicToolCalls,
+		ToolResults:        step.ToolResults,
+		StaticToolResults:  step.StaticToolResults,
+		DynamicToolResults: step.DynamicToolResults,
+		FinishReason:       r.finishReason,
+		RawFinishReason:    step.RawFinishReason,
+		Usage:              step.Usage,
+		Steps:              []types.StepResult{step},
+		TotalUsage:         r.usage,
+		Warnings:           r.warnings,
+		Sources:            step.Sources,
+		Files:              step.Files,
+		ProviderMetadata:   step.ProviderMetadata,
+		ResponseHeaders:    r.responseHeaders,
+		Response: GenerateStepResponse{
+			ID:       step.Response.ID,
+			Headers:  r.responseHeaders,
+			Messages: step.ResponseMessages,
+			Body:     step.Response.Body,
+		},
+		ExperimentalContext: r.cbExperimentalCtx,
+		RuntimeContext:      r.cbRuntimeCtx,
+		ToolsContext:        r.cbToolsCtx,
+	}, r.cbOnEndEvent)
+
 	return r.text, nil
 }
 
@@ -2185,14 +2458,52 @@ func includedRequestMessages(include bool, messages []types.Message) []types.Mes
 
 // nextChunk reads the next chunk with optional per-chunk timeout
 func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk, error) {
-	// If no per-chunk timeout, just call Next() directly
 	if r.timeout == nil || !r.timeout.HasPerChunk() {
-		return r.stream.Next()
+		if ctx == nil || ctx.Done() == nil {
+			return r.stream.Next()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		type chunkResult struct {
+			chunk *provider.StreamChunk
+			err   error
+		}
+		resultCh := make(chan chunkResult, 1)
+		go func() {
+			chunk, err := r.stream.Next()
+			resultCh <- chunkResult{chunk: chunk, err: err}
+		}()
+		select {
+		case result := <-resultCh:
+			return result.chunk, result.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// If per-chunk and per-step/total contexts are both active, the first one
+	// to expire wins.
+	parentCtx := ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	if parentCtx.Err() != nil {
+		return nil, parentCtx.Err()
 	}
 
 	// Use per-chunk timeout
-	chunkCtx, cancel := r.timeout.CreateTimeoutContext(ctx, "chunk")
+	chunkCtx, cancel := r.timeout.CreateTimeoutContext(parentCtx, "chunk")
 	defer cancel()
+	if chunkCtx == parentCtx && chunkCtx.Done() == nil {
+		return r.stream.Next()
+	}
 
 	// Channel to receive the chunk
 	type chunkResult struct {
@@ -2213,6 +2524,32 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 		return result.chunk, result.err
 	case <-chunkCtx.Done():
 		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
+	}
+}
+
+func isModelOutputChunkType(chunkType provider.ChunkType) bool {
+	switch chunkType {
+	case provider.ChunkTypeFile,
+		provider.ChunkTypeCustom,
+		provider.ChunkTypeSource,
+		provider.ChunkTypeTextStart,
+		provider.ChunkTypeText,
+		provider.ChunkTypeTextEnd,
+		provider.ChunkTypeReasoningStart,
+		provider.ChunkTypeReasoning,
+		provider.ChunkTypeReasoningEnd,
+		provider.ChunkTypeReasoningFile,
+		provider.ChunkTypeToolInputStart,
+		provider.ChunkTypeToolInputDelta,
+		provider.ChunkTypeToolInputEnd,
+		provider.ChunkTypeToolApprovalRequest,
+		provider.ChunkTypeToolApprovalResponse,
+		provider.ChunkTypeToolCall,
+		provider.ChunkTypeToolResult,
+		provider.ChunkTypeToolOutputDenied:
+		return true
+	default:
+		return false
 	}
 }
 

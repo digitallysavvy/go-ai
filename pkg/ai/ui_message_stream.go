@@ -25,8 +25,13 @@ type UIMessageStreamOnStepFinishCallback func(ctx map[string]interface{})
 // UIMessageStreamOnStepEndCallback is the canonical name for UIMessageStreamOnStepFinishCallback.
 type UIMessageStreamOnStepEndCallback = UIMessageStreamOnStepFinishCallback
 
-// UIMessageStreamOnFinishCallback is invoked when the UI stream finishes.
-type UIMessageStreamOnFinishCallback func(ctx map[string]interface{})
+// UIMessageStreamOnEndCallback is invoked when the UI stream ends.
+type UIMessageStreamOnEndCallback func(ctx map[string]interface{})
+
+// UIMessageStreamOnFinishCallback is invoked when the UI stream ends.
+//
+// Deprecated: use UIMessageStreamOnEndCallback.
+type UIMessageStreamOnFinishCallback = UIMessageStreamOnEndCallback
 
 // UIMessageStreamWriter is used by CreateUIMessageStreamWithOptions to write chunks.
 type UIMessageStreamWriter struct {
@@ -56,7 +61,9 @@ type UIMessageStreamOptions struct {
 	OriginalMessages []UIMessageChunk
 	OnStepEnd        UIMessageStreamOnStepEndCallback
 	// Deprecated: use OnStepEnd.
-	OnStepFinish      UIMessageStreamOnStepFinishCallback
+	OnStepFinish UIMessageStreamOnStepFinishCallback
+	OnEnd        UIMessageStreamOnEndCallback
+	// Deprecated: use OnEnd.
 	OnFinish          UIMessageStreamOnFinishCallback
 	GenerateMessageID IDGenerator
 }
@@ -75,8 +82,10 @@ type UIMessageStreamResultOptions struct {
 	OnStepEnd         UIMessageStreamOnStepEndCallback
 	// Deprecated: use OnStepEnd.
 	OnStepFinish UIMessageStreamOnStepFinishCallback
-	OnFinish     UIMessageStreamOnFinishCallback
-	OnError      func(error) string
+	OnEnd        UIMessageStreamOnEndCallback
+	// Deprecated: use OnEnd.
+	OnFinish UIMessageStreamOnFinishCallback
+	OnError  func(error) string
 }
 
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
@@ -119,6 +128,13 @@ func resolveUIMessageStreamOnStepEnd(onStepEnd, onStepFinish UIMessageStreamOnSt
 		return onStepEnd
 	}
 	return onStepFinish
+}
+
+func resolveUIMessageStreamOnEnd(onEnd, onFinish UIMessageStreamOnEndCallback) UIMessageStreamOnEndCallback {
+	if onEnd != nil {
+		return onEnd
+	}
+	return onFinish
 }
 
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
@@ -164,8 +180,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}
 		uiState := newUIMessageCallbackState(options.OriginalMessages, generateID())
 
-		callOnFinish := func() {
-			if options.OnFinish == nil {
+		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
+		callOnEnd := func() {
+			if onEnd == nil {
 				return
 			}
 			finishEvent := map[string]interface{}{
@@ -178,7 +195,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			defer func() {
 				_ = recover()
 			}()
-			options.OnFinish(finishEvent)
+			onEnd(finishEvent)
 		}
 
 		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
@@ -198,10 +215,10 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}
 		processAndEnqueue := func(part UIMessageChunk) {
 			uiState.apply(part, onError)
-			safeEnqueue(part)
 			if part["type"] == "finish-step" {
 				callOnStepFinish()
 			}
+			safeEnqueue(part)
 		}
 
 		var wg sync.WaitGroup
@@ -263,7 +280,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		closed = true
 		mu.Unlock()
 
-		callOnFinish()
+		callOnEnd()
 	}()
 
 	return out, errCh
@@ -313,8 +330,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 
 		uiState := newUIMessageCallbackState(options.OriginalMessages, callbackMessageID)
 
-		callOnFinish := func(finishReason types.FinishReason) {
-			if options.OnFinish == nil {
+		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
+		callOnEnd := func(finishReason types.FinishReason) {
+			if onEnd == nil {
 				return
 			}
 			finishEvent := map[string]interface{}{
@@ -327,7 +345,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			defer func() {
 				_ = recover()
 			}()
-			options.OnFinish(finishEvent)
+			onEnd(finishEvent)
 		}
 
 		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
@@ -356,29 +374,74 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 
 		processChunk := func(chunk UIMessageChunk) {
 			uiState.apply(chunk, onError)
-			safeEnqueue(chunk)
 			if chunk["type"] == "finish-step" {
 				callOnStepFinish()
 			}
+			safeEnqueue(chunk)
+		}
+		messageMetadataInput := func(part provider.StreamChunk, overrideType string) map[string]interface{} {
+			partType := string(part.Type)
+			if overrideType != "" {
+				partType = overrideType
+			} else {
+				switch part.Type {
+				case provider.ChunkTypeStreamStart:
+					partType = "start-step"
+				case provider.ChunkTypeFinish, provider.ChunkTypeStreamFinish:
+					partType = "finish-step"
+				case provider.ChunkTypeText:
+					partType = "text-delta"
+				case provider.ChunkTypeReasoning:
+					partType = "reasoning-delta"
+				}
+			}
+			metadataPart := part
+			metadataPart.Type = provider.ChunkType(partType)
+			return map[string]interface{}{
+				"type": partType,
+				"part": metadataPart,
+			}
+		}
+		processMessageMetadata := func(part provider.StreamChunk) {
+			if options.MessageMetadata == nil {
+				return
+			}
+			input := messageMetadataInput(part, "")
+			partType, _ := input["type"].(string)
+			metadata := options.MessageMetadata(input)
+			if metadata != nil && partType != "start" && partType != "finish" {
+				processChunk(UIMessageChunk{
+					"type":            "message-metadata",
+					"messageMetadata": metadata,
+				})
+			}
 		}
 
+		var startMetadata map[string]interface{}
+		if options.MessageMetadata != nil {
+			startMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{Type: provider.ChunkType("start")}, "start"))
+		}
 		if sendStart {
 			startEvent := map[string]interface{}{
 				"type": "start",
 			}
-			if streamMessageID != "" {
-				startEvent["messageId"] = streamMessageID
+			startMessageID := streamMessageID
+			if startMessageID == "" && options.GenerateMessageID != nil {
+				startMessageID = callbackMessageID
 			}
-			if options.MessageMetadata != nil {
-				metadata := options.MessageMetadata(map[string]interface{}{"type": "start"})
-				if metadata != nil {
-					startEvent["messageMetadata"] = metadata
-				}
+			if startMessageID != "" {
+				startEvent["messageId"] = startMessageID
+			}
+			if startMetadata != nil {
+				startEvent["messageMetadata"] = startMetadata
 			}
 			processChunk(startEvent)
 		}
 
 		finishReason := types.FinishReason("")
+		sawTerminal := false
+		sawFinishChunk := false
+		sawOutput := false
 		activeTextIDs := map[string]bool{}
 		activeReasoningIDs := map[string]bool{}
 		textID := ""
@@ -439,14 +502,40 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if err == io.EOF {
 					break
 				}
+				if isAbortErr(ctx, err) {
+					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+					abortChunk := UIMessageChunk{"type": "abort"}
+					if err.Error() != "" {
+						abortPart.AbortReason = err.Error()
+						abortChunk["reason"] = abortPart.AbortReason
+					}
+					processChunk(abortChunk)
+					processMessageMetadata(abortPart)
+					callOnEnd(finishReason)
+					return
+				}
 				errCh <- err
 				appendErrorChunk(onError, safeEnqueue, err)
-				callOnFinish(finishReason)
+				callOnEnd(finishReason)
 				return
 			}
 
 			if chunk.Type == provider.ChunkTypeFinish {
+				sawTerminal = true
+				sawFinishChunk = true
 				finishReason = chunk.FinishReason
+			}
+			if chunk.Type == provider.ChunkTypeError {
+				sawTerminal = true
+				if finishReason == "" {
+					finishReason = types.FinishReasonError
+				}
+			}
+			if isModelOutputChunkType(chunk.Type) {
+				sawOutput = true
+			}
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+				continue
 			}
 			chunkForConversion := *chunk
 			switch chunk.Type {
@@ -507,38 +596,48 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			for _, uiChunk := range converted {
 				processChunk(uiChunk)
 			}
-			if options.MessageMetadata != nil && chunk.Type != provider.ChunkTypeStreamStart && chunk.Type != provider.ChunkTypeStreamFinish {
-				metadata := options.MessageMetadata(map[string]interface{}{
-					"type": string(chunk.Type),
-					"part": chunk,
-				})
-				if metadata != nil && string(chunk.Type) != "start" && string(chunk.Type) != "finish" {
-					processChunk(UIMessageChunk{
-						"type":            "message-metadata",
-						"messageMetadata": metadata,
-					})
-				}
-			}
+			processMessageMetadata(*chunk)
 		}
 
+		if !sawTerminal {
+			if !sawOutput {
+				err := newIncompleteModelStreamError()
+				appendErrorChunk(onError, processChunk, err)
+				processMessageMetadata(provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: err.Error(),
+				})
+				callOnEnd(finishReason)
+				return
+			}
+			finishReason = types.FinishReasonOther
+		}
 		closeOpenParts()
+		if !sawFinishChunk && finishReason != "" {
+			processChunk(UIMessageChunk{"type": "finish-step"})
+			processMessageMetadata(provider.StreamChunk{
+				Type:         provider.ChunkTypeFinish,
+				FinishReason: finishReason,
+			})
+		}
+		var finishMetadata map[string]interface{}
+		if options.MessageMetadata != nil {
+			finishMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{
+				Type:         provider.ChunkType("finish"),
+				FinishReason: finishReason,
+			}, "finish"))
+		}
 		if sendFinish {
 			finishEvent := map[string]interface{}{
 				"type":         "finish",
 				"finishReason": string(finishReason),
 			}
-			if options.MessageMetadata != nil {
-				metadata := options.MessageMetadata(map[string]interface{}{
-					"type":         "finish",
-					"finishReason": string(finishReason),
-				})
-				if metadata != nil {
-					finishEvent["messageMetadata"] = metadata
-				}
+			if finishMetadata != nil {
+				finishEvent["messageMetadata"] = finishMetadata
 			}
 			processChunk(finishEvent)
 		}
-		callOnFinish(finishReason)
+		callOnEnd(finishReason)
 	}()
 	return out, errCh
 }
@@ -1317,6 +1416,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	}
 
 	switch chunk.Type {
+	case provider.ChunkTypeRaw:
+		break
+	case provider.ChunkTypeResponseMetadata, provider.ChunkTypeFirstChunk:
+		break
 	case provider.ChunkTypeTextStart:
 		part := map[string]interface{}{"type": "text-start", "id": chunk.ID}
 		withMeta(part)
@@ -1363,7 +1466,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"type":     "source-url",
 				"sourceId": chunk.SourceContent.ID,
 				"url":      chunk.SourceContent.URL,
-				"title":    chunk.SourceContent.Title,
+			}
+			if chunk.SourceContent.Title != "" {
+				part["title"] = chunk.SourceContent.Title
 			}
 			withMeta(part)
 			out = append(out, part)
@@ -1374,8 +1479,12 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"type":      "source-document",
 				"sourceId":  chunk.SourceContent.ID,
 				"mediaType": chunk.SourceContent.MediaType,
-				"title":     chunk.SourceContent.Title,
-				"filename":  chunk.SourceContent.Filename,
+			}
+			if chunk.SourceContent.Title != "" {
+				part["title"] = chunk.SourceContent.Title
+			}
+			if chunk.SourceContent.Filename != "" {
+				part["filename"] = chunk.SourceContent.Filename
 			}
 			withMeta(part)
 			out = append(out, part)
@@ -1665,10 +1774,6 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			out = append(out, map[string]interface{}{"type": "finish-step"})
 			break
 		}
-		out = append(out, UIMessageChunk{
-			"type":  string(chunk.Type),
-			"chunk": chunk,
-		})
 	}
 	return out
 }

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonutil"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -50,7 +50,7 @@ type PartialOutput[T any] struct {
 type outputProcessor interface {
 	ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error)
 	parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error)
-	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{}
+	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error)
 }
 
 // =============================================================================
@@ -205,12 +205,15 @@ func (o *textOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
-	r, _ := o.ParsePartialOutput(ctx, opts)
-	if r == nil {
-		return nil
+func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+	r, err := o.ParsePartialOutput(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	return r.Partial
+	if r == nil {
+		return nil, nil
+	}
+	return r.Partial, nil
 }
 
 // =============================================================================
@@ -290,10 +293,10 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 	var zero T
 
 	// Parse JSON
-	var result T
+	var result interface{}
 	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
 		return zero, &NoObjectGeneratedError{
-			Message:      "No object generated: could not parse the response",
+			Message:      "No object generated: could not parse the response.",
 			Cause:        err,
 			Text:         options.Text,
 			Response:     options.Response,
@@ -301,11 +304,13 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 			FinishReason: options.FinishReason,
 		}
 	}
+
+	result = schema.ApplyDefaults(result, o.schema)
 
 	// Validate against schema
 	if err := o.schema.Validator().Validate(result); err != nil {
 		return zero, &NoObjectGeneratedError{
-			Message:      "No object generated: response did not match schema",
+			Message:      "No object generated: response did not match schema.",
 			Cause:        err,
 			Text:         options.Text,
 			Response:     options.Response,
@@ -314,23 +319,43 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 		}
 	}
 
-	return result, nil
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return zero, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        err,
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+
+	var typedResult T
+	if err := json.Unmarshal(jsonBytes, &typedResult); err != nil {
+		return zero, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        err,
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+
+	return typedResult, nil
 }
 
 func (o *objectOutput[T]) ParsePartialOutput(ctx context.Context, options ParsePartialOutputOptions) (*PartialOutput[T], error) {
 	// Try to parse as partial JSON
-	parsed, err := jsonutil.ParsePartialJSON(options.Text)
-	if err != nil {
-		return nil, nil // No partial result available yet
-	}
-
-	if parsed == nil {
+	parseResult := jsonparser.ParsePartialJSON(options.Text)
+	if parseResult.State == jsonparser.ParseStateFailed || parseResult.State == jsonparser.ParseStateUndefinedInput {
 		return nil, nil
 	}
 
 	// Convert to expected type
 	// Note: This does not validate partial results, matching TypeScript behavior
-	jsonBytes, err := json.Marshal(parsed)
+	jsonBytes, err := json.Marshal(parseResult.Value)
 	if err != nil {
 		return nil, nil
 	}
@@ -349,12 +374,15 @@ func (o *objectOutput[T]) parseCompleteOutput(ctx context.Context, opts ParseCom
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
-	r, _ := o.ParsePartialOutput(ctx, opts)
-	if r == nil {
-		return nil
+func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+	r, err := o.ParsePartialOutput(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	return r.Partial
+	if r == nil {
+		return nil, nil
+	}
+	return r.Partial, nil
 }
 
 // =============================================================================
@@ -414,7 +442,7 @@ func ArrayOutput[ELEMENT any](opts ArrayOutputOptions[ELEMENT]) Output[[]ELEMENT
 }
 
 func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error) {
-	elementJSONSchema := o.elementSchema.Validator().JSONSchema()
+	elementJSONSchema := cloneSchemaMap(o.elementSchema.Validator().JSONSchema())
 
 	// Remove $schema from element schema if present
 	delete(elementJSONSchema, "$schema")
@@ -449,14 +477,10 @@ func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.Re
 }
 
 func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options ParseCompleteOutputOptions) ([]ELEMENT, error) {
-	// Parse JSON
-	var wrapper struct {
-		Elements []interface{} `json:"elements"`
-	}
-
-	if err := json.Unmarshal([]byte(options.Text), &wrapper); err != nil {
+	var outerValue interface{}
+	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return nil, &NoObjectGeneratedError{
-			Message:      "No object generated: could not parse the response",
+			Message:      "No object generated: could not parse the response.",
 			Cause:        err,
 			Text:         options.Text,
 			Response:     options.Response,
@@ -465,9 +489,33 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 		}
 	}
 
-	if wrapper.Elements == nil {
+	wrapper, ok := outerValue.(map[string]interface{})
+	if !ok {
 		return nil, &NoObjectGeneratedError{
-			Message:      "No object generated: response did not match schema",
+			Message:      "No object generated: response did not match schema.",
+			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+
+	rawElements, ok := wrapper["elements"]
+	if !ok {
+		return nil, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+	elementsArray, ok := rawElements.([]interface{})
+	if !ok {
+		return nil, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
 			Cause:        fmt.Errorf("response must be an object with an elements array"),
 			Text:         options.Text,
 			Response:     options.Response,
@@ -477,12 +525,13 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	}
 
 	// Validate and convert each element
-	elements := make([]ELEMENT, len(wrapper.Elements))
-	for i, elem := range wrapper.Elements {
+	elements := make([]ELEMENT, len(elementsArray))
+	for i, elem := range elementsArray {
+		elem = schema.ApplyDefaults(elem, o.elementSchema)
 		// Validate element against schema
 		if err := o.elementSchema.Validator().Validate(elem); err != nil {
 			return nil, &NoObjectGeneratedError{
-				Message:      "No object generated: response did not match schema",
+				Message:      "No object generated: response did not match schema.",
 				Cause:        err,
 				Text:         options.Text,
 				Response:     options.Response,
@@ -524,17 +573,13 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 
 func (o *arrayOutput[ELEMENT]) ParsePartialOutput(ctx context.Context, options ParsePartialOutputOptions) (*PartialOutput[[]ELEMENT], error) {
 	// Try to parse as partial JSON
-	parsed, err := jsonutil.ParsePartialJSON(options.Text)
-	if err != nil {
-		return nil, nil
-	}
-
-	if parsed == nil {
+	parseResult := jsonparser.ParsePartialJSON(options.Text)
+	if parseResult.State == jsonparser.ParseStateFailed || parseResult.State == jsonparser.ParseStateUndefinedInput {
 		return nil, nil
 	}
 
 	// Check if it has an elements array
-	parsedMap, ok := parsed.(map[string]interface{})
+	parsedMap, ok := parseResult.Value.(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
@@ -549,22 +594,20 @@ func (o *arrayOutput[ELEMENT]) ParsePartialOutput(ctx context.Context, options P
 		return nil, nil
 	}
 
-	// Parse each element that validates
-	var elements []ELEMENT
+	// Parse each complete element. In partial mode the final element may still
+	// be streaming, so match TS by ignoring only that last incomplete element.
+	isRepaired := parseResult.State == jsonparser.ParseStateRepaired
+	elements := make([]ELEMENT, 0, len(elementsArray))
 	for i, elemRaw := range elementsArray {
-		// Skip last element if JSON was repaired (might be incomplete)
-		// This matches TypeScript behavior
-		if i == len(elementsArray)-1 {
-			// Check if this looks like incomplete JSON
-			elemStr := fmt.Sprintf("%v", elemRaw)
-			if !jsonutil.IsPartiallyValid(elemStr) {
-				break
-			}
+		if i == len(elementsArray)-1 && isRepaired {
+			break
 		}
+
+		elemRaw = schema.ApplyDefaults(elemRaw, o.elementSchema)
 
 		// Validate element
 		if err := o.elementSchema.Validator().Validate(elemRaw); err != nil {
-			continue // Skip invalid elements
+			continue
 		}
 
 		// Convert to typed element
@@ -590,12 +633,15 @@ func (o *arrayOutput[ELEMENT]) parseCompleteOutput(ctx context.Context, opts Par
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
-	r, _ := o.ParsePartialOutput(ctx, opts)
-	if r == nil {
-		return nil
+func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+	r, err := o.ParsePartialOutput(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	return r.Partial
+	if r == nil {
+		return nil, nil
+	}
+	return r.Partial, nil
 }
 
 // =============================================================================
@@ -686,15 +732,45 @@ func (o *choiceOutput[CHOICE]) ResponseFormat(ctx context.Context) (*provider.Re
 func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options ParseCompleteOutputOptions) (CHOICE, error) {
 	var zero CHOICE
 
-	// Parse JSON
-	var wrapper struct {
-		Result string `json:"result"`
+	var outerValue interface{}
+	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
+		return zero, &NoObjectGeneratedError{
+			Message:      "No object generated: could not parse the response.",
+			Cause:        err,
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
 	}
 
-	if err := json.Unmarshal([]byte(options.Text), &wrapper); err != nil {
+	wrapper, ok := outerValue.(map[string]interface{})
+	if !ok {
 		return zero, &NoObjectGeneratedError{
-			Message:      "No object generated: could not parse the response",
-			Cause:        err,
+			Message:      "No object generated: response did not match schema.",
+			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+	rawResult, ok := wrapper["result"]
+	if !ok {
+		return zero, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+	result, ok := rawResult.(string)
+	if !ok {
+		return zero, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -705,7 +781,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	// Validate that result is one of the options
 	var found bool
 	for _, opt := range o.options {
-		if wrapper.Result == string(opt) {
+		if result == string(opt) {
 			found = true
 			break
 		}
@@ -713,7 +789,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 
 	if !found {
 		return zero, &NoObjectGeneratedError{
-			Message:      "No object generated: response did not match schema",
+			Message:      "No object generated: response did not match schema.",
 			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
 			Text:         options.Text,
 			Response:     options.Response,
@@ -722,24 +798,18 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 		}
 	}
 
-	return CHOICE(wrapper.Result), nil
+	return CHOICE(result), nil
 }
 
 func (o *choiceOutput[CHOICE]) ParsePartialOutput(ctx context.Context, options ParsePartialOutputOptions) (*PartialOutput[CHOICE], error) {
-	var zero CHOICE
-
 	// Try to parse as partial JSON
-	parsed, err := jsonutil.ParsePartialJSON(options.Text)
-	if err != nil {
-		return nil, nil
-	}
-
-	if parsed == nil {
+	parseResult := jsonparser.ParsePartialJSON(options.Text)
+	if parseResult.State == jsonparser.ParseStateFailed || parseResult.State == jsonparser.ParseStateUndefinedInput {
 		return nil, nil
 	}
 
 	// Check if it has a result field
-	parsedMap, ok := parsed.(map[string]interface{})
+	parsedMap, ok := parseResult.Value.(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
@@ -763,42 +833,39 @@ func (o *choiceOutput[CHOICE]) ParsePartialOutput(ctx context.Context, options P
 		}
 	}
 
-	// If no matches, return nil
-	if len(potentialMatches) == 0 {
+	if parseResult.State == jsonparser.ParseStateSuccessful {
+		for _, opt := range potentialMatches {
+			if resultStr == string(opt) {
+				return &PartialOutput[CHOICE]{
+					Partial: opt,
+				}, nil
+			}
+		}
 		return nil, nil
 	}
 
-	// For exact matches, return immediately
-	for _, opt := range o.options {
-		if resultStr == string(opt) {
-			return &PartialOutput[CHOICE]{
-				Partial: opt,
-			}, nil
-		}
-	}
-
-	// For partial matches, only return if unambiguous
 	if len(potentialMatches) == 1 {
 		return &PartialOutput[CHOICE]{
 			Partial: potentialMatches[0],
 		}, nil
 	}
 
-	return &PartialOutput[CHOICE]{
-		Partial: zero,
-	}, nil
+	return nil, nil
 }
 
 func (o *choiceOutput[CHOICE]) parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error) {
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
-	r, _ := o.ParsePartialOutput(ctx, opts)
-	if r == nil {
-		return nil
+func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+	r, err := o.ParsePartialOutput(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	return r.Partial
+	if r == nil {
+		return nil, nil
+	}
+	return r.Partial, nil
 }
 
 // =============================================================================
@@ -858,7 +925,7 @@ func (o *jsonOutput) ParseCompleteOutput(ctx context.Context, options ParseCompl
 	var result interface{}
 	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
 		return nil, &NoObjectGeneratedError{
-			Message:      "No object generated: could not parse the response",
+			Message:      "No object generated: could not parse the response.",
 			Cause:        err,
 			Text:         options.Text,
 			Response:     options.Response,
@@ -872,17 +939,13 @@ func (o *jsonOutput) ParseCompleteOutput(ctx context.Context, options ParseCompl
 
 func (o *jsonOutput) ParsePartialOutput(ctx context.Context, options ParsePartialOutputOptions) (*PartialOutput[interface{}], error) {
 	// Try to parse as partial JSON
-	parsed, err := jsonutil.ParsePartialJSON(options.Text)
-	if err != nil {
-		return nil, nil
-	}
-
-	if parsed == nil {
+	parseResult := jsonparser.ParsePartialJSON(options.Text)
+	if parseResult.State == jsonparser.ParseStateFailed || parseResult.State == jsonparser.ParseStateUndefinedInput {
 		return nil, nil
 	}
 
 	return &PartialOutput[interface{}]{
-		Partial: parsed,
+		Partial: parseResult.Value,
 	}, nil
 }
 
@@ -890,10 +953,13 @@ func (o *jsonOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) interface{} {
-	r, _ := o.ParsePartialOutput(ctx, opts)
-	if r == nil {
-		return nil
+func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+	r, err := o.ParsePartialOutput(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	return r.Partial
+	if r == nil {
+		return nil, nil
+	}
+	return r.Partial, nil
 }

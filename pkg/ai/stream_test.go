@@ -89,6 +89,84 @@ func TestStreamText_OnStartDefaultMaxRetriesMatchesTypeScript(t *testing.T) {
 	}
 }
 
+func TestStreamText_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan []string, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEnd: func(result *StreamTextResult) {
+			done <- []string{"OnEnd:" + result.Text()}
+		},
+		OnFinish: func(*StreamTextResult) {
+			done <- []string{"OnFinish"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("StreamText() result is nil")
+	}
+	select {
+	case calls := <-done:
+		if !reflect.DeepEqual(calls, []string{"OnEnd:done"}) {
+			t.Fatalf("calls = %#v, want OnEnd only", calls)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for OnEnd")
+	}
+}
+
+func TestStreamText_OnEndEventTakesPrecedenceOverDeprecatedOnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan []string, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			done <- []string{"OnEndEvent:" + e.Text}
+		},
+		OnFinishEvent: func(_ context.Context, _ OnFinishEvent) {
+			done <- []string{"OnFinishEvent"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("StreamText() result is nil")
+	}
+	select {
+	case calls := <-done:
+		if !reflect.DeepEqual(calls, []string{"OnEndEvent:done"}) {
+			t.Fatalf("calls = %#v, want OnEndEvent only", calls)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for OnEndEvent")
+	}
+}
+
 func TestStreamText_GatewayRetryableErrorsRetry(t *testing.T) {
 	t.Parallel()
 
@@ -432,6 +510,50 @@ func TestStreamText_ChunksChannel(t *testing.T) {
 	}
 	if texts[0] != "chunk1" || texts[1] != "chunk2" {
 		t.Errorf("unexpected chunks: %v", texts)
+	}
+}
+
+func TestStreamText_OnChunkFiltersEmptyTextDeltas(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+				{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var texts []string
+	done := make(chan struct{}, 1)
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test-input",
+		OnChunk: func(chunk provider.StreamChunk) {
+			if chunk.Type == provider.ChunkTypeText {
+				texts = append(texts, chunk.Text)
+			}
+		},
+		OnFinish: func(*StreamTextResult) {
+			done <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	<-done
+
+	want := []string{"Hello", ", ", "world!"}
+	if !reflect.DeepEqual(texts, want) {
+		t.Fatalf("text chunks = %#v, want %#v", texts, want)
 	}
 }
 
@@ -2299,4 +2421,418 @@ func TestStreamTextAbortDoesNotCallFinish(t *testing.T) {
 		t.Fatal("OnFinish should not be called for aborted stream")
 	default:
 	}
+}
+
+func TestStreamTextRejectsIncompleteMetadataOnlyStream(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+			}), nil
+		},
+	}
+
+	var onError error
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		OnError: func(_ context.Context, err error) {
+			onError = err
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	err = result.ensureConsumed()
+	if err == nil {
+		t.Fatal("ensureConsumed() expected incomplete stream error")
+	}
+	if !IsNoOutputGeneratedError(err) {
+		t.Fatalf("ensureConsumed() error = %T %v, want NoOutputGeneratedError", err, err)
+	}
+	if onError == nil || !IsNoOutputGeneratedError(onError) {
+		t.Fatalf("OnError = %T %v, want NoOutputGeneratedError", onError, onError)
+	}
+}
+
+func TestStreamTextIncompleteMetadataOnlyStreamEmitsErrorChunk(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+			}), nil
+		},
+	}
+
+	var chunks []provider.StreamChunk
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		OnChunk: func(chunk provider.StreamChunk) {
+			chunks = append(chunks, chunk)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	err = result.ensureConsumed()
+	if err == nil || !IsNoOutputGeneratedError(err) {
+		t.Fatalf("ensureConsumed() error = %T %v, want NoOutputGeneratedError", err, err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected error chunk")
+	}
+	got := chunks[len(chunks)-1]
+	if got.Type != provider.ChunkTypeError {
+		t.Fatalf("last chunk type = %q, want error", got.Type)
+	}
+	if got.Text != "No output generated. The model stream ended without a finish chunk." {
+		t.Fatalf("error chunk text = %q", got.Text)
+	}
+}
+
+func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: ", world"},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "Hello, world" {
+		t.Fatalf("text = %q, want Hello, world", text)
+	}
+	if result.FinishReason() != types.FinishReasonOther {
+		t.Fatalf("finishReason = %q, want other", result.FinishReason())
+	}
+}
+
+func TestStreamTextIncompletePartialOutputEmitsFinishStep(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			}), nil
+		},
+	}
+
+	var chunks []provider.StreamChunk
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		OnChunk: func(chunk provider.StreamChunk) {
+			chunks = append(chunks, chunk)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if err := result.ensureConsumed(); err != nil {
+		t.Fatalf("ensureConsumed() error = %v", err)
+	}
+	var sawFinish bool
+	for _, chunk := range chunks {
+		if chunk.Type == provider.ChunkTypeFinish {
+			sawFinish = true
+			if chunk.FinishReason != types.FinishReasonOther {
+				t.Fatalf("synthetic finish reason = %q, want other", chunk.FinishReason)
+			}
+		}
+	}
+	if !sawFinish {
+		t.Fatalf("chunks did not include finish-step equivalent: %#v", chunks)
+	}
+}
+
+func TestStreamTextErrorChunkIsTerminalForIncompleteStreamDetection(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+				{Type: provider.ChunkTypeError, Text: "chunk error"},
+			}), nil
+		},
+	}
+
+	var onError error
+	var chunks []provider.StreamChunk
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		OnError: func(_ context.Context, err error) {
+			onError = err
+		},
+		OnChunk: func(chunk provider.StreamChunk) {
+			chunks = append(chunks, chunk)
+		},
+		OnFinish: func(*StreamTextResult) {},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if err := result.ensureConsumed(); err != nil {
+		t.Fatalf("ensureConsumed() error = %T %v, want nil", err, err)
+	}
+	if onError == nil || onError.Error() != "chunk error" {
+		t.Fatalf("OnError = %v, want chunk error", onError)
+	}
+	if result.FinishReason() != types.FinishReasonError {
+		t.Fatalf("finishReason = %q, want error", result.FinishReason())
+	}
+	var sawError bool
+	var sawFinishAfterError bool
+	for _, chunk := range chunks {
+		if chunk.Type == provider.ChunkTypeError {
+			sawError = true
+			continue
+		}
+		if sawError && chunk.Type == provider.ChunkTypeFinish {
+			sawFinishAfterError = true
+			if chunk.FinishReason != types.FinishReasonError {
+				t.Fatalf("synthetic finish reason = %q, want error", chunk.FinishReason)
+			}
+			break
+		}
+	}
+	if !sawFinishAfterError {
+		t.Fatalf("chunks after error did not include finish-step equivalent: %#v", chunks)
+	}
+}
+
+func TestStreamTextStepTimeoutCoversStalledStreamRead(t *testing.T) {
+	stepTimeout := 20 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &blockingTextStream{done: make(chan struct{})}, nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:   model,
+		Prompt:  "test",
+		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	_, err = result.ReadAll()
+	if err == nil {
+		t.Fatal("ReadAll() expected step timeout")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep {
+		t.Fatalf("ReadAll() error = %T %v, want step TimeoutError", err, err)
+	}
+}
+
+func TestStreamTextStepTimeoutCallsAbortNotError(t *testing.T) {
+	stepTimeout := 20 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &delayedEOFTextStream{delay: 100 * time.Millisecond}, nil
+		},
+	}
+
+	var onError error
+	abortCalled := make(chan struct{}, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:   model,
+		Prompt:  "test",
+		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
+		OnError: func(_ context.Context, err error) {
+			onError = err
+		},
+		OnAbort: func(context.Context, []types.StepResult) {
+			abortCalled <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	err = result.ensureConsumed()
+	if err == nil {
+		t.Fatal("ensureConsumed() expected step timeout")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep {
+		t.Fatalf("ensureConsumed() error = %T %v, want step TimeoutError", err, err)
+	}
+	if onError != nil {
+		t.Fatalf("OnError = %v, want nil for abort/timeout", onError)
+	}
+	select {
+	case <-abortCalled:
+	default:
+		t.Fatal("OnAbort was not called")
+	}
+}
+
+func TestStreamTextStepTimeoutEmitsAbortChunk(t *testing.T) {
+	stepTimeout := 20 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &delayedEOFTextStream{delay: 100 * time.Millisecond}, nil
+		},
+	}
+
+	var chunks []provider.StreamChunk
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:   model,
+		Prompt:  "test",
+		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
+		OnChunk: func(chunk provider.StreamChunk) {
+			chunks = append(chunks, chunk)
+		},
+		OnAbort: func(context.Context, []types.StepResult) {},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	err = result.ensureConsumed()
+	if err == nil {
+		t.Fatal("ensureConsumed() expected step timeout")
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected abort chunk")
+	}
+	got := chunks[len(chunks)-1]
+	if got.Type != provider.ChunkTypeAbort {
+		t.Fatalf("last chunk type = %q, want abort", got.Type)
+	}
+	if got.AbortReason == "" {
+		t.Fatal("abort reason is empty")
+	}
+}
+
+func TestStreamTextStepTimeoutDuringToolExecutionCallsAbortNotError(t *testing.T) {
+	stepTimeout := 20 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID:        "call-1",
+					ToolName:  "slow",
+					Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	var onError error
+	abortCalled := make(chan struct{}, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:   model,
+		Prompt:  "test",
+		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
+		Tools: []types.Tool{{
+			Name: "slow",
+			Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}},
+		OnError: func(_ context.Context, err error) {
+			onError = err
+		},
+		OnAbort: func(context.Context, []types.StepResult) {
+			abortCalled <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	err = result.ensureConsumed()
+	if err == nil {
+		t.Fatal("ensureConsumed() expected step timeout")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep {
+		t.Fatalf("ensureConsumed() error = %T %v, want step TimeoutError", err, err)
+	}
+	if onError != nil {
+		t.Fatalf("OnError = %v, want nil for abort/timeout", onError)
+	}
+	select {
+	case <-abortCalled:
+	default:
+		t.Fatal("OnAbort was not called")
+	}
+}
+
+func TestStreamTextStepTimeoutCoversInitialDoStream(t *testing.T) {
+	stepTimeout := 20 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:   model,
+		Prompt:  "test",
+		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
+	})
+	if err == nil {
+		t.Fatal("StreamText() expected step timeout")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep {
+		t.Fatalf("StreamText() error = %T %v, want step TimeoutError", err, err)
+	}
+}
+
+type blockingTextStream struct {
+	done chan struct{}
+}
+
+func (s *blockingTextStream) Next() (*provider.StreamChunk, error) {
+	<-s.done
+	return nil, io.EOF
+}
+
+func (s *blockingTextStream) Close() error {
+	close(s.done)
+	return nil
+}
+
+func (s *blockingTextStream) Err() error {
+	return nil
+}
+
+type delayedEOFTextStream struct {
+	delay time.Duration
+}
+
+func (s *delayedEOFTextStream) Next() (*provider.StreamChunk, error) {
+	time.Sleep(s.delay)
+	return nil, io.EOF
+}
+
+func (s *delayedEOFTextStream) Close() error {
+	return nil
+}
+
+func (s *delayedEOFTextStream) Err() error {
+	return nil
 }

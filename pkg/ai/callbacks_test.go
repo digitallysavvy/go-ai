@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -112,6 +113,65 @@ func TestGenerateText_EventOrder(t *testing.T) {
 		if eventOrder[i] != ev {
 			t.Errorf("event[%d]: expected %q, got %q (full order: %v)", i, ev, eventOrder[i], eventOrder)
 		}
+	}
+}
+
+func TestGenerateText_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	var calls []string
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEnd: func(_ context.Context, result *GenerateTextResult, _ interface{}) {
+			calls = append(calls, "OnEnd:"+result.Text)
+		},
+		OnFinish: func(_ context.Context, _ *GenerateTextResult, _ interface{}) {
+			calls = append(calls, "OnFinish")
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText returned error: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("result text = %q, want done", result.Text)
+	}
+	if !reflect.DeepEqual(calls, []string{"OnEnd:done"}) {
+		t.Fatalf("calls = %#v, want OnEnd only", calls)
+	}
+}
+
+func TestGenerateText_OnEndEventTakesPrecedenceOverDeprecatedOnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	var calls []string
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			calls = append(calls, "OnEndEvent:"+e.Text)
+		},
+		OnFinishEvent: func(_ context.Context, _ OnFinishEvent) {
+			calls = append(calls, "OnFinishEvent")
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText returned error: %v", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"OnEndEvent:done"}) {
+		t.Fatalf("calls = %#v, want OnEndEvent only", calls)
 	}
 }
 

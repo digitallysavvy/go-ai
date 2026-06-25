@@ -92,6 +92,133 @@ func TestGenerateObject_ArrayMode(t *testing.T) {
 	}
 }
 
+func TestGenerateObject_ArrayModeReturnsDefaultedElements(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"elements":[{"name":"John"},{"name":"Jane","region":"eu"}]}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+	})
+
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:      model,
+		Prompt:     "Generate people",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Array) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(result.Array))
+	}
+	first, ok := result.Array[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("first element = %T, want map", result.Array[0])
+	}
+	if first["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", first["region"])
+	}
+	second, ok := result.Array[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("second element = %T, want map", result.Array[1])
+	}
+	if second["region"] != "eu" {
+		t.Fatalf("explicit region = %v, want eu", second["region"])
+	}
+}
+
+func TestGenerateObject_ArrayModeResponseFormatDoesNotMutateElementSchema(t *testing.T) {
+	t.Parallel()
+
+	schemaMap := map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"type":    "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(schemaMap)
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"elements":[{"name":"John"}]}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:      model,
+		Prompt:     "array",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := schemaMap["$schema"]; !ok {
+		t.Fatal("GenerateObject removed $schema from caller schema")
+	}
+	if _, ok := testSchema.Validator().JSONSchema()["$schema"]; !ok {
+		t.Fatal("GenerateObject removed $schema from schema validator")
+	}
+}
+
+func TestGenerateObject_ObjectModeReturnsDefaultedObject(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+	})
+
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate a person",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	obj, ok := result.Object.(map[string]interface{})
+	if !ok {
+		t.Fatalf("object = %T, want map", result.Object)
+	}
+	if obj["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", obj["region"])
+	}
+}
+
 func TestGenerateObject_EnumMode(t *testing.T) {
 	t.Parallel()
 
@@ -479,7 +606,7 @@ func TestGenerateObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
 	if !errors.As(err, &noObjErr) {
 		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
 	}
-	if noObjErr.Message != "No object generated: the model did not return a response." {
+	if noObjErr.Message != "No object generated: could not parse the response." {
 		t.Fatalf("message = %q", noObjErr.Message)
 	}
 	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_empty" {
@@ -1062,6 +1189,228 @@ func TestStreamObject_ArrayMode(t *testing.T) {
 	}
 }
 
+func TestStreamObject_ArrayModeResponseFormatDoesNotMutateElementSchema(t *testing.T) {
+	t.Parallel()
+
+	schemaMap := map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"type":    "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(schemaMap)
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"name":"John"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "array",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := schemaMap["$schema"]; !ok {
+		t.Fatal("StreamObject removed $schema from caller schema")
+	}
+	if _, ok := testSchema.Validator().JSONSchema()["$schema"]; !ok {
+		t.Fatal("StreamObject removed $schema from schema validator")
+	}
+}
+
+func TestStreamObject_ArrayModeReturnsDefaultedElements(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"name":"John"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+	})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "array",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Array) != 1 {
+		t.Fatalf("array length = %d, want 1", len(result.Array))
+	}
+	first, ok := result.Array[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("first element = %T, want map", result.Array[0])
+	}
+	if first["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", first["region"])
+	}
+}
+
+func TestStreamObject_ArrayModePartialSkipsIncompleteLastElement(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"name":"John"},`},
+				{Type: provider.ChunkTypeText, Text: `{"name":`},
+				{Type: provider.ChunkTypeText, Text: `"Jane"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	var partials []interface{}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "array partial",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+		OnChunk: func(partialObject interface{}) {
+			partials = append(partials, partialObject)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Array) != 2 {
+		t.Fatalf("array length = %d, want 2", len(result.Array))
+	}
+
+	foundCompleteFirst := false
+	for _, partial := range partials {
+		arr, ok := partial.([]interface{})
+		if !ok || len(arr) != 1 {
+			continue
+		}
+		first, ok := arr[0].(map[string]interface{})
+		if ok && first["name"] == "John" {
+			foundCompleteFirst = true
+		}
+	}
+	if !foundCompleteFirst {
+		t.Fatalf("partials = %#v, want a callback with only the complete first element", partials)
+	}
+}
+
+func TestStreamObject_ArrayModePartialAppliesDefaults(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"name":"John"},`},
+				{Type: provider.ChunkTypeText, Text: `{"name":"Jane"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+		"required": []string{"name"},
+	})
+
+	var partials []interface{}
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "array partial defaults",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+		OnChunk: func(partialObject interface{}) {
+			partials = append(partials, partialObject)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, partial := range partials {
+		arr, ok := partial.([]interface{})
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		first, ok := arr[0].(map[string]interface{})
+		if ok && first["name"] == "John" && first["region"] == "us-east-1" {
+			return
+		}
+	}
+	t.Fatalf("partials = %#v, want defaulted first element", partials)
+}
+
+func TestStreamObject_ObjectModeReturnsDefaultedObject(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"John"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+	})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "object",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	obj, ok := result.Object.(map[string]interface{})
+	if !ok {
+		t.Fatalf("object = %T, want map", result.Object)
+	}
+	if obj["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", obj["region"])
+	}
+}
+
 func TestStreamObject_EnumMode(t *testing.T) {
 	t.Parallel()
 
@@ -1086,6 +1435,76 @@ func TestStreamObject_EnumMode(t *testing.T) {
 	}
 	if result.EnumValue != "happy" {
 		t.Fatalf("enum value = %q, want happy", result.EnumValue)
+	}
+}
+
+func TestStreamObject_EnumModePartialAmbiguousPrefix(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result":"foo`},
+				{Type: provider.ChunkTypeText, Text: `bar"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var partials []interface{}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "enum partial",
+		OutputMode: ObjectModeEnum,
+		EnumValues: []string{"foobar", "foobar2"},
+		OnChunk: func(partialObject interface{}) {
+			partials = append(partials, partialObject)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.EnumValue != "foobar" {
+		t.Fatalf("enum value = %q, want foobar", result.EnumValue)
+	}
+	if len(partials) < 2 || partials[0] != "foo" || partials[len(partials)-1] != "foobar" {
+		t.Fatalf("partials = %#v, want ambiguous prefix then final enum value", partials)
+	}
+}
+
+func TestStreamObject_EnumModePartialCompletesUnambiguousPrefix(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result":"foo`},
+				{Type: provider.ChunkTypeText, Text: `bar"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var partials []interface{}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "enum partial",
+		OutputMode: ObjectModeEnum,
+		EnumValues: []string{"foobar", "barfoo"},
+		OnChunk: func(partialObject interface{}) {
+			partials = append(partials, partialObject)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.EnumValue != "foobar" {
+		t.Fatalf("enum value = %q, want foobar", result.EnumValue)
+	}
+	if len(partials) != 1 || partials[0] != "foobar" {
+		t.Fatalf("partials = %#v, want completed unambiguous enum value", partials)
 	}
 }
 
@@ -1237,7 +1656,7 @@ func TestStreamObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
 	if !errors.As(err, &noObjErr) {
 		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
 	}
-	if noObjErr.Message != "No object generated: the model did not return a response." {
+	if noObjErr.Message != "No object generated: could not parse the response." {
 		t.Fatalf("message = %q", noObjErr.Message)
 	}
 	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_stream_empty" {
@@ -1303,43 +1722,45 @@ func TestStreamObject_ProviderMetadataFromStream(t *testing.T) {
 	}
 }
 
-func TestStreamObject_FallbackResultFields(t *testing.T) {
+func TestStreamObject_DoStreamErrorCallsOnErrorWithoutGenerateFallback(t *testing.T) {
 	t.Parallel()
 
-	// When DoStream returns an error, StreamObject falls back to DoGenerate.
-	// The returned result struct must include Reasoning, Request, Response, ProviderMetadata
-	// (previously they were missing — populated only in the event but not the result).
+	streamErr := errors.New("streaming not supported")
+	generateCalled := false
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-			return nil, errors.New("streaming not supported")
+			return nil, streamErr
 		},
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-			return &types.GenerateResult{
-				Text:             `{"key": "val"}`,
-				FinishReason:     types.FinishReasonStop,
-				ProviderMetadata: map[string]interface{}{"model": "test"},
-			}, nil
+			generateCalled = true
+			return nil, errors.New("unexpected generate fallback")
 		},
 	}
 
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	var onError error
 
-	result, err := StreamObject(context.Background(), StreamObjectOptions{
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
 		Model:  model,
-		Prompt: "test fallback",
+		Prompt: "test stream startup error",
 		Schema: testSchema,
+		OnError: func(_ context.Context, err error) {
+			onError = err
+		},
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected stream error")
 	}
-	// Request and Response are now typed structs (not pointers); zero values are always valid.
-	// Verify they carry the expected data instead.
-	_ = result.Request  // GenerateStepRequest
-	_ = result.Response // GenerateStepResponse
-	if result.ProviderMetadata == nil {
-		t.Error("expected non-nil ProviderMetadata in fallback result")
+	if !errors.Is(err, streamErr) {
+		t.Fatalf("error = %v, want wrapped stream error", err)
+	}
+	if !errors.Is(onError, streamErr) {
+		t.Fatalf("OnError = %v, want stream error", onError)
+	}
+	if generateCalled {
+		t.Fatal("DoGenerate should not be called when StreamObject DoStream fails")
 	}
 }
 

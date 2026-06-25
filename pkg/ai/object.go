@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -67,6 +68,36 @@ func schemaToMap(s schema.Schema) map[string]interface{} {
 		return p.JSONSchema()
 	}
 	return nil
+}
+
+func cloneSchemaMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = cloneSchemaValue(value)
+	}
+	return out
+}
+
+func cloneSchemaValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return cloneSchemaMap(v)
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneSchemaValue(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(v))
+		copy(out, v)
+		return out
+	default:
+		return v
+	}
 }
 
 func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
@@ -186,7 +217,7 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		return nil, nil, "", newNoObjectGeneratedError("No object generated.", nil, "", model, nil)
 	}
 	if result.Text == "" {
-		return nil, nil, "", newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", io.ErrUnexpectedEOF, "", model, result)
 	}
 	obj, arr, enumValue, err := parseStreamFinal(mode, s, enumValues, result.Text)
 	if err != nil {
@@ -229,7 +260,7 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			Description: opts.SchemaDescription,
 		}, nil
 	case ObjectModeArray:
-		itemSchemaMap := schemaToMap(opts.Schema)
+		itemSchemaMap := cloneSchemaMap(schemaToMap(opts.Schema))
 		if itemSchemaMap == nil {
 			itemSchemaMap = map[string]interface{}{}
 		}
@@ -299,14 +330,23 @@ func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []str
 		if !ok {
 			return nil, false
 		}
-		if s != nil {
-			for _, element := range arr {
-				if err := s.Validator().Validate(element); err != nil {
-					return nil, false
-				}
-			}
+		limit := len(arr)
+		if parseResult.State == jsonparser.ParseStateRepaired && limit > 0 {
+			limit--
 		}
-		return arr, true
+		resultArray := make([]interface{}, 0, limit)
+		if s == nil {
+			resultArray = append(resultArray, arr[:limit]...)
+			return resultArray, true
+		}
+		for _, element := range arr[:limit] {
+			element = schema.ApplyDefaults(element, s)
+			if err := s.Validator().Validate(element); err != nil {
+				return nil, false
+			}
+			resultArray = append(resultArray, element)
+		}
+		return resultArray, true
 	case ObjectModeEnum:
 		wrapper, ok := parseResult.Value.(map[string]interface{})
 		if !ok {
@@ -320,12 +360,22 @@ func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []str
 		if !ok {
 			return nil, false
 		}
+		if selected == "" {
+			return nil, false
+		}
+		var matches []string
 		for _, enumVal := range enumValues {
-			if selected == enumVal {
-				return selected, true
+			if strings.HasPrefix(enumVal, selected) {
+				matches = append(matches, enumVal)
 			}
 		}
-		return nil, false
+		if len(matches) == 0 {
+			return nil, false
+		}
+		if len(matches) == 1 {
+			return matches[0], true
+		}
+		return selected, true
 	default:
 		return nil, false
 	}
@@ -342,6 +392,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		if err := json.Unmarshal([]byte(text), &obj); err != nil {
 			return nil, nil, "", err
 		}
+		obj = schema.ApplyDefaults(obj, s)
 		if err := s.Validator().Validate(obj); err != nil {
 			return nil, nil, "", err
 		}
@@ -359,12 +410,15 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		if !ok {
 			return nil, nil, "", fmt.Errorf("'elements' is not an array")
 		}
+		resultArray := make([]interface{}, len(arr))
 		for i, element := range arr {
+			element = schema.ApplyDefaults(element, s)
 			if err := s.Validator().Validate(element); err != nil {
 				return nil, nil, "", fmt.Errorf("validation failed for element %d: %w", i, err)
 			}
+			resultArray[i] = element
 		}
-		return arr, arr, "", nil
+		return resultArray, resultArray, "", nil
 	case ObjectModeEnum:
 		var wrapper map[string]interface{}
 		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
@@ -867,7 +921,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	// Build the wrapped array schema matching TS SDK's arrayOutputStrategy.jsonSchema():
 	// { type: 'object', properties: { elements: { type: 'array', items: itemSchema } }, required: ['elements'] }
 	// This wrapper is required because most LLMs cannot generate a top-level JSON array directly.
-	itemSchemaMap := schemaToMap(opts.Schema)
+	itemSchemaMap := cloneSchemaMap(schemaToMap(opts.Schema))
 	if itemSchemaMap == nil {
 		itemSchemaMap = map[string]interface{}{}
 	}
@@ -1500,101 +1554,15 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Metadata:        cbMeta,
 	}, opts.ExperimentalOnStepStart)
 
-	// Try to start streaming
-	// If streaming is not supported or fails, fall back to non-streaming
 	stream, err := doStreamWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil || stream == nil {
-		// Fallback to non-streaming generation
-		result, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
-		if err != nil {
-			if opts.OnError != nil {
-				opts.OnError(ctx, err)
-			}
-			return nil, fmt.Errorf("generation failed: %w", err)
+		if err == nil {
+			err = errors.New("stream is nil")
 		}
-
-		fallbackReasoning := extractObjectReasoning(result)
-
-		fbReqMeta := GenerateStepRequest{Body: result.RawRequest}
-		fbResMeta := generateStepResponseFromGenerateResult(opts.Model, result)
-
-		// Fire OnStepFinish before parsing.
-		Notify(ctx, ObjectOnStepFinishEvent{
-			CallID:           callID,
-			StepNumber:       0,
-			Provider:         opts.Model.Provider(),
-			ModelID:          opts.Model.ModelID(),
-			FinishReason:     result.FinishReason,
-			Usage:            result.Usage,
-			ObjectText:       result.Text,
-			Reasoning:        fallbackReasoning,
-			Warnings:         result.Warnings,
-			Request:          fbReqMeta,
-			Response:         fbResMeta,
-			ProviderMetadata: result.ProviderMetadata,
-		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
-
-		// Parse final JSON
-		finalObject, finalArray, finalEnum, parseErr := parseObjectResult(result, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
-		if parseErr != nil && opts.ExperimentalRepairText != nil {
-			repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, result.Text, parseErr)
-			if repairErr != nil {
-				parseErr = repairErr
-			} else if repairedText != nil && *repairedText != result.Text {
-				repairedResult := *result
-				repairedResult.Text = *repairedText
-				finalObject, finalArray, finalEnum, parseErr = parseObjectResult(&repairedResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
-			}
+		if opts.OnError != nil {
+			opts.OnError(ctx, err)
 		}
-		if parseErr != nil {
-			// Parsing failed — fire OnFinishEvent with error and nil object.
-			Notify(ctx, ObjectOnFinishEvent{
-				CallID:           callID,
-				Object:           nil,
-				Error:            parseErr,
-				Reasoning:        fallbackReasoning,
-				FinishReason:     result.FinishReason,
-				Usage:            result.Usage,
-				Warnings:         result.Warnings,
-				Request:          fbReqMeta,
-				Response:         fbResMeta,
-				ProviderMetadata: result.ProviderMetadata,
-			}, opts.OnFinishEvent)
-			return nil, parseErr
-		}
-
-		finalResult := &GenerateObjectResult{
-			Object:           finalObject,
-			Array:            finalArray,
-			EnumValue:        finalEnum,
-			Text:             result.Text,
-			FinishReason:     result.FinishReason,
-			Usage:            result.Usage,
-			Warnings:         result.Warnings,
-			Reasoning:        fallbackReasoning,
-			Request:          fbReqMeta,
-			Response:         fbResMeta,
-			ProviderMetadata: result.ProviderMetadata,
-		}
-
-		Notify(ctx, ObjectOnFinishEvent{
-			CallID:           callID,
-			Object:           finalObject,
-			Error:            nil,
-			Reasoning:        fallbackReasoning,
-			FinishReason:     result.FinishReason,
-			Usage:            result.Usage,
-			Warnings:         result.Warnings,
-			Request:          fbReqMeta,
-			Response:         fbResMeta,
-			ProviderMetadata: result.ProviderMetadata,
-		}, opts.OnFinishEvent)
-
-		if opts.OnFinish != nil {
-			opts.OnFinish(ctx, finalResult, opts.ExperimentalContext)
-		}
-
-		return finalResult, nil
+		return nil, fmt.Errorf("stream error: %w", err)
 	}
 	defer stream.Close() //nolint:errcheck
 
@@ -1669,6 +1637,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			if chunk.Usage != nil {
 				usage = usage.Add(*chunk.Usage)
 			}
+
+		case provider.ChunkTypeError:
+			chunkErr := errors.New(chunk.Text)
+			if opts.OnError != nil {
+				opts.OnError(ctx, chunkErr)
+			}
+			streamErr = chunkErr
 
 		case provider.ChunkTypeResponseMetadata:
 			if chunk.ResponseMetadata != nil {

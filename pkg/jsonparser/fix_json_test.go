@@ -91,8 +91,36 @@ func TestFixJSON(t *testing.T) {
 			input:    `{"text":"hello\nworld"`,
 			expected: `{"text":"hello\nworld"}`,
 		},
-		// Note: A trailing backslash in a string is ambiguous - we can't know what was intended
-		// Skipping this edge case as it's not a realistic streaming scenario
+		{
+			name:     "incomplete unicode escape only",
+			input:    `"\u`,
+			expected: `""`,
+		},
+		{
+			name:     "incomplete unicode escape digits",
+			input:    `"\u12`,
+			expected: `""`,
+		},
+		{
+			name:     "incomplete unicode escape after text",
+			input:    `"text \u00`,
+			expected: `"text "`,
+		},
+		{
+			name:     "incomplete unicode escape in object",
+			input:    `{"a":"\u12`,
+			expected: `{"a":""}`,
+		},
+		{
+			name:     "incomplete escape sequence",
+			input:    `"value with \`,
+			expected: `"value with "`,
+		},
+		{
+			name:     "complete escape sequences",
+			input:    `"value with \"quoted\" text and \\ escape`,
+			expected: `"value with \"quoted\" text and \\ escape"`,
+		},
 		{
 			name:     "multiple properties incomplete",
 			input:    `{"name":"John","age":30,"city":"New`,
@@ -103,6 +131,46 @@ func TestFixJSON(t *testing.T) {
 			input:    `{"value":1.23e-4`,
 			expected: `{"value":1.23e-4}`,
 		},
+		{
+			name:     "incomplete decimal number root",
+			input:    `12.`,
+			expected: `12`,
+		},
+		{
+			name:     "incomplete negative number root",
+			input:    `-`,
+			expected: ``,
+		},
+		{
+			name:     "incomplete exponent root",
+			input:    `2.5e-`,
+			expected: `2.5`,
+		},
+		{
+			name:     "object key without value",
+			input:    `{"key":`,
+			expected: `{}`,
+		},
+		{
+			name:     "partial second object key",
+			input:    `{"k1": 1, "k2`,
+			expected: `{"k1": 1}`,
+		},
+		{
+			name:     "array trailing comma",
+			input:    `[1, `,
+			expected: `[1]`,
+		},
+		{
+			name:     "nested object empty array start",
+			input:    `{"a": 1, "b": [`,
+			expected: `{"a": 1, "b": []}`,
+		},
+		{
+			name:     "empty objects inside nested objects and arrays",
+			input:    `{"type":"div","children":[{"type":"Card","props":{}`,
+			expected: `{"type":"div","children":[{"type":"Card","props":{}}]}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -112,10 +180,13 @@ func TestFixJSON(t *testing.T) {
 				t.Errorf("FixJSON() = %q, want %q", result, tt.expected)
 			}
 
-			// Verify the result is valid JSON
-			var v interface{}
-			if err := json.Unmarshal([]byte(result), &v); err != nil {
-				t.Errorf("FixJSON() produced invalid JSON: %v", err)
+			if result != "" {
+				// Verify the result is valid JSON when a repair is possible. Some TS
+				// parity cases, such as "-", intentionally truncate to empty.
+				var v interface{}
+				if err := json.Unmarshal([]byte(result), &v); err != nil {
+					t.Errorf("FixJSON() produced invalid JSON: %v", err)
+				}
 			}
 		})
 	}

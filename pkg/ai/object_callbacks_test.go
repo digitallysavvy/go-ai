@@ -524,6 +524,57 @@ func TestStreamObject_OnError_IsFiredOnStreamError(t *testing.T) {
 	}
 }
 
+func TestStreamObject_OnError_IsFiredOnErrorChunk(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeError, Text: "provider stream failed"},
+			}), nil
+		},
+	}
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	var mu sync.Mutex
+	var onErrorText string
+	var finishError error
+	var finishCalled bool
+
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "gen",
+		Schema: testSchema,
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			onErrorText = err.Error()
+		},
+		OnFinishEvent: func(_ context.Context, e ObjectOnFinishEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			finishCalled = true
+			finishError = e.Error
+		},
+	})
+	if err == nil {
+		t.Fatal("expected stream error")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if onErrorText != "provider stream failed" {
+		t.Fatalf("OnError = %q, want provider stream failed", onErrorText)
+	}
+	if !finishCalled {
+		t.Fatal("OnFinishEvent should be called for provider error chunk")
+	}
+	if finishError == nil || finishError.Error() != "provider stream failed" {
+		t.Fatalf("OnFinishEvent error = %v, want provider stream failed", finishError)
+	}
+}
+
 func TestStreamObject_CallbacksShareCallID(t *testing.T) {
 	t.Parallel()
 

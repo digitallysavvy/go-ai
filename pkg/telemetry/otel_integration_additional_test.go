@@ -247,6 +247,66 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	}
 }
 
+func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("telemetry-parentage-test")
+
+	integration := OTelTelemetryIntegration{}
+	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer, FunctionID: "outer"}
+
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
+		Settings:      settings,
+		OperationType: "ai.generateText",
+		StepNumber:    0,
+	})
+	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "lookup",
+	})
+
+	innerSettings := &Settings{IsEnabled: Bool(true), Tracer: tracer, FunctionID: "inner"}
+	innerCtx := integration.OnStart(toolCtx, TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      innerSettings,
+	})
+	integration.OnEnd(innerCtx, TelemetryFinishEvent{Settings: innerSettings, FinishReason: "stop"})
+
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "lookup",
+		DurationMs: 1,
+	})
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, StepNumber: 0, FinishReason: "tool-calls"})
+	integration.OnEnd(rootCtx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
+
+	var toolSpan, innerSpan sdktrace.ReadOnlySpan
+	for _, span := range rec.Ended() {
+		switch span.Name() {
+		case "ai.toolCall.lookup":
+			toolSpan = span
+		case "ai.generateText.inner":
+			innerSpan = span
+		}
+	}
+	if toolSpan == nil {
+		t.Fatal("missing tool execution span")
+	}
+	if innerSpan == nil {
+		t.Fatal("missing nested operation span")
+	}
+	if got, want := innerSpan.Parent().SpanID(), toolSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("nested operation parent span = %s, want tool span %s", got, want)
+	}
+}
+
 func TestGetTracerPaths(t *testing.T) {
 	custom := trace.NewNoopTracerProvider().Tracer("custom")
 	if GetTracer(&Settings{IsEnabled: Bool(false)}) == nil {

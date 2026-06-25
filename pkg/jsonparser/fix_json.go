@@ -1,143 +1,297 @@
 package jsonparser
 
-import (
-	"strings"
+type fixJSONState string
+
+const (
+	stateRoot                    fixJSONState = "ROOT"
+	stateFinish                  fixJSONState = "FINISH"
+	stateInsideString            fixJSONState = "INSIDE_STRING"
+	stateInsideStringEscape      fixJSONState = "INSIDE_STRING_ESCAPE"
+	stateInsideStringUnicode     fixJSONState = "INSIDE_STRING_UNICODE_ESCAPE"
+	stateInsideLiteral           fixJSONState = "INSIDE_LITERAL"
+	stateInsideNumber            fixJSONState = "INSIDE_NUMBER"
+	stateInsideObjectStart       fixJSONState = "INSIDE_OBJECT_START"
+	stateInsideObjectKey         fixJSONState = "INSIDE_OBJECT_KEY"
+	stateInsideObjectAfterKey    fixJSONState = "INSIDE_OBJECT_AFTER_KEY"
+	stateInsideObjectBeforeValue fixJSONState = "INSIDE_OBJECT_BEFORE_VALUE"
+	stateInsideObjectAfterValue  fixJSONState = "INSIDE_OBJECT_AFTER_VALUE"
+	stateInsideObjectAfterComma  fixJSONState = "INSIDE_OBJECT_AFTER_COMMA"
+	stateInsideArrayStart        fixJSONState = "INSIDE_ARRAY_START"
+	stateInsideArrayAfterValue   fixJSONState = "INSIDE_ARRAY_AFTER_VALUE"
+	stateInsideArrayAfterComma   fixJSONState = "INSIDE_ARRAY_AFTER_COMMA"
 )
 
-// FixJSON repairs incomplete or malformed JSON by closing unclosed structures
-// This uses a simplified stack-based approach to track open braces/brackets
-func FixJSON(jsonText string) string {
-	if jsonText == "" {
-		return ""
-	}
-
-	// Track what's open
-	var openStack []rune
-	inString := false
-	escaped := false
+// FixJSON repairs incomplete JSON using the same state-machine strategy as the
+// TypeScript AI SDK's fixJson utility.
+func FixJSON(input string) string {
+	stack := []fixJSONState{stateRoot}
 	lastValidIndex := -1
+	literalStart := -1
+	unicodeEscapeDigits := 0
 
-	for i := 0; i < len(jsonText); i++ {
-		char := rune(jsonText[i])
-
-		if escaped {
-			escaped = false
-			lastValidIndex = i
-			continue
+	push := func(state fixJSONState) {
+		stack = append(stack, state)
+	}
+	pop := func() {
+		if len(stack) > 0 {
+			stack = stack[:len(stack)-1]
 		}
-
-		if char == '\\' && inString {
-			escaped = true
-			lastValidIndex = i
-			continue
+	}
+	top := func() fixJSONState {
+		if len(stack) == 0 {
+			return stateFinish
 		}
+		return stack[len(stack)-1]
+	}
 
-		if char == '"' {
-			if inString {
-				inString = false
-			} else {
-				inString = true
-			}
-			lastValidIndex = i
-			continue
-		}
-
-		if inString {
-			lastValidIndex = i
-			continue
-		}
-
-		// Not in string, track braces and brackets
-		switch char {
-		case '{':
-			openStack = append(openStack, '{')
-			lastValidIndex = i
-		case '[':
-			openStack = append(openStack, '[')
-			lastValidIndex = i
+	processAfterObjectValue := func(ch byte, i int) {
+		switch ch {
+		case ',':
+			pop()
+			push(stateInsideObjectAfterComma)
 		case '}':
-			if len(openStack) > 0 && openStack[len(openStack)-1] == '{' {
-				openStack = openStack[:len(openStack)-1]
-				lastValidIndex = i
-			}
-		case ']':
-			if len(openStack) > 0 && openStack[len(openStack)-1] == '[' {
-				openStack = openStack[:len(openStack)-1]
-				lastValidIndex = i
-			}
-		case ',', ':', ' ', '\t', '\n', '\r', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-			'-', '.', 'e', 'E', '+', 't', 'r', 'u', 'f', 'a', 'l', 's', 'n':
-			// Valid JSON characters
 			lastValidIndex = i
+			pop()
+		}
+	}
+	processAfterArrayValue := func(ch byte, i int) {
+		switch ch {
+		case ',':
+			pop()
+			push(stateInsideArrayAfterComma)
+		case ']':
+			lastValidIndex = i
+			pop()
+		}
+	}
+	processValueStart := func(ch byte, i int, swapState fixJSONState) {
+		switch ch {
+		case '"':
+			lastValidIndex = i
+			pop()
+			push(swapState)
+			push(stateInsideString)
+		case 'f', 't', 'n':
+			lastValidIndex = i
+			literalStart = i
+			pop()
+			push(swapState)
+			push(stateInsideLiteral)
+		case '-':
+			pop()
+			push(swapState)
+			push(stateInsideNumber)
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			lastValidIndex = i
+			pop()
+			push(swapState)
+			push(stateInsideNumber)
+		case '{':
+			lastValidIndex = i
+			pop()
+			push(swapState)
+			push(stateInsideObjectStart)
+		case '[':
+			lastValidIndex = i
+			pop()
+			push(swapState)
+			push(stateInsideArrayStart)
 		}
 	}
 
-	// If nothing valid was found
-	if lastValidIndex < 0 {
-		return ""
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+
+		switch top() {
+		case stateRoot:
+			processValueStart(ch, i, stateFinish)
+
+		case stateInsideObjectStart:
+			switch ch {
+			case '"':
+				pop()
+				push(stateInsideObjectKey)
+			case '}':
+				lastValidIndex = i
+				pop()
+			}
+
+		case stateInsideObjectAfterComma:
+			if ch == '"' {
+				pop()
+				push(stateInsideObjectKey)
+			}
+
+		case stateInsideObjectKey:
+			if ch == '"' {
+				pop()
+				push(stateInsideObjectAfterKey)
+			}
+
+		case stateInsideObjectAfterKey:
+			if ch == ':' {
+				pop()
+				push(stateInsideObjectBeforeValue)
+			}
+
+		case stateInsideObjectBeforeValue:
+			processValueStart(ch, i, stateInsideObjectAfterValue)
+
+		case stateInsideObjectAfterValue:
+			processAfterObjectValue(ch, i)
+
+		case stateInsideString:
+			switch ch {
+			case '"':
+				pop()
+				lastValidIndex = i
+			case '\\':
+				push(stateInsideStringEscape)
+			default:
+				lastValidIndex = i
+			}
+
+		case stateInsideArrayStart:
+			if ch == ']' {
+				lastValidIndex = i
+				pop()
+			} else {
+				lastValidIndex = i
+				processValueStart(ch, i, stateInsideArrayAfterValue)
+			}
+
+		case stateInsideArrayAfterValue:
+			switch ch {
+			case ',':
+				pop()
+				push(stateInsideArrayAfterComma)
+			case ']':
+				lastValidIndex = i
+				pop()
+			default:
+				lastValidIndex = i
+			}
+
+		case stateInsideArrayAfterComma:
+			processValueStart(ch, i, stateInsideArrayAfterValue)
+
+		case stateInsideStringEscape:
+			pop()
+			if ch == 'u' {
+				unicodeEscapeDigits = 0
+				push(stateInsideStringUnicode)
+			} else {
+				lastValidIndex = i
+			}
+
+		case stateInsideStringUnicode:
+			if isHexDigit(ch) {
+				unicodeEscapeDigits++
+				if unicodeEscapeDigits == 4 {
+					pop()
+					lastValidIndex = i
+				}
+			}
+
+		case stateInsideNumber:
+			switch ch {
+			case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				lastValidIndex = i
+			case 'e', 'E', '-', '.':
+			case ',':
+				pop()
+				if top() == stateInsideArrayAfterValue {
+					processAfterArrayValue(ch, i)
+				}
+				if top() == stateInsideObjectAfterValue {
+					processAfterObjectValue(ch, i)
+				}
+			case '}':
+				pop()
+				if top() == stateInsideObjectAfterValue {
+					processAfterObjectValue(ch, i)
+				}
+			case ']':
+				pop()
+				if top() == stateInsideArrayAfterValue {
+					processAfterArrayValue(ch, i)
+				}
+			default:
+				pop()
+			}
+
+		case stateInsideLiteral:
+			partialLiteral := input[literalStart : i+1]
+			if !hasLiteralPrefix(partialLiteral) {
+				pop()
+				if top() == stateInsideObjectAfterValue {
+					processAfterObjectValue(ch, i)
+				} else if top() == stateInsideArrayAfterValue {
+					processAfterArrayValue(ch, i)
+				}
+			} else {
+				lastValidIndex = i
+			}
+		}
 	}
 
-	// Start with valid portion
-	result := jsonText[:lastValidIndex+1]
-
-	// Close unclosed string
-	if inString {
-		result += "\""
+	result := ""
+	if lastValidIndex >= 0 {
+		result = input[:lastValidIndex+1]
 	}
 
-	// Handle incomplete literals at the end
-	result = completeLiterals(result)
-
-	// Close any open braces/brackets in reverse order
-	for i := len(openStack) - 1; i >= 0; i-- {
-		switch openStack[i] {
-		case '{':
-			result += "}"
-		case '[':
-			result += "]"
+	for i := len(stack) - 1; i >= 0; i-- {
+		switch stack[i] {
+		case stateInsideString:
+			result += `"`
+		case stateInsideObjectKey,
+			stateInsideObjectAfterKey,
+			stateInsideObjectAfterComma,
+			stateInsideObjectStart,
+			stateInsideObjectBeforeValue,
+			stateInsideObjectAfterValue:
+			result += `}`
+		case stateInsideArrayStart,
+			stateInsideArrayAfterComma,
+			stateInsideArrayAfterValue:
+			result += `]`
+		case stateInsideLiteral:
+			if literalStart >= 0 {
+				partialLiteral := input[literalStart:]
+				result += literalCompletion(partialLiteral)
+			}
 		}
 	}
 
 	return result
 }
 
-// completeLiterals completes incomplete boolean/null literals at the end of the string
-func completeLiterals(s string) string {
-	// Check last few characters for incomplete literals
-	// This handles cases like: {"active":tr -> {"active":true}
+func isHexDigit(ch byte) bool {
+	return (ch >= '0' && ch <= '9') ||
+		(ch >= 'A' && ch <= 'F') ||
+		(ch >= 'a' && ch <= 'f')
+}
 
-	// Find the last non-whitespace, non-punctuation sequence
-	i := len(s) - 1
-	for i >= 0 && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-		i--
-	}
+func hasLiteralPrefix(s string) bool {
+	return hasPrefix("true", s) || hasPrefix("false", s) || hasPrefix("null", s)
+}
 
-	if i < 0 {
-		return s
+func literalCompletion(partial string) string {
+	switch {
+	case hasPrefix("true", partial):
+		return "true"[len(partial):]
+	case hasPrefix("false", partial):
+		return "false"[len(partial):]
+	case hasPrefix("null", partial):
+		return "null"[len(partial):]
+	default:
+		return ""
 	}
+}
 
-	// Extract potential partial literal (up to 5 chars for "false")
-	start := i
-	for start > 0 && s[start-1] >= 'a' && s[start-1] <= 'z' {
-		start--
+func hasPrefix(s, prefix string) bool {
+	if len(prefix) > len(s) {
+		return false
 	}
-
-	if start == i+1 {
-		return s // No literal found
-	}
-
-	partial := s[start : i+1]
-
-	// Check if it's a partial literal
-	if strings.HasPrefix("true", partial) && partial != "true" {
-		return s[:start] + "true"
-	}
-	if strings.HasPrefix("false", partial) && partial != "false" {
-		return s[:start] + "false"
-	}
-	if strings.HasPrefix("null", partial) && partial != "null" {
-		return s[:start] + "null"
-	}
-
-	return s
+	return s[:len(prefix)] == prefix
 }

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -74,6 +75,30 @@ func TestObjectOutput_ParseCompleteOutput(t *testing.T) {
 	}
 }
 
+func TestObjectOutput_ParseCompleteOutput_ReturnsDefaultedObject(t *testing.T) {
+	t.Parallel()
+
+	out := ObjectOutput[map[string]interface{}](ObjectOutputOptions{
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":   map[string]interface{}{"type": "string"},
+				"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+			},
+		}),
+	})
+
+	result, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"name":"Alice"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", result["region"])
+	}
+}
+
 func TestObjectOutput_ParseCompleteOutput_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
@@ -95,14 +120,13 @@ func TestObjectOutput_ParseCompleteOutput_InvalidJSON(t *testing.T) {
 	if !isNoObjectGeneratedError(err, &noObj) {
 		t.Errorf("expected *NoObjectGeneratedError, got %T", err)
 	}
+	if noObj.Message != "No object generated: could not parse the response." {
+		t.Fatalf("message = %q", noObj.Message)
+	}
 }
 
 func isNoObjectGeneratedError(err error, out **NoObjectGeneratedError) bool {
-	if e, ok := err.(*NoObjectGeneratedError); ok {
-		*out = e
-		return true
-	}
-	return false
+	return errors.As(err, out)
 }
 
 func TestObjectOutput_ParsePartialOutput(t *testing.T) {
@@ -182,6 +206,164 @@ func TestArrayOutput_ParseCompleteOutput_MissingElements(t *testing.T) {
 	}
 }
 
+func TestArrayOutput_ParseCompleteOutput_NonArrayElementsIsSchemaMismatch(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+	})
+
+	_, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":"not-an-array"}`,
+	})
+	if err == nil {
+		t.Fatal("expected error for non-array elements")
+	}
+	var noObj *NoObjectGeneratedError
+	if !isNoObjectGeneratedError(err, &noObj) {
+		t.Fatalf("expected *NoObjectGeneratedError, got %T", err)
+	}
+	if noObj.Message != "No object generated: response did not match schema." {
+		t.Fatalf("message = %q", noObj.Message)
+	}
+}
+
+func TestArrayOutput_ParsePartialOutput_SkipsInvalidNonLastElement(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":     "object",
+			"required": []interface{}{"label"},
+		}),
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"elements":[{},{"label":"valid"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if partial == nil || len(partial.Partial) != 1 || partial.Partial[0].Label != "valid" {
+		t.Fatalf("partial = %#v, want only valid element", partial)
+	}
+}
+
+func TestArrayOutput_ParsePartialOutput_ReturnsNilOnInvalidWrapperShape(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+	})
+
+	for _, text := range []string{
+		`[]`,
+		`{"other":[]}`,
+		`{"elements":"not-array"}`,
+	} {
+		partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: text})
+		if err != nil {
+			t.Fatalf("unexpected wrapper shape error for %s: %v", text, err)
+		}
+		if partial != nil {
+			t.Fatalf("partial = %#v for %s, want nil", partial, text)
+		}
+	}
+}
+
+func TestArrayOutput_ParsePartialOutput_ReturnsEmptySliceWhenNoElementsValidate(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":     "object",
+			"required": []interface{}{"label"},
+		}),
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"elements":[{}]}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if partial == nil {
+		t.Fatal("partial = nil, want empty partial array")
+	}
+	if partial.Partial == nil {
+		t.Fatal("partial.Partial = nil, want empty slice")
+	}
+	if len(partial.Partial) != 0 {
+		t.Fatalf("partial.Partial len = %d, want 0", len(partial.Partial))
+	}
+}
+
+func TestArrayOutput_ParsePartialOutput_IgnoresInvalidLastElement(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":     "object",
+			"required": []interface{}{"label"},
+		}),
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"elements":[{"label":"complete"},{}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for invalid last partial element: %v", err)
+	}
+	if partial == nil || len(partial.Partial) != 1 || partial.Partial[0].Label != "complete" {
+		t.Fatalf("partial = %#v, want only complete first element", partial)
+	}
+}
+
+func TestArrayOutput_ParsePartialOutput_IncludesLastElementForSuccessfulParse(t *testing.T) {
+	t.Parallel()
+
+	type Tag struct {
+		Label string `json:"label"`
+	}
+
+	out := ArrayOutput[Tag](ArrayOutputOptions[Tag]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":     "object",
+			"required": []interface{}{"label"},
+		}),
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"elements":[{"label":"complete"},{"label":"final"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if partial == nil || len(partial.Partial) != 2 || partial.Partial[1].Label != "final" {
+		t.Fatalf("partial = %#v, want both complete elements", partial)
+	}
+}
+
 type sentimentType string
 
 const (
@@ -221,6 +403,35 @@ func TestChoiceOutput_ParseCompleteOutput_InvalidChoice(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid choice")
 	}
+	var noObj *NoObjectGeneratedError
+	if !isNoObjectGeneratedError(err, &noObj) {
+		t.Fatalf("expected *NoObjectGeneratedError, got %T", err)
+	}
+	if noObj.Message != "No object generated: response did not match schema." {
+		t.Fatalf("message = %q", noObj.Message)
+	}
+}
+
+func TestChoiceOutput_ParseCompleteOutput_NonStringResultIsSchemaMismatch(t *testing.T) {
+	t.Parallel()
+
+	out := ChoiceOutput[sentimentType](ChoiceOutputOptions[sentimentType]{
+		Options: []sentimentType{sentimentPos, sentimentNeg, sentimentNeu},
+	})
+
+	_, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"result":123}`,
+	})
+	if err == nil {
+		t.Fatal("expected error for non-string result")
+	}
+	var noObj *NoObjectGeneratedError
+	if !isNoObjectGeneratedError(err, &noObj) {
+		t.Fatalf("expected *NoObjectGeneratedError, got %T", err)
+	}
+	if noObj.Message != "No object generated: response did not match schema." {
+		t.Fatalf("message = %q", noObj.Message)
+	}
 }
 
 func TestChoiceOutput_ParsePartialOutput(t *testing.T) {
@@ -239,6 +450,42 @@ func TestChoiceOutput_ParsePartialOutput(t *testing.T) {
 	}
 	if partial != nil && partial.Partial != sentimentPos {
 		t.Errorf("expected positive, got %q", partial.Partial)
+	}
+}
+
+func TestChoiceOutput_ParsePartialOutput_AmbiguousRepairedPrefixReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	out := ChoiceOutput[sentimentType](ChoiceOutputOptions[sentimentType]{
+		Options: []sentimentType{"aaa", "aab", "ccc"},
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"result":"a`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if partial != nil {
+		t.Fatalf("partial = %#v, want nil for ambiguous repaired prefix", partial)
+	}
+}
+
+func TestChoiceOutput_ParsePartialOutput_SingleRepairedPrefixReturnsMatch(t *testing.T) {
+	t.Parallel()
+
+	out := ChoiceOutput[sentimentType](ChoiceOutputOptions[sentimentType]{
+		Options: []sentimentType{"aaa", "aab", "ccc"},
+	})
+
+	partial, err := out.ParsePartialOutput(context.Background(), ParsePartialOutputOptions{
+		Text: `{"result":"c`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if partial == nil || partial.Partial != "ccc" {
+		t.Fatalf("partial = %#v, want ccc", partial)
 	}
 }
 
@@ -272,6 +519,13 @@ func TestJSONOutput_ParseCompleteOutput_Invalid(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+	var noObj *NoObjectGeneratedError
+	if !isNoObjectGeneratedError(err, &noObj) {
+		t.Fatalf("expected *NoObjectGeneratedError, got %T", err)
+	}
+	if noObj.Message != "No object generated: could not parse the response." {
+		t.Fatalf("message = %q", noObj.Message)
 	}
 }
 
@@ -328,8 +582,8 @@ func TestGenerateText_WithObjectOutput(t *testing.T) {
 	t.Parallel()
 
 	type Planet struct {
-		Name   string `json:"name"`
-		Moons  int    `json:"moons"`
+		Name  string `json:"name"`
+		Moons int    `json:"moons"`
 	}
 
 	model := &testutil.MockLanguageModel{
@@ -406,6 +660,48 @@ func TestGenerateText_WithArrayOutput(t *testing.T) {
 	}
 	if colors[0].Name != "red" || colors[1].Name != "blue" {
 		t.Errorf("unexpected colors: %+v", colors)
+	}
+}
+
+func TestGenerateText_WithArrayOutput_ReturnsDefaultedElements(t *testing.T) {
+	t.Parallel()
+
+	elementSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string"},
+			"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+		},
+	})
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"elements":[{"name":"red"},{"name":"blue","region":"eu"}]}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "List colors",
+		Output: ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+			ElementSchema: elementSchema,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	colors, ok := result.Output.([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected []map[string]interface{}, got %T", result.Output)
+	}
+	if colors[0]["region"] != "us-east-1" {
+		t.Fatalf("defaulted region = %v, want us-east-1", colors[0]["region"])
+	}
+	if colors[1]["region"] != "eu" {
+		t.Fatalf("explicit region = %v, want eu", colors[1]["region"])
 	}
 }
 
@@ -527,6 +823,13 @@ func TestGenerateText_OutputParseError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON output")
+	}
+	var noObj *NoObjectGeneratedError
+	if !isNoObjectGeneratedError(err, &noObj) {
+		t.Fatalf("expected *NoObjectGeneratedError, got %T", err)
+	}
+	if noObj.Message != "No object generated: could not parse the response." {
+		t.Fatalf("message = %q", noObj.Message)
 	}
 }
 
@@ -698,6 +1001,73 @@ func TestStreamText_WithArrayOutput_ResponseFormat(t *testing.T) {
 	}
 	if capturedFormat.Type != "json" {
 		t.Errorf("expected type=json, got %q", capturedFormat.Type)
+	}
+}
+
+func TestArrayOutput_ResponseFormatDoesNotMutateElementSchema(t *testing.T) {
+	t.Parallel()
+
+	schemaMap := map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"type":    "object",
+		"properties": map[string]interface{}{
+			"text": map[string]interface{}{"type": "string"},
+		},
+	}
+	elementSchema := schema.NewSimpleJSONSchema(schemaMap)
+
+	output := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: elementSchema,
+	})
+	if _, err := output.ResponseFormat(context.Background()); err != nil {
+		t.Fatalf("ResponseFormat error: %v", err)
+	}
+
+	if _, ok := schemaMap["$schema"]; !ok {
+		t.Fatal("ResponseFormat removed $schema from caller schema")
+	}
+	if _, ok := elementSchema.Validator().JSONSchema()["$schema"]; !ok {
+		t.Fatal("ResponseFormat removed $schema from schema validator")
+	}
+}
+
+func TestStreamText_WithArrayOutput_InvalidNonLastPartialElementIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	type Step struct {
+		Text string `json:"text"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"elements":[{},{"text":"still streaming"}`},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "List steps",
+		Output: ArrayOutput[Step](ArrayOutputOptions[Step]{
+			ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+				"type":     "object",
+				"required": []interface{}{"text"},
+			}),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected StreamText error: %v", err)
+	}
+
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v, want nil", err)
+	}
+	if text != `{"elements":[{},{"text":"still streaming"}` {
+		t.Fatalf("ReadAll() text = %q", text)
 	}
 }
 

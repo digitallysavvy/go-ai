@@ -331,8 +331,14 @@ type GenerateTextOptions struct {
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, step types.StepResult, userContext interface{})
 
-	// OnFinish is called when generation completes
-	// Receives the user context if ExperimentalContext is set
+	// OnEnd is called when generation completes.
+	// Receives the user context if RuntimeContext/ExperimentalContext is set.
+	OnEnd func(ctx context.Context, result *GenerateTextResult, userContext interface{})
+
+	// OnFinish is called when generation completes.
+	// Receives the user context if RuntimeContext/ExperimentalContext is set.
+	//
+	// Deprecated: use OnEnd.
 	OnFinish func(ctx context.Context, result *GenerateTextResult, userContext interface{})
 
 	// ========================================================================
@@ -369,8 +375,14 @@ type GenerateTextOptions struct {
 	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e OnStepFinishEvent)
 
+	// OnEndEvent is called once when the entire generation completes with a
+	// typed event.
+	OnEndEvent func(ctx context.Context, e OnFinishEvent)
+
 	// OnFinishEvent is called once when the entire generation completes with a
-	// typed OnFinishEvent. Use this instead of OnFinish for structured access.
+	// typed OnFinishEvent. Use OnEndEvent for new code.
+	//
+	// Deprecated: use OnEndEvent.
 	OnFinishEvent func(ctx context.Context, e OnFinishEvent)
 
 	// OnAbort is called when generation is aborted by context cancellation or
@@ -636,6 +648,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	onStepEndEvent := opts.OnStepEndEvent
 	if onStepEndEvent == nil {
 		onStepEndEvent = opts.OnStepFinishEvent
+	}
+	onEnd := opts.OnEnd
+	if onEnd == nil {
+		onEnd = opts.OnFinish
+	}
+	onEndEvent := opts.OnEndEvent
+	if onEndEvent == nil {
+		onEndEvent = opts.OnFinishEvent
 	}
 	Notify(ctx, OnStartEvent{
 		CallID:              callID,
@@ -1286,9 +1306,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
-	// Call finish callback (v6.0: with user context)
-	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, runtimeContext)
+	// Call end callback (v6.0: with user context)
+	if onEnd != nil {
+		onEnd(ctx, result, runtimeContext)
 	}
 
 	// Emit structured OnFinishEvent.
@@ -1355,7 +1375,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
-	}, opts.OnFinishEvent)
+	}, onEndEvent)
 
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings

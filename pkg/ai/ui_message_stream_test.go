@@ -51,6 +51,96 @@ func TestCreateUIMessageStream_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinis
 	}
 }
 
+func TestCreateUIMessageStream_OnStepEndRunsBeforeFinishStepChunk(t *testing.T) {
+	stepEndCalls := make(chan struct{}, 1)
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "finish-step"})
+		},
+		OnStepEnd: func(event map[string]interface{}) {
+			stepEndCalls <- struct{}{}
+		},
+	})
+
+	chunk, ok := <-stream
+	if !ok {
+		t.Fatal("stream closed before finish-step")
+	}
+	if chunk["type"] != "finish-step" {
+		t.Fatalf("chunk type = %v, want finish-step", chunk["type"])
+	}
+	select {
+	case <-stepEndCalls:
+	default:
+		t.Fatal("OnStepEnd had not run before finish-step chunk was observed")
+	}
+
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
+func TestCreateUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	var endCalls int
+	var finishCalls int
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-start", "id": "text-1"})
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "text-1", "delta": "Hello"})
+			writer.Write(UIMessageChunk{"type": "text-end", "id": "text-1"})
+		},
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["isAborted"] != false {
+				t.Fatalf("isAborted = %v, want false", event["isAborted"])
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+		GenerateMessageID: func() string { return "response-message-id" },
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
+func TestToUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var endCalls int
+	var finishCalls int
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-123" },
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["finishReason"] != types.FinishReasonStop {
+				t.Fatalf("finishReason = %v, want %s", event["finishReason"], types.FinishReasonStop)
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
 func TestPipeUIMessageStreamToResponse_AppendsDoneSentinel(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "hello"},
@@ -106,6 +196,37 @@ func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 	}, UIMessageStreamResultOptions{SendSources: &sendSources})
 	if !ok || source["type"] != "source-url" || source["sourceId"] != "source-1" {
 		t.Fatalf("source chunk = %#v, %v", source, ok)
+	}
+
+	sourceWithoutTitle, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "url",
+			ID:         "source-no-title",
+			URL:        "https://example.com/no-title",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSources})
+	if !ok || sourceWithoutTitle["type"] != "source-url" {
+		t.Fatalf("source without title chunk = %#v, %v", sourceWithoutTitle, ok)
+	}
+	if _, exists := sourceWithoutTitle["title"]; exists {
+		t.Fatalf("source without title emitted title key: %#v", sourceWithoutTitle)
+	}
+
+	documentWithoutFilename, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "document",
+			ID:         "doc-1",
+			MediaType:  "application/pdf",
+			Title:      "Document",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSources})
+	if !ok || documentWithoutFilename["type"] != "source-document" {
+		t.Fatalf("document source chunk = %#v, %v", documentWithoutFilename, ok)
+	}
+	if _, exists := documentWithoutFilename["filename"]; exists {
+		t.Fatalf("document without filename emitted filename key: %#v", documentWithoutFilename)
 	}
 
 	file, ok := ToUIMessageChunk(provider.StreamChunk{
@@ -183,6 +304,67 @@ func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 		t.Fatalf("provider executed error chunk = %#v, %v", providerExecutedError, ok)
 	}
 
+	if raw, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeRaw,
+		Raw:  map[string]interface{}{"provider": "raw"},
+	}, UIMessageStreamResultOptions{}); ok || raw != nil {
+		t.Fatalf("raw chunk = %#v, %v; want suppressed", raw, ok)
+	}
+
+	if metadata, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type:             provider.ChunkTypeResponseMetadata,
+		ResponseMetadata: &provider.ResponseMetadata{ID: "response-1", ModelID: "model-1"},
+	}, UIMessageStreamResultOptions{}); ok || metadata != nil {
+		t.Fatalf("response metadata chunk = %#v, %v; want suppressed", metadata, ok)
+	}
+
+	if unknown, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkType("provider-only"),
+		Text: "internal",
+	}, UIMessageStreamResultOptions{}); ok || unknown != nil {
+		t.Fatalf("unknown provider chunk = %#v, %v; want suppressed", unknown, ok)
+	}
+
+	sendSourcesForDocument := true
+	sourceDocument, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "document",
+			ID:         "source-1",
+			MediaType:  "text/plain",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSourcesForDocument})
+	if !ok || sourceDocument["type"] != "source-document" {
+		t.Fatalf("source document chunk = %#v, %v", sourceDocument, ok)
+	}
+	if _, ok := sourceDocument["title"]; ok {
+		t.Fatalf("source document title should be omitted when unset: %#v", sourceDocument)
+	}
+	if _, ok := sourceDocument["filename"]; ok {
+		t.Fatalf("source document filename should be omitted when unset: %#v", sourceDocument)
+	}
+
+	if toolInputEnd, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolInputEnd,
+		ID:   "call-1",
+	}, UIMessageStreamResultOptions{}); ok || toolInputEnd != nil {
+		t.Fatalf("tool input end chunk = %#v, %v; want suppressed", toolInputEnd, ok)
+	}
+
+	sendStart := false
+	if start, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeStreamStart,
+	}, UIMessageStreamResultOptions{SendStart: &sendStart}); !ok || start["type"] != "start-step" {
+		t.Fatalf("start-step chunk = %#v, %v", start, ok)
+	}
+
+	sendFinish := false
+	if finish, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeFinish,
+	}, UIMessageStreamResultOptions{SendFinish: &sendFinish}); !ok || finish["type"] != "finish-step" {
+		t.Fatalf("finish-step chunk = %#v, %v", finish, ok)
+	}
+
 	abort, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user"}, UIMessageStreamResultOptions{})
 	if !ok || abort["type"] != "abort" || abort["reason"] != "user" {
 		t.Fatalf("abort chunk = %#v, %v", abort, ok)
@@ -253,7 +435,7 @@ func TestToUIMessageStream_MessageIDParity(t *testing.T) {
 		}
 	})
 
-	t.Run("generate message ID without original messages is callback-only", func(t *testing.T) {
+	t.Run("generate message ID without original messages is injected into start and callback state", func(t *testing.T) {
 		stream := testutil.NewMockTextStream([]provider.StreamChunk{
 			{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
 			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
@@ -274,8 +456,8 @@ func TestToUIMessageStream_MessageIDParity(t *testing.T) {
 		if err, ok := <-errs; ok && err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if _, ok := start["messageId"]; ok {
-			t.Fatalf("start chunk should omit generated messageId without original messages: %#v", start)
+		if start["messageId"] != "msg-generated" {
+			t.Fatalf("start chunk messageId = %v, want msg-generated: %#v", start["messageId"], start)
 		}
 		finish := <-finishEvent
 		responseMessage, ok := finish["responseMessage"].(UIMessageChunk)
@@ -625,6 +807,216 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 	}
 }
 
+func TestToUIMessageStream_MessageMetadataReceivesUIPartTypes(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var callbackTypes []string
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(input map[string]interface{}) map[string]interface{} {
+			part, ok := input["part"].(provider.StreamChunk)
+			if !ok {
+				t.Fatalf("metadata input part = %#v, want provider.StreamChunk", input["part"])
+			}
+			partType := string(part.Type)
+			if input["type"] != partType {
+				t.Fatalf("metadata input type = %#v, part type = %q", input["type"], partType)
+			}
+			callbackTypes = append(callbackTypes, partType)
+			return map[string]interface{}{"partType": partType}
+		},
+	})
+
+	var metadataTypes []string
+	var startMetadataType string
+	var finishMetadataType string
+	for chunk := range chunks {
+		switch chunk["type"] {
+		case "start":
+			if metadata, ok := chunk["messageMetadata"].(map[string]interface{}); ok {
+				startMetadataType, _ = metadata["partType"].(string)
+			}
+		case "finish":
+			if metadata, ok := chunk["messageMetadata"].(map[string]interface{}); ok {
+				finishMetadataType, _ = metadata["partType"].(string)
+			}
+		case "message-metadata":
+			metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("message metadata chunk = %#v", chunk)
+			}
+			partType, _ := metadata["partType"].(string)
+			metadataTypes = append(metadataTypes, partType)
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCallbackTypes := []string{"start", "start-step", "text-delta", "finish-step", "finish"}
+	if !reflect.DeepEqual(callbackTypes, wantCallbackTypes) {
+		t.Fatalf("callback part types = %#v, want %#v", callbackTypes, wantCallbackTypes)
+	}
+	if startMetadataType != "start" {
+		t.Fatalf("start metadata type = %q, want start", startMetadataType)
+	}
+	if finishMetadataType != "finish" {
+		t.Fatalf("finish metadata type = %q, want finish", finishMetadataType)
+	}
+	wantMetadataTypes := []string{"start-step", "text-delta", "finish-step"}
+	if !reflect.DeepEqual(metadataTypes, wantMetadataTypes) {
+		t.Fatalf("message metadata types = %#v, want %#v", metadataTypes, wantMetadataTypes)
+	}
+}
+
+func TestToUIMessageStream_MessageMetadataRunsForSuppressedStartAndFinish(t *testing.T) {
+	sendStart := false
+	sendFinish := false
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var callbackTypes []string
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		SendStart:  &sendStart,
+		SendFinish: &sendFinish,
+		MessageMetadata: func(input map[string]interface{}) map[string]interface{} {
+			callbackTypes = append(callbackTypes, input["type"].(string))
+			return map[string]interface{}{"partType": input["type"]}
+		},
+	})
+
+	var gotTypes []string
+	for chunk := range chunks {
+		gotTypes = append(gotTypes, chunk["type"].(string))
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, disallowed := range []string{"start", "finish"} {
+		for _, got := range gotTypes {
+			if got == disallowed {
+				t.Fatalf("chunks include suppressed %q: %#v", disallowed, gotTypes)
+			}
+		}
+	}
+	wantCallbackTypes := []string{"start", "text-delta", "finish-step", "finish"}
+	if !reflect.DeepEqual(callbackTypes, wantCallbackTypes) {
+		t.Fatalf("callback part types = %#v, want %#v", callbackTypes, wantCallbackTypes)
+	}
+}
+
+func TestToUIMessageStream_FiltersEmptyTextDeltas(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return map[string]interface{}{"partType": part["type"]}
+		},
+	})
+
+	var textDeltas []string
+	var textMetadataCount int
+	for chunk := range chunks {
+		switch chunk["type"] {
+		case "text-delta":
+			textDeltas = append(textDeltas, chunk["delta"].(string))
+		case "message-metadata":
+			metadata := chunk["messageMetadata"].(map[string]interface{})
+			if metadata["partType"] == "text-delta" {
+				textMetadataCount++
+			}
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	want := []string{"Hello", ", ", "world!"}
+	if !reflect.DeepEqual(textDeltas, want) {
+		t.Fatalf("text deltas = %#v, want %#v", textDeltas, want)
+	}
+	if textMetadataCount != len(want) {
+		t.Fatalf("text metadata count = %d, want %d", textMetadataCount, len(want))
+	}
+}
+
+func TestToUIMessageStream_GenerateMessageIDInjectsStartMessageIDWithoutOriginalMessages(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-generated" },
+		OnEnd: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) == 0 || got[0]["type"] != "start" || got[0]["messageId"] != "msg-generated" {
+		t.Fatalf("start chunk = %#v", got)
+	}
+
+	event := <-finishEvent
+	message, ok := event["responseMessage"].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("responseMessage = %#v", event["responseMessage"])
+	}
+	if message["id"] != "msg-generated" {
+		t.Fatalf("response message id = %v, want msg-generated", message["id"])
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	res := &StreamTextResult{stream: stream}
+
+	var endCalls int
+	var finishCalls int
+	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-123" },
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["finishReason"] != types.FinishReasonStop {
+				t.Fatalf("finishReason = %v, want %s", event["finishReason"], types.FinishReasonStop)
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
 func TestToUIMessageStream_OnFinishBuildsTSUIMessageParts(t *testing.T) {
 	sendSources := true
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
@@ -850,6 +1242,139 @@ func TestToUIMessageStream_OnFinishReportsAbortChunk(t *testing.T) {
 	if event["isAborted"] != true {
 		t.Fatalf("isAborted = %#v, want true", event["isAborted"])
 	}
+}
+
+func TestToUIMessageStream_AbortErrorProducesAbortChunk(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v, want nil for abort stream", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("chunks = %#v, want start and abort", got)
+	}
+	if got[1]["type"] != "abort" || got[1]["reason"] != context.Canceled.Error() {
+		t.Fatalf("abort chunk = %#v", got[1])
+	}
+}
+
+func TestToUIMessageStream_AbortErrorProducesMessageMetadata(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return UIMessageChunk{"partType": part["type"]}
+		},
+	})
+	var sawAbortMetadata bool
+	for chunk := range chunks {
+		if chunk["type"] != "message-metadata" {
+			continue
+		}
+		metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+		if ok && metadata["partType"] == string(provider.ChunkTypeAbort) {
+			sawAbortMetadata = true
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v, want nil for abort stream", err)
+	}
+	if !sawAbortMetadata {
+		t.Fatal("missing abort message metadata")
+	}
+}
+
+func TestToUIMessageStream_IncompleteMetadataOnlyStreamProducesErrorChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled incomplete" },
+	})
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "error" || last["errorText"] != "handled incomplete" {
+		t.Fatalf("last chunk = %#v, want handled error", last)
+	}
+	for _, chunk := range got {
+		if chunk["type"] == string(provider.ChunkTypeResponseMetadata) {
+			t.Fatalf("response metadata leaked into UI stream: %#v", got)
+		}
+	}
+}
+
+func TestToUIMessageStream_IncompleteMetadataOnlyStreamProducesErrorMessageMetadata(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return UIMessageChunk{"partType": part["type"]}
+		},
+	})
+	var sawErrorMetadata bool
+	for chunk := range chunks {
+		if chunk["type"] != "message-metadata" {
+			continue
+		}
+		metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+		if ok && metadata["partType"] == string(provider.ChunkTypeError) {
+			sawErrorMetadata = true
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !sawErrorMetadata {
+		t.Fatal("missing error message metadata")
+	}
+}
+
+func TestToUIMessageStream_IncompletePartialOutputFinishesOther(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "text-1"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var finish UIMessageChunk
+	for chunk := range chunks {
+		if chunk["type"] == "finish" {
+			finish = chunk
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if finish["finishReason"] != string(types.FinishReasonOther) {
+		t.Fatalf("finish chunk = %#v, want finishReason other", finish)
+	}
+}
+
+type errorTextStream struct {
+	err error
+}
+
+func (s *errorTextStream) Next() (*provider.StreamChunk, error) {
+	return nil, s.err
+}
+
+func (s *errorTextStream) Close() error {
+	return nil
+}
+
+func (s *errorTextStream) Err() error {
+	return s.err
 }
 
 func TestCreateUIMessageStreamWithOptions_AsyncErrorEmission(t *testing.T) {
@@ -1193,6 +1718,72 @@ func TestToUIMessageChunkRedactsErrorByDefault(t *testing.T) {
 	}
 	if chunk["errorText"] != "handled: database password leaked" {
 		t.Fatalf("custom errorText = %#v", chunk["errorText"])
+	}
+}
+
+func TestToUIMessageStream_ErrorChunkEmitsFinishStep(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeError, Text: "chunk error"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled chunk error" },
+	})
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	var sawError bool
+	var sawFinishStepAfterError bool
+	for _, chunk := range got {
+		switch chunk["type"] {
+		case "error":
+			sawError = true
+		case "finish-step":
+			if sawError {
+				sawFinishStepAfterError = true
+			}
+		}
+	}
+	if !sawFinishStepAfterError {
+		t.Fatalf("UI chunks after error did not include finish-step: %#v", got)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "finish" || last["finishReason"] != string(types.FinishReasonError) {
+		t.Fatalf("final finish chunk = %#v, want finish reason error", last)
+	}
+}
+
+func TestToUIMessageStream_IncompletePartialOutputEmitsFinishStep(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	var sawFinishStep bool
+	for _, chunk := range got {
+		if chunk["type"] == "finish-step" {
+			sawFinishStep = true
+			break
+		}
+	}
+	if !sawFinishStep {
+		t.Fatalf("UI chunks did not include finish-step: %#v", got)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "finish" || last["finishReason"] != string(types.FinishReasonOther) {
+		t.Fatalf("final finish chunk = %#v, want finish reason other", last)
 	}
 }
 
