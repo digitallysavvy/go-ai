@@ -7,7 +7,8 @@ The AI Gateway provider enables unified access to multiple LLM providers through
 - **Unified Model Access**: Access models from multiple providers through a single interface
 - **Zero Data Retention**: Optional mode that prevents request logging
 - **Model Routing**: Intelligent routing to different model providers
-- **Search Tools**: Built-in Parallel Search and Perplexity Search tools
+- **Search Tools**: Built-in Exa, Parallel Search, and Perplexity Search tools
+- **Realtime Runtime Auth**: Mint short-lived realtime client secrets for browser WebSocket sessions
 - **Audio Models**: Speech synthesis and transcription through Gateway model routing
 - **Automatic Failover**: Gateway handles provider failover automatically
 - **Usage Tracking**: Track API usage and credits
@@ -50,7 +51,8 @@ func main() {
     }
 
     // Generate text
-    result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
         Prompt: "What is the capital of France?",
     })
     if err != nil {
@@ -83,7 +85,8 @@ provider, err := gateway.New(gateway.Config{
     QuotaEntityID:           "tenant-123",
 })
 
-result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
     Prompt: "Summarize the care plan",
     ProviderOptions: map[string]interface{}{
         "gateway": map[string]interface{}{
@@ -187,9 +190,71 @@ fmt.Println(result.Text)
 
 Gateway sends transcription requests to `/transcription-model` with `ai-transcription-model-specification-version: 4` and `ai-model-id`.
 
+## Realtime Runtime Client Secrets
+
+Gateway realtime clients use a short-lived `vcst_` token instead of exposing the
+long-lived Gateway credential to browsers. Server code mints the token, returns
+it to the client, and the browser connects with Gateway WebSocket subprotocols.
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:       "your-api-key",
+    TeamIDOrSlug: "team-slug", // optional
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+expires := 60
+token, err := provider.GetRealtimeToken(context.Background(), "openai/gpt-realtime", &gateway.RealtimeClientSecretOptions{
+    ExpiresAfterSeconds: &expires,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+model := provider.ExperimentalRealtime("openai/gpt-realtime")
+ws := model.GetWebSocketConfig(token.Token, token.URL)
+fmt.Println(ws.URL, ws.Protocols)
+```
+
+`MintRealtimeClientSecret` sends `POST /v1/realtime/client-secrets` at the
+Gateway origin with `{"model": "...", "expiresIn": ...}` and the normal Gateway
+auth headers. Realtime event parsing and client event serialization are identity
+codecs because Gateway speaks the normalized AI SDK realtime protocol.
+
 ## Provider-Executed Tools
 
-The Gateway provider includes two powerful search tools that are executed server-side by the gateway.
+The Gateway provider includes search tools that are executed server-side by the gateway.
+
+### Exa Search
+
+Search the web using Exa for current information and token-efficient excerpts.
+
+```go
+exaSearch := tools.NewExaSearch(tools.ExaSearchConfig{
+    Type:       "auto",
+    NumResults: intPtr(8),
+    Category:   "news",
+    Contents: &tools.ExaSearchContentsConfig{
+        Text: true,
+        Extras: &tools.ExaSearchExtrasConfig{
+            Links: intPtr(2),
+        },
+    },
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Find recent product launches in AI developer tools",
+    Tools: []types.Tool{
+        exaSearch.ToTool(),
+    },
+})
+```
+
+Numeric provider tool config fields use `*int`: `nil` omits the field like
+TypeScript `undefined`, while `intPtr(0)` sends an explicit zero.
 
 ### Parallel Search
 
@@ -216,14 +281,15 @@ func main() {
     // Create parallel search tool
     parallelSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
         Mode:       "one-shot", // or "agentic"
-        MaxResults: 10,
+        MaxResults: intPtr(10),
         SourcePolicy: &tools.ParallelSearchSourcePolicy{
             IncludeDomains: []string{"wikipedia.org", "nature.com"},
             AfterDate:      "2024-01-01",
         },
     })
 
-    result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
         Prompt: "Search for the latest developments in quantum computing",
         Tools: []types.Tool{
             parallelSearch.ToTool(),
@@ -249,14 +315,15 @@ Search using Perplexity's API for real-time information and news.
 ```go
 // Create perplexity search tool
 perplexitySearch := tools.NewPerplexitySearch(tools.PerplexitySearchConfig{
-    MaxResults:       10,
-    MaxTokensPerPage: 2048,
+    MaxResults:       intPtr(10),
+    MaxTokensPerPage: intPtr(2048),
     Country:          "US",
     SearchDomainFilter: []string{"nature.com", "science.org"},
     SearchRecencyFilter: "week",
 })
 
-result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
     Prompt: "What are the latest AI research papers?",
     Tools: []types.Tool{
         perplexitySearch.ToTool(),
@@ -398,6 +465,16 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `SearchLanguageFilter` ([]string): ISO 639-1 language codes
 - `SearchRecencyFilter` (string): "day", "week", "month", or "year"
 
+### Exa Search Config
+
+- `Type` (string): `auto`, `fast`, or `instant`
+- `NumResults` (int): Maximum results (1-100, default: 10)
+- `Category` (string): `company`, `people`, `research paper`, `news`, `personal site`, or `financial report`
+- `UserLocation` (string): Two-letter ISO country code
+- `IncludeDomains` / `ExcludeDomains` ([]string): Domain filters
+- `StartPublishedDate` / `EndPublishedDate` (string): ISO 8601 published date filters
+- `Contents` (*ExaSearchContentsConfig): Text, highlight, freshness, subpage, and extras controls
+
 ## Environment Variables
 
 - `AI_GATEWAY_API_KEY`: API key for authentication
@@ -417,19 +494,24 @@ settings unions:
 - `GatewayImageModelID` / `GatewayImageModelIDs`
 - `GatewayVideoModelID` / `GatewayVideoModelIDs`
 - `GatewayRerankingModelID` / `GatewayRerankingModelIDs`
+- `GatewaySpeechModelID` / `GatewaySpeechModelIDs`
+- `GatewayTranscriptionModelID` / `GatewayTranscriptionModelIDs`
 
 Examples:
 
 - `gateway.GatewayLanguageModelOpenaiGpt55`
-- `gateway.GatewayLanguageModelAnthropicClaudeOpus47`
-- `gateway.GatewayLanguageModelAlibabaQwen37Plus`
-- `gateway.GatewayLanguageModelStepfunStep35Flash`
-- `gateway.GatewayLanguageModelStepfunStep37Flash`
+- `gateway.GatewayLanguageModelOpenaiGpt52`
+- `gateway.GatewayLanguageModelAnthropicClaudeOpus48`
+- `gateway.GatewayLanguageModelMoonshotaiKimiK27Code`
+- `gateway.GatewayLanguageModelZaiGlm52`
 - `gateway.GatewayEmbeddingModelGoogleGeminiEmbedding2`
-- `gateway.GatewayVideoModelXaiGrokImagineVideo`
+- `gateway.GatewayImageModelBflFlux2Pro`
+- `gateway.GatewayVideoModelAlibabaWanV26T2v`
 - `gateway.GatewayRerankingModelCohereRerankV4Pro`
 
-June 6 catalog additions include `alibaba/qwen3.7-plus`, `google/gemini-3.1-flash-image`, `minimax/minimax-m3`, `nvidia/nemotron-3-ultra-550b-a55b`, `stepfun/step-3.5-flash`, `stepfun/step-3.7-flash`, and `xai/grok-imagine-video-1.5-preview`.
+June 21 catalog evidence is generated from the TypeScript Gateway settings:
+196 language IDs, 24 embedding IDs, 30 image IDs, 27 video IDs, 5 reranking IDs,
+and unconstrained speech/transcription ID types.
 
 Check available models using `provider.GetAvailableModels()`.
 
@@ -462,7 +544,8 @@ The gateway provider also returns standard provider errors:
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
-result, err := ai.GenerateText(ctx, model, opts)
+opts.Model = model
+result, err := ai.GenerateText(ctx, opts)
 if err != nil {
     switch e := err.(type) {
     case *errors.AuthenticationError:
