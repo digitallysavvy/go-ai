@@ -307,6 +307,7 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 
 	authResolver := func(ctx context.Context) (string, string, error) {
 		return resolveGatewayAuthToken(ctx, cfg)
@@ -605,6 +606,19 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 
 func (p *Provider) gatewayAPIError(resp *internalhttp.Response) error {
 	return p.gatewayAPIErrorWithContext(context.Background(), resp)
+}
+
+func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {
+	if resp == nil {
+		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
+	}
+	cause := &providererrors.ProviderError{
+		Provider:        "gateway",
+		StatusCode:      resp.StatusCode,
+		Message:         "Gateway request failed",
+		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
 }
 
 func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *internalhttp.Response) error {
