@@ -250,6 +250,7 @@ func (m *VideoModel) buildResponseFromSSEEvent(event *SSEVideoEvent) (*provider.
 		result.Warnings = append(result.Warnings, types.Warning{
 			Type:    warning.Type,
 			Feature: warning.Feature,
+			Setting: warning.Setting,
 			Details: warning.Details,
 			Message: warning.Message,
 		})
@@ -271,6 +272,7 @@ type warningData struct {
 	Type    string `json:"type"`
 	Message string `json:"message,omitempty"`
 	Feature string `json:"feature,omitempty"`
+	Setting string `json:"setting,omitempty"`
 	Details string `json:"details,omitempty"`
 }
 

@@ -49,6 +49,7 @@ func TestRerankingModel_DoRerank_RequestAndResponseParity(t *testing.T) {
 				{"index":0,"relevanceScore":0.89},
 				{"index":2,"relevanceScore":0.15}
 			],
+			"warnings":[{"type":"unsupported","feature":"topK","details":"ignored"}],
 			"providerMetadata":{"gateway":{"routing":{"provider":"cohere"}}}
 		}`))
 	}))
@@ -106,8 +107,8 @@ func TestRerankingModel_DoRerank_RequestAndResponseParity(t *testing.T) {
 	if len(result.Ranking) != 2 || result.Ranking[0].Index != 0 || result.Ranking[0].RelevanceScore != 0.89 {
 		t.Fatalf("ranking = %#v", result.Ranking)
 	}
-	if result.Warnings == nil || len(result.Warnings) != 0 {
-		t.Fatalf("warnings should be an explicit empty slice to match TS, got %#v", result.Warnings)
+	if len(result.Warnings) != 1 || result.Warnings[0].Type != "unsupported" || result.Warnings[0].Feature != "topK" || result.Warnings[0].Details != "ignored" {
+		t.Fatalf("warnings = %#v", result.Warnings)
 	}
 	if http.Header(result.Response.Headers).Get("x-request-id") != "req-123" {
 		t.Fatalf("response header x-request-id = %q, want req-123", http.Header(result.Response.Headers).Get("x-request-id"))

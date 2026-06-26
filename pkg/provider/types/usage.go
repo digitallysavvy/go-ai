@@ -218,6 +218,9 @@ type Warning struct {
 	// Feature is the specific feature that caused the warning (e.g. "image", "resolution").
 	Feature string `json:"feature,omitempty"`
 
+	// Setting is the deprecated setting name for warnings of type "deprecated".
+	Setting string `json:"setting,omitempty"`
+
 	// Details is the human-readable description of the warning.
 	Details string `json:"details,omitempty"`
 

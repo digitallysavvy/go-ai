@@ -144,12 +144,12 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			wantErr:      true,
 		},
 		{
-			name: "SSE with warnings in result",
+			name: "SSE with deprecated warnings in result",
 			opts: &provider.VideoModelV3CallOptions{
 				Prompt:   "A cat playing",
 				Duration: floatPtr(10.0),
 			},
-			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}],"warnings":[{"type":"unsupported","feature":"duration","details":"Duration capped at 8 seconds"}]}`,
+			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}],"warnings":[{"type":"deprecated","setting":"duration","message":"Use seconds instead"}]}`,
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			wantVideos:   1,
@@ -256,8 +256,8 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			if len(result.Warnings) != tt.wantWarnings {
 				t.Errorf("DoGenerate() returned %d warnings, want %d", len(result.Warnings), tt.wantWarnings)
 			}
-			if tt.name == "SSE with warnings in result" {
-				if result.Warnings[0].Type != "unsupported" || result.Warnings[0].Feature != "duration" || result.Warnings[0].Details != "Duration capped at 8 seconds" {
+			if tt.name == "SSE with deprecated warnings in result" {
+				if result.Warnings[0].Type != "deprecated" || result.Warnings[0].Setting != "duration" || result.Warnings[0].Message != "Use seconds instead" {
 					t.Fatalf("warning fields should match TS shape, got %#v", result.Warnings[0])
 				}
 			}

@@ -72,7 +72,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	return &types.RerankResult{
 		Ranking:          response.Ranking,
-		Warnings:         []types.Warning{},
+		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.RerankResponse{
 			Headers: map[string][]string(httpResp.Headers),
@@ -99,5 +99,6 @@ func (m *RerankingModel) handleErrorWithContext(ctx context.Context, err error) 
 
 type gatewayRerankResponse struct {
 	Ranking          []types.RerankItem `json:"ranking"`
+	Warnings         []types.Warning    `json:"warnings,omitempty"`
 	ProviderMetadata interface{}        `json:"providerMetadata,omitempty"`
 }

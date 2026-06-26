@@ -41,10 +41,10 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		values := seenBody["values"].([]interface{})
 		if len(values) == 1 {
-			_, _ = w.Write([]byte(`{"embeddings":[[1,2,3]],"usage":{"tokens":1},"providerMetadata":{"gateway":{"id":"one"}}}`))
+			_, _ = w.Write([]byte(`{"embeddings":[[1,2,3]],"usage":{"tokens":1},"warnings":[{"type":"deprecated","setting":"old","message":"use new"}],"providerMetadata":{"gateway":{"id":"one"}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"embeddings":[[1,2],[3,4]],"usage":{"tokens":2},"providerMetadata":{"gateway":{"id":"many"}}}`))
+		_, _ = w.Write([]byte(`{"embeddings":[[1,2],[3,4]],"usage":{"tokens":2},"warnings":[{"type":"other","message":"note"}],"providerMetadata":{"gateway":{"id":"many"}}}`))
 	}))
 	defer closeServer()
 
@@ -69,16 +69,22 @@ func TestGatewayEmbeddingModelDoEmbedAndMany(t *testing.T) {
 	if seenBody["providerOptions"].(map[string]interface{})["openai"].(map[string]interface{})["dimensions"] != float64(128) {
 		t.Fatalf("providerOptions mismatch: %#v", seenBody)
 	}
-	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"] != "r1" || one.Response.Body == nil || one.Usage.Tokens != 1 || one.ProviderMetadata["gateway"] == nil || one.Warnings == nil || len(one.Warnings) != 0 {
+	if len(one.Embedding) != 3 || one.Response.Headers["X-Req"] != "r1" || one.Response.Body == nil || one.Usage.Tokens != 1 || one.ProviderMetadata["gateway"] == nil {
 		t.Fatalf("result mismatch: %#v", one)
+	}
+	if len(one.Warnings) != 1 || one.Warnings[0].Type != "deprecated" || one.Warnings[0].Setting != "old" || one.Warnings[0].Message != "use new" {
+		t.Fatalf("warnings = %#v", one.Warnings)
 	}
 
 	many, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" || many.Responses[0].Body == nil || many.Usage.Tokens != 2 || many.ProviderMetadata["gateway"] == nil || many.Warnings == nil || len(many.Warnings) != 0 {
+	if len(many.Embeddings) != 2 || many.Responses[0].Headers["X-Req"] != "r1" || many.Responses[0].Body == nil || many.Usage.Tokens != 2 || many.ProviderMetadata["gateway"] == nil {
 		t.Fatalf("many result mismatch: %#v", many)
+	}
+	if len(many.Warnings) != 1 || many.Warnings[0].Type != "other" || many.Warnings[0].Message != "note" {
+		t.Fatalf("many warnings = %#v", many.Warnings)
 	}
 }
 

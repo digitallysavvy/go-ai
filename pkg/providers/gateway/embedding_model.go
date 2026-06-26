@@ -80,7 +80,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	rawBody := rawJSONBody(httpResp.Body)
 	result := &types.EmbeddingResult{
 		Usage:            response.Usage,
-		Warnings:         []types.Warning{},
+		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.EmbeddingResponse{
 			Headers: flattenHeaders(httpResp.Headers),
@@ -125,7 +125,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	result := &types.EmbeddingsResult{
 		Embeddings:       response.Embeddings,
 		Usage:            response.Usage,
-		Warnings:         []types.Warning{},
+		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Responses:        []types.EmbeddingResponse{{Headers: flattenHeaders(httpResp.Headers), Body: rawJSONBody(httpResp.Body)}},
 	}
@@ -144,7 +144,15 @@ func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 type gatewayEmbeddingResponse struct {
 	Embeddings       [][]float64            `json:"embeddings"`
 	Usage            types.EmbeddingUsage   `json:"usage"`
+	Warnings         []types.Warning        `json:"warnings,omitempty"`
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+func warningsOrEmpty(warnings []types.Warning) []types.Warning {
+	if warnings == nil {
+		return []types.Warning{}
+	}
+	return warnings
 }
 
 func rawJSONBody(body []byte) interface{} {

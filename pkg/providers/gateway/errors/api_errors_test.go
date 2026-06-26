@@ -203,7 +203,7 @@ func TestCreateGatewayErrorFromResponseTypedCases(t *testing.T) {
 		t.Fatalf("error type = %T, want *GatewayInternalServerError", err)
 	}
 
-	for _, rawType := range []string{"timeout", "failed_dependency"} {
+	for _, rawType := range []string{"timeout"} {
 		err = CreateGatewayErrorFromResponse(
 			[]byte(`{"error":{"message":"unknown gateway type","type":"`+rawType+`","param":null}}`),
 			504,
@@ -217,6 +217,39 @@ func TestCreateGatewayErrorFromResponseTypedCases(t *testing.T) {
 		if !errors.As(err, &details) || details.GetRawType() != rawType {
 			t.Fatalf("raw details for %s = %#v", rawType, details.GetRawType())
 		}
+	}
+
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"provider missing","type":"failed_dependency","param":null}}`),
+		424,
+		"default",
+		cause,
+		"api-key",
+	)
+	var failedDependencyErr *GatewayFailedDependencyError
+	if !errors.As(err, &failedDependencyErr) {
+		t.Fatalf("error type = %T, want *GatewayFailedDependencyError", err)
+	}
+	if failedDependencyErr.IsRetryable() {
+		t.Fatal("failed dependency should not be retryable")
+	}
+
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"blocked","type":"forbidden","code":"rule","param":{"ruleId":"r1"}}}`),
+		403,
+		"default",
+		cause,
+		"api-key",
+	)
+	var forbiddenErr *GatewayForbiddenError
+	if !errors.As(err, &forbiddenErr) {
+		t.Fatalf("error type = %T, want *GatewayForbiddenError", err)
+	}
+	if forbiddenErr.IsRetryable() {
+		t.Fatal("forbidden should not be retryable")
+	}
+	if !errors.As(err, &details) || details.GetRawType() != "forbidden" || details.GetCode() != "rule" {
+		t.Fatalf("forbidden details = %#v", details)
 	}
 }
 

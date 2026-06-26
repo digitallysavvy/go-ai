@@ -94,6 +94,30 @@ func NewGatewayInternalServerError(message string, statusCode int, cause error, 
 	return &GatewayInternalServerError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "internal_server_error", cause: cause, generationID: generationID}}
 }
 
+type GatewayFailedDependencyError struct{ baseGatewayError }
+
+func NewGatewayFailedDependencyError(message string, statusCode int, cause error, generationID string) *GatewayFailedDependencyError {
+	if message == "" {
+		message = "Failed dependency"
+	}
+	if statusCode == 0 {
+		statusCode = 424
+	}
+	return &GatewayFailedDependencyError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "failed_dependency", cause: cause, generationID: generationID}}
+}
+
+type GatewayForbiddenError struct{ baseGatewayError }
+
+func NewGatewayForbiddenError(message string, statusCode int, cause error, generationID string) *GatewayForbiddenError {
+	if message == "" {
+		message = "Forbidden"
+	}
+	if statusCode == 0 {
+		statusCode = 403
+	}
+	return &GatewayForbiddenError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "forbidden", cause: cause, generationID: generationID}}
+}
+
 type GatewayResponseError struct {
 	baseGatewayError
 	Response        interface{}
@@ -163,6 +187,10 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		err = newGatewayModelNotFoundErrorFromResponse(message, statusCode, param.ModelID, cause, generationID)
 	case "internal_server_error":
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
+	case "failed_dependency":
+		err = NewGatewayFailedDependencyError(message, statusCode, cause, generationID)
+	case "forbidden":
+		err = NewGatewayForbiddenError(message, statusCode, cause, generationID)
 	default:
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	}
@@ -252,6 +280,10 @@ func withGatewayResponseDetails(err error, rawType string, rawCode, rawParam int
 	case *GatewayModelNotFoundError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayInternalServerError:
+		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
+	case *GatewayFailedDependencyError:
+		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
+	case *GatewayForbiddenError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayResponseError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
