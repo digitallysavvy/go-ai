@@ -673,6 +673,11 @@ func (t *Tools) PerplexitySearch(config tools.PerplexitySearchConfig) tools.Perp
 	return tools.NewPerplexitySearch(config)
 }
 
+// ExaSearch creates an Exa search tool with the given configuration.
+func (t *Tools) ExaSearch(config tools.ExaSearchConfig) tools.ExaSearchTool {
+	return tools.NewExaSearch(config)
+}
+
 // NewTools creates a new Tools instance for accessing gateway-specific tools
 func NewTools() *Tools {
 	return &Tools{}

@@ -41,6 +41,11 @@ type Tool struct {
 	// Parameters schema for the tool input
 	Parameters interface{} `json:"parameters"`
 
+	// OutputSchema is the schema for provider-executed tool output. It mirrors
+	// TypeScript provider tool outputSchema and is not sent as part of function
+	// tool definitions.
+	OutputSchema interface{} `json:"outputSchema,omitempty"`
+
 	// Execute function that runs the tool
 	// This is not serialized to JSON
 	Execute ToolExecutor `json:"-"`

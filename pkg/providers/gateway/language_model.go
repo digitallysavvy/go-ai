@@ -558,11 +558,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 	if len(opts.Tools) > 0 {
 		tools := make([]map[string]interface{}, 0, len(opts.Tools))
 		for _, tool := range opts.Tools {
-			toolMap := map[string]interface{}{
-				"name":        tool.Name,
-				"description": tool.Description,
-				"parameters":  tool.Parameters,
+			toolMap := map[string]interface{}{"name": tool.Name}
+			if tool.Type == types.ToolTypeProviderDefined {
+				toolMap["type"] = types.ToolTypeProviderDefined
+				toolMap["id"] = tool.ProviderID
+				if tool.ProviderArgs != nil {
+					toolMap["args"] = tool.ProviderArgs
+				} else {
+					toolMap["args"] = map[string]interface{}{}
+				}
+				tools = append(tools, toolMap)
+				continue
 			}
+			toolMap["description"] = tool.Description
+			toolMap["parameters"] = tool.Parameters
 			if tool.ProviderExecuted {
 				toolMap["providerExecuted"] = true
 			}

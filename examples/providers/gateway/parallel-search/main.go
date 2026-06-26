@@ -35,11 +35,11 @@ func main() {
 	// Create basic parallel search tool
 	basicSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
 		Mode:       "one-shot",
-		MaxResults: 5,
+		MaxResults: intPtr(5),
 	})
 
 	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "Search for information about quantum computing breakthroughs in 2024.",
 		Tools: []types.Tool{
 			basicSearch.ToTool(),
@@ -68,7 +68,7 @@ func main() {
 	// Create parallel search with source policy
 	filteredSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
 		Mode:       "one-shot",
-		MaxResults: 10,
+		MaxResults: intPtr(10),
 		SourcePolicy: &tools.ParallelSearchSourcePolicy{
 			IncludeDomains: []string{"wikipedia.org", "nature.com", "science.org"},
 			AfterDate:      "2024-01-01",
@@ -76,7 +76,7 @@ func main() {
 	})
 
 	result2, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "What are the latest developments in renewable energy?",
 		Tools: []types.Tool{
 			filteredSearch.ToTool(),
@@ -94,20 +94,21 @@ func main() {
 	fmt.Println("=======================================================")
 
 	// Create agentic mode search with excerpt control
+	maxAgeSeconds := 0
 	agenticSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
 		Mode:       "agentic",
-		MaxResults: 3,
+		MaxResults: intPtr(3),
 		Excerpts: &tools.ParallelSearchExcerpts{
-			MaxCharsPerResult: 500,
-			MaxCharsTotal:     2000,
+			MaxCharsPerResult: intPtr(500),
+			MaxCharsTotal:     intPtr(2000),
 		},
 		FetchPolicy: &tools.ParallelSearchFetchPolicy{
-			MaxAgeSeconds: 0, // Always fetch fresh content
+			MaxAgeSeconds: &maxAgeSeconds, // Always fetch fresh content
 		},
 	})
 
 	result3, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "Find recent news about AI safety regulations.",
 		Tools: []types.Tool{
 			agenticSearch.ToTool(),
@@ -126,11 +127,11 @@ func main() {
 
 	searchTool := tools.NewParallelSearch(tools.ParallelSearchConfig{
 		Mode:       "one-shot",
-		MaxResults: 5,
+		MaxResults: intPtr(5),
 	})
 
 	stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "Search for and summarize the top 3 climate change solutions being implemented globally.",
 		Tools: []types.Tool{
 			searchTool.ToTool(),
@@ -151,4 +152,8 @@ func main() {
 	}
 
 	fmt.Println("\nDone!")
+}
+
+func intPtr(v int) *int {
+	return &v
 }

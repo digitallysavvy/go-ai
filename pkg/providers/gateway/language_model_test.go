@@ -356,3 +356,44 @@ func TestGatewayLanguageModelBuildRequestBodyUsesPrompt(t *testing.T) {
 		t.Fatalf("file data = %#v", data)
 	}
 }
+
+func TestGatewayLanguageModelBuildRequestBodyProviderExecutedToolIncludesProviderArgs(t *testing.T) {
+	model := newTestGatewayLanguageModel("openai/gpt-5")
+
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools: []types.Tool{{
+			Name:             "exa_search",
+			Parameters:       map[string]interface{}{"type": "object"},
+			OutputSchema:     map[string]interface{}{"type": "object"},
+			ProviderExecuted: true,
+			Type:             types.ToolTypeProviderDefined,
+			ProviderID:       "gateway.exa_search",
+			ProviderArgs:     map[string]interface{}{"numResults": 5, "category": "news"},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody error = %v", err)
+	}
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	tool := tools[0]
+	if tool["name"] != "exa_search" || tool["type"] != "provider" || tool["id"] != "gateway.exa_search" {
+		t.Fatalf("provider tool wire identity = %#v", tool)
+	}
+	if _, ok := tool["providerExecuted"]; ok {
+		t.Fatalf("provider tool should not include function-tool providerExecuted marker: %#v", tool)
+	}
+	if _, ok := tool["parameters"]; ok {
+		t.Fatalf("provider tool should not include function-tool parameters: %#v", tool)
+	}
+	if _, ok := tool["outputSchema"]; ok {
+		t.Fatalf("provider tool should not include public outputSchema in Gateway request: %#v", tool)
+	}
+	args := tool["args"].(map[string]interface{})
+	if args["numResults"] != 5 || args["category"] != "news" {
+		t.Fatalf("provider tool args = %#v", args)
+	}
+}
