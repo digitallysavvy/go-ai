@@ -52,30 +52,31 @@ type FilterActiveToolsHook func(ctx context.Context, stepNumber int, tools []typ
 
 // LanguageModelCallOptions mirrors the per-step call config used by ToolLoopAgent.
 type LanguageModelCallOptions struct {
-	StepNumber          int
-	System              string
-	Messages            []types.Message
-	Tools               []types.Tool
-	ToolChoice          types.ToolChoice
-	CallOptions         interface{}
-	Temperature         *float64
-	MaxTokens           *int
-	TopP                *float64
-	TopK                *int
-	FrequencyPenalty    *float64
-	PresencePenalty     *float64
-	StopSequences       []string
-	Seed                *int
-	Headers             map[string]string
-	Reasoning           *types.ReasoningLevel
-	SendReasoning       *bool
-	ProviderOptions     map[string]interface{}
-	RuntimeContext      interface{}
-	ToolsContext        map[string]interface{}
-	ExperimentalSandbox interface{}
-	PreviousSteps       []types.StepResult
-	AccumulatedUsage    types.Usage
-	CustomData          interface{}
+	StepNumber            int
+	System                string
+	AllowSystemInMessages bool
+	Messages              []types.Message
+	Tools                 []types.Tool
+	ToolChoice            types.ToolChoice
+	CallOptions           interface{}
+	Temperature           *float64
+	MaxTokens             *int
+	TopP                  *float64
+	TopK                  *int
+	FrequencyPenalty      *float64
+	PresencePenalty       *float64
+	StopSequences         []string
+	Seed                  *int
+	Headers               map[string]string
+	Reasoning             *types.ReasoningLevel
+	SendReasoning         *bool
+	ProviderOptions       map[string]interface{}
+	RuntimeContext        interface{}
+	ToolsContext          map[string]interface{}
+	ExperimentalSandbox   interface{}
+	PreviousSteps         []types.StepResult
+	AccumulatedUsage      types.Usage
+	CustomData            interface{}
 }
 
 // WorkflowAgent is a serializable-friendly wrapper around the SDK tool loop.
@@ -84,13 +85,17 @@ type WorkflowAgent struct {
 	System string
 	// Instructions is the TypeScript-compatible name for system instructions.
 	Instructions interface{}
-	Tools        []types.Tool
-	ToolSet      map[string]types.Tool
-	StopWhen     []ai.StopCondition
-	Output       interface{}
-	Telemetry    *ai.TelemetrySettings
-	ID           string
-	Prompt       string
+	// AllowSystemInMessages permits system-role messages in Messages. By
+	// default WorkflowAgent rejects system messages; use Instructions/System for
+	// default system prompts.
+	AllowSystemInMessages bool
+	Tools                 []types.Tool
+	ToolSet               map[string]types.Tool
+	StopWhen              []ai.StopCondition
+	Output                interface{}
+	Telemetry             *ai.TelemetrySettings
+	ID                    string
+	Prompt                string
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -136,6 +141,7 @@ type WorkflowGenerateOptions struct {
 	Messages                    []types.Message
 	System                      string
 	Instructions                interface{}
+	AllowSystemInMessages       bool
 	Tools                       []types.Tool
 	ToolSet                     map[string]types.Tool
 	StopWhen                    []ai.StopCondition
@@ -160,14 +166,15 @@ type WorkflowGenerateOptions struct {
 
 // WorkflowStreamOptions configures a single stream invocation.
 type WorkflowStreamOptions struct {
-	Prompt       string
-	Messages     []types.Message
-	System       string
-	Instructions interface{}
-	Tools        []types.Tool
-	ToolSet      map[string]types.Tool
-	StopWhen     []ai.StopCondition
-	Telemetry    *ai.TelemetrySettings
+	Prompt                string
+	Messages              []types.Message
+	System                string
+	Instructions          interface{}
+	AllowSystemInMessages bool
+	Tools                 []types.Tool
+	ToolSet               map[string]types.Tool
+	StopWhen              []ai.StopCondition
+	Telemetry             *ai.TelemetrySettings
 
 	ActiveTools                 []string
 	RuntimeContext              interface{}
@@ -269,6 +276,363 @@ func orderedTools(tools []types.Tool, toolSet map[string]types.Tool) []types.Too
 	return out
 }
 
+func effectiveWorkflowTools(w *WorkflowAgent, streamOpts WorkflowStreamOptions, generateOpts WorkflowGenerateOptions) []types.Tool {
+	tools := orderedTools(w.Tools, w.ToolSet)
+	if generateOpts.Tools != nil || generateOpts.ToolSet != nil {
+		tools = orderedTools(generateOpts.Tools, generateOpts.ToolSet)
+	}
+	if streamOpts.Tools != nil || streamOpts.ToolSet != nil {
+		tools = orderedTools(streamOpts.Tools, streamOpts.ToolSet)
+	}
+	return tools
+}
+
+func firstNonNil(values ...interface{}) interface{} {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstNonNilMap(values ...map[string]interface{}) map[string]interface{} {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func workflowToolByName(tools []types.Tool, name string) *types.Tool {
+	for i := range tools {
+		if tools[i].Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func workflowToolCallFromContent(part types.ToolCallContent) types.ToolCall {
+	return types.ToolCall{
+		ID:               part.ToolCallID,
+		ToolName:         part.ToolName,
+		Title:            part.Title,
+		Arguments:        part.Arguments,
+		RawArguments:     part.Input,
+		ProviderExecuted: part.ProviderExecuted,
+		ToolMetadata:     part.ToolMetadata,
+		ThoughtSignature: part.ThoughtSignature,
+		Dynamic:          part.Dynamic,
+		Invalid:          part.Invalid,
+	}
+}
+
+func workflowToolCallIsZero(call types.ToolCall) bool {
+	return call.ID == "" && call.ToolName == "" && len(call.Arguments) == 0 && call.RawArguments == "" && !call.ProviderExecuted
+}
+
+func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types.ToolCall, messages []types.Message, toolsContext map[string]interface{}) bool {
+	if tool == nil {
+		return false
+	}
+	setting := tool.ToolApproval
+	if setting == nil {
+		setting = tool.NeedsApproval
+	}
+	switch v := setting.(type) {
+	case bool:
+		return v
+	case types.ToolApprovalStatus:
+		return v == types.ToolApprovalStatusUserApproval || v == types.ToolApprovalStatusApproved || v == types.ToolApprovalStatusDenied
+	case string:
+		status := types.ToolApprovalStatus(v)
+		return status == types.ToolApprovalStatusUserApproval || status == types.ToolApprovalStatusApproved || status == types.ToolApprovalStatusDenied
+	case types.ToolNeedsApprovalFunc:
+		var toolContext interface{}
+		if toolsContext != nil {
+			toolContext = toolsContext[call.ToolName]
+		}
+		return v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{ToolCallID: call.ID, Messages: messages, Context: toolContext})
+	case types.NeedsApprovalFunc:
+		return v(ctx, call.Arguments)
+	default:
+		return false
+	}
+}
+
+func validateWorkflowToolInput(tool *types.Tool, input map[string]interface{}) error {
+	if tool == nil || tool.Parameters == nil {
+		return nil
+	}
+	switch s := tool.Parameters.(type) {
+	case schema.Schema:
+		return s.Validator().Validate(input)
+	case map[string]interface{}:
+		return schema.NewSimpleJSONSchema(s).Validator().Validate(input)
+	default:
+		return nil
+	}
+}
+
+func processWorkflowApprovalResume(ctx context.Context, messages []types.Message, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}) ([]types.Message, []provider.StreamChunk, error) {
+	if len(messages) == 0 {
+		return messages, nil, nil
+	}
+	toolCallsByID := map[string]types.ToolCall{}
+	requestsByApprovalID := map[string]types.ToolCall{}
+	responsesByApprovalID := map[string]types.ToolApprovalResponseContent{}
+	var responseOrder []string
+	for _, msg := range messages {
+		switch msg.Role {
+		case types.RoleAssistant:
+			for _, part := range msg.Content {
+				switch p := part.(type) {
+				case types.ToolCallContent:
+					call := workflowToolCallFromContent(p)
+					toolCallsByID[call.ID] = call
+				case *types.ToolCallContent:
+					if p != nil {
+						call := workflowToolCallFromContent(*p)
+						toolCallsByID[call.ID] = call
+					}
+				case types.ToolApprovalRequestContent:
+					call := p.ToolCall
+					if workflowToolCallIsZero(call) {
+						call = toolCallsByID[p.ToolCallID]
+					}
+					if !workflowToolCallIsZero(call) {
+						requestsByApprovalID[p.ApprovalID] = call
+					}
+				case *types.ToolApprovalRequestContent:
+					if p != nil {
+						call := p.ToolCall
+						if workflowToolCallIsZero(call) {
+							call = toolCallsByID[p.ToolCallID]
+						}
+						if !workflowToolCallIsZero(call) {
+							requestsByApprovalID[p.ApprovalID] = call
+						}
+					}
+				}
+			}
+		case types.RoleTool:
+			for _, part := range msg.Content {
+				switch p := part.(type) {
+				case types.ToolApprovalResponseContent:
+					if _, exists := responsesByApprovalID[p.ApprovalID]; !exists {
+						responseOrder = append(responseOrder, p.ApprovalID)
+					}
+					responsesByApprovalID[p.ApprovalID] = p
+				case *types.ToolApprovalResponseContent:
+					if p != nil {
+						if _, exists := responsesByApprovalID[p.ApprovalID]; !exists {
+							responseOrder = append(responseOrder, p.ApprovalID)
+						}
+						responsesByApprovalID[p.ApprovalID] = *p
+					}
+				}
+			}
+		}
+	}
+	if len(responsesByApprovalID) == 0 {
+		return messages, nil, nil
+	}
+
+	providerApprovalIDs := map[string]bool{}
+	localResults := make([]types.ContentPart, 0)
+	prefixChunks := make([]provider.StreamChunk, 0)
+	approvedOrder := make([]string, 0, len(responseOrder))
+	deniedOrder := make([]string, 0, len(responseOrder))
+	for _, approvalID := range responseOrder {
+		if responsesByApprovalID[approvalID].Approved {
+			approvedOrder = append(approvedOrder, approvalID)
+		} else {
+			deniedOrder = append(deniedOrder, approvalID)
+		}
+	}
+	for _, approvalID := range approvedOrder {
+		response := responsesByApprovalID[approvalID]
+		call, ok := requestsByApprovalID[approvalID]
+		if !ok {
+			continue
+		}
+		if call.ProviderExecuted {
+			providerApprovalIDs[approvalID] = true
+			continue
+		}
+		tool := workflowToolByName(tools, call.ToolName)
+		if response.Approved {
+			if tool == nil || tool.Execute == nil {
+				continue
+			}
+			if !workflowToolNeedsApproval(ctx, tool, call, messages, toolsContext) {
+				localResults = append(localResults, types.ToolResultContent{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: fmt.Sprintf("Tool %q does not require approval", call.ToolName)},
+				})
+				continue
+			}
+			if err := validateWorkflowToolInput(tool, call.Arguments); err != nil {
+				errText := err.Error()
+				localResults = append(localResults, types.ToolResultContent{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: errText},
+				})
+				continue
+			}
+			toolContext := interface{}(nil)
+			if toolsContext != nil {
+				toolContext = toolsContext[call.ToolName]
+			}
+			result, err := tool.Execute(ctx, call.Arguments, types.ToolExecutionOptions{
+				ToolCallID:          call.ID,
+				UserContext:         runtimeContext,
+				RuntimeContext:      runtimeContext,
+				ToolContext:         toolContext,
+				Metadata:            map[string]interface{}{},
+				ToolMetadata:        call.ToolMetadata,
+				ExperimentalSandbox: experimentalSandbox,
+			})
+			if err != nil {
+				errText := err.Error()
+				localResults = append(localResults, types.ToolResultContent{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: errText},
+				})
+				prefixChunks = append(prefixChunks, provider.StreamChunk{
+					Type: provider.ChunkTypeToolResult,
+					ToolResult: &types.ToolResult{
+						ToolCallID: call.ID,
+						ToolName:   call.ToolName,
+						Input:      call.Arguments,
+						Result:     errText,
+					},
+				})
+				continue
+			}
+			part := types.ToolResultContent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Input:      call.Arguments,
+				Result:     result,
+			}
+			if tool.ToModelOutput != nil {
+				output, err := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
+					ToolCallID: call.ID,
+					Input:      call.Arguments,
+					Output:     result,
+					Result:     result,
+					ToolCall:   &call,
+				})
+				if err != nil {
+					return nil, nil, err
+				}
+				part.Output = output
+				part.Result = nil
+			}
+			localResults = append(localResults, part)
+			prefixChunks = append(prefixChunks, provider.StreamChunk{
+				Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Result:     result,
+				},
+			})
+			continue
+		}
+	}
+	for _, approvalID := range deniedOrder {
+		response := responsesByApprovalID[approvalID]
+		call, ok := requestsByApprovalID[approvalID]
+		if !ok {
+			continue
+		}
+		if call.ProviderExecuted {
+			providerApprovalIDs[approvalID] = true
+			continue
+		}
+		localResults = append(localResults, types.ToolResultContent{
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Input:      call.Arguments,
+			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: response.Reason},
+		})
+		prefixChunks = append(prefixChunks, provider.StreamChunk{
+			Type:       provider.ChunkTypeToolOutputDenied,
+			ToolResult: &types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments},
+		})
+	}
+
+	cleaned := make([]types.Message, 0, len(messages)+1)
+	for _, msg := range messages {
+		switch msg.Role {
+		case types.RoleAssistant:
+			filtered := make([]types.ContentPart, 0, len(msg.Content))
+			for _, part := range msg.Content {
+				keep := true
+				switch p := part.(type) {
+				case types.ToolApprovalRequestContent:
+					keep = providerApprovalIDs[p.ApprovalID]
+				case *types.ToolApprovalRequestContent:
+					keep = p != nil && providerApprovalIDs[p.ApprovalID]
+				}
+				if keep {
+					filtered = append(filtered, part)
+				}
+			}
+			if len(filtered) > 0 {
+				msg.Content = filtered
+				cleaned = append(cleaned, msg)
+			}
+		case types.RoleTool:
+			filtered := make([]types.ContentPart, 0, len(msg.Content))
+			for _, part := range msg.Content {
+				switch p := part.(type) {
+				case types.ToolApprovalResponseContent:
+					if providerApprovalIDs[p.ApprovalID] {
+						p.ProviderExecuted = true
+						filtered = append(filtered, p)
+					}
+				case *types.ToolApprovalResponseContent:
+					if p != nil && providerApprovalIDs[p.ApprovalID] {
+						cp := *p
+						cp.ProviderExecuted = true
+						filtered = append(filtered, cp)
+					}
+				default:
+					filtered = append(filtered, part)
+				}
+			}
+			if len(filtered) > 0 {
+				msg.Content = filtered
+				cleaned = append(cleaned, msg)
+			}
+		default:
+			cleaned = append(cleaned, msg)
+		}
+	}
+	if len(localResults) > 0 {
+		cleaned = append(cleaned, types.Message{Role: types.RoleTool, Content: localResults})
+	}
+	if len(localResults) > 0 {
+		prefixChunks = append(prefixChunks,
+			provider.StreamChunk{Type: provider.ChunkTypeStreamFinish},
+			provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
+		)
+	}
+	return cleaned, prefixChunks, nil
+}
+
 func mergeStart(a, b StartCallback) StartCallback {
 	if a == nil {
 		return b
@@ -355,7 +719,7 @@ func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.C
 		return nil
 	}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-		opts := LanguageModelCallOptions{StepNumber: c.StepNumber, System: c.System, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions, Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed, Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions, RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox, PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData}
+		opts := LanguageModelCallOptions{StepNumber: c.StepNumber, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions, Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed, Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions, RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox, PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData}
 		if w.PrepareStep != nil {
 			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
 				opts = mutated
@@ -366,7 +730,7 @@ func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.C
 				opts = mutated
 			}
 		}
-		c.System, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
+		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
 		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
@@ -464,9 +828,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.Tools != nil || ovr.ToolSet != nil {
 		tools = orderedTools(ovr.Tools, ovr.ToolSet)
 	}
+	allowSystemInMessages := w.AllowSystemInMessages || govr.AllowSystemInMessages || ovr.AllowSystemInMessages
 	return agent.NewToolLoopAgent(agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
-		CallOptionsSchema: w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(ovr.ActiveTools),
+		AllowSystemInMessages: allowSystemInMessages,
+		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(ovr.ActiveTools),
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: w.Headers, Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
@@ -502,6 +868,7 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 		legacy.Prompt = opts.Prompt
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
+		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
 		legacy.StopWhen = opts.StopWhen
 		legacy.OnStart = opts.OnStart
 		legacy.OnStepStart = opts.OnStepStart
@@ -528,6 +895,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
+	var err error
+	opts.Messages, _, err = processWorkflowApprovalResume(ctx, opts.Messages, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts), firstNonNil(w.RuntimeContext, opts.RuntimeContext), firstNonNilMap(w.ToolsContext, opts.ToolsContext), firstNonNil(w.ExperimentalSandbox, opts.ExperimentalSandbox))
+	if err != nil {
+		return nil, err
+	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		if onAbort != nil {
@@ -546,7 +918,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if opts.Telemetry != nil {
 		telemetry = opts.Telemetry
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry}
 	result, err := a.GenerateAgent(ctx, call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil && onAbort != nil {
@@ -567,6 +939,7 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		legacy.Prompt = opts.Prompt
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
+		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
 		legacy.StopWhen = opts.StopWhen
 		legacy.OnChunk = opts.OnChunk
 		legacy.OnStart = opts.OnStart
@@ -594,6 +967,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
+	var err error
+	var prefixChunks []provider.StreamChunk
+	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}), firstNonNil(w.RuntimeContext, opts.RuntimeContext), firstNonNilMap(w.ToolsContext, opts.ToolsContext), firstNonNil(w.ExperimentalSandbox, opts.ExperimentalSandbox))
+	if err != nil {
+		return nil, err
+	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		if onAbort != nil {
@@ -613,8 +992,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		telemetry = opts.Telemetry
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry},
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry},
 		OnChunk:              opts.OnChunk,
+		InitialStreamChunks:  prefixChunks,
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
