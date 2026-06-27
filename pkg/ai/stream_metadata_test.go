@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -73,6 +75,148 @@ func TestStreamProviderMetadataAbsent(t *testing.T) {
 
 	if got := result.ProviderMetadata(); len(got) != 0 {
 		t.Errorf("expected nil ProviderMetadata, got %s", got)
+	}
+}
+
+func TestStreamReadAllProviderInlineToolResultUsesToModelOutputAndPreservesRawResult(t *testing.T) {
+	t.Parallel()
+
+	raw := map[string]interface{}{"public": "provider result", "secret": "hide me"}
+	input := map[string]interface{}{"query": "docs"}
+	var gotOptions types.ToModelOutputOptions
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: input, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: raw, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(_ context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				gotOptions = opts
+				return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees: provider result"}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if gotOptions.ToolCallID != "call-1" || !reflect.DeepEqual(gotOptions.Input, input) || !reflect.DeepEqual(gotOptions.Output, raw) {
+		t.Fatalf("ToModelOutput options = %+v, want TS-shaped provider result options", gotOptions)
+	}
+	toolResults := result.ToolResults()
+	if len(toolResults) != 1 || !reflect.DeepEqual(toolResults[0].Result, raw) {
+		t.Fatalf("ToolResults = %#v, want raw provider result", toolResults)
+	}
+	if !toolResults[0].ProviderExecuted || !reflect.DeepEqual(toolResults[0].Input, input) {
+		t.Fatalf("ToolResults[0] = %+v, want provider-executed result with original input", toolResults[0])
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1", len(steps))
+	}
+	var contentResult types.ToolResultContent
+	found := false
+	for _, part := range steps[0].Content {
+		if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == "call-1" {
+			contentResult = tr
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing tool result content in step: %#v", steps[0].Content)
+	}
+	if contentResult.Result != nil || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
+		t.Fatalf("tool result content = %+v, want converted model output", contentResult)
+	}
+}
+
+func TestStreamProcessProviderInlineToolResultUsesToModelOutputAndPreservesRawResult(t *testing.T) {
+	t.Parallel()
+
+	raw := map[string]interface{}{"public": "provider result", "secret": "hide me"}
+	input := map[string]interface{}{"query": "docs"}
+	var gotOptions types.ToModelOutputOptions
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: input, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: raw, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(_ context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				gotOptions = opts
+				return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees: provider result"}, nil
+			},
+		}},
+		OnChunk: func(provider.StreamChunk) {},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	toolResults := result.ToolResults()
+	if gotOptions.ToolCallID != "call-1" || !reflect.DeepEqual(gotOptions.Input, input) || !reflect.DeepEqual(gotOptions.Output, raw) {
+		t.Fatalf("ToModelOutput options = %+v, want TS-shaped provider result options", gotOptions)
+	}
+	if len(toolResults) != 1 || !reflect.DeepEqual(toolResults[0].Result, raw) {
+		t.Fatalf("ToolResults = %#v, want raw provider result", toolResults)
+	}
+	if !toolResults[0].ProviderExecuted || !reflect.DeepEqual(toolResults[0].Input, input) {
+		t.Fatalf("ToolResults[0] = %+v, want provider-executed result with original input", toolResults[0])
+	}
+}
+
+func TestStreamReadAllProviderInlineToModelOutputErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	convertErr := errors.New("conversion failed")
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: map[string]interface{}{"query": "docs"}, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: "raw", ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	_, err = result.ReadAll()
+	if !errors.Is(err, convertErr) {
+		t.Fatalf("ReadAll error = %v, want conversion error", err)
+	}
+	if err.Error() != "conversion failed" {
+		t.Fatalf("ReadAll error string = %q, want original conversion error", err.Error())
 	}
 }
 

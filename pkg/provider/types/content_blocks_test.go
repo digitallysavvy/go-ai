@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -142,6 +143,155 @@ func TestContentResult(t *testing.T) {
 	}
 }
 
+func TestToolResultOutputMarshalUsesTypeScriptValueShape(t *testing.T) {
+	tests := []struct {
+		name string
+		out  ToolResultOutput
+		want string
+	}{
+		{
+			name: "text",
+			out:  ToolResultOutput{Type: ToolResultOutputText, Value: "ok"},
+			want: `{"type":"text","value":"ok"}`,
+		},
+		{
+			name: "json null value is preserved",
+			out:  ToolResultOutput{Type: ToolResultOutputJSON, Value: nil},
+			want: `{"type":"json","value":null}`,
+		},
+		{
+			name: "empty content value is preserved",
+			out:  ToolResultOutput{Type: ToolResultOutputContent, Content: []ToolResultContentBlock{}},
+			want: `{"type":"content","value":[]}`,
+		},
+		{
+			name: "execution denied omits value",
+			out:  ToolResultOutput{Type: ToolResultOutputExecutionDenied, Reason: "policy"},
+			want: `{"type":"execution-denied","reason":"policy"}`,
+		},
+		{
+			name: "error text",
+			out:  ToolResultOutput{Type: ToolResultOutputErrorText, Value: "failed"},
+			want: `{"type":"error-text","value":"failed"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.out)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("json.Marshal() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToolResultOutputContentBlocksMarshalWithTypeScriptDiscriminators(t *testing.T) {
+	out := ToolResultOutput{
+		Type: ToolResultOutputContent,
+		Content: []ToolResultContentBlock{
+			TextContentBlock{Text: "Search results:"},
+			FileContentBlock{
+				FileData:  FileData{Type: FileDataTypeData, DataString: "aGVsbG8="},
+				MediaType: "text/plain",
+				Filename:  "result.txt",
+			},
+			ImageContentBlock{Data: []byte("png"), MediaType: "image/png"},
+			CustomContentBlock{ProviderOptions: map[string]interface{}{"provider": map[string]interface{}{"type": "tool-reference"}}},
+		},
+	}
+
+	got, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	want := `{"type":"content","value":[{"type":"text","text":"Search results:"},{"type":"file","data":{"type":"data","data":"aGVsbG8="},"mediaType":"text/plain","filename":"result.txt"},{"type":"file","data":{"type":"data","data":"cG5n"},"mediaType":"image/png"},{"type":"custom","providerOptions":{"provider":{"type":"tool-reference"}}}]}`
+	if string(got) != want {
+		t.Fatalf("json.Marshal() = %s, want %s", got, want)
+	}
+}
+
+func TestToolResultOutputMarshalLegacyReferenceRequiresProviderReferenceMap(t *testing.T) {
+	out := ToolResultOutput{
+		Type: ToolResultOutputContent,
+		Content: []ToolResultContentBlock{
+			FileContentBlock{Reference: "file-legacy", MediaType: "application/pdf"},
+		},
+	}
+
+	_, err := json.Marshal(out)
+	if !errors.Is(err, ErrMissingProviderReferenceContext) {
+		t.Fatalf("json.Marshal() error = %v, want ErrMissingProviderReferenceContext", err)
+	}
+}
+
+func TestToolResultOutputUnmarshalAcceptsTypeScriptValueShape(t *testing.T) {
+	var out ToolResultOutput
+	input := []byte(`{"type":"content","value":[{"type":"text","text":"Search results:"},{"type":"file","data":{"type":"url","url":"https://example.com/out.txt"},"mediaType":"text/plain","filename":"out.txt"},{"type":"file-data","data":"aGVsbG8=","mediaType":"text/plain","filename":"legacy.txt"},{"type":"file-url","url":"https://example.com/report.pdf"},{"type":"file-id","fileId":{"openai":"file-123"}},{"type":"file-reference","providerReference":{"anthropic":"file-456"}},{"type":"image-data","data":"cG5n","mediaType":"image/png"},{"type":"image-url","url":"https://example.com/out.png"},{"type":"image-file-id","fileId":"image-123"},{"type":"image-file-reference","providerReference":{"openai":"image-456"}},{"type":"provider-opaque","payload":{"id":1},"providerOptions":{"x":{"cacheControl":"ephemeral"}}}]}`)
+	if err := json.Unmarshal(input, &out); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if out.Type != ToolResultOutputContent || len(out.Content) != 11 || out.Value != nil {
+		t.Fatalf("unmarshaled output = %+v, want content blocks only", out)
+	}
+	if block, ok := out.Content[0].(TextContentBlock); !ok || block.Text != "Search results:" {
+		t.Fatalf("text block = %#v", out.Content[0])
+	}
+	fileBlock, ok := out.Content[1].(FileContentBlock)
+	if !ok {
+		t.Fatalf("file block = %#v", out.Content[1])
+	}
+	if fileBlock.FileData.Type != FileDataTypeURL || fileBlock.URL != "https://example.com/out.txt" || fileBlock.MediaType != "text/plain" || fileBlock.Filename != "out.txt" {
+		t.Fatalf("file block = %+v, want TS tagged url file", fileBlock)
+	}
+	legacyData, ok := out.Content[2].(FileContentBlock)
+	if !ok || legacyData.FileData.Type != FileDataTypeData || legacyData.FileData.DataString != "aGVsbG8=" || legacyData.MediaType != "text/plain" || legacyData.Filename != "legacy.txt" {
+		t.Fatalf("legacy file-data block = %#v", out.Content[2])
+	}
+	legacyURL, ok := out.Content[3].(FileContentBlock)
+	if !ok || legacyURL.FileData.Type != FileDataTypeURL || legacyURL.URL != "https://example.com/report.pdf" || legacyURL.MediaType != "application/pdf" {
+		t.Fatalf("legacy file-url block = %#v", out.Content[3])
+	}
+	legacyID, ok := out.Content[4].(FileContentBlock)
+	if !ok || legacyID.FileData.Type != FileDataTypeReference || legacyID.FileData.Reference["openai"] != "file-123" || legacyID.MediaType != "application" {
+		t.Fatalf("legacy file-id block = %#v", out.Content[4])
+	}
+	legacyReference, ok := out.Content[5].(FileContentBlock)
+	if !ok || legacyReference.FileData.Type != FileDataTypeReference || legacyReference.FileData.Reference["anthropic"] != "file-456" || legacyReference.MediaType != "application" {
+		t.Fatalf("legacy file-reference block = %#v", out.Content[5])
+	}
+	imageData, ok := out.Content[6].(FileContentBlock)
+	if !ok || imageData.FileData.Type != FileDataTypeData || imageData.FileData.DataString != "cG5n" || imageData.MediaType != "image/png" {
+		t.Fatalf("legacy image-data block = %#v", out.Content[6])
+	}
+	imageURL, ok := out.Content[7].(FileContentBlock)
+	if !ok || imageURL.FileData.Type != FileDataTypeURL || imageURL.URL != "https://example.com/out.png" || imageURL.MediaType != "image" {
+		t.Fatalf("legacy image-url block = %#v", out.Content[7])
+	}
+	imageID, ok := out.Content[8].(FileContentBlock)
+	if !ok || imageID.FileData.Type != FileDataTypeReference || imageID.FileData.Reference[""] != "image-123" || imageID.MediaType != "image" {
+		t.Fatalf("legacy image-file-id block = %#v", out.Content[8])
+	}
+	imageReference, ok := out.Content[9].(FileContentBlock)
+	if !ok || imageReference.FileData.Type != FileDataTypeReference || imageReference.FileData.Reference["openai"] != "image-456" || imageReference.MediaType != "image" {
+		t.Fatalf("legacy image-file-reference block = %#v", out.Content[9])
+	}
+	raw, ok := out.Content[10].(RawToolResultContentBlock)
+	if !ok || raw.Type != "provider-opaque" || string(raw.Fields["payload"]) != `{"id":1}` {
+		t.Fatalf("raw unknown block = %#v", out.Content[10])
+	}
+	encodedRaw, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("json.Marshal(raw) error = %v", err)
+	}
+	if string(encodedRaw) != `{"payload":{"id":1},"providerOptions":{"x":{"cacheControl":"ephemeral"}},"type":"provider-opaque"}` {
+		t.Fatalf("json.Marshal(raw) = %s, want raw TS item preserved", encodedRaw)
+	}
+}
+
 // TestErrorResult tests error result creation
 func TestErrorResult(t *testing.T) {
 	result := ErrorResult("call_999", "broken_tool", "Network timeout")
@@ -155,8 +305,8 @@ func TestErrorResult(t *testing.T) {
 	if result.Output == nil {
 		t.Fatal("Output should not be nil for error result")
 	}
-	if result.Output.Type != ToolResultOutputError {
-		t.Errorf("Output.Type = %v, want %v", result.Output.Type, ToolResultOutputError)
+	if result.Output.Type != ToolResultOutputErrorText {
+		t.Errorf("Output.Type = %v, want %v", result.Output.Type, ToolResultOutputErrorText)
 	}
 	if result.Output.Value != "Network timeout" {
 		t.Errorf("Output.Value = %v, want 'Network timeout'", result.Output.Value)

@@ -35,3 +35,31 @@ func TestResolveProviderReferenceMissingProvider(t *testing.T) {
 		t.Fatalf("unexpected error fields: %#v", refErr)
 	}
 }
+
+func TestResolveProviderReferenceLegacySingleProviderFallback(t *testing.T) {
+	ref := types.ProviderReference{"": "file-legacy"}
+
+	got, err := ResolveProviderReference(ref, "openai")
+	if err != nil {
+		t.Fatalf("ResolveProviderReference() err = %v", err)
+	}
+	if got != "file-legacy" {
+		t.Fatalf("ResolveProviderReference() = %q", got)
+	}
+}
+
+func TestResolveProviderReferenceLegacyFallbackRequiresProvider(t *testing.T) {
+	ref := types.ProviderReference{"": "file-legacy"}
+
+	_, err := ResolveProviderReference(ref, "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var refErr *providererrors.NoSuchProviderReferenceError
+	if !errors.As(err, &refErr) {
+		t.Fatalf("error type = %T, want NoSuchProviderReferenceError", err)
+	}
+	if refErr.Provider != "" || refErr.Reference[""] != "file-legacy" {
+		t.Fatalf("unexpected error fields: %#v", refErr)
+	}
+}

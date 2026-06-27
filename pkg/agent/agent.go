@@ -135,7 +135,8 @@ type AgentGenerateOptions struct {
 type AgentStreamOptions struct {
 	AgentGenerateOptions
 
-	OnChunk func(chunk provider.StreamChunk)
+	OnChunk             func(chunk provider.StreamChunk)
+	InitialStreamChunks []provider.StreamChunk
 }
 
 // AgentAction represents an action the agent has decided to take

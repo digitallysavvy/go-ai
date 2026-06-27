@@ -127,6 +127,10 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 		Dynamic:          result.Dynamic,
 		Preliminary:      result.Preliminary,
 	}
+	if result.ModelOutput != nil {
+		part.Output = result.ModelOutput
+		part.Result = nil
+	}
 	if result.Error != nil {
 		return normalizeToolErrorContent(types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
@@ -142,11 +146,15 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 	}
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
-		part.Output = &output
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = &output
+			part.Result = nil
+		}
 	case *types.ToolResultOutput:
-		part.Output = output
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = output
+			part.Result = nil
+		}
 	case error:
 		return normalizeToolErrorContent(types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
@@ -160,8 +168,10 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			Dynamic:          result.Dynamic,
 		}, result.ProviderExecuted)
 	case string:
-		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
+			part.Result = nil
+		}
 	case nil:
 		if part.Output == nil && result.Error == nil {
 			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: nil}

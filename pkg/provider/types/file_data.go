@@ -56,27 +56,74 @@ type FileData struct {
 // MarshalJSON preserves the TypeScript file-data union shape. In particular,
 // DataString is emitted as the "data" field for `{ type: "data" }` values.
 func (f FileData) MarshalJSON() ([]byte, error) {
-	type fileDataJSON struct {
-		Type      FileDataType      `json:"type"`
-		Data      interface{}       `json:"data,omitempty"`
-		URL       string            `json:"url,omitempty"`
-		Reference ProviderReference `json:"reference,omitempty"`
-		Text      string            `json:"text,omitempty"`
-		MediaType string            `json:"mediaType,omitempty"`
+	type fileDataBase struct {
+		Type FileDataType `json:"type"`
 	}
-	out := fileDataJSON{
-		Type:      f.Type,
-		URL:       f.URL,
-		Reference: f.Reference,
-		Text:      f.Text,
-		MediaType: f.MediaType,
+	base := fileDataBase{Type: f.Type}
+	switch f.Type {
+	case FileDataTypeData:
+		value := interface{}("")
+		if f.DataString != "" {
+			value = f.DataString
+		} else if f.Data != nil {
+			value = f.Data
+		}
+		return json.Marshal(struct {
+			fileDataBase
+			Data interface{} `json:"data"`
+		}{
+			fileDataBase: base,
+			Data:         value,
+		})
+	case FileDataTypeURL:
+		return json.Marshal(struct {
+			fileDataBase
+			URL string `json:"url"`
+		}{
+			fileDataBase: base,
+			URL:          f.URL,
+		})
+	case FileDataTypeReference:
+		reference := f.Reference
+		if reference == nil {
+			reference = ProviderReference{}
+		}
+		return json.Marshal(struct {
+			fileDataBase
+			Reference ProviderReference `json:"reference"`
+		}{
+			fileDataBase: base,
+			Reference:    reference,
+		})
+	case FileDataTypeText:
+		return json.Marshal(struct {
+			fileDataBase
+			Text string `json:"text"`
+		}{
+			fileDataBase: base,
+			Text:         f.Text,
+		})
+	default:
+		type fileDataJSON struct {
+			Type      FileDataType      `json:"type"`
+			Data      interface{}       `json:"data,omitempty"`
+			URL       string            `json:"url,omitempty"`
+			Reference ProviderReference `json:"reference,omitempty"`
+			Text      string            `json:"text,omitempty"`
+		}
+		out := fileDataJSON{
+			Type:      f.Type,
+			URL:       f.URL,
+			Reference: f.Reference,
+			Text:      f.Text,
+		}
+		if f.DataString != "" {
+			out.Data = f.DataString
+		} else if len(f.Data) > 0 {
+			out.Data = f.Data
+		}
+		return json.Marshal(out)
 	}
-	if f.DataString != "" {
-		out.Data = f.DataString
-	} else if len(f.Data) > 0 {
-		out.Data = f.Data
-	}
-	return json.Marshal(out)
 }
 
 func (f FileData) IsZero() bool {

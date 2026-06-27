@@ -108,11 +108,17 @@ type Tool struct {
 	// propagated via ToolCall.ToolMetadata and ToolResult.ToolMetadata.
 	Metadata map[string]interface{} `json:"-"`
 
+	// Meta preserves provider/tool-definition metadata fields such as MCP
+	// `_meta`. It is exposed for callers that need the raw provider metadata
+	// but is not sent to models.
+	Meta map[string]interface{} `json:"_meta,omitempty"`
+
 	// ProviderName identifies the provider that owns a provider-defined tool.
 	ProviderName string `json:"providerName,omitempty"`
 
-	// Type is "function" (default) or "provider" for provider-defined native tools.
-	// When Type is "provider", ProviderID and ProviderArgs specify the native tool.
+	// Type is "function" (default), "dynamic", or "provider" for
+	// provider-defined native tools. When Type is "provider", ProviderID and
+	// ProviderArgs specify the native tool.
 	Type string `json:"type,omitempty"`
 
 	// ProviderID is the identifier for provider-defined tools.
@@ -189,7 +195,21 @@ type ToModelOutputFunc func(ctx context.Context, options ToModelOutputOptions) (
 
 // ToModelOutputOptions contains options for converting tool results
 type ToModelOutputOptions struct {
-	// Result is the raw result from tool execution
+	// ToolCallID is the unique ID of the tool call. It matches the TypeScript
+	// SDK toModelOutput option name.
+	ToolCallID string
+
+	// Input is the original tool input. It matches the TypeScript SDK
+	// toModelOutput option name.
+	Input map[string]interface{}
+
+	// Output is the raw result from tool execution. It matches the TypeScript
+	// SDK toModelOutput option name.
+	Output interface{}
+
+	// Result is a deprecated alias for Output.
+	//
+	// Deprecated: use Output.
 	Result interface{}
 
 	// ToolCall is the original tool call
@@ -322,6 +342,11 @@ type ToolResult struct {
 
 	// Result of the tool execution
 	Result interface{} `json:"result"`
+
+	// ModelOutput is the optional model-facing representation of Result. It is
+	// populated from Tool.ToModelOutput and deliberately omitted from JSON so
+	// user-facing tool results preserve the raw Result value.
+	ModelOutput *ToolResultOutput `json:"-"`
 
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`

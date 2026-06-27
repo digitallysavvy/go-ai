@@ -317,6 +317,10 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 			Dynamic:          tr.Dynamic,
 			Preliminary:      tr.Preliminary,
 		}
+		if tr.ModelOutput != nil {
+			part.Output = tr.ModelOutput
+			part.Result = nil
+		}
 		if tr.Error != nil {
 			errPart := types.ToolErrorContent{
 				ToolCallID:       tr.ToolCallID,
@@ -337,11 +341,15 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 		}
 		switch output := tr.Result.(type) {
 		case types.ToolResultOutput:
-			part.Output = &output
-			part.Result = nil
+			if part.Output == nil {
+				part.Output = &output
+				part.Result = nil
+			}
 		case *types.ToolResultOutput:
-			part.Output = output
-			part.Result = nil
+			if part.Output == nil {
+				part.Output = output
+				part.Result = nil
+			}
 		case error:
 			errPart := types.ToolErrorContent{
 				ToolCallID:       tr.ToolCallID,
@@ -415,13 +423,21 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		Dynamic:          result.Dynamic,
 		Preliminary:      result.Preliminary,
 	}
+	if result.ModelOutput != nil {
+		part.Output = result.ModelOutput
+		part.Result = nil
+	}
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
-		part.Output = &output
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = &output
+			part.Result = nil
+		}
 	case *types.ToolResultOutput:
-		part.Output = output
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = output
+			part.Result = nil
+		}
 	case error:
 		return types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
@@ -434,8 +450,10 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			Dynamic:          result.Dynamic,
 		}
 	default:
-		part.Output = toolResultModelOutput(result.Result)
-		part.Result = nil
+		if part.Output == nil {
+			part.Output = toolResultModelOutput(result.Result)
+			part.Result = nil
+		}
 	}
 	return part
 }

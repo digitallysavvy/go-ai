@@ -1023,6 +1023,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
+				var conversionErr *toolResultModelOutputError
+				if errors.As(err, &conversionErr) {
+					return nil, conversionErr.Unwrap()
+				}
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
 
@@ -1414,6 +1418,24 @@ type toolCallEventCallbacks struct {
 	toolExecutionMs     map[string]int64
 }
 
+type toolResultModelOutputError struct {
+	err error
+}
+
+func (e *toolResultModelOutputError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *toolResultModelOutputError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
 	var messages []types.Message
 	for _, step := range steps {
@@ -1652,6 +1674,30 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				}
 				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
 			}
+			var modelOutput *types.ToolResultOutput
+			if toolErr == nil && tool.ToModelOutput != nil {
+				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
+					ToolCallID: call.ID,
+					Input:      call.Arguments,
+					Output:     toolResult,
+					Result:     toolResult,
+					ToolCall: &types.ToolCall{
+						ID:               call.ID,
+						ToolName:         call.ToolName,
+						Title:            call.Title,
+						Arguments:        call.Arguments,
+						ProviderExecuted: call.ProviderExecuted,
+						ProviderMetadata: call.ProviderMetadata,
+						ToolMetadata:     call.ToolMetadata,
+						Dynamic:          call.Dynamic,
+					},
+					Usage: usage,
+				})
+				if convertErr != nil {
+					return results, &toolResultModelOutputError{err: convertErr}
+				}
+				modelOutput = converted
+			}
 
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
@@ -1659,6 +1705,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
+				ModelOutput:      modelOutput,
 				Error:            toolErr,
 				ApprovalStatus:   approvalStatus,
 				ApprovalID:       approvalID,

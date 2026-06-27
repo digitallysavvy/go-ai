@@ -165,6 +165,10 @@ type StreamTextOptions struct {
 
 	// Callbacks
 	OnChunk func(chunk provider.StreamChunk)
+	// InitialStreamChunks are emitted before the provider stream. Higher-level
+	// adapters use this for work resolved before the next model step while
+	// preserving stream event ordering.
+	InitialStreamChunks []provider.StreamChunk
 	// OnEnd is called when the stream is fully consumed.
 	OnEnd func(result *StreamTextResult)
 	// OnFinish is called when the stream is fully consumed.
@@ -695,6 +699,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 
 	// Create result
+	if len(opts.InitialStreamChunks) > 0 {
+		prefix := make([]provider.StreamChunk, len(opts.InitialStreamChunks))
+		copy(prefix, opts.InitialStreamChunks)
+		stream = &prefixedTextStream{prefix: prefix, base: stream}
+	}
 	result := &StreamTextResult{
 		stream:            stream,
 		status:            StreamStatusSubmitted, // actively streaming; set before any chunks arrive
@@ -849,9 +858,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepSawTerminal bool
 		var stepSawFinish bool
 		var stepSawOutput bool
-		// streamedToolResultIDs tracks tool call IDs for which the provider returned a
-		// result inline in this step's stream (used for the deferred hasResult check).
-		streamedToolResultIDs := make(map[string]bool)
+		// streamedToolResults tracks provider-inline tool results by tool call ID.
+		streamedToolResults := make(map[string]types.ToolResult)
 
 		for {
 			chunk, err := r.nextChunk(stepCtx)
@@ -976,8 +984,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-				streamedToolResultIDs[chunk.ToolResult.ToolCallID] = true
-				stepContent = append(stepContent, toolResultContentFromToolResult(*chunk.ToolResult))
+				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, stepToolCalls, toolsByName, &stepUsage)
+				if convertErr != nil {
+					r.err = convertErr
+					break
+				}
+				chunk.ToolResult = &enrichedResult
+				streamedToolResults[enrichedResult.ToolCallID] = enrichedResult
+				stepContent = append(stepContent, toolResultContentFromToolResult(enrichedResult))
 			}
 
 			if chunk.Usage != nil {
@@ -1225,7 +1239,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if tool == nil || !tool.ProviderExecuted || !tool.SupportsDeferredResults {
 				continue
 			}
-			if !streamedToolResultIDs[call.ID] {
+			if _, ok := streamedToolResults[call.ID]; !ok {
 				pendingDeferredToolCalls[call.ID] = call.ToolName
 			}
 		}
@@ -1236,15 +1250,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// (ProviderExecuted=true, Result=nil); those must NOT clear the pending map.
 		// Only real locally-executed results (ProviderExecuted=false) are safe to clear,
 		// and those tools are never added to pendingDeferredToolCalls anyway, so this is
-		// a no-op for them. Only streamedToolResultIDs represents actual inline results.
-		for callID := range streamedToolResultIDs {
+		// a no-op for them. Only streamedToolResults represents actual inline results.
+		for callID := range streamedToolResults {
 			delete(pendingDeferredToolCalls, callID)
 		}
+		publicStepToolResults := mergeStreamedToolResults(stepToolResults, streamedToolResults)
 
 		// Accumulate step tool calls and results into the overall result.
 		r.mu.Lock()
 		r.toolCalls = append(r.toolCalls, stepToolCalls...)
-		r.toolResults = append(r.toolResults, stepToolResults...)
+		r.toolResults = append(r.toolResults, publicStepToolResults...)
 		r.usage = r.usage.Add(stepUsage)
 		r.mu.Unlock()
 		// Decode provider metadata for this step.
@@ -1288,9 +1303,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolCalls:          stepToolCalls,
 			StaticToolCalls:    filterStaticToolCalls(stepToolCalls),
 			DynamicToolCalls:   filterDynamicToolCalls(stepToolCalls),
-			ToolResults:        stepToolResults,
-			StaticToolResults:  filterStaticToolResults(stepToolResults),
-			DynamicToolResults: filterDynamicToolResults(stepToolResults),
+			ToolResults:        publicStepToolResults,
+			StaticToolResults:  filterStaticToolResults(publicStepToolResults),
+			DynamicToolResults: filterDynamicToolResults(publicStepToolResults),
 			FinishReason:       r.finishReason,
 			RawFinishReason:    stepRawFinishReason,
 			Usage:              stepUsage,
@@ -1752,6 +1767,98 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}, r.cbOnEndEvent)
 }
 
+func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
+	call, hasCall := findToolCallByID(toolCalls, result.ToolCallID)
+	if hasCall {
+		if result.ToolName == "" {
+			result.ToolName = call.ToolName
+		}
+		if result.Input == nil {
+			result.Input = call.Arguments
+		}
+		if !result.ProviderExecuted {
+			if tool := toolsByName[call.ToolName]; tool != nil && tool.ProviderExecuted {
+				result.ProviderExecuted = true
+			} else {
+				result.ProviderExecuted = call.ProviderExecuted
+			}
+		}
+	}
+	tool := toolsByName[result.ToolName]
+	if tool == nil || tool.ToModelOutput == nil || result.ModelOutput != nil || result.Error != nil {
+		return result, nil
+	}
+	input := result.Input
+	if input == nil && hasCall {
+		input = call.Arguments
+	}
+	toolCall := types.ToolCall{
+		ID:               result.ToolCallID,
+		ToolName:         result.ToolName,
+		Title:            result.Title,
+		Arguments:        input,
+		ProviderExecuted: result.ProviderExecuted,
+		ProviderMetadata: result.ProviderMetadata,
+		ToolMetadata:     result.ToolMetadata,
+		Dynamic:          result.Dynamic,
+	}
+	if hasCall {
+		toolCall = call
+		toolCall.Arguments = input
+		if toolCall.ToolName == "" {
+			toolCall.ToolName = result.ToolName
+		}
+		if !toolCall.ProviderExecuted {
+			toolCall.ProviderExecuted = result.ProviderExecuted
+		}
+	}
+	converted, err := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
+		ToolCallID: result.ToolCallID,
+		Input:      input,
+		Output:     result.Result,
+		Result:     result.Result,
+		ToolCall:   &toolCall,
+		Usage:      usage,
+	})
+	if err != nil {
+		return result, err
+	}
+	result.ModelOutput = converted
+	return result, nil
+}
+
+func findToolCallByID(toolCalls []types.ToolCall, toolCallID string) (types.ToolCall, bool) {
+	for _, call := range toolCalls {
+		if call.ID == toolCallID {
+			return call, true
+		}
+	}
+	return types.ToolCall{}, false
+}
+
+func mergeStreamedToolResults(executedResults []types.ToolResult, streamedResults map[string]types.ToolResult) []types.ToolResult {
+	if len(streamedResults) == 0 {
+		return executedResults
+	}
+	merged := make([]types.ToolResult, 0, len(executedResults)+len(streamedResults))
+	seen := make(map[string]bool, len(executedResults))
+	for _, result := range executedResults {
+		if streamed, ok := streamedResults[result.ToolCallID]; ok && result.ProviderExecuted && result.Result == nil && result.Error == nil {
+			merged = append(merged, streamed)
+			seen[result.ToolCallID] = true
+			continue
+		}
+		merged = append(merged, result)
+		seen[result.ToolCallID] = true
+	}
+	for id, streamed := range streamedResults {
+		if !seen[id] {
+			merged = append(merged, streamed)
+		}
+	}
+	return merged
+}
+
 // Stream returns the underlying text stream
 func (r *StreamTextResult) Stream() provider.TextStream {
 	return r.stream
@@ -1762,6 +1869,39 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 // Deprecated: use Stream.
 func (r *StreamTextResult) FullStream() provider.TextStream {
 	return r.Stream()
+}
+
+type prefixedTextStream struct {
+	prefix []provider.StreamChunk
+	index  int
+	base   provider.TextStream
+}
+
+func (s *prefixedTextStream) Next() (*provider.StreamChunk, error) {
+	if s.index < len(s.prefix) {
+		chunk := s.prefix[s.index]
+		s.index++
+		return &chunk, nil
+	}
+	if s.base == nil {
+		return nil, io.EOF
+	}
+	return s.base.Next()
+}
+
+func (s *prefixedTextStream) Err() error {
+	if s.base == nil {
+		return nil
+	}
+	return s.base.Err()
+}
+
+func (s *prefixedTextStream) Close() error {
+	s.index = len(s.prefix)
+	if s.base == nil {
+		return nil
+	}
+	return s.base.Close()
 }
 
 // ConsumeStream drains the stream and waits for completion.
@@ -2080,10 +2220,15 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	var outputChunkGapsMs []int64
 	firstChunk := true
 	var pendingToolCalls []types.ToolCall
+	streamedToolResults := make(map[string]types.ToolResult)
 	var stepContent []types.ContentPart
 	var stepReasoning []types.ReasoningContent
 	var sawTerminal bool
 	var sawOutput bool
+	toolsByName := make(map[string]*types.Tool, len(r.cbTools))
+	for i := range r.cbTools {
+		toolsByName[r.cbTools[i].Name] = &r.cbTools[i]
+	}
 
 	for {
 		chunk, err := r.nextChunk(stepCtx)
@@ -2183,7 +2328,14 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			})
 		}
 		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-			stepContent = append(stepContent, toolResultContentFromToolResult(*chunk.ToolResult))
+			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, pendingToolCalls, toolsByName, &r.usage)
+			if convertErr != nil {
+				r.err = convertErr
+				return "", convertErr
+			}
+			chunk.ToolResult = &enrichedResult
+			streamedToolResults[enrichedResult.ToolCallID] = enrichedResult
+			stepContent = append(stepContent, toolResultContentFromToolResult(enrichedResult))
 		}
 		if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "") {
 			reasoningText := chunk.Reasoning
@@ -2270,27 +2422,36 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 		r.toolCalls = pendingToolCalls
 		r.mu.Unlock()
 	}
+	readAllToolResults := mergeStreamedToolResults(nil, streamedToolResults)
+	if len(readAllToolResults) > 0 {
+		r.mu.Lock()
+		r.toolResults = readAllToolResults
+		r.mu.Unlock()
+	}
 	responseMessages := providerutils.ConvertToResponseMessages(
 		pendingToolCalls,
 		stepContent,
-		nil,
+		readAllToolResults,
 	)
 	step := types.StepResult{
-		CallID:           r.cbCallID,
-		StepNumber:       0,
-		Model:            types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
-		Text:             r.text,
-		Content:          stepContent,
-		Reasoning:        stepReasoning,
-		ReasoningText:    buildReasoningText(stepReasoning),
-		ToolCalls:        pendingToolCalls,
-		StaticToolCalls:  filterStaticToolCalls(pendingToolCalls),
-		DynamicToolCalls: filterDynamicToolCalls(pendingToolCalls),
-		FinishReason:     r.finishReason,
-		Usage:            r.usage,
-		Performance:      stepPerformance(stepStart, r.usage, firstTokenAt, outputChunkGapsMs),
-		Sources:          r.sources,
-		Files:            r.files,
+		CallID:             r.cbCallID,
+		StepNumber:         0,
+		Model:              types.StepModel{Provider: r.cbModelProvider, ModelID: r.cbModelID},
+		Text:               r.text,
+		Content:            stepContent,
+		Reasoning:          stepReasoning,
+		ReasoningText:      buildReasoningText(stepReasoning),
+		ToolCalls:          pendingToolCalls,
+		StaticToolCalls:    filterStaticToolCalls(pendingToolCalls),
+		DynamicToolCalls:   filterDynamicToolCalls(pendingToolCalls),
+		ToolResults:        readAllToolResults,
+		StaticToolResults:  filterStaticToolResults(readAllToolResults),
+		DynamicToolResults: filterDynamicToolResults(readAllToolResults),
+		FinishReason:       r.finishReason,
+		Usage:              r.usage,
+		Performance:        stepPerformance(stepStart, r.usage, firstTokenAt, outputChunkGapsMs),
+		Sources:            r.sources,
+		Files:              r.files,
 		Request: types.StepRequest{
 			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
 		},

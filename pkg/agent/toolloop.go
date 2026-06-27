@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -32,6 +33,24 @@ type agentCallbacks struct {
 	onToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 	onStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
 	onFinish         func(ctx context.Context, e ai.OnFinishEvent)
+}
+
+type toolResultModelOutputError struct {
+	err error
+}
+
+func (e *toolResultModelOutputError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *toolResultModelOutputError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 // mergeCallbacks combines settings-level and per-call structured callbacks.
@@ -365,6 +384,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ExperimentalTelemetry:       callConfig.ExperimentalTelemetry,
 		Internal:                    callConfig.Internal,
 		OnChunk:                     opts.OnChunk,
+		InitialStreamChunks:         opts.InitialStreamChunks,
 		OnStart:                     cbs.onStart,
 		OnStepStart:                 cbs.onStepStart,
 		OnToolExecutionStart:        cbs.onToolCallStart,
@@ -549,6 +569,10 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
 					a.config.OnChainError(err)
+				}
+				var conversionErr *toolResultModelOutputError
+				if errors.As(err, &conversionErr) {
+					return nil, conversionErr.Unwrap()
 				}
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
@@ -1402,6 +1426,29 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			startMs := time.Now().UnixMilli()
 			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
 			durationMs := time.Now().UnixMilli() - startMs
+			var modelOutput *types.ToolResultOutput
+			if toolErr == nil && tool.ToModelOutput != nil {
+				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
+					ToolCallID: call.ID,
+					Input:      call.Arguments,
+					Output:     toolResult,
+					Result:     toolResult,
+					ToolCall: &types.ToolCall{
+						ID:               call.ID,
+						ToolName:         call.ToolName,
+						Title:            call.Title,
+						Arguments:        call.Arguments,
+						ProviderExecuted: call.ProviderExecuted,
+						ProviderMetadata: call.ProviderMetadata,
+						ToolMetadata:     call.ToolMetadata,
+						Dynamic:          call.Dynamic,
+					},
+				})
+				if convertErr != nil {
+					return results, &toolResultModelOutputError{err: convertErr}
+				}
+				modelOutput = converted
+			}
 
 			result := types.ToolResult{
 				ToolCallID:       call.ID,
@@ -1409,6 +1456,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
+				ModelOutput:      modelOutput,
 				Error:            toolErr,
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,
@@ -1700,23 +1748,38 @@ func agentToolResultsToContentParts(results []types.ToolResult) []types.ContentP
 			Dynamic:          result.Dynamic,
 			Preliminary:      result.Preliminary,
 		}
-		switch output := result.Result.(type) {
-		case types.ToolResultOutput:
+		switch output := modelFacingToolResultOutput(result); output.Type {
+		case "":
+		case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputExecutionDenied:
 			part.Output = &output
 			part.Result = nil
-		case *types.ToolResultOutput:
-			part.Output = output
-			part.Result = nil
-		case string:
-			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
-			part.Result = nil
-		default:
-			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
-			part.Result = nil
+		}
+		if part.Output == nil {
+			switch output := result.Result.(type) {
+			case types.ToolResultOutput:
+				part.Output = &output
+				part.Result = nil
+			case *types.ToolResultOutput:
+				part.Output = output
+				part.Result = nil
+			case string:
+				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
+				part.Result = nil
+			default:
+				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+				part.Result = nil
+			}
 		}
 		parts = append(parts, part)
 	}
 	return parts
+}
+
+func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {
+	if result.ModelOutput == nil {
+		return types.ToolResultOutput{}
+	}
+	return *result.ModelOutput
 }
 
 func filterAgentStaticToolCalls(calls []types.ToolCall) []types.ToolCall {

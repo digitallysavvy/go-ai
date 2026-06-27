@@ -8,8 +8,13 @@ import (
 // ResolveProviderReference returns the provider-specific file identifier from
 // a provider reference map.
 func ResolveProviderReference(reference types.ProviderReference, provider string) (string, error) {
-	if id, ok := reference[provider]; ok {
-		return id, nil
+	if provider != "" {
+		if id, ok := reference[provider]; ok {
+			return id, nil
+		}
+		if id, ok := reference[""]; ok && id != "" {
+			return id, nil
+		}
 	}
 	return "", &providererrors.NoSuchProviderReferenceError{
 		Provider:  provider,

@@ -3,6 +3,8 @@ package types
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"strings"
 )
 
 // MessageRole represents the role of a message sender in a conversation
@@ -811,6 +813,8 @@ const (
 	ToolResultOutputExecutionDenied ToolResultOutputType = "execution-denied"
 )
 
+var ErrMissingProviderReferenceContext = errors.New("cannot marshal legacy file reference without provider reference map")
+
 // ToolResultOutput represents structured tool result output
 type ToolResultOutput struct {
 	// Type of the output
@@ -831,10 +835,315 @@ type ToolResultOutput struct {
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
+// MarshalJSON emits the TypeScript SDK ToolResultOutput union shape. Content
+// output uses "value" for the block array; the Content field is the idiomatic
+// Go mirror used by provider converters.
+func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
+	type outputJSON struct {
+		Type            ToolResultOutputType   `json:"type"`
+		Value           json.RawMessage        `json:"value,omitempty"`
+		Reason          string                 `json:"reason,omitempty"`
+		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+	}
+	out := outputJSON{
+		Type:            o.Type,
+		Reason:          o.Reason,
+		ProviderOptions: o.ProviderOptions,
+	}
+	marshalValue := func(value interface{}) error {
+		if value == nil {
+			out.Value = json.RawMessage("null")
+			return nil
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		out.Value = data
+		return nil
+	}
+	switch o.Type {
+	case ToolResultOutputContent:
+		if o.Value != nil {
+			if err := marshalValue(o.Value); err != nil {
+				return nil, err
+			}
+		} else if o.Content != nil {
+			if err := marshalValue(o.Content); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := marshalValue([]ToolResultContentBlock{}); err != nil {
+				return nil, err
+			}
+		}
+	case ToolResultOutputExecutionDenied:
+	default:
+		if err := marshalValue(o.Value); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON accepts the TypeScript SDK ToolResultOutput union shape and the
+// older Go "content" field for backward compatibility.
+func (o *ToolResultOutput) UnmarshalJSON(data []byte) error {
+	type outputJSON struct {
+		Type            ToolResultOutputType   `json:"type"`
+		Value           json.RawMessage        `json:"value"`
+		Content         json.RawMessage        `json:"content"`
+		Reason          string                 `json:"reason"`
+		ProviderOptions map[string]interface{} `json:"providerOptions"`
+	}
+	var raw outputJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	o.Type = raw.Type
+	o.Reason = raw.Reason
+	o.ProviderOptions = raw.ProviderOptions
+	o.Value = nil
+	o.Content = nil
+
+	if raw.Type == ToolResultOutputContent {
+		contentRaw := raw.Value
+		if len(contentRaw) == 0 {
+			contentRaw = raw.Content
+		}
+		if len(contentRaw) == 0 || string(contentRaw) == "null" {
+			o.Content = []ToolResultContentBlock{}
+			return nil
+		}
+		blocks, err := unmarshalToolResultContentBlocks(contentRaw)
+		if err != nil {
+			return err
+		}
+		o.Content = blocks
+		return nil
+	}
+	if len(raw.Value) > 0 {
+		if err := json.Unmarshal(raw.Value, &o.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func unmarshalToolResultContentBlocks(data []byte) ([]ToolResultContentBlock, error) {
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(data, &rawBlocks); err != nil {
+		return nil, err
+	}
+	blocks := make([]ToolResultContentBlock, 0, len(rawBlocks))
+	for _, rawBlock := range rawBlocks {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rawBlock, &envelope); err != nil {
+			return nil, err
+		}
+		switch envelope.Type {
+		case "text":
+			var block TextContentBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		case "file":
+			var block FileContentBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		case "file-data", "file-url", "file-id", "file-reference", "image-data", "image-url", "image-file-id", "image-file-reference":
+			block, err := unmarshalLegacyToolResultFileContentBlock(envelope.Type, rawBlock)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		case "image":
+			var block ImageContentBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		case "custom":
+			var block CustomContentBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		default:
+			var block RawToolResultContentBlock
+			if err := json.Unmarshal(rawBlock, &block); err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks, nil
+}
+
+func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (FileContentBlock, error) {
+	type legacyBlock struct {
+		Data              string                 `json:"data"`
+		URL               string                 `json:"url"`
+		FileID            interface{}            `json:"fileId"`
+		ProviderReference ProviderReference      `json:"providerReference"`
+		MediaType         string                 `json:"mediaType"`
+		Filename          string                 `json:"filename"`
+		ProviderOptions   map[string]interface{} `json:"providerOptions"`
+	}
+	var raw legacyBlock
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return FileContentBlock{}, err
+	}
+	block := FileContentBlock{
+		MediaType:       raw.MediaType,
+		Filename:        raw.Filename,
+		ProviderOptions: raw.ProviderOptions,
+	}
+	switch blockType {
+	case "file-data", "image-data":
+		block.FileData = FileData{Type: FileDataTypeData, DataString: raw.Data}
+		if block.MediaType == "" && strings.HasPrefix(blockType, "image-") {
+			block.MediaType = "image"
+		}
+	case "file-url", "image-url":
+		block.FileData = FileData{Type: FileDataTypeURL, URL: raw.URL}
+		block.URL = raw.URL
+		if block.MediaType == "" {
+			if blockType == "image-url" {
+				block.MediaType = "image"
+			} else {
+				block.MediaType = inferToolResultMediaTypeFromURL(raw.URL)
+			}
+		}
+	case "file-id", "image-file-id":
+		block.FileData = FileData{Type: FileDataTypeReference, Reference: providerReferenceFromLegacyFileID(raw.FileID)}
+		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+	case "file-reference", "image-file-reference":
+		block.FileData = FileData{Type: FileDataTypeReference, Reference: raw.ProviderReference}
+		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+	}
+	return block, nil
+}
+
+func providerReferenceFromLegacyFileID(fileID interface{}) ProviderReference {
+	switch value := fileID.(type) {
+	case string:
+		return ProviderReference{"": value}
+	case map[string]interface{}:
+		ref := make(ProviderReference, len(value))
+		for provider, id := range value {
+			if text, ok := id.(string); ok {
+				ref[provider] = text
+			}
+		}
+		return ref
+	default:
+		return nil
+	}
+}
+
+func legacyReferenceMediaType(blockType, mediaType string) string {
+	if mediaType != "" {
+		return mediaType
+	}
+	if strings.HasPrefix(blockType, "image-") {
+		return "image"
+	}
+	return "application"
+}
+
+func inferToolResultMediaTypeFromURL(value string) string {
+	path := value
+	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
+		path = path[:idx]
+	}
+	idx := strings.LastIndex(path, ".")
+	if idx < 0 || idx == len(path)-1 {
+		return "application/octet-stream"
+	}
+	switch strings.ToLower(path[idx+1:]) {
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
+	case "svg":
+		return "image/svg+xml"
+	case "avif":
+		return "image/avif"
+	case "heic":
+		return "image/heic"
+	case "bmp":
+		return "image/bmp"
+	case "tiff", "tif":
+		return "image/tiff"
+	case "pdf":
+		return "application/pdf"
+	case "mp4":
+		return "video/mp4"
+	case "webm":
+		return "video/webm"
+	case "mp3":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "ogg":
+		return "audio/ogg"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // ToolResultContentBlock represents a content block in tool results
 // This interface allows different types of content in tool results
 type ToolResultContentBlock interface {
 	ToolResultContentType() string
+}
+
+// RawToolResultContentBlock preserves unknown tool-result content variants.
+// TypeScript's mapToolResultOutput returns unknown variants unchanged.
+type RawToolResultContentBlock struct {
+	Type   string
+	Fields map[string]json.RawMessage
+}
+
+func (r RawToolResultContentBlock) ToolResultContentType() string {
+	return r.Type
+}
+
+func (r RawToolResultContentBlock) MarshalJSON() ([]byte, error) {
+	fields := make(map[string]json.RawMessage, len(r.Fields)+1)
+	for key, value := range r.Fields {
+		fields[key] = value
+	}
+	if r.Type != "" {
+		typeData, err := json.Marshal(r.Type)
+		if err != nil {
+			return nil, err
+		}
+		fields["type"] = typeData
+	}
+	return json.Marshal(fields)
+}
+
+func (r *RawToolResultContentBlock) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	r.Fields = fields
+	if typeData, ok := fields["type"]; ok {
+		_ = json.Unmarshal(typeData, &r.Type)
+	}
+	return nil
 }
 
 // TextContentBlock represents text content in tool results
@@ -849,6 +1158,18 @@ type TextContentBlock struct {
 // ToolResultContentType implements ToolResultContentBlock interface
 func (t TextContentBlock) ToolResultContentType() string {
 	return "text"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated tool-result content shape.
+func (t TextContentBlock) MarshalJSON() ([]byte, error) {
+	type textContentBlockAlias TextContentBlock
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		textContentBlockAlias
+	}{
+		Type:                  t.ToolResultContentType(),
+		textContentBlockAlias: textContentBlockAlias(t),
+	})
 }
 
 // ImageContentBlock represents an image in tool results
@@ -866,6 +1187,23 @@ type ImageContentBlock struct {
 // ToolResultContentType implements ToolResultContentBlock interface
 func (i ImageContentBlock) ToolResultContentType() string {
 	return "image"
+}
+
+// MarshalJSON emits the modern TypeScript SDK file tool-result shape for image
+// content. Legacy image-* aliases are accepted on input but not emitted.
+func (i ImageContentBlock) MarshalJSON() ([]byte, error) {
+	type imageContentBlockJSON struct {
+		Type            string                 `json:"type"`
+		Data            FileData               `json:"data"`
+		MediaType       string                 `json:"mediaType"`
+		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+	}
+	return json.Marshal(imageContentBlockJSON{
+		Type:            "file",
+		Data:            FileData{Type: FileDataTypeData, Data: i.Data},
+		MediaType:       i.MediaType,
+		ProviderOptions: i.ProviderOptions,
+	})
 }
 
 // FileContentBlock represents a file in tool results.
@@ -903,6 +1241,69 @@ func (f FileContentBlock) ToolResultContentType() string {
 	return "file"
 }
 
+// MarshalJSON emits the TypeScript SDK tagged file tool-result shape.
+func (f FileContentBlock) MarshalJSON() ([]byte, error) {
+	type fileContentBlockJSON struct {
+		Type            string                 `json:"type"`
+		Data            interface{}            `json:"data"`
+		MediaType       string                 `json:"mediaType"`
+		Filename        string                 `json:"filename,omitempty"`
+		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+	}
+	data := interface{}(f.FileData)
+	switch {
+	case !f.FileData.IsZero():
+	case f.URL != "":
+		data = FileData{Type: FileDataTypeURL, URL: f.URL}
+	case f.Reference != "":
+		return nil, ErrMissingProviderReferenceContext
+	case f.Text != "":
+		data = FileData{Type: FileDataTypeText, Text: f.Text}
+	default:
+		data = FileData{Type: FileDataTypeData, Data: f.Data}
+	}
+	return json.Marshal(fileContentBlockJSON{
+		Type:            f.ToolResultContentType(),
+		Data:            data,
+		MediaType:       firstNonEmptyString(f.MediaType, f.FileData.MediaType),
+		Filename:        f.Filename,
+		ProviderOptions: f.ProviderOptions,
+	})
+}
+
+// UnmarshalJSON accepts the TypeScript SDK tagged file tool-result shape.
+func (f *FileContentBlock) UnmarshalJSON(data []byte) error {
+	type fileContentBlockJSON struct {
+		Data            FileData               `json:"data"`
+		MediaType       string                 `json:"mediaType"`
+		Filename        string                 `json:"filename"`
+		ProviderOptions map[string]interface{} `json:"providerOptions"`
+	}
+	var raw fileContentBlockJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	f.FileData = raw.Data
+	f.MediaType = raw.MediaType
+	f.Filename = raw.Filename
+	f.ProviderOptions = raw.ProviderOptions
+	switch raw.Data.Type {
+	case FileDataTypeURL:
+		f.URL = raw.Data.URL
+	case FileDataTypeReference:
+		if len(raw.Data.Reference) == 1 {
+			for _, value := range raw.Data.Reference {
+				f.Reference = value
+			}
+		}
+	case FileDataTypeText:
+		f.Text = raw.Data.Text
+	case FileDataTypeData:
+		f.Data = raw.Data.Data
+	}
+	return nil
+}
+
 // CustomContentBlock represents provider-specific content
 // This is used for features like tool-reference (Anthropic) or other
 // provider-specific content types that don't fit standard categories
@@ -915,6 +1316,17 @@ type CustomContentBlock struct {
 // ToolResultContentType implements ToolResultContentBlock interface
 func (c CustomContentBlock) ToolResultContentType() string {
 	return "custom"
+}
+
+// MarshalJSON emits the TypeScript SDK custom tool-result content shape.
+func (c CustomContentBlock) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type            string                 `json:"type"`
+		ProviderOptions map[string]interface{} `json:"providerOptions"`
+	}{
+		Type:            c.ToolResultContentType(),
+		ProviderOptions: c.ProviderOptions,
+	})
 }
 
 // Prompt represents a prompt that can be either a simple string or a list of messages
@@ -999,7 +1411,7 @@ func ErrorResult(toolCallID, toolName, errorMsg string) ToolResultContent {
 		ToolName:   toolName,
 		Error:      errorMsg,
 		Output: &ToolResultOutput{
-			Type:  ToolResultOutputError,
+			Type:  ToolResultOutputErrorText,
 			Value: errorMsg,
 		},
 	}

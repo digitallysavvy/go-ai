@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func TestToolResultsToContentPartsIncludesErrorMetadata(t *testing.T) {
@@ -437,5 +440,130 @@ func TestExecuteToolsResolvesApprovalForProviderExecutedTools(t *testing.T) {
 	}
 	if resp, ok := parts[1].(types.ToolApprovalResponseContent); !ok || !resp.ProviderExecuted || !resp.Approved {
 		t.Fatalf("approval response = %#v, want provider-executed approved response", parts[1])
+	}
+}
+
+func TestExecuteToolsAppliesToModelOutputWithTSShapedOptions(t *testing.T) {
+	raw := map[string]interface{}{"public": "visible", "secret": "hide me"}
+	var gotOptions types.ToModelOutputOptions
+	results, err := executeTools(
+		context.Background(),
+		[]types.ToolCall{{
+			ID:        "call-1",
+			ToolName:  "lookup",
+			Arguments: map[string]interface{}{"query": "docs"},
+		}},
+		[]types.Tool{{
+			Name: "lookup",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return raw, nil
+			},
+			ToModelOutput: func(_ context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				gotOptions = opts
+				return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees: visible"}, nil
+			},
+		}},
+		nil,
+		nil,
+		nil,
+		&types.Usage{},
+		toolCallEventCallbacks{toolExecutionMs: map[string]int64{}},
+	)
+	if err != nil {
+		t.Fatalf("executeTools error = %v", err)
+	}
+	if gotOptions.ToolCallID != "call-1" || gotOptions.Input["query"] != "docs" || !reflect.DeepEqual(gotOptions.Output, raw) {
+		t.Fatalf("ToModelOutput options = %+v, want TS-shaped toolCallId/input/output", gotOptions)
+	}
+	if !reflect.DeepEqual(gotOptions.Result, raw) {
+		t.Fatalf("ToModelOutput result alias = %#v, want original map", gotOptions.Result)
+	}
+	if gotOptions.ToolCall == nil || gotOptions.ToolCall.ID != "call-1" || gotOptions.ToolCall.ToolName != "lookup" {
+		t.Fatalf("ToModelOutput ToolCall = %+v, want call-1/lookup", gotOptions.ToolCall)
+	}
+	if len(results) != 1 || !reflect.DeepEqual(results[0].Result, raw) {
+		t.Fatalf("raw tool results = %#v, want original result", results)
+	}
+	if results[0].ModelOutput == nil || results[0].ModelOutput.Value != "model sees: visible" {
+		t.Fatalf("ModelOutput = %+v, want converted output", results[0].ModelOutput)
+	}
+	parts := toolResultsToContentParts(results)
+	if len(parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1", len(parts))
+	}
+	toolResult, ok := parts[0].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ToolResultContent", parts[0])
+	}
+	if toolResult.Result != nil || toolResult.Output == nil || toolResult.Output.Value != "model sees: visible" {
+		t.Fatalf("tool result content = %+v, want converted model output only", toolResult)
+	}
+}
+
+func TestExecuteToolsToModelOutputErrorPropagates(t *testing.T) {
+	convertErr := errors.New("conversion failed")
+	_, err := executeTools(
+		context.Background(),
+		[]types.ToolCall{{
+			ID:        "call-1",
+			ToolName:  "lookup",
+			Arguments: map[string]interface{}{"query": "docs"},
+		}},
+		[]types.Tool{{
+			Name: "lookup",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "raw", nil
+			},
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+		nil,
+		nil,
+		nil,
+		&types.Usage{},
+		toolCallEventCallbacks{toolExecutionMs: map[string]int64{}},
+	)
+	if !errors.Is(err, convertErr) {
+		t.Fatalf("executeTools error = %v, want conversion error", err)
+	}
+	if err.Error() != "conversion failed" {
+		t.Fatalf("executeTools error string = %q, want original conversion error", err.Error())
+	}
+}
+
+func TestGenerateTextToModelOutputErrorPropagatesUnwrapped(t *testing.T) {
+	convertErr := errors.New("conversion failed")
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls: []types.ToolCall{{
+					ID:        "call-1",
+					ToolName:  "lookup",
+					Arguments: map[string]interface{}{"query": "docs"},
+				}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "lookup",
+		Tools: []types.Tool{{
+			Name: "lookup",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "raw", nil
+			},
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if !errors.Is(err, convertErr) {
+		t.Fatalf("GenerateText error = %v, want conversion error", err)
+	}
+	if err.Error() != "conversion failed" {
+		t.Fatalf("GenerateText error string = %q, want original conversion error", err.Error())
 	}
 }
