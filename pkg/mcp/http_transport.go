@@ -7,9 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
+
+const mcpHTTPAcceptHeader = "application/json, text/event-stream"
 
 // HTTPTransport implements the Transport interface for HTTP-based communication
 // This transport communicates with MCP servers over HTTP
@@ -194,6 +199,7 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", mcpHTTPAcceptHeader)
 	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
@@ -241,6 +247,7 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 			return NewTransportError("failed to create request", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", mcpHTTPAcceptHeader)
 		req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
 		for k, v := range t.config.Headers {
 			req.Header.Set(k, v)
@@ -249,9 +256,8 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
-	defer resp.Body.Close() //nolint:errcheck
-
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
 		message := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		if resp.StatusCode == http.StatusNotFound {
@@ -263,6 +269,13 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		return nil
 	}
 
+	contentType := resp.Header.Get("content-type")
+	if strings.Contains(contentType, "text/event-stream") {
+		go t.readMCPHTTPSSEMessages(resp.Body)
+		return nil
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -273,18 +286,91 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		fmt.Printf("MCP HTTP Receive: %s\n", string(body))
 	}
 
-	// Parse response
-	var responseMsg MCPMessage
-	if err := unmarshalSafeJSON(body, &responseMsg); err != nil {
+	messages, err := parseMCPHTTPJSONMessages(body)
+	if err != nil {
 		return NewTransportError("failed to unmarshal response", err)
 	}
 
-	// Queue response for receiving
-	t.receiveMu.Lock()
-	t.receiveQueue = append(t.receiveQueue, &responseMsg)
-	t.receiveMu.Unlock()
+	t.queueReceivedMessages(messages)
 
 	return nil
+}
+
+func (t *HTTPTransport) queueReceivedMessages(messages []*MCPMessage) {
+	if len(messages) == 0 {
+		return
+	}
+	t.receiveMu.Lock()
+	t.receiveQueue = append(t.receiveQueue, messages...)
+	t.receiveMu.Unlock()
+}
+
+func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var batch []MCPMessage
+		if err := unmarshalSafeJSON(trimmed, &batch); err != nil {
+			return nil, err
+		}
+		messages := make([]*MCPMessage, 0, len(batch))
+		for i := range batch {
+			msg := batch[i]
+			messages = append(messages, &msg)
+		}
+		return messages, nil
+	}
+	var responseMsg MCPMessage
+	if err := unmarshalSafeJSON(trimmed, &responseMsg); err != nil {
+		return nil, err
+	}
+	return []*MCPMessage{&responseMsg}, nil
+}
+
+func parseMCPHTTPSSEMessages(body io.Reader) ([]*MCPMessage, error) {
+	parser := streaming.NewSSEParser(body)
+	var messages []*MCPMessage
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			return messages, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if event.Event != "" && event.Event != "message" {
+			continue
+		}
+		var msg MCPMessage
+		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+			return nil, err
+		}
+		messages = append(messages, &msg)
+	}
+}
+
+func (t *HTTPTransport) readMCPHTTPSSEMessages(body io.ReadCloser) {
+	defer body.Close() //nolint:errcheck
+	parser := streaming.NewSSEParser(body)
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			return
+		}
+		if event.Event != "" && event.Event != "message" {
+			continue
+		}
+		var msg MCPMessage
+		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+			continue
+		}
+		t.queueReceivedMessages([]*MCPMessage{&msg})
+	}
 }
 
 // Receive receives a message from the MCP server

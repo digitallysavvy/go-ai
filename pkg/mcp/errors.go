@@ -21,6 +21,9 @@ func (e *MCPClientError) Error() string {
 	if e.Code == 0 && e.StatusCode != 0 {
 		return e.Message
 	}
+	if e.Code == 0 {
+		return e.Message
+	}
 	if e.Data != nil {
 		return fmt.Sprintf("MCP error %d: %s (data: %v)", e.Code, e.Message, e.Data)
 	}

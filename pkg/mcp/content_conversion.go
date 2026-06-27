@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -36,17 +37,25 @@ func convertSingleContent(item ToolResultContent) (types.ContentPart, error) {
 	case "text":
 		return convertMCPTextToAISDK(item), nil
 	case "image":
+		if !item.hasDataField() || !item.hasMimeTypeField() {
+			return convertMCPOpaqueContentToAISDK(item)
+		}
 		return convertMCPImageToAISDK(item)
 	case "resource":
-		return convertMCPResourceToAISDK(item), nil
+		return convertMCPOpaqueContentToAISDK(item)
 	case "resource_link":
-		return convertMCPResourceLinkToAISDK(item), nil
+		return convertMCPOpaqueContentToAISDK(item)
 	default:
-		// Unknown type, treat as text
-		return types.TextContent{
-			Text: fmt.Sprintf("Unknown content type: %s", item.Type),
-		}, nil
+		return convertMCPOpaqueContentToAISDK(item)
 	}
+}
+
+func convertMCPOpaqueContentToAISDK(item ToolResultContent) (types.ContentPart, error) {
+	data, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal opaque MCP content: %w", err)
+	}
+	return types.TextContent{Text: string(data)}, nil
 }
 
 func convertMCPResourceLinkToAISDK(item ToolResultContent) types.ContentPart {

@@ -6,15 +6,31 @@ import (
 	"testing"
 )
 
-func TestUnmarshalSafeJSONPreservesPrototypeNamedOwnKeys(t *testing.T) {
+func TestUnmarshalSafeJSONRejectsProtoKey(t *testing.T) {
 	var target map[string]interface{}
-	err := unmarshalSafeJSON([]byte(`{"params":{"__proto__":{"polluted":true},"constructor":{"prototype":{"ok":true}}}}`), &target)
+	err := unmarshalSafeJSON([]byte(`{"params":{"__proto__":{"polluted":true}}}`), &target)
+	if err == nil || !strings.Contains(err.Error(), "forbidden prototype property") {
+		t.Fatalf("expected forbidden prototype property error, got %v", err)
+	}
+}
+
+func TestUnmarshalSafeJSONRejectsConstructorPrototype(t *testing.T) {
+	var target map[string]interface{}
+	err := unmarshalSafeJSON([]byte(`{"params":{"constructor":{"prototype":{"polluted":true}}}}`), &target)
+	if err == nil || !strings.Contains(err.Error(), "forbidden prototype property") {
+		t.Fatalf("expected forbidden prototype property error, got %v", err)
+	}
+}
+
+func TestUnmarshalSafeJSONPreservesOrdinaryConstructorKey(t *testing.T) {
+	var target map[string]interface{}
+	err := unmarshalSafeJSON([]byte(`{"params":{"constructor":{"x":true}}}`), &target)
 	if err != nil {
-		t.Fatalf("expected prototype-named keys to parse as ordinary Go map keys, got %v", err)
+		t.Fatalf("expected ordinary constructor key to parse, got %v", err)
 	}
 	params, _ := target["params"].(map[string]interface{})
-	if params == nil || params["__proto__"] == nil || params["constructor"] == nil {
-		t.Fatalf("prototype-named keys were not preserved: %#v", target)
+	if params == nil || params["constructor"] == nil {
+		t.Fatalf("constructor key was not preserved: %#v", target)
 	}
 }
 

@@ -24,6 +24,88 @@ func newMockTransport() *mockTransport {
 	}
 }
 
+func TestMCPRequestParamsMarshalArgumentsLikeTypeScript(t *testing.T) {
+	toolNil, err := json.Marshal(CallToolParams{Name: "lookup"})
+	if err != nil {
+		t.Fatalf("marshal nil tool params: %v", err)
+	}
+	if string(toolNil) != `{"name":"lookup","arguments":{}}` {
+		t.Fatalf("nil tool params JSON = %s, want arguments empty object", toolNil)
+	}
+
+	toolEmpty, err := json.Marshal(CallToolParams{Name: "lookup", Arguments: map[string]interface{}{}})
+	if err != nil {
+		t.Fatalf("marshal empty tool params: %v", err)
+	}
+	if string(toolEmpty) != `{"name":"lookup","arguments":{}}` {
+		t.Fatalf("empty tool params JSON = %s, want arguments empty object", toolEmpty)
+	}
+
+	promptNil, err := json.Marshal(GetPromptParams{Name: "review"})
+	if err != nil {
+		t.Fatalf("marshal nil prompt params: %v", err)
+	}
+	if string(promptNil) != `{"name":"review"}` {
+		t.Fatalf("nil prompt params JSON = %s, want arguments omitted", promptNil)
+	}
+
+	promptEmpty, err := json.Marshal(GetPromptParams{Name: "review", Arguments: map[string]interface{}{}})
+	if err != nil {
+		t.Fatalf("marshal empty prompt params: %v", err)
+	}
+	if string(promptEmpty) != `{"name":"review","arguments":{}}` {
+		t.Fatalf("empty prompt params JSON = %s, want arguments empty object", promptEmpty)
+	}
+}
+
+func TestMCPCallToolResultMarshalIsErrorDefaultLikeTypeScript(t *testing.T) {
+	var contentResult CallToolResult
+	if err := json.Unmarshal([]byte(`{"content":[{"type":"text","text":"ok"}]}`), &contentResult); err != nil {
+		t.Fatalf("unmarshal content result: %v", err)
+	}
+	contentJSON, err := json.Marshal(contentResult)
+	if err != nil {
+		t.Fatalf("marshal content result: %v", err)
+	}
+	if string(contentJSON) != `{"content":[{"type":"text","text":"ok"}],"isError":false}` {
+		t.Fatalf("content result JSON = %s, want TS default isError false", contentJSON)
+	}
+
+	manualContentJSON, err := json.Marshal(CallToolResult{
+		Content: []ToolResultContent{{Type: "text", Text: "ok"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal manual content result: %v", err)
+	}
+	if string(manualContentJSON) != `{"content":[{"type":"text","text":"ok"}],"isError":false}` {
+		t.Fatalf("manual content result JSON = %s, want TS default isError false", manualContentJSON)
+	}
+
+	var legacyResult CallToolResult
+	if err := json.Unmarshal([]byte(`{"toolResult":{"ok":true}}`), &legacyResult); err != nil {
+		t.Fatalf("unmarshal legacy result: %v", err)
+	}
+	legacyJSON, err := json.Marshal(legacyResult)
+	if err != nil {
+		t.Fatalf("marshal legacy result: %v", err)
+	}
+	if string(legacyJSON) != `{"toolResult":{"ok":true}}` {
+		t.Fatalf("legacy result JSON = %s, want no default isError", legacyJSON)
+	}
+
+	var looseContentResult CallToolResult
+	if err := json.Unmarshal([]byte(`{"content":[],"structuredContent":null,"extra":{"kept":true}}`), &looseContentResult); err != nil {
+		t.Fatalf("unmarshal loose content result: %v", err)
+	}
+	looseJSON, err := json.Marshal(looseContentResult)
+	if err != nil {
+		t.Fatalf("marshal loose content result: %v", err)
+	}
+	if string(looseJSON) != `{"content":[],"structuredContent":null,"isError":false,"extra":{"kept":true}}` {
+		t.Fatalf("loose content result JSON = %s, want TS loose-object fields and isError default", looseJSON)
+	}
+}
+
 func (m *mockTransport) Connect(ctx context.Context) error {
 	m.connected = true
 	return nil
@@ -303,7 +385,7 @@ func TestMCPToolConverterMetadataIncludesClientNameAndApp(t *testing.T) {
 			"resourceUri": "ui://ai-sdk-e2e/dashboard",
 			"visibility":  []interface{}{"model", "app"},
 		}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("convertTool error: %v", err)
 	}

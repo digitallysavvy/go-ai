@@ -1,6 +1,9 @@
 package mcp
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ProtocolVersion is the MCP protocol version this client advertises as its
 // preferred version during initialization. It is always set to the newest
@@ -61,6 +64,39 @@ type MCPTool struct {
 	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
 	Annotations  map[string]interface{} `json:"annotations,omitempty"`
 	Meta         map[string]interface{} `json:"_meta,omitempty"`
+
+	titlePresent bool
+}
+
+func (t *MCPTool) UnmarshalJSON(data []byte) error {
+	type mcpToolJSON struct {
+		Name         string                 `json:"name"`
+		Title        string                 `json:"title,omitempty"`
+		Description  string                 `json:"description,omitempty"`
+		InputSchema  map[string]interface{} `json:"inputSchema"`
+		OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
+		Annotations  map[string]interface{} `json:"annotations,omitempty"`
+		Meta         map[string]interface{} `json:"_meta,omitempty"`
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var out mcpToolJSON
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*t = MCPTool{
+		Name:         out.Name,
+		Title:        out.Title,
+		Description:  out.Description,
+		InputSchema:  out.InputSchema,
+		OutputSchema: out.OutputSchema,
+		Annotations:  out.Annotations,
+		Meta:         out.Meta,
+	}
+	_, t.titlePresent = raw["title"]
+	return nil
 }
 
 // MCPResource represents a resource exposed via MCP
@@ -181,6 +217,18 @@ type CallToolParams struct {
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 }
 
+func (p CallToolParams) MarshalJSON() ([]byte, error) {
+	type callToolParamsJSON struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}
+	args := p.Arguments
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	return json.Marshal(callToolParamsJSON{Name: p.Name, Arguments: args})
+}
+
 // CallToolResult represents the result of calling a tool
 type CallToolResult struct {
 	Content           []ToolResultContent    `json:"content,omitempty"`
@@ -188,6 +236,86 @@ type CallToolResult struct {
 	ToolResult        interface{}            `json:"toolResult,omitempty"`
 	IsError           bool                   `json:"isError,omitempty"`
 	Metadata          map[string]interface{} `json:"_meta,omitempty"`
+
+	rawFields                map[string]json.RawMessage
+	rawFieldOrder            []string
+	isErrorPresent           bool
+	contentPresent           bool
+	structuredContentPresent bool
+	toolResultPresent        bool
+	metadataPresent          bool
+}
+
+func (r *CallToolResult) UnmarshalJSON(data []byte) error {
+	type callToolResultJSON struct {
+		Content           []ToolResultContent    `json:"content,omitempty"`
+		StructuredContent interface{}            `json:"structuredContent,omitempty"`
+		ToolResult        interface{}            `json:"toolResult,omitempty"`
+		IsError           bool                   `json:"isError,omitempty"`
+		Metadata          map[string]interface{} `json:"_meta,omitempty"`
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var out callToolResultJSON
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*r = CallToolResult{
+		Content:           out.Content,
+		StructuredContent: out.StructuredContent,
+		ToolResult:        out.ToolResult,
+		IsError:           out.IsError,
+		Metadata:          out.Metadata,
+		rawFields:         copyRawFields(raw),
+		rawFieldOrder:     jsonObjectFieldOrder(data),
+	}
+	_, r.isErrorPresent = raw["isError"]
+	_, r.contentPresent = raw["content"]
+	_, r.structuredContentPresent = raw["structuredContent"]
+	_, r.toolResultPresent = raw["toolResult"]
+	_, r.metadataPresent = raw["_meta"]
+	return nil
+}
+
+func (r CallToolResult) MarshalJSON() ([]byte, error) {
+	contentPresent := r.contentPresent || r.Content != nil
+	structuredContentPresent := r.structuredContentPresent || r.StructuredContent != nil
+	toolResultPresent := r.toolResultPresent || r.ToolResult != nil
+	metadataPresent := r.metadataPresent || r.Metadata != nil
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	emitted := map[string]bool{}
+	first := true
+	if contentPresent {
+		if err := appendJSONField(&buf, &first, emitted, "content", r.Content); err != nil {
+			return nil, err
+		}
+	}
+	if structuredContentPresent {
+		if err := appendJSONField(&buf, &first, emitted, "structuredContent", r.StructuredContent); err != nil {
+			return nil, err
+		}
+	}
+	if toolResultPresent {
+		if err := appendJSONField(&buf, &first, emitted, "toolResult", r.ToolResult); err != nil {
+			return nil, err
+		}
+	}
+	if r.IsError || r.isErrorPresent || contentPresent {
+		if err := appendJSONField(&buf, &first, emitted, "isError", r.IsError); err != nil {
+			return nil, err
+		}
+	}
+	if metadataPresent {
+		if err := appendJSONField(&buf, &first, emitted, "_meta", r.Metadata); err != nil {
+			return nil, err
+		}
+	}
+	appendRawFields(&buf, &first, emitted, r.rawFields, r.rawFieldOrder)
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 // ToolResultContent represents content in a tool result
@@ -203,6 +331,211 @@ type ToolResultContent struct {
 	Resource    *ResourceContent       `json:"resource,omitempty"`
 	Metadata    interface{}            `json:"metadata,omitempty"`
 	Meta        map[string]interface{} `json:"_meta,omitempty"`
+
+	rawFields             map[string]json.RawMessage
+	rawFieldOrder         []string
+	textPresent           bool
+	textStringPresent     bool
+	dataPresent           bool
+	dataStringPresent     bool
+	mimeTypePresent       bool
+	mimeTypeStringPresent bool
+}
+
+// UnmarshalJSON tracks presence for fields where the TypeScript MCP
+// toModelOutput path uses property-existence checks rather than truthiness.
+func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*c = ToolResultContent{
+		rawFields:     copyRawFields(raw),
+		rawFieldOrder: jsonObjectFieldOrder(data),
+	}
+	unmarshalStringField(raw, "type", &c.Type)
+	c.textPresent, c.textStringPresent = unmarshalStringField(raw, "text", &c.Text)
+	c.dataPresent, c.dataStringPresent = unmarshalStringField(raw, "data", &c.Data)
+	c.mimeTypePresent, c.mimeTypeStringPresent = unmarshalStringField(raw, "mimeType", &c.MimeType)
+	unmarshalStringField(raw, "uri", &c.URI)
+	unmarshalStringField(raw, "name", &c.Name)
+	unmarshalStringField(raw, "title", &c.Title)
+	unmarshalStringField(raw, "description", &c.Description)
+	if rawResource, ok := raw["resource"]; ok && string(rawResource) != "null" {
+		if err := json.Unmarshal(rawResource, &c.Resource); err != nil {
+			return err
+		}
+	}
+	if rawMetadata, ok := raw["metadata"]; ok && string(rawMetadata) != "null" {
+		if err := json.Unmarshal(rawMetadata, &c.Metadata); err != nil {
+			return err
+		}
+	}
+	if rawMeta, ok := raw["_meta"]; ok && string(rawMeta) != "null" {
+		if err := json.Unmarshal(rawMeta, &c.Meta); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c ToolResultContent) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	emitted := map[string]bool{}
+	first := true
+	appendStringJSONField(&buf, &first, emitted, "type", c.Type, c.Type != "")
+	appendStringJSONField(&buf, &first, emitted, "text", c.Text, c.Text != "" || c.textStringPresent)
+	appendStringJSONField(&buf, &first, emitted, "data", c.Data, c.Data != "" || c.dataStringPresent)
+	appendStringJSONField(&buf, &first, emitted, "mimeType", c.MimeType, c.MimeType != "" || c.mimeTypeStringPresent)
+	appendStringJSONField(&buf, &first, emitted, "uri", c.URI, c.URI != "")
+	appendStringJSONField(&buf, &first, emitted, "name", c.Name, c.Name != "")
+	appendStringJSONField(&buf, &first, emitted, "title", c.Title, c.Title != "")
+	appendStringJSONField(&buf, &first, emitted, "description", c.Description, c.Description != "")
+	if c.Resource != nil {
+		if err := appendJSONField(&buf, &first, emitted, "resource", c.Resource); err != nil {
+			return nil, err
+		}
+	}
+	if c.Metadata != nil {
+		if err := appendJSONField(&buf, &first, emitted, "metadata", c.Metadata); err != nil {
+			return nil, err
+		}
+	}
+	if c.Meta != nil {
+		if err := appendJSONField(&buf, &first, emitted, "_meta", c.Meta); err != nil {
+			return nil, err
+		}
+	}
+	appendRawFields(&buf, &first, emitted, c.rawFields, c.rawFieldOrder)
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+func copyRawFields(raw map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(raw))
+	for key, value := range raw {
+		out[key] = append(json.RawMessage(nil), value...)
+	}
+	return out
+}
+
+func jsonObjectFieldOrder(data []byte) []string {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return nil
+	}
+	var order []string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return order
+		}
+		key, ok := token.(string)
+		if !ok {
+			return order
+		}
+		order = append(order, key)
+		var skip json.RawMessage
+		if err := decoder.Decode(&skip); err != nil {
+			return order
+		}
+	}
+	return order
+}
+
+func unmarshalStringField(raw map[string]json.RawMessage, key string, target *string) (present bool, stringPresent bool) {
+	value, ok := raw[key]
+	if !ok {
+		return false, false
+	}
+	var decoded string
+	if err := json.Unmarshal(value, &decoded); err == nil {
+		*target = decoded
+		return true, true
+	}
+	return true, false
+}
+
+func appendStringJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key, value string, emit bool) {
+	if !emit {
+		return
+	}
+	keyJSON, _ := json.Marshal(key)
+	valueJSON, _ := json.Marshal(value)
+	if !*first {
+		buf.WriteByte(',')
+	}
+	*first = false
+	buf.Write(keyJSON)
+	buf.WriteByte(':')
+	buf.Write(valueJSON)
+	emitted[key] = true
+}
+
+func appendJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key string, value interface{}) error {
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	keyJSON, _ := json.Marshal(key)
+	if !*first {
+		buf.WriteByte(',')
+	}
+	*first = false
+	buf.Write(keyJSON)
+	buf.WriteByte(':')
+	buf.Write(valueJSON)
+	emitted[key] = true
+	return nil
+}
+
+func appendRawFields(buf *bytes.Buffer, first *bool, emitted map[string]bool, rawFields map[string]json.RawMessage, rawFieldOrder []string) {
+	seen := map[string]bool{}
+	for _, key := range rawFieldOrder {
+		if _, ok := rawFields[key]; !ok || emitted[key] {
+			continue
+		}
+		appendRawField(buf, first, key, rawFields[key])
+		seen[key] = true
+	}
+	for key, value := range rawFields {
+		if emitted[key] || seen[key] {
+			continue
+		}
+		appendRawField(buf, first, key, value)
+	}
+}
+
+func appendRawField(buf *bytes.Buffer, first *bool, key string, value json.RawMessage) {
+	keyJSON, _ := json.Marshal(key)
+	if !*first {
+		buf.WriteByte(',')
+	}
+	*first = false
+	buf.Write(keyJSON)
+	buf.WriteByte(':')
+	buf.Write(value)
+}
+
+func (c ToolResultContent) hasTextField() bool {
+	return c.Text != "" || c.textPresent
+}
+
+func (c ToolResultContent) hasDataField() bool {
+	return c.Data != "" || c.dataPresent
+}
+
+func (c ToolResultContent) hasMimeTypeField() bool {
+	return c.MimeType != "" || c.mimeTypePresent
 }
 
 // ListResourcesParams represents parameters for listing resources
@@ -252,6 +585,18 @@ type ListPromptsResult struct {
 type GetPromptParams struct {
 	Name      string                 `json:"name"`
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
+}
+
+func (p GetPromptParams) MarshalJSON() ([]byte, error) {
+	if p.Arguments == nil {
+		return json.Marshal(struct {
+			Name string `json:"name"`
+		}{Name: p.Name})
+	}
+	return json.Marshal(struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	}{Name: p.Name, Arguments: p.Arguments})
 }
 
 // GetPromptResult represents the result of getting a prompt
