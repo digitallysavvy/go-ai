@@ -24,6 +24,7 @@ type AgentTUIRunnerOptions struct {
 	Reasoning          TerminalPartDisplayMode
 	ResponseStatistics ResponseStatisticsMode
 	ContextSize        int
+	Sandbox            interface{}
 }
 
 // AgentTUIRenderer is the rendering contract used by AgentTUIRunner.
@@ -71,6 +72,7 @@ type AgentTUIRunner struct {
 	reasoning          TerminalPartDisplayMode
 	responseStatistics ResponseStatisticsMode
 	contextSize        int
+	sandbox            interface{}
 }
 
 func NewAgentTUIRunner(options AgentTUIRunnerOptions) *AgentTUIRunner {
@@ -106,6 +108,7 @@ func NewAgentTUIRunner(options AgentTUIRunnerOptions) *AgentTUIRunner {
 		reasoning:          reasoning,
 		responseStatistics: stats,
 		contextSize:        options.ContextSize,
+		sandbox:            options.Sandbox,
 	}
 }
 
@@ -158,7 +161,8 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 		streamCtx, cancel := context.WithCancel(ctx)
 		result, err := r.agent.Stream(streamCtx, agent.AgentStreamOptions{
 			AgentGenerateOptions: agent.AgentGenerateOptions{
-				Messages: append([]types.Message(nil), messages...),
+				Messages:            append([]types.Message(nil), messages...),
+				ExperimentalSandbox: r.sandbox,
 			},
 		})
 		if err != nil {

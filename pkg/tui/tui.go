@@ -57,6 +57,9 @@ type RunAgentTUIOptions struct {
 	// shows total token usage as a percentage of this context window.
 	ContextSize int
 
+	// Sandbox is passed through to agent tool execution.
+	Sandbox interface{}
+
 	// Input and Output are optional test hooks. When unset, os.Stdin/os.Stdout are used.
 	Input  io.Reader
 	Output io.Writer
@@ -86,6 +89,7 @@ func RunAgentTUI(ctx context.Context, opts RunAgentTUIOptions) error {
 		Reasoning:          opts.Reasoning,
 		ResponseStatistics: opts.ResponseStatistics,
 		ContextSize:        opts.ContextSize,
+		Sandbox:            opts.Sandbox,
 		Renderer: NewTerminalRenderer(TerminalRendererOptions{
 			Input:              opts.Input,
 			Output:             opts.Output,

@@ -53,6 +53,27 @@ func TestAgentTUIRunnerSubmitsEmptyPromptLikeTypeScript(t *testing.T) {
 	}
 }
 
+func TestAgentTUIRunnerForwardsSandboxToAgentStream(t *testing.T) {
+	mock := &runnerMockAgent{}
+	renderer := &runnerMockRenderer{prompts: []string{"hello"}}
+	sandbox := struct{ name string }{name: "sandbox"}
+	runner := NewAgentTUIRunner(AgentTUIRunnerOptions{
+		Agent:    mock,
+		Renderer: renderer,
+		Sandbox:  sandbox,
+	})
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(mock.streamCalls) != 1 {
+		t.Fatalf("stream calls = %d, want 1", len(mock.streamCalls))
+	}
+	if mock.streamCalls[0].ExperimentalSandbox != sandbox {
+		t.Fatalf("sandbox = %#v, want %#v", mock.streamCalls[0].ExperimentalSandbox, sandbox)
+	}
+}
+
 func TestAgentTUIRunnerContinuesWithToolApprovalResponse(t *testing.T) {
 	mock := &runnerMockAgent{}
 	renderer := &runnerMockRenderer{
