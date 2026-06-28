@@ -66,7 +66,7 @@ func TestFireworksEmbeddingModelDoEmbedMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if seenBody["model"] != "nomic-embed" || len(out.Embeddings) != 2 || out.Usage.InputTokens != 7 {
+	if seenBody["model"] != "nomic-embed" || len(out.Embeddings) != 2 || out.Usage.Tokens != 7 || out.Usage.InputTokens != 7 || out.Usage.TotalTokens != 9 {
 		t.Fatalf("embedding result mismatch body=%#v out=%#v", seenBody, out)
 	}
 }

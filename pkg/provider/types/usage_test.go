@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,18 @@ func TestEmbeddingUsage_Fields(t *testing.T) {
 	}
 	if eu.TotalTokens != 100 {
 		t.Errorf("expected TotalTokens 100, got %d", eu.TotalTokens)
+	}
+}
+
+func TestEmbeddingUsageMarshalNaNTokensAsNull(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(EmbeddingUsage{Tokens: math.NaN()})
+	if err != nil {
+		t.Fatalf("Marshal EmbeddingUsage with NaN tokens: %v", err)
+	}
+	if string(raw) != `{"tokens":null,"inputTokens":0,"totalTokens":0}` {
+		t.Fatalf("json = %s", raw)
 	}
 }
 

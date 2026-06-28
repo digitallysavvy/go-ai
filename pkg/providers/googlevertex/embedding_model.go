@@ -136,7 +136,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		totalTokens += pred.Embeddings.Statistics.TokenCount
 	}
 
-	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)}
+	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}
 	responses := make([]types.EmbeddingResponse, len(inputs))
 	for i := range inputs {
 		responses[i] = respEntry
@@ -145,6 +145,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
 		},

@@ -90,7 +90,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage:      types.EmbeddingUsage{InputTokens: tokens, TotalTokens: tokens},
+		Usage:      types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens},
 		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
 	}, nil
 }

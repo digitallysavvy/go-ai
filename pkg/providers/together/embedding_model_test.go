@@ -40,7 +40,7 @@ func TestEmbeddingModelDoEmbedManyAndDoEmbed(t *testing.T) {
 				{"object": "embedding", "embedding": []float64{3.3, 4.4}, "index": 1},
 			},
 			"model": "embed-model",
-			"usage": map[string]interface{}{"prompt_tokens": 6, "total_tokens": 6},
+			"usage": map[string]interface{}{"prompt_tokens": 6, "total_tokens": 8},
 		})
 	}))
 	defer server.Close()
@@ -57,7 +57,7 @@ func TestEmbeddingModelDoEmbedManyAndDoEmbed(t *testing.T) {
 	if len(res.Embeddings) != 2 || len(res.Embeddings[0]) != 2 {
 		t.Fatalf("unexpected embeddings result: %+v", res)
 	}
-	if res.Usage.InputTokens != 6 || res.Usage.TotalTokens != 6 {
+	if res.Usage.Tokens != 6 || res.Usage.InputTokens != 6 || res.Usage.TotalTokens != 8 {
 		t.Fatalf("unexpected usage: %+v", res.Usage)
 	}
 	if len(res.Responses) != 1 || res.Responses[0].Headers["X-Req"] != "123" {
@@ -70,7 +70,7 @@ func TestEmbeddingModelDoEmbedManyAndDoEmbed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbed() error = %v", err)
 	}
-	if len(one.Embedding) != 2 || one.Usage.InputTokens != 6 {
+	if len(one.Embedding) != 2 || one.Usage.Tokens != 6 || one.Usage.InputTokens != 6 || one.Usage.TotalTokens != 8 {
 		t.Fatalf("unexpected single embedding result: %+v", one)
 	}
 }

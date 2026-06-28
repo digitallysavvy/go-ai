@@ -109,10 +109,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: response.Embeddings,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
 			InputTokens: response.Meta.BilledUnits.InputTokens,
 			TotalTokens: response.Meta.BilledUnits.InputTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers)}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
 	}, nil
 }
 

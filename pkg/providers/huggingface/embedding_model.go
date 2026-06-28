@@ -85,6 +85,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	return &types.EmbeddingResult{
 		Embedding: embedding,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
 		},
@@ -132,6 +133,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
 		},

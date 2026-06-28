@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -315,6 +316,7 @@ func TestBedrockEmbeddingCohereV4Response(t *testing.T) {
 		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: 200,
+				Header:     http.Header{"X-Amzn-Bedrock-Input-Token-Count": []string{"6"}},
 				Body:       io.NopCloser(strings.NewReader(`{"embeddings":{"float":[[0.4,0.5]]}}`)),
 			}, nil
 		})},
@@ -324,6 +326,71 @@ func TestBedrockEmbeddingCohereV4Response(t *testing.T) {
 	result, err := cohere.DoEmbed(context.Background(), "hello", nil)
 	if err != nil || len(result.Embedding) != 2 || result.Embedding[0] != 0.4 {
 		t.Fatalf("cohere v4 response mismatch result=%#v err=%v", result, err)
+	}
+	if result.Usage.Tokens != 6 || result.Usage.InputTokens != 6 {
+		t.Fatalf("cohere usage = %#v, want header token count 6", result.Usage)
+	}
+}
+
+func TestBedrockEmbeddingCohereV4MissingTokenHeaderReturnsNaN(t *testing.T) {
+	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"embeddings":{"float":[[0.4,0.5]]}}`)),
+			}, nil
+		})},
+	})
+
+	cohere := NewEmbeddingModel(p, "cohere.embed-v4:0")
+	result, err := cohere.DoEmbed(context.Background(), "hello", nil)
+	if err != nil || len(result.Embedding) != 2 {
+		t.Fatalf("cohere v4 response mismatch result=%#v err=%v", result, err)
+	}
+	if !math.IsNaN(result.Usage.Tokens) {
+		t.Fatalf("cohere usage tokens = %#v, want NaN when header is absent", result.Usage)
+	}
+	if result.Usage.InputTokens != 0 || result.Usage.TotalTokens != 0 {
+		t.Fatalf("legacy integer usage = %#v, want zero when TS tokens is NaN", result.Usage)
+	}
+}
+
+func TestBedrockEmbeddingCohereInferenceProfileUsesCohereShape(t *testing.T) {
+	var requestBody map[string]interface{}
+	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(body, &requestBody); err != nil {
+				t.Fatalf("decode cohere request: %v", err)
+			}
+			if !strings.Contains(req.URL.Path, "us.cohere.embed-v4:0") {
+				t.Fatalf("path = %q, want inference profile model ID", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"X-Amzn-Bedrock-Input-Token-Count": []string{"6"}},
+				Body:       io.NopCloser(strings.NewReader(`{"embeddings":{"float":[[0.4,0.5]]}}`)),
+			}, nil
+		})},
+	})
+
+	cohere := NewEmbeddingModel(p, "us.cohere.embed-v4:0")
+	result, err := cohere.DoEmbed(context.Background(), "hello", nil)
+	if err != nil || len(result.Embedding) != 2 {
+		t.Fatalf("cohere inference profile response mismatch result=%#v err=%v", result, err)
+	}
+	if result.Usage.Tokens != 6 {
+		t.Fatalf("cohere inference profile usage = %#v, want header token count 6", result.Usage)
+	}
+	if requestBody["input_type"] != "search_query" || requestBody["texts"] == nil {
+		t.Fatalf("cohere inference profile request used non-cohere shape: %#v", requestBody)
 	}
 }
 

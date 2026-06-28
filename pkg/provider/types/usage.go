@@ -1,6 +1,10 @@
 package types
 
-import "time"
+import (
+	"encoding/json"
+	"math"
+	"time"
+)
 
 // Usage represents token or resource usage for an API call
 // Updated to match TypeScript AI SDK v6.0 with detailed token tracking
@@ -174,13 +178,35 @@ func (u Usage) GetTotalTokens() int64 {
 // EmbeddingUsage represents usage for embedding operations
 type EmbeddingUsage struct {
 	// Tokens matches the TypeScript EmbeddingModelV4 usage field.
-	Tokens int `json:"tokens,omitempty"`
+	// It is float64 so providers can surface JavaScript number semantics such
+	// as NaN when the TypeScript SDK does.
+	Tokens float64 `json:"tokens,omitempty"`
 
 	// Number of tokens in the input text
 	InputTokens int `json:"inputTokens"`
 
 	// Total tokens
 	TotalTokens int `json:"totalTokens"`
+}
+
+func (u EmbeddingUsage) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Tokens      interface{} `json:"tokens"`
+		InputTokens int         `json:"inputTokens"`
+		TotalTokens int         `json:"totalTokens"`
+	}
+	var tokens interface{}
+	switch {
+	case math.IsNaN(u.Tokens), math.IsInf(u.Tokens, 0):
+		tokens = nil
+	default:
+		tokens = u.Tokens
+	}
+	return json.Marshal(alias{
+		Tokens:      tokens,
+		InputTokens: u.InputTokens,
+		TotalTokens: u.TotalTokens,
+	})
 }
 
 // ImageUsage represents usage for image generation operations

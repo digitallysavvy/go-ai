@@ -38,7 +38,7 @@ func TestOllamaEmbeddingModelMetadataAndDoEmbed(t *testing.T) {
 	if seenBody["model"] != "nomic-embed" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
-	if len(out.Embedding) != 2 || out.Usage.InputTokens != 3 {
+	if len(out.Embedding) != 2 || out.Usage.Tokens != 3 || out.Usage.InputTokens != 3 || out.Usage.TotalTokens != 4 {
 		t.Fatalf("result mismatch: %#v", out)
 	}
 }

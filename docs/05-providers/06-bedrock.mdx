@@ -7,6 +7,8 @@ description: Setup and usage guide for AWS Bedrock multi-model platform with Go-
 
 AWS Bedrock provides access to multiple foundation models from different providers through a single API. Includes models from Anthropic, Meta, Cohere, AI21, Amazon, and more with enterprise-grade security and compliance.
 
+Cohere embedding models are detected both as direct model IDs such as `cohere.embed-v4` and cross-region inference profile IDs such as `us.cohere.embed-v4:0`. The request body uses the Cohere embedding shape in both cases.
+
 ## Setup
 
 ### Installation

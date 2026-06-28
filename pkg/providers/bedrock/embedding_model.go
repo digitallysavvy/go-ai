@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -73,7 +75,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	}
 
 	isNovaModel := strings.HasPrefix(m.modelID, "amazon.nova-") && strings.Contains(m.modelID, "embed")
-	isCohereModel := strings.HasPrefix(m.modelID, "cohere.embed-")
+	isCohereModel := bedrockIsCohereEmbeddingModel(m.modelID)
 
 	switch {
 	case isNovaModel:
@@ -250,11 +252,20 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if embedding == nil {
 		return nil, fmt.Errorf("no embeddings in response")
 	}
+	tokens := float64(inputTokens)
+	if isCohereModel {
+		if headerTokens, err := strconv.Atoi(resp.Header.Get("x-amzn-bedrock-input-token-count")); err == nil {
+			inputTokens = headerTokens
+			tokens = float64(headerTokens)
+		} else {
+			tokens = math.NaN()
+		}
+	}
 
 	return &types.EmbeddingResult{
 		Embedding: embedding,
 		Usage: types.EmbeddingUsage{
-			Tokens:      inputTokens,
+			Tokens:      tokens,
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
 		},
@@ -370,6 +381,14 @@ func intOption(value interface{}) (int, bool) {
 	}
 }
 
+func bedrockIsCohereEmbeddingModel(modelID string) bool {
+	if strings.HasPrefix(modelID, "cohere.embed-") {
+		return true
+	}
+	parts := strings.SplitN(modelID, ".", 2)
+	return len(parts) == 2 && strings.HasPrefix(parts[1], "cohere.embed-")
+}
+
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	var embeddings [][]float64
@@ -392,7 +411,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
-			Tokens:      totalTokens,
+			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
 		},
