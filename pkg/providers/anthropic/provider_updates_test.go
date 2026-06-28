@@ -114,6 +114,199 @@ func TestOutputConfigFormat(t *testing.T) {
 	}
 }
 
+func TestClaudeFable5CapabilitiesAndFallbacksRequest(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	maxTokens := 64000
+	model := NewLanguageModel(prov, ClaudeFable5, &ModelOptions{
+		Fallbacks: []FallbackConfig{{
+			Model:     ClaudeOpus4_8,
+			MaxTokens: &maxTokens,
+			Thinking:  map[string]interface{}{"type": "adaptive"},
+			Speed:     SpeedStandard,
+		}},
+	})
+
+	if !model.SupportsStructuredOutput() {
+		t.Fatal("claude-fable-5 should support native structured output")
+	}
+	if got := anthropicMaxOutputTokens(ClaudeFable5); got != 128000 {
+		t.Fatalf("max output tokens = %d, want 128000", got)
+	}
+	if !anthropicSupportsAdaptiveThinking(ClaudeFable5) || !anthropicSupportsXHighEffort(ClaudeFable5) {
+		t.Fatal("claude-fable-5 should support adaptive thinking and xhigh effort")
+	}
+
+	body := model.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}, false)
+	fallbacks, ok := body["fallbacks"].([]FallbackConfig)
+	if !ok || len(fallbacks) != 1 {
+		t.Fatalf("fallbacks = %#v, want one FallbackConfig", body["fallbacks"])
+	}
+	if fallbacks[0].Model != ClaudeOpus4_8 || fallbacks[0].MaxTokens == nil || *fallbacks[0].MaxTokens != maxTokens {
+		t.Fatalf("fallback = %#v", fallbacks[0])
+	}
+	if h := model.getBetaHeaders(); !strings.Contains(h, BetaHeaderServerSideFallback) {
+		t.Fatalf("anthropic-beta = %q, want %q", h, BetaHeaderServerSideFallback)
+	}
+
+	noFallbacks := NewLanguageModel(prov, ClaudeFable5, &ModelOptions{})
+	noFallbackBody := noFallbacks.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}, false)
+	if _, ok := noFallbackBody["fallbacks"]; ok {
+		t.Fatalf("fallbacks should be omitted when unset: %#v", noFallbackBody["fallbacks"])
+	}
+	if h := noFallbacks.getBetaHeaders(); strings.Contains(h, BetaHeaderServerSideFallback) {
+		t.Fatalf("anthropic-beta = %q, should not include %q", h, BetaHeaderServerSideFallback)
+	}
+}
+
+func TestAnthropicFallbackResponsePreservesBlockAndIterations(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeFable5, nil)
+
+	response := anthropicResponse{
+		ID:         "msg_01FallbackExampleAbcdefghij",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      ClaudeOpus4_8,
+		StopReason: "end_turn",
+		Content: []anthropicContent{
+			{
+				Type: "fallback",
+				From: map[string]interface{}{"model": ClaudeFable5},
+				To:   map[string]interface{}{"model": ClaudeOpus4_8},
+			},
+			{Type: "text", Text: "The printing press was invented by Johannes Gutenberg around 1440."},
+		},
+		Usage: anthropicUsage{
+			InputTokens:  412,
+			OutputTokens: 264,
+			Iterations: []UsageIteration{
+				{Type: "message", Model: ClaudeFable5, InputTokens: 408, OutputTokens: 0},
+				{Type: "fallback_message", Model: ClaudeOpus4_8, InputTokens: 412, OutputTokens: 264},
+			},
+		},
+	}
+
+	result := model.convertResponse(response, false, nil)
+	if result.Text != "The printing press was invented by Johannes Gutenberg around 1440." {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	for _, part := range result.Content {
+		if custom, ok := part.(types.CustomContent); ok && custom.Kind == "anthropic-fallback" {
+			t.Fatalf("fallback content block should be dropped like TS, got %#v", part)
+		}
+	}
+	if result.Usage.Raw["iterations"] == nil {
+		t.Fatalf("usage raw missing iterations: %#v", result.Usage.Raw)
+	}
+	if result.Usage.InputTokens == nil || *result.Usage.InputTokens != 412 {
+		t.Fatalf("usage input tokens = %#v, want top-level fallback usage 412", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens == nil || *result.Usage.OutputTokens != 264 {
+		t.Fatalf("usage output tokens = %#v, want top-level fallback usage 264", result.Usage.OutputTokens)
+	}
+	meta, ok := result.ProviderMetadata["anthropic"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("provider metadata missing anthropic object: %#v", result.ProviderMetadata)
+	}
+	iterations, ok := meta["iterations"].([]map[string]interface{})
+	if !ok || len(iterations) != 2 {
+		t.Fatalf("provider metadata iterations = %#v, want two mapped iterations", meta["iterations"])
+	}
+	if iterations[1]["type"] != "fallback_message" || iterations[1]["model"] != ClaudeOpus4_8 {
+		t.Fatalf("fallback iteration metadata = %#v", iterations[1])
+	}
+}
+
+func TestAnthropicResponseProviderMetadataStopDetails(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeFable5, nil)
+
+	result := model.convertResponse(anthropicResponse{
+		ID:           "msg_stop_details",
+		Type:         "message",
+		Role:         "assistant",
+		Model:        ClaudeFable5,
+		StopReason:   "refusal",
+		StopSequence: "END",
+		StopDetails: &anthropicStopDetails{
+			Type:             "refusal",
+			Category:         "cyber",
+			Explanation:      "blocked",
+			RecommendedModel: ClaudeFable5,
+		},
+		Content: []anthropicContent{{Type: "text", Text: "blocked"}},
+		Usage:   anthropicUsage{InputTokens: 1, OutputTokens: 1},
+	}, false, nil)
+
+	meta, ok := result.ProviderMetadata["anthropic"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("provider metadata missing anthropic object: %#v", result.ProviderMetadata)
+	}
+	if meta["stopSequence"] != "END" {
+		t.Fatalf("stopSequence = %#v, want END", meta["stopSequence"])
+	}
+	stopDetails, ok := meta["stopDetails"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stopDetails = %#v, want map", meta["stopDetails"])
+	}
+	if stopDetails["type"] != "refusal" || stopDetails["category"] != "cyber" ||
+		stopDetails["explanation"] != "blocked" || stopDetails["recommendedModel"] != ClaudeFable5 {
+		t.Fatalf("stopDetails = %#v", stopDetails)
+	}
+}
+
+func TestAnthropicResponseProviderMetadataContainerSkillsAndContextManagementMatchTypeScript(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeFable5, nil)
+
+	result := model.convertResponse(anthropicResponse{
+		ID:         "msg_container",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      ClaudeFable5,
+		StopReason: "end_turn",
+		Content:    []anthropicContent{{Type: "text", Text: "done"}},
+		Usage:      anthropicUsage{InputTokens: 10, OutputTokens: 2},
+		Container: &anthropicContainerResponse{
+			ID:        "container_123",
+			ExpiresAt: "2026-05-22T23:31:03.230609Z",
+			Skills: []anthropicContainerSkillResponse{{
+				Type:    "anthropic",
+				SkillID: "pptx",
+				Version: "20251013",
+			}},
+		},
+		ContextManagement: &ContextManagementResponse{
+			AppliedEdits: []AppliedEdit{
+				&AppliedClearToolUsesEdit{
+					Type:               "clear_tool_uses_20250919",
+					ClearedToolUses:    2,
+					ClearedInputTokens: 30,
+				},
+				&AppliedCompactEdit{Type: "compact_20260112"},
+			},
+		},
+	}, false, nil)
+
+	meta := result.ProviderMetadata["anthropic"].(map[string]interface{})
+	container := meta["container"].(map[string]interface{})
+	skills := container["skills"].([]map[string]interface{})
+	if container["id"] != "container_123" || skills[0]["skillId"] != "pptx" || skills[0]["version"] != "20251013" {
+		t.Fatalf("container metadata = %#v", container)
+	}
+	contextManagement := meta["contextManagement"].(map[string]interface{})
+	appliedEdits := contextManagement["appliedEdits"].([]map[string]interface{})
+	if len(appliedEdits) != 2 {
+		t.Fatalf("appliedEdits = %#v", appliedEdits)
+	}
+	if appliedEdits[0]["clearedToolUses"] != 2 || appliedEdits[0]["clearedInputTokens"] != 30 {
+		t.Fatalf("clear tool uses edit = %#v", appliedEdits[0])
+	}
+	if appliedEdits[1]["type"] != "compact_20260112" {
+		t.Fatalf("compact edit = %#v", appliedEdits[1])
+	}
+}
+
 func TestOutputConfigFormatSanitizesSchema(t *testing.T) {
 	schema := map[string]interface{}{
 		"type":                 "object",
@@ -983,6 +1176,111 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 	}
 }
 
+func TestStreamingFallbackUsageAndIterationsMatchTypeScript(t *testing.T) {
+	sseData := "" +
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01FallbackStreamAbcdefghij\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":408,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"fallback\",\"from\":{\"model\":\"claude-fable-5\"},\"to\":{\"model\":\"claude-opus-4-8\"}}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"The printing press was invented by Johannes Gutenberg around 1440.\"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":412,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":264,\"iterations\":[{\"type\":\"message\",\"model\":\"claude-fable-5\",\"input_tokens\":408,\"output_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0},{\"type\":\"fallback_message\",\"model\":\"claude-opus-4-8\",\"input_tokens\":412,\"output_tokens\":264,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}]}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+
+	textChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() text chunk error: %v", err)
+	}
+	if textChunk.Type != provider.ChunkTypeText || textChunk.Text != "The printing press was invented by Johannes Gutenberg around 1440." {
+		t.Fatalf("unexpected text chunk: %#v", textChunk)
+	}
+
+	finishChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() finish chunk error: %v", err)
+	}
+	if finishChunk.Type != provider.ChunkTypeFinish {
+		t.Fatalf("chunk type = %v, want finish", finishChunk.Type)
+	}
+	if finishChunk.Usage == nil || finishChunk.Usage.InputTokens == nil || *finishChunk.Usage.InputTokens != 412 {
+		t.Fatalf("finish input tokens = %#v, want top-level fallback usage 412", finishChunk.Usage)
+	}
+	if finishChunk.Usage.OutputTokens == nil || *finishChunk.Usage.OutputTokens != 264 {
+		t.Fatalf("finish output tokens = %#v, want top-level fallback usage 264", finishChunk.Usage.OutputTokens)
+	}
+
+	var meta map[string]map[string]interface{}
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode provider metadata: %v", err)
+	}
+	iterations, ok := meta["anthropic"]["iterations"].([]interface{})
+	if !ok || len(iterations) != 2 {
+		t.Fatalf("provider metadata iterations = %#v", meta["anthropic"]["iterations"])
+	}
+	fallbackIteration, ok := iterations[1].(map[string]interface{})
+	if !ok || fallbackIteration["type"] != "fallback_message" || fallbackIteration["model"] != ClaudeOpus4_8 {
+		t.Fatalf("fallback iteration metadata = %#v", iterations[1])
+	}
+}
+
+func TestStreamingStopSequenceAndDetailsMetadataMatchTypeScript(t *testing.T) {
+	sseData := "" +
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stop_details\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"blocked\"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_sequence\":\"END\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\",\"explanation\":\"blocked\",\"recommended_model\":\"claude-fable-5\"},\"container\":{\"id\":\"container_123\",\"expires_at\":\"2026-05-22T23:31:03.230609Z\",\"skills\":[{\"type\":\"anthropic\",\"skill_id\":\"pptx\",\"version\":\"20251013\"}]}},\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"context_management\":{\"applied_edits\":[{\"type\":\"clear_thinking_20251015\",\"cleared_thinking_turns\":1,\"cleared_input_tokens\":4}]}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	if chunk, err := stream.Next(); err != nil || chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("text chunk = %#v err=%v", chunk, err)
+	}
+	finishChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("finish chunk error: %v", err)
+	}
+	if finishChunk.Type != provider.ChunkTypeFinish {
+		t.Fatalf("chunk type = %v, want finish", finishChunk.Type)
+	}
+
+	var meta map[string]map[string]interface{}
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode provider metadata: %v", err)
+	}
+	anthropicMeta := meta["anthropic"]
+	if anthropicMeta["stopSequence"] != "END" {
+		t.Fatalf("stopSequence = %#v, want END", anthropicMeta["stopSequence"])
+	}
+	stopDetails, ok := anthropicMeta["stopDetails"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stopDetails = %#v, want map", anthropicMeta["stopDetails"])
+	}
+	if stopDetails["type"] != "refusal" || stopDetails["category"] != "cyber" ||
+		stopDetails["explanation"] != "blocked" || stopDetails["recommendedModel"] != ClaudeFable5 {
+		t.Fatalf("stopDetails = %#v", stopDetails)
+	}
+	container, ok := anthropicMeta["container"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("container = %#v, want map", anthropicMeta["container"])
+	}
+	skills, ok := container["skills"].([]interface{})
+	if !ok || len(skills) != 1 {
+		t.Fatalf("container skills = %#v, want one skill", container["skills"])
+	}
+	skill := skills[0].(map[string]interface{})
+	if skill["skillId"] != "pptx" || skill["version"] != "20251013" {
+		t.Fatalf("skill metadata = %#v", skill)
+	}
+	contextManagement, ok := anthropicMeta["contextManagement"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("contextManagement = %#v, want map", anthropicMeta["contextManagement"])
+	}
+	appliedEdits := contextManagement["appliedEdits"].([]interface{})
+	edit := appliedEdits[0].(map[string]interface{})
+	if edit["clearedThinkingTurns"] != float64(1) || edit["clearedInputTokens"] != float64(4) {
+		t.Fatalf("context edit = %#v", edit)
+	}
+}
+
 // TestStreamingUsageWithNoMessageStart verifies graceful handling when message_start is absent.
 func TestStreamingUsageWithNoMessageStart(t *testing.T) {
 	sseData := "" +
@@ -1007,20 +1305,6 @@ func TestStreamingUsageWithNoMessageStart(t *testing.T) {
 	if *finishChunk.Usage.TotalTokens != 3 {
 		t.Errorf("TotalTokens = %d, want 3", *finishChunk.Usage.TotalTokens)
 	}
-}
-
-// --- Integration test placeholder (ANT-T05, ANT-T11) ---
-
-// TestOutputConfigIntegration is a live integration test that verifies output_config.format
-// works against the real Anthropic API. Skips when ANTHROPIC_API_KEY is not set.
-func TestOutputConfigIntegration(t *testing.T) {
-	t.Skip("Integration test: run manually with ANTHROPIC_API_KEY set")
-}
-
-// TestAutomaticCachingIntegration is a live integration test that verifies automatic caching
-// works against the real Anthropic API. Skips when ANTHROPIC_API_KEY is not set.
-func TestAutomaticCachingIntegration(t *testing.T) {
-	t.Skip("Integration test: run manually with ANTHROPIC_API_KEY set")
 }
 
 // --- metadata.user_id tests ---

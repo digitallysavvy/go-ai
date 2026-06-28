@@ -86,6 +86,7 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 	id := m.modelID
 	return strings.Contains(id, "claude-opus-4-8") ||
 		strings.Contains(id, "claude-opus-4-7") ||
+		strings.Contains(id, "claude-fable-5") ||
 		strings.Contains(id, "claude-sonnet-4-6") ||
 		strings.Contains(id, "claude-opus-4-6") ||
 		strings.Contains(id, "claude-sonnet-4-5") ||
@@ -415,6 +416,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if m.options != nil && m.options.InferenceGeo != "" {
 		body["inference_geo"] = m.options.InferenceGeo
 	}
+	if m.options != nil && len(m.options.Fallbacks) > 0 {
+		body["fallbacks"] = m.options.Fallbacks
+	}
 
 	// cache_control: explicit CacheControl takes precedence over AutomaticCaching.
 	if m.options != nil && m.options.CacheControl != nil {
@@ -670,6 +674,7 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 		// Fallback to legacy location in usage block
 		result.ContextManagement = response.Usage.ContextManagement
 	}
+	result.ProviderMetadata = anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement)
 
 	return result
 }
@@ -747,13 +752,29 @@ func mapAnthropicToolName(name string, providerToSDK map[string]string) string {
 func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	var inputTokens, outputTokens int64
 
-	// When iterations is present (compaction occurred), sum across all iterations
-	// to get the true total tokens consumed/billed. The top-level input_tokens
-	// and output_tokens exclude compaction iteration usage.
-	if len(usage.Iterations) > 0 {
+	servedByFallback := false
+	for _, iter := range usage.Iterations {
+		if iter.Type == "fallback_message" {
+			servedByFallback = true
+			break
+		}
+	}
+
+	// When executor iterations are present for compaction/advisor work, sum the
+	// executor iterations because top-level input/output exclude that work.
+	// Server-side fallback is the exception: top-level usage already reflects
+	// the served fallback answer, while the primary message iteration is only
+	// the blocked/failed attempt.
+	if len(usage.Iterations) > 0 && !servedByFallback {
 		for _, iter := range usage.Iterations {
-			inputTokens += int64(iter.InputTokens)
-			outputTokens += int64(iter.OutputTokens)
+			if iter.Type == "compaction" || iter.Type == "message" {
+				inputTokens += int64(iter.InputTokens)
+				outputTokens += int64(iter.OutputTokens)
+			}
+		}
+		if inputTokens == 0 && outputTokens == 0 {
+			inputTokens = int64(usage.InputTokens)
+			outputTokens = int64(usage.OutputTokens)
 		}
 	} else {
 		inputTokens = int64(usage.InputTokens)
@@ -805,6 +826,157 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	}
 
 	return result
+}
+
+func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}) map[string]interface{} {
+	anthropic := map[string]interface{}{
+		"usage":             anthropicRawUsage(usage),
+		"stopSequence":      nil,
+		"iterations":        anthropicUsageIterationsMetadata(usage.Iterations),
+		"container":         nil,
+		"contextManagement": mapAnthropicContextManagement(contextManagement),
+	}
+	if stopSequence != "" {
+		anthropic["stopSequence"] = stopSequence
+	}
+	if mappedStopDetails := mapAnthropicStopDetails(stopDetails); mappedStopDetails != nil {
+		anthropic["stopDetails"] = mappedStopDetails
+	}
+	if container != nil {
+		anthropic["container"] = map[string]interface{}{
+			"expiresAt": container.ExpiresAt,
+			"id":        container.ID,
+			"skills":    mapAnthropicContainerSkills(container.Skills),
+		}
+	}
+	return map[string]interface{}{"anthropic": anthropic}
+}
+
+func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}) json.RawMessage {
+	raw, err := json.Marshal(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement))
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func mapAnthropicStopDetails(stopDetails *anthropicStopDetails) map[string]interface{} {
+	if stopDetails == nil {
+		return nil
+	}
+	out := map[string]interface{}{"type": stopDetails.Type}
+	if stopDetails.Category != "" {
+		out["category"] = stopDetails.Category
+	}
+	if stopDetails.Explanation != "" {
+		out["explanation"] = stopDetails.Explanation
+	}
+	if stopDetails.RecommendedModel != "" {
+		out["recommendedModel"] = stopDetails.RecommendedModel
+	}
+	return out
+}
+
+func mapAnthropicContainerSkills(skills []anthropicContainerSkillResponse) interface{} {
+	if len(skills) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(skills))
+	for _, skill := range skills {
+		item := map[string]interface{}{
+			"type":    skill.Type,
+			"skillId": skill.SkillID,
+		}
+		if skill.Version != "" {
+			item["version"] = skill.Version
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func mapAnthropicContextManagement(contextManagement interface{}) interface{} {
+	if contextManagement == nil {
+		return nil
+	}
+	switch cm := contextManagement.(type) {
+	case *ContextManagementResponse:
+		return mapAnthropicContextManagementResponse(cm)
+	case ContextManagementResponse:
+		return mapAnthropicContextManagementResponse(&cm)
+	default:
+		return contextManagement
+	}
+}
+
+func mapAnthropicContextManagementResponse(contextManagement *ContextManagementResponse) interface{} {
+	if contextManagement == nil {
+		return nil
+	}
+	edits := make([]map[string]interface{}, 0, len(contextManagement.AppliedEdits))
+	for _, edit := range contextManagement.AppliedEdits {
+		switch e := edit.(type) {
+		case *AppliedClearToolUsesEdit:
+			edits = append(edits, map[string]interface{}{
+				"type":               e.Type,
+				"clearedToolUses":    e.ClearedToolUses,
+				"clearedInputTokens": e.ClearedInputTokens,
+			})
+		case *AppliedClearThinkingEdit:
+			edits = append(edits, map[string]interface{}{
+				"type":                 e.Type,
+				"clearedThinkingTurns": e.ClearedThinkingTurns,
+				"clearedInputTokens":   e.ClearedInputTokens,
+			})
+		case *AppliedCompactEdit:
+			edits = append(edits, map[string]interface{}{
+				"type": e.Type,
+			})
+		}
+	}
+	return map[string]interface{}{"appliedEdits": edits}
+}
+
+func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
+	raw := map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		raw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.CacheReadInputTokens > 0 {
+		raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+	if len(usage.Iterations) > 0 {
+		raw["iterations"] = usage.Iterations
+	}
+	return raw
+}
+
+func anthropicUsageIterationsMetadata(iterations []UsageIteration) interface{} {
+	if len(iterations) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(iterations))
+	for _, iter := range iterations {
+		item := map[string]interface{}{
+			"type":         iter.Type,
+			"inputTokens":  iter.InputTokens,
+			"outputTokens": iter.OutputTokens,
+		}
+		if iter.Model != "" {
+			item["model"] = iter.Model
+		}
+		if iter.CacheCreationInputTokens > 0 {
+			item["cacheCreationInputTokens"] = iter.CacheCreationInputTokens
+		}
+		if iter.CacheReadInputTokens > 0 {
+			item["cacheReadInputTokens"] = iter.CacheReadInputTokens
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // Tool name constants used to detect code execution tools when building beta headers and warnings.
@@ -933,6 +1105,9 @@ func (m *LanguageModel) getBetaHeaders() string {
 	if len(m.options.MCPServers) > 0 {
 		headers = append(headers, BetaHeaderMCPClient)
 	}
+	if len(m.options.Fallbacks) > 0 {
+		headers = append(headers, BetaHeaderServerSideFallback)
+	}
 
 	// Container skills require three beta headers; plain container without skills needs none
 	if m.options.Container != nil && len(m.options.Container.Skills) > 0 {
@@ -1041,7 +1216,7 @@ func (m *LanguageModel) handleError(err error) error {
 func anthropicMaxOutputTokens(modelID string) int {
 	lower := strings.ToLower(modelID)
 	switch {
-	case strings.Contains(lower, "claude-opus-4-7"):
+	case strings.Contains(lower, "claude-opus-4-8") || strings.Contains(lower, "claude-opus-4-7") || strings.Contains(lower, "claude-fable-5"):
 		return 128000
 	case strings.Contains(lower, "claude-sonnet-4-6") || strings.Contains(lower, "claude-opus-4-6"):
 		return 128000
@@ -1063,12 +1238,14 @@ func anthropicMaxOutputTokens(modelID string) int {
 func anthropicSupportsAdaptiveThinking(modelID string) bool {
 	lower := strings.ToLower(modelID)
 	return strings.Contains(lower, "claude-opus-4-7") ||
+		strings.Contains(lower, "claude-fable-5") ||
 		strings.Contains(lower, "claude-sonnet-4-6") ||
 		strings.Contains(lower, "claude-opus-4-6")
 }
 
 func anthropicSupportsXHighEffort(modelID string) bool {
-	return strings.Contains(strings.ToLower(modelID), "claude-opus-4-7")
+	lower := strings.ToLower(modelID)
+	return strings.Contains(lower, "claude-opus-4-7") || strings.Contains(lower, "claude-fable-5")
 }
 
 func anthropicReasoningEffort(level types.ReasoningLevel, modelID string) string {
@@ -1122,21 +1299,36 @@ func anthropicReasoningBudget(level types.ReasoningLevel, modelID string) int {
 // anthropicContainerResponse represents container info returned in the Anthropic API response.
 // The container field is present when a container was used or created during the request.
 type anthropicContainerResponse struct {
-	ID        string `json:"id"`
-	ExpiresAt string `json:"expires_at,omitempty"`
+	ID        string                            `json:"id"`
+	ExpiresAt string                            `json:"expires_at,omitempty"`
+	Skills    []anthropicContainerSkillResponse `json:"skills,omitempty"`
+}
+
+type anthropicContainerSkillResponse struct {
+	Type    string `json:"type"`
+	SkillID string `json:"skill_id"`
+	Version string `json:"version,omitempty"`
+}
+
+type anthropicStopDetails struct {
+	Type             string `json:"type"`
+	Category         string `json:"category,omitempty"`
+	Explanation      string `json:"explanation,omitempty"`
+	RecommendedModel string `json:"recommended_model,omitempty"`
 }
 
 // anthropicResponse represents the Anthropic API response
 // Updated in v6.0 to support prompt caching and context management
 type anthropicResponse struct {
-	ID           string             `json:"id"`
-	Type         string             `json:"type"`
-	Role         string             `json:"role"`
-	Content      []anthropicContent `json:"content"`
-	Model        string             `json:"model"`
-	StopReason   string             `json:"stop_reason"`
-	StopSequence string             `json:"stop_sequence,omitempty"`
-	Usage        anthropicUsage     `json:"usage"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	Role         string                `json:"role"`
+	Content      []anthropicContent    `json:"content"`
+	Model        string                `json:"model"`
+	StopReason   string                `json:"stop_reason"`
+	StopSequence string                `json:"stop_sequence,omitempty"`
+	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
+	Usage        anthropicUsage        `json:"usage"`
 	// Root-level context management (new location - takes precedence)
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
@@ -1159,9 +1351,12 @@ type anthropicUsage struct {
 // When compaction occurs, the API returns an iterations array showing
 // usage for each sampling iteration (compaction + message).
 type UsageIteration struct {
-	Type         string `json:"type"`          // "compaction" or "message"
-	InputTokens  int    `json:"input_tokens"`  // Input tokens for this iteration
-	OutputTokens int    `json:"output_tokens"` // Output tokens for this iteration
+	Type                     string `json:"type"`                                  // "compaction", "message", or fallback iteration type
+	Model                    string `json:"model,omitempty"`                       // Model used for this iteration, when provided
+	InputTokens              int    `json:"input_tokens"`                          // Input tokens for this iteration
+	OutputTokens             int    `json:"output_tokens"`                         // Output tokens for this iteration
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"` // Cache write tokens for this iteration
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`     // Cache read tokens for this iteration
 }
 
 // anthropicContent represents content in an Anthropic response
@@ -1170,6 +1365,8 @@ type anthropicContent struct {
 	Text      string                 `json:"text,omitempty"`
 	ID        string                 `json:"id,omitempty"`
 	Name      string                 `json:"name,omitempty"`
+	From      map[string]interface{} `json:"from,omitempty"`
+	To        map[string]interface{} `json:"to,omitempty"`
 	Input     map[string]interface{} `json:"input,omitempty"`
 	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
 	Signature string                 `json:"signature,omitempty"` // For "thinking" type
@@ -1205,6 +1402,7 @@ type anthropicStream struct {
 	inputTokens      int64
 	cacheReadTokens  int64
 	cacheWriteTokens int64
+	usage            anthropicUsage
 	// In-flight content blocks, keyed by SSE index.
 	// Populated by content_block_start; removed on content_block_stop.
 	contentBlocks map[int]*streamContentBlock
@@ -1215,6 +1413,9 @@ type anthropicStream struct {
 	// container info parsed from message_start/message_delta events.
 	// Present when the model used or created a container during the request.
 	container *anthropicContainerResponse
+	// stop metadata parsed from message_delta for finish provider metadata.
+	stopSequence string
+	stopDetails  *anthropicStopDetails
 	// usesJsonResponseTool is true when the request was built with the synthetic
 	// 'json' tool (jsonTool structured output mode). Text delta events are
 	// suppressed and json tool input_json_delta events are emitted as text chunks.
@@ -1462,9 +1663,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		var msg struct {
 			Message struct {
 				Usage struct {
-					InputTokens              int `json:"input_tokens"`
-					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					InputTokens              int              `json:"input_tokens"`
+					OutputTokens             int              `json:"output_tokens,omitempty"`
+					CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
+					CacheCreationInputTokens int              `json:"cache_creation_input_tokens"`
+					Iterations               []UsageIteration `json:"iterations,omitempty"`
 				} `json:"usage"`
 				Container *anthropicContainerResponse `json:"container,omitempty"`
 				Content   []struct {
@@ -1483,6 +1686,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			s.inputTokens = int64(msg.Message.Usage.InputTokens)
 			s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 			s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+			s.usage.InputTokens = msg.Message.Usage.InputTokens
+			s.usage.OutputTokens = msg.Message.Usage.OutputTokens
+			s.usage.CacheReadInputTokens = msg.Message.Usage.CacheReadInputTokens
+			s.usage.CacheCreationInputTokens = msg.Message.Usage.CacheCreationInputTokens
+			if len(msg.Message.Usage.Iterations) > 0 {
+				s.usage.Iterations = msg.Message.Usage.Iterations
+			}
 
 			// Capture container info (present when container was used/created).
 			// In message_start it contains id and expires_at but no skills.
@@ -1760,10 +1970,16 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		// Parse message delta for finish reason, context management, and container.
 		var delta struct {
 			Delta struct {
-				StopReason string `json:"stop_reason"`
+				StopReason   string                      `json:"stop_reason"`
+				StopSequence string                      `json:"stop_sequence"`
+				StopDetails  *anthropicStopDetails       `json:"stop_details,omitempty"`
+				Container    *anthropicContainerResponse `json:"container,omitempty"`
 			} `json:"delta"`
 			Usage struct {
-				OutputTokens int `json:"output_tokens"`
+				InputTokens              *int `json:"input_tokens,omitempty"`
+				OutputTokens             *int `json:"output_tokens,omitempty"`
+				CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+				CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 				// Legacy location for context management
 				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 				// Iterations breakdown for compaction
@@ -1779,9 +1995,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		// Update container state if the delta contains container info (includes skills).
-		if delta.Container != nil {
+		if delta.Delta.Container != nil {
+			s.container = delta.Delta.Container
+		} else if delta.Container != nil {
 			s.container = delta.Container
 		}
+		s.stopSequence = delta.Delta.StopSequence
+		s.stopDetails = delta.Delta.StopDetails
 
 		if delta.Delta.StopReason != "" {
 			var finishReason types.FinishReason
@@ -1804,25 +2024,30 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				finishReason = types.FinishReasonOther
 			}
 
-			// Build usage from tokens captured across message_start and message_delta.
-			outputTokens := int64(delta.Usage.OutputTokens)
-			inputTotal := s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
-			totalTokens := inputTotal + outputTokens
-			usage := &types.Usage{
-				InputTokens:  &inputTotal,
-				OutputTokens: &outputTokens,
-				TotalTokens:  &totalTokens,
-				InputDetails: &types.InputTokenDetails{
-					NoCacheTokens:    &s.inputTokens,
-					CacheReadTokens:  &s.cacheReadTokens,
-					CacheWriteTokens: &s.cacheWriteTokens,
-				},
+			if delta.Usage.InputTokens != nil {
+				s.inputTokens = int64(*delta.Usage.InputTokens)
+				s.usage.InputTokens = *delta.Usage.InputTokens
 			}
+			if delta.Usage.OutputTokens != nil {
+				s.usage.OutputTokens = *delta.Usage.OutputTokens
+			}
+			if delta.Usage.CacheReadInputTokens != nil {
+				s.cacheReadTokens = int64(*delta.Usage.CacheReadInputTokens)
+				s.usage.CacheReadInputTokens = *delta.Usage.CacheReadInputTokens
+			}
+			if delta.Usage.CacheCreationInputTokens != nil {
+				s.cacheWriteTokens = int64(*delta.Usage.CacheCreationInputTokens)
+				s.usage.CacheCreationInputTokens = *delta.Usage.CacheCreationInputTokens
+			}
+			if len(delta.Usage.Iterations) > 0 {
+				s.usage.Iterations = delta.Usage.Iterations
+			}
+			usage := convertAnthropicUsage(s.usage)
 
 			chunk := &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
-				Usage:        usage,
+				Usage:        &usage,
 			}
 
 			// Extract context management (check root level first, then usage block)
@@ -1831,6 +2056,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			} else if delta.Usage.ContextManagement != nil {
 				chunk.ContextManagement = delta.Usage.ContextManagement
 			}
+			chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement)
 
 			return chunk, nil
 		}

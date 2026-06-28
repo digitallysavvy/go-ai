@@ -230,6 +230,9 @@ const (
 	// BetaHeaderAdvisorTool is required for advisor_20260301.
 	// Automatically injected when that tool is present in the tool list.
 	BetaHeaderAdvisorTool = "advisor-tool-2026-03-01"
+
+	// BetaHeaderServerSideFallback is required when fallbacks are configured.
+	BetaHeaderServerSideFallback = "server-side-fallback-2026-06-01"
 )
 
 // Helper functions for creating edit configurations

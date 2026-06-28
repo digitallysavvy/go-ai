@@ -121,6 +121,8 @@ The default base URL is `https://aws-external-anthropic.{region}.api.aws`. `Work
 
 Set `InferenceGeo` on Anthropic model options to forward the TypeScript SDK `inferenceGeo` provider option as `inference_geo`. Supported values are `"us"` and `"global"`.
 
+`anthropic.ClaudeFable5` is available for Claude Fable 5. `ModelOptions.Fallbacks` forwards Anthropic's server-side fallback configuration and enables the `server-side-fallback-2026-06-01` beta header. Fallback response blocks are consumed like the TypeScript provider and are not returned as content; fallback activity is visible through the raw usage `iterations` metadata.
+
 ```go
 model := anthropic.NewLanguageModel(provider, anthropic.ClaudeOpus4_7, &anthropic.ModelOptions{
     InferenceGeo: "us",

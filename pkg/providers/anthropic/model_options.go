@@ -79,6 +79,15 @@ const (
 	SpeedStandard Speed = "standard"
 )
 
+// FallbackConfig configures one Anthropic server-side fallback attempt.
+type FallbackConfig struct {
+	Model        string                 `json:"model"`
+	MaxTokens    *int                   `json:"max_tokens,omitempty"`
+	Thinking     map[string]interface{} `json:"thinking,omitempty"`
+	OutputConfig map[string]interface{} `json:"output_config,omitempty"`
+	Speed        Speed                  `json:"speed,omitempty"`
+}
+
 // ThinkingConfig configures Claude's extended thinking capabilities
 type ThinkingConfig struct {
 	// Type specifies the thinking mode
@@ -185,6 +194,9 @@ type ModelOptions struct {
 	// InferenceGeo controls where Anthropic inference may run for this request.
 	// Supported values match the TypeScript SDK: "us" or "global".
 	InferenceGeo string `json:"inference_geo,omitempty"`
+
+	// Fallbacks configures Anthropic server-side fallback attempts.
+	Fallbacks []FallbackConfig `json:"fallbacks,omitempty"`
 
 	// ToolStreaming controls whether fine-grained tool streaming is enabled.
 	// Deprecated: the fine-grained-tool-streaming beta header is obsolete in the

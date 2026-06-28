@@ -4,6 +4,9 @@ package anthropic
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.anthropic.com/en/docs/about-claude/models/overview for the full list.
 const (
+	// Claude Fable 5 — model with server-side fallbacks support
+	ClaudeFable5 = "claude-fable-5"
+
 	// Claude Opus 4.8 — Most capable model with native structured output support
 	ClaudeOpus4_8 = "claude-opus-4-8"
 
