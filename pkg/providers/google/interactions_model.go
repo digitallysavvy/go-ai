@@ -281,6 +281,7 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		Timestamp: created,
 		ModelID:   response.Model,
 		Headers:   headers,
+		Body:      rawBody,
 	}
 	return &types.GenerateResult{
 		Text:             text,
@@ -361,11 +362,10 @@ func (m *InteractionsLanguageModel) handleError(err error) error {
 }
 
 func requestHeaders(opts *provider.GenerateOptions) map[string]string {
-	base := map[string]string{"Api-Revision": "2026-05-20"}
 	if opts == nil {
-		return base
+		return nil
 	}
-	return internalhttp.MergeHeaders(opts.Headers, base)
+	return opts.Headers
 }
 
 func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (GoogleInteractionsProviderOptions, error) {

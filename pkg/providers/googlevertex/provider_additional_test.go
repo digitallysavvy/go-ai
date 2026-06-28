@@ -1,8 +1,15 @@
 package googlevertex
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 func TestVertexProvider_CreateAliasesAndClient(t *testing.T) {
@@ -90,6 +97,92 @@ func TestVertexHostMatchesTypeScriptProvider(t *testing.T) {
 	}
 }
 
+func TestVertexChirpTranscriptionRequestAndResponse(t *testing.T) {
+	var capturedURL string
+	var capturedBody map[string]interface{}
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			capturedURL = r.URL.String()
+			if got := r.Header.Get("Authorization"); got != "Bearer token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			return jsonResponse(200, `{
+				"results":[{
+					"alternatives":[{
+						"transcript":"hello world",
+						"words":[
+							{"word":"hello","startOffset":"0s","endOffset":"0.500s"},
+							{"word":"world","startOffset":"0.500s","endOffset":"1s"}
+						]
+					}],
+					"languageCode":"en-US"
+				}],
+				"metadata":{"totalBilledDuration":"1s"}
+			}`), nil
+		})},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	model, err := p.TranscriptionModel("chirp_2")
+	if err != nil {
+		t.Fatalf("TranscriptionModel: %v", err)
+	}
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		AudioBase64: "AQIDBAUGBwg=",
+		MimeType:    "audio/wav",
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"languageCodes": []interface{}{"en-US", "fr-FR"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
+	if capturedURL != "https://us-central1-speech.googleapis.com/v2/projects/test-project/locations/us-central1/recognizers/_:recognize" {
+		t.Fatalf("url = %q", capturedURL)
+	}
+	config := capturedBody["config"].(map[string]interface{})
+	if config["model"] != "chirp_2" || capturedBody["content"] != "AQIDBAUGBwg=" {
+		t.Fatalf("body = %#v", capturedBody)
+	}
+	if result.Text != "hello world" || result.Language != "en" || result.DurationInSeconds == nil || *result.DurationInSeconds != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Segments) != 2 || result.Segments[1].End != 1 {
+		t.Fatalf("segments = %#v", result.Segments)
+	}
+	if result.Response == nil || result.Response.Timestamp.IsZero() || result.Response.ModelID != "chirp_2" {
+		t.Fatalf("response metadata = %#v", result.Response)
+	}
+	if result.Response.Headers["Content-Type"] != "application/json" {
+		t.Fatalf("response headers = %#v", result.Response.Headers)
+	}
+	body, ok := result.Response.Body.(map[string]interface{})
+	if !ok || body["metadata"] == nil {
+		t.Fatalf("response body = %#v, want decoded raw response", result.Response.Body)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
 func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	t.Parallel()
 
@@ -128,8 +221,12 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if emptySpeech.ModelID() != "" {
 		t.Fatalf("SpeechModel(\"\").ModelID() = %q, want empty string", emptySpeech.ModelID())
 	}
-	if _, err := p.TranscriptionModel("x"); err == nil {
-		t.Fatal("TranscriptionModel expected unsupported error")
+	transcription, err := p.TranscriptionModel("chirp_2")
+	if err != nil {
+		t.Fatalf("TranscriptionModel() error = %v", err)
+	}
+	if transcription.Provider() != "google.vertex.transcription" || transcription.ModelID() != "chirp_2" {
+		t.Fatalf("TranscriptionModel metadata = %s/%s", transcription.Provider(), transcription.ModelID())
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")

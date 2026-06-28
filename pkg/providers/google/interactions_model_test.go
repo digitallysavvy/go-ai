@@ -24,6 +24,9 @@ func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/interactions" {
 			t.Fatalf("path = %q, want /interactions", r.URL.Path)
 		}
+		if got := r.Header.Get("Api-Revision"); got != "" {
+			t.Fatalf("Api-Revision header = %q, want empty", got)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -116,6 +119,15 @@ func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
 	}
 	if result.ProviderMetadata["google"].(map[string]interface{})["interactionId"] != "v1_test" {
 		t.Fatalf("provider metadata = %#v", result.ProviderMetadata)
+	}
+	if result.ResponseMetadata == nil || result.ResponseMetadata.ModelID != "gemini-2.5-flash" || result.ResponseMetadata.ID != "v1_test" {
+		t.Fatalf("response metadata = %#v", result.ResponseMetadata)
+	}
+	if result.ResponseMetadata.Timestamp.IsZero() {
+		t.Fatalf("response timestamp must be parsed from created")
+	}
+	if body, ok := result.ResponseMetadata.Body.(json.RawMessage); !ok || !strings.Contains(string(body), `"id":"v1_test"`) {
+		t.Fatalf("response body = %#v, want raw body", result.ResponseMetadata.Body)
 	}
 }
 

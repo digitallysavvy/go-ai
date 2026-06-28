@@ -167,6 +167,8 @@ Use `ai.ConnectRealtime` for a provider-neutral Go session helper. Browser-only
 TypeScript pieces such as `BrowserRealtimeTransport`, `BrowserRealtimeAudio`,
 and `useRealtime` are not part of the Go runtime.
 
+Gemini Live Translate configuration can be passed through `ProviderOptions["google"]["translationConfig"]`. The provider merges it into the realtime session `generationConfig.translationConfig`, matching the TypeScript Live Translate request shape.
+
 ## Provider-Specific Features
 
 ### Service Tier

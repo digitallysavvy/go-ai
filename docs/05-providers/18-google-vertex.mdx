@@ -79,6 +79,8 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 
 Vertex reuses the Gemini speech model implementation and exposes it through `Provider.SpeechModel` and `Provider.Speech`.
 
+Vertex Chirp transcription is exposed through `Provider.TranscriptionModel` and `Provider.Transcription`. Chirp requests use the Vertex Speech-to-Text v2 `recognize` endpoint and support language codes, word time offsets, punctuation, and billed-duration metadata.
+
 | Model ID | Go constant |
 |----------|-------------|
 | `gemini-2.5-flash-tts` | `googlevertex.SpeechModelGemini25FlashTTS` |

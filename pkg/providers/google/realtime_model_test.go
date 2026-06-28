@@ -97,6 +97,25 @@ func TestGoogleRealtimeBuildSessionAndSerialize(t *testing.T) {
 	if !strings.Contains(string(raw), `"responseModalities":["TEXT","AUDIO"]`) || strings.Contains(string(raw), `"$schema"`) {
 		t.Fatalf("session raw = %s", raw)
 	}
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"generationConfig": map[string]interface{}{"temperature": 0.2},
+			"google": map[string]interface{}{
+				"translationConfig": map[string]interface{}{
+					"targetLanguageCode": "pl",
+					"echoTargetLanguage": true,
+				},
+			},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	translation := generation["translationConfig"].(map[string]interface{})
+	if generation["temperature"] != 0.2 || translation["targetLanguageCode"] != "pl" || translation["echoTargetLanguage"] != true {
+		t.Fatalf("generationConfig = %#v", generation)
+	}
+	if _, ok := setup["google"]; ok {
+		t.Fatalf("setup should not include raw google provider options: %#v", setup)
+	}
 	raw, err = model.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "abc"})
 	if err != nil || !strings.Contains(string(raw), `audio/pcm;rate=24000`) {
 		t.Fatalf("audio append raw=%s err=%v", raw, err)

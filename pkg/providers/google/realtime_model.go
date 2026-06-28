@@ -138,6 +138,16 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 			},
 		}
 	}
+	if rawGeneration, ok := config.ProviderOptions["generationConfig"].(map[string]interface{}); ok {
+		for k, v := range rawGeneration {
+			generation[k] = v
+		}
+	}
+	if googleOptions, ok := config.ProviderOptions["google"].(map[string]interface{}); ok {
+		if translationConfig, ok := googleOptions["translationConfig"].(map[string]interface{}); ok {
+			generation["translationConfig"] = translationConfig
+		}
+	}
 	setup["generationConfig"] = generation
 	if config.Instructions != nil {
 		setup["systemInstruction"] = map[string]interface{}{"parts": []map[string]interface{}{{"text": *config.Instructions}}}
@@ -163,6 +173,9 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 		setup["outputAudioTranscription"] = map[string]interface{}{}
 	}
 	for k, v := range config.ProviderOptions {
+		if k == "google" || k == "generationConfig" {
+			continue
+		}
 		setup[k] = v
 	}
 	return setup

@@ -59,6 +59,9 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// HTTPClient overrides the HTTP client used for requests.
+	HTTPClient *stdhttp.Client `json:"-"`
 }
 
 type cachedTokenSource struct {
@@ -115,7 +118,7 @@ func New(cfg Config) (*Provider, error) {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
-	var httpClient *stdhttp.Client
+	httpClient := cfg.HTTPClient
 
 	if cfg.APIKey != "" {
 		// Vertex express mode (TS parity): API key auth and publishers/google base URL.
@@ -165,6 +168,9 @@ func New(cfg Config) (*Provider, error) {
 			},
 		}
 		baseTransport := stdhttp.RoundTripper(stdhttp.DefaultTransport)
+		if httpClient != nil && httpClient.Transport != nil {
+			baseTransport = httpClient.Transport
+		}
 		httpClient = &stdhttp.Client{
 			Transport: &authTransport{
 				base: baseTransport,
@@ -310,7 +316,10 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGoogle Vertex AI does not support transcription through this API")
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("google vertex transcription models do not support Express Mode API keys")
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID

@@ -126,7 +126,7 @@ func (m *MockEmbeddingModel) DoEmbed(ctx context.Context, input string, opts *pr
 	}
 	return &types.EmbeddingResult{
 		Embedding: []float64{0.1, 0.2, 0.3, 0.4, 0.5},
-		Usage:     types.EmbeddingUsage{InputTokens: 5, TotalTokens: 5},
+		Usage:     types.EmbeddingUsage{Tokens: 5, InputTokens: 5, TotalTokens: 5},
 	}, nil
 }
 
@@ -144,7 +144,7 @@ func (m *MockEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, o
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage:      types.EmbeddingUsage{InputTokens: len(inputs) * 5, TotalTokens: len(inputs) * 5},
+		Usage:      types.EmbeddingUsage{Tokens: float64(len(inputs) * 5), InputTokens: len(inputs) * 5, TotalTokens: len(inputs) * 5},
 	}, nil
 }
 
