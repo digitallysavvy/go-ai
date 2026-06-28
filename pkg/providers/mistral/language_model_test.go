@@ -36,6 +36,9 @@ func TestMistralReasoningEffortSupportedModelsMatchTypeScript(t *testing.T) {
 					level := tt.level
 					opts := &provider.GenerateOptions{Reasoning: &level}
 					body := model.buildRequestBody(opts, false)
+					if _, ok := body["stream"]; ok {
+						t.Fatalf("stream = %#v, want omitted for non-streaming request", body["stream"])
+					}
 
 					val, hasKey := body["reasoning_effort"]
 					if hasKey != tt.hasKey {

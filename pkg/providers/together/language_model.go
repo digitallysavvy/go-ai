@@ -106,8 +106,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)

@@ -162,8 +162,10 @@ func extractMistralProviderOptions(opts *provider.GenerateOptions) (mistralProvi
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)

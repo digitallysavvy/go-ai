@@ -123,6 +123,9 @@ func TestBuildRequestBodyWithThinking(t *testing.T) {
 			}
 
 			body := model.buildRequestBody(opts, false)
+			if _, ok := body["stream"]; ok {
+				t.Fatalf("stream = %#v, want omitted for non-streaming request", body["stream"])
+			}
 
 			if tt.checkThinking {
 				thinking, ok := body["thinking"].(map[string]interface{})
@@ -190,6 +193,26 @@ func TestBuildRequestBodyWithoutProviderOptions(t *testing.T) {
 	}
 	if _, ok := body["messages"]; !ok {
 		t.Error("messages field should be present")
+	}
+}
+
+func TestBuildRequestBodyStreamIncludesUsage(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "accounts/fireworks/models/kimi-k2p5")
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Test prompt"},
+	}, true)
+
+	if body["stream"] != true {
+		t.Fatalf("stream = %#v, want true", body["stream"])
+	}
+	streamOptions, ok := body["stream_options"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stream_options = %#v, want map", body["stream_options"])
+	}
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("stream_options = %#v, want include_usage true", streamOptions)
 	}
 }
 

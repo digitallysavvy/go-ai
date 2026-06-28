@@ -37,8 +37,11 @@ func TestLanguageModelBuildRequestBodyAndUsageConversion(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %+v", warnings)
 	}
-	if body["model"] != "meta-llama/test" || body["stream"] != false {
+	if body["model"] != "meta-llama/test" {
 		t.Fatalf("unexpected request body: %+v", body)
+	}
+	if _, ok := body["stream"]; ok {
+		t.Fatalf("stream = %#v, want omitted for non-streaming request", body["stream"])
 	}
 	if _, ok := body["tools"]; !ok {
 		t.Fatal("expected tools in request body")

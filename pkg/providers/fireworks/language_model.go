@@ -96,8 +96,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
+	}
+	if stream {
+		body["stream"] = true
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
