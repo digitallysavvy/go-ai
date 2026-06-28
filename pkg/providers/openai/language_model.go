@@ -119,15 +119,17 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 
-	inner := newOpenAIStream(httpResp.Body, opts.IncludeRawChunks)
+	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	return streaming.NewWarningsStream(inner, nil), nil
 }
 
 // buildRequestBody builds the OpenAI API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 
 	// Extract store flag early — needed before message conversion so we can
@@ -495,16 +497,30 @@ type openAIStream struct {
 	flushQueue       []*provider.StreamChunk // fully assembled chunks ready to emit
 	includeRawChunks bool
 	metadataEmitted  bool
+	pendingRaw       []*provider.StreamChunk
+	pendingMetadata  *provider.StreamChunk
+	outputStarted    bool
+	providerName     string
+	responseHeaders  http.Header
 }
 
 // newOpenAIStream creates a new OpenAI stream
 func newOpenAIStream(reader io.ReadCloser, includeRawChunks ...bool) *openAIStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
+	return newOpenAIStreamWithMetadata(reader, emitRaw, "openai.chat", nil)
+}
+
+func newOpenAIStreamWithMetadata(reader io.ReadCloser, emitRaw bool, providerName string, headers http.Header) *openAIStream {
+	if providerName == "" {
+		providerName = "openai.chat"
+	}
 	return &openAIStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
 		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
 		includeRawChunks: emitRaw,
+		providerName:     providerName,
+		responseHeaders:  headers,
 	}
 }
 
@@ -543,19 +559,6 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
-	rawQueued := false
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-		rawQueued = true
-	}
-
 	// Parse the event data as JSON.
 	// Tool call deltas carry an "index" field not present in non-streaming responses,
 	// so we use an inline struct here instead of the shared openAIToolCall type.
@@ -582,17 +585,29 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 	}
 
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		s.queueRawChunk(event.Data)
 		errorChunk := &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 		}
-		if rawQueued {
+		if len(s.flushQueue) > 0 {
 			s.flushQueue = append(s.flushQueue, errorChunk)
 			return s.Next()
 		}
 		return errorChunk, nil
 	}
+	rawChunk := s.rawChunk(event.Data)
 	if len(chunkData.Error) > 0 {
+		if !s.outputStarted {
+			s.flushQueue = nil
+			s.pendingRaw = nil
+			s.pendingMetadata = nil
+			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+			return nil, s.err
+		}
+		if rawChunk != nil {
+			s.flushQueue = append(s.flushQueue, rawChunk)
+		}
 		errorChunk := &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: openAIStreamErrorText(chunkData.Error),
@@ -612,10 +627,10 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		if chunkData.Created != 0 {
 			metadata.Timestamp = time.Unix(chunkData.Created, 0)
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		s.pendingMetadata = &provider.StreamChunk{
 			Type:             provider.ChunkTypeResponseMetadata,
 			ResponseMetadata: metadata,
-		})
+		}
 		s.metadataEmitted = true
 	}
 
@@ -624,6 +639,11 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 
 		// Text chunk
 		if choice.Delta.Content != "" {
+			s.outputStarted = true
+			if rawChunk != nil {
+				s.pendingRaw = append(s.pendingRaw, rawChunk)
+			}
+			s.flushPendingMetadata()
 			textChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				Text: choice.Delta.Content,
@@ -639,10 +659,15 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// OpenAI sends: first delta has id + name + empty/partial args;
 		// subsequent deltas for the same index carry argument fragments only.
 		if len(choice.Delta.ToolCalls) > 0 {
+			if rawChunk != nil {
+				s.pendingRaw = append(s.pendingRaw, rawChunk)
+			}
 			for _, tc := range choice.Delta.ToolCalls {
 				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := chunk
+					s.flushPendingMetadata()
 					s.flushQueue = append(s.flushQueue, &c)
+					s.outputStarted = true
 				}
 			}
 			if choice.FinishReason != nil {
@@ -654,13 +679,49 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 
 		// Finish chunk — flush all accumulated tool calls first.
 		if choice.FinishReason != nil {
+			if rawChunk != nil && !s.outputStarted {
+				s.pendingRaw = append(s.pendingRaw, rawChunk)
+			}
+			s.flushPendingMetadata()
 			s.flushOpenAIToolCalls(*choice.FinishReason)
+			s.outputStarted = true
 			return s.Next()
 		}
 	}
 
+	if rawChunk != nil {
+		s.pendingRaw = append(s.pendingRaw, rawChunk)
+	}
 	// Empty chunk, get next
 	return s.Next()
+}
+
+func (s *openAIStream) flushPendingMetadata() {
+	if len(s.pendingRaw) > 0 {
+		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
+		s.pendingRaw = nil
+	}
+	if s.pendingMetadata != nil {
+		s.flushQueue = append(s.flushQueue, s.pendingMetadata)
+		s.pendingMetadata = nil
+	}
+}
+
+func (s *openAIStream) queueRawChunk(data string) {
+	if raw := s.rawChunk(data); raw != nil {
+		s.flushQueue = append(s.flushQueue, raw)
+	}
+}
+
+func (s *openAIStream) rawChunk(data string) *provider.StreamChunk {
+	if !s.includeRawChunks {
+		return nil
+	}
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		raw = data
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}
 }
 
 func openAIStreamErrorText(raw json.RawMessage) string {

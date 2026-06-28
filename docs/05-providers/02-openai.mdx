@@ -226,6 +226,8 @@ if result.ToolCalls != nil {
 
 Responses API tool calls preserve OpenAI provider metadata, including `function_call.namespace`. Tool calls with no input serialize `{}` rather than `null`, and assistant messages serialize `content: null` only when tool calls are present and no text content is available. Non-tool assistant turns are not sent as null-content messages.
 
+Function tools can be grouped into OpenAI Responses namespaces by setting `providerOptions.openai.namespace` on the tool definition. Go serializes the namespace wrapper exactly as the TypeScript provider does and rejects conflicting namespace descriptions. When a reasoning effort is set for Responses models and no summary is provided, Go defaults `reasoning.summary` to `"detailed"`, matching the OpenAI provider default.
+
 For Responses API calls, use `ProviderOptions["openai"]["allowedTools"]` to
 restrict callable function tools while keeping the full `tools` array in the
 request. This preserves prompt caching behavior across different allowlists and

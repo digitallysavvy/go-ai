@@ -1,6 +1,8 @@
 package responses
 
 import (
+	"fmt"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -17,18 +19,46 @@ import (
 // The returned slice is ready to be marshaled as the "tools" field in an
 // OpenAI Responses API request body.
 func PrepareTools(tools []types.Tool) []interface{} {
+	result, _ := PrepareToolsWithError(tools)
+	return result
+}
+
+// PrepareToolsWithError converts SDK tools to OpenAI Responses API tool
+// definitions and reports TS-parity unsupported functionality errors.
+func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	result := make([]interface{}, 0, len(tools))
+	namespaces := map[string]*NamespaceToolDef{}
 	for _, t := range tools {
 		def := convertTool(t)
 		if def != nil {
+			if functionDef, ok := def.(FunctionToolDef); ok {
+				namespace, ok := functionToolNamespace(t.ProviderOptions)
+				if ok {
+					namespaceDef := namespaces[namespace.Name]
+					if namespaceDef == nil {
+						namespaceDef = &NamespaceToolDef{
+							Type:        "namespace",
+							Name:        namespace.Name,
+							Description: namespace.Description,
+							Tools:       []FunctionToolDef{},
+						}
+						namespaces[namespace.Name] = namespaceDef
+						result = append(result, namespaceDef)
+					} else if namespaceDef.Description != namespace.Description {
+						return nil, fmt.Errorf("unsupported functionality: conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+					}
+					namespaceDef.Tools = append(namespaceDef.Tools, functionDef)
+					continue
+				}
+			}
 			result = append(result, def)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
@@ -393,20 +423,54 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 }
 
 func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
-	options, ok := providerOptions.(map[string]interface{})
-	if !ok {
-		return false, false
-	}
-	openaiRaw, ok := options["openai"]
-	if !ok {
-		return false, false
-	}
-	openaiOptions, ok := openaiRaw.(map[string]interface{})
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
 	if !ok {
 		return false, false
 	}
 	deferLoading, ok := openaiOptions["deferLoading"].(bool)
 	return deferLoading, ok
+}
+
+type functionToolNamespaceOption struct {
+	Name        string
+	Description string
+}
+
+func functionToolNamespace(providerOptions interface{}) (functionToolNamespaceOption, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return functionToolNamespaceOption{}, false
+	}
+	rawNamespace, ok := openaiOptions["namespace"]
+	if !ok || rawNamespace == nil {
+		return functionToolNamespaceOption{}, false
+	}
+	namespace, ok := rawNamespace.(map[string]interface{})
+	if !ok {
+		return functionToolNamespaceOption{}, false
+	}
+	name, _ := namespace["name"].(string)
+	description, _ := namespace["description"].(string)
+	if name == "" {
+		return functionToolNamespaceOption{}, false
+	}
+	return functionToolNamespaceOption{Name: name, Description: description}, true
+}
+
+func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interface{}, bool) {
+	options, ok := providerOptions.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	openaiRaw, ok := options["openai"]
+	if !ok {
+		return nil, false
+	}
+	openaiOptions, ok := openaiRaw.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	return openaiOptions, true
 }
 
 func defaultFunctionParameters(parameters interface{}) interface{} {

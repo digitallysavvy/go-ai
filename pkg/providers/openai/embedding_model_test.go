@@ -59,7 +59,7 @@ func TestEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if seenBody["model"] != "text-embedding-3-small" || seenBody["input"] != "hello" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
-	if len(one.Embedding) != 2 || one.Usage.InputTokens != 3 || one.Response.Headers["X-Request-Id"] != "req_1" {
+	if len(one.Embedding) != 2 || one.Usage.Tokens != 3 || one.Usage.InputTokens != 3 || one.Usage.TotalTokens != 4 || one.Response.Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbed result mismatch: %#v", one)
 	}
 
@@ -67,7 +67,7 @@ func TestEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if len(many.Embeddings) != 2 || many.Usage.InputTokens != 7 || many.Responses[0].Headers["X-Request-Id"] != "req_1" {
+	if len(many.Embeddings) != 2 || many.Usage.Tokens != 7 || many.Usage.InputTokens != 7 || many.Usage.TotalTokens != 9 || many.Responses[0].Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbedMany result mismatch: %#v", many)
 	}
 }

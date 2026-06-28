@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -254,29 +256,37 @@ func TestCompletionModelDoStreamFinishesWhenProviderClosesWithoutDone(t *testing
 	}
 }
 
-func TestCompletionModelDoStreamErrorChunkSetsErrorFinishReason(t *testing.T) {
+func TestCompletionModelDoStreamEarlyErrorReturnsError(t *testing.T) {
 	stream := newCompletionStream(io.NopCloser(strings.NewReader(
 		`data: {"error":{"message":"boom"}}`+"\n\n",
 	)), false)
 	defer stream.Close() //nolint:errcheck
 
-	var sawError bool
-	for {
-		chunk, err := stream.Next()
-		if err != nil {
-			t.Fatalf("stream ended before finish: %v", err)
-		}
-		if chunk.Type == provider.ChunkTypeError {
-			sawError = true
-		}
-		if chunk.Type == provider.ChunkTypeFinish {
-			if !sawError {
-				t.Fatal("expected error chunk before finish")
-			}
-			if chunk.FinishReason != types.FinishReasonError {
-				t.Fatalf("finish reason = %q, want error", chunk.FinishReason)
-			}
-			break
-		}
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %v, want boom", err)
+	}
+}
+
+func TestCompletionModelDoStreamMetadataOnlyThenErrorIsStillEarly(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}`+"\n\n"+
+			`data: {"error":{"message":"rate limited","type":"rate_limit_exceeded","param":null,"code":null}}`+"\n\n",
+	)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
+	}
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.StatusCode != 429 || providerErr.Message != "rate limited" {
+		t.Fatalf("provider error = %#v", providerErr)
 	}
 }

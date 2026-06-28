@@ -101,6 +101,119 @@ func TestPrepareTools_FunctionTool_DeferLoading(t *testing.T) {
 	}
 }
 
+func TestPrepareTools_FunctionTool_NamespaceGrouping(t *testing.T) {
+	result, err := PrepareToolsWithError([]types.Tool{
+		{
+			Name:        "get_customer_profile",
+			Description: "Fetch a customer profile by customer ID.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"customer_id": map[string]interface{}{"type": "string"}},
+				"required":   []string{"customer_id"},
+			},
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{
+					"namespace": map[string]interface{}{
+						"name":        "crm",
+						"description": "CRM tools for customer lookup and order management.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_weather",
+			Description: "Get the current weather",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"location": map[string]interface{}{"type": "string"}},
+			},
+		},
+		{
+			Name:        "list_open_orders",
+			Description: "List open orders for a customer ID.",
+			Strict:      true,
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"customer_id": map[string]interface{}{"type": "string"}},
+				"required":   []string{"customer_id"},
+			},
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{
+					"deferLoading": true,
+					"namespace": map[string]interface{}{
+						"name":        "crm",
+						"description": "CRM tools for customer lookup and order management.",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareToolsWithError() error = %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+	namespace, ok := result[0].(*NamespaceToolDef)
+	if !ok {
+		t.Fatalf("result[0] = %T, want *NamespaceToolDef", result[0])
+	}
+	if namespace.Type != "namespace" || namespace.Name != "crm" || namespace.Description != "CRM tools for customer lookup and order management." {
+		t.Fatalf("namespace = %#v", namespace)
+	}
+	if len(namespace.Tools) != 2 {
+		t.Fatalf("namespace tools len = %d, want 2", len(namespace.Tools))
+	}
+	if namespace.Tools[0].Name != "get_customer_profile" || namespace.Tools[1].Name != "list_open_orders" {
+		t.Fatalf("namespace tool order = %#v", namespace.Tools)
+	}
+	if namespace.Tools[1].Strict == nil || !*namespace.Tools[1].Strict || namespace.Tools[1].DeferLoading == nil || !*namespace.Tools[1].DeferLoading {
+		t.Fatalf("strict/defer_loading not preserved: %#v", namespace.Tools[1])
+	}
+	if function, ok := result[1].(FunctionToolDef); !ok || function.Name != "get_weather" {
+		t.Fatalf("result[1] = %#v, want ungrouped get_weather function", result[1])
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var wire []map[string]interface{}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	if wire[0]["type"] != "namespace" || wire[0]["name"] != "crm" {
+		t.Fatalf("wire namespace = %#v", wire[0])
+	}
+}
+
+func TestPrepareTools_FunctionTool_NamespaceConflictingDescription(t *testing.T) {
+	_, err := PrepareToolsWithError([]types.Tool{
+		{
+			Name: "get_customer_profile",
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{
+					"namespace": map[string]interface{}{"name": "crm", "description": "CRM tools."},
+				},
+			},
+		},
+		{
+			Name: "list_open_orders",
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{
+					"namespace": map[string]interface{}{"name": "crm", "description": "Different CRM tools."},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("PrepareToolsWithError() error = nil, want conflict")
+	}
+	if got, want := err.Error(), `unsupported functionality: conflicting descriptions for OpenAI tool namespace "crm"`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func TestPrepareTools_FunctionTool_DefaultParametersIncludeObjectType(t *testing.T) {
 	result := PrepareTools([]types.Tool{{Name: "empty_tool"}})
 	def, ok := result[0].(FunctionToolDef)

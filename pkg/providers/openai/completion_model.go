@@ -83,7 +83,7 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 
-	inner := newCompletionStream(httpResp.Body, opts.IncludeRawChunks)
+	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -359,20 +359,34 @@ type completionStream struct {
 	err              error
 	flushQueue       []*provider.StreamChunk
 	metadataEmitted  bool
+	pendingRaw       []*provider.StreamChunk
+	pendingMetadata  *provider.StreamChunk
 	textStarted      bool
+	outputStarted    bool
 	finished         bool
 	finishReason     types.FinishReason
 	usage            *types.Usage
 	providerMetadata map[string]interface{}
+	providerName     string
+	responseHeaders  http.Header
 }
 
 func newCompletionStream(reader io.ReadCloser, includeRawChunks bool) *completionStream {
+	return newCompletionStreamWithMetadata(reader, includeRawChunks, "openai.completion", nil)
+}
+
+func newCompletionStreamWithMetadata(reader io.ReadCloser, includeRawChunks bool, providerName string, headers http.Header) *completionStream {
+	if providerName == "" {
+		providerName = "openai.completion"
+	}
 	return &completionStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
 		includeRawChunks: includeRawChunks,
 		finishReason:     types.FinishReasonOther,
 		providerMetadata: map[string]interface{}{"openai": map[string]interface{}{}},
+		providerName:     providerName,
+		responseHeaders:  headers,
 	}
 }
 
@@ -399,16 +413,9 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		s.finish()
 		return s.Next()
 	}
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
-	}
-
 	var chunk openAICompletionChunk
 	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		s.queueRawChunk(event.Data)
 		s.finishReason = types.FinishReasonError
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
@@ -416,8 +423,19 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		})
 		return s.Next()
 	}
+	rawChunk := s.rawChunk(event.Data)
 	if len(chunk.Error) > 0 {
 		s.finishReason = types.FinishReasonError
+		if !s.outputStarted {
+			s.flushQueue = nil
+			s.pendingRaw = nil
+			s.pendingMetadata = nil
+			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+			return nil, s.err
+		}
+		if rawChunk != nil {
+			s.flushQueue = append(s.flushQueue, rawChunk)
+		}
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: openAIStreamErrorText(chunk.Error),
@@ -426,18 +444,14 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 	}
 	if !s.metadataEmitted {
 		s.metadataEmitted = true
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		s.pendingMetadata = &provider.StreamChunk{
 			Type: provider.ChunkTypeResponseMetadata,
 			ResponseMetadata: &provider.ResponseMetadata{
 				ID:        chunk.ID,
 				ModelID:   chunk.Model,
 				Timestamp: completionStreamTimestamp(chunk.Created),
 			},
-		})
-	}
-	if !s.textStarted {
-		s.textStarted = true
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+		}
 	}
 	if chunk.Usage != nil {
 		usage := convertOpenAICompletionUsage(chunk.Usage)
@@ -452,12 +466,24 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 		}
 		if choice.Text != "" {
+			s.outputStarted = true
+			if rawChunk != nil {
+				s.pendingRaw = append(s.pendingRaw, rawChunk)
+			}
+			s.flushPendingMetadata()
+			if !s.textStarted {
+				s.textStarted = true
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				ID:   "0",
 				Text: choice.Text,
 			})
 		}
+	}
+	if rawChunk != nil {
+		s.pendingRaw = append(s.pendingRaw, rawChunk)
 	}
 	return s.Next()
 }
@@ -468,6 +494,7 @@ func (s *completionStream) finish() {
 		return
 	}
 	s.finished = true
+	s.flushPendingMetadata()
 	if s.textStarted {
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
 	}
@@ -478,6 +505,34 @@ func (s *completionStream) finish() {
 		ProviderMetadata: mustMarshalCompletionProviderMetadata(s.providerMetadata),
 	})
 	s.err = io.EOF
+}
+
+func (s *completionStream) flushPendingMetadata() {
+	if len(s.pendingRaw) > 0 {
+		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
+		s.pendingRaw = nil
+	}
+	if s.pendingMetadata != nil {
+		s.flushQueue = append(s.flushQueue, s.pendingMetadata)
+		s.pendingMetadata = nil
+	}
+}
+
+func (s *completionStream) queueRawChunk(data string) {
+	if raw := s.rawChunk(data); raw != nil {
+		s.flushQueue = append(s.flushQueue, raw)
+	}
+}
+
+func (s *completionStream) rawChunk(data string) *provider.StreamChunk {
+	if !s.includeRawChunks {
+		return nil
+	}
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		raw = data
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}
 }
 
 func mustMarshalCompletionProviderMetadata(metadata map[string]interface{}) json.RawMessage {

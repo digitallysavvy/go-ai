@@ -45,6 +45,12 @@ type ProviderError struct {
 
 	// ResponseHeaders are response headers from the failed provider call, when available.
 	ResponseHeaders map[string]string
+
+	// ResponseBody is the raw provider response body or stream error frame, when available.
+	ResponseBody string
+
+	// Data is provider-specific structured error data, when available.
+	Data interface{}
 }
 
 // RetryErrorReason identifies why retrying stopped.

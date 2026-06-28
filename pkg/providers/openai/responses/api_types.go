@@ -213,6 +213,14 @@ type FunctionToolDef struct {
 	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
+// NamespaceToolDef groups function tools under an OpenAI Responses namespace.
+type NamespaceToolDef struct {
+	Type        string            `json:"type"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Tools       []FunctionToolDef `json:"tools"`
+}
+
 // LocalShellToolDef represents the local_shell tool in an API request.
 // No additional fields are needed; its presence enables the tool.
 type LocalShellToolDef struct {

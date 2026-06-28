@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
@@ -608,8 +610,10 @@ data: [DONE]
 	}
 }
 
-func TestResponsesLanguageModel_DoStreamProviderErrorEventIsChunkOnly(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","code":"bad_request","message":"boom"}
+func TestResponsesLanguageModel_DoStreamEarlyProviderErrorReturnsError(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_error","created_at":1741269019,"model":"gpt-4o"}}
+
+data: {"type":"error","code":"rate_limit_exceeded","message":"boom"}
 
 data: [DONE]
 
@@ -617,27 +621,36 @@ data: [DONE]
 	defer stream.Close() //nolint:errcheck
 
 	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("first chunk error: %v", err)
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
 	}
-	if chunk.Type != provider.ChunkTypeRaw {
-		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %[1]v, want ProviderError", err)
 	}
+	if providerErr.StatusCode != 429 || providerErr.Message != "boom" || providerErr.ResponseBody == "" {
+		t.Fatalf("provider error = %#v", providerErr)
+	}
+}
 
-	chunk, err = stream.Next()
-	if err != nil {
-		t.Fatalf("second chunk error: %v", err)
-	}
-	if chunk.Type != provider.ChunkTypeError || chunk.Text != "boom" {
-		t.Fatalf("second chunk = %#v, want error boom", chunk)
-	}
+func TestResponsesLanguageModel_DoStreamEarlyResponseFailedReturnsError(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_failed","created_at":1741269019,"model":"gpt-4o"}}
 
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Fatalf("termination error = %v, want io.EOF", err)
+data: {"type":"response.failed","sequence_number":1,"response":{"error":{"code":"server_error","message":"response failed"},"incomplete_details":null,"usage":null,"service_tier":null}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
 	}
-	if stream.Err() != nil {
-		t.Fatalf("stream.Err() = %v, want nil", stream.Err())
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.StatusCode != 500 || providerErr.Message != "response failed" {
+		t.Fatalf("provider error = %#v", providerErr)
 	}
 }
 
@@ -1333,6 +1346,80 @@ func TestResponsesLanguageModel_ResponsesRequestParityOptions(t *testing.T) {
 			},
 		},
 		{
+			name:    "reasoning effort defaults summary to detailed",
+			modelID: "gpt-5.1-codex-max",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"reasoningEffort": "xhigh"},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				reasoning := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "xhigh" || reasoning["summary"] != "detailed" {
+					t.Fatalf("reasoning = %#v, want xhigh/detailed", reasoning)
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				assertNoWarning(t, warnings, "reasoningEffort")
+			},
+		},
+		{
+			name:    "top-level reasoning defaults summary to detailed",
+			modelID: "o3-mini",
+			opts: provider.GenerateOptions{
+				Prompt:    types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				Reasoning: ptrReasoning(types.ReasoningMedium),
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				reasoning := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "medium" || reasoning["summary"] != "detailed" {
+					t.Fatalf("reasoning = %#v, want medium/detailed", reasoning)
+				}
+			},
+		},
+		{
+			name:    "reasoning none does not default summary",
+			modelID: "gpt-5.2",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"reasoningEffort": "none"},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				reasoning := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "none" {
+					t.Fatalf("reasoning effort = %#v, want none", reasoning["effort"])
+				}
+				if _, ok := reasoning["summary"]; ok {
+					t.Fatalf("reasoning summary = %#v, want omitted", reasoning["summary"])
+				}
+			},
+		},
+		{
+			name:    "reasoning summary null suppresses default summary like TypeScript",
+			modelID: "o3-mini",
+			opts: provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"reasoningEffort": "low", "reasoningSummary": nil},
+				},
+			},
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				reasoning := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "low" {
+					t.Fatalf("reasoning effort = %#v, want low", reasoning["effort"])
+				}
+				if _, ok := reasoning["summary"]; ok {
+					t.Fatalf("reasoning summary = %#v, want omitted for explicit null", reasoning["summary"])
+				}
+			},
+			assertWarning: func(t *testing.T, warnings []types.Warning) {
+				assertNoWarning(t, warnings, "reasoningSummary")
+			},
+		},
+		{
 			name:    "non-reasoning model warns and omits provider reasoning",
 			modelID: "gpt-4o",
 			opts: provider.GenerateOptions{
@@ -1584,6 +1671,10 @@ func assertNoWarning(t *testing.T, warnings []types.Warning, feature string) {
 			t.Fatalf("warnings = %#v, unexpectedly included unsupported %s", warnings, feature)
 		}
 	}
+}
+
+func ptrReasoning(value types.ReasoningLevel) *types.ReasoningLevel {
+	return &value
 }
 
 func containsString(values []string, want string) bool {

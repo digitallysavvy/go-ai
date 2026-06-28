@@ -22,12 +22,13 @@ type LanguageModel struct {
 }
 
 type OpenResponsesProviderOptions struct {
-	ReasoningSummary string                 `json:"reasoningSummary,omitempty"`
-	ReasoningEffort  string                 `json:"reasoningEffort,omitempty"`
-	ForceReasoning   *bool                  `json:"forceReasoning,omitempty"`
-	StrictJSONSchema *bool                  `json:"strictJsonSchema,omitempty"`
-	TextVerbosity    string                 `json:"textVerbosity,omitempty"`
-	Raw              map[string]interface{} `json:"-"`
+	ReasoningSummary    string                 `json:"reasoningSummary,omitempty"`
+	ReasoningSummarySet bool                   `json:"-"`
+	ReasoningEffort     string                 `json:"reasoningEffort,omitempty"`
+	ForceReasoning      *bool                  `json:"forceReasoning,omitempty"`
+	StrictJSONSchema    *bool                  `json:"strictJsonSchema,omitempty"`
+	TextVerbosity       string                 `json:"textVerbosity,omitempty"`
+	Raw                 map[string]interface{} `json:"-"`
 }
 
 // NewLanguageModel creates a new Open Responses language model
@@ -278,13 +279,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if provOpts.ForceReasoning != nil {
 		isReasoningModel = *provOpts.ForceReasoning
 	}
-	if isReasoningModel && (reasoningEffort != "" || provOpts.ReasoningSummary != "") {
+	resolvedReasoningSummary := provOpts.ReasoningSummary
+	if isReasoningModel && (reasoningEffort != "" || resolvedReasoningSummary != "") {
 		reasoning := map[string]interface{}{}
 		if reasoningEffort != "" {
 			reasoning["effort"] = reasoningEffort
 		}
-		if provOpts.ReasoningSummary != "" {
-			reasoning["summary"] = provOpts.ReasoningSummary
+		if resolvedReasoningSummary != "" {
+			reasoning["summary"] = resolvedReasoningSummary
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoningModel {
@@ -404,6 +406,12 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 		if err := json.Unmarshal(data, &opts); err == nil {
 			if values, ok := raw.(map[string]interface{}); ok {
 				opts.Raw = values
+				if summary, ok := values["reasoningSummary"]; ok {
+					opts.ReasoningSummarySet = true
+					if text, ok := summary.(string); ok {
+						opts.ReasoningSummary = text
+					}
+				}
 			}
 			return opts
 		}

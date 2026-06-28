@@ -77,10 +77,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	return &types.EmbeddingResult{
 		Embedding: response.Data[0].Embedding,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
 	}, nil
 }
 
@@ -124,10 +125,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers)}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
 	}, nil
 }
 

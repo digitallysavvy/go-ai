@@ -209,6 +209,66 @@ func TestBuildRequestBody_ReasoningSummaryOption(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBody_ReasoningSummaryNullSuppressesDefaultLikeTypeScript(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1"})
+	m := NewLanguageModel(p, "gpt-5")
+	reasoning := types.ReasoningMedium
+
+	body, warnings, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &reasoning,
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningSummary": nil,
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+	for _, warning := range warnings {
+		if warning.Feature == "reasoningSummary" {
+			t.Fatalf("unexpected reasoningSummary warning: %#v", warning)
+		}
+	}
+
+	reasoningBody, ok := body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reasoning body missing: %#v", body)
+	}
+	if reasoningBody["effort"] != "medium" {
+		t.Fatalf("effort = %v, want medium", reasoningBody["effort"])
+	}
+	if _, ok := reasoningBody["summary"]; ok {
+		t.Fatalf("summary = %v, want omitted for explicit null", reasoningBody["summary"])
+	}
+}
+
+func TestBuildRequestBody_TopLevelReasoningDoesNotDefaultSummaryLikeOpenResponsesTypeScript(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1"})
+	m := NewLanguageModel(p, "gpt-5")
+	reasoning := types.ReasoningHigh
+
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hello"},
+		Reasoning: &reasoning,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+
+	reasoningBody, ok := body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reasoning body missing: %#v", body)
+	}
+	if reasoningBody["effort"] != "high" {
+		t.Fatalf("effort = %v, want high", reasoningBody["effort"])
+	}
+	if _, ok := reasoningBody["summary"]; ok {
+		t.Fatalf("summary = %v, want omitted unless providerOptions reasoningSummary is set", reasoningBody["summary"])
+	}
+}
+
 func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
 	m := NewLanguageModel(p, "gpt-5")

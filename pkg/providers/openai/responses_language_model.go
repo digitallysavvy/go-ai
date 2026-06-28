@@ -96,7 +96,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStream(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName()), warnings), nil
+	return streaming.NewWarningsStream(newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header), warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,6 +120,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	promptCacheKey := ""
 	reasoningEffort := ""
 	reasoningSummary := ""
+	reasoningSummarySet := false
 	strictJSONSchema := true
 	textVerbosity := ""
 	serviceTier := ""
@@ -167,8 +168,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
 				reasoningEffort = v
 			}
-			if v, ok := openaiOpts["reasoningSummary"].(string); ok {
-				reasoningSummary = v
+			if v, ok := openaiOpts["reasoningSummary"]; ok {
+				reasoningSummarySet = true
+				if summary, ok := v.(string); ok {
+					reasoningSummary = summary
+				}
 			}
 			if v, ok := openaiOpts["strictJsonSchema"].(bool); ok {
 				strictJSONSchema = v
@@ -306,13 +310,17 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if reasoningEffort != "" {
 		effort = reasoningEffort
 	}
-	if isReasoning && (effort != "" || reasoningSummary != "") {
+	resolvedReasoningSummary := reasoningSummary
+	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
+		resolvedReasoningSummary = "detailed"
+	}
+	if isReasoning && (effort != "" || resolvedReasoningSummary != "") {
 		reasoning := map[string]interface{}{}
 		if effort != "" {
 			reasoning["effort"] = effort
 		}
-		if reasoningSummary != "" {
-			reasoning["summary"] = reasoningSummary
+		if resolvedReasoningSummary != "" {
+			reasoning["summary"] = resolvedReasoningSummary
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoning {
@@ -395,7 +403,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Tools.
 	if len(opts.Tools) > 0 {
-		body["tools"] = responses.PrepareTools(opts.Tools)
+		preparedTools, err := responses.PrepareToolsWithError(opts.Tools)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		body["tools"] = preparedTools
 		if allowedTools != nil {
 			body["tool_choice"] = *allowedTools
 		} else if opts.ToolChoice.Type != "" {
@@ -1107,16 +1119,22 @@ type responsesStream struct {
 	webSearchToolName string
 	providerName      string
 	responseID        string
+	outputStarted     bool
+	pendingRaw        []*provider.StreamChunk
+	pendingMetadata   *provider.StreamChunk
+	responseHeaders   http.Header
 }
 
 func newResponsesStream(r io.ReadCloser, includeRawChunks bool, args ...string) *responsesStream {
-	toolName := "web_search"
-	if len(args) > 0 && args[0] != "" {
-		toolName = args[0]
+	return newResponsesStreamWithMetadata(r, includeRawChunks, argOrDefault(args, 0, "web_search"), argOrDefault(args, 1, "openai"), nil)
+}
+
+func newResponsesStreamWithMetadata(r io.ReadCloser, includeRawChunks bool, toolName, providerName string, headers http.Header) *responsesStream {
+	if toolName == "" {
+		toolName = "web_search"
 	}
-	providerName := "openai"
-	if len(args) > 1 && args[1] != "" {
-		providerName = args[1]
+	if providerName == "" {
+		providerName = "openai"
 	}
 	return &responsesStream{
 		reader:            r,
@@ -1127,7 +1145,15 @@ func newResponsesStream(r io.ReadCloser, includeRawChunks bool, args ...string) 
 		includeRawChunks:  includeRawChunks,
 		webSearchToolName: toolName,
 		providerName:      providerName,
+		responseHeaders:   headers,
 	}
+}
+
+func argOrDefault(args []string, index int, fallback string) string {
+	if len(args) > index && args[index] != "" {
+		return args[index]
+	}
+	return fallback
 }
 
 // Close implements provider.TextStream.
@@ -1148,10 +1174,7 @@ func (s *responsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provide
 	if len(s.flushQueue) == 0 {
 		return chunk, nil
 	}
-	queue := make([]*provider.StreamChunk, 0, len(s.flushQueue)+1)
-	queue = append(queue, s.flushQueue[0], chunk)
-	queue = append(queue, s.flushQueue[1:]...)
-	s.flushQueue = queue
+	s.flushQueue = append(s.flushQueue, chunk)
 	return s.Next()
 }
 
@@ -1190,24 +1213,27 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		s.err = io.EOF
 		return nil, io.EOF
 	}
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-	}
-
 	// Parse the "type" discriminator.
 	var peek responses.ResponsesStreamEvent
 	if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+		s.queueRawChunk(event.Data)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 		})
+	}
+	var eventRawChunk *provider.StreamChunk
+	if s.includeRawChunks {
+		eventRawChunk = openAIResponsesRawChunk(event.Data)
+		if !s.outputStarted && peek.Type == "response.created" {
+			s.pendingRaw = append(s.pendingRaw, eventRawChunk)
+		} else if !s.outputStarted && (peek.Type == "error" || peek.Type == "response.failed") {
+			// TS checks early errors before exposing raw chunks.
+		} else if !s.outputStarted {
+			// First output raw is queued after pending metadata in the handler.
+		} else {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
 	}
 
 	switch peek.Type {
@@ -1227,10 +1253,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Response.CreatedAt != 0 {
 			metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
+		s.pendingMetadata = &provider.StreamChunk{
 			Type:             provider.ChunkTypeResponseMetadata,
 			ResponseMetadata: metadata,
-		})
+		}
+		return s.Next()
 
 	case "response.output_item.added":
 		var e responses.OutputItemAddedEvent
@@ -1238,6 +1265,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		s.itemTypes[e.OutputIndex] = e.Item.Type
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
 		switch e.Item.Type {
 		case "function_call":
 			s.toolAccum[e.OutputIndex] = &responsesToolAccum{
@@ -1288,6 +1319,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Delta == "" {
 			return s.Next()
 		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
 			Text: e.Delta,
@@ -1297,6 +1332,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		var e responses.FunctionCallArgumentsDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
 		if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 			accum.arguments += e.Delta
@@ -1310,6 +1349,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		if e.Delta == "" {
 			return s.Next()
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
 		// Accumulate for providerMetadata and emit as reasoning chunk.
 		if accum, ok := s.reasoningAccum[e.OutputIndex]; ok {
@@ -1325,6 +1368,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
 		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
 		return s.handleOutputItemDone(e)
 
 	case "response.completed", "response.incomplete":
@@ -1335,6 +1382,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
 
 		var meta json.RawMessage
 		responseID := s.responseID
@@ -1358,6 +1409,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			s.err = io.EOF
 			return nil, io.EOF
+		}
+		if !s.outputStarted && e.Response.Error != nil {
+			s.flushQueue = nil
+			s.pendingRaw = nil
+			s.pendingMetadata = nil
+			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+			return nil, s.err
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := types.FinishReason("error")
@@ -1394,6 +1452,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.Next()
 		}
+		if !s.outputStarted {
+			s.flushQueue = nil
+			s.pendingRaw = nil
+			s.pendingMetadata = nil
+			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+			return nil, s.err
+		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: e.Message,
@@ -1403,6 +1468,38 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		// Unknown event types (web_search_call, code_interpreter_call, etc.) —
 		// skip silently; they are provider-internal and require no client action.
 		return s.Next()
+	}
+}
+
+func (s *responsesStream) markOutputStarted() {
+	if s.outputStarted {
+		return
+	}
+	s.outputStarted = true
+	if len(s.pendingRaw) > 0 {
+		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
+		s.pendingRaw = nil
+	}
+	if s.pendingMetadata != nil {
+		s.flushQueue = append(s.flushQueue, s.pendingMetadata)
+		s.pendingMetadata = nil
+	}
+}
+
+func (s *responsesStream) queueRawChunk(data string) {
+	if s.includeRawChunks {
+		s.flushQueue = append(s.flushQueue, openAIResponsesRawChunk(data))
+	}
+}
+
+func openAIResponsesRawChunk(data string) *provider.StreamChunk {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		raw = data
+	}
+	return &provider.StreamChunk{
+		Type: provider.ChunkTypeRaw,
+		Raw:  raw,
 	}
 }
 

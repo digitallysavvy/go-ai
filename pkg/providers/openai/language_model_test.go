@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -329,6 +331,9 @@ func TestBuildRequestBodyWithPromptCacheRetention(t *testing.T) {
 	}
 
 	body := model.buildRequestBody(opts, false)
+	if _, ok := body["stream"]; ok {
+		t.Fatalf("stream = %#v, want omitted for non-streaming request", body["stream"])
+	}
 
 	// Verify prompt_cache_retention is present
 	retention, ok := body["prompt_cache_retention"]
@@ -862,7 +867,7 @@ data: [DONE]
 	}
 }
 
-func TestOpenAIStreamProviderErrorEventEmitsErrorChunkAfterRaw(t *testing.T) {
+func TestOpenAIStreamEarlyProviderErrorEventReturnsError(t *testing.T) {
 	sseData := `data: {"error":{"message":"provider failed"}}
 
 data: [DONE]
@@ -872,22 +877,33 @@ data: [DONE]
 	defer stream.Close() //nolint:errcheck
 
 	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("first chunk error: %v", err)
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
 	}
-	if chunk.Type != provider.ChunkTypeRaw {
-		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	if !strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("error = %v, want provider failed", err)
 	}
+}
 
-	chunk, err = stream.Next()
-	if err != nil {
-		t.Fatalf("second chunk error: %v", err)
+func TestOpenAIStreamEarlyProviderErrorPreservesStatusCode(t *testing.T) {
+	sseData := `data: {"error":{"message":"bad request","type":"provider_error","param":null,"code":400}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
 	}
-	if chunk.Type != provider.ChunkTypeError {
-		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %[1]v, want ProviderError", err)
 	}
-	if chunk.Text != "provider failed" {
-		t.Fatalf("error text = %q, want provider failed", chunk.Text)
+	if providerErr.StatusCode != 400 || providerErr.Message != "bad request" || providerErr.ResponseBody == "" {
+		t.Fatalf("provider error = %#v", providerErr)
 	}
 }
 
