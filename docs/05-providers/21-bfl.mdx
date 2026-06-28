@@ -217,6 +217,8 @@ func compareFLUXCosts(imageCount int) {
 
 ## See Also
 
+Provider options are parsed once when the request body is built. Polling and result retrieval reuse the generated request state, matching the TypeScript provider behavior for single-parse option semantics.
+
 - [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
 - [BFL Documentation](https://docs.bfl.ai)
 - [Stability AI Provider](20-stability.mdx) - Alternative

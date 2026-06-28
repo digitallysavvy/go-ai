@@ -2,6 +2,7 @@ package bfl
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -20,21 +21,35 @@ type Config struct {
 
 	// BaseURL is the base URL for the BFL API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// PollIntervalMillis is the default interval between image status checks.
+	// Defaults to 500ms, matching the TypeScript provider.
+	PollIntervalMillis int
+
+	// PollTimeoutMillis is the default total polling timeout.
+	// Defaults to 60000ms, matching the TypeScript provider.
+	PollTimeoutMillis int
 }
 
 // New creates a new Black Forest Labs provider with the given configuration
 func New(cfg Config) *Provider {
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("BFL_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
-		baseURL = "https://api.bfl.ml/v1"
+		baseURL = defaultBaseURL
 	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: http.MergeHeaders(map[string]string{
 			"X-Key":        cfg.APIKey,
 			"Content-Type": "application/json",
-		},
+		}, cfg.Headers),
 	})
 
 	return &Provider{
@@ -42,6 +57,15 @@ func New(cfg Config) *Provider {
 		client: client,
 	}
 }
+
+func (p *Provider) baseURL() string {
+	if p.config.BaseURL != "" {
+		return p.config.BaseURL
+	}
+	return defaultBaseURL
+}
+
+const defaultBaseURL = "https://api.bfl.ai/v1"
 
 // Name returns the provider name
 func (p *Provider) Name() string {

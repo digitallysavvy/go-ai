@@ -1,6 +1,8 @@
 package bfl
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -42,6 +44,27 @@ func TestProviderFactoriesAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestProviderDefaultsMatchTypeScript(t *testing.T) {
+	orig := os.Getenv("BFL_API_KEY")
+	t.Cleanup(func() {
+		if orig == "" {
+			_ = os.Unsetenv("BFL_API_KEY")
+		} else {
+			_ = os.Setenv("BFL_API_KEY", orig)
+		}
+	})
+	if err := os.Setenv("BFL_API_KEY", "env-key"); err != nil {
+		t.Fatalf("Setenv: %v", err)
+	}
+	p := New(Config{})
+	if p.baseURL() != "https://api.bfl.ai/v1" {
+		t.Fatalf("baseURL = %q", p.baseURL())
+	}
+	if p.config.APIKey != "env-key" {
+		t.Fatalf("APIKey = %q", p.config.APIKey)
+	}
+}
+
 func TestImageModelEndpointSelection(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	tests := map[string]string{
@@ -73,6 +96,40 @@ func TestBuildRequestBodyAndConvertErrors(t *testing.T) {
 	if body["width"] != 1280 || body["height"] != 720 {
 		t.Fatalf("size parse failed: %#v", body)
 	}
+	if body["aspect_ratio"] != "16:9" {
+		t.Fatalf("aspect_ratio = %#v, want 16:9", body["aspect_ratio"])
+	}
+	warnings := bflWarnings(&provider.ImageGenerateOptions{Size: "1280x720"})
+	if len(warnings) != 1 || warnings[0].Type != "unsupported" || warnings[0].Feature != "size" {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+
+	body = m.buildRequestBody(&provider.ImageGenerateOptions{
+		Prompt:      "a fox",
+		Size:        "1280x720",
+		AspectRatio: "1:1",
+		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{
+			"promptUpsampling":    true,
+			"unsupportedProperty": "value",
+			"pollIntervalMillis":  1,
+		}},
+	})
+	if body["aspect_ratio"] != "1:1" || body["width"] != 1280 || body["height"] != 720 {
+		t.Fatalf("aspectRatio override body = %#v", body)
+	}
+	if body["prompt_upsampling"] != true {
+		t.Fatalf("prompt_upsampling = %#v", body["prompt_upsampling"])
+	}
+	if _, ok := body["unsupportedProperty"]; ok {
+		t.Fatalf("unsupported provider option should be stripped: %#v", body)
+	}
+	if _, ok := body["pollIntervalMillis"]; ok {
+		t.Fatalf("pollIntervalMillis should not be sent in request body: %#v", body)
+	}
+	warnings = bflWarnings(&provider.ImageGenerateOptions{Size: "1280x720", AspectRatio: "1:1"})
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Details, "ignores size") {
+		t.Fatalf("aspect warning = %#v", warnings)
+	}
 
 	fill := NewImageModel(p, "flux-pro-1.0-fill")
 	fillBody := fill.buildRequestBody(&provider.ImageGenerateOptions{
@@ -86,7 +143,7 @@ func TestBuildRequestBodyAndConvertErrors(t *testing.T) {
 		t.Fatalf("fill image = %#v", fillBody["image"])
 	}
 
-	if _, err := m.convertResponse(t.Context(), bflResult{}); err == nil {
+	if _, err := m.convertResponse(t.Context(), bflResult{}, bflCreateResponse{}, nil, nil); err == nil {
 		t.Fatal("convertResponse should fail on empty sample URL")
 	}
 }

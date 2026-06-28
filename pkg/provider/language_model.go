@@ -562,6 +562,11 @@ type TranscriptionOptions struct {
 	// Audio data to transcribe
 	Audio []byte
 
+	// AudioBase64 is an already base64-encoded audio payload. When set, providers
+	// that send base64 request content use it directly, matching the TypeScript
+	// SDK's string audio input path.
+	AudioBase64 string
+
 	// MIME type of the audio
 	MimeType string
 
