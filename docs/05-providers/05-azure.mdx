@@ -135,6 +135,8 @@ speechModel, err := provider.SpeechModel("tts-1")
 transcriptionModel, err := provider.TranscriptionModel("whisper-1")
 ```
 
+Azure DeepSeek deployments are available through `provider.DeepSeek("deployment-name")`. The model uses Azure authentication, the Azure `api-version` query parameter, and the `"azure"` provider option namespace while preserving DeepSeek reasoning-effort request behavior.
+
 ## Custom Headers
 
 Use `Headers` for request metadata that should be sent with every provider call:

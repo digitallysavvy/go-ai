@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -140,6 +141,26 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // Chat returns a legacy deployment-based Chat Completions language model.
 func (p *Provider) Chat(modelID string) (provider.LanguageModel, error) {
 	return p.ChatModel(modelID)
+}
+
+// DeepSeekModel returns an Azure-hosted DeepSeek chat model.
+func (p *Provider) DeepSeekModel(modelID string) (provider.LanguageModel, error) {
+	supportsThinking := false
+	deepseekProvider := deepseek.New(deepseek.Config{
+		BaseURL:             p.responsesBaseURL(modelID),
+		Headers:             p.staticAuthHeaders(),
+		Name:                "azure.deepseek",
+		ProviderOptionsName: "azure",
+		ChatCompletionsPath: "/chat/completions?api-version=" + p.config.APIVersion,
+		SupportsThinking:    &supportsThinking,
+		HTTPClient:          p.httpClient,
+	})
+	return deepseek.NewLanguageModel(deepseekProvider, modelID), nil
+}
+
+// DeepSeek returns an Azure-hosted DeepSeek chat model.
+func (p *Provider) DeepSeek(modelID string) (provider.LanguageModel, error) {
+	return p.DeepSeekModel(modelID)
 }
 
 // CompletionModel returns an Azure OpenAI Completions API language model by

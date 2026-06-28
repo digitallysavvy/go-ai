@@ -69,6 +69,10 @@ func TestProviderTypeScriptFactoryAliases(t *testing.T) {
 	if err != nil || chat.Provider() != "azure.chat" || chat.ModelID() != "dep" {
 		t.Fatalf("Chat alias = %v err=%v", chat, err)
 	}
+	deepseek, err := p.DeepSeek("dep")
+	if err != nil || deepseek.Provider() != "azure.deepseek" || deepseek.ModelID() != "dep" {
+		t.Fatalf("DeepSeek alias = %v err=%v", deepseek, err)
+	}
 	completion, err := p.Completion("dep")
 	if err != nil || completion.Provider() != "azure.completion" || completion.ModelID() != "dep" {
 		t.Fatalf("Completion alias = %v err=%v", completion, err)
@@ -233,6 +237,104 @@ func TestCompletionModelUsesAzureCompletionURLHeadersAndOptions(t *testing.T) {
 	}
 }
 
+func TestDeepSeekModelUsesAzureNamespaceReasoningAndURL(t *testing.T) {
+	var capturedPath string
+	var capturedQuery string
+	var capturedAPIKey string
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		capturedAPIKey = r.Header.Get("api-key")
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-azure-deepseek",
+			"model":"deepseek-v4-pro",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok","reasoning_content":"think"}}],
+			"usage":{"prompt_tokens":19,"completion_tokens":7,"total_tokens":26}
+		}`))
+	}))
+	defer server.Close()
+
+	p := mustNewProvider(t, Config{
+		APIKey:     "azure-key",
+		BaseURL:    server.URL + "/openai",
+		APIVersion: "v1",
+	})
+	model, err := p.DeepSeekModel("deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("DeepSeekModel: %v", err)
+	}
+
+	reasoning := types.ReasoningHigh
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "Hello"},
+		Reasoning: &reasoning,
+		ProviderOptions: map[string]interface{}{
+			"deepseek": map[string]interface{}{"reasoningEffort": "low"},
+			"azure":    map[string]interface{}{"reasoningEffort": "max"},
+		},
+		ResponseFormat: &provider.ResponseFormat{Type: "json"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedPath != "/openai/v1/chat/completions" || capturedQuery != "api-version=v1" {
+		t.Fatalf("url path/query = %q?%s", capturedPath, capturedQuery)
+	}
+	if capturedAPIKey != "azure-key" {
+		t.Fatalf("api-key = %q", capturedAPIKey)
+	}
+	if capturedBody["model"] != "deepseek-v4-pro" || capturedBody["reasoning_effort"] != "max" {
+		t.Fatalf("body = %#v", capturedBody)
+	}
+	responseFormat := capturedBody["response_format"].(map[string]interface{})
+	if responseFormat["type"] != "json_object" {
+		t.Fatalf("response_format = %#v", responseFormat)
+	}
+	if _, ok := capturedBody["thinking"]; ok {
+		t.Fatalf("thinking = %#v, want omitted for Azure DeepSeek", capturedBody["thinking"])
+	}
+	if result.Text != "ok" || len(result.Content) == 0 {
+		t.Fatalf("result mismatch: %#v", result)
+	}
+}
+
+func TestDeepSeekModelUsesConfiguredHTTPClient(t *testing.T) {
+	var capturedURL string
+	p := mustNewProvider(t, Config{
+		APIKey:     "azure-key",
+		BaseURL:    "https://azure.example/openai",
+		APIVersion: "v1",
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			capturedURL = r.URL.String()
+			if got := r.Header.Get("api-key"); got != "azure-key" {
+				t.Fatalf("api-key = %q", got)
+			}
+			return azureJSONResponse(200, `{
+				"id":"chatcmpl-azure-deepseek",
+				"model":"deepseek-v4-pro",
+				"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],
+				"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+			}`, nil), nil
+		})},
+	})
+	model, err := p.DeepSeekModel("deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("DeepSeekModel: %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedURL != "https://azure.example/openai/v1/chat/completions?api-version=v1" {
+		t.Fatalf("url = %q", capturedURL)
+	}
+}
+
 func TestCompletionModelUsesDeploymentBasedAzureURL(t *testing.T) {
 	var capturedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -369,6 +471,32 @@ func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
 	sr, err := tm.convertResponse(simple, false)
 	if err != nil || sr.Text != "hola" {
 		t.Fatalf("simple convertResponse result=%#v err=%v", sr, err)
+	}
+}
+
+func TestAzureEmbeddingUsageTokensUsesPromptTokensLikeTypeScript(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "req_embed")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	p := mustNewProvider(t, Config{
+		APIKey:     "k",
+		BaseURL:    server.URL,
+		APIVersion: "2024-10-21",
+	})
+	model := NewEmbeddingModel(p, "dep-embed")
+	result, err := model.DoEmbed(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("DoEmbed error = %v", err)
+	}
+	if result.Usage.Tokens != 3 || result.Usage.InputTokens != 3 || result.Usage.TotalTokens != 4 {
+		t.Fatalf("usage = %+v, want TS usage.tokens from prompt_tokens and legacy total preserved", result.Usage)
+	}
+	if result.Response.Headers["X-Request-Id"] != "req_embed" || result.Response.Body == nil {
+		t.Fatalf("response metadata = %+v", result.Response)
 	}
 }
 

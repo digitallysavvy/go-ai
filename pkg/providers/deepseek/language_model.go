@@ -40,7 +40,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "deepseek"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -69,7 +69,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
+		Path:   m.provider.chatCompletionsPath(),
 		Body:   reqBody,
 	}, &response)
 	if err != nil {
@@ -86,7 +86,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
+		Path:   m.provider.chatCompletionsPath(),
 		Body:   reqBody,
 		Headers: map[string]string{
 			"Accept": "text/event-stream",
@@ -108,10 +108,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	var warnings []types.Warning
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
 	}
 	if stream {
+		body["stream"] = true
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
@@ -146,42 +146,58 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 	if opts.ResponseFormat != nil {
+		responseFormatType := opts.ResponseFormat.Type
+		if responseFormatType == "json" {
+			responseFormatType = "json_object"
+		}
 		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
+			"type": responseFormatType,
 		}
 	}
-	deepseekOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("deepseek", opts.ProviderOptions)
+	deepseekOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.provider.providerOptionsName(), opts.ProviderOptions)
 	warnings = append(warnings, optionWarnings...)
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
 	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
-			body["thinking"] = map[string]interface{}{"type": "disabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "disabled"}
+			}
 		case types.ReasoningMinimal:
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "enabled"}
+			}
 			body["reasoning_effort"] = "low"
 			if !hasProviderReasoningEffort {
 				warnings = append(warnings, reasoningCompatibilityWarning("minimal", "low"))
 			}
 		case types.ReasoningLow:
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "enabled"}
+			}
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "enabled"}
+			}
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh:
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "enabled"}
+			}
 			body["reasoning_effort"] = "high"
 		case types.ReasoningXHigh:
-			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": "enabled"}
+			}
 			body["reasoning_effort"] = "max"
 			if !hasProviderReasoningEffort {
 				warnings = append(warnings, reasoningCompatibilityWarning("xhigh", "max"))
 			}
 		}
 	}
-	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
+	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok && m.provider.supportsThinking() {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
 			body["thinking"] = map[string]interface{}{"type": thinkingType}
 		}

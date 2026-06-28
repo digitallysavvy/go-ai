@@ -69,8 +69,11 @@ func TestAzureLanguageModelDoGenerateHTTP(t *testing.T) {
 	if !strings.HasPrefix(seenURI, "/v1/chat/completions?api-version=2024-10-21") {
 		t.Fatalf("path = %q", seenURI)
 	}
-	if seenBody["stream"] != false || seenBody["model"] != "dep" {
-		t.Fatalf("stream flag mismatch: %#v", seenBody)
+	if seenBody["model"] != "dep" {
+		t.Fatalf("model mismatch: %#v", seenBody)
+	}
+	if _, ok := seenBody["stream"]; ok {
+		t.Fatalf("stream = %#v, want omitted for non-streaming request", seenBody["stream"])
 	}
 	if res.Text != "ok" {
 		t.Fatalf("result text = %q", res.Text)

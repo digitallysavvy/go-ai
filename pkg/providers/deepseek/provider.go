@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"fmt"
+	stdhttp "net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -23,6 +24,22 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Name overrides the provider name surfaced by language models.
+	Name string
+
+	// ProviderOptionsName overrides the providerOptions namespace.
+	ProviderOptionsName string
+
+	// ChatCompletionsPath overrides the request path.
+	ChatCompletionsPath string
+
+	// SupportsThinking controls whether top-level reasoning also sends the
+	// DeepSeek thinking field. Defaults to true.
+	SupportsThinking *bool
+
+	// HTTPClient overrides the HTTP client used for requests.
+	HTTPClient *stdhttp.Client `json:"-"`
 }
 
 // New creates a new Deepseek provider with the given configuration
@@ -32,12 +49,15 @@ func New(cfg Config) *Provider {
 		baseURL = "https://api.deepseek.com"
 	}
 
+	headers := map[string]string{"Content-Type": "application/json"}
+	if cfg.APIKey != "" {
+		headers["Authorization"] = "Bearer " + cfg.APIKey
+	}
+
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
-			"Content-Type":  "application/json",
-		}, cfg.Headers),
+		BaseURL:    baseURL,
+		Headers:    http.MergeHeaders(headers, cfg.Headers),
+		HTTPClient: cfg.HTTPClient,
 	})
 
 	return &Provider{
@@ -56,7 +76,31 @@ func CreateDeepSeek(cfg Config) *Provider {
 
 // Name returns the provider name
 func (p *Provider) Name() string {
+	if p.config.Name != "" {
+		return p.config.Name
+	}
 	return "deepseek"
+}
+
+func (p *Provider) providerOptionsName() string {
+	if p.config.ProviderOptionsName != "" {
+		return p.config.ProviderOptionsName
+	}
+	return "deepseek"
+}
+
+func (p *Provider) chatCompletionsPath() string {
+	if p.config.ChatCompletionsPath != "" {
+		return p.config.ChatCompletionsPath
+	}
+	return "/v1/chat/completions"
+}
+
+func (p *Provider) supportsThinking() bool {
+	if p.config.SupportsThinking == nil {
+		return true
+	}
+	return *p.config.SupportsThinking
 }
 
 // LanguageModel returns a language model by ID

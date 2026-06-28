@@ -121,8 +121,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // buildRequestBody builds the Azure OpenAI API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":  m.deploymentID,
-		"stream": stream,
+		"model": m.deploymentID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 
 	// Convert messages
