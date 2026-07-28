@@ -374,7 +374,7 @@ auditLog := AuditEntry{
     Timestamp:    time.Now(),
     UserID:       user.ID,
     Model:        model.ModelID(),
-    TokensUsed:   result.Usage.TotalTokens,
+    TokensUsed:   result.Usage.GetTotalTokens(),
     FinishReason: result.FinishReason,
     // No sensitive content stored
 }

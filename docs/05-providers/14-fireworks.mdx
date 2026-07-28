@@ -83,7 +83,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Fireworks AI")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Fireworks AI"})
     if err != nil {
         log.Fatal(err)
     }

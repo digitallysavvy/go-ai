@@ -114,7 +114,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("prodia API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	contentType := resp.Headers.Get("Content-Type")

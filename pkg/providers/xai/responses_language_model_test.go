@@ -41,8 +41,8 @@ func TestXAIResponsesLanguageModelMetadata(t *testing.T) {
 
 func TestXAIResponsesDoStreamIncludesRawChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/responses" {
-			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %q, want /responses", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}

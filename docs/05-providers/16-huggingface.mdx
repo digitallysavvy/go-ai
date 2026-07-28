@@ -89,7 +89,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain transformers")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain transformers"})
     fmt.Println(result.Text)
 }
 ```

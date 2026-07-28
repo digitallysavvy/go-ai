@@ -71,6 +71,17 @@ export XAI_API_KEY=xai-...
 |----------|-------------|
 | `grok-imagine-video` | Video generation |
 
+### Audio models
+
+xAI speech and transcription use provider factory methods rather than named
+model IDs. The Go provider method keeps the shared provider interface shape,
+but the model ID parameter is ignored to match the TypeScript provider default.
+
+```go
+speechModel, _ := provider.SpeechModel("")
+transcriptionModel, _ := provider.TranscriptionModel("")
+```
+
 ## Responses API (default)
 
 Starting in v0.4.0, `LanguageModel()` returns a Responses API model. This is the recommended API for new development. Use `ChatCompletionsLanguageModel()` if you need the legacy Chat Completions API.
@@ -203,6 +214,54 @@ result, _ := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 ```
 
 Returns `ModerationError` if content is filtered. `CostInUsdTicks` available in provider metadata.
+
+## Speech and transcription
+
+`SpeechModel("")` maps to xAI's `/v1/tts` endpoint. It defaults to voice
+`"eve"`, language `"auto"`, and MP3 output, matching the TypeScript provider.
+Use provider options under the `"xai"` key for xAI-specific audio controls.
+
+```go
+speechModel, _ := provider.SpeechModel("")
+
+result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:        speechModel,
+    Text:         "Hello from Go-AI.",
+    Voice:        "ara",
+    OutputFormat: "wav",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "sampleRate":               44100,
+            "optimizeStreamingLatency": 1,
+            "textNormalization":        true,
+        },
+    },
+})
+```
+
+`TranscriptionModel("")` maps to `/v1/stt`. Multipart request fields match the
+TypeScript provider, including repeated `keyterm` fields and the audio `file`
+part last.
+
+```go
+transcriptionModel, _ := provider.TranscriptionModel("")
+
+transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:     transcriptionModel,
+    Audio:     audioBytes,
+    MimeType:  "audio/wav",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "language":    "en",
+            "diarize":     true,
+            "keyterm":     []string{"Go-AI", "Grok"},
+            "fillerWords": true,
+        },
+    },
+})
+
+fmt.Println(transcript.Text)
+```
 
 ## Best practices
 

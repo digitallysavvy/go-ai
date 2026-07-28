@@ -34,6 +34,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -158,11 +159,11 @@ const (
 // CompactingHistory maintains conversation history with automatic compaction.
 type CompactingHistory struct {
     messages []types.Message
-    model    ai.LanguageModel
+    model    provider.LanguageModel
     system   string
 }
 
-func NewCompactingHistory(model ai.LanguageModel, system string) *CompactingHistory {
+func NewCompactingHistory(model provider.LanguageModel, system string) *CompactingHistory {
     return &CompactingHistory{model: model, system: system}
 }
 

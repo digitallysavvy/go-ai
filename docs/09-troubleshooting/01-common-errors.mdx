@@ -243,8 +243,8 @@ func main() {
 
     // Read from channel until it closes
     // The range loop automatically handles channel closure
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
     // Channel is now closed - DO NOT try to read again
 
@@ -253,7 +253,7 @@ func main() {
         log.Printf("Stream error: %v", err)
     }
 
-    // DO NOT try to read from TextChannel again - it's closed
+    // DO NOT try to read from Chunks again - it's closed
 }
 ```
 
@@ -293,8 +293,8 @@ func processStream(ctx context.Context, model interface{}, prompt string) error 
     }
 
     // ALWAYS consume the entire stream, even if you don't need all the data
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
 
         // If you need to exit early, the context will cancel the stream
         select {
@@ -574,8 +574,8 @@ func main() {
                 log.Fatal(err)
             }
 
-            for chunk := range stream.TextChannel {
-                fmt.Print(chunk)
+            for chunk := range stream.Chunks() {
+                fmt.Print(chunk.Text)
             }
 
             if err := stream.Err(); err != nil {
@@ -617,7 +617,7 @@ defer cancel()
 
 ```go
 // Always read all values from stream channels
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     // Process chunk
 }
 // Check error after stream closes

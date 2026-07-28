@@ -54,13 +54,15 @@ Cerebras delivers unprecedented inference speed:
 import "time"
 
 start := time.Now()
-result, err := ai.GenerateText(model,
-    "Write a detailed 500-word essay about AI")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: "Write a detailed 500-word essay about AI",
+    })
 
 elapsed := time.Since(start)
-tokensPerSec := float64(result.Usage.CompletionTokens) / elapsed.Seconds()
+tokensPerSec := float64(result.Usage.GetOutputTokens()) / elapsed.Seconds()
 
-fmt.Printf("Generated %d tokens in %v\n", result.Usage.CompletionTokens, elapsed)
+fmt.Printf("Generated %d tokens in %v\n", result.Usage.GetOutputTokens(), elapsed)
 fmt.Printf("Speed: %.0f tokens/second\n", tokensPerSec)
 // Output: Speed: 1800+ tokens/second
 ```
@@ -70,7 +72,7 @@ fmt.Printf("Speed: %.0f tokens/second\n", tokensPerSec)
 Ultra-fast streaming for immediate user feedback:
 
 ```go
-stream, err := ai.StreamText(model, "Write a story")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a story"})
 if err != nil {
     log.Fatal(err)
 }
@@ -80,8 +82,8 @@ defer stream.Close()
 startTime := time.Now()
 tokenCount := 0
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
     tokenCount++
 }
 
@@ -104,8 +106,10 @@ for i := 0; i < requests; i++ {
     wg.Add(1)
     go func(idx int) {
         defer wg.Done()
-        result, err := ai.GenerateText(model,
-            fmt.Sprintf("Query %d", idx))
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: fmt.Sprintf("Query %d", idx),
+        })
         if err != nil {
             log.Printf("Request %d failed: %v", idx, err)
         }
@@ -148,27 +152,30 @@ func main() {
     }
 
     start := time.Now()
-    result, err := ai.GenerateText(model,
-        "Explain wafer-scale computing in one paragraph")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: "Explain wafer-scale computing in one paragraph",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     elapsed := time.Since(start)
-    tokensPerSec := float64(result.Usage.CompletionTokens) / elapsed.Seconds()
+    tokensPerSec := float64(result.Usage.GetOutputTokens()) / elapsed.Seconds()
 
     fmt.Println(result.Text)
     fmt.Printf("\nGenerated %d tokens in %v (%.0f tokens/sec)\n",
-        result.Usage.CompletionTokens, elapsed, tokensPerSec)
+        result.Usage.GetOutputTokens(), elapsed, tokensPerSec)
 }
 ```
 
 ### Interactive Chat Application
 
 ```go
-func interactiveChat(model ai.LanguageModel) {
+func interactiveChat(model provider.LanguageModel) {
+    ctx := context.Background()
     scanner := bufio.NewScanner(os.Stdin)
-    messages := []ai.Message{}
+    messages := []types.Message{}
 
     for {
         fmt.Print("You: ")
@@ -179,10 +186,18 @@ func interactiveChat(model ai.LanguageModel) {
             break
         }
 
-        messages = append(messages, ai.UserMessage(userInput))
+        messages = append(messages, types.Message{
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: userInput},
+            },
+        })
 
         // Ultra-fast response
-        stream, err := ai.StreamText(model, ai.WithMessages(messages...))
+        stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+            Model:    model,
+            Messages: messages,
+        })
         if err != nil {
             log.Printf("Error: %v", err)
             continue
@@ -190,13 +205,18 @@ func interactiveChat(model ai.LanguageModel) {
 
         fmt.Print("AI: ")
         var response string
-        for chunk := range stream.TextChannel() {
-            fmt.Print(chunk)
+        for chunk := range stream.Chunks() {
+            fmt.Print(chunk.Text)
             response += chunk
         }
         fmt.Println()
 
-        messages = append(messages, ai.AssistantMessage(response))
+        messages = append(messages, types.Message{
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: response},
+            },
+        })
     }
 }
 ```
@@ -221,7 +241,7 @@ func processHighVolume(prompts []string) {
             defer wg.Done()
             defer func() { <-semaphore }() // Release
 
-            result, err := ai.GenerateText(model, p)
+            result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: p})
             if err != nil {
                 log.Printf("Failed %d: %v", idx, err)
                 return
@@ -295,7 +315,7 @@ fmt.Printf("Cost per second: $%.6f\n", cost) // Very efficient
 ## Error Handling
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if strings.Contains(err.Error(), "rate_limit") {
         log.Println("Rate limited - unlikely with Cerebras' high throughput")

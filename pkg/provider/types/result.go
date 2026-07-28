@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"time"
 )
@@ -316,6 +317,18 @@ type GeneratedFile struct {
 
 	// MediaType is the MIME type of the file (e.g., "video/mp4", "image/png")
 	MediaType string `json:"mediaType"`
+}
+
+// Base64 returns the generated file bytes as a base64 string, matching the
+// TypeScript GeneratedFile base64 accessor.
+func (f GeneratedFile) Base64() string {
+	return base64.StdEncoding.EncodeToString(f.Data)
+}
+
+// Uint8Array returns the generated file bytes, matching the TypeScript
+// GeneratedFile uint8Array accessor.
+func (f GeneratedFile) Uint8Array() []byte {
+	return f.Data
 }
 
 // StepResult represents the result of a single step in multi-step generation.

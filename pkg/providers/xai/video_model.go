@@ -114,11 +114,11 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	body := m.buildRequestBody(opts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
 
 	// Determine endpoint
-	endpoint := "/v1/videos/generations"
+	endpoint := "/videos/generations"
 	if isEdit {
-		endpoint = "/v1/videos/edits"
+		endpoint = "/videos/edits"
 	} else if isExtension {
-		endpoint = "/v1/videos/extensions"
+		endpoint = "/videos/extensions"
 	}
 
 	// Submit video generation/edit request
@@ -151,7 +151,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	statusChecker := func(ctx context.Context) (*polling.JobResult, error) {
 		var status xaiVideoStatusResponse
-		statusPath := fmt.Sprintf("/v1/videos/%s", createResp.RequestID)
+		statusPath := fmt.Sprintf("/videos/%s", createResp.RequestID)
 
 		if err := m.provider.client.GetJSON(ctx, statusPath, &status); err != nil {
 			return nil, m.handleError(err)

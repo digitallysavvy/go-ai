@@ -125,8 +125,8 @@ func runWithTokenBudget(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Printf("Steps: %d\n", len(result.Steps))
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+	if result.Usage.GetTotalTokens() > 0 {
+		fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 	}
 	fmt.Printf("StopReason: %q\n", result.StopReason)
 	fmt.Printf("Answer: %s\n", result.Text)

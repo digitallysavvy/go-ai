@@ -23,7 +23,7 @@ provider := google.New(google.Config{APIKey: key})
 
 // Same API for all providers
 model, err := provider.LanguageModel("model-id")
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 ```
 
 ### Provider Interface
@@ -307,22 +307,26 @@ model, _ := provider.LanguageModel("gemini-2.0-pro")
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/ai"
 
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    switch {
-    case errors.Is(err, ai.ErrInvalidAPIKey):
-        log.Fatal("Invalid API key")
-    case errors.Is(err, ai.ErrRateLimitExceeded):
-        // Implement backoff
-        time.Sleep(time.Second * 5)
-    case errors.Is(err, ai.ErrModelNotFound):
-        log.Fatal("Model not available")
-    case errors.Is(err, ai.ErrContextLengthExceeded):
-        // Reduce prompt size
-    case errors.Is(err, ai.ErrContentFiltered):
-        log.Println("Content filtered by provider")
-    default:
-        log.Printf("Provider error: %v", err)
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch providerErr.StatusCode {
+        case 401:
+            log.Fatal("Invalid API key")
+        case 404:
+            log.Fatal("Model not available")
+        case 429:
+            // Implement backoff
+            time.Sleep(time.Second * 5)
+        default:
+            log.Printf("Provider error: %s", providerErr.Message)
+        }
+    } else {
+        log.Printf("Unexpected error: %v", err)
     }
 }
 ```
@@ -330,31 +334,30 @@ if err != nil {
 ### Provider-Specific Errors
 
 ```go
-// OpenAI
-if openaiErr, ok := err.(*openai.Error); ok {
-    log.Printf("OpenAI error code: %s", openaiErr.Code)
-}
-
-// Anthropic
-if anthropicErr, ok := err.(*anthropic.Error); ok {
-    log.Printf("Anthropic error type: %s", anthropicErr.Type)
+var providerErr *providererrors.ProviderError
+if errors.As(err, &providerErr) {
+    log.Printf("%s error code: %s", providerErr.Provider, providerErr.ErrorCode)
 }
 ```
 
 ### Retry Logic
 
 ```go
-func generateWithRetry(model ai.LanguageModel, prompt string, maxRetries int) (*ai.GenerateTextResult, error) {
+func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt string, maxRetries int) (*ai.GenerateTextResult, error) {
     var result *ai.GenerateTextResult
     var err error
 
     for i := 0; i < maxRetries; i++ {
-        result, err = ai.GenerateText(model, prompt)
+        result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
         if err == nil {
             return result, nil
         }
 
-        if errors.Is(err, ai.ErrRateLimitExceeded) {
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) && providerErr.StatusCode == 429 {
             backoff := time.Duration(math.Pow(2, float64(i))) * time.Second
             time.Sleep(backoff)
             continue
@@ -373,7 +376,7 @@ func generateWithRetry(model ai.LanguageModel, prompt string, maxRetries int) (*
 
 ```go
 type MultiProvider struct {
-    providers []ai.Provider
+    providers []provider.Provider
 }
 
 func (m *MultiProvider) GenerateText(prompt string) (*ai.GenerateTextResult, error) {
@@ -386,7 +389,7 @@ func (m *MultiProvider) GenerateText(prompt string) (*ai.GenerateTextResult, err
             continue
         }
 
-        result, err := ai.GenerateText(model, prompt)
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
         if err == nil {
             return result, nil
         }
@@ -403,12 +406,12 @@ func (m *MultiProvider) GenerateText(prompt string) (*ai.GenerateTextResult, err
 
 ```go
 type LoadBalancer struct {
-    providers []ai.Provider
+    providers []provider.Provider
     current   int
     mu        sync.Mutex
 }
 
-func (lb *LoadBalancer) NextProvider() ai.Provider {
+func (lb *LoadBalancer) NextProvider() provider.Provider {
     lb.mu.Lock()
     defer lb.mu.Unlock()
 
@@ -422,12 +425,12 @@ func (lb *LoadBalancer) NextProvider() ai.Provider {
 
 ```go
 type CostOptimizer struct {
-    cheapProvider ai.Provider
-    premiumProvider ai.Provider
+    cheapProvider provider.Provider
+    premiumProvider provider.Provider
 }
 
 func (co *CostOptimizer) GenerateText(prompt string, priority string) (*ai.GenerateTextResult, error) {
-    var provider ai.Provider
+    var provider provider.Provider
 
     if priority == "high" {
         provider = co.premiumProvider
@@ -440,7 +443,7 @@ func (co *CostOptimizer) GenerateText(prompt string, priority string) (*ai.Gener
         return nil, err
     }
 
-    return ai.GenerateText(model, prompt)
+    return ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 }
 ```
 
@@ -467,7 +470,7 @@ provider := openai.New(openai.Config{
 ```go
 // For embedding providers
 type BatchEmbedder struct {
-    model ai.EmbeddingModel
+    model provider.EmbeddingModel
     batchSize int
 }
 
@@ -494,12 +497,12 @@ func (be *BatchEmbedder) EmbedBatch(texts []string) ([][]float64, error) {
 
 ```go
 type CachedProvider struct {
-    provider ai.Provider
+    provider provider.Provider
     cache    map[string]*ai.GenerateTextResult
     mu       sync.RWMutex
 }
 
-func (cp *CachedProvider) GenerateText(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+func (cp *CachedProvider) GenerateText(ctx context.Context, model provider.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
     cacheKey := hash(prompt)
 
     cp.mu.RLock()
@@ -509,7 +512,10 @@ func (cp *CachedProvider) GenerateText(model ai.LanguageModel, prompt string) (*
     }
     cp.mu.RUnlock()
 
-    result, err := ai.GenerateText(model, prompt)
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
     if err != nil {
         return nil, err
     }
@@ -528,7 +534,7 @@ func (cp *CachedProvider) GenerateText(model ai.LanguageModel, prompt string) (*
 
 ```go
 type UsageTracker struct {
-    totalTokens map[string]int
+    totalTokens map[string]int64
     mu          sync.Mutex
 }
 
@@ -536,10 +542,10 @@ func (ut *UsageTracker) TrackGeneration(provider string, result *ai.GenerateText
     ut.mu.Lock()
     defer ut.mu.Unlock()
 
-    ut.totalTokens[provider] += result.Usage.TotalTokens
+    ut.totalTokens[provider] += result.Usage.GetTotalTokens()
 }
 
-func (ut *UsageTracker) GetUsage(provider string) int {
+func (ut *UsageTracker) GetUsage(provider string) int64 {
     ut.mu.Lock()
     defer ut.mu.Unlock()
     return ut.totalTokens[provider]
@@ -550,21 +556,24 @@ func (ut *UsageTracker) GetUsage(provider string) int {
 
 ```go
 type LoggingProvider struct {
-    provider ai.Provider
+    provider provider.Provider
     logger   *log.Logger
 }
 
-func (lp *LoggingProvider) GenerateText(model ai.LanguageModel, prompt string, opts ...ai.GenerateOption) (*ai.GenerateTextResult, error) {
+func (lp *LoggingProvider) GenerateText(ctx context.Context, model provider.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
     start := time.Now()
 
-    result, err := ai.GenerateText(model, prompt, opts...)
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
 
     duration := time.Since(start)
     lp.logger.Printf(
         "provider=%s duration=%v tokens=%d error=%v",
         "openai",
         duration,
-        result.Usage.TotalTokens,
+        result.Usage.GetTotalTokens(),
         err,
     )
 
@@ -626,7 +635,7 @@ type MockProvider struct {
     index     int
 }
 
-func (m *MockProvider) LanguageModel(id string) (ai.LanguageModel, error) {
+func (m *MockProvider) LanguageModel(id string) (provider.LanguageModel, error) {
     return &MockLanguageModel{provider: m}, nil
 }
 ```

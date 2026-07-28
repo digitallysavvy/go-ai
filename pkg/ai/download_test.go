@@ -63,6 +63,7 @@ func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
 		if got := r.Header.Get("X-Test-Header"); got != "value" {
 			t.Fatalf("X-Test-Header = %q, want value", got)
 		}
+		w.Header().Set("Content-Type", "video/webm")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -76,8 +77,30 @@ func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("download error = %v", err)
 	}
-	if len(results) != 1 || results[0] == nil || string(results[0].Data) != "ok" {
-		t.Fatalf("download results = %#v, want ok data", results)
+	if len(results) != 1 || results[0] == nil || string(results[0].Data) != "ok" || results[0].MediaType != "video/webm" {
+		t.Fatalf("download results = %#v, want ok data and video/webm media type", results)
+	}
+}
+
+func TestCreateURLDownloadWithMetadataReturnsMediaType(t *testing.T) {
+	restore := downloadURLValidator
+	downloadURLValidator = func(string) error { return nil }
+	t.Cleanup(func() { downloadURLValidator = restore })
+
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/webm")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer server.Close()
+
+	download := CreateURLDownloadWithMetadata(nil)
+	result, err := download(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("download error = %v", err)
+	}
+	if string(result.Data) != "video" || result.MediaType != "video/webm" {
+		t.Fatalf("download result = %#v, want video data and video/webm media type", result)
 	}
 }
 

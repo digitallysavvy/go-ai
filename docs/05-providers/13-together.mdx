@@ -83,7 +83,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain open-source AI")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain open-source AI"})
     if err != nil {
         log.Fatal(err)
     }

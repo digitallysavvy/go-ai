@@ -60,13 +60,14 @@ Extended thinking for complex problems:
 ```go
 model, err := provider.LanguageModel("deepseek-reasoner")
 
-result, err := ai.GenerateText(model,
-    "Solve this logic puzzle: Three friends...",
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this logic puzzle: Three friends...",
+})
 
 // Response includes reasoning process
-if result.ReasoningContent != "" {
-    fmt.Println("Reasoning:", result.ReasoningContent)
+if result.ReasoningText != "" {
+    fmt.Println("Reasoning:", result.ReasoningText)
 }
 ```
 
@@ -108,8 +109,10 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain gradient descent")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain gradient descent",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -123,11 +126,12 @@ func main() {
 ```go
 reasoner, err := provider.LanguageModel("deepseek-reasoner")
 
-result, err := ai.GenerateText(reasoner,
-    "A farmer has 100 feet of fence. What's the maximum area he can enclose?",
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  reasoner,
+    Prompt: "A farmer has 100 feet of fence. What's the maximum area he can enclose?",
+})
 
-fmt.Println("Reasoning:", result.ReasoningContent)
+fmt.Println("Reasoning:", result.ReasoningText)
 fmt.Println("Answer:", result.Text)
 ```
 

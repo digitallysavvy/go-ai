@@ -205,7 +205,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 ```
 
 For `EmbedMany`:
@@ -219,7 +219,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
 ```
 
 ## Settings
@@ -515,7 +515,7 @@ func main() {
 Group similar texts together:
 
 ```go
-func clusterTexts(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, threshold float64) [][]int {
+func clusterTexts(ctx context.Context, texts []string, embeddingModel provider.EmbeddingModel, threshold float64) [][]int {
     // Embed all texts
     result, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
         Model:  embeddingModel,
@@ -564,7 +564,7 @@ func clusterTexts(ctx context.Context, texts []string, embeddingModel ai.Embeddi
 Combine embeddings with text generation:
 
 ```go
-func answerWithRAG(ctx context.Context, query string, documents []Document, model ai.LanguageModel, embeddingModel ai.EmbeddingModel) (string, error) {
+func answerWithRAG(ctx context.Context, query string, documents []Document, model provider.LanguageModel, embeddingModel provider.EmbeddingModel) (string, error) {
     // Embed query
     queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
         Model: embeddingModel,
@@ -661,7 +661,7 @@ result, _ := ai.Embed(ctx, ai.EmbedOptions{
 Process large datasets efficiently:
 
 ```go
-func embedLargeDataset(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, batchSize int) ([][]float64, error) {
+func embedLargeDataset(ctx context.Context, texts []string, embeddingModel provider.EmbeddingModel, batchSize int) ([][]float64, error) {
     var allEmbeddings [][]float64
 
     for i := 0; i < len(texts); i += batchSize {
@@ -712,7 +712,7 @@ func (c *EmbeddingCache) Set(text string, embedding []float64) {
     c.cache[text] = embedding
 }
 
-func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model ai.EmbeddingModel) ([]float64, error) {
+func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model provider.EmbeddingModel) ([]float64, error) {
     // Check cache first
     if embedding, ok := c.Get(text); ok {
         return embedding, nil

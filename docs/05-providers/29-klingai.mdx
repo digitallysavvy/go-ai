@@ -76,17 +76,18 @@ Create videos from text descriptions:
 model, _ := provider.VideoModel("kling-v2.6-t2v")
 
 duration := 10.0
-result, err := ai.GenerateVideo(model,
-    "A sunrise over mountains in 4K",
-    ai.WithDuration(&duration),
-    ai.WithAspectRatio("16:9"),
-    ai.WithProviderOptions(map[string]interface{}{
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:       model,
+    Prompt:      ai.VideoPrompt{Text: "A sunrise over mountains in 4K"},
+    Duration:    &duration,
+    AspectRatio: "16:9",
+    ProviderOptions: map[string]interface{}{
         "klingai": map[string]interface{}{
             "mode": "pro",
             "negativePrompt": "low quality, blurry",
         },
-    }),
-)
+    },
+})
 ```
 
 ### Image-to-Video Animation
@@ -96,13 +97,14 @@ Animate static images with camera control:
 ```go
 model, _ := provider.VideoModel("kling-v2.6-i2v")
 
-result, err := ai.GenerateVideo(model,
-    ai.VideoPrompt{
-        Image: imageData,
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Image: &ai.VideoPromptImage{Data: imageData},
         Text: "The cat slowly turns its head and blinks",
     },
-    ai.WithDuration(&duration),
-    ai.WithProviderOptions(map[string]interface{}{
+    Duration: &duration,
+    ProviderOptions: map[string]interface{}{
         "klingai": map[string]interface{}{
             "mode": "pro",
             "cameraControl": map[string]interface{}{
@@ -114,8 +116,8 @@ result, err := ai.GenerateVideo(model,
                 },
             },
         },
-    }),
-)
+    },
+})
 ```
 
 ### Start/End Frame Control
@@ -125,19 +127,20 @@ Precise control over video start and end states:
 ```go
 model, _ := provider.VideoModel("kling-v2.6-i2v")
 
-result, err := ai.GenerateVideo(model,
-    ai.VideoPrompt{
-        Image: startImage,
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Image: &ai.VideoPromptImage{Data: startImage},
         Text: "Transform cat into dog with smooth transition",
     },
-    ai.WithProviderOptions(map[string]interface{}{
+    ProviderOptions: map[string]interface{}{
         "klingai": map[string]interface{}{
             "mode": "pro", // Required for start/end control
             "imageTail": endImageURL,
             "sound": "on",
         },
-    }),
-)
+    },
+})
 ```
 
 ### Motion Control
@@ -147,12 +150,13 @@ Transfer motion from reference videos to your characters:
 ```go
 model, _ := provider.VideoModel("kling-v2.6-motion-control")
 
-result, err := ai.GenerateVideo(model,
-    ai.VideoPrompt{
-        Image: characterImage,
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Image: &ai.VideoPromptImage{Data: characterImage},
         Text: "Character performs smooth dance move",
     },
-    ai.WithProviderOptions(map[string]interface{}{
+    ProviderOptions: map[string]interface{}{
         "klingai": map[string]interface{}{
             "videoUrl": "https://example.com/reference-motion.mp4",
             "characterOrientation": "video", // "image" or "video"
@@ -160,8 +164,8 @@ result, err := ai.GenerateVideo(model,
             "keepOriginalSound": "yes",
             "pollTimeoutMs": 600000, // 10 minutes for pro mode
         },
-    }),
-)
+    },
+})
 ```
 
 ## Provider Options

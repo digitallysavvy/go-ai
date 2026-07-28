@@ -78,6 +78,8 @@ import (
     "strings"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -94,7 +96,7 @@ func main() {
     }
 
     // Initialize conversation history
-    messages := []ai.Message{}
+    messages := []types.Message{}
 
     // Create a reader for user input
     reader := bufio.NewReader(os.Stdin)
@@ -113,9 +115,11 @@ func main() {
         }
 
         // Add user message to history
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleUser,
-            Content: userInput,
+        messages = append(messages, types.Message{
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: userInput},
+            },
         })
 
         // Stream the response
@@ -131,9 +135,11 @@ func main() {
         // Print assistant response
         fmt.Print("\nAssistant: ")
         var fullResponse strings.Builder
-        for chunk := range stream.TextChannel {
-            fmt.Print(chunk)
-            fullResponse.WriteString(chunk)
+        for chunk := range stream.Chunks() {
+            if chunk.Type == provider.ChunkTypeText {
+                fmt.Print(chunk.Text)
+                fullResponse.WriteString(chunk.Text)
+            }
         }
         fmt.Println("\n")
 
@@ -144,9 +150,11 @@ func main() {
         }
 
         // Add assistant response to history
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleAssistant,
-            Content: fullResponse.String(),
+        messages = append(messages, types.Message{
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: fullResponse.String()},
+            },
         })
     }
 }
@@ -238,6 +246,8 @@ import (
     "strings"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -252,7 +262,7 @@ func main() {
         log.Fatal(err)
     }
 
-    messages := []ai.Message{}
+    messages := []types.Message{}
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Println("AI Chat Agent (type 'exit' to quit)")
@@ -267,14 +277,17 @@ func main() {
             break
         }
 
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleUser,
-            Content: userInput,
+        messages = append(messages, types.Message{
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: userInput},
+            },
         })
 
         // Define tools
-        tools := map[string]ai.Tool{
-            "getWeather": {
+        tools := []types.Tool{
+            {
+                Name:        "getWeather",
                 Description: "Get the weather in a location (fahrenheit)",
                 Parameters: map[string]interface{}{
                     "type": "object",
@@ -286,7 +299,7 @@ func main() {
                     },
                     "required": []string{"location"},
                 },
-                Execute: func(params map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     location := params["location"].(string)
                     temperature := rand.Intn(59) + 32 // Random temp between 32-90°F
                     return map[string]interface{}{
@@ -309,9 +322,11 @@ func main() {
 
         fmt.Print("\nAssistant: ")
         var fullResponse strings.Builder
-        for chunk := range stream.TextChannel {
-            fmt.Print(chunk)
-            fullResponse.WriteString(chunk)
+        for chunk := range stream.Chunks() {
+            if chunk.Type == provider.ChunkTypeText {
+                fmt.Print(chunk.Text)
+                fullResponse.WriteString(chunk.Text)
+            }
         }
         fmt.Println("\n")
 
@@ -320,9 +335,11 @@ func main() {
             continue
         }
 
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleAssistant,
-            Content: fullResponse.String(),
+        messages = append(messages, types.Message{
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: fullResponse.String()},
+            },
         })
     }
 }
@@ -361,6 +378,7 @@ import (
     "strings"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -375,7 +393,7 @@ func main() {
         log.Fatal(err)
     }
 
-    messages := []ai.Message{}
+    messages := []types.Message{}
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Println("AI Chat Agent (type 'exit' to quit)")
@@ -390,13 +408,16 @@ func main() {
             break
         }
 
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleUser,
-            Content: userInput,
+        messages = append(messages, types.Message{
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: userInput},
+            },
         })
 
-        tools := map[string]ai.Tool{
-            "getWeather": {
+        tools := []types.Tool{
+            {
+                Name:        "getWeather",
                 Description: "Get the weather in a location (fahrenheit)",
                 Parameters: map[string]interface{}{
                     "type": "object",
@@ -408,7 +429,7 @@ func main() {
                     },
                     "required": []string{"location"},
                 },
-                Execute: func(params map[string]interface{}) (interface{}, error) {
+                Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                     location := params["location"].(string)
                     temperature := rand.Intn(59) + 32
                     return map[string]interface{}{
@@ -420,11 +441,12 @@ func main() {
         }
 
         // Generate with tool calling (synchronous for multi-step)
+        maxSteps := 5
         result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             Model:    model,
             Messages: messages,
             Tools:    tools,
-            MaxSteps: 5, // Allow up to 5 steps for tool calling
+            MaxSteps: &maxSteps, // Allow up to 5 steps for tool calling
         })
         if err != nil {
             log.Printf("Error: %v\n", err)
@@ -434,9 +456,11 @@ func main() {
         fmt.Printf("\nAssistant: %s\n\n", result.Text)
 
         // Add the full result to conversation history
-        messages = append(messages, ai.Message{
-            Role:    ai.RoleAssistant,
-            Content: result.Text,
+        messages = append(messages, types.Message{
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.TextContent{Text: result.Text},
+            },
         })
 
         // Log tool calls if any
@@ -462,8 +486,9 @@ Now when you ask about the weather, the agent will:
 Let's add temperature conversion to demonstrate multi-step tool usage:
 
 ```go filename="main.go" highlight="43-62"
-tools := map[string]ai.Tool{
-    "getWeather": {
+tools := []types.Tool{
+    {
+        Name:        "getWeather",
         Description: "Get the weather in a location (fahrenheit)",
         Parameters: map[string]interface{}{
             "type": "object",
@@ -475,7 +500,7 @@ tools := map[string]ai.Tool{
             },
             "required": []string{"location"},
         },
-        Execute: func(params map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             location := params["location"].(string)
             temperature := rand.Intn(59) + 32
             return map[string]interface{}{
@@ -484,7 +509,8 @@ tools := map[string]ai.Tool{
             }, nil
         },
     },
-    "convertFahrenheitToCelsius": {
+    {
+        Name:        "convertFahrenheitToCelsius",
         Description: "Convert a temperature from fahrenheit to celsius",
         Parameters: map[string]interface{}{
             "type": "object",
@@ -496,7 +522,7 @@ tools := map[string]ai.Tool{
             },
             "required": []string{"temperature"},
         },
-        Execute: func(params map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Handle both float64 and int
             var fahrenheit float64
             switch v := params["temperature"].(type) {

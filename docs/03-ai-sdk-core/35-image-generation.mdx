@@ -35,11 +35,11 @@ func main() {
     }
 
     // Access image data
-    fmt.Printf("Image MIME type: %s\n", result.MimeType)
-    fmt.Printf("Image size: %d bytes\n", len(result.Image))
+    fmt.Printf("Image MIME type: %s\n", result.Image.MediaType)
+    fmt.Printf("Image size: %d bytes\n", len(result.Image.Data))
 
     // Save image to file
-    err = os.WriteFile("generated.png", result.Image, 0644)
+    err = os.WriteFile("generated.png", result.Image.Data, 0644)
     if err != nil {
         log.Fatal(err)
     }
@@ -52,13 +52,13 @@ You can access the image data in different formats:
 
 ```go
 // As bytes
-imageBytes := result.Image
+imageBytes := result.Image.Data
 
 // As base64 string
-base64String := result.Base64Image
+base64String := result.Image.Base64()
 
 // Get image MIME type
-mimeType := result.MimeType
+mimeType := result.Image.MediaType
 ```
 
 ## Settings
@@ -284,7 +284,7 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Prompt: "Beautiful sunset",
 })
 
-saveImage(result.Image, result.MimeType, "sunset")
+saveImage(result.Image.Data, result.Image.MediaType, "sunset")
 ```
 
 ### Generating Image Variations
@@ -292,11 +292,11 @@ saveImage(result.Image, result.MimeType, "sunset")
 Generate multiple variations of the same prompt:
 
 ```go
-func generateVariations(ctx context.Context, model provider.ImageModel, prompt string, count int) ([][]byte, error) {
+func generateVariations(ctx context.Context, model provider.ImageModel, prompt string, count int) ([]types.GeneratedFile, error) {
     result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
         Model:  model,
         Prompt: prompt,
-        N:      count,
+        N:      &count,
     })
     if err != nil {
         return nil, err
@@ -308,7 +308,7 @@ func generateVariations(ctx context.Context, model provider.ImageModel, prompt s
 images, _ := generateVariations(ctx, imageModel, "Abstract art with vibrant colors", 4)
 
 for i, img := range images {
-    os.WriteFile(fmt.Sprintf("variation-%d.png", i+1), img, 0644)
+    os.WriteFile(fmt.Sprintf("variation-%d.png", i+1), img.Data, 0644)
 }
 ```
 
@@ -335,7 +335,7 @@ for i, prompt := range prompts {
     }
 
     filename := fmt.Sprintf("batch-%d.png", i+1)
-    os.WriteFile(filename, result.Image, 0644)
+    os.WriteFile(filename, result.Image.Data, 0644)
     fmt.Printf("Generated %s: %s\n", filename, prompt)
 }
 ```
@@ -343,7 +343,7 @@ for i, prompt := range prompts {
 ### Image Generation with Retry Logic
 
 ```go
-func generateImageWithRetry(ctx context.Context, model provider.ImageModel, prompt string, maxRetries int) (*types.ImageResult, error) {
+func generateImageWithRetry(ctx context.Context, model provider.ImageModel, prompt string, maxRetries int) (*ai.GenerateImageResult, error) {
     var lastErr error
 
     for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -396,8 +396,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-os.WriteFile("imagen_4_output.png", result.Image, 0644)
-fmt.Printf("Generated with Imagen 4.0: %d bytes\n", len(result.Image))
+os.WriteFile("imagen_4_output.png", result.Image.Data, 0644)
+fmt.Printf("Generated with Imagen 4.0: %d bytes\n", len(result.Image.Data))
 ```
 
 #### Google Generative AI - Gemini Flash Image
@@ -415,7 +415,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-os.WriteFile("gemini_output.png", result.Image, 0644)
+os.WriteFile("gemini_output.png", result.Image.Data, 0644)
 ```
 
 #### Google Vertex AI - Imagen 3.0
@@ -444,7 +444,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-os.WriteFile("vertex_imagen_output.png", result.Image, 0644)
+os.WriteFile("vertex_imagen_output.png", result.Image.Data, 0644)
 ```
 
 #### Comparing Google Models
@@ -475,7 +475,7 @@ for name, model := range models {
         }
 
         filename := fmt.Sprintf("%s_%d.png", name, i+1)
-        os.WriteFile(filename, result.Image, 0644)
+        os.WriteFile(filename, result.Image.Data, 0644)
         fmt.Printf("✓ Generated %s\n", filename)
     }
 }

@@ -128,8 +128,8 @@ func (p *ProgressTracker) OnStepFinish(step types.StepResult) {
     p.steps = append(p.steps, step)
     p.currentStep = step.StepNumber
 
-    if step.Usage.TotalTokens != nil {
-        p.totalTokens += *step.Usage.TotalTokens
+    if step.Usage.GetTotalTokens() > 0 {
+        p.totalTokens += step.Usage.GetTotalTokens()
     }
 
     // Update UI (simplified example)

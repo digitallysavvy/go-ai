@@ -15,8 +15,8 @@ import (
 func TestFilesAPI_UploadFile(t *testing.T) {
 	var teamIDSeen bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/files" {
-			t.Fatalf("upload path = %q, want %q", r.URL.Path, "/v1/files")
+		if r.URL.Path != "/files" {
+			t.Fatalf("upload path = %q, want %q", r.URL.Path, "/files")
 		}
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatal(err)

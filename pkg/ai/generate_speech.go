@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,33 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
+
+// GeneratedAudioFile mirrors the TypeScript SDK's GeneratedAudioFile export.
+type GeneratedAudioFile struct {
+	// Data is the raw generated audio bytes.
+	Data []byte `json:"data,omitempty"`
+
+	// URL is the URL to the audio file, when a provider returns one.
+	URL string `json:"url,omitempty"`
+
+	// MediaType is the IANA media type of the generated audio.
+	MediaType string `json:"mediaType"`
+
+	// Format is the audio format, derived from MediaType. audio/mpeg maps to mp3.
+	Format string `json:"format"`
+}
+
+// Base64 returns the generated audio bytes as a base64 string, matching the
+// TypeScript GeneratedAudioFile base64 accessor.
+func (f GeneratedAudioFile) Base64() string {
+	return base64.StdEncoding.EncodeToString(f.Data)
+}
+
+// Uint8Array returns the generated audio bytes, matching the TypeScript
+// GeneratedAudioFile uint8Array accessor.
+func (f GeneratedAudioFile) Uint8Array() []byte {
+	return f.Data
+}
 
 // GenerateSpeechOptions contains options for speech generation.
 type GenerateSpeechOptions struct {
@@ -31,15 +59,29 @@ type GenerateSpeechOptions struct {
 
 // GenerateSpeechResult contains generated speech audio.
 type GenerateSpeechResult struct {
-	Audio            types.GeneratedFile       `json:"audio"`
-	Warnings         []types.Warning           `json:"warnings"`
-	Responses        []*types.ResponseMetadata `json:"responses"`
-	ProviderMetadata map[string]interface{}    `json:"providerMetadata"`
+	Audio            GeneratedAudioFile            `json:"audio"`
+	Warnings         []types.Warning               `json:"warnings"`
+	Responses        []SpeechModelResponseMetadata `json:"responses"`
+	ProviderMetadata map[string]interface{}        `json:"providerMetadata"`
 }
+
+// SpeechModelResponseMetadata contains metadata for a speech model call.
+type SpeechModelResponseMetadata struct {
+	Timestamp time.Time         `json:"timestamp"`
+	ModelID   string            `json:"modelId"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      interface{}       `json:"body,omitempty"`
+}
+
+// Experimental_SpeechResult mirrors the TypeScript SDK's deprecated
+// Experimental_SpeechResult alias.
+//
+// Deprecated: use GenerateSpeechResult.
+type Experimental_SpeechResult = GenerateSpeechResult
 
 // NoSpeechGeneratedError is returned when a speech model returns no audio.
 type NoSpeechGeneratedError struct {
-	Responses []*types.ResponseMetadata
+	Responses []SpeechModelResponseMetadata
 }
 
 func (e *NoSpeechGeneratedError) Error() string {
@@ -96,9 +138,9 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	if err != nil {
 		return nil, err
 	}
-	var responses []*types.ResponseMetadata
+	var responses []SpeechModelResponseMetadata
 	if raw != nil {
-		responses = []*types.ResponseMetadata{raw.Response}
+		responses = []SpeechModelResponseMetadata{speechResponseMetadata(raw.Response, opts.Model)}
 	}
 	if raw == nil || len(raw.Audio) == 0 {
 		return nil, &NoSpeechGeneratedError{Responses: responses}
@@ -111,15 +153,41 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
+	mediaType := resolveGeneratedSpeechMediaType(raw.Audio)
 	return &GenerateSpeechResult{
-		Audio: types.GeneratedFile{
+		Audio: GeneratedAudioFile{
 			Data:      raw.Audio,
-			MediaType: resolveGeneratedSpeechMediaType(raw.Audio),
+			MediaType: mediaType,
+			Format:    generatedAudioFormat(mediaType),
 		},
 		Warnings:         warnings,
 		Responses:        responses,
 		ProviderMetadata: providerMetadata,
 	}, nil
+}
+
+func speechResponseMetadata(response *types.ResponseMetadata, model provider.SpeechModel) SpeechModelResponseMetadata {
+	if response == nil {
+		metadata := SpeechModelResponseMetadata{Timestamp: time.Now()}
+		if model != nil {
+			metadata.ModelID = model.ModelID()
+		}
+		return metadata
+	}
+	return SpeechModelResponseMetadata{
+		Timestamp: response.Timestamp,
+		ModelID:   response.ModelID,
+		Headers:   response.Headers,
+		Body:      response.Body,
+	}
+}
+
+// ExperimentalGenerateSpeech mirrors the TypeScript SDK's deprecated
+// experimental_generateSpeech export.
+//
+// Deprecated: use GenerateSpeech.
+func ExperimentalGenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error) {
+	return GenerateSpeech(ctx, opts)
 }
 
 func speechHeadersWithUserAgent(headers map[string]string) map[string]string {
@@ -132,4 +200,15 @@ func resolveGeneratedSpeechMediaType(data []byte) string {
 		return mediaType
 	}
 	return "audio/mp3"
+}
+
+func generatedAudioFormat(mediaType string) string {
+	if mediaType == "audio/mpeg" {
+		return "mp3"
+	}
+	parts := strings.Split(mediaType, "/")
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return "mp3"
 }

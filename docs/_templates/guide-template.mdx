@@ -44,12 +44,12 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Step 1 code with clear comments
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
 
     // Continue with clear, simple example
 }
@@ -61,9 +61,9 @@ Explanation of the second step and what it accomplishes.
 
 ```go
 // Build on the previous step
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "claude-3-5-sonnet-20241022",
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {Role: "user", Content: "Hello!"},
     },
 }
@@ -75,7 +75,7 @@ Explanation of the final basic step.
 
 ```go
 // Complete the basic example
-response, err := client.Generate(context.Background(), request)
+response, err := ai.GenerateText(context.Background(), request)
 if err != nil {
     log.Fatalf("Error: %v", err)
 }
@@ -95,27 +95,27 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
     // Create client
-    client := gai.NewClient(
+    client := newExampleClient(
         "your-api-key",
-        gai.WithProvider(anthropic.NewProvider()),
+        exampleWithProvider(anthropic.NewProvider()),
     )
 
     // Create request
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "claude-3-5-sonnet-20241022",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "Hello, world!"},
         },
     }
 
     // Generate response
-    response, err := client.Generate(context.Background(), request)
+    response, err := ai.GenerateText(context.Background(), request)
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
@@ -140,32 +140,30 @@ import (
     "log"
     "time"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Advanced configuration
-    client := gai.NewClient(
+    client := newExampleClient(
         "your-api-key",
-        gai.WithAdvancedOption1(value1),
-        gai.WithAdvancedOption2(value2),
+        exampleWithAdvancedOption1(value1),
+        exampleWithAdvancedOption2(value2),
     )
 
     // Advanced usage pattern
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "claude-3-5-sonnet-20241022",
         Messages: messages,
-        Options: &gai.RequestOptions{
-            Temperature: 0.7,
-            MaxTokens:   2000,
-            // Advanced options
-        },
+        Temperature: ptr(0.7),
+        MaxTokens:   ptr(2000),
+        // Advanced options
     }
 
-    response, err := client.Generate(ctx, request)
+    response, err := ai.GenerateText(ctx, request)
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
@@ -207,9 +205,9 @@ Additional advanced capability.
 **Example:**
 
 ```go
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithOption1(customValue),
+    exampleWithOption1(customValue),
 )
 ```
 
@@ -224,9 +222,11 @@ client := gai.NewClient(
 **Example:**
 
 ```go
-request := &gai.Request{
-    Options: &gai.RequestOptions{
-        Option2: value,
+request := ai.GenerateTextOptions{
+    ProviderOptions: map[string]interface{}{
+        "[provider-package]": map[string]interface{}{
+            "option2": value,
+        },
     },
 }
 ```
@@ -248,15 +248,15 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Implementation specific to this use case
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
 
     // Scenario-specific code
-    result, err := performTask(client)
+    result, err := performTask(context.Background())
     if err != nil {
         log.Fatalf("Task failed: %v", err)
     }
@@ -264,7 +264,7 @@ func main() {
     fmt.Printf("Result: %+v\n", result)
 }
 
-func performTask(client *gai.Client) (interface{}, error) {
+func performTask(ctx context.Context) (interface{}, error) {
     // Task implementation
     return nil, nil
 }
@@ -300,9 +300,9 @@ Explanation of why this is important.
 
 ```go
 // Example of correct approach
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithBestPracticeOption(),
+    exampleWithBestPracticeOption(),
 )
 ```
 
@@ -310,7 +310,7 @@ client := gai.NewClient(
 
 ```go
 // Example of what to avoid
-client := gai.NewClient(apiKey)
+client := newExampleClient(apiKey)
 // Missing important configuration
 ```
 
@@ -342,15 +342,15 @@ Additional best practice.
 Always implement proper error handling:
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, gai.ErrRateLimited) {
+    if providererrors.IsRateLimitError(err) {
         // Handle rate limiting
         log.Println("Rate limited, implementing backoff")
         time.Sleep(5 * time.Second)
         // Retry logic
-    } else if errors.Is(err, gai.ErrInvalidInput) {
+    } else if errors.Is(err, providererrors.ErrInvalidInput) {
         // Handle validation errors
         return fmt.Errorf("invalid input: %w", err)
     } else {
@@ -370,7 +370,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
 // Close streams when done
-stream, err := client.GenerateStream(ctx, request)
+stream, err := ai.StreamText(ctx, request)
 if err != nil {
     return err
 }
@@ -432,16 +432,16 @@ if err != nil {
 
 #### Error Type 1
 
-**Error:** `ErrSpecificError`
+**Error:** `ErrUnsupportedFeature`
 
 **Cause:** What causes this error.
 
 **Example:**
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
-    if errors.Is(err, gai.ErrSpecificError) {
+    if errors.Is(err, providererrors.ErrUnsupportedFeature) {
         log.Printf("Specific error occurred: %v", err)
         // Handle appropriately
     }
@@ -469,17 +469,17 @@ if err != nil {
 Complete error handling pattern for this feature:
 
 ```go
-func handleRequest(client *gai.Client, request *gai.Request) error {
+func handleRequest(request ai.GenerateTextOptions) error {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    response, err := client.Generate(ctx, request)
+    response, err := ai.GenerateText(ctx, request)
     if err != nil {
         // Handle different error types
         switch {
-        case errors.Is(err, gai.ErrRateLimited):
-            return handleRateLimit(client, request)
-        case errors.Is(err, gai.ErrInvalidInput):
+        case providererrors.IsRateLimitError(err):
+            return handleRateLimit(request)
+        case errors.Is(err, providererrors.ErrInvalidInput):
             return fmt.Errorf("invalid request: %w", err)
         case errors.Is(err, context.DeadlineExceeded):
             return fmt.Errorf("request timed out: %w", err)
@@ -493,21 +493,26 @@ func handleRequest(client *gai.Client, request *gai.Request) error {
     return nil
 }
 
-func handleRateLimit(client *gai.Client, request *gai.Request) error {
+func handleRateLimit(request ai.GenerateTextOptions) error {
     // Implement exponential backoff
     backoff := time.Second
     maxRetries := 3
 
     for i := 0; i < maxRetries; i++ {
         time.Sleep(backoff)
-        response, err := client.Generate(context.Background(), request)
+        response, err := ai.GenerateText(context.Background(), request)
         if err == nil {
             processResponse(response)
             return nil
         }
-        if !errors.Is(err, gai.ErrRateLimited) {
+        if !providererrors.IsRateLimitError(err) {
             return err
         }
+        backoff *= 2
+    }
+
+    return fmt.Errorf("max retries exceeded")
+}
         backoff *= 2
     }
 
@@ -547,15 +552,15 @@ How to measure performance:
 import "testing"
 
 func BenchmarkFeature(b *testing.B) {
-    client := gai.NewClient("your-api-key")
-    request := &gai.Request{
+    client := newExampleClient("your-api-key")
+    request := ai.GenerateTextOptions{
         Model:    "claude-3-5-sonnet-20241022",
         Messages: messages,
     }
 
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
-        _, err := client.Generate(context.Background(), request)
+        _, err := ai.GenerateText(context.Background(), request)
         if err != nil {
             b.Fatalf("Error: %v", err)
         }
@@ -576,23 +581,23 @@ import (
     "context"
     "testing"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func TestFeature(t *testing.T) {
     // Setup
-    client := gai.NewClient("test-api-key")
+    client := newExampleClient("test-api-key")
 
     // Test case
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "claude-3-5-sonnet-20241022",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "test"},
         },
     }
 
     // Execute
-    response, err := client.Generate(context.Background(), request)
+    response, err := ai.GenerateText(context.Background(), request)
 
     // Assert
     if err != nil {
@@ -670,14 +675,14 @@ How to mock for testing:
 import "log"
 
 // Enable verbose logging
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithDebug(true),
+    exampleWithDebug(true),
 )
 
 // Log requests and responses
 log.Printf("Request: %+v\n", request)
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 log.Printf("Response: %+v\n", response)
 log.Printf("Error: %v\n", err)
 ```
@@ -697,8 +702,8 @@ import (
     "os"
     "time"
 
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
@@ -708,10 +713,10 @@ func main() {
         log.Fatal("ANTHROPIC_API_KEY not set")
     }
 
-    client := gai.NewClient(
+    client := newExampleClient(
         apiKey,
-        gai.WithProvider(anthropic.NewProvider()),
-        gai.WithTimeout(60*time.Second),
+        exampleWithProvider(anthropic.NewProvider()),
+        exampleWithTimeout(60*time.Second),
     )
 
     // Execute task with error handling
@@ -722,13 +727,13 @@ func main() {
     log.Println("Task completed successfully")
 }
 
-func executeTask(client *gai.Client) error {
+func executeTask(model provider.LanguageModel) error {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    request := &gai.Request{
-        Model: "claude-3-5-sonnet-20241022",
-        Messages: []gai.Message{
+    request := ai.GenerateTextOptions{
+        Model: model,
+        Messages: []types.Message{
             {
                 Role:    "system",
                 Content: "You are a helpful assistant.",
@@ -738,28 +743,26 @@ func executeTask(client *gai.Client) error {
                 Content: "Explain the concept briefly.",
             },
         },
-        Options: &gai.RequestOptions{
-            Temperature: 0.7,
-            MaxTokens:   1000,
-        },
+        Temperature: ptr(0.7),
+        MaxTokens:   ptr(1000),
     }
 
-    response, err := client.Generate(ctx, request)
+    response, err := ai.GenerateText(ctx, request)
     if err != nil {
         return handleError(err)
     }
 
     fmt.Printf("Response:\n%s\n", response.Content)
-    fmt.Printf("Tokens used: %d\n", response.Usage.TotalTokens)
+    fmt.Printf("Tokens used: %d\n", response.Usage.GetTotalTokens())
 
     return nil
 }
 
 func handleError(err error) error {
     switch {
-    case errors.Is(err, gai.ErrRateLimited):
+    case providererrors.IsRateLimitError(err):
         return fmt.Errorf("rate limited, try again later: %w", err)
-    case errors.Is(err, gai.ErrInvalidInput):
+    case errors.Is(err, providererrors.ErrInvalidInput):
         return fmt.Errorf("invalid input: %w", err)
     case errors.Is(err, context.DeadlineExceeded):
         return fmt.Errorf("request timed out: %w", err)

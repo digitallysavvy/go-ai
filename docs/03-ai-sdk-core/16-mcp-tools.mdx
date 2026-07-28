@@ -253,25 +253,25 @@ import (
 )
 
 // Define tool schema
-weatherTool := ai.Tool{
+weatherTool := types.Tool{
     Name:        "get-weather",
     Description: "Get weather information for a location",
-    Parameters: types.JSONSchema{
-        Type: "object",
-        Properties: map[string]types.JSONSchema{
-            "location": {
-                Type:        "string",
-                Description: "City name",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]string{
+                "type":        "string",
+                "description": "City name",
             },
-            "units": {
-                Type: "string",
-                Enum: []string{"celsius", "fahrenheit"},
-                Description: "Temperature units",
+            "units": map[string]interface{}{
+                "type":        "string",
+                "enum":        []string{"celsius", "fahrenheit"},
+                "description": "Temperature units",
             },
         },
-        Required: []string{"location"},
+        "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
         // Call MCP tool manually
         result, err := client.CallTool(ctx, &mcp.CallToolRequest{
             Name: "get-weather",
@@ -290,7 +290,7 @@ weatherTool := ai.Tool{
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the temperature in Paris?",
-    Tools:  []ai.Tool{weatherTool},
+    Tools:  []types.Tool{weatherTool},
 })
 ```
 
@@ -577,8 +577,8 @@ func main() {
 
     // Display usage statistics
     fmt.Printf("\nUsage: %d input tokens, %d output tokens\n",
-        result.Usage.PromptTokens,
-        result.Usage.CompletionTokens)
+        result.Usage.GetInputTokens(),
+        result.Usage.GetOutputTokens())
 }
 ```
 
@@ -705,9 +705,9 @@ if err != nil {
 }
 
 // Check if image handling is working correctly
-if result.Usage.PromptTokens > 100000 {
+if result.Usage.GetInputTokens() > 100000 {
     log.Printf("WARNING: High token usage (%d) - possible image handling issue",
-        result.Usage.PromptTokens)
+        result.Usage.GetInputTokens())
 }
 ```
 

@@ -151,6 +151,7 @@ func (m *TranscriptionModel) convertResponse(body []byte, timestamps bool) (*typ
 
 		return &types.TranscriptionResult{
 			Text:       response.Text,
+			Segments:   timestampList,
 			Timestamps: timestampList,
 			Usage: types.TranscriptionUsage{
 				DurationSeconds: response.Duration,

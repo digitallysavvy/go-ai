@@ -270,8 +270,8 @@ func retrieveWithReranking(
     ctx context.Context,
     query string,
     documents []string,
-    embeddingModel ai.EmbeddingModel,
-    rerankModel ai.RerankingModel,
+    embeddingModel provider.EmbeddingModel,
+    rerankModel provider.RerankingModel,
 ) ([]string, error) {
     // Step 1: Embed query and documents
     queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
@@ -347,8 +347,8 @@ type Document struct {
 type SearchEngine struct {
     documents     []Document
     embeddings    [][]float64
-    embeddingModel ai.EmbeddingModel
-    rerankModel    ai.RerankingModel
+    embeddingModel provider.EmbeddingModel
+    rerankModel    provider.RerankingModel
 }
 
 func (se *SearchEngine) Search(ctx context.Context, query string, limit int) ([]Document, error) {
@@ -417,7 +417,7 @@ func rerankWithMultipleQueries(
     ctx context.Context,
     queries []string,
     documents []string,
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
 ) ([]string, error) {
     // Aggregate scores from multiple queries
     scoreMap := make(map[int]float64)
@@ -473,7 +473,7 @@ func searchWithFiltering(
     query string,
     documents []Document,
     filters map[string]interface{},
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
 ) ([]Document, error) {
     // Filter documents first
     var filtered []Document
@@ -575,7 +575,7 @@ func rerankLargeDataset(
     ctx context.Context,
     query string,
     documents []string,
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
     batchSize int,
 ) ([]string, error) {
     var allResults []RankItem

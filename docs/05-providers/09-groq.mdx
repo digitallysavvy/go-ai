@@ -63,15 +63,15 @@ All models FREE in public beta with rate limits.
 Groq excels at real-time streaming:
 
 ```go
-stream, err := ai.StreamText(model, "Write a story")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a story"})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
 // Tokens arrive at 300-800 tokens/second
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -80,35 +80,34 @@ for chunk := range stream.TextChannel() {
 Function calling with high-speed inference:
 
 ```go
-tools := []ai.Tool{
+tools := []types.Tool{
     {
-        Type: "function",
-        Function: ai.FunctionDefinition{
-            Name: "calculate",
-            Description: "Perform calculation",
-            Parameters: map[string]interface{}{
-                "type": "object",
-                "properties": map[string]interface{}{
-                    "expression": map[string]string{"type": "string"},
-                },
+        Name:        "calculate",
+        Description: "Perform calculation",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "expression": map[string]string{"type": "string"},
             },
         },
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What is 234 * 567?",
-    ai.WithTools(tools...),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What is 234 * 567?",
+    Tools:  tools,
+})
 ```
 
 ### JSON Mode
 
 ```go
-result, err := ai.GenerateText(model,
-    "Extract structured data from: John, age 30",
-    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Extract structured data from: John, age 30",
+    ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
+})
 ```
 
 ## Examples
@@ -140,7 +139,7 @@ func main() {
     }
 
     start := time.Now()
-    result, err := ai.GenerateText(model, "Explain Groq LPU technology")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Groq LPU technology"})
     if err != nil {
         log.Fatal(err)
     }
@@ -149,23 +148,26 @@ func main() {
     fmt.Println(result.Text)
     fmt.Printf("\nCompleted in %v (%.0f tokens/sec)\n",
         elapsed,
-        float64(result.Usage.CompletionTokens)/elapsed.Seconds())
+        float64(result.Usage.GetOutputTokens())/elapsed.Seconds())
 }
 ```
 
 ### Real-Time Chat Application
 
 ```go
-func streamChat(model ai.LanguageModel, message string) {
-    stream, err := ai.StreamText(model, message)
+func streamChat(ctx context.Context, model provider.LanguageModel, message string) {
+    stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+        Model:  model,
+        Prompt: message,
+    })
     if err != nil {
         log.Fatal(err)
     }
     defer stream.Close()
 
     // Ultra-fast streaming for real-time UX
-    for chunk := range stream.TextChannel() {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
         // No perceptible delay between tokens
     }
     fmt.Println()
@@ -202,7 +204,7 @@ func streamChat(model ai.LanguageModel, message string) {
 ## Error Handling
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if strings.Contains(err.Error(), "rate_limit") {
         log.Println("Rate limited - wait before retry")

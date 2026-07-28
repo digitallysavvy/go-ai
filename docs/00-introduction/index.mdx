@@ -87,8 +87,10 @@ stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Prompt: "Write a story about...",
 })
 
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
 }
 ```
 
@@ -118,11 +120,12 @@ Integrate external tools and APIs:
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in San Francisco?",
-    Tools: map[string]ai.Tool{
-        "getWeather": {
+    Tools: []types.Tool{
+        {
+            Name:        "getWeather",
             Description: "Get current weather for a location",
             Parameters: weatherSchema,
-            Execute: func(params map[string]interface{}) (interface{}, error) {
+            Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 return fetchWeather(params["location"].(string))
             },
         },
@@ -202,7 +205,7 @@ stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
 Unbuffered channels provide natural flow control:
 
 ```go
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     // Processing automatically slows down generation
     time.Sleep(100 * time.Millisecond)
     processChunk(chunk)

@@ -171,15 +171,15 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
 
-    response, err := client.Generate(context.Background(), &gai.Request{
+    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
         Model: "claude-3-5-sonnet-20241022",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "Hello!"},
         },
     })

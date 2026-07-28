@@ -214,35 +214,39 @@ func LogMiddleware() *middleware.LanguageModelMiddleware {
                 return nil, err
             }
 
-            // Wrap the stream channel to log chunks
-            wrappedChan := make(chan types.StreamChunk)
-            go func() {
-                defer close(wrappedChan)
-                var fullText string
-
-                for chunk := range stream.Channel() {
-                    if chunk.Text != "" {
-                        fullText += chunk.Text
-                    }
-                    wrappedChan <- chunk
-                }
-
-                log.Println("DoStream finished")
-                log.Printf("Generated text: %s\n", fullText)
-            }()
-
-            return &wrappedStream{channel: wrappedChan}, nil
+            return &loggingStream{base: stream}, nil
         },
     }
 }
 
-// wrappedStream implements provider.TextStream
-type wrappedStream struct {
-    channel chan types.StreamChunk
+// loggingStream implements provider.TextStream
+type loggingStream struct {
+    base     provider.TextStream
+    fullText string
 }
 
-func (s *wrappedStream) Channel() <-chan types.StreamChunk {
-    return s.channel
+func (s *loggingStream) Next() (*provider.StreamChunk, error) {
+    chunk, err := s.base.Next()
+    if err == io.EOF {
+        log.Println("DoStream finished")
+        log.Printf("Generated text: %s\n", s.fullText)
+        return nil, io.EOF
+    }
+    if err != nil {
+        return nil, err
+    }
+    if chunk.Type == provider.ChunkTypeText {
+        s.fullText += chunk.Text
+    }
+    return chunk, nil
+}
+
+func (s *loggingStream) Err() error {
+    return s.base.Err()
+}
+
+func (s *loggingStream) Close() error {
+    return s.base.Close()
 }
 ```
 
@@ -588,7 +592,7 @@ func MetricsMiddleware(metrics *Metrics) *middleware.LanguageModelMiddleware {
                 return nil, err
             }
 
-            metrics.TotalTokens += int64(result.Usage.TotalTokens)
+            metrics.TotalTokens += int64(result.Usage.GetTotalTokens())
 
             return result, nil
         },
@@ -774,17 +778,7 @@ WrapStream: func(ctx context.Context, doGenerate func() (*types.GenerateResult, 
         return nil, err
     }
 
-    wrappedChan := make(chan types.StreamChunk)
-    go func() {
-        defer close(wrappedChan)
-
-        for chunk := range stream.Channel() {
-            // Process chunk
-            wrappedChan <- chunk
-        }
-    }()
-
-    return &wrappedStream{channel: wrappedChan}, nil
+    return &processingStream{base: stream}, nil
 }
 ```
 

@@ -64,15 +64,19 @@ func (m *CustomLanguageModel) SupportsImageInput() bool {
     return false
 }
 
+func int64Ptr(v int64) *int64 {
+    return &v
+}
+
 func (m *CustomLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
     // Implement your API call here
     return &types.GenerateResult{
         Text:         "Generated text",
         FinishReason: types.FinishReasonStop,
         Usage: types.Usage{
-            PromptTokens:     10,
-            CompletionTokens: 20,
-            TotalTokens:      30,
+            InputTokens:  int64Ptr(10),
+            OutputTokens: int64Ptr(20),
+            TotalTokens:  int64Ptr(30),
         },
     }, nil
 }

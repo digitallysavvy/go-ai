@@ -64,7 +64,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	resp, err := f.provider.client.Do(ctx, internalhttp.Request{
 		Method: "POST",
-		Path:   "/v1/files",
+		Path:   "/files",
 		Body:   &body,
 		Headers: map[string]string{
 			"Content-Type": writer.FormDataContentType(),

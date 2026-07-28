@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ func TestGenerateSpeechForwardsProviderResponseMetadata(t *testing.T) {
 				Audio:   []byte("audio"),
 				Request: &types.StepRequest{Body: `{"input":"hello"}`},
 				Response: &types.ResponseMetadata{
+					ID:        "provider-only-id",
 					Timestamp: timestamp,
 					ModelID:   "speech-model",
 					Headers:   map[string]string{"X-Request": "speech-1"},
@@ -60,6 +63,16 @@ func TestGenerateSpeechForwardsProviderResponseMetadata(t *testing.T) {
 	}
 	if string(result.Responses[0].Body.([]byte)) != `{"ok":true}` {
 		t.Fatalf("response body = %#v", result.Responses[0].Body)
+	}
+	encoded, err := json.Marshal(result.Responses[0])
+	if err != nil {
+		t.Fatalf("marshal response metadata: %v", err)
+	}
+	if strings.Contains(string(encoded), `"id"`) {
+		t.Fatalf("speech response metadata JSON = %s, must not expose provider-only id", encoded)
+	}
+	if !strings.Contains(string(encoded), `"body"`) {
+		t.Fatalf("speech response metadata JSON = %s, want body", encoded)
 	}
 }
 
@@ -231,5 +244,22 @@ func TestGenerateSpeechNoAudioReturnsNoSpeechGeneratedErrorWithResponses(t *test
 	}
 	if len(noSpeech.Responses) != 1 || noSpeech.Responses[0].Headers["X-Request"] != "speech-1" {
 		t.Fatalf("responses = %#v", noSpeech.Responses)
+	}
+}
+
+func TestGeneratedAudioFormatMatchesTypeScript(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"audio/mpeg": "mp3",
+		"audio/mp3":  "mp3",
+		"audio/wav":  "wav",
+		"audio/pcm":  "pcm",
+		"":           "mp3",
+	}
+	for mediaType, want := range tests {
+		if got := generatedAudioFormat(mediaType); got != want {
+			t.Fatalf("generatedAudioFormat(%q) = %q, want %q", mediaType, got, want)
+		}
 	}
 }

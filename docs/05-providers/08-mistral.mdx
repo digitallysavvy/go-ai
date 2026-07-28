@@ -77,27 +77,25 @@ These are mapped into `Usage.InputDetails.CacheReadTokens`, `Usage.InputDetails.
 Mistral supports parallel function calling:
 
 ```go
-tools := []ai.Tool{
+tools := []types.Tool{
     {
-        Type: "function",
-        Function: ai.FunctionDefinition{
-            Name: "get_weather",
-            Description: "Get weather for location",
-            Parameters: map[string]interface{}{
-                "type": "object",
-                "properties": map[string]interface{}{
-                    "location": map[string]string{"type": "string"},
-                },
-                "required": []string{"location"},
+        Name:        "get_weather",
+        Description: "Get weather for location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]string{"type": "string"},
             },
+            "required": []string{"location"},
         },
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What's the weather in Paris and London?",
-    ai.WithTools(tools...),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Paris and London?",
+    Tools:  tools,
+})
 
 // Processes both calls in parallel
 ```
@@ -107,9 +105,11 @@ result, err := ai.GenerateText(model,
 Structured output generation:
 
 ```go
-result, err := ai.GenerateText(model, "Extract: John, 30, engineer",
-    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Extract: John, 30, engineer",
+    ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
+})
 ```
 
 ### Code Generation
@@ -150,8 +150,10 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain Mistral AI advantages")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain Mistral AI advantages",
+    })
     if err != nil {
         log.Fatal(err)
     }

@@ -32,7 +32,7 @@ func TestVideoModel_TextToVideo(t *testing.T) {
 
 		if requestCount == 1 {
 			// First request: video generation
-			assert.Equal(t, "/v1/videos/generations", r.URL.Path)
+			assert.Equal(t, "/videos/generations", r.URL.Path)
 			assert.Equal(t, http.MethodPost, r.Method)
 
 			var body map[string]interface{}
@@ -48,7 +48,7 @@ func TestVideoModel_TextToVideo(t *testing.T) {
 			})
 		} else {
 			// Subsequent requests: status polling
-			assert.Equal(t, "/v1/videos/test-request-id", r.URL.Path)
+			assert.Equal(t, "/videos/test-request-id", r.URL.Path)
 			assert.Equal(t, http.MethodGet, r.Method)
 
 			w.Header().Set("Content-Type", "application/json")
@@ -97,7 +97,7 @@ func TestVideoModel_ImageToVideo(t *testing.T) {
 		requestCount++
 
 		if requestCount == 1 {
-			assert.Equal(t, "/v1/videos/generations", r.URL.Path)
+			assert.Equal(t, "/videos/generations", r.URL.Path)
 
 			var body map[string]interface{}
 			err := json.NewDecoder(r.Body).Decode(&body)
@@ -206,7 +206,7 @@ func TestVideoModel_VideoEditing(t *testing.T) {
 
 		if requestCount == 1 {
 			// Should use edits endpoint
-			assert.Equal(t, "/v1/videos/edits", r.URL.Path)
+			assert.Equal(t, "/videos/edits", r.URL.Path)
 
 			var body map[string]interface{}
 			err := json.NewDecoder(r.Body).Decode(&body)
@@ -261,7 +261,7 @@ func TestVideoModel_VideoExtensionMode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		if requestCount == 1 {
-			assert.Equal(t, "/v1/videos/extensions", r.URL.Path)
+			assert.Equal(t, "/videos/extensions", r.URL.Path)
 			var body map[string]interface{}
 			err := json.NewDecoder(r.Body).Decode(&body)
 			require.NoError(t, err)
@@ -302,7 +302,7 @@ func TestVideoModel_ExtendMethod(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		if requestCount == 1 {
-			assert.Equal(t, "/v1/videos/extensions", r.URL.Path)
+			assert.Equal(t, "/videos/extensions", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
 			return
@@ -330,7 +330,7 @@ func TestVideoModel_ReferenceImagesMode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		if requestCount == 1 {
-			assert.Equal(t, "/v1/videos/generations", r.URL.Path)
+			assert.Equal(t, "/videos/generations", r.URL.Path)
 			var body map[string]interface{}
 			err := json.NewDecoder(r.Body).Decode(&body)
 			require.NoError(t, err)

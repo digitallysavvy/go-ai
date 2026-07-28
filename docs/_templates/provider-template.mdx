@@ -25,7 +25,7 @@ Detailed introduction covering:
 ## Installation
 
 ```bash
-go get github.com/teilomillet/go-ai
+go get github.com/digitallysavvy/go-ai
 ```
 
 The [Provider Name] provider is included in the main Go-AI SDK package.
@@ -40,21 +40,21 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/[provider-package]"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/[provider-package]"
 )
 
 func main() {
     // Create client with [Provider Name]
-    client := gai.NewClient(
+    client := newExampleClient(
         "your-api-key",
-        gai.WithProvider([provider-package].NewProvider()),
+        exampleWithProvider([provider-package].NewProvider()),
     )
 
     // Generate a response
-    response, err := client.Generate(context.Background(), &gai.Request{
+    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
         Model: "[default-model-name]",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "Hello, world!"},
         },
     })
@@ -75,9 +75,9 @@ func main() {
 2. **Configure in code**:
 
 ```go
-client := gai.NewClient(
+client := newExampleClient(
     "your-api-key",
-    gai.WithProvider([provider-package].NewProvider()),
+    exampleWithProvider([provider-package].NewProvider()),
 )
 ```
 
@@ -91,9 +91,9 @@ export [PROVIDER]_API_KEY="your-api-key"
 import "os"
 
 apiKey := os.Getenv("[PROVIDER]_API_KEY")
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithProvider([provider-package].NewProvider()),
+    exampleWithProvider([provider-package].NewProvider()),
 )
 ```
 
@@ -118,17 +118,17 @@ client := gai.NewClient(
 
 ```go
 // Use the latest flagship model
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[flagship-model-name]",
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {Role: "user", Content: "Your prompt"},
     },
 }
 
 // Use a faster, cost-effective model
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[fast-model-name]",
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {Role: "user", Content: "Your prompt"},
     },
 }
@@ -151,7 +151,7 @@ provider := [provider-package].NewProvider(
     [provider-package].WithOption2(value2),
 )
 
-client := gai.NewClient(apiKey, gai.WithProvider(provider))
+client := newExampleClient(apiKey, exampleWithProvider(provider))
 ```
 
 ### Available Options
@@ -219,12 +219,10 @@ Controls randomness in responses.
 **Example:**
 
 ```go
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
     Messages: messages,
-    Options: &gai.RequestOptions{
-        Temperature: 0.7, // Balanced creativity
-    },
+    Temperature: ptr(0.7), // Balanced creativity
 }
 ```
 
@@ -240,12 +238,10 @@ Limits the length of generated responses.
 **Example:**
 
 ```go
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
     Messages: messages,
-    Options: &gai.RequestOptions{
-        MaxTokens: 1000, // Limit to ~750 words
-    },
+    MaxTokens: ptr(1000), // Limit to ~750 words
 }
 ```
 
@@ -258,12 +254,10 @@ Nucleus sampling parameter.
 **Example:**
 
 ```go
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
     Messages: messages,
-    Options: &gai.RequestOptions{
-        TopP: 0.9, // Consider top 90% probability mass
-    },
+    TopP: ptr(0.9), // Consider top 90% probability mass
 }
 ```
 
@@ -272,11 +266,13 @@ request := &gai.Request{
 Document any provider-specific options:
 
 ```go
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
     Messages: messages,
-    Options: &gai.RequestOptions{
-        ProviderSpecificOption: value,
+    ProviderOptions: map[string]interface{}{
+        "[provider-package]": map[string]interface{}{
+            "providerSpecificOption": value,
+        },
     },
 }
 ```
@@ -295,24 +291,24 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/[provider-package]"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/[provider-package]"
 )
 
 func main() {
-    client := gai.NewClient(
+    client := newExampleClient(
         apiKey,
-        gai.WithProvider([provider-package].NewProvider()),
+        exampleWithProvider([provider-package].NewProvider()),
     )
 
-    request := &gai.Request{
+    request := ai.StreamTextOptions{
         Model: "[model-name]",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "Tell me a story"},
         },
     }
 
-    stream, err := client.GenerateStream(context.Background(), request)
+    stream, err := ai.StreamText(context.Background(), request)
     if err != nil {
         log.Fatalf("Stream error: %v", err)
     }
@@ -337,9 +333,9 @@ func main() {
 Configure model behavior with system messages.
 
 ```go
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {
             Role:    "system",
             Content: "You are a helpful coding assistant specializing in Go.",
@@ -357,13 +353,13 @@ request := &gai.Request{
 Maintain conversation context across multiple exchanges.
 
 ```go
-messages := []gai.Message{
+messages := []types.Message{
     {Role: "user", Content: "What is Go?"},
     {Role: "assistant", Content: "Go is a programming language..."},
     {Role: "user", Content: "What are its main features?"},
 }
 
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model:    "[model-name]",
     Messages: messages,
 }
@@ -393,9 +389,9 @@ Provider-specific prompting best practices:
 
 ```go
 // Effective prompting for [Provider Name]
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model: "[model-name]",
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {
             Role: "system",
             Content: "You are an expert in [domain]. " +
@@ -415,7 +411,7 @@ If supported by the provider:
 
 ```go
 // Define available functions
-tools := []gai.Tool{
+tools := []types.Tool{
     {
         Name:        "get_weather",
         Description: "Get current weather for a location",
@@ -431,7 +427,7 @@ tools := []gai.Tool{
     },
 }
 
-request := &gai.Request{
+request := ai.GenerateTextOptions{
     Model:    "[model-name]",
     Messages: messages,
     Tools:    tools,
@@ -443,8 +439,8 @@ request := &gai.Request{
 If the provider supports embeddings:
 
 ```go
-embedding, err := client.CreateEmbedding(context.Background(), &gai.EmbeddingRequest{
-    Model: "[embedding-model]",
+embedding, err := ai.Embed(context.Background(), ai.EmbedOptions{
+    Model: embeddingModel,
     Input: "Text to embed",
 })
 ```
@@ -456,9 +452,9 @@ embedding, err := client.CreateEmbedding(context.Background(), &gai.EmbeddingReq
 #### Authentication Errors
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
-    if errors.Is(err, [provider-package].ErrInvalidAPIKey) {
+    if isUnauthorizedProviderError(err) {
         log.Println("Invalid API key - check your credentials")
         // Update API key
     }
@@ -468,9 +464,9 @@ if err != nil {
 #### Rate Limiting
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
-    if errors.Is(err, [provider-package].ErrRateLimited) {
+    if providererrors.IsRateLimitError(err) {
         log.Println("Rate limited - implementing backoff")
         time.Sleep(5 * time.Second)
         // Retry request
@@ -481,9 +477,9 @@ if err != nil {
 #### Model Not Found
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
-    if errors.Is(err, [provider-package].ErrModelNotFound) {
+    if errors.Is(err, providererrors.ErrModelNotFound) {
         log.Printf("Model %s not available\n", request.Model)
         // Try alternative model
     }
@@ -493,9 +489,9 @@ if err != nil {
 #### Context Length Exceeded
 
 ```go
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
-    if errors.Is(err, [provider-package].ErrContextTooLarge) {
+    if isContextLengthError(err) {
         log.Println("Input exceeds context window")
         // Reduce input size or use model with larger context
     }
@@ -505,18 +501,18 @@ if err != nil {
 ### Error Handling Best Practices
 
 ```go
-func generateWithRetry(client *gai.Client, request *gai.Request) (*gai.Response, error) {
+func generateWithRetry(request ai.GenerateTextOptions) (*ai.GenerateTextResult, error) {
     maxRetries := 3
     backoff := time.Second
 
     for attempt := 0; attempt < maxRetries; attempt++ {
-        response, err := client.Generate(context.Background(), request)
+        response, err := ai.GenerateText(context.Background(), request)
         if err == nil {
             return response, nil
         }
 
         // Check if error is retryable
-        if errors.Is(err, [provider-package].ErrRateLimited) {
+        if providererrors.IsRateLimitError(err) {
             time.Sleep(backoff)
             backoff *= 2
             continue
@@ -553,7 +549,7 @@ if err := limiter.Wait(context.Background()); err != nil {
     log.Printf("Rate limiter error: %v", err)
 }
 
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 ```
 
 ## Pricing
@@ -634,8 +630,8 @@ import (
     "os"
     "time"
 
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/[provider-package]"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/[provider-package]"
 )
 
 func main() {
@@ -652,12 +648,12 @@ func main() {
     )
 
     // Create client
-    client := gai.NewClient(apiKey, gai.WithProvider(provider))
+    client := newExampleClient(apiKey, exampleWithProvider(provider))
 
     // Create request with best practices
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "[recommended-model]",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {
                 Role:    "system",
                 Content: "You are a helpful assistant.",
@@ -667,24 +663,22 @@ func main() {
                 Content: "Explain error handling in Go with examples.",
             },
         },
-        Options: &gai.RequestOptions{
-            Temperature: 0.7,
-            MaxTokens:   2000,
-        },
+        Temperature: ptr(0.7),
+        MaxTokens:   ptr(2000),
     }
 
     // Generate with timeout
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    response, err := client.Generate(ctx, request)
+    response, err := ai.GenerateText(ctx, request)
     if err != nil {
         log.Fatalf("Generation failed: %v", err)
     }
 
     // Process response
     fmt.Printf("Response:\n%s\n", response.Content)
-    fmt.Printf("\nTokens used: %d\n", response.Usage.TotalTokens)
+    fmt.Printf("\nTokens used: %d\n", response.Usage.GetTotalTokens())
 }
 ```
 

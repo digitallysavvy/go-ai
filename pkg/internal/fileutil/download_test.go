@@ -37,6 +37,34 @@ func TestDownload_Success(t *testing.T) {
 	}
 }
 
+func TestDownloadWithMetadataReturnsContentType(t *testing.T) {
+	content := []byte("test content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	result, err := DownloadWithMetadata(context.Background(), server.URL, insecureDownloadOptions())
+	if err != nil {
+		t.Fatalf("DownloadWithMetadata error = %v", err)
+	}
+	if string(result.Data) != string(content) || result.ContentType != "image/png" {
+		t.Fatalf("DownloadWithMetadata = %#v", result)
+	}
+}
+
+func TestDownloadWithMetadataReturnsDataURLMediaType(t *testing.T) {
+	result, err := DownloadWithMetadata(context.Background(), "data:image/jpeg;base64,AQI=", insecureDownloadOptions())
+	if err != nil {
+		t.Fatalf("DownloadWithMetadata(data URL) error = %v", err)
+	}
+	if string(result.Data) != string([]byte{1, 2}) || result.ContentType != "image/jpeg" {
+		t.Fatalf("DownloadWithMetadata(data URL) = %#v", result)
+	}
+}
+
 func TestDownload_DefaultLimit2GiB(t *testing.T) {
 	opts := insecureDownloadOptions()
 	if opts.MaxSize != DefaultMaxDownloadSize {

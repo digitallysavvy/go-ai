@@ -18,13 +18,13 @@ This limit prevents memory exhaustion from unbounded downloads while allowing le
 
 ## Types
 
-### DownloadFunction
+### URLDownloadFunction
 
 ```go
-type DownloadFunction func(ctx context.Context, url string) ([]byte, error)
+type URLDownloadFunction func(ctx context.Context, url string) ([]byte, error)
 ```
 
-A function that downloads a file from a URL with size limits.
+A single-URL download function that returns downloaded bytes.
 
 **Parameters:**
 - `ctx`: Context for cancellation and timeout
@@ -33,6 +33,36 @@ A function that downloads a file from a URL with size limits.
 **Returns:**
 - `[]byte`: Downloaded data
 - `error`: Error if download fails or exceeds size limit
+
+### URLDownloadWithMetadataFunction
+
+```go
+type URLDownloadWithMetadataFunction func(ctx context.Context, url string) (*DownloadResult, error)
+```
+
+A single-URL download function that returns downloaded bytes plus an optional
+media type. `GenerateVideoOptions.DownloadWithMetadata` uses this shape to
+match TypeScript `generateVideo` custom downloads.
+
+### DownloadFunction
+
+```go
+type DownloadFunction func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error)
+```
+
+A batch download function for prompt file URL normalization. A nil result leaves
+the original URL in place when the model can consume it directly.
+
+### DownloadResult
+
+```go
+type DownloadResult struct {
+    Data      []byte
+    MediaType string
+}
+```
+
+Downloaded bytes plus an optional media type.
 
 ### DownloadOptions
 
@@ -112,19 +142,36 @@ The returned function enforces size limits to prevent memory exhaustion. Pass `n
 **Returns:**
 - `DownloadFunction`: Configured download function
 
+### CreateURLDownload
+
+```go
+func CreateURLDownload(options *DownloadOptions) URLDownloadFunction
+```
+
+Creates a bytes-only single-URL download function.
+
+### CreateURLDownloadWithMetadata
+
+```go
+func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMetadataFunction
+```
+
+Creates a single-URL download function that preserves response media type
+metadata for APIs such as `GenerateVideo`.
+
 **Example:**
 
 ```go
-// Create with default 2 GiB limit
+// Create a batch prompt download function with default 2 GiB limit
 defaultDownload := ai.CreateDownload(nil)
 
-// Create with custom 100 MB limit
-customDownload := ai.CreateDownload(&ai.DownloadOptions{
+// Create a single-URL download function with custom 100 MB limit
+customDownload := ai.CreateURLDownload(&ai.DownloadOptions{
     MaxBytes: 100 * 1024 * 1024,
 })
 
-// Create with custom headers
-authDownload := ai.CreateDownload(&ai.DownloadOptions{
+// Create a single-URL metadata download function with custom headers
+authDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 500 * 1024 * 1024,
     Headers: map[string]string{
         "Authorization": "Bearer token",
@@ -138,12 +185,13 @@ authDownload := ai.CreateDownload(&ai.DownloadOptions{
 var DefaultDownload = CreateDownload(nil)
 ```
 
-The default download function with 2 GiB limit.
+The default batch prompt download function with 2 GiB limit.
 
-Use this when you don't need custom configuration:
+Use `CreateURLDownload(nil)` when you need a single-URL downloader:
 
 ```go
-data, err := ai.DefaultDownload(ctx, url)
+download := ai.CreateURLDownload(nil)
+data, err := download(ctx, url)
 ```
 
 ## Low-Level API
@@ -217,7 +265,8 @@ import (
     providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-data, err := ai.DefaultDownload(ctx, url)
+download := ai.CreateURLDownload(nil)
+data, err := download(ctx, url)
 if err != nil {
     var downloadErr *providererrors.DownloadError
     if errors.As(err, &downloadErr) {
@@ -265,7 +314,7 @@ if providererrors.IsDownloadError(err) {
 ### Video Generation
 
 ```go
-customDownload := ai.CreateDownload(&ai.DownloadOptions{
+customDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 200 * 1024 * 1024, // 200 MB
 })
 
@@ -277,7 +326,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
             URL: "https://example.com/input.jpg",
         },
     },
-    Download: customDownload,
+    DownloadWithMetadata: customDownload,
 })
 ```
 

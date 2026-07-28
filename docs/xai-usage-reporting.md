@@ -254,7 +254,7 @@ func main() {
 
     // Print detailed breakdown
     fmt.Println("=== Token Usage ===")
-    fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+    fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 
     if result.Usage.InputDetails != nil {
         fmt.Println("\nInput breakdown:")

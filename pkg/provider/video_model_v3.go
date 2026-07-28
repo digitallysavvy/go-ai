@@ -33,6 +33,11 @@ type VideoModelV3CallOptions struct {
 	// Text prompt for video generation (required for text-to-video, optional for image-to-video)
 	Prompt string
 
+	// PromptSet reports whether Prompt was explicitly provided. It lets providers
+	// preserve the TypeScript SDK distinction between prompt: "" and an omitted
+	// prompt for image-only generation.
+	PromptSet bool
+
 	// Number of videos to generate (default: 1)
 	N int
 

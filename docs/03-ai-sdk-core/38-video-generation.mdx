@@ -221,6 +221,9 @@ type GenerateVideoOptions struct {
     // Number of videos to generate (default: 1)
     N int
 
+    // Maximum videos per API call. If unset, uses the model default.
+    MaxVideosPerCall *int
+
     // Aspect ratio in format "width:height" (e.g., "16:9", "9:16", "1:1")
     AspectRatio string
 
@@ -239,11 +242,17 @@ type GenerateVideoOptions struct {
     // Provider-specific options
     ProviderOptions map[string]interface{}
 
-    // Maximum retries per call (default: 2)
-    MaxRetries int
+    // Maximum retries per call (default: 2). Set to 0 to disable retries.
+    MaxRetries *int
 
     // Additional HTTP headers
     Headers map[string]string
+
+    // Custom bytes-only download function for URL video outputs
+    Download URLDownloadFunction
+
+    // Custom download function for URL video outputs that also returns media type
+    DownloadWithMetadata URLDownloadWithMetadataFunction
 }
 ```
 
@@ -261,6 +270,9 @@ type VideoPrompt struct {
 type VideoPromptImage struct {
     // URL to image (or)
     URL string
+
+    // Base64, base64url, or data URL image string
+    DataString string
 
     // Raw image data
     Data []byte
@@ -289,6 +301,20 @@ type GenerateVideoResult struct {
     // Provider-specific metadata
     ProviderMetadata map[string]interface{}
 }
+
+type VideoModelResponseMetadata struct {
+    Timestamp time.Time `json:"timestamp"`
+    ModelID string `json:"modelId"`
+    Headers map[string]string `json:"headers,omitempty"`
+    ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+```
+
+`types.GeneratedFile` contains the generated video bytes in `Data`, the detected `MediaType`, and TypeScript-compatible helper methods:
+
+```go
+base64Data := result.Video.Base64()
+videoBytes := result.Video.Uint8Array()
 ```
 
 ## Provider-Specific Options
@@ -346,7 +372,7 @@ All video providers use async generation with polling:
 
 1. **Submit Request**: Initial API call submits the generation job
 2. **Polling**: SDK automatically polls for completion
-3. **Download**: Video is downloaded when ready
+3. **Download**: URL video outputs are downloaded into `types.GeneratedFile.Data`
 4. **Return**: Complete video data returned to your code
 
 Default polling configuration:
@@ -374,6 +400,9 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 ```go
 result, err := ai.GenerateVideo(ctx, opts)
 if err != nil {
+    if noVideo, ok := err.(*ai.NoVideoGeneratedError); ok {
+        fmt.Printf("No video generated; responses: %d\n", len(noVideo.Responses))
+    }
     if videoErr, ok := err.(*providererrors.VideoGenerationError); ok {
         fmt.Printf("Provider: %s\n", videoErr.Provider)
         fmt.Printf("Model: %s\n", videoErr.ModelID)

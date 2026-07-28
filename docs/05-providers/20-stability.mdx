@@ -5,7 +5,7 @@ description: Setup and usage guide for Stability AI image generation with Go-AI 
 
 # Stability AI Provider
 
-Stability AI provides state-of-the-art image generation models including Stable Diffusion XL, SD3, and more. Known for high-quality, customizable image synthesis.
+The current Go provider exposes Stability text-to-image generation through the shared `ai.GenerateImage` API.
 
 ## Setup
 
@@ -13,6 +13,7 @@ Stability AI provides state-of-the-art image generation models including Stable 
 
 ```go
 import (
+    "context"
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/stability"
 )
@@ -38,72 +39,21 @@ export STABILITY_API_KEY=sk-...
 
 ### Image Generation
 
-| Model ID | Resolution | Price | Best For |
-|----------|-----------|-------|----------|
-| stable-diffusion-xl-1024-v1-0 | 1024x1024 | $0.04/image | High quality |
-| sd3-large | 1024x1024 | $0.065/image | Latest generation |
-| sd3-medium | 1024x1024 | $0.035/image | Balanced |
-| stable-diffusion-v1-6 | 512x512 | $0.02/image | Fast, cheap |
-
-### Upscaling
-
-| Model ID | Scale | Price | Best For |
-|----------|-------|-------|----------|
-| esrgan-v1-x2plus | 2x | $0.02/image | Enhance details |
+| Model ID | Output | Best For |
+|----------|--------|----------|
+| stable-diffusion-xl-1024-v1-0 | PNG bytes | High quality text-to-image generation |
+| stable-diffusion-v1-6 | PNG bytes | Fast text-to-image generation |
 
 ## Provider-Specific Features
 
-### Advanced Control
+### Text-to-Image
 
 ```go
-result, err := ai.GenerateImage(model, "A serene landscape",
-    ai.WithImageSize("1024x1024"),
-    ai.WithSteps(30), // More steps = better quality
-    ai.WithCFGScale(7.5), // Prompt adherence
-    ai.WithSeed(12345), // Reproducibility
-    ai.WithNegativePrompt("blurry, low quality"),
-)
-```
-
-### Image-to-Image
-
-Transform existing images:
-
-```go
-initImage, _ := os.ReadFile("input.png")
-
-result, err := ai.GenerateImage(model,
-    "Transform into oil painting",
-    ai.WithInitImage(initImage),
-    ai.WithImageStrength(0.8), // How much to change
-)
-```
-
-### Inpainting
-
-Edit specific parts of images:
-
-```go
-image, _ := os.ReadFile("photo.png")
-mask, _ := os.ReadFile("mask.png")
-
-result, err := ai.GenerateImage(model,
-    "Add mountains in background",
-    ai.WithInitImage(image),
-    ai.WithMaskImage(mask),
-)
-```
-
-### Upscaling
-
-Enhance image resolution:
-
-```go
-upscaleModel, err := provider.ImageModel("esrgan-v1-x2plus")
-
-lowResImage, _ := os.ReadFile("low-res.png")
-
-result, err := ai.UpscaleImage(upscaleModel, lowResImage)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A serene landscape",
+    Size:   "1024x1024",
+})
 ```
 
 ## Examples
@@ -114,6 +64,7 @@ result, err := ai.UpscaleImage(upscaleModel, lowResImage)
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -132,11 +83,11 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateImage(model,
-        "A futuristic cityscape at sunset, photorealistic",
-        ai.WithImageSize("1024x1024"),
-        ai.WithSteps(40),
-    )
+    result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: "A futuristic cityscape at sunset, photorealistic",
+        Size:   "1024x1024",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -162,9 +113,10 @@ prompts := []string{
 }
 
 for i, prompt := range prompts {
-    result, err := ai.GenerateImage(model, prompt,
-        ai.WithSeed(12345+i), // Consistent seed base
-    )
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
     if err != nil {
         log.Printf("Failed to generate %d: %v", i, err)
         continue
@@ -175,49 +127,40 @@ for i, prompt := range prompts {
 }
 ```
 
-### Variations
-
-Generate variations of an image:
+### Multiple Images
 
 ```go
-originalImage, _ := os.ReadFile("original.png")
+n := 4
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A set of colorful product concept images",
+    N:      &n,
+    Size:   "1024x1024",
+})
+if err != nil {
+    log.Fatal(err)
+}
 
-for i := 0; i < 4; i++ {
-    result, err := ai.GenerateImage(model,
-        "Artistic variation",
-        ai.WithInitImage(originalImage),
-        ai.WithImageStrength(0.6),
-        ai.WithSeed(i), // Different seed for each
-    )
-
-    filename := fmt.Sprintf("variation_%d.png", i)
-    os.WriteFile(filename, result.Images[0].Data, 0644)
+for i, image := range result.Images {
+    filename := fmt.Sprintf("concept_%d.png", i)
+    os.WriteFile(filename, image.Data, 0644)
 }
 ```
 
 ## Best Practices
 
-1. **Quality Control**
-   - Use 30-50 steps for best quality
-   - Adjust CFG scale (7-10 typical)
-   - Use negative prompts
-   - Experiment with seeds
-
-2. **Prompt Engineering**
+1. **Prompt Engineering**
    - Be specific and detailed
    - Include style keywords
    - Mention quality (4k, detailed, etc)
-   - Use negative prompts effectively
 
-3. **Cost Optimization**
-   - Start with lower resolution
-   - Upscale final images
+2. **Cost Optimization**
+   - Start with one image before increasing `N`
    - Batch similar requests
    - Cache generated images
 
-4. **Performance**
+3. **Performance**
    - Use appropriate model for task
-   - Balance quality vs speed
    - Parallelize generations
 
 ## Rate Limits & Pricing

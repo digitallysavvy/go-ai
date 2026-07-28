@@ -83,7 +83,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Replicate")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Replicate"})
     fmt.Println(result.Text)
 }
 ```
@@ -96,12 +96,13 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateImage(imageModel,
-    "A cyberpunk city at night",
-    ai.WithImageSize("1024x1024"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A cyberpunk city at night",
+    Size:   "1024x1024",
+})
 
-fmt.Printf("Image URL: %s\n", result.Images[0].URL)
+fmt.Printf("Image bytes: %d\n", len(result.Images[0].Data))
 ```
 
 ## Best Practices

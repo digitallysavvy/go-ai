@@ -69,8 +69,8 @@ func main() {
     }
 
     // Read from stream
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check for errors after stream completes
@@ -107,7 +107,7 @@ func main() {
     }
 
     // Read from full stream
-    for chunk := range stream.FullChannel {
+    for chunk := range stream.Chunks() {
         switch chunk.Type {
         case provider.ChunkTypeText:
             fmt.Print(chunk.Text)
@@ -156,8 +156,8 @@ func main() {
         log.Fatal(err)
     }
 
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check if operation was canceled or timed out
@@ -184,13 +184,13 @@ stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
     OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
         // Called only on normal completion, NOT on cancellation
         fmt.Printf("Completed after %d steps\n", len(result.Steps))
-        fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
+        fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
     },
 })
 
 // Handle context cancellation separately
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if ctx.Err() == context.Canceled {
@@ -333,8 +333,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if err := stream.Err(); err != nil {
@@ -534,12 +534,12 @@ if errors.As(err, &rateLimitErr) {
 Always respect context cancellation:
 
 ```go
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     select {
     case <-ctx.Done():
         return ctx.Err()
     default:
-        fmt.Print(chunk)
+        fmt.Print(chunk.Text)
     }
 }
 ```
@@ -601,8 +601,8 @@ for attempt := 0; attempt <= maxRetries; attempt++ {
 Always check for errors after a stream completes:
 
 ```go
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if err := stream.Err(); err != nil {

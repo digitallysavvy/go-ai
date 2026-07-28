@@ -81,7 +81,7 @@ wrapped := middleware.WrapLanguageModel(
         log.Printf("Generating with model: %v", opts.Prompt)
     },
     func(result *types.GenerateResult) {
-        log.Printf("Generated %d tokens", result.Usage.TotalTokens)
+        log.Printf("Generated %d tokens", result.Usage.GetTotalTokens())
     },
 )
 ```

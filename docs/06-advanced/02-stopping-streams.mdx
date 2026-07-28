@@ -54,8 +54,8 @@ func main() {
     }()
 
     // Process the stream
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check why the stream ended
@@ -105,8 +105,8 @@ func main() {
         log.Fatal(err)
     }
 
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check if timeout occurred
@@ -168,7 +168,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     // Stream to client
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         select {
         case <-ctx.Done():
             // Client disconnected
@@ -281,8 +281,8 @@ func processStream(ctx context.Context) error {
         return err
     }
 
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
 
         // Check context periodically
         select {
@@ -337,7 +337,7 @@ result, err := ai.GenerateText(ctx, options)
 ### 2. Check Context in Long Operations
 
 ```go
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     // Check context regularly
     select {
     case <-ctx.Done():

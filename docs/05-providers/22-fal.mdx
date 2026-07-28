@@ -59,7 +59,10 @@ FAL optimizes for speed:
 
 ```go
 start := time.Now()
-result, err := ai.GenerateImage(model, "A sunset over mountains")
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A sunset over mountains",
+})
 elapsed := time.Since(start)
 fmt.Printf("Generated in %v\n", elapsed) // ~1-2 seconds
 ```
@@ -74,13 +77,21 @@ videoModel, err := provider.VideoModel("fal-ai/stable-video-diffusion")
 // Generate from image
 initImage, _ := os.ReadFile("frame.png")
 
-result, err := ai.GenerateVideo(videoModel,
-    ai.WithInitImage(initImage),
-    ai.WithVideoFrames(25),
-    ai.WithVideoFPS(10),
-)
+fps := 10
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: videoModel,
+    Prompt: ai.VideoPrompt{
+        Image: &ai.VideoPromptImage{Data: initImage},
+    },
+    FPS: &fps,
+    ProviderOptions: map[string]interface{}{
+        "fal": map[string]interface{}{
+            "frames": 25,
+        },
+    },
+})
 
-os.WriteFile("output.mp4", result.Video, 0644)
+os.WriteFile("output.mp4", result.Video.Data, 0644)
 ```
 
 ### Real-Time Generation
@@ -103,6 +114,7 @@ for update := range stream.Updates() {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -123,7 +135,10 @@ func main() {
     }
 
     start := time.Now()
-    result, err := ai.GenerateImage(model, "A peaceful zen garden")
+    result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: "A peaceful zen garden",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -149,7 +164,10 @@ for i, prompt := range prompts {
     go func(idx int, p string) {
         defer wg.Done()
 
-        result, err := ai.GenerateImage(model, p)
+        result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+            Model:  model,
+            Prompt: p,
+        })
         if err != nil {
             return
         }

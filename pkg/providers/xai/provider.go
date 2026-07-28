@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for xAI (Grok)
@@ -56,10 +57,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("xai")),
 	})
 
 	return &Provider{
@@ -71,10 +72,9 @@ func New(cfg Config) *Provider {
 
 func normalizeBaseURL(baseURL string) string {
 	if baseURL == "" {
-		baseURL = "https://api.x.ai"
+		baseURL = "https://api.x.ai/v1"
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	return strings.TrimSuffix(baseURL, "/v1")
+	return strings.TrimRight(baseURL, "/")
 }
 
 // CreateXai creates a new xAI provider.
@@ -124,14 +124,16 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	return NewImageModel(p, modelID), nil
 }
 
-// SpeechModel returns a speech synthesis model by ID
+// SpeechModel returns the xAI speech synthesis model. The TypeScript provider
+// has no speech model ID parameter, so Go ignores modelID for parity.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("xAI does not support speech synthesis")
+	return NewSpeechModel(p, ""), nil
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns the xAI speech-to-text model. The TypeScript
+// provider has no transcription model ID parameter, so Go ignores modelID for parity.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("xAI does not support transcription")
+	return NewTranscriptionModel(p, ""), nil
 }
 
 // RerankingModel returns a reranking model by ID

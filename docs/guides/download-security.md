@@ -51,8 +51,8 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
-// Create download with 100 MB limit
-customDownload := ai.CreateDownload(&ai.DownloadOptions{
+// Create single-URL download with 100 MB limit
+customDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 100 * 1024 * 1024, // 100 MB
 })
 ```
@@ -68,7 +68,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
             URL: "https://example.com/image.jpg",
         },
     },
-    Download: customDownload, // Use custom 100 MB limit
+    DownloadWithMetadata: customDownload, // Use custom 100 MB limit
 })
 ```
 
@@ -77,7 +77,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 You can also set custom HTTP headers:
 
 ```go
-customDownload := ai.CreateDownload(&ai.DownloadOptions{
+customDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 500 * 1024 * 1024, // 500 MB
     Headers: map[string]string{
         "Authorization": "Bearer token",
@@ -161,17 +161,17 @@ if err != nil {
 
 ```go
 // Small images for thumbnails
-thumbnailDownload := ai.CreateDownload(&ai.DownloadOptions{
+thumbnailDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 10 * 1024 * 1024, // 10 MB
 })
 
 // High-resolution images for analysis
-hiresDownload := ai.CreateDownload(&ai.DownloadOptions{
+hiresDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 500 * 1024 * 1024, // 500 MB
 })
 
 // Videos (use larger limit)
-videoDownload := ai.CreateDownload(&ai.DownloadOptions{
+videoDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 2 * 1024 * 1024 * 1024, // 2 GiB (default)
 })
 ```

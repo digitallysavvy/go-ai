@@ -16,7 +16,8 @@ Timeout errors occur when an AI operation takes longer than the configured timeo
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 // If this takes longer than 30 seconds, you get a timeout error
 ```
 
@@ -35,7 +36,8 @@ The Gateway provider provides enhanced timeout error detection:
 ```go
 import gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 
-result, err := ai.GenerateVideo(ctx, videoModel, options)
+options.Model = videoModel
+result, err := ai.GenerateVideo(ctx, options)
 if err != nil {
     if gatewayerrors.IsGatewayTimeoutError(err) {
         // This is a timeout error with troubleshooting guidance
@@ -52,7 +54,8 @@ import (
     "errors"
 )
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 if err != nil {
     if errors.Is(err, context.DeadlineExceeded) {
         // Context timeout
@@ -68,7 +71,8 @@ if err != nil {
 ```go
 // ❌ Too short for complex generation
 ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
     Prompt: "Write a detailed essay about AI...",
     MaxTokens: ptr(4000),
 })
@@ -76,7 +80,8 @@ result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
 
 // ✅ Appropriate timeout
 ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
     Prompt: "Write a detailed essay about AI...",
     MaxTokens: ptr(4000),
 })
@@ -89,12 +94,14 @@ Video generation typically takes several minutes:
 ```go
 // ❌ Way too short for video generation
 ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-result, err := ai.GenerateVideo(ctx, videoModel, options)
+options.Model = videoModel
+result, err := ai.GenerateVideo(ctx, options)
 // Will timeout
 
 // ✅ Appropriate timeout for video generation
 ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-result, err := ai.GenerateVideo(ctx, videoModel, options)
+options.Model = videoModel
+result, err := ai.GenerateVideo(ctx, options)
 ```
 
 ### Streaming Timeouts
@@ -106,8 +113,9 @@ For streaming operations, timeouts apply to the entire stream:
 ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 defer cancel()
 
-stream, err := ai.StreamText(ctx, model, options)
-for chunk := range stream.TextStream {
+options.Model = model
+stream, err := ai.StreamText(ctx, options)
+for chunk := range stream.Chunks() {
     // Process chunks
     // If total time exceeds 5 minutes, stream stops
 }
@@ -177,7 +185,8 @@ ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 defer cancel()
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 if err != nil {
     if errors.Is(err, context.DeadlineExceeded) {
         log.Println("Request timed out - consider increasing timeout")
@@ -199,7 +208,8 @@ func generateWithRetry(model provider.LanguageModel, options ai.GenerateTextOpti
 
     for i, timeout := range timeouts {
         ctx, cancel := context.WithTimeout(context.Background(), timeout)
-        result, err := ai.GenerateText(ctx, model, options)
+        options.Model = model
+result, err := ai.GenerateText(ctx, options)
         cancel()
 
         if err == nil {
@@ -230,7 +240,8 @@ func generateWithBackoff(model provider.LanguageModel, options ai.GenerateTextOp
 
     for attempt := 0; attempt < maxAttempts; attempt++ {
         ctx, cancel := context.WithTimeout(context.Background(), timeout)
-        result, err := ai.GenerateText(ctx, model, options)
+        options.Model = model
+result, err := ai.GenerateText(ctx, options)
         cancel()
 
         if err == nil {
@@ -281,13 +292,15 @@ func getTimeout(opts ai.GenerateTextOptions) time.Duration {
 
 ```go
 // Reduce MaxTokens for faster responses
-result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
     Prompt: "Explain quantum computing",
     MaxTokens: ptr(200), // Shorter = faster
 })
 
 // Use streaming for long content
-stream, err := ai.StreamText(ctx, model, ai.StreamTextOptions{
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model: model,
     Prompt: "Write a long article...",
     // Get partial results immediately
 })
@@ -301,14 +314,15 @@ Streaming provides partial results immediately, reducing perceived latency:
 ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 defer cancel()
 
-stream, err := ai.StreamText(ctx, model, options)
+options.Model = model
+stream, err := ai.StreamText(ctx, options)
 if err != nil {
     return err
 }
 
-for chunk := range stream.TextStream {
+for chunk := range stream.Chunks() {
     // Display partial results immediately
-    fmt.Print(chunk)
+    fmt.Print(chunk.Text)
 }
 
 if err := stream.Err(); err != nil {
@@ -339,13 +353,14 @@ tracker := &ProgressTracker{
     Timeout:   5 * time.Minute,
 }
 
-stream, err := ai.StreamText(ctx, model, options)
-for chunk := range stream.TextStream {
+options.Model = model
+stream, err := ai.StreamText(ctx, options)
+for chunk := range stream.Chunks() {
     if err := tracker.Check(); err != nil {
         log.Printf("Progress timeout: %v", err)
         break
     }
-    fmt.Print(chunk)
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -371,7 +386,7 @@ func startVideoGeneration(opts ai.GenerateVideoOptions) *VideoJob {
         ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
         defer cancel()
 
-        result, err := ai.GenerateVideo(ctx, opts.Model, opts)
+        result, err := ai.GenerateVideo(ctx, opts)
         job.Result = result
         job.Error = err
         job.Status = "completed"
@@ -433,7 +448,8 @@ startTime := time.Now()
 ctx, cancel := context.WithTimeout(context.Background(), timeout)
 defer cancel()
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 elapsed := time.Since(startTime)
 
 if err != nil {
@@ -462,7 +478,8 @@ func trackOperation(ctx context.Context, model provider.LanguageModel, opts ai.G
     startTime := time.Now()
     metrics.TotalRequests++
 
-    result, err := ai.GenerateText(ctx, model, opts)
+    opts.Model = model
+result, err := ai.GenerateText(ctx, opts)
     duration := time.Since(startTime)
 
     if errors.Is(err, context.DeadlineExceeded) {

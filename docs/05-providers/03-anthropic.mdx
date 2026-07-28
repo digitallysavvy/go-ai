@@ -139,8 +139,10 @@ Claude models support up to 200K token context windows:
 // Process entire codebases or documents
 largeDocument := readLargeFile("document.txt") // up to 200K tokens
 
-result, err := ai.GenerateText(model,
-    fmt.Sprintf("Analyze this document and provide insights:\n\n%s", largeDocument))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: fmt.Sprintf("Analyze this document and provide insights:\n\n%s", largeDocument),
+})
 ```
 
 ### Vision Capabilities
@@ -148,22 +150,27 @@ result, err := ai.GenerateText(model,
 Claude 4.5 and 3.5 models support image understanding:
 
 ```go
-import "encoding/base64"
-
-// Read and encode image
+// Read image
 imageData, err := os.ReadFile("chart.png")
 if err != nil {
     log.Fatal(err)
 }
-encodedImage := base64.StdEncoding.EncodeToString(imageData)
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Analyze this chart",
-            ai.WithImageData(encodedImage, "image/png"),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Analyze this chart"},
+                types.FileContent{
+                    Data:      imageData,
+                    MediaType: "image/png",
+                },
+            },
+        },
+    },
+})
 ```
 
 ### Tool Use (Function Calling)
@@ -171,43 +178,41 @@ result, err := ai.GenerateText(model,
 Claude excels at tool use with precise parameter extraction:
 
 ```go
-searchTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "search_database",
-        Description: "Search the customer database",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "query": map[string]interface{}{
-                    "type":        "string",
-                    "description": "Search query",
-                },
-                "filters": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "status": map[string]interface{}{
-                            "type": "string",
-                            "enum": []string{"active", "inactive"},
-                        },
-                        "created_after": map[string]string{
-                            "type": "string",
-                        },
+searchTool := types.Tool{
+    Name:        "search_database",
+    Description: "Search the customer database",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "Search query",
+            },
+            "filters": map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "status": map[string]interface{}{
+                        "type": "string",
+                        "enum": []string{"active", "inactive"},
+                    },
+                    "created_after": map[string]string{
+                        "type": "string",
                     },
                 },
             },
-            "required": []string{"query"},
         },
+        "required": []string{"query"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "Find all active customers who signed up in 2024",
-    ai.WithTools(searchTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Find all active customers who signed up in 2024",
+    Tools:  []types.Tool{searchTool},
+})
 
 for _, call := range result.ToolCalls {
-    fmt.Printf("Tool: %s\nArgs: %s\n", call.Function.Name, call.Function.Arguments)
+    fmt.Printf("Tool: %s\nArgs: %v\n", call.ToolName, call.Arguments)
 }
 ```
 
@@ -217,14 +222,27 @@ Reduce costs by caching frequently used prompt segments:
 
 ```go
 // Cache system prompt and context
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.SystemMessage("You are an expert Go programmer..."), // Will be cached
-        ai.UserMessage("Review this code: "+largeCodebase),    // Will be cached
-        ai.UserMessage("How can I improve error handling?"),   // New query
-    ),
-    ai.WithCaching(true),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "You are an expert Go programmer...",
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Review this code: " + largeCodebase},
+            },
+        },
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "How can I improve error handling?"},
+            },
+        },
+    },
+    ProviderOptions: map[string]interface{}{
+        "anthropic": anthropic.ModelOptions{AutomaticCaching: true},
+    },
+})
 
 // Subsequent requests with same cached content cost significantly less
 ```
@@ -239,10 +257,17 @@ Pricing with caching:
 Claude 4.5 supports extended thinking for complex problems:
 
 ```go
-result, err := ai.GenerateText(model,
-    "Solve this complex optimization problem...",
-    ai.WithThinking(true), // Enable extended reasoning
-)
+thinkingModel, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
+    Thinking: &anthropic.ThinkingConfig{Type: anthropic.ThinkingTypeAdaptive},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  thinkingModel,
+    Prompt: "Solve this complex optimization problem...",
+})
 
 // Response includes thinking process
 if result.Thinking != "" {
@@ -279,7 +304,10 @@ model, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.
 })
 
 // Use in long conversations - context automatically managed
-result, err := ai.GenerateText(model, longConversation...)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: longConversation,
+})
 
 // Check if context management was applied
 if result.ContextManagement != nil {
@@ -326,14 +354,14 @@ if result.ContextManagement != nil {
 Stream responses for real-time output:
 
 ```go
-stream, err := ai.StreamText(model, "Write a detailed essay about AI safety")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a detailed essay about AI safety"})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if stream.Error() != nil {
@@ -367,28 +395,38 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain the Go concurrency model with examples")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain the Go concurrency model with examples",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     fmt.Println(result.Text)
     fmt.Printf("\nTokens - Input: %d, Output: %d\n",
-        result.Usage.PromptTokens,
-        result.Usage.CompletionTokens)
+        result.Usage.GetInputTokens(),
+        result.Usage.GetOutputTokens())
 }
 ```
 
 ### Multi-Turn Conversation
 
 ```go
-messages := []ai.Message{
-    ai.SystemMessage("You are a helpful code review assistant"),
-    ai.UserMessage("Review this function:\n\n" + code),
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Review this function:\n\n" + code},
+        },
+    },
 }
 
-result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    System:   "You are a helpful code review assistant",
+    Messages: messages,
+})
 if err != nil {
     log.Fatal(err)
 }
@@ -397,11 +435,25 @@ fmt.Println("Review:", result.Text)
 
 // Continue conversation
 messages = append(messages,
-    ai.AssistantMessage(result.Text),
-    ai.UserMessage("Can you suggest specific improvements?"),
+    types.Message{
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: result.Text},
+        },
+    },
+    types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Can you suggest specific improvements?"},
+        },
+    },
 )
 
-result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    System:   "You are a helpful code review assistant",
+    Messages: messages,
+})
 ```
 
 ### Document Analysis with Vision
@@ -413,18 +465,22 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage(
-            "Extract all line items from this invoice with prices",
-            ai.WithImageData(
-                base64.StdEncoding.EncodeToString(imageData),
-                "image/png",
-            ),
-        ),
-    ),
-    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Extract all line items from this invoice with prices"},
+                types.FileContent{
+                    Data:      imageData,
+                    MediaType: "image/png",
+                },
+            },
+        },
+    },
+    ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
+})
 
 fmt.Println("Extracted data:", result.Text)
 ```
@@ -432,48 +488,43 @@ fmt.Println("Extracted data:", result.Text)
 ### Code Generation with Tool Use
 
 ```go
-fileReadTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "read_file",
-        Description: "Read contents of a file",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "path": map[string]string{
-                    "type":        "string",
-                    "description": "File path",
-                },
+fileReadTool := types.Tool{
+    Name:        "read_file",
+    Description: "Read contents of a file",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "path": map[string]string{
+                "type":        "string",
+                "description": "File path",
             },
-            "required": []string{"path"},
         },
+        "required": []string{"path"},
     },
 }
 
-fileWriteTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "write_file",
-        Description: "Write content to a file",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "path": map[string]string{"type": "string"},
-                "content": map[string]string{"type": "string"},
-            },
-            "required": []string{"path", "content"},
+fileWriteTool := types.Tool{
+    Name:        "write_file",
+    Description: "Write content to a file",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "path": map[string]string{"type": "string"},
+            "content": map[string]string{"type": "string"},
         },
+        "required": []string{"path", "content"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "Read main.go, add error handling, and save the improved version",
-    ai.WithTools(fileReadTool, fileWriteTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Read main.go, add error handling, and save the improved version",
+    Tools:  []types.Tool{fileReadTool, fileWriteTool},
+})
 
 // Process tool calls
 for _, call := range result.ToolCalls {
-    switch call.Function.Name {
+    switch call.ToolName {
     case "read_file":
         // Execute file read
     case "write_file":
@@ -488,26 +539,44 @@ for _, call := range result.ToolCalls {
 // Load large codebase
 codebase := loadCodebase("./src") // ~100K tokens
 
-messages := []ai.Message{
-    ai.SystemMessage("You are an expert code reviewer"),
-    ai.UserMessage("Here is the codebase:\n\n" + codebase), // Cached
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Here is the codebase:\n\n" + codebase}, // Cached
+        },
+    },
 }
 
 // First query - caches codebase
-result, err := ai.GenerateText(model,
-    ai.WithMessages(append(messages,
-        ai.UserMessage("List all exported functions"),
-    )...),
-    ai.WithCaching(true),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "You are an expert code reviewer",
+    Messages: append(messages, types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "List all exported functions"},
+        },
+    }),
+    ProviderOptions: map[string]interface{}{
+        "anthropic": anthropic.ModelOptions{AutomaticCaching: true},
+    },
+})
 
 // Second query - uses cached codebase (90% cost reduction)
-result, err = ai.GenerateText(model,
-    ai.WithMessages(append(messages,
-        ai.UserMessage("Find potential security issues"),
-    )...),
-    ai.WithCaching(true),
-)
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "You are an expert code reviewer",
+    Messages: append(messages, types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Find potential security issues"},
+        },
+    }),
+    ProviderOptions: map[string]interface{}{
+        "anthropic": anthropic.ModelOptions{AutomaticCaching: true},
+    },
+})
 ```
 
 ## Advanced Configuration
@@ -554,12 +623,16 @@ provider := anthropic.New(anthropic.Config{
 ### Common Errors
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if anthropicErr, ok := err.(*anthropic.Error); ok {
-        switch anthropicErr.Type {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch providerErr.ErrorCode {
         case "invalid_request_error":
-            log.Printf("Invalid request: %s", anthropicErr.Message)
+            log.Printf("Invalid request: %s", providerErr.Message)
         case "authentication_error":
             log.Fatal("Invalid API key")
         case "permission_error":
@@ -567,14 +640,13 @@ if err != nil {
         case "not_found_error":
             log.Fatal("Model not found")
         case "rate_limit_error":
-            retryAfter := anthropicErr.RetryAfter
-            log.Printf("Rate limited, retry after %d seconds", retryAfter)
-            time.Sleep(time.Duration(retryAfter) * time.Second)
+            log.Printf("Rate limited: %s", providerErr.Message)
+            time.Sleep(time.Second * 5)
         case "overloaded_error":
             log.Println("Service overloaded, retrying...")
             time.Sleep(time.Second * 10)
         default:
-            log.Printf("Anthropic error: %s", anthropicErr.Message)
+            log.Printf("Anthropic error: %s", providerErr.Message)
         }
     }
     return nil, err
@@ -584,18 +656,22 @@ if err != nil {
 ### Retry with Exponential Backoff
 
 ```go
-func generateWithRetry(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
     maxRetries := 5
     baseDelay := time.Second
 
     for attempt := 0; attempt < maxRetries; attempt++ {
-        result, err := ai.GenerateText(model, prompt)
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
         if err == nil {
             return result, nil
         }
 
-        if anthropicErr, ok := err.(*anthropic.Error); ok {
-            if anthropicErr.Type == "rate_limit_error" || anthropicErr.Type == "overloaded_error" {
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) {
+            if providerErr.ErrorCode == "rate_limit_error" || providerErr.ErrorCode == "overloaded_error" {
                 delay := baseDelay * time.Duration(math.Pow(2, float64(attempt)))
                 log.Printf("Attempt %d failed, waiting %v", attempt+1, delay)
                 time.Sleep(delay)

@@ -87,7 +87,7 @@ model, err := provider.LanguageModel("gpt-4")
 ### 3. Generate Text
 
 ```go
-result, err := ai.GenerateText(model, "What is the Go-AI SDK?")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "What is the Go-AI SDK?"})
 if err != nil {
     log.Fatal(err)
 }
@@ -197,9 +197,9 @@ if err != nil {
 All major providers support streaming responses:
 
 ```go
-stream, err := ai.StreamText(model, "Write a story")
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a story"})
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -208,9 +208,11 @@ for chunk := range stream.TextChannel() {
 Most providers support function calling:
 
 ```go
-result, err := ai.GenerateText(model, "What's the weather?",
-    ai.WithTools(weatherTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather?",
+    Tools:  []types.Tool{weatherTool},
+})
 ```
 
 ### Structured Output
@@ -226,9 +228,13 @@ result, err := ai.GenerateObject(model, schema, "Describe a person")
 ### Rate Limits
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if errors.Is(err, ai.ErrRateLimitExceeded) {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) && providerErr.StatusCode == 429 {
         time.Sleep(time.Second * 5)
         // Retry
     }

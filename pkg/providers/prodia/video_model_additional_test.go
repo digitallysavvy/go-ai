@@ -2,6 +2,7 @@ package prodia
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -9,7 +10,7 @@ import (
 
 func TestProdiaVideoModelHelpers(t *testing.T) {
 	model := NewVideoModel(&Provider{}, "prodia-video")
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
 	if model.Provider() != "prodia.video" {
@@ -40,14 +41,30 @@ func TestProdiaVideoModelHelpers(t *testing.T) {
 	}
 }
 
-func TestProdiaVideoModelUnsupportedAspectRatio(t *testing.T) {
-	model := NewVideoModel(&Provider{}, "prodia-video")
-	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
-		Prompt:      "test",
-		AspectRatio: "99:99",
+func TestProdiaVideoImageURLUsesValidatedDownload(t *testing.T) {
+	_, _, err := resolveVideoImage(context.Background(), &provider.VideoModelV3File{
+		Type: "url",
+		URL:  "http://127.0.0.1/image.png",
 	})
 	if err == nil {
-		t.Fatal("DoGenerate should reject unsupported aspect ratio before network calls")
+		t.Fatal("resolveVideoImage(url) should reject unsafe hosts")
+	}
+	if !strings.Contains(err.Error(), "URL with IP address 127.0.0.1 is not allowed") {
+		t.Fatalf("resolveVideoImage(url) error = %v", err)
+	}
+}
+
+func TestProdiaVideoImageURLUsesDownloadedMediaType(t *testing.T) {
+	data, mimeType, err := resolveVideoImage(context.Background(), &provider.VideoModelV3File{
+		Type:      "url",
+		URL:       "data:image/png;base64,AQI=",
+		MediaType: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatalf("resolveVideoImage(data URL) error = %v", err)
+	}
+	if string(data) != string([]byte{1, 2}) || mimeType != "image/png" {
+		t.Fatalf("resolveVideoImage(data URL) = %v, %q; want data bytes and downloaded image/png", data, mimeType)
 	}
 }
 

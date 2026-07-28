@@ -93,7 +93,8 @@ model, _ := provider.LanguageModel(string(gateway.GatewayLanguageModelAnthropicC
 
 // Generate text
 maxTokens := 200
-result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model: model,
     Prompt: "Explain quantum computing in simple terms.",
     MaxTokens: &maxTokens,
 })
@@ -211,7 +212,8 @@ result, err := ai.Embed(context.Background(), embeddingModel, ai.EmbedOptions{
 Customize provider selection and behavior:
 
 ```go
-result, err := ai.GenerateText(ctx, model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
     Prompt: "Hello, world!",
     ProviderOptions: map[string]interface{}{
         "gateway": map[string]interface{}{
@@ -277,7 +279,37 @@ if errors.As(err, &details) {
 
 Inline `[]byte` file data in Gateway language-model requests is base64-encoded exactly once for file, reasoning-file, and tool-result file parts. URL, provider-reference, and text file data are preserved in their provider-native form.
 
-Gateway realtime is not implemented in this SDK because the June 6 TypeScript range did not add a Gateway realtime factory or model implementation.
+## Realtime Runtime Client Secrets
+
+Gateway realtime is exposed through `provider.ExperimentalRealtime(modelID)`.
+Use `GetRealtimeToken` or `MintRealtimeClientSecret` on a server to create the
+short-lived client secret used by browser WebSocket clients.
+
+```go
+gw := gateway.New(gateway.Config{
+    APIKey:       os.Getenv("AI_GATEWAY_API_KEY"),
+    TeamIDOrSlug: os.Getenv("VERCEL_TEAM_ID"),
+})
+
+expiresIn := 600
+secret, err := gw.GetRealtimeToken(ctx, "openai/gpt-realtime", &gateway.RealtimeClientSecretOptions{
+    ExpiresIn: &expiresIn,
+})
+if err != nil {
+    return err
+}
+
+model := gw.ExperimentalRealtime("openai/gpt-realtime")
+ws := model.GetWebSocketConfig(secret.Token, secret.URL)
+fmt.Println(ws.URL, ws.Protocols)
+```
+
+`MintRealtimeClientSecret` sends `POST /v1/realtime/client-secrets` at the
+Gateway origin, not under `/v4/ai`. The realtime WebSocket protocols include
+`ai-gateway-realtime.v1`, `ai-gateway-auth.<token>`, and, when configured, a
+base64url encoded `ai-gateway-team.<team>` entry. Realtime event parsing,
+client event serialization, and session config building are identity mappings
+for provider-native realtime payloads.
 
 ### Setting Timeouts
 
@@ -292,19 +324,22 @@ import (
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 
 // Video generation: 5-10 minutes
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 defer cancel()
 
-result, err := ai.GenerateVideo(ctx, videoModel, options)
+options.Model = videoModel
+result, err := ai.GenerateVideo(ctx, options)
 ```
 
 ### Detecting Timeout Errors
 
 ```go
-result, err := ai.GenerateVideo(ctx, videoModel, options)
+options.Model = videoModel
+result, err := ai.GenerateVideo(ctx, options)
 if err != nil {
     if gatewayerrors.IsGatewayTimeoutError(err) {
         // This is a client-side timeout
@@ -393,7 +428,8 @@ The Gateway provides detailed error types:
 ```go
 import gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 
-result, err := ai.GenerateText(ctx, model, options)
+options.Model = model
+result, err := ai.GenerateText(ctx, options)
 if err != nil {
     switch {
     case gatewayerrors.IsGatewayTimeoutError(err):

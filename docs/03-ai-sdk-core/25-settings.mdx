@@ -382,11 +382,14 @@ result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 Transcription settings:
 
 ```go
+maxRetries := 2
+
 result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:      transcriptionModel,
-    Audio:      audioData,
-    Language:   "en",
-    Timestamps: true,
+    Model:       transcriptionModel,
+    Audio:       audioData,
+    Language:    "en",
+    Timestamps:  true,
+    MaxRetries:  &maxRetries,
 })
 ```
 

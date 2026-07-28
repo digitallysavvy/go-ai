@@ -52,10 +52,11 @@ export BFL_API_KEY=...
 FLUX models produce photorealistic and artistically sophisticated images:
 
 ```go
-result, err := ai.GenerateImage(model,
-    "A photorealistic portrait of an elderly person with expressive eyes",
-    ai.WithImageSize("1024x1024"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A photorealistic portrait of an elderly person with expressive eyes",
+    Size:   "1024x1024",
+})
 ```
 
 ### Perfect Text Rendering
@@ -63,9 +64,10 @@ result, err := ai.GenerateImage(model,
 FLUX excels at text in images:
 
 ```go
-result, err := ai.GenerateImage(model,
-    "A storefront sign that says 'Coffee & Code' in elegant typography",
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A storefront sign that says 'Coffee & Code' in elegant typography",
+})
 ```
 
 ### Advanced Prompt Understanding
@@ -73,10 +75,11 @@ result, err := ai.GenerateImage(model,
 Complex, nuanced prompts work well:
 
 ```go
-result, err := ai.GenerateImage(model,
-    "A cyberpunk street scene at night, neon reflections on wet pavement, "+
-    "shallow depth of field, cinematic composition, blade runner aesthetic",
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model: model,
+    Prompt: "A cyberpunk street scene at night, neon reflections on wet pavement, " +
+        "shallow depth of field, cinematic composition, blade runner aesthetic",
+})
 ```
 
 ## Examples
@@ -87,6 +90,7 @@ result, err := ai.GenerateImage(model,
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -105,10 +109,11 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateImage(model,
-        "A majestic dragon perched on a mountain peak at sunrise",
-        ai.WithImageSize("1024x1024"),
-    )
+    result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: "A majestic dragon perched on a mountain peak at sunrise",
+        Size:   "1024x1024",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -121,11 +126,12 @@ func main() {
 ### Professional Photography
 
 ```go
-result, err := ai.GenerateImage(model,
-    "Professional product photography: luxury watch on marble surface, "+
-    "soft studio lighting, shallow depth of field, 85mm lens, f/1.4",
-    ai.WithImageSize("1024x1024"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model: model,
+    Prompt: "Professional product photography: luxury watch on marble surface, " +
+        "soft studio lighting, shallow depth of field, 85mm lens, f/1.4",
+    Size: "1024x1024",
+})
 ```
 
 ### Fill Models
@@ -158,7 +164,10 @@ basePrompt := "A serene forest path"
 
 for i, style := range styles {
     prompt := fmt.Sprintf("%s, %s", basePrompt, style)
-    result, err := ai.GenerateImage(model, prompt)
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
     if err != nil {
         continue
     }

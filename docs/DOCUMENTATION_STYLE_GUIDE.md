@@ -92,11 +92,11 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
     // ... rest of example
 }
 ```
@@ -148,20 +148,20 @@ import (
     "log"
 
     // Third-party imports second, grouped by domain
-    "github.com/teilomillet/go-ai"
-    "github.com/teilomillet/go-ai/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
     // 1. Setup/configuration
-    client := gai.NewClient(
+    client := newExampleClient(
         "your-api-key",
-        gai.WithProvider(anthropic.NewProvider()),
+        exampleWithProvider(anthropic.NewProvider()),
     )
 
     // 2. Main operation
-    response, err := client.Generate(context.Background(), &gai.Request{
-        Messages: []gai.Message{
+    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Messages: []types.Message{
             {Role: "user", Content: "Hello!"},
         },
     })
@@ -182,16 +182,16 @@ func main() {
 
 ```go
 // Simple example
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
     log.Fatalf("Generation failed: %v", err)
 }
 
 // Comprehensive example with error handling
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, gai.ErrRateLimited) {
+    if providererrors.IsRateLimitError(err) {
         log.Println("Rate limited, retrying...")
         // Retry logic
     } else {
@@ -207,7 +207,7 @@ if err != nil {
 
 ```go
 // Replace with your actual API key from https://console.anthropic.com
-client := gai.NewClient("your-api-key")
+client := newExampleClient("your-api-key")
 
 // Use a supported model name (e.g., claude-3-5-sonnet-20241022)
 request.Model = "your-model-name"
@@ -221,10 +221,10 @@ request.Model = "your-model-name"
 
 ```go
 // Configure aggressive caching to reduce API costs
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithCaching(true),
-    gai.WithCacheTTL(24 * time.Hour), // Cache for 24 hours
+    exampleWithCaching(true),
+    exampleWithCacheTTL(24 * time.Hour), // Cache for 24 hours
 )
 ```
 
@@ -347,13 +347,13 @@ Every feature that can fail must document:
 
 The following errors may occur:
 
-### `ErrRateLimited`
+### Rate limit errors
 
 **Cause**: Too many requests sent in a short time period.
 
 **Handling**:
 ```go
-if errors.Is(err, gai.ErrRateLimited) {
+if providererrors.IsRateLimitError(err) {
     time.Sleep(time.Second * 5)
     // Retry request
 }
@@ -367,12 +367,12 @@ Show both the error case and the handling:
 
 ```go
 // This will fail if the API key is invalid
-client := gai.NewClient("invalid-key")
+client := newExampleClient("invalid-key")
 
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 if err != nil {
     // Handle authentication errors
-    if errors.Is(err, gai.ErrUnauthorized) {
+    if isUnauthorizedProviderError(err) {
         log.Println("Check your API key")
         return
     }
@@ -406,36 +406,34 @@ Bad: "If you want deterministic outputs, it would be recommended to consider set
 ### Inline Documentation
 ```go
 // Generate a completion using the Claude model
-response, err := client.Generate(ctx, &gai.Request{
+response, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: "claude-3-5-sonnet-20241022", // Recommended for most use cases
-    Messages: []gai.Message{
+    Messages: []types.Message{
         {
             Role:    "user",
             Content: "Explain quantum computing",
         },
     },
-    Options: &gai.RequestOptions{
-        Temperature: 0.7, // Higher = more creative, lower = more focused
-        MaxTokens:   1000, // Limit response length
-    },
+    Temperature: ptr(0.7), // Higher = more creative, lower = more focused
+    MaxTokens:   ptr(1000), // Limit response length
 })
 ```
 
 ### Step-by-Step Examples
 ```go
 // Step 1: Initialize the client with your API key
-client := gai.NewClient("your-api-key")
+client := newExampleClient("your-api-key")
 
 // Step 2: Create a request with system and user messages
-request := &gai.Request{
-    Messages: []gai.Message{
+request := ai.GenerateTextOptions{
+    Messages: []types.Message{
         {Role: "system", Content: "You are a helpful assistant."},
         {Role: "user", Content: "What is Go?"},
     },
 }
 
 // Step 3: Generate the response
-response, err := client.Generate(context.Background(), request)
+response, err := ai.GenerateText(context.Background(), request)
 
 // Step 4: Handle any errors
 if err != nil {
@@ -458,7 +456,7 @@ Mark non-compilable examples:
 ````markdown
 ```go
 // This is pseudo-code for illustration only
-response := client.Generate(...)
+response := ai.GenerateText(...)
 process(response)
 ```
 ````

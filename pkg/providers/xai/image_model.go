@@ -111,9 +111,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// Determine if this is editing or generation
 	hasFiles := len(opts.Files) > 0
-	endpoint := "/v1/images/generations"
+	endpoint := "/images/generations"
 	if hasFiles {
-		endpoint = "/v1/images/edits"
+		endpoint = "/images/edits"
 	}
 
 	// Build request body

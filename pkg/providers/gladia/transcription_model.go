@@ -125,6 +125,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 				End:   utterance.End,
 			}
 		}
+		result.Segments = append([]types.TranscriptionTimestamp(nil), result.Timestamps...)
 	}
 
 	return result, nil

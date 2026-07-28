@@ -199,25 +199,25 @@ func main() {
     ctx := context.Background()
 
     // Define tool with clear descriptions
-    weatherTool := ai.Tool{
+    weatherTool := types.Tool{
         Name: "get_weather",
         Description: "Get current weather for a location. Returns temperature in Celsius, conditions (e.g. sunny, rainy), and humidity percentage.",
-        Parameters: types.JSONSchema{
-            Type: "object",
-            Properties: map[string]types.JSONSchema{
-                "location": {
-                    Type:        "string",
-                    Description: "City name (e.g., 'New York' or 'London, UK')",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]string{
+                    "type":        "string",
+                    "description": "City name (e.g., 'New York' or 'London, UK')",
                 },
-                "units": {
-                    Type:        "string",
-                    Enum:        []string{"celsius", "fahrenheit"},
-                    Description: "Temperature units (defaults to celsius)",
+                "units": map[string]interface{}{
+                    "type":        "string",
+                    "enum":        []string{"celsius", "fahrenheit"},
+                    "description": "Temperature units (defaults to celsius)",
                 },
             },
-            Required: []string{"location"},
+            "required": []string{"location"},
         },
-        Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+        Execute: func(ctx context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
             // Implementation
             return map[string]interface{}{
                 "temperature": 22,
@@ -238,7 +238,7 @@ func main() {
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:       model,
         Temperature: &temperature,
-        Tools:       []ai.Tool{weatherTool},
+        Tools:       []types.Tool{weatherTool},
         Prompt:      "What's the weather in Brooklyn, New York?",
     })
 
@@ -304,39 +304,39 @@ When defining schemas for tool parameters or structured output:
 
 ```go
 // ✅ Good: Simple, clear schema
-schema := types.JSONSchema{
-    Type: "object",
-    Properties: map[string]types.JSONSchema{
-        "name": {
-            Type:        "string",
-            Description: "Person's full name",
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]string{
+            "type":        "string",
+            "description": "Person's full name",
         },
-        "age": {
-            Type:        "number",
-            Description: "Age in years",
+        "age": map[string]string{
+            "type":        "number",
+            "description": "Age in years",
         },
-        "email": {
-            Type:        "string",
-            Description: "Email address",
-            Pattern:     "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+        "email": map[string]string{
+            "type":        "string",
+            "description": "Email address",
+            "pattern":     "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
         },
     },
-    Required: []string{"name", "age"},
+    "required": []string{"name", "age"},
 }
 
 // ❌ Avoid: Overly complex nested schemas
-schema := types.JSONSchema{
-    Type: "object",
-    Properties: map[string]types.JSONSchema{
-        "person": {
-            Type: "object",
-            Properties: map[string]types.JSONSchema{
-                "name": {
-                    Type: "object",
-                    Properties: map[string]types.JSONSchema{
-                        "first": {Type: "string"},
-                        "middle": {Type: "string"},
-                        "last": {Type: "string"},
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "person": map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "name": map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "first": map[string]string{"type": "string"},
+                        "middle": map[string]string{"type": "string"},
+                        "last": map[string]string{"type": "string"},
                         // ... too deep
                     },
                 },
@@ -352,23 +352,23 @@ Be explicit about required fields:
 
 ```go
 // Clear required fields
-schema := types.JSONSchema{
-    Type: "object",
-    Properties: map[string]types.JSONSchema{
-        "command": {
-            Type:        "string",
-            Description: "Shell command to execute",
+schema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "command": map[string]string{
+            "type":        "string",
+            "description": "Shell command to execute",
         },
-        "workdir": {
-            Type:        "string",
-            Description: "Working directory (optional, defaults to current dir)",
+        "workdir": map[string]string{
+            "type":        "string",
+            "description": "Working directory (optional, defaults to current dir)",
         },
-        "timeout": {
-            Type:        "number",
-            Description: "Timeout in seconds (optional, defaults to 30)",
+        "timeout": map[string]string{
+            "type":        "number",
+            "description": "Timeout in seconds (optional, defaults to 30)",
         },
     },
-    Required: []string{"command"}, // Only command is required
+    "required": []string{"command"}, // Only command is required
 }
 ```
 
@@ -446,12 +446,12 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Input tokens: %d\n", result.Usage.PromptTokens)
-fmt.Printf("Output tokens: %d\n", result.Usage.CompletionTokens)
-fmt.Printf("Total tokens: %d\n", result.Usage.TotalTokens)
+fmt.Printf("Input tokens: %d\n", result.Usage.GetInputTokens())
+fmt.Printf("Output tokens: %d\n", result.Usage.GetOutputTokens())
+fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 
 // Check for unexpectedly high usage
-if result.Usage.TotalTokens > 10000 {
+if result.Usage.GetTotalTokens() > 10000 {
     log.Printf("WARNING: High token usage detected")
 }
 ```

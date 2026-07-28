@@ -36,7 +36,7 @@ func main() {
     }
 
     // Save audio to file
-    err = os.WriteFile("output.mp3", result.Audio, 0644)
+    err = os.WriteFile("output.mp3", result.Audio.Data, 0644)
     if err != nil {
         log.Fatal(err)
     }
@@ -50,6 +50,8 @@ func main() {
 To access the generated audio:
 
 ```go
+speed := 1.25
+
 result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model: speechModel,
     Text:  "Hello, world!",
@@ -57,14 +59,12 @@ result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 })
 
 // Audio bytes
-audioData := result.Audio
+audioData := result.Audio.Data
 
 // MIME type (e.g., "audio/mpeg")
-mimeType := result.MimeType
+mimeType := result.Audio.MediaType
 
-// Usage information
-charCount := result.Usage.CharacterCount
-fmt.Printf("Processed %d characters\n", charCount)
+fmt.Printf("Generated %d bytes as %s\n", len(audioData), mimeType)
 ```
 
 ## Settings
@@ -119,7 +119,7 @@ result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model:  speechModel,
     Text:   "Hello, world!",
     Voice:  "alloy",
-    Format: "mp3", // or "wav", "opus", "flac", etc.
+    OutputFormat: "mp3", // or "wav", "opus", "flac", etc.
 })
 ```
 
@@ -129,15 +129,11 @@ You can set model-specific settings with the `ProviderOptions` parameter:
 
 ```go
 result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
-    Model: speechModel,
-    Text:  "Hello, world!",
-    Voice: "alloy",
-    ProviderOptions: map[string]interface{}{
-        "openai": map[string]interface{}{
-            "responseFormat": "opus",
-            "speed":          1.25,
-        },
-    },
+    Model:        speechModel,
+    Text:         "Hello, world!",
+    Voice:        "alloy",
+    OutputFormat: "opus",
+    Speed:        &speed,
 })
 ```
 
@@ -212,14 +208,12 @@ result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Voice: "alloy",
 })
 if err != nil {
-    // Check for specific error types
-    if errors.Is(err, ai.ErrNoSpeechGenerated) {
+    if ai.IsNoSpeechGeneratedError(err) {
         fmt.Println("No speech was generated")
-        fmt.Printf("Cause: %v\n", errors.Unwrap(err))
-    } else if errors.Is(err, provider.ErrRateLimit) {
-        fmt.Println("Rate limit exceeded")
-    } else if errors.Is(err, provider.ErrInvalidVoice) {
-        fmt.Println("Invalid voice specified")
+        var noSpeech *ai.NoSpeechGeneratedError
+        if errors.As(err, &noSpeech) {
+            fmt.Printf("Responses: %d\n", len(noSpeech.Responses))
+        }
     } else {
         fmt.Printf("Speech generation error: %v\n", err)
     }
@@ -229,10 +223,9 @@ if err != nil {
 
 Common speech generation errors:
 
-- **ErrNoSpeechGenerated**: The model failed to generate audio
-- **ErrRateLimit**: Rate limit exceeded
-- **ErrInvalidVoice**: Unsupported voice
-- **ErrTextTooLong**: Text exceeds maximum length
+- **NoSpeechGeneratedError**: The model returned no generated audio
+- **ProviderError**: Provider-specific HTTP or API failure
+- **InvalidArgumentError**: Invalid input such as negative `MaxRetries`
 - **context.DeadlineExceeded**: Operation timed out
 - **context.Canceled**: Operation was canceled
 
@@ -241,7 +234,7 @@ Common speech generation errors:
 ### Generate and Save Audio
 
 ```go
-func generateAndSaveAudio(ctx context.Context, model ai.SpeechModel, text, voice, outputPath string) error {
+func generateAndSaveAudio(ctx context.Context, model provider.SpeechModel, text, voice, outputPath string) error {
     result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
         Model: model,
         Text:  text,
@@ -251,12 +244,12 @@ func generateAndSaveAudio(ctx context.Context, model ai.SpeechModel, text, voice
         return fmt.Errorf("speech generation failed: %w", err)
     }
 
-    err = os.WriteFile(outputPath, result.Audio, 0644)
+    err = os.WriteFile(outputPath, result.Audio.Data, 0644)
     if err != nil {
         return fmt.Errorf("failed to save audio: %w", err)
     }
 
-    fmt.Printf("Audio saved to %s (%d bytes)\n", outputPath, len(result.Audio))
+    fmt.Printf("Audio saved to %s (%d bytes)\n", outputPath, len(result.Audio.Data))
     return nil
 }
 ```
@@ -264,7 +257,7 @@ func generateAndSaveAudio(ctx context.Context, model ai.SpeechModel, text, voice
 ### Generate Multiple Voices
 
 ```go
-func generateWithMultipleVoices(ctx context.Context, model ai.SpeechModel, text string, voices []string) error {
+func generateWithMultipleVoices(ctx context.Context, model provider.SpeechModel, text string, voices []string) error {
     for i, voice := range voices {
         result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
             Model: model,
@@ -276,7 +269,7 @@ func generateWithMultipleVoices(ctx context.Context, model ai.SpeechModel, text 
         }
 
         filename := fmt.Sprintf("output-%s.mp3", voice)
-        err = os.WriteFile(filename, result.Audio, 0644)
+        err = os.WriteFile(filename, result.Audio.Data, 0644)
         if err != nil {
             return fmt.Errorf("failed to save %s: %w", filename, err)
         }
@@ -295,43 +288,20 @@ generateWithMultipleVoices(ctx, speechModel, "Hello, world!", voices)
 ### Text-to-Speech with Retry Logic
 
 ```go
-func generateSpeechWithRetry(ctx context.Context, model ai.SpeechModel, text, voice string, maxRetries int) (*ai.GenerateSpeechResult, error) {
-    var lastErr error
-
-    for attempt := 0; attempt <= maxRetries; attempt++ {
-        if attempt > 0 {
-            fmt.Printf("Retry attempt %d/%d\n", attempt, maxRetries)
-            time.Sleep(time.Duration(attempt) * time.Second)
-        }
-
-        result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
-            Model: model,
-            Text:  text,
-            Voice: voice,
-        })
-
-        if err == nil {
-            return result, nil
-        }
-
-        lastErr = err
-
-        // Don't retry on certain errors
-        if errors.Is(err, context.Canceled) ||
-           errors.Is(err, context.DeadlineExceeded) ||
-           errors.Is(err, provider.ErrInvalidVoice) {
-            break
-        }
-    }
-
-    return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)
+func generateSpeechWithRetry(ctx context.Context, model provider.SpeechModel, text, voice string, maxRetries int) (*ai.GenerateSpeechResult, error) {
+    return ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+        Model:      model,
+        Text:       text,
+        Voice:      voice,
+        MaxRetries: &maxRetries,
+    })
 }
 ```
 
 ### Batch Text-to-Speech
 
 ```go
-func batchGenerateSpeech(ctx context.Context, model ai.SpeechModel, texts []string, voice string) ([][]byte, error) {
+func batchGenerateSpeech(ctx context.Context, model provider.SpeechModel, texts []string, voice string) ([][]byte, error) {
     audioFiles := make([][]byte, len(texts))
 
     for i, text := range texts {
@@ -344,8 +314,8 @@ func batchGenerateSpeech(ctx context.Context, model ai.SpeechModel, texts []stri
             return nil, fmt.Errorf("failed to generate audio for text %d: %w", i, err)
         }
 
-        audioFiles[i] = result.Audio
-        fmt.Printf("Generated audio %d/%d (%d bytes)\n", i+1, len(texts), len(result.Audio))
+        audioFiles[i] = result.Audio.Data
+        fmt.Printf("Generated audio %d/%d (%d bytes)\n", i+1, len(texts), len(result.Audio.Data))
     }
 
     return audioFiles, nil
@@ -355,7 +325,7 @@ func batchGenerateSpeech(ctx context.Context, model ai.SpeechModel, texts []stri
 ### Parallel Speech Generation with Goroutines
 
 ```go
-func generateSpeechParallel(ctx context.Context, model ai.SpeechModel, texts []string, voice string) ([][]byte, error) {
+func generateSpeechParallel(ctx context.Context, model provider.SpeechModel, texts []string, voice string) ([][]byte, error) {
     type result struct {
         index int
         audio []byte
@@ -378,7 +348,7 @@ func generateSpeechParallel(ctx context.Context, model ai.SpeechModel, texts []s
                 return
             }
 
-            resultChan <- result{index: index, audio: speech.Audio}
+            resultChan <- result{index: index, audio: speech.Audio.Data}
         }(i, text)
     }
 
@@ -398,7 +368,7 @@ func generateSpeechParallel(ctx context.Context, model ai.SpeechModel, texts []s
 ### Generate Speech with Different Speeds
 
 ```go
-func generateAtDifferentSpeeds(ctx context.Context, model ai.SpeechModel, text, voice string) error {
+func generateAtDifferentSpeeds(ctx context.Context, model provider.SpeechModel, text, voice string) error {
     speeds := []float64{0.5, 0.75, 1.0, 1.25, 1.5, 2.0}
 
     for _, speed := range speeds {
@@ -413,7 +383,7 @@ func generateAtDifferentSpeeds(ctx context.Context, model ai.SpeechModel, text, 
         }
 
         filename := fmt.Sprintf("output-%.2fx.mp3", speed)
-        err = os.WriteFile(filename, result.Audio, 0644)
+        err = os.WriteFile(filename, result.Audio.Data, 0644)
         if err != nil {
             return fmt.Errorf("failed to save %s: %w", filename, err)
         }
@@ -453,12 +423,12 @@ func speechHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     // Set appropriate headers
-    w.Header().Set("Content-Type", result.MimeType)
-    w.Header().Set("Content-Length", fmt.Sprintf("%d", len(result.Audio)))
+    w.Header().Set("Content-Type", result.Audio.MediaType)
+    w.Header().Set("Content-Length", fmt.Sprintf("%d", len(result.Audio.Data)))
     w.Header().Set("Content-Disposition", "inline; filename=\"speech.mp3\"")
 
     // Write audio data
-    w.Write(result.Audio)
+    w.Write(result.Audio.Data)
 }
 ```
 
@@ -467,7 +437,7 @@ func speechHandler(w http.ResponseWriter, r *http.Request) {
 ```go
 import "strings"
 
-func generateLongText(ctx context.Context, model ai.SpeechModel, longText, voice string, maxChunkSize int) ([]byte, error) {
+func generateLongText(ctx context.Context, model provider.SpeechModel, longText, voice string, maxChunkSize int) ([]byte, error) {
     // Split text into chunks
     sentences := strings.Split(longText, ". ")
     var chunks []string
@@ -500,7 +470,7 @@ func generateLongText(ctx context.Context, model ai.SpeechModel, longText, voice
             return nil, fmt.Errorf("failed to generate chunk %d: %w", i+1, err)
         }
 
-        allAudio = append(allAudio, result.Audio...)
+        allAudio = append(allAudio, result.Audio.Data...)
     }
 
     return allAudio, nil
@@ -585,7 +555,7 @@ import "golang.org/x/time/rate"
 // Create rate limiter (e.g., 10 requests per minute)
 limiter := rate.NewLimiter(rate.Every(6*time.Second), 1)
 
-func generateSpeechWithRateLimit(ctx context.Context, model ai.SpeechModel, text, voice string) (*ai.GenerateSpeechResult, error) {
+func generateSpeechWithRateLimit(ctx context.Context, model provider.SpeechModel, text, voice string) (*ai.GenerateSpeechResult, error) {
     // Wait for rate limiter
     if err := limiter.Wait(ctx); err != nil {
         return nil, err

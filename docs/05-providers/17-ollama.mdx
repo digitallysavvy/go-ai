@@ -81,7 +81,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Ollama")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Ollama"})
     if err != nil {
         log.Fatal(err)
     }
@@ -93,14 +93,14 @@ func main() {
 ### Streaming
 
 ```go
-stream, err := ai.StreamText(model, "Write a story")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a story"})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -110,15 +110,22 @@ for chunk := range stream.TextChannel() {
 model, err := provider.LanguageModel("llava")
 
 imageData, _ := os.ReadFile("image.jpg")
-encodedImage := base64.StdEncoding.EncodeToString(imageData)
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Describe this image",
-            ai.WithImageData(encodedImage, "image/jpeg"),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe this image"},
+                types.FileContent{
+                    Data:      imageData,
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
 ```
 
 ### Embeddings
@@ -213,9 +220,12 @@ ollama create my-coding-assistant -f Modelfile
 ### Context Window
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithMaxTokens(4096), // Adjust based on model
-)
+maxTokens := 4096
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    prompt,
+    MaxTokens: &maxTokens, // Adjust based on model
+})
 ```
 
 ### Remote Ollama
@@ -230,7 +240,7 @@ provider := openai.New(openai.Config{
 ## Error Handling
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if strings.Contains(err.Error(), "connection refused") {
         log.Fatal("Ollama server not running - run: ollama serve")

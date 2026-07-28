@@ -102,7 +102,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Baseten")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Baseten"})
     fmt.Println(result.Text)
 }
 ```

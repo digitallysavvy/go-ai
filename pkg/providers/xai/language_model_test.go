@@ -79,8 +79,8 @@ func TestXAIChatLogprobsOption(t *testing.T) {
 
 func TestXAIChatDoStreamIncludesRawChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"id":"chunk-1","object":"chat.completion.chunk","created":1750538300,"model":"grok-3","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}

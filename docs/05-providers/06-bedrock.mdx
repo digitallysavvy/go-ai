@@ -143,12 +143,16 @@ provider := bedrock.New(bedrock.Config{
 Apply AWS Bedrock Guardrails for content filtering:
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithGuardrails(ai.Guardrails{
-        ID:      "your-guardrail-id",
-        Version: "1",
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+    ProviderOptions: map[string]interface{}{
+        "amazonBedrock": map[string]interface{}{
+            "guardrailIdentifier": "your-guardrail-id",
+            "guardrailVersion":    "1",
+        },
+    },
+})
 ```
 
 ### Agents
@@ -209,8 +213,10 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain AWS Bedrock benefits")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain AWS Bedrock benefits",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -237,7 +243,7 @@ for _, modelID := range models {
         continue
     }
 
-    result, err := ai.GenerateText(model, prompt)
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
     if err != nil {
         log.Printf("Failed to generate with %s: %v", modelID, err)
         continue
@@ -255,17 +261,17 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateImage(imageModel,
-    "A serene mountain landscape at sunset",
-    ai.WithImageSize("1024x1024"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A serene mountain landscape at sunset",
+    Size:   "1024x1024",
+})
 if err != nil {
     log.Fatal(err)
 }
 
 // Save image
-imageData, err := downloadImage(result.Images[0].URL)
-os.WriteFile("output.png", imageData, 0644)
+os.WriteFile("output.png", result.Images[0].Data, 0644)
 ```
 
 ### Embeddings with Cohere
@@ -298,14 +304,14 @@ if err != nil {
     log.Fatal(err)
 }
 
-stream, err := ai.StreamText(model, "Write a detailed essay about serverless computing")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a detailed essay about serverless computing"})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -364,7 +370,7 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 ### Common Errors
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if bedrockErr, ok := err.(*bedrock.Error); ok {
         switch bedrockErr.Code {

@@ -69,7 +69,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	var response xaiResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
+		Path:   "/chat/completions",
 		Body:   reqBody,
 	}, &response)
 	if err != nil {
@@ -127,7 +127,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
+		Path:   "/chat/completions",
 		Body:   reqBody,
 		Headers: map[string]string{
 			"Accept": "text/event-stream",

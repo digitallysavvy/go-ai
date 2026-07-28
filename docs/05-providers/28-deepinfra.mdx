@@ -108,7 +108,7 @@ provider := deepinfra.New(deepinfra.Config{
 
 model, err := provider.LanguageModel("google/gemini-2.0-flash-thinking-exp-1219")
 
-result, err := ai.GenerateText(model, "Explain quantum computing")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain quantum computing"})
 
 // Token usage is automatically corrected
 if result.Usage.OutputDetails != nil {
@@ -126,7 +126,7 @@ No infrastructure management required:
 
 ```go
 // Automatic scaling and GPU allocation
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 // DeepInfra handles all infrastructure
 ```
 
@@ -136,7 +136,7 @@ Pay only for actual inference time:
 
 ```go
 // No idle costs, no minimum commitments
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 // Charged only for tokens used
 ```
 
@@ -187,16 +187,18 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain serverless GPU inference")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model: model,
+        Prompt: "Explain serverless GPU inference",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     fmt.Println(result.Text)
     fmt.Printf("Cost: $%.6f\n",
-        calculateCost(result.Usage.PromptTokens,
-            result.Usage.CompletionTokens))
+        calculateCost(result.Usage.GetInputTokens(),
+            result.Usage.GetOutputTokens()))
 }
 
 func calculateCost(inputTokens, outputTokens int) float64 {
@@ -224,7 +226,7 @@ func compareModels(prompt string) {
         }
 
         start := time.Now()
-        result, err := ai.GenerateText(model, prompt)
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
         if err != nil {
             log.Printf("Failed %s: %v", name, err)
             continue
@@ -234,7 +236,7 @@ func compareModels(prompt string) {
         fmt.Printf("\n=== %s ===\n", name)
         fmt.Printf("Response: %s\n", result.Text)
         fmt.Printf("Time: %v\n", elapsed)
-        fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+        fmt.Printf("Tokens: %d\n", result.Usage.GetTotalTokens())
     }
 }
 ```
@@ -267,14 +269,14 @@ fmt.Printf("Generated %d embeddings of dimension %d\n",
 ### Streaming
 
 ```go
-stream, err := ai.StreamText(model, "Write a detailed article")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a detailed article"})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -335,7 +337,7 @@ func compareProviderCosts(inputTokens, outputTokens int) {
 ## Error Handling
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if strings.Contains(err.Error(), "rate_limit") {
         log.Println("Rate limited, implement backoff")

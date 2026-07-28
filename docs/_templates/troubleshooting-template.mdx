@@ -73,14 +73,14 @@ import (
     "context"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Fixed implementation
-    client := gai.NewClient(
+    client := newExampleClient(
         "your-api-key",
-        gai.WithCorrectOption(),
+        exampleWithCorrectOption(),
     )
 }
 ```
@@ -99,7 +99,7 @@ How to verify the issue is resolved.
 
 ```go
 // Verification code
-response, err := client.Generate(context.Background(), request)
+response, err := ai.GenerateText(context.Background(), request)
 if err != nil {
     log.Printf("Still failing: %v", err)
 } else {
@@ -156,9 +156,9 @@ For a fast solution:
 
 ```go
 // Quick fix code
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithQuickFixOption(),
+    exampleWithQuickFixOption(),
 )
 ```
 
@@ -175,21 +175,21 @@ import (
     "log"
     "time"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Complete solution implementation
-    client := gai.NewClient(
+    client := newExampleClient(
         apiKey,
-        gai.WithOption1(value1),
-        gai.WithOption2(value2),
+        exampleWithOption1(value1),
+        exampleWithOption2(value2),
     )
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 
-    response, err := client.Generate(ctx, request)
+    response, err := ai.GenerateText(ctx, request)
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
@@ -287,7 +287,7 @@ import (
     "context"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
@@ -357,7 +357,7 @@ import (
     "log"
     "os"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
@@ -366,9 +366,9 @@ func main() {
     log.SetFlags(log.LstdFlags | log.Lshortfile)
 
     // Create client with debug mode
-    client := gai.NewClient(
+    client := newExampleClient(
         apiKey,
-        gai.WithDebug(true),
+        exampleWithDebug(true),
     )
 
     // Your code here
@@ -388,7 +388,7 @@ requestJSON, _ := json.MarshalIndent(request, "", "  ")
 log.Printf("Request:\n%s\n", requestJSON)
 
 // Make API call
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 
 // Log response details
 responseJSON, _ := json.MarshalIndent(response, "", "  ")
@@ -439,9 +439,9 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // Use custom client
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithHTTPClient(httpClient),
+    exampleWithHTTPClient(httpClient),
 )
 ```
 
@@ -467,7 +467,7 @@ go func() {
 }()
 
 // Make request
-response, err := client.Generate(ctx, request)
+response, err := ai.GenerateText(ctx, request)
 ```
 
 ## Common Error Patterns
@@ -528,20 +528,20 @@ import (
     "errors"
     "time"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
-func generateWithRetry(client *gai.Client, request *gai.Request) (*gai.Response, error) {
+func generateWithRetry(request ai.GenerateTextOptions) (*ai.GenerateTextResult, error) {
     maxRetries := 3
     backoff := time.Second
 
     for i := 0; i < maxRetries; i++ {
-        response, err := client.Generate(context.Background(), request)
+        response, err := ai.GenerateText(context.Background(), request)
         if err == nil {
             return response, nil
         }
 
-        if errors.Is(err, gai.ErrRateLimited) {
+        if providererrors.IsRateLimitError(err) {
             log.Printf("Rate limited, waiting %v\n", backoff)
             time.Sleep(backoff)
             backoff *= 2
@@ -568,7 +568,7 @@ invalid request format
 
 ```go
 // Validate input before sending
-func validateRequest(request *gai.Request) error {
+func validateRequest(request ai.GenerateTextOptions) error {
     if request.Model == "" {
         return fmt.Errorf("model is required")
     }
@@ -605,7 +605,7 @@ if err := validateRequest(request); err != nil {
 1. **Use streaming for long responses:**
 
 ```go
-stream, err := client.GenerateStream(ctx, request)
+stream, err := ai.StreamText(ctx, request)
 if err != nil {
     log.Fatalf("Error: %v", err)
 }
@@ -626,9 +626,7 @@ for {
 2. **Reduce token limits:**
 
 ```go
-request.Options = &gai.RequestOptions{
-    MaxTokens: 500, // Reduce for faster responses
-}
+request.MaxTokens = ptr(500) // Reduce for faster responses
 ```
 
 3. **Use faster models:**
@@ -648,7 +646,7 @@ request.Model = "claude-3-haiku-20240307" // Faster model
 1. **Close streams properly:**
 
 ```go
-stream, err := client.GenerateStream(ctx, request)
+stream, err := ai.StreamText(ctx, request)
 if err != nil {
     return err
 }
@@ -658,9 +656,7 @@ defer stream.Close() // Always close streams
 2. **Limit response sizes:**
 
 ```go
-request.Options = &gai.RequestOptions{
-    MaxTokens: 1000, // Prevent extremely long responses
-}
+request.MaxTokens = ptr(1000) // Prevent extremely long responses
 ```
 
 3. **Process responses incrementally:**
@@ -709,9 +705,9 @@ httpClient := &http.Client{
     },
 }
 
-client := gai.NewClient(
+client := newExampleClient(
     apiKey,
-    gai.WithHTTPClient(httpClient),
+    exampleWithHTTPClient(httpClient),
 )
 ```
 
@@ -756,7 +752,7 @@ If you're still experiencing issues:
    - [Provider Documentation](../03-providers/anthropic.mdx)
 
 2. **Search existing issues:**
-   - [GitHub Issues](https://github.com/teilomillet/go-ai/issues)
+   - [GitHub Issues](https://github.com/digitallysavvy/go-ai/issues)
    - [Community Forum](https://community.example.com)
 
 3. **Create a minimal reproduction:**
@@ -769,21 +765,21 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Minimal code that reproduces the issue
-    client := gai.NewClient("test-key")
+    client := newExampleClient("test-key")
 
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "test-model",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "test"},
         },
     }
 
-    _, err := client.Generate(context.Background(), request)
+    _, err := ai.GenerateText(context.Background(), request)
     log.Printf("Error: %v\n", err)
 }
 ```
@@ -821,4 +817,4 @@ env | grep -i api
 
 - [Provider Status Page](https://status.anthropic.com)
 - [API Documentation](https://docs.anthropic.com)
-- [Community Examples](https://github.com/teilomillet/go-ai/tree/main/examples)
+- [Community Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)

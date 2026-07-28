@@ -45,8 +45,8 @@ func badStreamHandling(ctx context.Context, model interface{}) error {
     }
 
     // Only reading first chunk - LEAK!
-    chunk := <-stream.TextChannel
-    fmt.Println(chunk)
+    chunk := <-stream.Chunks()
+    fmt.Println(chunk.Text)
 
     // Returning without consuming rest of channel
     // Producer goroutine will block forever
@@ -64,8 +64,8 @@ func goodStreamHandling(ctx context.Context, model interface{}) error {
     }
 
     // Range loop consumes all values until channel closes
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check for errors after stream completes
@@ -83,8 +83,8 @@ func earlyExitStreamHandling(ctx context.Context, model interface{}) error {
     }
 
     count := 0
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
         count++
 
         // If you need to exit early, cancel the context
@@ -152,15 +152,15 @@ func main() {
     }
 
     // First read - OK
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Channel is now closed
 
     // BAD: Don't try to read again
-    // for chunk := range stream.TextChannel { // Channel is closed!
-    //     fmt.Print(chunk)
+    // for chunk := range stream.Chunks() { // Channel is closed!
+    //     fmt.Print(chunk.Text)
     // }
 
     // GOOD: Only check error after stream closes
@@ -214,8 +214,8 @@ func robustStreaming(ctx context.Context, model interface{}, prompt string) erro
     var chunkCount int
     var finishReason string
 
-    // Use FullChannel to get detailed chunk information
-    for chunk := range stream.FullChannel {
+    // Use Chunks to get detailed chunk information
+    for chunk := range stream.Chunks() {
         switch chunk.Type {
         case provider.ChunkTypeText:
             fmt.Print(chunk.Text)
@@ -304,13 +304,13 @@ func completeStreamRead(ctx context.Context, model interface{}) error {
 
     for {
         select {
-        case chunk, ok := <-stream.TextChannel:
+        case chunk, ok := <-stream.Chunks():
             if !ok {
                 // Channel properly closed, all chunks received
                 log.Println("\nStream completed")
                 return stream.Err()
             }
-            fmt.Print(chunk)
+            fmt.Print(chunk.Text)
 
         case <-timeout:
             log.Println("\nTimeout waiting for stream")
@@ -414,9 +414,9 @@ func processStreamSafely(ctx context.Context, model interface{}, prompt string) 
     wg.Add(1)
     go func() {
         defer wg.Done()
-        for chunk := range stream.TextChannel {
+        for chunk := range stream.Chunks() {
             processor.AddChunk(chunk)
-            fmt.Print(chunk)
+            fmt.Print(chunk.Text)
         }
         processor.MarkDone()
     }()
@@ -493,7 +493,7 @@ func memoryHungryStreaming(ctx context.Context, model interface{}) error {
     }
 
     var allText string // Accumulates all chunks - can use lots of memory!
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         allText += chunk // Bad: growing string
     }
 
@@ -521,13 +521,13 @@ func memoryEfficientStreaming(ctx context.Context, model interface{}, outputFile
     writer := bufio.NewWriter(file)
     defer writer.Flush()
 
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         // Write chunk immediately, don't accumulate
-        if _, err := writer.WriteString(chunk); err != nil {
+        if _, err := writer.WriteString(chunk.Text); err != nil {
             return err
         }
         // Also print to console
-        fmt.Print(chunk)
+        fmt.Print(chunk.Text)
     }
 
     return stream.Err()
@@ -546,7 +546,7 @@ func bufferedStreaming(ctx context.Context, model interface{}) error {
     const maxBufferSize = 1000 // Process in chunks of 1000 chars
     buffer := make([]byte, 0, maxBufferSize)
 
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         buffer = append(buffer, []byte(chunk)...)
 
         // Process buffer when full
@@ -589,7 +589,7 @@ func main() {
 
 ```go
 // Use range to ensure all chunks consumed
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     process(chunk)
 }
 // Channel is now properly closed
@@ -598,8 +598,8 @@ for chunk := range stream.TextChannel {
 ### 2. Check Errors After Stream
 
 ```go
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if err := stream.Err(); err != nil {
@@ -607,10 +607,10 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-### 3. Use FullChannel for Detailed Info
+### 3. Use Chunks for Detailed Info
 
 ```go
-for chunk := range stream.FullChannel {
+for chunk := range stream.Chunks() {
     switch chunk.Type {
     case provider.ChunkTypeText:
         // Handle text
@@ -629,7 +629,7 @@ for chunk := range stream.FullChannel {
 var allText string // BAD
 
 // Process each chunk as it arrives
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     processImmediately(chunk) // GOOD
 }
 ```
@@ -648,7 +648,7 @@ stream, _ := ai.StreamText(ctx, options)
 ```go
 for {
     select {
-    case chunk, ok := <-stream.TextChannel:
+    case chunk, ok := <-stream.Chunks():
         if !ok {
             return stream.Err()
         }

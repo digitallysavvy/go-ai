@@ -29,7 +29,7 @@ Before contributing to documentation, ensure you have:
 
 1. **Fork the repository**:
    ```bash
-   # Navigate to https://github.com/teilomillet/go-ai
+   # Navigate to https://github.com/digitallysavvy/go-ai
    # Click the "Fork" button
    ```
 
@@ -147,23 +147,23 @@ import (
     "fmt"
     "log"
 
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // Create client with API key
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
 
     // Create request
-    request := &gai.Request{
+    request := ai.GenerateTextOptions{
         Model: "claude-3-5-sonnet-20241022",
-        Messages: []gai.Message{
+        Messages: []types.Message{
             {Role: "user", Content: "Hello!"},
         },
     }
 
     // Generate response
-    response, err := client.Generate(context.Background(), request)
+    response, err := ai.GenerateText(context.Background(), request)
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
@@ -254,12 +254,12 @@ import (
     "log"
 
     // Third-party imports
-    "github.com/teilomillet/go-ai"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
     // 1. Setup
-    client := gai.NewClient("your-api-key")
+    client := newExampleClient("your-api-key")
 
     // 2. Main operation
     result, err := client.DoSomething(context.Background())
@@ -624,11 +624,11 @@ go run extract-examples.go -docs=../07-reference/api/new-type.mdx -verbose
 - [Documentation Style Guide](./DOCUMENTATION_STYLE_GUIDE.md)
 - [Template Files](./_templates/)
 - [Existing Documentation](./01-getting-started/)
-- [Go-AI Repository](https://github.com/teilomillet/go-ai)
+- [Go-AI Repository](https://github.com/digitallysavvy/go-ai)
 
 ### Questions?
 
-- Open a [GitHub Discussion](https://github.com/teilomillet/go-ai/discussions)
+- Open a [GitHub Discussion](https://github.com/digitallysavvy/go-ai/discussions)
 - Ask in the [Community Forum](https://community.example.com)
 - Comment on related issues or PRs
 - Reach out to maintainers

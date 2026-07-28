@@ -41,6 +41,12 @@ type DownloadOptions struct {
 	URLValidator func(string) error
 }
 
+// DownloadResult contains downloaded file bytes and response metadata.
+type DownloadResult struct {
+	Data        []byte
+	ContentType string
+}
+
 // DefaultDownloadOptions returns default download options
 func DefaultDownloadOptions() DownloadOptions {
 	return DownloadOptions{
@@ -56,6 +62,16 @@ func DefaultDownloadOptions() DownloadOptions {
 // It checks the Content-Length header for early rejection, then reads the body
 // incrementally and aborts with a DownloadError when the limit is exceeded.
 func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, error) {
+	result, err := DownloadWithMetadata(ctx, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+// DownloadWithMetadata downloads a file from a URL with size limits and returns
+// response metadata needed by provider wire encoders.
+func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions) (*DownloadResult, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 60 * time.Second
 	}
@@ -78,7 +94,7 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 		if int64(len(data)) > opts.MaxSize {
 			return nil, providererrors.NewDownloadError(url, 0, "", fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize), nil)
 		}
-		return data, nil
+		return &DownloadResult{Data: data, ContentType: dataURLMediaType(url)}, nil
 	}
 
 	// Create HTTP client with timeout and optional post-redirect URL validation.
@@ -160,7 +176,7 @@ func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, er
 		)
 	}
 
-	return data, nil
+	return &DownloadResult{Data: data, ContentType: resp.Header.Get("Content-Type")}, nil
 }
 
 // DownloadToWriter downloads a file from a URL and writes it to an io.Writer
@@ -350,6 +366,18 @@ func decodeDataURL(raw string) ([]byte, error) {
 		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 	}
 	return []byte(data), nil
+}
+
+func dataURLMediaType(raw string) string {
+	comma := strings.IndexByte(raw, ',')
+	if comma < 0 {
+		return ""
+	}
+	meta := raw[len("data:"):comma]
+	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
+		meta = meta[:semi]
+	}
+	return meta
 }
 
 // GetContentType retrieves the Content-Type header from a URL without downloading the body

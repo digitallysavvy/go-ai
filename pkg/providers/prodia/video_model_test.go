@@ -2,18 +2,23 @@ package prodia
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-// TestProdiaVideoModelSpecificationVersion verifies the spec version is "v3".
+// TestProdiaVideoModelSpecificationVersion verifies the spec version is "v4".
 func TestProdiaVideoModelSpecificationVersion(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
 
-	if got := model.SpecificationVersion(); got != "v3" {
-		t.Errorf("SpecificationVersion() = %q, want %q", got, "v3")
+	if got := model.SpecificationVersion(); got != "v4" {
+		t.Errorf("SpecificationVersion() = %q, want %q", got, "v4")
 	}
 }
 
@@ -141,37 +146,150 @@ func TestExtractVideoProviderOptionsNil(t *testing.T) {
 	}
 }
 
-// TestVideoModelT2VRejectsInvalidAspectRatio verifies that an invalid aspect
-// ratio returns an error before making any network call.
-func TestVideoModelT2VRejectsInvalidAspectRatio(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
+func TestProdiaVideoModelSerializesOnlyTypeScriptJobConfigFields(t *testing.T) {
+	var requestBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/job" || r.URL.Query().Get("price") != "true" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
 
-	_, err := model.DoGenerate(context.TODO(), &provider.VideoModelV3CallOptions{
+		body, contentType := buildTestMultipartBody(
+			`{"id":"job-vid-123","state":{"current":"completed"},"config":{"seed":42}}`,
+			[]byte("video"),
+			"video/mp4",
+		)
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
+	seed := 42
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
 		Prompt:      "a cat running",
-		AspectRatio: "10:3", // invalid
+		AspectRatio: "10:3",
+		Resolution:  "1080p",
+		Seed:        &seed,
+		ProviderOptions: map[string]interface{}{
+			"prodia": map[string]interface{}{"resolution": "720p"},
+		},
 	})
-	if err == nil {
-		t.Fatal("expected error for invalid aspect ratio, got nil")
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+
+	config, ok := requestBody["config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("config = %#v", requestBody["config"])
+	}
+	if config["prompt"] != "a cat running" || config["seed"].(float64) != 42 || config["resolution"] != "720p" {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+	if _, ok := config["aspect_ratio"]; ok {
+		t.Fatalf("aspect_ratio should not be serialized: %#v", config)
 	}
 }
 
-// TestVideoModelI2VRejectsInvalidAspectRatio verifies that an invalid aspect
-// ratio returns an error for the img2vid path too.
-func TestVideoModelI2VRejectsInvalidAspectRatio(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, VideoModelWan22LightningImg2Vid)
-
-	_, err := model.DoGenerate(context.TODO(), &provider.VideoModelV3CallOptions{
-		Prompt:      "animate this",
-		AspectRatio: "bad",
-		Image: &provider.VideoModelV3File{
-			Type:      "file",
-			Data:      []byte{0x89, 0x50, 0x4E, 0x47},
-			MediaType: "image/png",
+func TestProdiaVideoModelPromptSetMatchesTypeScriptOptionalPrompt(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       provider.VideoModelV3CallOptions
+		wantPrompt *string
+	}{
+		{
+			name: "explicit empty prompt is serialized",
+			opts: provider.VideoModelV3CallOptions{
+				Prompt:    "",
+				PromptSet: true,
+			},
+			wantPrompt: prodiaStringPtr(""),
 		},
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid aspect ratio, got nil")
+		{
+			name:       "omitted prompt is not serialized",
+			opts:       provider.VideoModelV3CallOptions{},
+			wantPrompt: nil,
+		},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestBody map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/job" || r.URL.Query().Get("price") != "true" {
+					t.Fatalf("unexpected request: %s", r.URL.String())
+				}
+				if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+				body, contentType := buildTestMultipartBody(
+					`{"id":"job-vid-123","state":{"current":"completed"}}`,
+					[]byte("video"),
+					"video/mp4",
+				)
+				w.Header().Set("Content-Type", contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+
+			prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
+			if _, err := model.DoGenerate(context.Background(), &tt.opts); err != nil {
+				t.Fatalf("DoGenerate() error = %v", err)
+			}
+
+			config, ok := requestBody["config"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("config = %#v", requestBody["config"])
+			}
+			got, exists := config["prompt"]
+			if tt.wantPrompt == nil {
+				if exists {
+					t.Fatalf("prompt serialized unexpectedly: %#v", config)
+				}
+				return
+			}
+			if !exists || got != *tt.wantPrompt {
+				t.Fatalf("prompt = %#v (exists %v), want %q", got, exists, *tt.wantPrompt)
+			}
+		})
+	}
+}
+
+func TestProdiaVideoModelProviderErrorMatchesTypeScriptMessagePrecedence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req-error")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"Invalid prompt","detail":"Prompt cannot be empty"}`))
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, VideoModelWan22LightningTxt2Vid)
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt:    "",
+		PromptSet: true,
+	})
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %v, want ProviderError", err, err)
+	}
+	if providerErr.StatusCode != http.StatusBadRequest || providerErr.Message != "Prompt cannot be empty" {
+		t.Fatalf("provider error = %#v", providerErr)
+	}
+	if providerErr.ResponseHeaders["X-Request-Id"] != "req-error" {
+		t.Fatalf("response headers = %#v", providerErr.ResponseHeaders)
+	}
+	if providerErr.ResponseBody != `{"message":"Invalid prompt","detail":"Prompt cannot be empty"}` {
+		t.Fatalf("response body = %q", providerErr.ResponseBody)
+	}
+}
+
+func prodiaStringPtr(s string) *string {
+	return &s
 }

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 TS SDK parity — fully compatible with TS AI SDK v7 at `9e8753a26c`.
 May 2026 cycle: 7 PRDs (P1-4 through P2-3), 120+ tasks. Zero open parity gaps.
+June 21 2026 parity audit: TS commit range `19736eedbb..5415a858c1`
+is accounted for in `state/parity/jun_21_2026_audit.md`; implementation rows
+cover Gateway realtime/client secrets/Exa, MCP OAuth/SSE hardening, WorkflowAgent
+approval resume behavior, stable callback names, UI stream redaction, and
+provider updates for OpenAI, Anthropic, Azure, Vertex, Google, Fireworks,
+Bedrock, BFL, and Prodia.
 
 ### Breaking Changes
 
@@ -66,6 +72,16 @@ May 2026 cycle: 7 PRDs (P1-4 through P2-3), 120+ tasks. Zero open parity gaps.
 - **Model catalog sync** — ~26 previously missing provider models added
   (amazon/nova-*, arcee-ai, bytedance/seed-*, inception/mercury-*,
   interfaze, kwaipilot/kat-coder-*, meituan/longcat-*) (GAP-011)
+- **Realtime runtime client secrets** — `ExperimentalRealtime`,
+  `GetRealtimeToken`, and `MintRealtimeClientSecret` mirror the TS Gateway
+  realtime auth surface, including Gateway-origin `/v1/realtime/client-secrets`
+  requests and WebSocket protocol helpers.
+- **Exa Gateway tool** — `gateway/tools.NewExaSearch` and
+  `Provider.Tools.ExaSearch` serialize the provider-executed `gateway.exa_search`
+  tool shape with TS-compatible schema fields and explicit-zero option handling.
+- **Provider warnings and typed errors** — Gateway embedding/reranking warnings,
+  deprecated warnings on media surfaces, `GatewayForbiddenError`, and
+  `GatewayFailedDependencyError` match the June 21 TS provider behavior.
 
 #### New Provider: Voyage AI
 - **`pkg/providers/voyage/`** — embedding and reranking models; all 17 model ID
@@ -74,6 +90,10 @@ May 2026 cycle: 7 PRDs (P1-4 through P2-3), 120+ tasks. Zero open parity gaps.
 #### xAI Provider
 - **Image model**: `b64_json` response format, `Quality`, `User`, and
   `CostInUsdTicks` fields in both options and metadata (P2-2)
+- **Speech and transcription** — `SpeechModel` and `TranscriptionModel` now
+  implement the June 21 xAI `/v1/tts` and `/v1/stt` surfaces, including xAI
+  provider options, speech warnings, multipart transcription fields, timestamp
+  segments, and response metadata.
 
 #### Perplexity Provider
 - **Cost in `providerMetadata`** — `PerplexityMetadata.Cost` with

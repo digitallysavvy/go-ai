@@ -67,25 +67,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Prompt: "Hello",
 })
 
-if result.Usage.TotalTokens != nil && *result.Usage.TotalTokens > 0 {
-    fmt.Printf("Used %d tokens\n", *result.Usage.TotalTokens)
+if result.Usage.GetTotalTokens() > 0 {
+    fmt.Printf("Used %d tokens\n", result.Usage.GetTotalTokens())
 }
 ```
 
 ### Helper Pattern
 
-For cleaner code, create a helper function:
+For cleaner code, prefer the built-in getter methods when nil should behave like zero:
 
 ```go
-func getTokens(ptr *int64) int64 {
-    if ptr == nil {
-        return 0
-    }
-    return *ptr
-}
-
-// Usage
-tokens := getTokens(result.Usage.TotalTokens)
+tokens := result.Usage.GetTotalTokens()
 fmt.Printf("Used %d tokens\n", tokens)
 ```
 

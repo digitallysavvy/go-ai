@@ -77,8 +77,10 @@ stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Prompt: "Write a story...",
 })
 
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
     // Producer automatically slows down to match consumer
 }
 ```
@@ -139,9 +141,10 @@ Build autonomous agents with full control:
 agent := agents.New(agents.Config{
     Model:        model,
     Instructions: "You are a customer support agent.",
-    Tools: map[string]ai.Tool{
-        "searchDocs":    searchDocsToolgetUserInfo":     getUserInfoTool,
-        "createTicket":  createTicketTool,
+    Tools: []types.Tool{
+        searchDocsTool,
+        getUserInfoTool,
+        createTicketTool,
     },
     MaxSteps: 10,
 })

@@ -70,7 +70,7 @@ Models run on Cloudflare's global network for low latency:
 
 ```go
 // Automatic edge routing
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 // Runs on nearest Cloudflare datacenter
 ```
 
@@ -88,7 +88,7 @@ Deploy alongside Cloudflare Workers:
 
 ```go
 // In Workers code
-result, err := ai.GenerateText(model, userPrompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: userPrompt})
 // No egress charges
 ```
 
@@ -119,7 +119,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain edge computing")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain edge computing"})
     fmt.Println(result.Text)
 }
 ```

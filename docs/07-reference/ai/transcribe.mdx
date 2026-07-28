@@ -5,7 +5,7 @@ description: API reference for Transcribe
 
 # Transcribe
 
-Converts audio bytes to text using a transcription model.
+Converts audio to text using a transcription model.
 
 ## Signature
 
@@ -18,11 +18,16 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `Model` | `provider.TranscriptionModel` | Yes | Transcription model |
-| `Audio` | `[]byte` | Yes | Audio bytes |
-| `MimeType` | `string` | No | Audio MIME type |
-| `Language` | `string` | No | Requested language code |
-| `Timestamps` | `bool` | No | Whether to request timestamps |
+| `Audio` | `[]byte` | Yes* | Audio bytes |
+| `AudioBase64` | `string` | Yes* | Base64 or base64url audio data, matching TypeScript `DataContent` string input |
+| `AudioURL` | `string` | Yes* | Remote audio URL to download before transcription |
+| `MimeType` | `string` | No | Audio MIME type. When omitted, `Transcribe` detects it from the audio bytes and falls back to `audio/wav` |
+| `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options keyed by provider name |
 | `Headers` | `map[string]string` | No | Extra request headers |
+| `Download` | `ai.URLDownloadFunction` | No | Custom single-URL downloader for `AudioURL`; defaults to `CreateURLDownload(nil)` |
+| `MaxRetries` | `*int` | No | Maximum retries per transcription call. Defaults to 2; set to 0 to disable |
+
+*Provide one of `Audio`, `AudioBase64`, or `AudioURL`.
 
 ## TranscribeResult
 
@@ -30,13 +35,22 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 |---|---|---|
 | `Text` | `string` | Transcribed text |
 | `Segments` | `[]TranscriptionSegment` | Segment-level timing entries |
-| `Language` | `string` | Language value carried on the request/result |
+| `Language` | `string` | Detected language when returned by the provider |
 | `DurationInSeconds` | `*float64` | Optional duration (provider-dependent) |
-| `Timestamps` | `[]types.TranscriptionTimestamp` | Provider timestamp entries |
 | `Warnings` | `[]types.Warning` | Provider warnings (if exposed) |
-| `Responses` | `[]*types.ResponseMetadata` | Response metadata entries |
+| `Responses` | `[]ai.TranscriptionModelResponseMetadata` | Response metadata entries (`timestamp`, `modelId`, optional `headers`, optional `body`) |
 | `ProviderMetadata` | `map[string]interface{}` | Provider-specific metadata |
-| `Usage` | `types.TranscriptionUsage` | Usage metrics |
+
+## Deprecated Compatibility Aliases
+
+The TypeScript SDK still exports deprecated `experimental_transcribe` and
+`Experimental_TranscriptionResult` names. Go exposes equivalent migration
+aliases:
+
+```go
+func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error)
+type Experimental_TranscriptionResult = TranscribeResult
+```
 
 ## Example
 
@@ -53,4 +67,32 @@ if err != nil {
 }
 
 fmt.Println(result.Text)
+```
+
+## URL and Base64 Input
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:    transcriptionModel,
+    AudioURL: "https://example.com/audio.wav",
+})
+```
+
+```go
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:       transcriptionModel,
+    AudioBase64: "UklGRi...",
+})
+```
+
+## Errors
+
+When the provider response contains no transcript text, `Transcribe` returns a
+typed `NoTranscriptGeneratedError` with response metadata:
+
+```go
+result, err := ai.Transcribe(ctx, opts)
+if ai.IsNoTranscriptGeneratedError(err) {
+    // inspect err.(*ai.NoTranscriptGeneratedError).Responses if needed
+}
 ```

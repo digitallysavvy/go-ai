@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -136,6 +136,7 @@ func (m *TranscriptionModel) convertResponse(transcript assemblyAITranscript) *t
 
 	return &types.TranscriptionResult{
 		Text:       transcript.Text,
+		Segments:   timestamps,
 		Timestamps: timestamps,
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: float64(transcript.AudioDuration) / 1000.0,

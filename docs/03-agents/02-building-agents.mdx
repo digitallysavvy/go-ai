@@ -453,8 +453,8 @@ func main() {
 
         OnStepFinish: func(step types.StepResult) {
             fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
-            if step.Usage.TotalTokens != nil {
-                fmt.Printf("  Tokens used: %d\n", *step.Usage.TotalTokens)
+            if step.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("  Tokens used: %d\n", step.Usage.GetTotalTokens())
             }
         },
 
@@ -473,8 +473,8 @@ func main() {
 
         OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
-            if result.Usage.TotalTokens != nil {
-                fmt.Printf("Total tokens used: %d\n", *result.Usage.TotalTokens)
+            if result.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
             }
         },
     })
@@ -517,7 +517,7 @@ OnStepFinish: func(step types.StepResult) {
     log.Printf("[Step %d] Tool calls: %d, Tokens: %d",
         step.StepNumber,
         len(step.ToolCalls),
-        getTokens(step.Usage.TotalTokens))
+        getTokens(step.Usage.GetTotalTokens()))
 }
 ```
 
@@ -527,13 +527,13 @@ OnStepFinish: func(step types.StepResult) {
 totalTokens := int64(0)
 
 OnStepFinish: func(step types.StepResult) {
-    if step.Usage.TotalTokens != nil {
-        totalTokens += *step.Usage.TotalTokens
+    if step.Usage.GetTotalTokens() > 0 {
+        totalTokens += step.Usage.GetTotalTokens()
     }
 
     fmt.Printf("Step %d: %d tokens (total: %d)\n",
         step.StepNumber,
-        getTokens(step.Usage.TotalTokens),
+        getTokens(step.Usage.GetTotalTokens()),
         totalTokens)
 
     if totalTokens > 10000 {
@@ -816,8 +816,8 @@ func main() {
     if result.Usage.OutputTokens != nil {
         fmt.Printf("  Output tokens: %d\n", *result.Usage.OutputTokens)
     }
-    if result.Usage.TotalTokens != nil {
-        fmt.Printf("  Total tokens: %d\n", *result.Usage.TotalTokens)
+    if result.Usage.GetTotalTokens() > 0 {
+        fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
     }
 
     // Check finish reason
@@ -960,8 +960,8 @@ Guidelines:
 
         OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("\n[Agent] Completed in %d steps\n", len(result.Steps))
-            if result.Usage.TotalTokens != nil {
-                fmt.Printf("[Agent] Total tokens: %d\n", *result.Usage.TotalTokens)
+            if result.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("[Agent] Total tokens: %d\n", result.Usage.GetTotalTokens())
             }
         },
     })
@@ -982,8 +982,8 @@ Guidelines:
     fmt.Println("\n=== Agent Statistics ===")
     fmt.Printf("Steps: %d\n", len(result.Steps))
     fmt.Printf("Tools used: %d\n", len(result.ToolResults))
-    if result.Usage.TotalTokens != nil {
-        fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+    if result.Usage.GetTotalTokens() > 0 {
+        fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
     }
     fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }

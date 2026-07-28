@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -109,6 +109,7 @@ func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionRespo
 
 	return &types.TranscriptionResult{
 		Text:       transcript,
+		Segments:   timestamps,
 		Timestamps: timestamps,
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: response.Metadata.Duration,
@@ -125,7 +126,7 @@ type deepgramTranscriptionResponse struct {
 	Results struct {
 		Channels []struct {
 			Alternatives []struct {
-				Transcript string `json:"transcript"`
+				Transcript string  `json:"transcript"`
 				Confidence float64 `json:"confidence"`
 				Words      []struct {
 					Word       string  `json:"word"`

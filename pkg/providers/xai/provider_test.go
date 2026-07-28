@@ -55,12 +55,12 @@ func TestNormalizeBaseURLMatchesTypeScriptBaseURLShape(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"default", "", "https://api.x.ai"},
+		{"default", "", "https://api.x.ai/v1"},
 		{"root", "https://api.x.ai", "https://api.x.ai"},
 		{"root trailing slash", "https://api.x.ai/", "https://api.x.ai"},
-		{"typescript v1 base url", "https://api.x.ai/v1", "https://api.x.ai"},
-		{"typescript v1 base url trailing slash", "https://api.x.ai/v1/", "https://api.x.ai"},
-		{"custom v1 base url", "https://example.test/proxy/v1", "https://example.test/proxy"},
+		{"typescript v1 base url", "https://api.x.ai/v1", "https://api.x.ai/v1"},
+		{"typescript v1 base url trailing slash", "https://api.x.ai/v1/", "https://api.x.ai/v1"},
+		{"custom v1 base url", "https://example.test/proxy/v1", "https://example.test/proxy/v1"},
 	}
 
 	for _, tt := range tests {

@@ -277,22 +277,311 @@ func TestGenerateSpeechAndTranscribe_Basic(t *testing.T) {
 	if string(speech.Audio.Data) != "audio" {
 		t.Fatalf("audio = %q, want audio", string(speech.Audio.Data))
 	}
+	if len(speech.Responses) != 1 || speech.Responses[0].ModelID != speechModel.ModelID() || speech.Responses[0].Timestamp.IsZero() {
+		t.Fatalf("speech responses = %#v, want fallback model/timestamp metadata", speech.Responses)
+	}
 
 	transcribeModel := &testutil.MockTranscriptionModel{
 		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-			return &types.TranscriptionResult{Text: "hello world"}, nil
+			if opts.MimeType != "audio/wav" {
+				t.Fatalf("transcription media type = %q, want audio/wav", opts.MimeType)
+			}
+			if opts.Headers["user-agent"] != "go-ai/0.5.0" {
+				t.Fatalf("transcription user-agent = %q, want go-ai/0.5.0", opts.Headers["user-agent"])
+			}
+			if opts.ProviderOptions == nil || len(opts.ProviderOptions) != 0 {
+				t.Fatalf("provider options = %#v, want empty map", opts.ProviderOptions)
+			}
+			return &types.TranscriptionResult{
+				Text:     "hello world",
+				Warnings: []types.Warning{{Type: "other", Message: "Setting is not supported"}},
+				Response: &types.ResponseMetadata{
+					ModelID: "test-model-id",
+					Headers: map[string]string{
+						"X-Request-Id": "req-1",
+					},
+				},
+				ProviderMetadata: map[string]interface{}{
+					"test-provider": map[string]interface{}{"test-key": "test-value"},
+				},
+			}, nil
 		},
 	}
 	transcript, err := Transcribe(context.Background(), TranscribeOptions{
-		Model:    transcribeModel,
-		Audio:    []byte("audio"),
-		MimeType: "audio/mpeg",
+		Model: transcribeModel,
+		Audio: []byte("audio"),
 	})
 	if err != nil {
 		t.Fatalf("Transcribe() error = %v", err)
 	}
 	if transcript.Text != "hello world" {
 		t.Fatalf("text = %q, want hello world", transcript.Text)
+	}
+	if len(transcript.Responses) != 1 || transcript.Responses[0].Headers["X-Request-Id"] != "req-1" {
+		t.Fatalf("responses = %#v", transcript.Responses)
+	}
+	if len(transcript.Warnings) != 1 || transcript.Warnings[0].Message != "Setting is not supported" {
+		t.Fatalf("warnings = %#v", transcript.Warnings)
+	}
+	if transcript.ProviderMetadata["test-provider"] == nil {
+		t.Fatalf("provider metadata = %#v", transcript.ProviderMetadata)
+	}
+}
+
+func TestSpeechAndTranscribeDeprecatedExperimentalAliases(t *testing.T) {
+	speechModel := &testutil.MockSpeechModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+			if opts.Text != "hello" {
+				t.Fatalf("speech text = %q, want hello", opts.Text)
+			}
+			return &types.SpeechResult{Audio: []byte("audio")}, nil
+		},
+	}
+	speech, err := ExperimentalGenerateSpeech(context.Background(), GenerateSpeechOptions{
+		Model: speechModel,
+		Text:  "hello",
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalGenerateSpeech() error = %v", err)
+	}
+	var speechAlias *Experimental_SpeechResult = speech
+	var audioAlias GeneratedAudioFile = speechAlias.Audio
+	if string(audioAlias.Data) != "audio" {
+		t.Fatalf("audio = %q, want audio", string(audioAlias.Data))
+	}
+	if audioAlias.Format != "mp3" {
+		t.Fatalf("audio format = %q, want mp3", audioAlias.Format)
+	}
+	if audioAlias.Base64() != "YXVkaW8=" {
+		t.Fatalf("audio base64 = %q, want YXVkaW8=", audioAlias.Base64())
+	}
+	backingAudio := audioAlias.Uint8Array()
+	backingAudio[0] = 'A'
+	if string(audioAlias.Data) != "Audio" {
+		t.Fatalf("Uint8Array should return backing data like TypeScript: %q", string(audioAlias.Data))
+	}
+
+	transcribeModel := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			if opts.MimeType != "audio/wav" {
+				t.Fatalf("transcription media type = %q, want audio/wav", opts.MimeType)
+			}
+			return &types.TranscriptionResult{Text: "hello world"}, nil
+		},
+	}
+	transcript, err := ExperimentalTranscribe(context.Background(), TranscribeOptions{
+		Model: transcribeModel,
+		Audio: []byte("audio"),
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalTranscribe() error = %v", err)
+	}
+	var transcriptAlias *Experimental_TranscriptionResult = transcript
+	if transcriptAlias.Text != "hello world" {
+		t.Fatalf("text = %q, want hello world", transcriptAlias.Text)
+	}
+}
+
+func TestTranscribe_AudioURLCustomDownloadMatchesTypeScript(t *testing.T) {
+	audioBytes := []byte{
+		'R', 'I', 'F', 'F',
+		0x24, 0, 0, 0,
+		'W', 'A', 'V', 'E',
+	}
+	var downloadedURL string
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			if !bytes.Equal(opts.Audio, audioBytes) {
+				t.Fatalf("audio = %v, want downloaded bytes", opts.Audio)
+			}
+			if opts.MimeType != "audio/wav" {
+				t.Fatalf("media type = %q, want detected audio/wav", opts.MimeType)
+			}
+			if opts.Headers["user-agent"] != "custom-agent go-ai/0.5.0" {
+				t.Fatalf("user-agent = %q", opts.Headers["user-agent"])
+			}
+			return &types.TranscriptionResult{
+				Text:     "downloaded transcript",
+				Response: &types.ResponseMetadata{ModelID: "mock-transcription"},
+			}, nil
+		},
+	}
+
+	got, err := Transcribe(context.Background(), TranscribeOptions{
+		Model:    model,
+		AudioURL: "https://example.com/audio.wav",
+		Headers:  map[string]string{"User-Agent": "custom-agent"},
+		Download: func(ctx context.Context, rawURL string) ([]byte, error) {
+			downloadedURL = rawURL
+			return audioBytes, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Transcribe(AudioURL) error = %v", err)
+	}
+	if got.Text != "downloaded transcript" || downloadedURL != "https://example.com/audio.wav" {
+		t.Fatalf("result/downloadedURL = %#v/%q", got, downloadedURL)
+	}
+}
+
+func TestTranscribeAudioBase64AndMaxRetriesMatchTypeScript(t *testing.T) {
+	attempts := 0
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, &providererrors.ProviderError{
+					Provider:        "mock",
+					StatusCode:      429,
+					Message:         "temporary",
+					ResponseHeaders: map[string]string{"retry-after-ms": "0"},
+				}
+			}
+			if string(opts.Audio) != "audio" {
+				t.Fatalf("audio = %q, want decoded base64", string(opts.Audio))
+			}
+			if opts.MimeType != "audio/wav" {
+				t.Fatalf("media type = %q, want fallback audio/wav", opts.MimeType)
+			}
+			return &types.TranscriptionResult{
+				Text:     "decoded transcript",
+				Response: &types.ResponseMetadata{ModelID: "mock-transcription"},
+			}, nil
+		},
+	}
+	maxRetries := 1
+
+	got, err := Transcribe(context.Background(), TranscribeOptions{
+		Model:       model,
+		AudioBase64: "YXVkaW8",
+		MaxRetries:  &maxRetries,
+	})
+	if err != nil {
+		t.Fatalf("Transcribe(AudioBase64) error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got.Text != "decoded transcript" {
+		t.Fatalf("text = %q, want decoded transcript", got.Text)
+	}
+}
+
+func TestTranscribeInvalidAudioBase64AndNegativeMaxRetries(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{}
+
+	_, err := Transcribe(context.Background(), TranscribeOptions{
+		Model:       model,
+		AudioBase64: "not base64!!!",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid base64 audio data") {
+		t.Fatalf("invalid base64 error = %v", err)
+	}
+
+	maxRetries := -1
+	_, err = Transcribe(context.Background(), TranscribeOptions{
+		Model:      model,
+		Audio:      []byte("audio"),
+		MaxRetries: &maxRetries,
+	})
+	if err == nil || !strings.Contains(err.Error(), "maxRetries must be >= 0") {
+		t.Fatalf("negative maxRetries error = %v", err)
+	}
+}
+
+func TestTranscribeNoTranscriptGeneratedErrorWithResponses(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			return &types.TranscriptionResult{
+				Text: "",
+				Response: &types.ResponseMetadata{
+					ModelID: "test-model-id",
+					Headers: map[string]string{
+						"custom-response-header": "response-header-value",
+					},
+				},
+			}, nil
+		},
+	}
+
+	_, err := Transcribe(context.Background(), TranscribeOptions{
+		Model: model,
+		Audio: []byte("audio"),
+	})
+	var noTranscript *NoTranscriptGeneratedError
+	if !errors.As(err, &noTranscript) {
+		t.Fatalf("Transcribe error = %T %v, want NoTranscriptGeneratedError", err, err)
+	}
+	if noTranscript.Error() != "No transcript generated." {
+		t.Fatalf("error message = %q", noTranscript.Error())
+	}
+	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].Headers["custom-response-header"] != "response-header-value" {
+		t.Fatalf("responses = %#v", noTranscript.Responses)
+	}
+
+	fallbackModel := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			return &types.TranscriptionResult{Text: ""}, nil
+		},
+	}
+	_, err = Transcribe(context.Background(), TranscribeOptions{
+		Model: fallbackModel,
+		Audio: []byte("audio"),
+	})
+	if !errors.As(err, &noTranscript) {
+		t.Fatalf("Transcribe fallback error = %T %v, want NoTranscriptGeneratedError", err, err)
+	}
+	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].ModelID != fallbackModel.ModelID() || noTranscript.Responses[0].Timestamp.IsZero() {
+		t.Fatalf("fallback responses = %#v, want model/timestamp metadata", noTranscript.Responses)
+	}
+}
+
+func TestTranscribeResultJSONShapeMatchesTypeScript(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			return &types.TranscriptionResult{
+				Text: "hello",
+				Segments: []types.TranscriptionTimestamp{{
+					Text:  "hello",
+					Start: 0,
+					End:   1,
+				}},
+				Timestamps: []types.TranscriptionTimestamp{{
+					Text:  "provider-only timestamp",
+					Start: 2,
+					End:   3,
+				}},
+				Usage: types.TranscriptionUsage{DurationSeconds: 3},
+				Response: &types.ResponseMetadata{
+					ID:      "provider-only-id",
+					ModelID: "test-model-id",
+					Body:    []byte(`{"provider":true}`),
+				},
+			}, nil
+		},
+	}
+
+	result, err := Transcribe(context.Background(), TranscribeOptions{
+		Model: model,
+		Audio: []byte("audio"),
+	})
+	if err != nil {
+		t.Fatalf("Transcribe error = %v", err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	s := string(encoded)
+	for _, absent := range []string{`"usage"`, `"timestamps"`, `"id"`} {
+		if strings.Contains(s, absent) {
+			t.Fatalf("result JSON = %s, must not include %s", s, absent)
+		}
+	}
+	for _, present := range []string{`"text"`, `"segments"`, `"responses"`, `"providerMetadata"`, `"body"`} {
+		if !strings.Contains(s, present) {
+			t.Fatalf("result JSON = %s, missing %s", s, present)
+		}
 	}
 }
 

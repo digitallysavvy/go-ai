@@ -176,12 +176,15 @@ Gemini Live Translate configuration can be passed through `ProviderOptions["goog
 For the Gemini API, pass `serviceTier` in Google provider options:
 
 ```go
-result, err := ai.GenerateText(model, "hello",
-    ai.WithProviderOptions(map[string]interface{}{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "hello",
+    ProviderOptions: map[string]interface{}{
         "google": map[string]interface{}{
             "serviceTier": "priority",
         },
-    }))
+    },
+})
 ```
 
 ### Massive Context Windows
@@ -192,8 +195,10 @@ Gemini supports up to 2M tokens of context:
 // Process entire codebases or books
 hugeDocument := loadDocument("book.txt") // up to 2M tokens
 
-result, err := ai.GenerateText(model,
-    fmt.Sprintf("Summarize this book:\n\n%s", hugeDocument))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: fmt.Sprintf("Summarize this book:\n\n%s", hugeDocument),
+})
 ```
 
 ### Multimodal Capabilities
@@ -202,32 +207,59 @@ Gemini excels at processing text, images, video, and audio together:
 
 ```go
 // Image understanding
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Describe this image in detail",
-            ai.WithImageURL("https://example.com/photo.jpg"),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe this image in detail"},
+                types.FileContent{
+                    URL:       "https://example.com/photo.jpg",
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
 
 // Multiple images
-result, err = ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Compare these images",
-            ai.WithImageURL("https://example.com/before.jpg"),
-            ai.WithImageURL("https://example.com/after.jpg"),
-        ),
-    ),
-)
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Compare these images"},
+                types.FileContent{
+                    URL:       "https://example.com/before.jpg",
+                    MediaType: "image/jpeg",
+                },
+                types.FileContent{
+                    URL:       "https://example.com/after.jpg",
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
 
 // Video understanding
-result, err = ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("What happens in this video?",
-            ai.WithVideoURL("https://example.com/video.mp4"),
-        ),
-    ),
-)
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What happens in this video?"},
+                types.FileContent{
+                    URL:       "https://example.com/video.mp4",
+                    MediaType: "video/mp4",
+                },
+            },
+        },
+    },
+})
 ```
 
 ### Function Calling
@@ -235,35 +267,33 @@ result, err = ai.GenerateText(model,
 Gemini supports sophisticated function calling:
 
 ```go
-weatherTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "get_weather",
-        Description: "Get current weather for a location",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "location": map[string]interface{}{
-                    "type":        "string",
-                    "description": "City and country",
-                },
-                "unit": map[string]interface{}{
-                    "type": "string",
-                    "enum": []string{"celsius", "fahrenheit"},
-                },
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{
+                "type":        "string",
+                "description": "City and country",
             },
-            "required": []string{"location"},
+            "unit": map[string]interface{}{
+                "type": "string",
+                "enum": []string{"celsius", "fahrenheit"},
+            },
         },
+        "required": []string{"location"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What's the weather in Tokyo?",
-    ai.WithTools(weatherTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Tokyo?",
+    Tools:  []types.Tool{weatherTool},
+})
 
 for _, call := range result.ToolCalls {
-    fmt.Printf("Function: %s\nArgs: %v\n", call.Function.Name, call.Function.Arguments)
+    fmt.Printf("Function: %s\nArgs: %v\n", call.ToolName, call.Arguments)
 }
 ```
 
@@ -320,16 +350,15 @@ Interactions responses preserve ordered text, reasoning, files, sources, and too
 Connect Gemini to real-time web information:
 
 ```go
-result, err := ai.GenerateText(model,
-    "What are the latest developments in quantum computing?",
-    ai.WithGrounding(ai.Grounding{
-        GoogleSearch: true,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What are the latest developments in quantum computing?",
+    Tools:  []types.Tool{google.GoogleSearchTool()},
+})
 
 // Response includes citations
-for _, citation := range result.Citations {
-    fmt.Printf("Source: %s\n", citation.URL)
+for _, source := range result.Sources {
+    fmt.Printf("Source: %s\n", source.URL)
 }
 ```
 
@@ -352,8 +381,11 @@ schema := map[string]interface{}{
     "required": []string{"title", "author", "year"},
 }
 
-result, err := ai.GenerateObject(model, schema,
-    "Extract book metadata: '1984 by George Orwell, published 1949'")
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: schema,
+    Prompt: "Extract book metadata: '1984 by George Orwell, published 1949'",
+})
 ```
 
 ### Streaming
@@ -361,14 +393,17 @@ result, err := ai.GenerateObject(model, schema,
 Real-time response streaming:
 
 ```go
-stream, err := ai.StreamText(model, "Write a long story")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long story",
+})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -379,8 +414,10 @@ Gemini 2.0 Flash Thinking uses extended reasoning:
 ```go
 model, err := googleProvider.LanguageModel(google.ModelGemini20FlashThinkingExp)
 
-result, err := ai.GenerateText(model,
-    "Solve this logic puzzle: Three friends...")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this logic puzzle: Three friends...",
+})
 
 // Reasoning content is preserved in ordered content parts when returned.
 for _, part := range result.Content {
@@ -423,14 +460,16 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain machine learning in simple terms")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain machine learning in simple terms",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     fmt.Println(result.Text)
-    fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Tokens: %d\n", result.Usage.GetTotalTokens())
 }
 ```
 
@@ -442,16 +481,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Analyze this chart and extract key insights",
-            ai.WithImageData(
-                base64.StdEncoding.EncodeToString(imageData),
-                "image/png",
-            ),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Analyze this chart and extract key insights"},
+                types.FileContent{
+                    Data:      imageData,
+                    MediaType: "image/png",
+                },
+            },
+        },
+    },
+})
 
 fmt.Println(result.Text)
 ```
@@ -465,16 +509,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Describe what happens in this video",
-            ai.WithVideoData(
-                base64.StdEncoding.EncodeToString(videoData),
-                "video/mp4",
-            ),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe what happens in this video"},
+                types.FileContent{
+                    Data:      videoData,
+                    MediaType: "video/mp4",
+                },
+            },
+        },
+    },
+})
 
 fmt.Println(result.Text)
 ```
@@ -490,25 +539,26 @@ docs := []string{
 }
 combined := strings.Join(docs, "\n\n---\n\n")
 
-result, err := ai.GenerateText(model,
-    fmt.Sprintf("Analyze these documents and identify common themes:\n\n%s", combined))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: fmt.Sprintf("Analyze these documents and identify common themes:\n\n%s", combined),
+})
 ```
 
 ### Grounded Search Responses
 
 ```go
-result, err := ai.GenerateText(model,
-    "What are the current COVID-19 vaccination rates in major countries?",
-    ai.WithGrounding(ai.Grounding{
-        GoogleSearch: true,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What are the current COVID-19 vaccination rates in major countries?",
+    Tools:  []types.Tool{google.GoogleSearchTool()},
+})
 
 fmt.Println("Answer:", result.Text)
 
 fmt.Println("\nSources:")
-for _, citation := range result.Citations {
-    fmt.Printf("- %s: %s\n", citation.Title, citation.URL)
+for _, source := range result.Sources {
+    fmt.Printf("- %s: %s\n", source.Title, source.URL)
 }
 ```
 
@@ -562,17 +612,38 @@ if err != nil {
 ### Multi-Turn Conversation
 
 ```go
-messages := []ai.Message{
-    ai.UserMessage("What is the capital of France?"),
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What is the capital of France?"},
+        },
+    },
 }
 
-result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
 messages = append(messages,
-    ai.AssistantMessage(result.Text),
-    ai.UserMessage("What's the population?"),
+    types.Message{
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: result.Text},
+        },
+    },
+    types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What's the population?"},
+        },
+    },
 )
 
-result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
 ```
 
 ### Image Generation
@@ -581,7 +652,7 @@ Google supports both **Imagen** and **Gemini** models for text-to-image generati
 
 ```go
 // Imagen 4.0 - High quality image generation
-imageModel, err := provider.ImageModel("imagen-4.0-generate-001")
+imageModel, err := googleProvider.ImageModel("imagen-4.0-generate-001")
 if err != nil {
     log.Fatal(err)
 }
@@ -598,14 +669,14 @@ if err != nil {
 }
 
 // Save the image
-err = os.WriteFile("imagen_output.png", result.Image, 0644)
+err = os.WriteFile("imagen_output.png", result.Images[0].Data, 0644)
 ```
 
 **Gemini Image Models** offer fast generation:
 
 ```go
 // Gemini 2.5 Flash - Fast image generation
-geminiImageModel, err := provider.ImageModel("gemini-2.5-flash-image")
+geminiImageModel, err := googleProvider.ImageModel("gemini-2.5-flash-image")
 if err != nil {
     log.Fatal(err)
 }
@@ -619,8 +690,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Image generated: %d bytes\n", len(result.Image))
-os.WriteFile("gemini_output.png", result.Image, 0644)
+fmt.Printf("Image generated: %d bytes\n", len(result.Images[0].Data))
+os.WriteFile("gemini_output.png", result.Images[0].Data, 0644)
 ```
 
 **Supported Aspect Ratios:**
@@ -662,25 +733,37 @@ googleProvider := google.New(google.Config{
 ### Safety Settings
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithSafetySettings(ai.SafetySettings{
-        HarmCategoryHateSpeech:          ai.BlockLowAndAbove,
-        HarmCategoryDangerousContent:    ai.BlockMediumAndAbove,
-        HarmCategorySexuallyExplicit:    ai.BlockMediumAndAbove,
-        HarmCategoryHarassment:          ai.BlockMediumAndAbove,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "safetySettings": []map[string]string{
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_LOW_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            },
+        },
+    },
+})
 ```
 
 ### Generation Config
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithTemperature(0.9),
-    ai.WithTopP(0.95),
-    ai.WithTopK(40),
-    ai.WithMaxTokens(2048),
-)
+temperature := 0.9
+topP := 0.95
+topK := 40
+maxTokens := 2048
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      prompt,
+    Temperature: &temperature,
+    TopP:        &topP,
+    TopK:        &topK,
+    MaxTokens:   &maxTokens,
+})
 ```
 
 ## Error Handling
@@ -688,12 +771,16 @@ result, err := ai.GenerateText(model, prompt,
 ### Common Errors
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if googleErr, ok := err.(*google.Error); ok {
-        switch googleErr.Code {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch providerErr.StatusCode {
         case 400:
-            log.Printf("Invalid request: %s", googleErr.Message)
+            log.Printf("Invalid request: %s", providerErr.Message)
         case 401:
             log.Fatal("Invalid API key")
         case 403:
@@ -707,7 +794,7 @@ if err != nil {
             log.Println("Service error, retrying...")
             time.Sleep(time.Second * 10)
         default:
-            log.Printf("Google AI error: %d - %s", googleErr.Code, googleErr.Message)
+            log.Printf("Google AI error: %d - %s", providerErr.StatusCode, providerErr.Message)
         }
     }
     return nil, err
@@ -717,10 +804,14 @@ if err != nil {
 ### Content Filtering
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if googleErr, ok := err.(*google.Error); ok {
-        if googleErr.Code == 400 && strings.Contains(googleErr.Message, "SAFETY") {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        if providerErr.StatusCode == 400 && strings.Contains(providerErr.Message, "SAFETY") {
             log.Println("Content blocked by safety filters")
             // Try with adjusted safety settings
         }

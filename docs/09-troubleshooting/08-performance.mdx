@@ -71,12 +71,12 @@ func useStreaming() {
     firstChunkTime := time.Duration(0)
     chunkCount := 0
 
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         if chunkCount == 0 {
             firstChunkTime = time.Since(start)
             fmt.Printf("Time to first chunk: %v\n", firstChunkTime)
         }
-        fmt.Print(chunk)
+        fmt.Print(chunk.Text)
         chunkCount++
     }
 

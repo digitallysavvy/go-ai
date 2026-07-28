@@ -21,17 +21,45 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 | `Text` | `string` | Yes | Input text |
 | `Voice` | `string` | No | Voice identifier |
 | `Speed` | `*float64` | No | Speech speed |
+| `OutputFormat` | `string` | No | Desired audio format, such as `mp3` or `wav` |
+| `Instructions` | `string` | No | Provider-dependent delivery instructions |
+| `Language` | `string` | No | Speech language code or provider-supported automatic language mode |
+| `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options keyed by provider name |
 | `Headers` | `map[string]string` | No | Extra request headers |
+| `MaxRetries` | `*int` | No | Maximum retries per speech call. Defaults to 2; set to 0 to disable |
 
 ## GenerateSpeechResult
 
 | Field | Type | Description |
 |---|---|---|
-| `Audio` | `types.GeneratedFile` | Generated audio file payload |
+| `Audio` | `ai.GeneratedAudioFile` | Generated audio file payload |
 | `Warnings` | `[]types.Warning` | Provider warnings (if exposed) |
-| `Responses` | `[]*types.ResponseMetadata` | Response metadata entries |
+| `Responses` | `[]ai.SpeechModelResponseMetadata` | Response metadata entries (`timestamp`, `modelId`, optional `headers`, optional `body`) |
 | `ProviderMetadata` | `map[string]interface{}` | Provider-specific metadata |
-| `Usage` | `types.SpeechUsage` | Speech usage metrics |
+
+## GeneratedAudioFile
+
+```go
+type GeneratedAudioFile struct {
+    Data      []byte `json:"data,omitempty"`
+    URL       string `json:"url,omitempty"`
+    MediaType string `json:"mediaType"`
+    Format    string `json:"format"`
+}
+
+func (f GeneratedAudioFile) Base64() string
+func (f GeneratedAudioFile) Uint8Array() []byte
+```
+
+## Deprecated Compatibility Aliases
+
+The TypeScript SDK still exports deprecated `experimental_generateSpeech` and
+`Experimental_SpeechResult` names. Go exposes equivalent migration aliases:
+
+```go
+func ExperimentalGenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error)
+type Experimental_SpeechResult = GenerateSpeechResult
+```
 
 ## Example
 

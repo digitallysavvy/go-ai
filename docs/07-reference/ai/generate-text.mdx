@@ -102,7 +102,7 @@ func main() {
     }
 
     fmt.Println(result.Text)
-    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 }
 ```
 
