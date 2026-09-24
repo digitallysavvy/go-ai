@@ -73,6 +73,12 @@ type OAuthDiscoveryOptions struct {
 	ResourceMetadataURL            string
 	HTTPClient                     *http.Client
 	ValidateAuthorizationServerURL func(serverURL string, authorizationServerURL string) error
+
+	// TrustedOrigin is a developer-configured origin whose discovery hops skip
+	// the SSRF guard in DiscoverAuthorizationServerMetadata (TS trustedOrigin).
+	// It must never be derived from response data. See
+	// TrustedOAuthAuthorizationServerOrigin.
+	TrustedOrigin string
 }
 
 // CreateOAuthAuthorizationServerInformation creates the credential pin used by
@@ -120,6 +126,14 @@ func SelectOAuthAuthorizationServerURL(ctx context.Context, serverURL string, op
 		}
 	} else if !strings.Contains(err.Error(), "Resource server does not implement OAuth 2.0 Protected Resource Metadata.") {
 		return "", nil, err
+	}
+	// An authorization server selected by response metadata is untrusted until
+	// its target has passed the SSRF guard. A same-origin (or loopback-to-
+	// loopback) server is already the developer-configured request target.
+	if TrustedOAuthAuthorizationServerOrigin(serverURL, authServerURL) == "" {
+		if err := assertSafeOAuthEndpoint(authServerURL, false); err != nil {
+			return "", nil, err
+		}
 	}
 	if opts.ValidateAuthorizationServerURL != nil {
 		if err := opts.ValidateAuthorizationServerURL(serverURL, authServerURL); err != nil {
@@ -188,9 +202,6 @@ func ExtractResourceMetadataURL(resp *http.Response) (*url.URL, bool) {
 // metadata using the same path-aware well-known and root fallback as TS.
 func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL string, opts OAuthDiscoveryOptions) (OAuthProtectedResourceMetadata, error) {
 	client := opts.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
 		protocolVersion = ProtocolVersion
@@ -199,7 +210,13 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
-	resp, err := oauthMetadataGET(ctx, client, metadataURL, protocolVersion)
+	// The configured MCP server is trusted as a request target. Redirects
+	// crossing its origin are still validated before they are followed.
+	trustedOrigin := ""
+	if server, err := url.Parse(serverURL); err == nil && server.Scheme != "" && server.Host != "" {
+		trustedOrigin = origin(server)
+	}
+	resp, err := oauthMetadataGET(ctx, client, metadataURL, protocolVersion, trustedOrigin)
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
@@ -209,7 +226,7 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 		if err != nil {
 			return OAuthProtectedResourceMetadata{}, err
 		}
-		resp, err = oauthMetadataGET(ctx, client, rootURL.ResolveReference(&url.URL{Path: "/.well-known/oauth-protected-resource"}).String(), protocolVersion)
+		resp, err = oauthMetadataGET(ctx, client, rootURL.ResolveReference(&url.URL{Path: "/.well-known/oauth-protected-resource"}).String(), protocolVersion, trustedOrigin)
 		if err != nil {
 			return OAuthProtectedResourceMetadata{}, err
 		}
@@ -261,9 +278,6 @@ func BuildAuthorizationServerDiscoveryURLs(authorizationServerURL string) ([]OAu
 // metadata and validates the issuer against the discovery URL, matching TS.
 func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServerURL string, opts OAuthDiscoveryOptions) (*OAuthAuthorizationServerMetadata, error) {
 	client := opts.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
 		protocolVersion = ProtocolVersion
@@ -273,7 +287,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		return nil, err
 	}
 	for _, candidate := range urls {
-		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion)
+		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion, opts.TrustedOrigin)
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +314,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		if err := validateOAuthAuthorizationServerMetadata(metadata, candidate.Type); err != nil {
 			return nil, err
 		}
-		if metadata.Issuer != candidate.ExpectedIssuer {
+		if !oauthIssuerMatches(metadata.Issuer, candidate.ExpectedIssuer) {
 			return nil, NewMCPClientError(0, fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer), nil)
 		}
 		if candidate.Type == "oidc" && !containsOAuthString(metadata.CodeChallengeMethodsSupported, "S256") {
@@ -328,13 +342,17 @@ func protectedResourceMetadataURL(serverURL, explicit string) (string, error) {
 	return server.String(), nil
 }
 
-func oauthMetadataGET(ctx context.Context, client *http.Client, endpoint, protocolVersion string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
+// oauthIssuerMatches accepts an exact issuer match, or a trailing slash on an
+// origin-only expected issuer (TS assertMetadataIssuerMatches, 809e922).
+func oauthIssuerMatches(issuer, expected string) bool {
+	if issuer == expected {
+		return true
 	}
-	req.Header.Set("MCP-Protocol-Version", protocolVersion)
-	return client.Do(req)
+	parsed, err := url.Parse(expected)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return expected == origin(parsed) && issuer == expected+"/"
 }
 
 func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string) bool {
@@ -418,9 +436,6 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	}
 	if len(metadata.ResponseTypesSupported) == 0 {
 		return fmt.Errorf("OAuth authorization server metadata missing required response_types_supported")
-	}
-	if len(metadata.CodeChallengeMethodsSupported) == 0 {
-		return fmt.Errorf("OAuth authorization server metadata missing required code_challenge_methods_supported")
 	}
 	if metadata.RegistrationEndpoint != "" {
 		if !isAbsoluteOAuthURL(metadata.RegistrationEndpoint) {
