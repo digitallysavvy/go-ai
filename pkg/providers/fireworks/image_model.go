@@ -5,11 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -187,28 +188,32 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 
 // downloadImage fetches the image binary from the given URL and returns an ImageResult
 // with the raw bytes and MIME type, matching the TypeScript reference implementation.
+//
+// imageURL comes from the provider response body, so (TS getFromApi with
+// validateUrl, credentialedOrigin and trustedOrigin set to the base URL):
+// foreign-origin URLs and redirect hops are SSRF-validated and DNS-pinned, and
+// provider credentials are only sent when the URL is same-origin with the
+// configured base URL (never to a CDN or an attacker-named host).
 func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types.ImageResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("LFireworks failed to create download request: %w", err)
+	baseURL := m.baseURL()
+	var trustedTransport http.RoundTripper
+	if c := m.provider.client.HTTPClient(); c != nil {
+		trustedTransport = c.Transport
+	}
+	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
+	if fileutil.IsSameOrigin(imageURL, baseURL) {
+		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
+			"Authorization": "Bearer " + m.provider.config.APIKey,
+		}, m.provider.config.Headers)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	downloaded, err := fileutil.DownloadWithMetadata(ctx, imageURL, dlOpts)
 	if err != nil {
 		return nil, fmt.Errorf("LFireworks failed to download image: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	data := downloaded.Data
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LFireworks image download returned status %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("LFireworks failed to read image data: %w", err)
-	}
-
-	mimeType := resp.Header.Get("Content-Type")
+	mimeType := downloaded.ContentType
 	if mimeType == "" {
 		mimeType = "image/png"
 	}
@@ -221,6 +226,14 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types
 		Image:    data,
 		MimeType: mimeType,
 	}, nil
+}
+
+// baseURL returns the developer-configured API base URL.
+func (m *ImageModel) baseURL() string {
+	if m.provider.config.BaseURL != "" {
+		return m.provider.config.BaseURL
+	}
+	return "https://api.fireworks.ai/inference"
 }
 
 // buildAsyncWarnings returns warnings for unsupported options on flux-kontext models,
