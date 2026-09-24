@@ -745,9 +745,12 @@ func TestToAnthropicMessagesProviderExecutedWebSearchResult(t *testing.T) {
 	}
 }
 
+// A locally executed tool that happens to be named web_search is replayed in a
+// tool message and must stay a generic tool_result (TS: only assistant-role
+// tool results are provider-executed results).
 func TestToAnthropicMessagesLocalWebSearchToolResultStaysGeneric(t *testing.T) {
 	msgs := []types.Message{{
-		Role: types.RoleAssistant,
+		Role: types.RoleTool,
 		Content: []types.ContentPart{
 			types.ToolResultContent{
 				ToolCallID: "call_search",

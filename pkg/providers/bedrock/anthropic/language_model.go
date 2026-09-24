@@ -59,6 +59,9 @@ func (m *BedrockAnthropicLanguageModel) SupportsImageInput() bool {
 // DoGenerate performs non-streaming text generation
 func (m *BedrockAnthropicLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
+	if _, err := m.convertPrompt(opts); err != nil {
+		return nil, err
+	}
 	reqBody := m.buildRequestBody(opts, false)
 
 	// Build URL
@@ -118,6 +121,9 @@ func (m *BedrockAnthropicLanguageModel) DoGenerate(ctx context.Context, opts *pr
 // DoStream performs streaming text generation
 func (m *BedrockAnthropicLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming
+	if _, err := m.convertPrompt(opts); err != nil {
+		return nil, err
+	}
 	reqBody := m.buildRequestBody(opts, true)
 
 	// Build streaming URL
@@ -166,27 +172,40 @@ func (m *BedrockAnthropicLanguageModel) DoStream(ctx context.Context, opts *prov
 	return newBedrockAnthropicStream(sseReader, resp.Body), nil
 }
 
+// convertPrompt converts the prompt messages with the shared Anthropic prompt
+// converter (TS convertToAnthropicPrompt).
+func (m *BedrockAnthropicLanguageModel) convertPrompt(opts *provider.GenerateOptions) (*prompt.AnthropicPrompt, error) {
+	var msgs []types.Message
+	if opts.Prompt.IsMessages() {
+		msgs = opts.Prompt.Messages
+	} else if opts.Prompt.IsSimple() {
+		msgs = prompt.SimpleTextToMessages(opts.Prompt.Text)
+	}
+	return prompt.ConvertToAnthropicPrompt(msgs, prompt.AnthropicPromptOptions{
+		ToolsetNames: prompt.AnthropicToolsetNames(opts.Tools),
+	})
+}
+
 // buildRequestBody builds the request body for Bedrock Anthropic API
 func (m *BedrockAnthropicLanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
 		"anthropic_version": AnthropicVersion,
 	}
 
-	// Convert messages (Anthropic format)
-	if opts.Prompt.IsMessages() {
-		messages := prompt.ToAnthropicMessages(opts.Prompt.Messages)
+	// Convert messages (Anthropic format). Conversion errors are surfaced by
+	// DoGenerate/DoStream before the body is built.
+	converted, _ := m.convertPrompt(opts)
+	if converted != nil {
+		messages := converted.Messages
 		// Insert cache points in messages if configured
 		if m.provider.cacheConfig != nil && len(m.provider.cacheConfig.CacheMessageIndices) > 0 {
 			messages = m.insertMessageCachePoints(messages, m.provider.cacheConfig)
 		}
 		body["messages"] = messages
-	} else if opts.Prompt.IsSimple() {
-		messages := prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
-		// Insert cache points in messages if configured
-		if m.provider.cacheConfig != nil && len(m.provider.cacheConfig.CacheMessageIndices) > 0 {
-			messages = m.insertMessageCachePoints(messages, m.provider.cacheConfig)
+		// System messages inside the prompt become Anthropic system blocks.
+		if opts.Prompt.System == "" && converted.System != nil {
+			body["system"] = converted.System
 		}
-		body["messages"] = messages
 	}
 
 	// Add system message separately (Anthropic requires this)
