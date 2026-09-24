@@ -128,8 +128,8 @@ func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[str
 			},
 		},
 		"rerankingConfiguration": map[string]interface{}{
-			"type":                                "BEDROCK_RERANKING_MODEL",
-			"amazonBedrockRerankingConfiguration": amazonConfig,
+			"type":                          "BEDROCK_RERANKING_MODEL",
+			"bedrockRerankingConfiguration": amazonConfig,
 		},
 		"sources": sources,
 	}

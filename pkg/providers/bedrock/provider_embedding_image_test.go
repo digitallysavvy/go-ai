@@ -110,7 +110,7 @@ func TestBedrockRerankingModelDoRerank(t *testing.T) {
 			if config["type"] != "BEDROCK_RERANKING_MODEL" {
 				t.Fatalf("reranking type mismatch: %#v", config)
 			}
-			amazonConfig := config["amazonBedrockRerankingConfiguration"].(map[string]interface{})
+			amazonConfig := config["bedrockRerankingConfiguration"].(map[string]interface{})
 			if amazonConfig["numberOfResults"] != float64(1) {
 				t.Fatalf("numberOfResults mismatch: %#v", amazonConfig)
 			}
@@ -223,7 +223,12 @@ func TestBedrockRerankingOptionsPreferAmazonBedrockNamespace(t *testing.T) {
 		t.Fatalf("empty nextToken should be serialized when explicitly provided: %#v", body)
 	}
 	config := body["rerankingConfiguration"].(map[string]interface{})
-	amazonConfig := config["amazonBedrockRerankingConfiguration"].(map[string]interface{})
+	// TS: 'should send the AWS-required `bedrockRerankingConfiguration` wire key'.
+	// The Bedrock Agent Runtime Rerank API rejects any other member name.
+	if _, ok := config["amazonBedrockRerankingConfiguration"]; ok {
+		t.Fatalf("wrong wire key amazonBedrockRerankingConfiguration sent: %#v", config)
+	}
+	amazonConfig := config["bedrockRerankingConfiguration"].(map[string]interface{})
 	modelConfig := amazonConfig["modelConfiguration"].(map[string]interface{})
 	if additional, ok := modelConfig["additionalModelRequestFields"].(map[string]interface{}); !ok || len(additional) != 0 {
 		t.Fatalf("empty additionalModelRequestFields should be serialized when explicitly provided: %#v", body)
