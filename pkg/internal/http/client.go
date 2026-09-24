@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 )
 
 // DefaultHTTPClient is a shared HTTP client with sensible defaults
@@ -26,6 +28,8 @@ type Client struct {
 	client  *http.Client
 	baseURL string
 	headers map[string]string
+
+	maxBodyBytes int64
 }
 
 // Config contains configuration for an HTTP client
@@ -42,6 +46,10 @@ type Config struct {
 	// HTTPClient is the underlying HTTP client to use
 	// If nil, DefaultHTTPClient will be used
 	HTTPClient *http.Client
+
+	// MaxResponseBytes bounds buffered response body reads. Zero uses
+	// fileutil.DefaultMaxDownloadSize (2 GiB), the TS response-handler limit.
+	MaxResponseBytes int64
 }
 
 // MergeHeaders returns a new map containing each header map in order. Later
@@ -79,7 +87,16 @@ func NewClient(cfg Config) *Client {
 		client:  client,
 		baseURL: cfg.BaseURL,
 		headers: cfg.Headers,
+
+		maxBodyBytes: cfg.MaxResponseBytes,
 	}
+}
+
+func (c *Client) maxResponseBytes() int64 {
+	if c.maxBodyBytes > 0 {
+		return c.maxBodyBytes
+	}
+	return fileutil.DefaultMaxDownloadSize
 }
 
 // HTTPClient returns the underlying HTTP client. It is intended for provider
@@ -181,10 +198,12 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
-	// Read response body
-	respBody, err := io.ReadAll(httpResp.Body)
+	// Read response body with the TS size limit (response-handler.ts
+	// readResponseBodyAsText → readResponseWithSizeLimit, 2 GiB default) so a
+	// hostile or broken endpoint cannot exhaust memory.
+	respBody, err := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	return &Response{
@@ -303,7 +322,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Check for error status codes
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck
-		errBody, _ := io.ReadAll(httpResp.Body)
+		errBody, _ := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 		return nil, &HTTPStatusError{
 			StatusCode: httpResp.StatusCode,
 			Headers:    httpResp.Header,
