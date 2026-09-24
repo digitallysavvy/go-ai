@@ -55,6 +55,7 @@ func TestDefaultDownloadUsesCreateDownloadBehavior(t *testing.T) {
 }
 
 func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
+	allowLoopbackDownloadTransport(t)
 	restore := downloadURLValidator
 	downloadURLValidator = func(string) error { return nil }
 	t.Cleanup(func() { downloadURLValidator = restore })
@@ -83,6 +84,7 @@ func TestCreateDownloadSuccessfulFetchForwardsHeaders(t *testing.T) {
 }
 
 func TestCreateURLDownloadWithMetadataReturnsMediaType(t *testing.T) {
+	allowLoopbackDownloadTransport(t)
 	restore := downloadURLValidator
 	downloadURLValidator = func(string) error { return nil }
 	t.Cleanup(func() { downloadURLValidator = restore })
@@ -105,6 +107,7 @@ func TestCreateURLDownloadWithMetadataReturnsMediaType(t *testing.T) {
 }
 
 func TestCreateDownloadHonorsMaxBytes(t *testing.T) {
+	allowLoopbackDownloadTransport(t)
 	restore := downloadURLValidator
 	downloadURLValidator = func(string) error { return nil }
 	t.Cleanup(func() { downloadURLValidator = restore })
@@ -150,6 +153,7 @@ func TestCreateDownload_BlocksOpenRedirectChainViaPostRedirectValidation(t *test
 	}))
 	defer redirect1.Close()
 
+	allowLoopbackDownloadTransport(t)
 	restore := downloadURLValidator
 	downloadURLValidator = func(raw string) error {
 		// Allow our local redirect fixtures as the initial trusted URLs.
@@ -195,4 +199,13 @@ func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	}
 	server.Start()
 	return server
+}
+
+// allowLoopbackDownloadTransport disables connect-time DNS pinning so tests can
+// reach httptest loopback fixtures (pinning is covered in internal/fileutil).
+func allowLoopbackDownloadTransport(t *testing.T) {
+	t.Helper()
+	restore := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = restore })
 }

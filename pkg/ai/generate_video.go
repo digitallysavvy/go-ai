@@ -436,6 +436,7 @@ func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunct
 
 	opts := fileutil.DefaultDownloadOptions()
 	opts.URLValidator = downloadURLValidator
+	opts.Transport = downloadTransport()
 	result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
 		return nil, "", err

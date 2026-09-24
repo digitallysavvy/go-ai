@@ -109,6 +109,9 @@ func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
 		}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = oldDefaultTransport })
+	oldDownloadTransport := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = oldDownloadTransport })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/flux-pro":

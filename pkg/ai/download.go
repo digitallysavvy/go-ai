@@ -9,6 +9,11 @@ import (
 
 var downloadURLValidator = validateDownloadURL
 
+// downloadTransport returns the transport used by default downloads. It
+// validates and pins DNS results at connect time (TS safe-node-fetch).
+// Tests replace it to reach loopback fixtures.
+var downloadTransport = fileutil.SafeTransport
+
 // DownloadRequest describes one remote file URL discovered during prompt
 // preparation. IsURLSupportedByModel indicates whether the selected model can
 // consume the URL directly; returning nil for that request leaves the URL in the
@@ -76,6 +81,7 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 		}
 
 		opts.URLValidator = downloadURLValidator
+		opts.Transport = downloadTransport()
 
 		result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 		if err != nil {

@@ -430,6 +430,10 @@ func bflProviderMetadata(createResp bflCreateResponse, result bflResult) map[str
 	}
 }
 
+// downloadTransport is the DNS-pinning transport used for response-supplied
+// foreign download URLs. Tests replace it to intercept those downloads.
+var downloadTransport = fileutil.SafeTransport
+
 func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[string]string) ([]byte, map[string]string, error) {
 	if strings.HasPrefix(strings.ToLower(url), "data:") {
 		data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
@@ -442,21 +446,21 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 			return nil, nil, err
 		}
 	}
-	client := &http.Client{Timeout: opts.Timeout}
-	if opts.URLValidator != nil {
-		validator := opts.URLValidator
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) > 10 {
-				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
-			}
-			return validator(req.URL.String())
-		}
+	trusted := bflTrustedURL(url, m.provider.baseURL())
+	if !trusted {
+		opts.Transport = downloadTransport()
+	} else {
+		// The developer-configured origin is trusted and may be self-hosted;
+		// response-supplied foreign URLs are DNS-pinned (TS trustedOrigin).
+		opts.Transport = nil
 	}
+	// Validates each redirect hop and drops credentials on cross-origin hops.
+	client := fileutil.NewDownloadClient(url, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	if bflTrustedURL(url, m.provider.baseURL()) {
+	if trusted {
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}

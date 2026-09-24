@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -210,6 +211,11 @@ func validateIP(rawURL string, ip net.IP) error {
 		return providererrors.NewSSRFError(rawURL, fmt.Sprintf("URL resolves to shared address space (100.64.0.0/10): %s", ip), nil)
 	case thisNetwork.Contains(ip):
 		return providererrors.NewSSRFError(rawURL, fmt.Sprintf("URL resolves to reserved 'this' network (0.0.0.0/8): %s", ip), nil)
+	case fileutil.IsBlockedIP(ip):
+		// Remaining TS validate-download-url.ts ranges: TEST-NET-1/2/3,
+		// 192.0.0.0/24, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4,
+		// fec0::/10, 2001:db8::/32, 3fff::/20 and embedded-IPv4 forms.
+		return providererrors.NewSSRFError(rawURL, fmt.Sprintf("URL resolves to reserved address %s", ip), nil)
 	}
 
 	return nil

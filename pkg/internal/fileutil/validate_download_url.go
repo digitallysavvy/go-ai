@@ -236,6 +236,31 @@ func numericLikeIPv4Part(part string) bool {
 	return true
 }
 
+// IsBlockedIP reports whether ip is in a private, loopback, link-local,
+// multicast, reserved, documentation or otherwise non-public range, mirroring
+// the TypeScript SDK's isPrivateIPv4 / isPrivateIPv6 checks in
+// provider-utils validate-download-url.ts.
+func IsBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return isBlockedIP(ip)
+}
+
+// ValidateDownloadAddress validates an address returned by DNS before it is
+// used to open a socket (TS validateDownloadAddress). hostname is the name
+// that was resolved and is used in the error.
+func ValidateDownloadAddress(hostname string, ip net.IP) error {
+	if ip == nil || isBlockedIP(ip) {
+		address := "<invalid>"
+		if ip != nil {
+			address = ip.String()
+		}
+		return providererrors.NewDownloadError(hostname, 0, "", fmt.Sprintf("Hostname %s resolved to disallowed IP address %s", hostname, address), nil)
+	}
+	return nil
+}
+
 func isBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil {
 		a, b, c := v4[0], v4[1], v4[2]
@@ -246,9 +271,22 @@ func isBlockedIP(ip net.IP) bool {
 			(a == 169 && b == 254) ||
 			(a == 172 && b >= 16 && b <= 31) ||
 			(a == 192 && b == 0 && c == 0) ||
+			(a == 192 && b == 0 && c == 2) || // TEST-NET-1
 			(a == 192 && b == 168) ||
 			(a == 198 && (b == 18 || b == 19)) ||
-			a >= 240
+			(a == 198 && b == 51 && c == 100) || // TEST-NET-2
+			(a == 203 && b == 0 && c == 113) || // TEST-NET-3
+			a >= 224 // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved
+	}
+	if v6 := ip.To16(); v6 != nil {
+		// 2001:db8::/32 (documentation range, not globally routable)
+		if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0d && v6[3] == 0xb8 {
+			return true
+		}
+		// 3fff::/20 (documentation range, RFC 9637)
+		if v6[0] == 0x3f && v6[1] == 0xff && v6[2]&0xf0 == 0 {
+			return true
+		}
 	}
 	if v6 := ip.To16(); v6 != nil && hasEmbeddedBlockedIPv4(v6) {
 		return true
