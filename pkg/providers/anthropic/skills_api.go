@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -105,7 +106,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 }, error) {
 	resp, err := s.provider.client.Do(ctx, internalhttp.Request{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/v1/skills/%s/versions/%s", skillID, version),
+		Path:    fmt.Sprintf("/v1/skills/%s/versions/%s", providerutils.EncodePathSegment(skillID), providerutils.EncodePathSegment(version)),
 		Headers: headers,
 	})
 	if err != nil || resp.StatusCode >= 400 {

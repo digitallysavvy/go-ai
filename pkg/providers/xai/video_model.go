@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
@@ -151,7 +152,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	statusChecker := func(ctx context.Context) (*polling.JobResult, error) {
 		var status xaiVideoStatusResponse
-		statusPath := fmt.Sprintf("/videos/%s", createResp.RequestID)
+		statusPath := "/videos/" + providerutils.EncodePathSegment(createResp.RequestID)
 
 		if err := m.provider.client.GetJSON(ctx, statusPath, &status); err != nil {
 			return nil, m.handleError(err)
