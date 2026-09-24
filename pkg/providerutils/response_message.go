@@ -478,10 +478,11 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 		toolCallID = part.ToolCall.ID
 	}
 	return types.ToolApprovalRequestContent{
-		ApprovalID:  part.ApprovalID,
-		ToolCallID:  toolCallID,
-		Signature:   part.Signature,
-		IsAutomatic: part.IsAutomatic,
+		ApprovalID:       part.ApprovalID,
+		ToolCallID:       toolCallID,
+		Signature:        part.Signature,
+		IsAutomatic:      part.IsAutomatic,
+		InputSchemaInput: part.InputSchemaInput,
 	}
 }
 
