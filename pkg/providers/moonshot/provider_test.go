@@ -66,7 +66,8 @@ func TestLanguageModelValidation(t *testing.T) {
 		{"kimi-k2-thinking", "kimi-k2-thinking", false},
 		{"kimi-k2-thinking-turbo", "kimi-k2-thinking-turbo", false},
 		{"kimi-k2-turbo", "kimi-k2-turbo", false},
-		{"invalid-model", "invalid-model", true},
+		// TS accepts any model ID (MoonshotAIChatModelId includes string).
+		{"unlisted-model", "kimi-k9-preview", false},
 	}
 
 	for _, tt := range tests {
