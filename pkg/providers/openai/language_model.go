@@ -218,10 +218,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Add response format if present
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
+	// Response format (TS openai-chat-language-model.ts): json_schema when a
+	// schema is present (strictJsonSchema defaults to true), else json_object.
+	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs: true,
+		StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
+	}); format != nil {
+		body["response_format"] = format
 	}
 
 	// Map top-level Reasoning to OpenAI reasoning_effort.
@@ -756,4 +759,20 @@ func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
 		Type:         provider.ChunkTypeFinish,
 		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
 	})
+}
+
+// strictJSONSchema reads the strictJsonSchema provider option (default true).
+// OpenAI-compatible hosts built on this model (e.g. Cerebras, Baseten,
+// DeepInfra) read it from their own provider options key, like the TS
+// openai-compatible chat model; the "openai" key is always honoured.
+func (m *LanguageModel) strictJSONSchema(providerOptions map[string]interface{}) bool {
+	strict := true
+	for _, key := range []string{"openai", m.provider.Name(), providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())} {
+		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
+			if v, ok := opts["strictJsonSchema"].(bool); ok {
+				strict = v
+			}
+		}
+	}
+	return strict
 }

@@ -143,11 +143,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
 	// Map top-level Reasoning to Groq reasoning_effort.
 	// none and provider-default → omit (Groq does not accept "disabled" for none).
 	// minimal/low → "low", medium → "medium", high/xhigh → "high".
@@ -164,6 +159,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
+	// strictJsonSchema both default to true; a dropped schema is warned about.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         providerutils.BoolOption(compatibleOptions, "structuredOutputs", true),
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
+	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	return body, warnings
 }

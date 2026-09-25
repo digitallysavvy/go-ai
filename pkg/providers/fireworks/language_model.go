@@ -133,10 +133,15 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
+	// Response format (TS openai-compatible chat model with
+	// supportsStructuredOutputs: true): json_schema when a schema is present,
+	// strictJsonSchema (default true) from the fireworks provider options.
+	fireworksOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs: true,
+		StrictJSONSchema:  providerutils.BoolOption(fireworksOptions, "strictJsonSchema", true),
+	}); format != nil {
+		body["response_format"] = format
 	}
 	// Map top-level Reasoning to Fireworks reasoning_effort.
 	// none and provider-default → omit (Fireworks passes through the raw level string

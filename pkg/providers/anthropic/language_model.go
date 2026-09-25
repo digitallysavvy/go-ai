@@ -110,7 +110,10 @@ func (m *LanguageModel) SupportsImageInput() bool {
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, promptInfo, err := m.buildRequest(opts, false)
+	if err != nil {
+		return nil, err
+	}
 	reqBody = m.transformRequestBody(reqBody, false)
 
 	// Determine whether this request uses the synthetic json tool for structured output.
@@ -118,7 +121,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	usesJsonResponseTool := m.isJsonToolMode(opts)
 
 	// Collect beta headers from model options and tool requirements (non-streaming)
-	betaHeaders := m.combineBetaHeaders(opts, false)
+	betaHeaders := mergeBetaHeaders(m.combineBetaHeaders(opts, false), promptInfo.Betas)
 
 	reqHeaders := map[string]string{}
 	if len(betaHeaders) > 0 {
@@ -141,6 +144,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response, usesJsonResponseTool, opts.Tools)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	result.Warnings = append(result.Warnings, promptInfo.Warnings...)
 	result.Warnings = append(result.Warnings, m.strictToolWarnings(opts)...)
 	if w := m.detectSkillsWarning(opts); w != nil {
 		result.Warnings = append(result.Warnings, *w)
@@ -151,7 +155,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, promptInfo, err := m.buildRequest(opts, true)
+	if err != nil {
+		return nil, err
+	}
 	reqBody = m.transformRequestBody(reqBody, true)
 
 	// Prepare headers
@@ -160,7 +167,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Collect beta headers from model options and tool requirements (streaming)
-	betaHeaders := m.combineBetaHeaders(opts, true)
+	betaHeaders := mergeBetaHeaders(m.combineBetaHeaders(opts, true), promptInfo.Betas)
 	if len(betaHeaders) > 0 {
 		headers["anthropic-beta"] = betaHeaders
 	}
@@ -179,7 +186,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
 	// events and route json tool input_json_delta as text chunks.
 	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return providerutils.WithResponseMetadata(newAnthropicStreamWithWarnings(httpResp.Body, usesJsonResponseTool, opts.Tools, m.strictToolWarnings(opts)), httpResp.Header, m.ModelID()), nil
+	return providerutils.WithResponseMetadata(newAnthropicStreamWithWarnings(httpResp.Body, usesJsonResponseTool, opts.Tools, append(promptInfo.Warnings, m.strictToolWarnings(opts)...)), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) messagesPath(stream bool) string {
@@ -214,34 +221,87 @@ func (m *LanguageModel) strictToolWarnings(opts *provider.GenerateOptions) []typ
 	return warnings
 }
 
-// buildRequestBody builds the Anthropic API request body
+// convertPrompt converts the call prompt to the Anthropic messages / system
+// shape (TS convertToAnthropicPrompt). opts.Prompt.System becomes a leading
+// system message, matching how the TS core places the system prompt.
+func (m *LanguageModel) convertPrompt(opts *provider.GenerateOptions) (*prompt.AnthropicPrompt, error) {
+	return ConvertPrompt(opts, m.sendReasoningOption())
+}
+
+// ConvertPrompt converts a call prompt (system prompt, messages or text) with
+// the Anthropic prompt converter (TS convertToAnthropicPrompt). Vertex- and
+// AWS-hosted Anthropic models use it through this package's LanguageModel.
+func ConvertPrompt(opts *provider.GenerateOptions, sendReasoning *bool) (*prompt.AnthropicPrompt, error) {
+	var msgs []types.Message
+	if opts.Prompt.System != "" {
+		msgs = append(msgs, types.Message{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}},
+		})
+	}
+	if opts.Prompt.IsMessages() {
+		msgs = append(msgs, opts.Prompt.Messages...)
+	} else if opts.Prompt.Text != "" {
+		msgs = append(msgs, prompt.SimpleTextToMessages(opts.Prompt.Text)...)
+	}
+	return prompt.ConvertToAnthropicPrompt(msgs, prompt.AnthropicPromptOptions{
+		SendReasoning: sendReasoning,
+		ToolsetNames:  prompt.AnthropicToolsetNames(opts.Tools),
+	})
+}
+
+func (m *LanguageModel) sendReasoningOption() *bool {
+	if m.options != nil {
+		return m.options.SendReasoning
+	}
+	return nil
+}
+
+// mergeBetaHeaders appends prompt-required betas to a comma-separated beta
+// header value, skipping duplicates.
+func mergeBetaHeaders(base string, extra []string) string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, b := range strings.Split(base, ",") {
+		if b = strings.TrimSpace(b); b != "" && !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	for _, b := range extra {
+		if !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// buildRequestBody builds the Anthropic API request body. Prompt conversion
+// errors are dropped; DoGenerate/DoStream use buildRequest to surface them.
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _, _ := m.buildRequest(opts, stream)
+	return body
+}
+
+// buildRequest builds the Anthropic API request body together with the
+// converted prompt (betas and warnings).
+func (m *LanguageModel) buildRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, *prompt.AnthropicPrompt, error) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
 	}
 
-	// Determine whether to strip reasoning content from outgoing messages.
-	// Default (nil or true): include reasoning blocks. False: filter them out.
-	sendReasoning := true
-	if m.options != nil && m.options.SendReasoning != nil {
-		sendReasoning = *m.options.SendReasoning
+	promptInfo, err := m.convertPrompt(opts)
+	if err != nil {
+		return body, &prompt.AnthropicPrompt{}, err
 	}
-
-	// Convert messages (Anthropic format), optionally filtering reasoning blocks.
-	if opts.Prompt.IsMessages() {
-		msgs := opts.Prompt.Messages
-		if !sendReasoning {
-			msgs = filterReasoningContent(msgs)
-		}
-		body["messages"] = prompt.ToAnthropicMessages(msgs)
-	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
-	}
-
-	// Add system message separately (Anthropic requires this)
-	if opts.Prompt.System != "" {
-		body["system"] = opts.Prompt.System
+	body["messages"] = promptInfo.Messages
+	if promptInfo.System != nil {
+		body["system"] = promptInfo.System
 	}
 
 	// Set max_tokens (required by Anthropic)
@@ -502,7 +562,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		// Otherwise (empty ContainerConfig): don't add any container field
 	}
 
-	return body
+	return body, promptInfo, nil
 }
 
 // convertResponse converts an Anthropic response to GenerateResult.
@@ -1146,39 +1206,6 @@ func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *typ
 		Type:    "other",
 		Message: "code execution tool is required when using skills",
 	}
-}
-
-// filterReasoningContent returns a copy of messages with all ReasoningContent
-// parts removed from every message. The original slice is not modified.
-// Messages that have only reasoning content are kept but with an empty content
-// slice, matching the TypeScript SDK behaviour.
-func filterReasoningContent(messages []types.Message) []types.Message {
-	filtered := make([]types.Message, 0, len(messages))
-	for _, msg := range messages {
-		hasReasoning := false
-		for _, part := range msg.Content {
-			if _, ok := part.(types.ReasoningContent); ok {
-				hasReasoning = true
-				break
-			}
-		}
-		if !hasReasoning {
-			filtered = append(filtered, msg)
-			continue
-		}
-		// Rebuild message without reasoning parts.
-		newContent := make([]types.ContentPart, 0, len(msg.Content))
-		for _, part := range msg.Content {
-			if _, ok := part.(types.ReasoningContent); !ok {
-				newContent = append(newContent, part)
-			}
-		}
-		filtered = append(filtered, types.Message{
-			Role:    msg.Role,
-			Content: newContent,
-		})
-	}
-	return filtered
 }
 
 // anthropicErrorBody is the top-level structure of an Anthropic API error response.

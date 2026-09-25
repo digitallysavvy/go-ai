@@ -97,10 +97,14 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		t.Fatalf("openAI file_id = %v", fileMap["file_id"])
 	}
 
-	anthropic := anthropicFileContentPart(types.FileContent{
+	c := &anthropicConverter{validator: NewAnthropicCacheControlValidator(), betaSet: map[string]bool{}}
+	anthropic, err := c.convertUserFile(types.FileContent{
 		Text:      "doc body",
 		MediaType: "text/plain",
-	})
+	}, nil)
+	if err != nil {
+		t.Fatalf("convertUserFile: %v", err)
+	}
 	if anthropic["type"] != "document" {
 		t.Fatalf("anthropic part type = %v", anthropic["type"])
 	}
@@ -109,12 +113,15 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		t.Fatalf("anthropic text source = %#v", source)
 	}
 
-	blockPart := anthropicFileContentBlockPart(types.FileContentBlock{
-		Data:      []byte("abc"),
-		MediaType: "text/plain",
+	blockPart, err := c.convertToolResultContentBlock(types.FileContentBlock{
+		Data:      []byte("%PDF-1.4"),
+		MediaType: "application/pdf",
 	})
+	if err != nil {
+		t.Fatalf("convertToolResultContentBlock: %v", err)
+	}
 	blockSource := blockPart["source"].(map[string]interface{})
-	if blockSource["data"] != base64.StdEncoding.EncodeToString([]byte("abc")) {
+	if blockSource["data"] != base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")) {
 		t.Fatalf("anthropic block data = %v", blockSource["data"])
 	}
 

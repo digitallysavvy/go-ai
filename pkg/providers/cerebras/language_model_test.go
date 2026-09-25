@@ -2,6 +2,7 @@ package cerebras
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -76,4 +77,46 @@ func (m *mockCerebrasBaseModel) DoGenerate(context.Context, *provider.GenerateOp
 }
 func (m *mockCerebrasBaseModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 	return nil, errors.New("not used")
+}
+
+// Cerebras exposes only the OpenAI-compatible Chat Completions API; the
+// language model must not call /responses (TS createCerebras builds an
+// OpenAICompatibleChatLanguageModel at `${baseURL}/chat/completions`).
+func TestCerebrasLanguageModelUsesChatCompletions(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"llama3.1-8b","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	for _, factory := range []string{"LanguageModel", "ChatModel"} {
+		p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+		var model provider.LanguageModel
+		var err error
+		if factory == "LanguageModel" {
+			model, err = p.LanguageModel("llama3.1-8b")
+		} else {
+			model, err = p.ChatModel("llama3.1-8b")
+		}
+		if err != nil {
+			t.Fatalf("%s error = %v", factory, err)
+		}
+		result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+		if err != nil {
+			t.Fatalf("%s DoGenerate error = %v", factory, err)
+		}
+		if gotPath != "/chat/completions" {
+			t.Fatalf("%s path = %q, want /chat/completions", factory, gotPath)
+		}
+		if _, ok := gotBody["messages"]; !ok {
+			t.Fatalf("%s body has no chat messages: %#v", factory, gotBody)
+		}
+		if result.Text != "hi" {
+			t.Fatalf("%s text = %q", factory, result.Text)
+		}
+	}
 }

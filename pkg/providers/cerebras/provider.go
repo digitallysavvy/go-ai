@@ -49,13 +49,21 @@ func New(cfg Config) *Provider {
 }
 
 // LanguageModel returns a Cerebras language model with Cerebras-specific
-// request/response compatibility fixes layered over the OpenAI-compatible API.
+// request/response compatibility fixes layered over the OpenAI-compatible
+// Chat Completions API (/chat/completions). Cerebras has no Responses API, so
+// this must not use openai.Provider.LanguageModel (which returns the
+// Responses model); TS createCerebras builds an OpenAICompatibleChatLanguageModel.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	base, err := p.Provider.LanguageModel(modelID)
+	base, err := p.Provider.ChatModel(modelID)
 	if err != nil {
 		return nil, err
 	}
 	return &LanguageModel{base: base}, nil
+}
+
+// ChatModel is an alias for LanguageModel (TS provider.chat).
+func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
+	return p.LanguageModel(modelID)
 }
 
 func withCerebrasTransform(client *http.Client) *http.Client {

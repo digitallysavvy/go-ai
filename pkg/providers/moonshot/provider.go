@@ -45,31 +45,13 @@ func (p *Provider) Name() string {
 	return "moonshot"
 }
 
-// LanguageModel returns a language model by ID
-// Supported models: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k,
-// kimi-k2, kimi-k2.5, kimi-k2-thinking, kimi-k2-thinking-turbo, kimi-k2-turbo
+// LanguageModel returns a language model by ID. Any model ID is accepted
+// (TS createMoonshotAI does not validate IDs); see model_ids.go for known IDs.
+// An empty ID selects moonshot-v1-32k.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
-		modelID = "moonshot-v1-32k" // Default model
+		modelID = defaultLanguageModelID
 	}
-
-	// Validate model ID
-	validModels := map[string]bool{
-		"moonshot-v1-8k":            true,
-		"moonshot-v1-32k":           true,
-		"moonshot-v1-128k":          true,
-		"kimi-k2":                   true,
-		"kimi-k2-0905":              true,
-		"kimi-k2-thinking":          true,
-		"kimi-k2-thinking-turbo":    true,
-		"kimi-k2-turbo":             true,
-		"kimi-k2.5":                 true,
-	}
-
-	if !validModels[modelID] {
-		return nil, fmt.Errorf("unsupported Moonshot model: %s", modelID)
-	}
-
 	return NewLanguageModel(p, modelID), nil
 }
 
