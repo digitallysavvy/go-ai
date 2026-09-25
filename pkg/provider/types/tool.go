@@ -258,19 +258,52 @@ type ToolNeedsApprovalFunc func(ctx context.Context, input map[string]interface{
 // Deprecated: use ToolNeedsApprovalFunc.
 type NeedsApprovalFunc func(ctx context.Context, input map[string]interface{}) bool
 
-// OnInputStartFunc is called when tool input streaming starts
-type OnInputStartFunc func(ctx context.Context) error
+// OnInputStartFunc is called when tool input starts. In streaming calls it
+// fires on the tool-input-start chunk; in non-streaming calls it fires right
+// before OnInputAvailable for each valid tool call (TS onInputStart).
+type OnInputStartFunc func(ctx context.Context, options OnInputStartOptions) error
+
+// OnInputStartOptions contains options for input start callbacks. Cancellation
+// is signalled through the ctx argument (TS abortSignal).
+type OnInputStartOptions struct {
+	// ToolCallID is the ID of the tool call whose input is starting.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for the step that produced
+	// the tool call (TS messages).
+	Messages []Message
+
+	// Context is the per-tool context (ToolsContext[toolName]) validated
+	// against the tool's ContextSchema.
+	Context interface{}
+}
 
 // OnInputDeltaFunc is called for each delta during tool input streaming
 type OnInputDeltaFunc func(ctx context.Context, options OnInputDeltaOptions) error
 
 // OnInputDeltaOptions contains options for input delta callbacks
 type OnInputDeltaOptions struct {
-	// Delta is the incremental text change
+	// InputTextDelta is the incremental tool input text (TS inputTextDelta).
+	InputTextDelta string
+
+	// Delta is the incremental text change.
+	//
+	// Deprecated: use InputTextDelta.
 	Delta string
 
-	// Value is the current accumulated value (may be partial)
+	// Value is not populated by the SDK; it is kept for backward compatibility.
+	//
+	// Deprecated: accumulate InputTextDelta instead.
 	Value interface{}
+
+	// ToolCallID is the ID of the tool call whose input is streaming.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // OnInputAvailableFunc is called when complete tool input is available
@@ -278,8 +311,22 @@ type OnInputAvailableFunc func(ctx context.Context, options OnInputAvailableOpti
 
 // OnInputAvailableOptions contains options for input available callbacks
 type OnInputAvailableOptions struct {
-	// Value is the complete tool input value
+	// Input is the complete, parsed tool input (TS input).
+	Input map[string]interface{}
+
+	// Value is the complete tool input value.
+	//
+	// Deprecated: use Input.
 	Value map[string]interface{}
+
+	// ToolCallID is the ID of the tool call.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // ToolCall represents a tool call made by the model

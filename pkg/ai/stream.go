@@ -31,6 +31,12 @@ type StreamTextOptions struct {
 	// When set, Instructions takes precedence over System.
 	Instructions *string
 
+	// InstructionMessages supplies the instructions as system messages (TS
+	// instructions: SystemModelMessage | SystemModelMessage[]), preserving
+	// per-message ProviderOptions. When non-empty it takes precedence over
+	// Instructions and System. Every message must have the system role.
+	InstructionMessages []types.Message
+
 	// AllowSystemMessages permits system-role messages in Messages.
 	// Defaults to false; use System for system instructions unless you are
 	// intentionally passing provider-native system messages.
@@ -124,6 +130,36 @@ type StreamTextOptions struct {
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
 	// override it for an individual step.
 	ExperimentalSandbox interface{}
+
+	// RepairToolCall attempts to repair tool calls that fail to parse because
+	// the tool does not exist or its input is invalid. When it returns a call,
+	// the repaired call is parsed again; (nil, nil) keeps the call invalid.
+	RepairToolCall ToolCallRepairFunction
+
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before each provider
+	// model call begins.
+	OnLanguageModelCallStart OnLanguageModelCallStartCallback
+
+	// ExperimentalOnLanguageModelCallStart is a deprecated alias for
+	// OnLanguageModelCallStart.
+	//
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after each provider model response is
+	// normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd OnLanguageModelCallEndCallback
+
+	// ExperimentalOnLanguageModelCallEnd is a deprecated alias for
+	// OnLanguageModelCallEnd.
+	//
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd OnLanguageModelCallEndCallback
 
 	// ExperimentalRefineToolInput refines parsed tool inputs by tool name before
 	// approval, callbacks, telemetry, execution, and response messages.

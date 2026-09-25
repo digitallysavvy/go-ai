@@ -124,6 +124,12 @@ type GenerateTextOptions struct {
 	// When set, Instructions takes precedence over System.
 	Instructions *string
 
+	// InstructionMessages supplies the instructions as system messages (TS
+	// instructions: SystemModelMessage | SystemModelMessage[]), preserving
+	// per-message ProviderOptions. When non-empty it takes precedence over
+	// Instructions and System. Every message must have the system role.
+	InstructionMessages []types.Message
+
 	// AllowSystemMessages permits system-role messages in Messages.
 	// Defaults to false; use System for system instructions unless you are
 	// intentionally passing provider-native system messages.
@@ -271,6 +277,36 @@ type GenerateTextOptions struct {
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
 	// override it for an individual step.
 	ExperimentalSandbox interface{}
+
+	// RepairToolCall attempts to repair tool calls that fail to parse because
+	// the tool does not exist or its input is invalid. When it returns a call,
+	// the repaired call is parsed again; (nil, nil) keeps the call invalid.
+	RepairToolCall ToolCallRepairFunction
+
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before each provider
+	// model call begins.
+	OnLanguageModelCallStart OnLanguageModelCallStartCallback
+
+	// ExperimentalOnLanguageModelCallStart is a deprecated alias for
+	// OnLanguageModelCallStart.
+	//
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after each provider model response is
+	// normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd OnLanguageModelCallEndCallback
+
+	// ExperimentalOnLanguageModelCallEnd is a deprecated alias for
+	// OnLanguageModelCallEnd.
+	//
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd OnLanguageModelCallEndCallback
 
 	// ExperimentalRefineToolInput refines parsed tool inputs by tool name before
 	// approval, callbacks, telemetry, execution, and response messages.
@@ -429,6 +465,15 @@ type PrepareStepOptions struct {
 	// InitialInstructions are the instructions provided to GenerateText.
 	InitialInstructions *string
 
+	// InstructionMessages are the step instructions as system messages. Set
+	// it in the returned options to override the step instructions with
+	// system messages; it takes precedence over Instructions and System.
+	InstructionMessages []types.Message
+
+	// InitialInstructionMessages are the system-message instructions provided
+	// to the call, if any.
+	InitialInstructionMessages []types.Message
+
 	// Messages for the next step
 	Messages []types.Message
 
@@ -571,6 +616,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
+	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
+	if err := validateInstructionMessages(instructionMessages); err != nil {
+		return nil, err
+	}
+	if len(instructionMessages) > 0 {
+		// System-message instructions take precedence over text instructions.
+		system = ""
+	}
+	repairToolCall := effectiveRepairToolCall(opts.RepairToolCall, opts.ExperimentalRepairToolCall)
+	onLanguageModelCallStart := firstLMCallStart(opts.OnLanguageModelCallStart, opts.ExperimentalOnLanguageModelCallStart)
+	onLanguageModelCallEnd := firstLMCallEnd(opts.OnLanguageModelCallEnd, opts.ExperimentalOnLanguageModelCallEnd)
 	include := effectiveInclude(opts.Include, opts.ExperimentalInclude, false)
 	if opts.Include == nil && opts.ExperimentalInclude == nil && opts.ExperimentalRetention != nil {
 		include.RequestBody = opts.ExperimentalRetention.ShouldRetainRequestBody()
@@ -589,6 +645,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = system
+		if len(instructionMessages) > 0 {
+			telSystem = instructionMessagesText(instructionMessages)
+		}
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		OperationType:  "ai.generateText",
@@ -660,13 +719,20 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	Notify(ctx, OnStartEvent{
 		CallID:              callID,
 		OperationID:         "ai.generateText",
+		Provider:            opts.Model.Provider(),
 		ModelProvider:       opts.Model.Provider(),
 		ModelID:             opts.Model.ModelID(),
+		Instructions:        system,
+		InstructionMessages: instructionMessages,
 		System:              system,
 		Prompt:              opts.Prompt,
 		Messages:            opts.Messages,
 		Tools:               opts.Tools,
+		ActiveTools:         opts.ActiveTools,
+		ToolOrder:           opts.ToolOrder,
 		ToolChoice:          opts.ToolChoice,
+		Timeout:             opts.Timeout,
+		Reasoning:           opts.Reasoning,
 		Output:              opts.Output,
 		ProviderOptions:     opts.ProviderOptions,
 		Headers:             opts.Headers,
@@ -737,6 +803,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 	initialInstructions := system
 	instructionsForNextStep := system
+	instructionMessagesForNextStep := instructionMessages
 
 	// pendingDeferredToolCalls tracks provider tools whose results will arrive in
 	// a subsequent response (SupportsDeferredResults=true). Key = toolCallID, value = toolName.
@@ -748,6 +815,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepIndex := stepNum - 1
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
+		stepInstructionMessages := instructionMessagesForNextStep
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
@@ -758,33 +826,45 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-				Model:               stepModel,
-				System:              stepSystem,
-				Instructions:        &stepSystem,
-				InitialInstructions: &initialInstructions,
-				Messages:            append([]types.Message(nil), stepMessages...),
-				InitialMessages:     append([]types.Message(nil), initialMessages...),
-				ResponseMessages:    accumulatedResponseMessages,
-				UserContext:         runtimeContext,
-				RuntimeContext:      runtimeContext,
-				ToolsContext:        toolsContext,
-				StepNumber:          stepIndex,
-				Steps:               append([]types.StepResult(nil), result.Steps...),
-				Tools:               stepTools,
-				ToolChoice:          stepToolChoice,
-				ActiveTools:         opts.ActiveTools,
-				ToolOrder:           stepToolOrder,
-				ProviderOptions:     stepProviderOptions,
-				ExperimentalSandbox: stepSandbox,
-				AccumulatedUsage:    result.Usage,
+				Model:                      stepModel,
+				System:                     stepSystem,
+				Instructions:               &stepSystem,
+				InitialInstructions:        &initialInstructions,
+				InstructionMessages:        cloneInstructionMessages(stepInstructionMessages),
+				InitialInstructionMessages: cloneInstructionMessages(instructionMessages),
+				Messages:                   append([]types.Message(nil), stepMessages...),
+				InitialMessages:            append([]types.Message(nil), initialMessages...),
+				ResponseMessages:           accumulatedResponseMessages,
+				UserContext:                runtimeContext,
+				RuntimeContext:             runtimeContext,
+				ToolsContext:               toolsContext,
+				StepNumber:                 stepIndex,
+				Steps:                      append([]types.StepResult(nil), result.Steps...),
+				Tools:                      stepTools,
+				ToolChoice:                 stepToolChoice,
+				ActiveTools:                opts.ActiveTools,
+				ToolOrder:                  stepToolOrder,
+				ProviderOptions:            stepProviderOptions,
+				ExperimentalSandbox:        stepSandbox,
+				AccumulatedUsage:           result.Usage,
 			})
 			if prepared.Model != nil {
 				stepModel = prepared.Model
 			}
-			if prepared.Instructions != nil {
+			if len(prepared.InstructionMessages) > 0 {
+				if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
+					return nil, err
+				}
+				stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
+				stepSystem = ""
+			} else if prepared.Instructions != nil {
 				stepSystem = *prepared.Instructions
+				stepInstructionMessages = nil
 			} else if prepared.System != "" {
 				stepSystem = prepared.System
+				stepInstructionMessages = nil
+			} else if prepared.InstructionMessages != nil {
+				stepInstructionMessages = nil
 			}
 			if prepared.Messages != nil {
 				stepMessages = prepared.Messages
@@ -815,6 +895,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
 		instructionsForNextStep = stepSystem
+		instructionMessagesForNextStep = stepInstructionMessages
 		toolsByName := make(map[string]*types.Tool, len(stepTools))
 		for i := range stepTools {
 			toolsByName[stepTools[i].Name] = &stepTools[i]
@@ -832,12 +913,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Notify(ctx, OnStepStartEvent{
 			CallID:              callID,
 			StepNumber:          stepIndex,
+			Provider:            stepModel.Provider(),
 			ModelProvider:       stepModel.Provider(),
 			ModelID:             stepModel.ModelID(),
+			Instructions:        stepSystem,
+			InstructionMessages: stepInstructionMessages,
 			System:              stepSystem,
 			Messages:            stepMessages,
 			Tools:               stepTools,
+			ToolChoice:          stepToolChoice,
 			ActiveTools:         opts.ActiveTools,
+			ToolOrder:           stepToolOrder,
+			ProviderOptions:     stepProviderOptions,
 			Steps:               result.Steps,
 			PreviousSteps:       result.Steps, // deprecated alias
 			ExperimentalContext: runtimeContext,
@@ -864,6 +951,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if normErr != nil {
 			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
 		}
+		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Build generate options
 		genOpts := &provider.GenerateOptions{
@@ -902,6 +990,24 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
 
+		Notify(stepCtx, LanguageModelCallStartEvent{
+			CallID:              callID,
+			Provider:            stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			Instructions:        stepSystem,
+			InstructionMessages: stepInstructionMessages,
+			Messages:            stepMessages,
+			Tools:               genOpts.Tools,
+			MaxOutputTokens:     genOpts.MaxTokens,
+			Temperature:         genOpts.Temperature,
+			TopP:                genOpts.TopP,
+			TopK:                genOpts.TopK,
+			PresencePenalty:     genOpts.PresencePenalty,
+			FrequencyPenalty:    genOpts.FrequencyPenalty,
+			StopSequences:       genOpts.StopSequences,
+			Seed:                genOpts.Seed,
+			Reasoning:           genOpts.Reasoning,
+		}, onLanguageModelCallStart)
 		telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 			Settings:      telemetrySettings,
 			CallID:        callID,
@@ -927,10 +1033,40 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
 		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
+
+		// Parse (validate / repair) the tool calls of this model call before
+		// the language-model-call-end event (TS parseToolCall).
+		parsedToolCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
+			Tools:               stepTools,
+			RepairToolCall:      repairToolCall,
+			Instructions:        stepSystem,
+			InstructionMessages: stepInstructionMessages,
+			Messages:            stepMessages,
+		})
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		genResult.ToolCalls = parsedToolCalls
+
 		responseID := ""
+		responseModelID := stepModel.ModelID()
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {
 			responseID = meta.ID
+			if meta.ModelID != "" {
+				responseModelID = meta.ModelID
+			}
 		}
+		Notify(stepCtx, LanguageModelCallEndEvent{
+			CallID:           callID,
+			Provider:         stepModel.Provider(),
+			ModelID:          responseModelID,
+			FinishReason:     genResult.FinishReason,
+			Usage:            genResult.Usage,
+			Content:          generateResultContentParts(genResult),
+			ResponseID:       responseID,
+			ProviderMetadata: genResult.ProviderMetadata,
+			Performance:      languageModelCallPerformance(performance),
+		}, onLanguageModelCallEnd)
 		telemetry.FireOnLanguageModelCallEnd(stepCtx, telemetry.LanguageModelCallEndEvent{
 			Settings:      telemetrySettings,
 			CallID:        callID,
@@ -1036,6 +1172,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ToolCalls = append(result.ToolCalls, genResult.ToolCalls...)
 		result.StaticToolCalls = filterStaticToolCalls(result.ToolCalls)
 		result.DynamicToolCalls = filterDynamicToolCalls(result.ToolCalls)
+
+		// Notify the tools that the tool calls are available (TS order:
+		// OnInputStart then OnInputAvailable, valid calls only).
+		if err := invokeToolInputCallbacks(stepCtx, genResult.ToolCalls, stepTools, stepMessages, toolsContext); err != nil {
+			return nil, err
+		}
 
 		if len(genResult.ToolCalls) > 0 && len(stepTools) > 0 {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
@@ -1324,6 +1466,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	result.TotalUsage = result.Usage
 	if len(result.Steps) > 0 {
 		result.FinalStep = result.Steps[len(result.Steps)-1]
+		// Final-step shortcuts always reflect the last step (TS
+		// DefaultGenerateTextResult getters), also when the loop ended after a
+		// step with tool calls.
+		result.Text = result.FinalStep.Text
+		result.Reasoning = result.FinalStep.Reasoning
+		result.ReasoningText = result.FinalStep.ReasoningText
+		result.FinishReason = result.FinalStep.FinishReason
+		result.RawFinishReason = result.FinalStep.RawFinishReason
+		result.ProviderMetadata = result.FinalStep.ProviderMetadata
 		result.Request = result.FinalStep.Request
 		result.Response = result.FinalStep.Response
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
@@ -1574,6 +1725,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 	}
 
 	for i, call := range toolCalls {
+		// Invalid tool calls are never executed. Client calls get a
+		// synthesized tool error; invalid provider-executed calls do not
+		// (TS 7bd6bdd).
+		if call.Invalid {
+			if !call.ProviderExecuted {
+				results[i] = invalidToolCallResult(call)
+			}
+			continue
+		}
+
 		// Find the tool
 		var tool *types.Tool
 		for j := range availableTools {
@@ -1676,8 +1837,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolMetadata:     call.ToolMetadata,
 			}
 		} else {
-			if callbacks.executionBlocked {
+			if callbacks.executionBlocked || tool.Execute == nil {
 				// Leave the slot empty; it is removed before returning.
+				// Tools without Execute are client-side tools that are
+				// never executed automatically.
 				continue
 			}
 			approvalStatus := approval.Status
@@ -1702,6 +1865,8 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
+				ToolCall:            call,
+				ToolContext:         toolContext,
 				Args:                call.Arguments,
 				StepNumber:          callbacks.stepNum,
 				ModelProvider:       callbacks.modelProvider,
@@ -1823,6 +1988,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				CallID:              callbacks.callID,
 				ToolCallID:          call.ID,
 				ToolName:            call.ToolName,
+				ToolCall:            call,
+				ToolContext:         toolContext,
+				ToolOutput:          results[i],
+				ToolExecutionMs:     durationMs,
 				Args:                call.Arguments,
 				Result:              toolResult,
 				Error:               toolErr,
@@ -1839,17 +2008,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		}
 	}
 
-	if callbacks.executionBlocked {
-		executed := results[:0]
-		for _, result := range results {
-			if result.ToolCallID == "" && result.ToolName == "" {
-				continue
-			}
-			executed = append(executed, result)
+	executed := results[:0]
+	for _, result := range results {
+		if result.ToolCallID == "" && result.ToolName == "" {
+			continue
 		}
-		results = executed
+		executed = append(executed, result)
 	}
-	return results, nil
+	return executed, nil
 }
 
 // validateToolResults validates tool results, especially for provider-executed tools

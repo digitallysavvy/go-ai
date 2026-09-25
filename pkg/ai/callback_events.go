@@ -1,9 +1,11 @@
 package ai
 
 import (
+	"context"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // GenerateStepRequest contains additional information about the request sent to
@@ -53,11 +55,25 @@ type OnStartEvent struct {
 	// OperationID identifies the operation type: "ai.generateText" or "ai.streamText".
 	OperationID string
 
-	// Model provider and ID
+	// Provider is the provider identifier (TS provider).
+	Provider string
+
+	// ModelProvider is the provider identifier.
+	//
+	// Deprecated: use Provider.
 	ModelProvider string
 	ModelID       string
 
-	// Input configuration
+	// Instructions are the standardized text instructions (TS instructions).
+	Instructions string
+
+	// InstructionMessages are the instructions when they were given as
+	// system messages (TS instructions: SystemModelMessage[]).
+	InstructionMessages []types.Message
+
+	// System is the system prompt.
+	//
+	// Deprecated: use Instructions.
 	System   string
 	Prompt   string
 	Messages []types.Message
@@ -66,8 +82,17 @@ type OnStartEvent struct {
 	// ActiveTools limits which tool names are available in this generation.
 	ActiveTools []string
 
+	// ToolOrder is the configured order in which tools are sent to the provider.
+	ToolOrder []string
+
 	// Tool choice strategy for this generation.
 	ToolChoice types.ToolChoice
+
+	// Timeout is the configured timeout, if any.
+	Timeout *TimeoutConfig
+
+	// Reasoning is the configured reasoning level, if any.
+	Reasoning *types.ReasoningLevel
 
 	// MaxRetries is the maximum number of retries for failed requests.
 	MaxRetries int
@@ -114,11 +139,25 @@ type OnStepStartEvent struct {
 	// StepNumber is 0-indexed
 	StepNumber int
 
-	// Model provider and ID for this step
+	// Provider is the provider identifier for this step (TS provider).
+	Provider string
+
+	// ModelProvider is the provider identifier for this step.
+	//
+	// Deprecated: use Provider.
 	ModelProvider string
 	ModelID       string
 
+	// Instructions in effect for this step (TS instructions).
+	Instructions string
+
+	// InstructionMessages are the step instructions when given as system
+	// messages.
+	InstructionMessages []types.Message
+
 	// System prompt in effect for this step
+	//
+	// Deprecated: use Instructions.
 	System string
 
 	// Messages being sent to the model for this step
@@ -127,8 +166,17 @@ type OnStepStartEvent struct {
 	// Tools available in this step
 	Tools []types.Tool
 
+	// ToolChoice in effect for this step.
+	ToolChoice types.ToolChoice
+
 	// ActiveTools limits which tool names are available in this step.
 	ActiveTools []string
+
+	// ToolOrder in effect for this step.
+	ToolOrder []string
+
+	// ProviderOptions in effect for this step.
+	ProviderOptions map[string]interface{}
 
 	// Output is the output specification for structured outputs, if configured.
 	Output interface{}
@@ -161,17 +209,31 @@ type OnToolCallStartEvent struct {
 	// ToolName is the name of the tool being invoked
 	ToolName string
 
+	// ToolCall is the tool call being executed (TS toolCall).
+	ToolCall types.ToolCall
+
+	// ToolContext is the validated per-tool context (TS toolContext).
+	ToolContext interface{}
+
 	// Args contains the arguments the model passed to the tool
+	//
+	// Deprecated: use ToolCall.Arguments.
 	Args map[string]any
 
-	// StepNumber is the 0-indexed step in which this tool call occurs
+	// StepNumber is the 0-indexed step in which this tool call occurs.
+	//
+	// Deprecated: removed from the TypeScript event; correlate with step
+	// events instead.
 	StepNumber int
 
-	// Model provider and ID for the step that produced this tool call
+	// ModelProvider and ModelID identify the step model.
+	//
+	// Deprecated: removed from the TypeScript event.
 	ModelProvider string
 	ModelID       string
 
-	// Messages available at tool execution time (full conversation context)
+	// Messages that were sent to the model to initiate the response that
+	// contained the tool call.
 	Messages []types.Message
 
 	// User-defined context flowing through the generation lifecycle.
@@ -196,22 +258,47 @@ type OnToolCallFinishEvent struct {
 	// ToolName is the name of the tool that was invoked
 	ToolName string
 
+	// ToolCall is the executed tool call (TS toolCall).
+	ToolCall types.ToolCall
+
+	// ToolContext is the validated per-tool context (TS toolContext).
+	ToolContext interface{}
+
+	// ToolOutput is the tool result or tool error (TS toolOutput). Exactly
+	// one of ToolOutput.Result / ToolOutput.Error is meaningful.
+	ToolOutput types.ToolResult
+
+	// ToolExecutionMs is the execution time of the tool in milliseconds.
+	ToolExecutionMs int64
+
 	// Args contains the arguments the model passed to the tool
+	//
+	// Deprecated: use ToolCall.Arguments.
 	Args map[string]any
 
 	// Result is the tool's return value on success (nil on failure)
+	//
+	// Deprecated: use ToolOutput.Result.
 	Result any
 
 	// Error is non-nil when the tool execution failed (nil on success)
+	//
+	// Deprecated: use ToolOutput.Error.
 	Error error
 
 	// DurationMs is the wall-clock execution time of the tool in milliseconds
+	//
+	// Deprecated: use ToolExecutionMs.
 	DurationMs int64
 
-	// StepNumber is the 0-indexed step in which this tool call occurred
+	// StepNumber is the 0-indexed step in which this tool call occurred.
+	//
+	// Deprecated: removed from the TypeScript event.
 	StepNumber int
 
-	// Model provider and ID for the step that produced this tool call
+	// ModelProvider and ModelID identify the step model.
+	//
+	// Deprecated: removed from the TypeScript event.
 	ModelProvider string
 	ModelID       string
 
@@ -409,3 +496,104 @@ type OnStepEndEvent = OnStepFinishEvent
 
 // GenerateTextEndEvent is the canonical name for OnFinishEvent.
 type GenerateTextEndEvent = OnFinishEvent
+
+// ToolExecutionStartEvent is the canonical name for OnToolCallStartEvent.
+type ToolExecutionStartEvent = OnToolCallStartEvent
+
+// ToolExecutionEndEvent is the canonical name for OnToolCallFinishEvent.
+type ToolExecutionEndEvent = OnToolCallFinishEvent
+
+// LanguageModelCallPerformance contains performance metrics for a single
+// provider model call.
+type LanguageModelCallPerformance = telemetry.LanguageModelCallPerformance
+
+// LanguageModelCallStartEvent is passed to OnLanguageModelCallStart
+// immediately before each provider model call begins. Unlike OnStepStart, it
+// only represents model invocation work. Mirrors TS LanguageModelCallStartEvent.
+type LanguageModelCallStartEvent struct {
+	// CallID correlates this event with the other events of the call.
+	CallID string
+
+	// Provider and ModelID identify the model that is called.
+	Provider string
+	ModelID  string
+
+	// Instructions are the step's text instructions.
+	Instructions string
+
+	// InstructionMessages are the step's instructions when given as system
+	// messages.
+	InstructionMessages []types.Message
+
+	// Messages are the step's input messages.
+	Messages []types.Message
+
+	// Tools are the prepared tool definitions sent to the model.
+	Tools []types.Tool
+
+	// Call settings.
+	MaxOutputTokens  *int
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
+	Reasoning        *types.ReasoningLevel
+}
+
+// LanguageModelCallEndEvent is passed to OnLanguageModelCallEnd after the
+// model response has been normalized and parsed, but before any client-side
+// tool execution begins. Mirrors TS LanguageModelCallEndEvent.
+type LanguageModelCallEndEvent struct {
+	// CallID correlates this event with the other events of the call.
+	CallID string
+
+	// Provider is the provider identifier.
+	Provider string
+
+	// ModelID is the model that produced the response (the response model ID
+	// when the provider reports one, otherwise the requested model).
+	ModelID string
+
+	// FinishReason is the unified finish reason of the model call.
+	FinishReason types.FinishReason
+
+	// Usage is the token usage reported by the model call.
+	Usage types.Usage
+
+	// Content are the (parsed) content parts produced by the model call.
+	Content []types.ContentPart
+
+	// ResponseID is the provider-returned response id.
+	ResponseID string
+
+	// ProviderMetadata is optional provider-specific metadata.
+	ProviderMetadata map[string]interface{}
+
+	// Performance contains performance metrics for the model call.
+	Performance LanguageModelCallPerformance
+}
+
+// OnLanguageModelCallStartCallback is the callback type for
+// OnLanguageModelCallStart.
+type OnLanguageModelCallStartCallback = func(ctx context.Context, e LanguageModelCallStartEvent)
+
+// OnLanguageModelCallEndCallback is the callback type for
+// OnLanguageModelCallEnd.
+type OnLanguageModelCallEndCallback = func(ctx context.Context, e LanguageModelCallEndEvent)
+
+func firstLMCallStart(stable, experimental OnLanguageModelCallStartCallback) OnLanguageModelCallStartCallback {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
+
+func firstLMCallEnd(stable, experimental OnLanguageModelCallEndCallback) OnLanguageModelCallEndCallback {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
