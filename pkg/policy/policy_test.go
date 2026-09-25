@@ -181,10 +181,16 @@ func TestNormalizeOPADecision(t *testing.T) {
 		{name: "legacy bool deny", raw: map[string]any{"allow": false, "reason": "no rule"}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "no rule"}},
 		{name: "native string map", raw: map[string]string{"decision": "deny", "reason": "no"}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "no"}},
 		{name: "native bool map", raw: map[string]bool{"allow": true}, want: PolicyDecision{Type: types.ToolApprovalStatusApproved}},
-		{name: "wrapped result", raw: map[string]any{"result": map[string]any{"allow": true}}, want: PolicyDecision{Type: types.ToolApprovalStatusNotApplicable}},
-		{name: "batch expression", raw: []any{map[string]any{"expressions": []any{map[string]any{"value": map[string]any{"allow": false}}}}}, want: PolicyDecision{Type: types.ToolApprovalStatusNotApplicable}},
-		{name: "primitive", raw: "yes", want: PolicyDecision{Type: types.ToolApprovalStatusNotApplicable}},
-		{name: "json bytes", raw: []byte(`{"decision":"allow"}`), want: PolicyDecision{Type: types.ToolApprovalStatusNotApplicable}},
+		// TS f29566e: unrecognized results fail closed (denied); nil stays not-applicable.
+		{name: "nil", raw: nil, want: PolicyDecision{Type: types.ToolApprovalStatusNotApplicable}},
+		{name: "requires approval with reason", raw: map[string]any{"decision": "requires-approval", "reason": "requires operator review"}, want: PolicyDecision{Type: types.ToolApprovalStatusUserApproval, Reason: "requires operator review"}},
+		{name: "unknown decision value", raw: map[string]any{"decision": "blocked"}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "non-boolean legacy value", raw: map[string]any{"allow": "false"}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "unknown key", raw: map[string]any{"verdict": "deny"}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "wrapped result", raw: map[string]any{"result": map[string]any{"allow": true}}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "batch expression", raw: []any{map[string]any{"expressions": []any{map[string]any{"value": map[string]any{"allow": false}}}}}, want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "primitive", raw: "yes", want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
+		{name: "json bytes", raw: []byte(`{"decision":"allow"}`), want: PolicyDecision{Type: types.ToolApprovalStatusDenied, Reason: "unrecognized OPA policy decision"}},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -392,6 +398,42 @@ func TestWrapMCPTools(t *testing.T) {
 	nilApproval := nilWrapped.ToolApproval.(map[string]types.ToolApprovalValue)
 	if nilApproval["search"] != types.ToolApprovalStatusDenied {
 		t.Fatalf("nil approval entry = %#v, want fallback", nilApproval["search"])
+	}
+}
+
+// TS 47bd0a6 wrap-mcp-tools.test.ts: per-tool approval functions fail closed
+// when they return not-applicable/empty; explicit decisions pass through.
+func TestWrapMCPToolsPerToolFunctionsFailClosed(t *testing.T) {
+	t.Parallel()
+	tools := map[string]types.Tool{"search": {Name: "search"}, "push": {Name: "push"}, "list": {Name: "list"}, "static": {Name: "static"}}
+	reason := "ok"
+	wrapped := WrapMCPTools(tools, map[string]interface{}{
+		"search": types.SingleToolApprovalFunc(func(map[string]interface{}, types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		}),
+		"push": types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{}
+		}),
+		"list": types.SingleToolApprovalFunc(func(map[string]interface{}, types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved, Reason: &reason}
+		}),
+		"static": types.ToolApprovalStatusNotApplicable,
+	})
+	approval := wrapped.ToolApproval.(map[string]interface{})
+	search := approval["search"].(types.SingleToolApprovalFunc)
+	if got := search(nil, types.SingleToolApprovalOptions{}); got.Status != types.ToolApprovalStatusUserApproval {
+		t.Fatalf("search = %q, want user-approval fallback", got.Status)
+	}
+	push := approval["push"].(types.GenericToolApprovalFunc)
+	if got := push(approvalArgs("push", nil)); got.Status != types.ToolApprovalStatusUserApproval {
+		t.Fatalf("push = %q, want user-approval fallback", got.Status)
+	}
+	list := approval["list"].(types.SingleToolApprovalFunc)
+	if got := list(nil, types.SingleToolApprovalOptions{}); got.Status != types.ToolApprovalStatusApproved || got.Reason == nil || *got.Reason != "ok" {
+		t.Fatalf("list = %+v, want approved passthrough", got)
+	}
+	if approval["static"] != types.ToolApprovalStatusNotApplicable {
+		t.Fatalf("static status should be kept as-is, got %#v", approval["static"])
 	}
 }
 
