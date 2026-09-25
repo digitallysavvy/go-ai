@@ -666,6 +666,11 @@ type ToolApprovalRequestContent struct {
 	Signature   string   `json:"signature,omitempty"`
 	IsAutomatic bool     `json:"isAutomatic,omitempty"`
 
+	// Reason explains why approval is required (user-approval status with a
+	// reason). It is shown to the approver; approved/denied reasons live on
+	// ToolApprovalResponseContent.
+	Reason string `json:"reason,omitempty"`
+
 	// InputSchemaInput is the tool input as it was before schema parsing and
 	// input refinement, present only when it differs from the approved input.
 	// Approval revalidation re-validates and re-refines this value and
@@ -685,6 +690,7 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 		ApprovalID       string           `json:"approvalId"`
 		ToolCallID       string           `json:"toolCallId,omitempty"`
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
+		Reason           string           `json:"reason,omitempty"`
 		Signature        string           `json:"signature,omitempty"`
 		IsAutomatic      bool             `json:"isAutomatic,omitempty"`
 		InputSchemaInput interface{}      `json:"inputSchemaInput,omitempty"`
@@ -692,6 +698,7 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	out := toolApprovalRequestContentJSON{
 		Type:             t.ContentType(),
 		ApprovalID:       t.ApprovalID,
+		Reason:           t.Reason,
 		Signature:        t.Signature,
 		IsAutomatic:      t.IsAutomatic,
 		InputSchemaInput: t.InputSchemaInput,
