@@ -1611,7 +1611,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolsContext:        r.cbToolsCtx,
 		}, opts.OnStepStart)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
-			Messages: nextMessages,
+			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
