@@ -228,8 +228,9 @@ func (m *LanguageModel) convertPrompt(opts *provider.GenerateOptions) (*prompt.A
 	return ConvertPrompt(opts, m.sendReasoningOption())
 }
 
-// ConvertPrompt converts a call prompt with the Anthropic prompt converter.
-// It is shared with Anthropic-compatible hosts (Bedrock, Vertex).
+// ConvertPrompt converts a call prompt (system prompt, messages or text) with
+// the Anthropic prompt converter (TS convertToAnthropicPrompt). Vertex- and
+// AWS-hosted Anthropic models use it through this package's LanguageModel.
 func ConvertPrompt(opts *provider.GenerateOptions, sendReasoning *bool) (*prompt.AnthropicPrompt, error) {
 	var msgs []types.Message
 	if opts.Prompt.System != "" {
