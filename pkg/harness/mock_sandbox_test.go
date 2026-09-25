@@ -142,8 +142,8 @@ type fakeHarness struct {
 	recipe *Bootstrap
 }
 
-func (h *fakeHarness) SpecificationVersion() string          { return SpecificationVersion }
-func (h *fakeHarness) HarnessID() string                     { return h.id }
+func (h *fakeHarness) SpecificationVersion() string         { return SpecificationVersion }
+func (h *fakeHarness) HarnessID() string                    { return h.id }
 func (h *fakeHarness) BuiltinTools() map[string]BuiltinTool { return map[string]BuiltinTool{} }
 func (h *fakeHarness) DoStart(context.Context, StartOptions) (Session, error) {
 	return nil, errors.New("not used")

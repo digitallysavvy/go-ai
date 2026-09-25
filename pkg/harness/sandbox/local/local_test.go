@@ -155,8 +155,8 @@ func TestContextCancellationKillsProcess(t *testing.T) {
 
 type recipeHarness struct{ recipe *harness.Bootstrap }
 
-func (h recipeHarness) SpecificationVersion() string                  { return harness.SpecificationVersion }
-func (h recipeHarness) HarnessID() string                             { return "demo" }
+func (h recipeHarness) SpecificationVersion() string                 { return harness.SpecificationVersion }
+func (h recipeHarness) HarnessID() string                            { return "demo" }
 func (h recipeHarness) BuiltinTools() map[string]harness.BuiltinTool { return nil }
 func (h recipeHarness) DoStart(context.Context, harness.StartOptions) (harness.Session, error) {
 	return nil, nil
