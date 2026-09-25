@@ -10,32 +10,32 @@ import (
 // ── Allowed URLs ──────────────────────────────────────────────────────────────
 
 func TestValidateDownloadURL_AllowsHTTPS(t *testing.T) {
-	if err := validateDownloadURL("https://203.0.113.1/image.png"); err != nil {
+	if err := validateDownloadURL("https://8.8.8.1/image.png"); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
 
 func TestValidateDownloadURL_AllowsHTTP(t *testing.T) {
-	if err := validateDownloadURL("http://203.0.113.2/image.png"); err != nil {
+	if err := validateDownloadURL("http://8.8.8.2/image.png"); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
 
 func TestValidateDownloadURL_AllowsHTTPSchemeCaseInsensitive(t *testing.T) {
-	if err := validateDownloadURL("HTTPS://203.0.113.3/image.png"); err != nil {
+	if err := validateDownloadURL("HTTPS://8.8.8.3/image.png"); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
 
 func TestValidateDownloadURL_AllowsPublicIPAddress(t *testing.T) {
-	// 203.0.113.1 is TEST-NET-3 (documentation range), but it is not private/internal.
-	if err := validateDownloadURL("https://203.0.113.1/file"); err != nil {
+	// 8.8.8.1 is a public, globally-routable address. TEST-NET ranges are blocked (TS parity).
+	if err := validateDownloadURL("https://8.8.8.1/file"); err != nil {
 		t.Errorf("expected public IP to be allowed, got: %v", err)
 	}
 }
 
 func TestValidateDownloadURL_AllowsURLWithPort(t *testing.T) {
-	if err := validateDownloadURL("https://203.0.113.4:8080/file"); err != nil {
+	if err := validateDownloadURL("https://8.8.8.4:8080/file"); err != nil {
 		t.Errorf("expected URL with port to be allowed, got: %v", err)
 	}
 }
@@ -168,7 +168,7 @@ func TestValidateDownloadURL_DoesNotTreatHexLikeDomainAsIPv4(t *testing.T) {
 		if host != "bad.cafe" {
 			t.Fatalf("netLookupHost host = %q, want bad.cafe", host)
 		}
-		return []string{"203.0.113.10"}, nil
+		return []string{"8.8.8.10"}, nil
 	}
 	t.Cleanup(func() { netLookupHost = restore })
 
@@ -301,9 +301,9 @@ func TestValidateDownloadURL_BlocksIPv6MappedLinkLocal(t *testing.T) {
 }
 
 func TestValidateDownloadURL_AllowsIPv6MappedPublicIP(t *testing.T) {
-	// ::ffff:203.0.113.1 maps to a public IPv4 address — should be allowed.
-	if err := validateDownloadURL("http://[::ffff:203.0.113.1]/file"); err != nil {
-		t.Errorf("expected ::ffff:203.0.113.1 to be allowed, got: %v", err)
+	// ::ffff:8.8.8.1 maps to a public IPv4 address — should be allowed.
+	if err := validateDownloadURL("http://[::ffff:8.8.8.1]/file"); err != nil {
+		t.Errorf("expected ::ffff:8.8.8.1 to be allowed, got: %v", err)
 	}
 }
 
@@ -326,7 +326,7 @@ func TestDownloadSSRFPrivateIPv6Blocked(t *testing.T) {
 
 // TestDownloadSSRFPublicRedirectAllowed verifies that public redirect targets pass.
 func TestDownloadSSRFPublicRedirectAllowed(t *testing.T) {
-	if err := validateDownloadURL("https://203.0.113.5/file.bin"); err != nil {
+	if err := validateDownloadURL("https://8.8.8.5/file.bin"); err != nil {
 		t.Errorf("expected public URL to be allowed, got: %v", err)
 	}
 }
@@ -345,5 +345,34 @@ func TestValidateDownloadURL_ReturnsStructuredSSRFError(t *testing.T) {
 	}
 	if ssrfErr.URL != "http://127.0.0.1/private" {
 		t.Fatalf("unexpected SSRF URL: %q", ssrfErr.URL)
+	}
+}
+
+// Ports TS validate-download-url.test.ts range cases at ai@7.0.113
+// (224.0.0.0/4, TEST-NET-1/2/3, 2001:db8::/32, 3fff::/20).
+func TestValidateDownloadURL_BlocksTSReservedRanges(t *testing.T) {
+	for _, raw := range []string{
+		"http://224.0.0.1/file",
+		"http://239.255.255.250/file",
+		"http://192.0.2.1/file",
+		"http://198.51.100.1/file",
+		"http://203.0.113.1/file",
+		"http://[2001:db8::1]/file",
+		"http://[3fff::1]/file",
+		"http://[3fff:fff::1]/file",
+		"http://[::ffff:203.0.113.1]/file",
+	} {
+		if err := validateDownloadURL(raw); err == nil {
+			t.Errorf("expected %s to be blocked", raw)
+		}
+	}
+	for _, raw := range []string{
+		"http://198.51.101.1/file",
+		"http://[2606:4700::1]/file",
+		"http://[3fff:1000::1]/file",
+	} {
+		if err := validateDownloadURL(raw); err != nil {
+			t.Errorf("expected %s to be allowed, got %v", raw, err)
+		}
 	}
 }

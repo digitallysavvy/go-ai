@@ -16,6 +16,7 @@ import (
 func insecureDownloadOptions() DownloadOptions {
 	opts := DefaultDownloadOptions()
 	opts.URLValidator = nil
+	opts.Transport = nil
 	return opts
 }
 
@@ -189,7 +190,7 @@ func TestDownload_JustOverLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	opts := DefaultDownloadOptions()
+	opts := insecureDownloadOptions()
 	opts.MaxSize = 1000
 
 	_, err := Download(context.Background(), server.URL, opts)
@@ -427,6 +428,19 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"http://192.0.0.1/file",
 		"http://240.0.0.1/file",
 		"http://255.255.255.255/file",
+		// TS: should block 224.0.0.0/4 (multicast)
+		"http://224.0.0.1/file",
+		"http://239.255.255.250/file",
+		// TS: TEST-NET documentation ranges
+		"http://192.0.2.1/file",
+		"http://198.51.100.1/file",
+		"http://203.0.113.1/file",
+		"http://[::ffff:203.0.113.1]/file",
+		"http://[64:ff9b::203.0.113.1]/file",
+		// TS: should block 2001:db8::/32 and 3fff::/20 (documentation)
+		"http://[2001:db8::1]/file",
+		"http://[3fff::1]/file",
+		"http://[3fff:fff::1]/file",
 	}
 	for _, raw := range blocked {
 		t.Run(raw, func(t *testing.T) {
@@ -442,10 +456,12 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"data:text/plain;base64,aGVsbG8=",
 		"http://172.15.0.1/file",
 		"http://172.32.0.1/file",
-		"http://203.0.113.1/file",
-		"http://[::ffff:203.0.113.1]/file",
-		"http://[64:ff9b::203.0.113.1]/file",
-		"http://[2001:db8::1]/file",
+		"https://8.8.8.8/file",
+		"http://198.51.101.1/file",
+		"http://[::ffff:8.8.8.8]/file",
+		"http://[64:ff9b::8.8.8.8]/file",
+		"http://[2606:4700::1]/file",
+		"http://[3fff:1000::1]/file",
 		"http://100.63.0.1/file",
 		"http://100.128.0.1/file",
 		"http://8.8/file",
@@ -578,6 +594,7 @@ func TestDownloadRedirectTargetValidationBlocksUnsafeTarget(t *testing.T) {
 	defer server.Close()
 
 	opts := DefaultDownloadOptions()
+	opts.Transport = nil // loopback fixtures; connect-time pinning covered in safe_transport_test.go
 	opts.URLValidator = func(raw string) error {
 		if strings.HasPrefix(raw, server.URL) {
 			return nil
@@ -617,6 +634,7 @@ func TestDownloadAllowsTenRedirectsThenRejectsNextHop(t *testing.T) {
 	defer server.Close()
 
 	opts := DefaultDownloadOptions()
+	opts.Transport = nil // loopback fixtures; connect-time pinning covered in safe_transport_test.go
 	opts.URLValidator = func(raw string) error {
 		if strings.HasPrefix(raw, server.URL) {
 			return nil

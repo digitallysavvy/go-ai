@@ -85,7 +85,8 @@ func TestBFLImageModel_DoGenerateSuccess(t *testing.T) {
 }
 
 func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
-	t.Parallel()
+	// Not parallel: this test swaps the process-global http.DefaultTransport
+	// and the package download transport, which races with parallel tests.
 
 	var submitHeaders http.Header
 	var pollHeaders http.Header
@@ -109,6 +110,9 @@ func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
 		}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = oldDefaultTransport })
+	oldDownloadTransport := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = oldDownloadTransport })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/flux-pro":

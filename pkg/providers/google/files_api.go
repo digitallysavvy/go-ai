@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
@@ -104,7 +105,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
 
-		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+file.Name, nil)
+		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+googleFilePath(file.Name), nil)
 		for k, v := range headers {
 			pollReq.Header.Set(k, v)
 		}
@@ -188,4 +189,14 @@ func inlineFileBytes(data types.FileData) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported file data type %q", data.Type)
 	}
+}
+
+// googleFilePath path-encodes a provider-returned file resource name before it
+// is reused in the credentialed polling URL (TS google-files.ts, 7de3612):
+// "files/<id>" keeps the collection segment and encodes only the id.
+func googleFilePath(name string) string {
+	if rest, ok := strings.CutPrefix(name, "files/"); ok && rest != "" && !strings.Contains(rest, "/") {
+		return "files/" + providerutils.EncodePathSegment(rest)
+	}
+	return providerutils.EncodePathSegment(name)
 }
