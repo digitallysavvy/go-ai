@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"unicode/utf16"
-	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -196,49 +194,4 @@ func writeFingerprintCanonical(buf *bytes.Buffer, value interface{}) error {
 		return writeFingerprintCanonical(buf, generic)
 	}
 	return nil
-}
-
-// writeJSString writes s exactly as JavaScript JSON.stringify would. Unlike
-// encoding/json it does not escape <, >, &, U+2028 or U+2029.
-func writeJSString(buf *bytes.Buffer, s string) {
-	const hex = "0123456789abcdef"
-	buf.WriteByte('"')
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == '"':
-			buf.WriteString(`\"`)
-		case r == '\\':
-			buf.WriteString(`\\`)
-		case r == '\b':
-			buf.WriteString(`\b`)
-		case r == '\f':
-			buf.WriteString(`\f`)
-		case r == '\n':
-			buf.WriteString(`\n`)
-		case r == '\r':
-			buf.WriteString(`\r`)
-		case r == '\t':
-			buf.WriteString(`\t`)
-		case r < 0x20:
-			buf.WriteString(`\u00`)
-			buf.WriteByte(hex[r>>4])
-			buf.WriteByte(hex[r&0xf])
-		default:
-			buf.WriteString(s[i : i+size])
-		}
-		i += size
-	}
-	buf.WriteByte('"')
-}
-
-// lessUTF16 orders strings by UTF-16 code units, matching JS Array#sort.
-func lessUTF16(a, b string) bool {
-	ua, ub := utf16.Encode([]rune(a)), utf16.Encode([]rune(b))
-	for i := 0; i < len(ua) && i < len(ub); i++ {
-		if ua[i] != ub[i] {
-			return ua[i] < ub[i]
-		}
-	}
-	return len(ua) < len(ub)
 }
