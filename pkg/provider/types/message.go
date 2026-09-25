@@ -665,6 +665,12 @@ type ToolApprovalRequestContent struct {
 	ToolCall    ToolCall `json:"toolCall,omitempty"`
 	Signature   string   `json:"signature,omitempty"`
 	IsAutomatic bool     `json:"isAutomatic,omitempty"`
+
+	// InputSchemaInput is the tool input as it was before schema parsing and
+	// input refinement, present only when it differs from the approved input.
+	// Approval revalidation re-validates and re-refines this value and
+	// requires the result to equal the approved input.
+	InputSchemaInput interface{} `json:"inputSchemaInput,omitempty"`
 }
 
 func (t ToolApprovalRequestContent) ContentType() string {
@@ -675,18 +681,20 @@ func (t ToolApprovalRequestContent) ContentType() string {
 // provider replay. Public result content still includes ToolCall when present.
 func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	type toolApprovalRequestContentJSON struct {
-		Type        string           `json:"type"`
-		ApprovalID  string           `json:"approvalId"`
-		ToolCallID  string           `json:"toolCallId,omitempty"`
-		ToolCall    *ToolCallContent `json:"toolCall,omitempty"`
-		Signature   string           `json:"signature,omitempty"`
-		IsAutomatic bool             `json:"isAutomatic,omitempty"`
+		Type             string           `json:"type"`
+		ApprovalID       string           `json:"approvalId"`
+		ToolCallID       string           `json:"toolCallId,omitempty"`
+		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
+		Signature        string           `json:"signature,omitempty"`
+		IsAutomatic      bool             `json:"isAutomatic,omitempty"`
+		InputSchemaInput interface{}      `json:"inputSchemaInput,omitempty"`
 	}
 	out := toolApprovalRequestContentJSON{
-		Type:        t.ContentType(),
-		ApprovalID:  t.ApprovalID,
-		Signature:   t.Signature,
-		IsAutomatic: t.IsAutomatic,
+		Type:             t.ContentType(),
+		ApprovalID:       t.ApprovalID,
+		Signature:        t.Signature,
+		IsAutomatic:      t.IsAutomatic,
+		InputSchemaInput: t.InputSchemaInput,
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)

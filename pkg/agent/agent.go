@@ -489,6 +489,11 @@ type AgentConfig struct {
 	// types.ToolApprovalFunc and maps keyed by tool name. Nil or zero-valued
 	// results are treated as not-applicable.
 	ToolApproval types.ToolApprovalConfig
+
+	// ExperimentalToolApprovalSecret signs issued tool approval requests and
+	// verifies resumed approval responses before tools execute (TS
+	// experimental_toolApprovalSecret). Nil disables signing/verification.
+	ExperimentalToolApprovalSecret []byte
 }
 
 // PrepareCallConfig contains configuration that can be modified before each call
@@ -527,6 +532,10 @@ type PrepareCallConfig struct {
 
 	// ToolApproval configures automatic approval handling for this call.
 	ToolApproval types.ToolApprovalConfig
+
+	// ExperimentalToolApprovalSecret overrides the approval signing secret for
+	// this call.
+	ExperimentalToolApprovalSecret []byte
 
 	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
 	SensitiveRuntimeContext bool

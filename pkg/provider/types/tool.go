@@ -182,6 +182,10 @@ type ToolExecutionOptions struct {
 	// ToolMetadata contains metadata attached to the tool call by the provider.
 	ToolMetadata map[string]interface{}
 
+	// Messages are the model messages sent to the language model to initiate
+	// the response that contained the tool call (TS ToolExecutionOptions.messages).
+	Messages []Message
+
 	// ExperimentalSandbox is the sandbox environment for this tool execution.
 	// It is intentionally typed as interface{} so applications can provide their
 	// own sandbox implementation while core APIs preserve TypeScript parity.

@@ -156,6 +156,16 @@ func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, p
 			}
 		}
 	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+		if obj, ok := asMap(value); ok {
+			props, _ := schema["properties"].(map[string]interface{})
+			for key := range obj {
+				if _, declared := props[key]; !declared {
+					return fmt.Errorf("%s.%s: additional property is not allowed", path, key)
+				}
+			}
+		}
+	}
 	if allOf, ok := interfaceSlice(schema["allOf"]); ok {
 		for i, rawSubschema := range allOf {
 			subschema, ok := rawSubschema.(map[string]interface{})

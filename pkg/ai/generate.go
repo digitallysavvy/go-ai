@@ -695,6 +695,46 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
 	initialMessages := append([]types.Message(nil), prompt.Messages...)
+
+	// Resume tool approvals from the input messages (TS collectToolApprovals
+	// + validateApprovedToolApprovals): execute re-validated approved tools,
+	// report invalid inputs and denials to the model before the first step.
+	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
+		messages:       initialMessages,
+		tools:          opts.Tools,
+		toolApproval:   opts.ToolApproval,
+		toolsContext:   toolsContext,
+		runtimeContext: runtimeContext,
+		secret:         opts.ExperimentalToolApprovalSecret,
+		refine:         opts.ExperimentalRefineToolInput,
+		usage:          &result.Usage,
+		callbacks: toolCallEventCallbacks{
+			callID:              callID,
+			onStart:             opts.OnToolExecutionStart,
+			onFinish:            opts.OnToolExecutionEnd,
+			fallbackStart:       opts.OnToolCallStart,
+			fallbackFinish:      opts.OnToolCallFinish,
+			modelProvider:       opts.Model.Provider(),
+			modelID:             opts.Model.ModelID(),
+			messages:            initialMessages,
+			experimentalContext: runtimeContext,
+			runtimeContext:      runtimeContext,
+			toolsContext:        toolsContext,
+			functionID:          cbFuncID,
+			metadata:            cbMeta,
+			timeout:             opts.Timeout,
+			telemetrySettings:   telemetrySettings,
+			experimentalSandbox: opts.ExperimentalSandbox,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	initialResponseMessages := resumed.responseMessages
+	if len(initialResponseMessages) > 0 {
+		currentMessages = append(append([]types.Message(nil), currentMessages...), initialResponseMessages...)
+		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, nil)
+	}
 	initialInstructions := system
 	instructionsForNextStep := system
 
@@ -715,7 +755,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
 
-		accumulatedResponseMessages := responseMessagesFromSteps(result.Steps)
+		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 				Model:               stepModel,
@@ -818,7 +858,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-			Messages: stepMessages,
+			Messages: messagesForModel(stepMessages),
 			System:   appendSandboxDescription(stepSystem, stepSandbox),
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
@@ -983,6 +1023,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		hasUserApproval := false
 
 		// Check if there are tool calls to execute
+		preRefinementCalls := genResult.ToolCalls
 		refinedToolCalls, refineErr := RefineToolCalls(ctx, genResult.ToolCalls, stepTools, opts.ExperimentalRefineToolInput, runtimeContext, toolsContext)
 		if refineErr != nil {
 			return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
@@ -1017,6 +1058,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				telemetrySettings:   telemetrySettings,
 				experimentalSandbox: stepSandbox,
 				toolExecutionMs:     map[string]int64{},
+				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
 			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
@@ -1039,7 +1081,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
-			stepResult.Content = append(stepResult.Content, toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret)...)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -1143,7 +1185,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Sources = append(result.Sources, stepResult.Sources...)
 		result.Files = append(result.Files, stepResult.Files...)
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
-		result.ResponseMessages = responseMessagesFromSteps(result.Steps)
+		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.FinalStep = stepResult
 
 		// Call step finish callback (v6.0: with user context)
@@ -1270,6 +1312,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if !hasLocalToolCalls && !hasPendingDeferred {
 			break
 		}
+		// Continue only after every local tool call has an output or was
+		// denied (TS: clientToolOutputs + denied === clientToolCalls). Calls
+		// left unexecuted because of an unsafe finish reason stop the loop.
+		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, stepResult.ToolResults) {
+			break
+		}
 	}
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
@@ -1278,7 +1326,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.FinalStep = result.Steps[len(result.Steps)-1]
 		result.Request = result.FinalStep.Request
 		result.Response = result.FinalStep.Response
-		result.ResponseMessages = responseMessagesFromSteps(result.Steps)
+		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.RawRequest = result.Request.Body
 		result.RawResponse = result.Response.Body
 	}
@@ -1416,6 +1464,18 @@ type toolCallEventCallbacks struct {
 	telemetrySettings   *TelemetrySettings
 	experimentalSandbox interface{}
 	toolExecutionMs     map[string]int64
+	// executionBlocked resolves approvals but skips local tool execution.
+	// Set when the step finished with a finish reason that does not allow
+	// automatic tool execution (TS isToolExecutionAllowedFinishReason).
+	executionBlocked bool
+}
+
+// isToolExecutionAllowedFinishReason reports whether client tools may be
+// executed automatically after a step with this finish reason. Tool calls
+// from truncated, filtered, errored or otherwise unexpected responses are
+// never executed. Mirrors TS isToolExecutionAllowedFinishReason.
+func isToolExecutionAllowedFinishReason(reason types.FinishReason) bool {
+	return reason == types.FinishReasonStop || reason == types.FinishReasonToolCalls
 }
 
 type toolResultModelOutputError struct {
@@ -1434,6 +1494,32 @@ func (e *toolResultModelOutputError) Unwrap() error {
 		return nil
 	}
 	return e.err
+}
+
+// hasUnresolvedLocalToolCalls reports whether a locally executed tool call
+// of the step has neither a result nor an approval outcome.
+func hasUnresolvedLocalToolCalls(calls []types.ToolCall, toolsByName map[string]*types.Tool, results []types.ToolResult) bool {
+	resolved := make(map[string]bool, len(results))
+	for _, result := range results {
+		resolved[result.ToolCallID] = true
+	}
+	for _, call := range calls {
+		tool := toolsByName[call.ToolName]
+		if tool == nil || tool.ProviderExecuted {
+			continue
+		}
+		if !resolved[call.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// responseMessagesWithInitial returns the initial response messages (tool
+// results from resumed approvals) followed by the step response messages.
+func responseMessagesWithInitial(initial []types.Message, steps []types.StepResult) []types.Message {
+	messages := append([]types.Message(nil), initial...)
+	return append(messages, responseMessagesFromSteps(steps)...)
 }
 
 func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
@@ -1590,6 +1676,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolMetadata:     call.ToolMetadata,
 			}
 		} else {
+			if callbacks.executionBlocked {
+				// Leave the slot empty; it is removed before returning.
+				continue
+			}
 			approvalStatus := approval.Status
 			approvalReason := approval.Reason
 
@@ -1642,6 +1732,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Usage:               usage,
 				Metadata:            make(map[string]interface{}),
 				ToolMetadata:        call.ToolMetadata,
+				Messages:            callbacks.messages,
 				ExperimentalSandbox: callbacks.experimentalSandbox,
 			}
 
@@ -1748,6 +1839,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		}
 	}
 
+	if callbacks.executionBlocked {
+		executed := results[:0]
+		for _, result := range results {
+			if result.ToolCallID == "" && result.ToolName == "" {
+				continue
+			}
+			executed = append(executed, result)
+		}
+		results = executed
+	}
 	return results, nil
 }
 

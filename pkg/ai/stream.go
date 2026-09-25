@@ -404,6 +404,12 @@ type StreamTextResult struct {
 	cbInclude             IncludeOptions
 	cbSteps               []types.StepResult
 	cbResponseMessages    []types.Message
+	// initialResponseMessages holds the tool message produced by resuming
+	// tool approvals from the input messages (prepended to ResponseMessages).
+	initialResponseMessages []types.Message
+	// resumeChunksRemaining counts the resumed-approval chunks at the head of
+	// the stream; they are forwarded but not accumulated into step content.
+	resumeChunksRemaining int
 	cbExperimentalSandbox interface{}
 	// Snapshot of the initial messages and tools for event population
 	cbMessages []types.Message
@@ -526,9 +532,50 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		ToolsContext:        toolsContext,
 	}, opts.OnStart)
 
+	// Resume tool approvals from the input messages before the first step
+	// (TS streamText initial tool execution stream).
+	var resumeUsage types.Usage
+	resumed, resumeErr := resumeToolApprovals(ctx, toolApprovalResumeOptions{
+		messages:       prompt.Messages,
+		tools:          opts.Tools,
+		toolApproval:   opts.ToolApproval,
+		toolsContext:   toolsContext,
+		runtimeContext: runtimeContext,
+		secret:         opts.ExperimentalToolApprovalSecret,
+		refine:         opts.ExperimentalRefineToolInput,
+		usage:          &resumeUsage,
+		streaming:      true,
+		callbacks: toolCallEventCallbacks{
+			callID:              callID,
+			onStart:             opts.OnToolExecutionStart,
+			onFinish:            opts.OnToolExecutionEnd,
+			fallbackStart:       opts.OnToolCallStart,
+			fallbackFinish:      opts.OnToolCallFinish,
+			modelProvider:       opts.Model.Provider(),
+			modelID:             opts.Model.ModelID(),
+			messages:            prompt.Messages,
+			experimentalContext: runtimeContext,
+			runtimeContext:      runtimeContext,
+			toolsContext:        toolsContext,
+			functionID:          cbFuncID,
+			metadata:            cbMeta,
+			timeout:             opts.Timeout,
+			telemetrySettings:   telemetrySettings,
+			experimentalSandbox: opts.ExperimentalSandbox,
+		},
+	})
+	if resumeErr != nil {
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: resumeErr})
+		return nil, resumeErr
+	}
+	initialResponseMessages := resumed.responseMessages
+
 	stepModel := opts.Model
 	stepSystem := system
 	stepMessages := prompt.Messages
+	if len(initialResponseMessages) > 0 {
+		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
+	}
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 	stepToolChoice := opts.ToolChoice
 	stepToolOrder := opts.ToolOrder
@@ -542,7 +589,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 			InitialInstructions: &system,
 			Messages:            append([]types.Message(nil), stepMessages...),
 			InitialMessages:     append([]types.Message(nil), prompt.Messages...),
-			ResponseMessages:    nil,
+			ResponseMessages:    responseMessagesWithInitial(initialResponseMessages, nil),
 			UserContext:         runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
@@ -632,7 +679,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 	}
 
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: stepMessages}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -699,9 +746,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 
 	// Create result
-	if len(opts.InitialStreamChunks) > 0 {
-		prefix := make([]provider.StreamChunk, len(opts.InitialStreamChunks))
-		copy(prefix, opts.InitialStreamChunks)
+	if len(opts.InitialStreamChunks) > 0 || len(resumed.chunks) > 0 {
+		prefix := make([]provider.StreamChunk, 0, len(resumed.chunks)+len(opts.InitialStreamChunks))
+		prefix = append(prefix, resumed.chunks...)
+		prefix = append(prefix, opts.InitialStreamChunks...)
 		stream = &prefixedTextStream{prefix: prefix, base: stream}
 	}
 	result := &StreamTextResult{
@@ -736,6 +784,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		// Retained for deferred provider tool continuation.
 		cbModel:      stepModel,
 		cbStreamOpts: opts,
+		// Resumed approval outputs precede the first step.
+		initialResponseMessages: initialResponseMessages,
+		cbResponseMessages:      responseMessagesWithInitial(initialResponseMessages, nil),
+		resumeChunksRemaining:   len(resumed.chunks),
 	}
 
 	// Start the processing loop when any callback depends on post-stream tool
@@ -875,6 +927,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					fireAbort(err)
 				}
 				break
+			}
+			if r.resumeChunksRemaining > 0 {
+				// Outputs of resumed tool approvals: forward, but they belong
+				// to the initial response, not to this step's content.
+				r.resumeChunksRemaining--
+				if onChunk != nil {
+					onChunk(*chunk)
+				}
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(chunk.Type),
+				})
+				continue
 			}
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
@@ -1131,12 +1196,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepText := strings.Join(stepTextParts, "")
 		r.text = strings.Join(accumulatedTextParts, "")
 		var refineErr error
+		preRefinementCalls := stepToolCalls
 		stepToolCalls, refineErr = RefineToolCalls(ctx, stepToolCalls, stepTools, opts.ExperimentalRefineToolInput, r.cbRuntimeCtx, r.cbToolsCtx)
 		if refineErr != nil {
 			r.err = fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
 			break
 		}
 		stepToolCalls = enrichToolCallMetadata(stepToolCalls, stepTools)
+		stepInputSchemaInputs := inputSchemaInputs(preRefinementCalls, stepToolCalls)
 		stepContent = replaceToolCallContentParts(stepContent, stepToolCalls)
 		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
 
@@ -1165,6 +1232,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				telemetrySettings:   r.telemetrySettings,
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
+				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
@@ -1200,6 +1268,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			switch tr.ApprovalStatus {
 			case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
 				request := toolApprovalRequestFromToolResult(*tr)
+				if input, ok := stepInputSchemaInputs[tr.ToolCallID]; ok {
+					request.InputSchemaInput = input
+				}
 				emitChunk(provider.StreamChunk{
 					Type:                provider.ChunkTypeToolApprovalRequest,
 					ToolApprovalRequest: &request,
@@ -1228,7 +1299,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				ToolResult: tr,
 			})
 		}
-		stepContent = append(stepContent, toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret)...)
+		stepContent = append(stepContent, attachInputSchemaInputs(toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret), stepInputSchemaInputs)...)
 
 		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.
@@ -1369,7 +1440,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepResult = allSteps[len(allSteps)-1]
 		r.mu.Lock()
 		r.cbSteps = append([]types.StepResult(nil), allSteps...)
-		r.cbResponseMessages = responseMessagesFromSteps(allSteps)
+		r.cbResponseMessages = responseMessagesWithInitial(r.initialResponseMessages, allSteps)
 		r.mu.Unlock()
 		Notify(ctx, OnStepFinishEvent{
 			CallID:             r.cbCallID,
@@ -1433,6 +1504,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
 			break
 		}
+		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
+		if hasUnresolvedLocalToolCalls(stepToolCalls, toolsByName, stepToolResults) {
+			break
+		}
 
 		// Resolve ResponseFormat for the next step.
 		responseFormat := opts.ResponseFormat
@@ -1459,7 +1534,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				InitialInstructions: &r.cbSystem,
 				Messages:            append([]types.Message(nil), nextMessages...),
 				InitialMessages:     append([]types.Message(nil), r.cbMessages...),
-				ResponseMessages:    responseMessagesFromSteps(allSteps),
+				ResponseMessages:    responseMessagesWithInitial(r.initialResponseMessages, allSteps),
 				UserContext:         r.cbRuntimeCtx,
 				RuntimeContext:      r.cbRuntimeCtx,
 				ToolsContext:        r.cbToolsCtx,
@@ -1536,7 +1611,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolsContext:        r.cbToolsCtx,
 		}, opts.OnStepStart)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
-			Messages: nextMessages,
+			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
@@ -2250,6 +2325,11 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 			}
 			return "", err
 		}
+		if r.resumeChunksRemaining > 0 {
+			// Resumed tool approval outputs are not part of the step content.
+			r.resumeChunksRemaining--
+			continue
+		}
 
 		if isModelOutputChunkType(chunk.Type) {
 			sawOutput = true
@@ -2468,7 +2548,8 @@ func (r *StreamTextResult) ReadAll() (string, error) {
 	}
 	r.mu.Lock()
 	r.cbSteps = []types.StepResult{step}
-	r.cbResponseMessages = responseMessages
+	r.cbResponseMessages = responseMessagesWithInitial(r.initialResponseMessages, nil)
+	r.cbResponseMessages = append(r.cbResponseMessages, responseMessages...)
 	r.stepRequest = step.Request
 	r.stepResponse = step.Response
 	r.mu.Unlock()

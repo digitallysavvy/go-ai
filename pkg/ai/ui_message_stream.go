@@ -1630,6 +1630,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalRequest.Signature != "" {
 			part["signature"] = chunk.ToolApprovalRequest.Signature
 		}
+		if chunk.ToolApprovalRequest.InputSchemaInput != nil {
+			part["inputSchemaInput"] = chunk.ToolApprovalRequest.InputSchemaInput
+		}
 		out = append(out, part)
 	case provider.ChunkTypeToolApprovalResponse:
 		if chunk.ToolApprovalResponse == nil {

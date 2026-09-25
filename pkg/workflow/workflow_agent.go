@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -133,6 +134,9 @@ type WorkflowAgent struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// ExperimentalToolApprovalSecret signs issued approval requests and
+	// verifies resumed approvals before approved tools execute.
+	ExperimentalToolApprovalSecret []byte
 }
 
 // WorkflowGenerateOptions configures a single generate invocation.
@@ -151,6 +155,8 @@ type WorkflowGenerateOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
+	ExperimentalToolApprovalSecret []byte
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -182,6 +188,8 @@ type WorkflowStreamOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
+	ExperimentalToolApprovalSecret []byte
 
 	OnChunk              func(chunk provider.StreamChunk)
 	OnStart              StartCallback
@@ -314,25 +322,6 @@ func workflowToolByName(tools []types.Tool, name string) *types.Tool {
 	return nil
 }
 
-func workflowToolCallFromContent(part types.ToolCallContent) types.ToolCall {
-	return types.ToolCall{
-		ID:               part.ToolCallID,
-		ToolName:         part.ToolName,
-		Title:            part.Title,
-		Arguments:        part.Arguments,
-		RawArguments:     part.Input,
-		ProviderExecuted: part.ProviderExecuted,
-		ToolMetadata:     part.ToolMetadata,
-		ThoughtSignature: part.ThoughtSignature,
-		Dynamic:          part.Dynamic,
-		Invalid:          part.Invalid,
-	}
-}
-
-func workflowToolCallIsZero(call types.ToolCall) bool {
-	return call.ID == "" && call.ToolName == "" && len(call.Arguments) == 0 && call.RawArguments == "" && !call.ProviderExecuted
-}
-
 func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types.ToolCall, messages []types.Message, toolsContext map[string]interface{}) bool {
 	if tool == nil {
 		return false
@@ -362,210 +351,160 @@ func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types
 	}
 }
 
-func validateWorkflowToolInput(tool *types.Tool, input map[string]interface{}) error {
-	if tool == nil || tool.Parameters == nil {
-		return nil
-	}
-	switch s := tool.Parameters.(type) {
-	case schema.Schema:
-		return s.Validator().Validate(input)
-	case map[string]interface{}:
-		return schema.NewSimpleJSONSchema(s).Validator().Validate(input)
-	default:
-		return nil
-	}
+// workflowApprovalResumeOptions configures processWorkflowApprovalResume.
+type workflowApprovalResumeOptions struct {
+	messages            []types.Message
+	tools               []types.Tool
+	runtimeContext      interface{}
+	toolsContext        map[string]interface{}
+	experimentalSandbox interface{}
+	toolApprovalSecret  []byte
+	onToolStart         ToolExecutionStartCallback
+	onToolEnd           ToolExecutionEndCallback
 }
 
-func processWorkflowApprovalResume(ctx context.Context, messages []types.Message, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}) ([]types.Message, []provider.StreamChunk, error) {
+// processWorkflowApprovalResume resolves tool approvals from the last tool
+// message before the agent loop starts, mirroring TS WorkflowAgent: it reuses
+// the core collector and validator (ai.CollectToolApprovals /
+// ai.ValidateApprovedToolApprovals, incl. signature verification when a
+// secret is configured), executes approved local tools with tool execution
+// callbacks, turns revalidation failures and execution errors into
+// model-visible error-text results, synthesizes execution-denied results for
+// denials, and strips locally resolved approval parts. Provider-executed
+// approvals are preserved (and stamped providerExecuted) for the provider.
+func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalResumeOptions) ([]types.Message, []provider.StreamChunk, error) {
+	messages := opts.messages
 	if len(messages) == 0 {
 		return messages, nil, nil
 	}
-	toolCallsByID := map[string]types.ToolCall{}
-	requestsByApprovalID := map[string]types.ToolCall{}
-	responsesByApprovalID := map[string]types.ToolApprovalResponseContent{}
-	var responseOrder []string
-	for _, msg := range messages {
-		switch msg.Role {
-		case types.RoleAssistant:
-			for _, part := range msg.Content {
-				switch p := part.(type) {
-				case types.ToolCallContent:
-					call := workflowToolCallFromContent(p)
-					toolCallsByID[call.ID] = call
-				case *types.ToolCallContent:
-					if p != nil {
-						call := workflowToolCallFromContent(*p)
-						toolCallsByID[call.ID] = call
-					}
-				case types.ToolApprovalRequestContent:
-					call := p.ToolCall
-					if workflowToolCallIsZero(call) {
-						call = toolCallsByID[p.ToolCallID]
-					}
-					if !workflowToolCallIsZero(call) {
-						requestsByApprovalID[p.ApprovalID] = call
-					}
-				case *types.ToolApprovalRequestContent:
-					if p != nil {
-						call := p.ToolCall
-						if workflowToolCallIsZero(call) {
-							call = toolCallsByID[p.ToolCallID]
-						}
-						if !workflowToolCallIsZero(call) {
-							requestsByApprovalID[p.ApprovalID] = call
-						}
-					}
-				}
-			}
-		case types.RoleTool:
-			for _, part := range msg.Content {
-				switch p := part.(type) {
-				case types.ToolApprovalResponseContent:
-					if _, exists := responsesByApprovalID[p.ApprovalID]; !exists {
-						responseOrder = append(responseOrder, p.ApprovalID)
-					}
-					responsesByApprovalID[p.ApprovalID] = p
-				case *types.ToolApprovalResponseContent:
-					if p != nil {
-						if _, exists := responsesByApprovalID[p.ApprovalID]; !exists {
-							responseOrder = append(responseOrder, p.ApprovalID)
-						}
-						responsesByApprovalID[p.ApprovalID] = *p
-					}
-				}
-			}
-		}
+	collected, err := ai.CollectToolApprovals(messages)
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(responsesByApprovalID) == 0 {
+	if len(collected.ApprovedToolApprovals) == 0 && len(collected.DeniedToolApprovals) == 0 {
 		return messages, nil, nil
 	}
 
 	providerApprovalIDs := map[string]bool{}
-	localResults := make([]types.ContentPart, 0)
-	prefixChunks := make([]provider.StreamChunk, 0)
-	approvedOrder := make([]string, 0, len(responseOrder))
-	deniedOrder := make([]string, 0, len(responseOrder))
-	for _, approvalID := range responseOrder {
-		if responsesByApprovalID[approvalID].Approved {
-			approvedOrder = append(approvedOrder, approvalID)
-		} else {
-			deniedOrder = append(deniedOrder, approvalID)
+	for _, approval := range append(append([]ai.CollectedToolApproval(nil), collected.ApprovedToolApprovals...), collected.DeniedToolApprovals...) {
+		if approval.ToolCall.ProviderExecuted {
+			providerApprovalIDs[approval.ApprovalResponse.ApprovalID] = true
 		}
 	}
-	for _, approvalID := range approvedOrder {
-		response := responsesByApprovalID[approvalID]
-		call, ok := requestsByApprovalID[approvalID]
-		if !ok {
-			continue
+
+	localResults := make([]types.ContentPart, 0)
+	prefixChunks := make([]provider.StreamChunk, 0)
+	errorTextResult := func(call types.ToolCall, text string) types.ToolResultContent {
+		return types.ToolResultContent{
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: text},
 		}
+	}
+
+	for _, approval := range collected.ApprovedToolApprovals {
+		call := approval.ToolCall
 		if call.ProviderExecuted {
-			providerApprovalIDs[approvalID] = true
 			continue
 		}
-		tool := workflowToolByName(tools, call.ToolName)
-		if response.Approved {
-			if tool == nil || tool.Execute == nil {
-				continue
+		tool := workflowToolByName(opts.tools, call.ToolName)
+		if tool == nil || tool.Execute == nil {
+			continue
+		}
+		if !workflowToolNeedsApproval(ctx, tool, call, messages, opts.toolsContext) {
+			localResults = append(localResults, errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName)))
+			continue
+		}
+
+		// Re-validate through the shared core implementation: signature (when
+		// configured), input schema, and approval policy. Failures become a
+		// model-visible tool error so the loop can continue.
+		revalidationReason := ""
+		validated, err := ai.ValidateApprovedToolApprovals(ctx, ai.ValidateApprovedToolApprovalsOptions{
+			ApprovedToolApprovals: []ai.CollectedToolApproval{approval},
+			Tools:                 opts.tools,
+			Messages:              messages,
+			ToolsContext:          opts.toolsContext,
+			RuntimeContext:        opts.runtimeContext,
+			ToolApprovalSecret:    opts.toolApprovalSecret,
+		})
+		switch {
+		case err != nil:
+			revalidationReason = err.Error()
+		case len(validated.InvalidToolApprovals) > 0:
+			revalidationReason = validated.InvalidToolApprovals[0].Error.Error()
+		case len(validated.DeniedToolApprovals) > 0:
+			revalidationReason = validated.DeniedToolApprovals[0].ApprovalResponse.Reason
+			if revalidationReason == "" {
+				revalidationReason = "Tool approval denied"
 			}
-			if !workflowToolNeedsApproval(ctx, tool, call, messages, toolsContext) {
-				localResults = append(localResults, types.ToolResultContent{
-					ToolCallID: call.ID,
-					ToolName:   call.ToolName,
-					Input:      call.Arguments,
-					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: fmt.Sprintf("Tool %q does not require approval", call.ToolName)},
-				})
-				continue
-			}
-			if err := validateWorkflowToolInput(tool, call.Arguments); err != nil {
-				errText := err.Error()
-				localResults = append(localResults, types.ToolResultContent{
-					ToolCallID: call.ID,
-					ToolName:   call.ToolName,
-					Input:      call.Arguments,
-					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: errText},
-				})
-				continue
-			}
-			toolContext := interface{}(nil)
-			if toolsContext != nil {
-				toolContext = toolsContext[call.ToolName]
-			}
-			result, err := tool.Execute(ctx, call.Arguments, types.ToolExecutionOptions{
-				ToolCallID:          call.ID,
-				UserContext:         runtimeContext,
-				RuntimeContext:      runtimeContext,
-				ToolContext:         toolContext,
-				Metadata:            map[string]interface{}{},
-				ToolMetadata:        call.ToolMetadata,
-				ExperimentalSandbox: experimentalSandbox,
-			})
-			if err != nil {
-				errText := err.Error()
-				localResults = append(localResults, types.ToolResultContent{
-					ToolCallID: call.ID,
-					ToolName:   call.ToolName,
-					Input:      call.Arguments,
-					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: errText},
-				})
-				prefixChunks = append(prefixChunks, provider.StreamChunk{
-					Type: provider.ChunkTypeToolResult,
-					ToolResult: &types.ToolResult{
-						ToolCallID: call.ID,
-						ToolName:   call.ToolName,
-						Input:      call.Arguments,
-						Result:     errText,
-					},
-				})
-				continue
-			}
-			part := types.ToolResultContent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Input:      call.Arguments,
-				Result:     result,
-			}
-			if tool.ToModelOutput != nil {
-				output, err := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
-					ToolCallID: call.ID,
-					Input:      call.Arguments,
-					Output:     result,
-					Result:     result,
-					ToolCall:   &call,
-				})
-				if err != nil {
-					return nil, nil, err
-				}
-				part.Output = output
-				part.Result = nil
-			}
-			localResults = append(localResults, part)
+		}
+		if revalidationReason != "" {
+			localResults = append(localResults, errorTextResult(call, revalidationReason))
+			continue
+		}
+
+		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
+		if execErr != nil {
+			errText := execErr.Error()
+			localResults = append(localResults, errorTextResult(call, errText))
+			// Failed executions stream as tool errors, not tool results.
 			prefixChunks = append(prefixChunks, provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: call.ID,
 					ToolName:   call.ToolName,
 					Input:      call.Arguments,
-					Result:     result,
+					Error:      execErr,
+					Dynamic:    call.Dynamic,
 				},
 			})
 			continue
 		}
-	}
-	for _, approvalID := range deniedOrder {
-		response := responsesByApprovalID[approvalID]
-		call, ok := requestsByApprovalID[approvalID]
-		if !ok {
-			continue
+		part := types.ToolResultContent{
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Input:      call.Arguments,
+			Result:     result,
 		}
-		if call.ProviderExecuted {
-			providerApprovalIDs[approvalID] = true
+		if tool.ToModelOutput != nil {
+			callCopy := call
+			output, err := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
+				ToolCallID: call.ID,
+				Input:      call.Arguments,
+				Output:     result,
+				Result:     result,
+				ToolCall:   &callCopy,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			part.Output = output
+			part.Result = nil
+		}
+		localResults = append(localResults, part)
+		prefixChunks = append(prefixChunks, provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Input:      call.Arguments,
+				Result:     result,
+				Dynamic:    call.Dynamic,
+			},
+		})
+	}
+
+	for _, approval := range collected.DeniedToolApprovals {
+		call := approval.ToolCall
+		if call.ProviderExecuted || approval.ExistingToolResult != nil {
 			continue
 		}
 		localResults = append(localResults, types.ToolResultContent{
 			ToolCallID: call.ID,
 			ToolName:   call.ToolName,
 			Input:      call.Arguments,
-			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: response.Reason},
+			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason},
 		})
 		prefixChunks = append(prefixChunks, provider.StreamChunk{
 			Type:       provider.ChunkTypeToolOutputDenied,
@@ -623,14 +562,64 @@ func processWorkflowApprovalResume(ctx context.Context, messages []types.Message
 	}
 	if len(localResults) > 0 {
 		cleaned = append(cleaned, types.Message{Role: types.RoleTool, Content: localResults})
-	}
-	if len(localResults) > 0 {
 		prefixChunks = append(prefixChunks,
 			provider.StreamChunk{Type: provider.ChunkTypeStreamFinish},
 			provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
 		)
 	}
 	return cleaned, prefixChunks, nil
+}
+
+// executeWorkflowApprovedTool runs an approved tool with the conversation
+// messages and fires the tool execution start/end callbacks (TS
+// executeToolWithCallbacks).
+func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call types.ToolCall, opts workflowApprovalResumeOptions) (interface{}, error) {
+	var toolContext interface{}
+	if opts.toolsContext != nil {
+		toolContext = opts.toolsContext[call.ToolName]
+	}
+	if opts.onToolStart != nil {
+		opts.onToolStart(ctx, ai.OnToolCallStartEvent{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Args:                call.Arguments,
+			StepNumber:          0,
+			Messages:            opts.messages,
+			ExperimentalContext: opts.runtimeContext,
+			RuntimeContext:      opts.runtimeContext,
+			ToolsContext:        opts.toolsContext,
+		})
+	}
+	start := time.Now()
+	result, err := tool.Execute(ctx, call.Arguments, types.ToolExecutionOptions{
+		ToolCallID:          call.ID,
+		UserContext:         opts.runtimeContext,
+		RuntimeContext:      opts.runtimeContext,
+		ToolContext:         toolContext,
+		Metadata:            map[string]interface{}{},
+		ToolMetadata:        call.ToolMetadata,
+		Messages:            opts.messages,
+		ExperimentalSandbox: opts.experimentalSandbox,
+	})
+	if opts.onToolEnd != nil {
+		finish := ai.OnToolCallFinishEvent{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Args:                call.Arguments,
+			Error:               err,
+			DurationMs:          time.Since(start).Milliseconds(),
+			StepNumber:          0,
+			Messages:            opts.messages,
+			ExperimentalContext: opts.runtimeContext,
+			RuntimeContext:      opts.runtimeContext,
+			ToolsContext:        opts.toolsContext,
+		}
+		if err == nil {
+			finish.Result = result
+		}
+		opts.onToolEnd(ctx, finish)
+	}
+	return result, err
 }
 
 func mergeStart(a, b StartCallback) StartCallback {
@@ -814,6 +803,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ExperimentalRefineToolInput != nil {
 		refineToolInput = ovr.ExperimentalRefineToolInput
 	}
+	approvalSecret := w.effectiveToolApprovalSecret(ovr, govr)
 	telemetry := w.Telemetry
 	if govr.Telemetry != nil {
 		telemetry = govr.Telemetry
@@ -836,19 +826,30 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: w.Headers, Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
-		ToolChoice:                  w.ToolChoice,
-		Output:                      w.Output,
-		Telemetry:                   telemetry,
-		Include:                     include,
-		ExperimentalSandbox:         sandbox,
-		ExperimentalRefineToolInput: refineToolInput,
-		OnStart:                     mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
-		OnStepStartEvent:            mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
-		OnToolExecutionStart:        mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
-		OnToolExecutionEnd:          mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
-		OnStepFinishEvent:           mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
-		OnFinishEvent:               mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
+		ToolChoice:                     w.ToolChoice,
+		Output:                         w.Output,
+		Telemetry:                      telemetry,
+		Include:                        include,
+		ExperimentalSandbox:            sandbox,
+		ExperimentalRefineToolInput:    refineToolInput,
+		ExperimentalToolApprovalSecret: approvalSecret,
+		OnStart:                        mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
+		OnStepStartEvent:               mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
+		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
+		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
+		OnStepFinishEvent:              mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
+		OnFinishEvent:                  mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
 	})
+}
+
+func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) []byte {
+	if ovr.ExperimentalToolApprovalSecret != nil {
+		return ovr.ExperimentalToolApprovalSecret
+	}
+	if govr.ExperimentalToolApprovalSecret != nil {
+		return govr.ExperimentalToolApprovalSecret
+	}
+	return w.ExperimentalToolApprovalSecret
 }
 
 func validatePromptMessages(prompt string, messages []types.Message) error {
@@ -896,7 +897,16 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, err
 	}
 	var err error
-	opts.Messages, _, err = processWorkflowApprovalResume(ctx, opts.Messages, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts), firstNonNil(w.RuntimeContext, opts.RuntimeContext), firstNonNilMap(w.ToolsContext, opts.ToolsContext), firstNonNil(w.ExperimentalSandbox, opts.ExperimentalSandbox))
+	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		messages:            opts.Messages,
+		tools:               effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts),
+		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
+		toolsContext:        firstNonNilMap(opts.ToolsContext, w.ToolsContext),
+		experimentalSandbox: firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox),
+		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
+		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
+		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -969,7 +979,16 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	var err error
 	var prefixChunks []provider.StreamChunk
-	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}), firstNonNil(w.RuntimeContext, opts.RuntimeContext), firstNonNilMap(w.ToolsContext, opts.ToolsContext), firstNonNil(w.ExperimentalSandbox, opts.ExperimentalSandbox))
+	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		messages:            opts.Messages,
+		tools:               effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}),
+		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
+		toolsContext:        firstNonNilMap(opts.ToolsContext, w.ToolsContext),
+		experimentalSandbox: firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox),
+		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
+		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
+		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
+	})
 	if err != nil {
 		return nil, err
 	}
