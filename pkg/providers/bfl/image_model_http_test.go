@@ -85,7 +85,8 @@ func TestBFLImageModel_DoGenerateSuccess(t *testing.T) {
 }
 
 func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
-	t.Parallel()
+	// Not parallel: this test swaps the process-global http.DefaultTransport
+	// and the package download transport, which races with parallel tests.
 
 	var submitHeaders http.Header
 	var pollHeaders http.Header
