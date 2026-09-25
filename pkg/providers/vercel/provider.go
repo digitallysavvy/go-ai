@@ -1,6 +1,7 @@
 package vercel
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -40,4 +41,11 @@ func New(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "vercel"
+}
+
+// LanguageModel returns an OpenAI-compatible Chat Completions model
+// (/chat/completions). The embedded openai.Provider.LanguageModel returns the
+// OpenAI Responses model, which OpenAI-compatible hosts do not implement.
+func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
+	return p.Provider.ChatModel(modelID)
 }

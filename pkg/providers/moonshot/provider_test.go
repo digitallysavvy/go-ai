@@ -174,10 +174,10 @@ func TestMoonshotUsageConversion(t *testing.T) {
 // TestMoonshotUsageWithCaching tests usage conversion with cache tokens
 func TestMoonshotUsageWithCaching(t *testing.T) {
 	tests := []struct {
-		name                 string
-		usage                MoonshotUsage
-		expectedCacheRead    int64
-		expectedNoCache      int64
+		name              string
+		usage             MoonshotUsage
+		expectedCacheRead int64
+		expectedNoCache   int64
 	}{
 		{
 			name: "top-level cached_tokens",

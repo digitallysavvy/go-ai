@@ -201,9 +201,17 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
+	// Response format (TS mistral-chat-language-model.ts): structuredOutputs
+	// defaults to true, strictJsonSchema defaults to false. JSON mode without a
+	// schema also injects a JSON instruction into the system message.
+	mistralOptions, _ := opts.ProviderOptions["mistral"].(map[string]interface{})
+	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs: providerutils.BoolOption(mistralOptions, "structuredOutputs", true),
+		StrictJSONSchema:  providerutils.BoolOption(mistralOptions, "strictJsonSchema", false),
+	}); format != nil {
+		body["response_format"] = format
+		if providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema) == nil || opts.ResponseFormat.Type == "json_object" {
+			injectMistralJSONInstruction(body)
 		}
 	}
 	// Map top-level Reasoning to Mistral reasoning_effort.
@@ -701,4 +709,23 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 		Type:         provider.ChunkTypeFinish,
 		FinishReason: mapMistralFinishReason(finishReason),
 	})
+}
+
+// injectMistralJSONInstruction mirrors injectJsonInstructionIntoMessages
+// (provider-utils) for JSON mode without a schema: the generic JSON
+// instruction is appended to the leading system message (or a new one).
+func injectMistralJSONInstruction(body map[string]interface{}) {
+	const instruction = "You MUST answer with JSON."
+	messages, _ := body["messages"].([]map[string]interface{})
+	if len(messages) > 0 && messages[0]["role"] == "system" {
+		if content, ok := messages[0]["content"].(string); ok {
+			if content != "" {
+				messages[0]["content"] = content + "\n\n" + instruction
+			} else {
+				messages[0]["content"] = instruction
+			}
+			return
+		}
+	}
+	body["messages"] = append([]map[string]interface{}{{"role": "system", "content": instruction}}, messages...)
 }

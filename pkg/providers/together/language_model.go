@@ -51,9 +51,10 @@ func (m *LanguageModel) SupportsTools() bool {
 	return true
 }
 
-// SupportsStructuredOutput returns whether the model supports structured output
+// SupportsStructuredOutput returns whether the model supports json_schema
+// structured outputs (TS supportsStructuredOutputs for Together AI).
 func (m *LanguageModel) SupportsStructuredOutput() bool {
-	return true
+	return SupportsStructuredOutputs(m.modelID)
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -142,13 +143,21 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Response format (TS openai-compatible chat model with
+	// supportsStructuredOutputs = getModelStructuredOutputSupport(modelId)):
+	// only structured-output models get json_schema; others fall back to
+	// json_object with a warning when a schema was supplied.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         SupportsStructuredOutputs(m.modelID),
+		StrictJSONSchema:          togetherStrictJSONSchema(opts.ProviderOptions, compatibleOptions),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
+	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	return body, warnings
 }
@@ -347,4 +356,21 @@ func newTogetherStream(reader io.ReadCloser) *togetherStream {
 		}}
 	}
 	return s
+}
+
+// SupportsStructuredOutputs reports whether a Together AI chat model supports
+// json_schema structured outputs. Mirrors getModelStructuredOutputSupport in
+// packages/togetherai/src/togetherai-provider.ts.
+func SupportsStructuredOutputs(modelID string) bool {
+	return modelID == "deepseek-ai/DeepSeek-V4-Flash-0731"
+}
+
+// togetherStrictJSONSchema reads strictJsonSchema (default true) from the
+// "together" options and the TS provider options key "togetherai".
+func togetherStrictJSONSchema(providerOptions, compatibleOptions map[string]interface{}) bool {
+	strict := providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true)
+	if opts, ok := providerOptions["togetherai"].(map[string]interface{}); ok {
+		strict = providerutils.BoolOption(opts, "strictJsonSchema", strict)
+	}
+	return strict
 }
