@@ -1,0 +1,159 @@
+{
+  "recipes": [
+    {
+      "recipe": {
+        "harnessId": "demo",
+        "bootstrapDir": "/tmp/harness/demo",
+        "files": [
+          {
+            "path": "/tmp/harness/demo/a.txt",
+            "content": "one"
+          },
+          {
+            "path": "/tmp/harness/demo/b.txt",
+            "content": "two"
+          }
+        ],
+        "commands": [
+          {
+            "command": "echo first"
+          },
+          {
+            "command": "echo second"
+          }
+        ]
+      },
+      "identity": "2b1b95adf78b2953"
+    },
+    {
+      "recipe": {
+        "harnessId": "claude-code",
+        "bootstrapDir": ".harness-bootstrap/claude-code",
+        "files": [
+          {
+            "path": ".harness-bootstrap/claude-code/pnpm-workspace.yaml",
+            "content": "onlyBuiltDependencies:\n  - x\n"
+          },
+          {
+            "path": ".harness-bootstrap/claude-code/package.json",
+            "content": "{\"name\":\"bridge\",\"dependencies\":{\"ws\":\"8.21.0\"}}"
+          },
+          {
+            "path": ".harness-bootstrap/claude-code/bridge.mjs",
+            "content": "console.log(\"héllo   <&>\");\n"
+          },
+          {
+            "path": ".harness-bootstrap/claude-code/Bridge.mjs",
+            "content": "upper"
+          },
+          {
+            "path": ".harness-bootstrap/claude-code/_hidden",
+            "content": ""
+          },
+          {
+            "path": ".harness-bootstrap/claude-code/pnpm-lock.yaml",
+            "content": "lockfileVersion: 9.0\n"
+          }
+        ],
+        "commands": [
+          {
+            "command": "pnpm install --frozen-lockfile --prod \"<&>\"   'q' \\ \t\n\u0001"
+          }
+        ]
+      },
+      "identity": "3f64e5fc2084b1d8"
+    },
+    {
+      "recipe": {
+        "harnessId": "empty",
+        "bootstrapDir": "",
+        "files": [],
+        "commands": []
+      },
+      "identity": "c6e99c6e5cb1a0d3"
+    }
+  ],
+  "sandboxIdentities": [
+    {
+      "input": {
+        "recipeIdentity": "3f64e5fc2084b1d8",
+        "bootstrapHash": "repo-v1",
+        "workDir": "repo"
+      },
+      "identity": "25dd053a63bdf51c"
+    },
+    {
+      "input": {
+        "recipeIdentity": "3f64e5fc2084b1d8",
+        "workDir": "repo/"
+      },
+      "identity": "f52ef2d0c2db2d85"
+    },
+    {
+      "input": {
+        "bootstrapHash": "repo-v1"
+      },
+      "identity": "b9b535d780853e09"
+    }
+  ],
+  "preparedIdentities": [
+    {
+      "input": {
+        "recipeIdentities": {
+          "beta": "bbbb",
+          "alpha": "aaaa",
+          "Alpha": "AAAA",
+          "_x": "xx"
+        },
+        "bootstrapHash": "h",
+        "workDir": "repo"
+      },
+      "identity": "fb26aacbe0620d8e"
+    },
+    {
+      "input": {
+        "recipeIdentities": {},
+        "bootstrapHash": "only-hash"
+      },
+      "identity": "03c7f6856a6d17cd"
+    }
+  ],
+  "skills": [
+    {
+      "skill": {
+        "name": "demo",
+        "description": "Demo skill.",
+        "content": "Use reference.md.",
+        "files": [
+          {
+            "path": "reference.md",
+            "content": "# Reference"
+          }
+        ]
+      },
+      "hash": "c14ffcc71e9d9c39fb21765d4ac61acd2fc428e973a224e6f20d76f23aa3954b"
+    },
+    {
+      "skill": {
+        "name": "ünï",
+        "description": "D",
+        "content": "C",
+        "files": [
+          {
+            "path": "b/Z.md",
+            "content": "z"
+          },
+          {
+            "path": "b/a.md",
+            "content": "ä"
+          },
+          {
+            "path": "A.md",
+            "content": ""
+          }
+        ]
+      },
+      "hash": "3dc78b7c45c8f549440e9ecd4283a2b759fdf7cb54be25b6254cbc2fa2de8ba8"
+    }
+  ]
+}
