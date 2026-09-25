@@ -583,7 +583,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
-			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults)...)
+			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults, callConfig.ExperimentalToolApprovalSecret)...)
 			responseContent = stepResult.Content
 			result.ToolResults = append(result.ToolResults, toolResults...)
 			if len(toolResults) == 0 {
@@ -1680,7 +1680,10 @@ func agentContentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
-func agentToolResultsToContentParts(results []types.ToolResult) []types.ContentPart {
+// agentToolResultsToContentParts converts tool results to content parts. When
+// secret is non-nil, approval requests are signed so they can be verified on
+// resume.
+func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
 	}
@@ -1702,10 +1705,15 @@ func agentToolResultsToContentParts(results []types.ToolResult) []types.ContentP
 				ToolMetadata:     result.ToolMetadata,
 				Dynamic:          result.Dynamic,
 			}
+			signature := ""
+			if secret != nil {
+				signature, _ = ai.SignToolApproval(secret, result.ToolCallID, result.ToolCallID, result.ToolName, result.Input)
+			}
 			parts = append(parts, types.ToolApprovalRequestContent{
 				ApprovalID:  result.ToolCallID,
 				ToolCallID:  result.ToolCallID,
 				ToolCall:    toolCall,
+				Signature:   signature,
 				IsAutomatic: result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied,
 			})
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {

@@ -1732,6 +1732,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Usage:               usage,
 				Metadata:            make(map[string]interface{}),
 				ToolMetadata:        call.ToolMetadata,
+				Messages:            callbacks.messages,
 				ExperimentalSandbox: callbacks.experimentalSandbox,
 			}
 
