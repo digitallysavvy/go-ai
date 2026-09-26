@@ -94,8 +94,27 @@ type Config struct {
 	// allow it.
 	SupportsStrictTools *bool
 
+	// SupportedURLs overrides the URL patterns the model accepts directly
+	// without downloading first (TS languageModelConfig.supportedUrls). A nil
+	// value falls back to DefaultSupportedURLs (https image/* and
+	// application/pdf), matching the direct Anthropic and anthropic-aws
+	// providers. Vertex-Anthropic and Bedrock-Anthropic set this to a function
+	// that returns an empty map to force base64 conversion, matching TS.
+	SupportedURLs func(modelID string) map[string][]string `json:"-"`
+
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
+// anthropic-aws accept without downloading first: https URLs for image and
+// PDF content. Mirrors the supportedUrls map in TS anthropic-provider.ts /
+// anthropic-aws-provider.ts.
+func DefaultSupportedURLs() map[string][]string {
+	return map[string][]string{
+		"image/*":         {`^https?://.*$`},
+		"application/pdf": {`^https?://.*$`},
+	}
 }
 
 // New creates a new Anthropic provider with the given configuration

@@ -2,8 +2,8 @@ package anthropic
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -69,6 +69,18 @@ func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
 func (m *LanguageModel) SupportsStructuredOutput() bool {
 	return m.configBool(m.provider.config.SupportsNativeStructuredOutput) &&
 		GetModelCapabilities(m.modelID).SupportsStructuredOutput
+}
+
+// SupportedURLs returns the URL patterns (regular expressions keyed by media
+// type) this model accepts directly without downloading first. Mirrors TS
+// languageModelConfig.supportedUrls: the direct Anthropic API and
+// anthropic-aws accept https image/PDF URLs directly; Vertex-Anthropic and
+// Bedrock-Anthropic override Config.SupportedURLs to force base64 conversion.
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.provider.config.SupportedURLs != nil {
+		return m.provider.config.SupportedURLs(m.modelID)
+	}
+	return DefaultSupportedURLs()
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -520,13 +532,15 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	// the served fallback answer, while the primary message iteration is only
 	// the blocked/failed attempt.
 	if len(usage.Iterations) > 0 && !servedByFallback {
+		hasExecutorIteration := false
 		for _, iter := range usage.Iterations {
 			if iter.Type == "compaction" || iter.Type == "message" {
+				hasExecutorIteration = true
 				inputTokens += int64(iter.InputTokens)
 				outputTokens += int64(iter.OutputTokens)
 			}
 		}
-		if inputTokens == 0 && outputTokens == 0 {
+		if !hasExecutorIteration {
 			inputTokens = int64(usage.InputTokens)
 			outputTokens = int64(usage.OutputTokens)
 		}
@@ -1028,6 +1042,11 @@ type anthropicStream struct {
 	// message_start while a message is still open).
 	isMessageOpen   bool
 	activeMessageID string
+	// spliced is set once a spliced-stream error chunk has been emitted (TS
+	// hasInvalidMessageSequence). Once true, every remaining SSE event is
+	// discarded (never surfaced as a chunk, and no finish chunk is
+	// synthesized) until the underlying stream ends.
+	spliced bool
 	// inputTransformations / safeguardResults are reported in the finish
 	// provider metadata.
 	inputTransformations interface{}
@@ -1686,7 +1705,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				SafeguardResults json.RawMessage             `json:"safeguard_results,omitempty"`
 			} `json:"delta"`
 			InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
-			Usage struct {
+			Usage                struct {
 				InputTokens              *int `json:"input_tokens,omitempty"`
 				OutputTokens             *int `json:"output_tokens,omitempty"`
 				CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`

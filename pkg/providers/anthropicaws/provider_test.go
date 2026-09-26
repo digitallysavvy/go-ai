@@ -63,6 +63,31 @@ func TestAnthropicAWSAPIKeyHeaders(t *testing.T) {
 	}
 }
 
+// Ports the "anthropicAws provider - supportedUrls" describe block of
+// anthropic-aws-provider.test.ts (ai@7.0.113): anthropic-aws accepts https
+// image/PDF URLs directly, the same as the direct Anthropic API.
+func TestAnthropicAWSSupportedURLs(t *testing.T) {
+	p, err := New(Config{Region: "us-west-2", WorkspaceID: "wrkspc_test", APIKey: "sk-aws-platform-key"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	model, err := p.LanguageModel("claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
+	}
+	urlsProvider, ok := model.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("model does not implement SupportedURLs()")
+	}
+	urls := urlsProvider.SupportedURLs()
+	if len(urls["image/*"]) == 0 {
+		t.Errorf("expected image/* supportedUrls, got %v", urls)
+	}
+	if len(urls["application/pdf"]) == 0 {
+		t.Errorf("expected application/pdf supportedUrls, got %v", urls)
+	}
+}
+
 func TestAnthropicAWSSigV4HeadersAndCredentialProvider(t *testing.T) {
 	transport := &captureTransport{}
 	called := false
