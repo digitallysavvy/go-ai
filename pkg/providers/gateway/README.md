@@ -227,6 +227,31 @@ Gateway origin with `{"model": "...", "expiresIn": ...}` and the normal Gateway
 auth headers. Realtime event parsing and client event serialization are identity
 codecs because Gateway speaks the normalized AI SDK realtime protocol.
 
+### Transcription Client Secrets
+
+The same mechanism mints a token bound to the streaming transcription surface
+by setting `routeKind: "transcription"` in the mint request body:
+
+```go
+expires := 60
+token, err := provider.GetTranscriptionToken(context.Background(), "openai/gpt-realtime-whisper", &gateway.TranscriptionClientSecretOptions{
+    ExpiresAfterSeconds: &expires,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(token.Token, token.URL) // token.URL: wss://.../v4/ai/transcription-model?ai-model-id=openai%2Fgpt-realtime-whisper
+
+model := provider.ExperimentalTranscription("openai/gpt-realtime-whisper")
+```
+
+`gateway.ToGatewayTranscriptionURL(baseURL, modelID)` builds the streaming
+transcription WebSocket URL directly (HTTP(S) base upgraded to WS(S), model
+id passed as the `ai-model-id` query parameter). Streaming transcription
+itself (`TranscriptionModel.DoStream` over WebSocket) is not yet implemented;
+`TranscriptionModel.DoTranscribe` (non-streaming, HTTP) is available today.
+
 ## Provider-Executed Tools
 
 The Gateway provider includes search tools that are executed server-side by the gateway.

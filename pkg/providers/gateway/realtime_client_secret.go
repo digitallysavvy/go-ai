@@ -15,6 +15,11 @@ import (
 type MintRealtimeClientSecretParams struct {
 	ModelID             string
 	ExpiresAfterSeconds *int
+	// RouteKind binds the minted token to a WebSocket surface. It is omitted
+	// (empty) for realtime, the Gateway default, so older Gateway
+	// deployments keep accepting realtime mints. Set to "transcription" via
+	// GetTranscriptionToken to mint a transcription-bound secret.
+	RouteKind string
 }
 
 type RealtimeClientSecret struct {
@@ -28,6 +33,9 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 		return nil, err
 	}
 	body := map[string]interface{}{"model": params.ModelID}
+	if params.RouteKind != "" {
+		body["routeKind"] = params.RouteKind
+	}
 	if params.ExpiresAfterSeconds != nil {
 		body["expiresIn"] = *params.ExpiresAfterSeconds
 	}
