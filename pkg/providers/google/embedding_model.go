@@ -106,8 +106,9 @@ func (m *EmbeddingModel) ModelID() string {
 }
 
 // MaxEmbeddingsPerCall returns the maximum number of embeddings per call.
+// Matches TS GoogleEmbeddingModel.maxEmbeddingsPerCall (google-embedding-model.ts).
 func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
-	return 2048
+	return 100
 }
 
 // SupportsParallelCalls returns whether parallel calls are supported

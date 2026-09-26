@@ -36,8 +36,23 @@ func (m *EmbeddingModel) Provider() string { return "google-vertex" }
 func (m *EmbeddingModel) ModelID() string { return m.modelID }
 
 // MaxEmbeddingsPerCall returns the maximum number of embeddings per batch call.
-// Vertex AI supports up to 2048 embeddings per call.
-func (m *EmbeddingModel) MaxEmbeddingsPerCall() int { return 2048 }
+// gemini-embedding-2 / gemini-embedding-2-preview only support the
+// :embedContent endpoint, which accepts one value per call; every other
+// Vertex embedding model supports up to 250 per :predict call (TS
+// google-vertex-embedding-model.ts maxEmbeddingsPerCall).
+func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
+	if usesEmbedContentEndpoint(m.modelID) {
+		return 1
+	}
+	return 250
+}
+
+// usesEmbedContentEndpoint reports whether modelID must use the
+// :embedContent endpoint instead of the batch :predict endpoint.
+// https://github.com/vercel/ai/issues/15853
+func usesEmbedContentEndpoint(modelID string) bool {
+	return modelID == EmbeddingModelGeminiEmbedding2 || modelID == EmbeddingModelGeminiEmbedding2Preview
+}
 
 // SupportsParallelCalls returns whether parallel calls are supported.
 func (m *EmbeddingModel) SupportsParallelCalls() bool { return true }
@@ -86,6 +101,10 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 
 	vopts := vertexEmbeddingOptions(opts)
+
+	if usesEmbedContentEndpoint(m.modelID) {
+		return m.doEmbedContent(ctx, inputs[0], vopts, opts)
+	}
 
 	instances := make([]map[string]interface{}, len(inputs))
 	for i, v := range inputs {
@@ -151,6 +170,77 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		},
 		Responses: responses,
 	}, nil
+}
+
+// doEmbedContent embeds a single value via the :embedContent endpoint, used
+// for gemini-embedding-2 / gemini-embedding-2-preview which do not support
+// the batch :predict endpoint (TS google-vertex-embedding-model.ts).
+func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts VertexEmbeddingProviderOptions, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	config := map[string]interface{}{}
+	if vopts.OutputDimensionality != nil {
+		config["outputDimensionality"] = *vopts.OutputDimensionality
+	}
+	if vopts.TaskType != "" {
+		config["taskType"] = vopts.TaskType
+	}
+	if vopts.Title != "" {
+		config["title"] = vopts.Title
+	}
+	if vopts.AutoTruncate != nil {
+		config["autoTruncate"] = *vopts.AutoTruncate
+	}
+
+	body := map[string]interface{}{
+		"content": map[string]interface{}{
+			"parts": []map[string]interface{}{{"text": value}},
+		},
+	}
+	if len(config) > 0 {
+		body["embedContentConfig"] = config
+	}
+
+	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
+
+	var response vertexEmbedContentResponse
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    path,
+		Body:    body,
+		Headers: embedOptsHeaders(opts),
+	}, &response)
+	if err != nil {
+		return nil, fmt.Errorf("vertex embedding request failed: %w", err)
+	}
+
+	usage := types.EmbeddingUsage{}
+	if response.UsageMetadata != nil {
+		tokens := float64(response.UsageMetadata.PromptTokenCount)
+		usage = types.EmbeddingUsage{
+			Tokens:      tokens,
+			InputTokens: response.UsageMetadata.PromptTokenCount,
+			TotalTokens: response.UsageMetadata.PromptTokenCount,
+		}
+	}
+
+	return &types.EmbeddingsResult{
+		Embeddings: [][]float64{response.Embedding.Values},
+		Usage:      usage,
+		Responses: []types.EmbeddingResponse{{
+			Headers: providerutils.ExtractHeaders(httpResp.Headers),
+			Body:    response,
+		}},
+	}, nil
+}
+
+// vertexEmbedContentResponse is the Vertex AI :embedContent API response,
+// used only by gemini-embedding-2 / gemini-embedding-2-preview.
+type vertexEmbedContentResponse struct {
+	Embedding struct {
+		Values []float64 `json:"values"`
+	} `json:"embedding"`
+	UsageMetadata *struct {
+		PromptTokenCount int `json:"promptTokenCount"`
+	} `json:"usageMetadata,omitempty"`
 }
 
 // vertexEmbeddingOptions extracts Vertex embedding provider options from EmbedModelOptions.
