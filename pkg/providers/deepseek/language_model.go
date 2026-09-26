@@ -234,10 +234,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			}
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
+			// TS deepseek-chat-language-model.ts effortMap: medium -> 'high'
+			// (DeepSeek's reasoning_effort scale is low/high/max; there is no
+			// "medium" wire value).
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
-			body["reasoning_effort"] = "medium"
+			body["reasoning_effort"] = "high"
+			if !hasProviderReasoningEffort {
+				warnings = append(warnings, reasoningCompatibilityWarning("medium", "high"))
+			}
 		case types.ReasoningHigh:
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
