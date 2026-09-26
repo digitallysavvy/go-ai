@@ -18,7 +18,7 @@ func TestCacheControlOnSystemMessage(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, validator)
+	result := ConvertToAlibabaChatMessages(msgs, validator, false)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -53,7 +53,7 @@ func TestCacheControlOnUserMessage(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, validator)
+	result := ConvertToAlibabaChatMessages(msgs, validator, false)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -91,7 +91,7 @@ func TestCacheControlOnAssistantMessage(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, validator)
+	result := ConvertToAlibabaChatMessages(msgs, validator, false)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -131,7 +131,7 @@ func TestCacheControlOnToolMessage(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, validator)
+	result := ConvertToAlibabaChatMessages(msgs, validator, false)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -169,7 +169,7 @@ func TestNoCacheControlProducesStringContent(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, nil)
+	result := ConvertToAlibabaChatMessages(msgs, nil, false)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
@@ -218,7 +218,7 @@ func TestAlibabaSingleItemContentArrayCacheControl(t *testing.T) {
 		},
 	}
 
-	result := ConvertToAlibabaChatMessages(msgs, validator)
+	result := ConvertToAlibabaChatMessages(msgs, validator, false)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
