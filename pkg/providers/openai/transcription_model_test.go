@@ -252,3 +252,45 @@ func TestTranscriptionDoTranscribeSuccessAndErrors(t *testing.T) {
 		t.Fatalf("expected decode error, got %v", err)
 	}
 }
+
+// TestTranscriptionWhisper1AlwaysUsesVerboseJSON ports TS getArgs: whisper-1
+// unconditionally gets response_format=verbose_json regardless of whether
+// timestamps were requested, and a providerOptions.openai.responseFormat
+// override does not apply to it (the TS conditional spread that lets other
+// models opt into a different responseFormat is gated on
+// `this.modelId !== 'whisper-1'`).
+func TestTranscriptionWhisper1AlwaysUsesVerboseJSON(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewTranscriptionModel(p, "whisper-1")
+
+	// No timestamps requested: still verbose_json, not "json".
+	body, _, err := m.buildMultipartBody(&provider.TranscriptionOptions{
+		Audio:    []byte("audio"),
+		MimeType: "audio/mpeg",
+	})
+	if err != nil {
+		t.Fatalf("buildMultipartBody error = %v", err)
+	}
+	raw, _ := io.ReadAll(body)
+	blob := string(raw)
+	if !strings.Contains(blob, `name="response_format"`) || !strings.Contains(blob, "verbose_json") {
+		t.Fatalf("expected verbose_json response_format even without timestamps: %s", blob)
+	}
+
+	// An explicit responseFormat provider option override is ignored for whisper-1.
+	body, _, err = m.buildMultipartBody(&provider.TranscriptionOptions{
+		Audio:    []byte("audio"),
+		MimeType: "audio/mpeg",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"responseFormat": "json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMultipartBody error = %v", err)
+	}
+	raw, _ = io.ReadAll(body)
+	blob = string(raw)
+	if !strings.Contains(blob, "verbose_json") {
+		t.Fatalf("expected verbose_json response_format for whisper-1 even with responseFormat override: %s", blob)
+	}
+}

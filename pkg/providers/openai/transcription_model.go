@@ -164,15 +164,13 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	isDiarizationModel := m.modelID == "gpt-4o-transcribe-diarize"
 	isGpt4oTranscribeModel := m.modelID == "gpt-4o-transcribe" || m.modelID == "gpt-4o-mini-transcribe"
 
-	// Add response format (abb9ebf: diarized_json for the diarize model,
-	// json for gpt-4o(-mini)-transcribe, verbose_json otherwise -- unless a
-	// providerOptions.openai.responseFormat override is given). whisper-1
-	// keeps its existing verbose_json-when-timestamped default, matching
-	// the prior Go behavior.
-	responseFormat := "json"
-	if opts.Timestamps {
-		responseFormat = "verbose_json"
-	}
+	// Add response format (TS getArgs: whisper-1 unconditionally gets
+	// "verbose_json" -- set before, and never overridden by,
+	// providerOptions.openai.responseFormat. Every other model defaults to
+	// diarized_json for the diarize model, json for gpt-4o(-mini)-transcribe,
+	// verbose_json otherwise, with an explicit responseFormat override
+	// winning over all of those; abb9ebf).
+	responseFormat := "verbose_json"
 	if m.modelID != "whisper-1" {
 		switch {
 		case openaiOpts.ResponseFormat != "":
