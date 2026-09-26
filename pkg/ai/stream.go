@@ -2436,32 +2436,6 @@ func (s *prefixedTextStream) Close() error {
 	return s.base.Close()
 }
 
-// erroredTextStream is a provider.TextStream that immediately fails with a
-// fixed error. Backs newErroredStreamResult.
-type erroredTextStream struct {
-	err error
-}
-
-func (s *erroredTextStream) Next() (*provider.StreamChunk, error) { return nil, s.err }
-func (s *erroredTextStream) Err() error                           { return s.err }
-func (s *erroredTextStream) Close() error                         { return nil }
-
-// newErroredStreamResult builds a *StreamTextResult that is already done and
-// carries err, so every consumption path (ReadAll, Stream, Chunks, Err)
-// surfaces it as a stream error rather than requiring StreamText itself to
-// return an error. Used when a failure occurs after StreamText has already
-// committed to returning a result (see the resumeToolApprovals error path).
-func newErroredStreamResult(err error) *StreamTextResult {
-	done := make(chan struct{})
-	close(done)
-	return &StreamTextResult{
-		stream:         &erroredTextStream{err: err},
-		status:         StreamStatusDone,
-		err:            err,
-		processingDone: done,
-	}
-}
-
 // ConsumeStream drains the stream and waits for completion.
 func (r *StreamTextResult) ConsumeStream() error {
 	_, err := r.ReadAll()

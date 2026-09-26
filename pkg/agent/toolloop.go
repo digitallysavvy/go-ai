@@ -300,8 +300,8 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		OnStepStart:                    cbs.onStepStart,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
-		OnStepFinishEvent:              cbs.onStepFinish,
-		OnFinishEvent:                  cbs.onFinish,
+		OnStepEndEvent:                 cbs.onStepFinish,
+		OnEndEvent:                     cbs.onFinish,
 	})
 }
 
@@ -412,8 +412,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnStepStart:                    cbs.onStepStart,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
-		OnStepFinishEvent:              cbs.onStepFinish,
-		OnFinishEvent:                  cbs.onFinish,
+		OnStepEndEvent:                 cbs.onStepFinish,
+		OnEndEvent:                     cbs.onFinish,
 	}
 	return ai.StreamText(ctx, streamOpts)
 }
