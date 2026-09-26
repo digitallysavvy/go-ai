@@ -1,0 +1,74 @@
+{
+  "claudecode": {
+    "harnessId": "claude-code",
+    "bootstrapDir": ".harness-bootstrap/claude-code",
+    "fileNames": [
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "bridge.mjs"
+    ],
+    "commands": [
+      {
+        "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
+      },
+      {
+        "command": "./node_modules/.bin/claude --version"
+      }
+    ],
+    "identity": "3a632b269645451f"
+  },
+  "codex": {
+    "harnessId": "codex",
+    "bootstrapDir": ".harness-bootstrap/codex",
+    "fileNames": [
+      "package.json",
+      "pnpm-lock.yaml",
+      "bridge.mjs"
+    ],
+    "commands": [
+      {
+        "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
+      }
+    ],
+    "identity": "6d1d910611ef7a04"
+  },
+  "opencode": {
+    "harnessId": "opencode",
+    "bootstrapDir": ".harness-bootstrap/opencode",
+    "fileNames": [
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "bridge.mjs",
+      "host-tool-mcp.mjs"
+    ],
+    "commands": [
+      {
+        "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
+      },
+      {
+        "command": "./node_modules/.bin/opencode --version"
+      }
+    ],
+    "identity": "25a5758678df0d1c"
+  },
+  "deepagents": {
+    "harnessId": "deepagents",
+    "bootstrapDir": ".harness-bootstrap/deepagents",
+    "fileNames": [
+      "bridge.mjs",
+      "package.json",
+      "pnpm-lock.yaml"
+    ],
+    "commands": [
+      {
+        "command": "command -v rg >/dev/null 2>&1 || { case \"$(uname -m)\" in aarch64) a=aarch64-unknown-linux-gnu; sha=c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f ;; *) a=x86_64-unknown-linux-musl; sha=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e ;; esac; f=/tmp/ripgrep-14.1.1.tar.gz; curl -fsSL \"https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-$a.tar.gz\" -o \"$f\" && echo \"$sha  $f\" | sha256sum -c - && tar xzf \"$f\" -C /tmp && mv \"/tmp/ripgrep-14.1.1-$a/rg\" /usr/local/bin/rg && chmod +x /usr/local/bin/rg; }"
+      },
+      {
+        "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
+      }
+    ],
+    "identity": "7a46123634a29cf0"
+  }
+}
