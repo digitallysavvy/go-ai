@@ -1016,7 +1016,8 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
 		assert.Equal(t, "9:16", imageConfig["aspectRatio"])
-		assert.Equal(t, "low", genConfig["thinkingBudget"])
+		thinkingConfig := genConfig["thinkingConfig"].(map[string]interface{})
+		assert.Equal(t, "low", thinkingConfig["thinkingLevel"])
 
 		response := geminiImageResponse{
 			Candidates: []struct {
@@ -1066,7 +1067,9 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 			{Type: "url", URL: "https://example.com/ref.png"},
 		},
 		ProviderOptions: map[string]interface{}{
-			"google": map[string]interface{}{"thinkingBudget": "low"},
+			"google": map[string]interface{}{
+				"thinkingConfig": map[string]interface{}{"thinkingLevel": "low"},
+			},
 		},
 	})
 
