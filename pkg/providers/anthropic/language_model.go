@@ -2,8 +2,8 @@ package anthropic
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -69,6 +69,18 @@ func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
 func (m *LanguageModel) SupportsStructuredOutput() bool {
 	return m.configBool(m.provider.config.SupportsNativeStructuredOutput) &&
 		GetModelCapabilities(m.modelID).SupportsStructuredOutput
+}
+
+// SupportedURLs returns the URL patterns (regular expressions keyed by media
+// type) this model accepts directly without downloading first. Mirrors TS
+// languageModelConfig.supportedUrls: the direct Anthropic API and
+// anthropic-aws accept https image/PDF URLs directly; Vertex-Anthropic and
+// Bedrock-Anthropic override Config.SupportedURLs to force base64 conversion.
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.provider.config.SupportedURLs != nil {
+		return m.provider.config.SupportedURLs(m.modelID)
+	}
+	return DefaultSupportedURLs()
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -520,13 +532,15 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	// the served fallback answer, while the primary message iteration is only
 	// the blocked/failed attempt.
 	if len(usage.Iterations) > 0 && !servedByFallback {
+		hasExecutorIteration := false
 		for _, iter := range usage.Iterations {
 			if iter.Type == "compaction" || iter.Type == "message" {
+				hasExecutorIteration = true
 				inputTokens += int64(iter.InputTokens)
 				outputTokens += int64(iter.OutputTokens)
 			}
 		}
-		if inputTokens == 0 && outputTokens == 0 {
+		if !hasExecutorIteration {
 			inputTokens = int64(usage.InputTokens)
 			outputTokens = int64(usage.OutputTokens)
 		}
@@ -1028,6 +1042,11 @@ type anthropicStream struct {
 	// message_start while a message is still open).
 	isMessageOpen   bool
 	activeMessageID string
+	// spliced is set once a spliced-stream error chunk has been emitted (TS
+	// hasInvalidMessageSequence). Once true, every remaining SSE event is
+	// discarded (never surfaced as a chunk, and no finish chunk is
+	// synthesized) until the underlying stream ends.
+	spliced bool
 	// inputTransformations / safeguardResults are reported in the finish
 	// provider metadata.
 	inputTransformations interface{}
@@ -1094,6 +1113,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 	// Get next SSE event
 	event, err := s.parser.Next()
 	if err != nil {
+		if s.spliced {
+			// A spliced stream ends without a finish chunk: TS never
+			// re-enqueues after hasInvalidMessageSequence is set, and the
+			// ReadableStream simply closes once the underlying byte stream
+			// ends (no synthesized finish part).
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 		if err == io.EOF && s.finish != nil && !s.finishIssued {
 			s.finishIssued = true
 			s.err = io.EOF
@@ -1101,6 +1128,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.err = err
 		return nil, err
+	}
+
+	// Once a spliced-stream error chunk has been emitted, every remaining
+	// event is silently discarded (TS hasInvalidMessageSequence guard).
+	if s.spliced {
+		return s.Next()
 	}
 
 	// Anthropic uses different event types
@@ -1342,11 +1375,20 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				if s.activeMessageID == msg.Message.ID {
 					return s.Next()
 				}
-				// A spliced stream: everything after this point is dropped.
-				s.err = providererrors.NewProviderError("anthropic", 0, "invalid_response_data", fmt.Sprintf(
-					"Received message_start for message %s while message %s is still open.",
-					jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)), nil)
-				return nil, s.err
+				// A spliced stream: emit an error chunk in the stream itself
+				// (matching TS, which enqueues an 'error' stream part rather
+				// than throwing) and discard everything after it. This is
+				// not a fatal Go error: the generation already produced
+				// output, so the failure must surface the same way other
+				// mid-stream provider errors do (see openai/language_model.go
+				// for the analogous outputStarted convention).
+				s.spliced = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: fmt.Sprintf(
+						"Received message_start for message %s while message %s is still open.",
+						jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)),
+				}, nil
 			}
 			s.isMessageOpen = true
 			s.activeMessageID = msg.Message.ID
@@ -1686,7 +1728,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				SafeguardResults json.RawMessage             `json:"safeguard_results,omitempty"`
 			} `json:"delta"`
 			InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
-			Usage struct {
+			Usage                struct {
 				InputTokens              *int `json:"input_tokens,omitempty"`
 				OutputTokens             *int `json:"output_tokens,omitempty"`
 				CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`

@@ -394,6 +394,44 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			wantWarnings: []string{"sending reasoning content is disabled for this model"},
 		},
 		{
+			// TS: "should preserve citations on assistant text"
+			name: "preserve citations on assistant text",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.TextContent{Text: "The Federal Reserve held rates steady.", ProviderOptions: anthropicOpt("citations", []interface{}{
+						map[string]interface{}{
+							"type":            "web_search_result_location",
+							"cited_text":      "The Committee decided to maintain the rate.",
+							"url":             "https://example.com/fed-decision",
+							"title":           "Federal Reserve decision",
+							"encrypted_index": "encrypted-index",
+						},
+					})},
+				}},
+				userText("What happened before that?"),
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[{"type":"text","text":"The Federal Reserve held rates steady.","citations":[
+					{"type":"web_search_result_location","cited_text":"The Committee decided to maintain the rate.","url":"https://example.com/fed-decision","title":"Federal Reserve decision","encrypted_index":"encrypted-index"}
+				]}]},
+				{"role":"user","content":[{"type":"text","text":"What happened before that?"}]}
+			]`,
+		},
+		{
+			// TS convert-to-anthropic-prompt.ts drops an assistant message
+			// entirely when its converted content ends up empty (e.g. only an
+			// empty compaction block), rather than sending an empty content array.
+			name: "drop entirely-empty assistant message",
+			messages: []types.Message{
+				userText("hi"),
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.TextContent{Text: "", ProviderOptions: anthropicOpt("type", "compaction")},
+				}},
+				userText("bye"),
+			},
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"user","content":[{"type":"text","text":"bye"}]}]`,
+		},
+		{
 			name: "web_search tool call and result",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ToolCallContent{ToolCallID: "srvtoolu_1", ToolName: "web_search", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "SF news"}},

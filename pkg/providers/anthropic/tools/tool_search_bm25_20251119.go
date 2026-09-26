@@ -102,7 +102,7 @@ Best practices:
 - Keep tool names and descriptions searchable
 - Use consistent naming conventions
 - Include relevant keywords in tool descriptions`,
-		Parameters:       parameters,
+		Parameters: parameters,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("tool search BM25 must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},

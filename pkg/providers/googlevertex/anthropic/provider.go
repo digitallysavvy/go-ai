@@ -87,6 +87,10 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsImageInput:             &supportsImageInput,
 		SupportsStrictTools:            &supportsStrictTools,
+		// Vertex-Anthropic forces base64 conversion instead of passing URLs
+		// through, matching TS google-vertex-anthropic-provider.ts
+		// (`supportedUrls: () => ({})`).
+		SupportedURLs: func(string) map[string][]string { return map[string][]string{} },
 		MessagesPath: func(id string, stream bool) string {
 			action := "rawPredict"
 			if stream {

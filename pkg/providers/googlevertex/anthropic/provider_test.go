@@ -356,6 +356,24 @@ func TestVertexAnthropicReportsImageInputSupportForVertexModelIDs(t *testing.T) 
 	}
 }
 
+// Ports the "supportedUrls returns empty object to force base64 conversion"
+// assertion in google-vertex-anthropic-provider.test.ts (ai@7.0.113):
+// Vertex-Anthropic never passes image/PDF URLs through directly.
+func TestVertexAnthropicSupportedURLsForcesBase64Conversion(t *testing.T) {
+	p := New(Options{BaseURL: "https://example.invalid"})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	urlsProvider, ok := model.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("model does not implement SupportedURLs()")
+	}
+	if got := urlsProvider.SupportedURLs(); len(got) != 0 {
+		t.Errorf("SupportedURLs() = %v, want empty map", got)
+	}
+}
+
 func TestVertexAnthropicStrictToolWarningAndOmission(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

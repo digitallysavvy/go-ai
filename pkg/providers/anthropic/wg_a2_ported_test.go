@@ -3,14 +3,11 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -323,34 +320,30 @@ func TestSplicedStreamRejected(t *testing.T) {
 		t.Fatalf("text chunk = %#v, err = %v", textChunk, err)
 	}
 
-	// The spliced message_start returns an InvalidResponseData-equivalent
-	// error (Go has no InvalidResponseDataError type, so this is a
-	// ProviderError with ErrorCode "invalid_response_data"; see HANDOFF.md
-	// gotcha 8) and drops the rest of the stream.
+	// The spliced message_start surfaces as an error CHUNK within the stream
+	// (matching TS, which enqueues a stream part rather than throwing / erroring
+	// the ReadableStream) — not a fatal Go error. This lets consumers observe it
+	// via ChunkTypeError the same way they would any other mid-stream provider
+	// error (see pkg/ai/stream.go's ChunkTypeError handling and
+	// openai/language_model.go's analogous outputStarted convention).
 	chunk, err := stream.Next()
-	if chunk != nil {
-		t.Fatalf("expected no chunk alongside the spliced-stream error, got %#v", chunk)
+	if err != nil {
+		t.Fatalf("expected a nil error alongside the spliced-stream error chunk, got %v", err)
 	}
-	if err == nil {
-		t.Fatal("expected an error for the spliced message_start, got nil")
-	}
-	var provErr *providererrors.ProviderError
-	if !errors.As(err, &provErr) {
-		t.Fatalf("err = %v (%T), want *ProviderError", err, err)
-	}
-	if provErr.ErrorCode != "invalid_response_data" {
-		t.Errorf("ErrorCode = %q, want invalid_response_data", provErr.ErrorCode)
+	if chunk == nil || chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk = %#v, want a ChunkTypeError chunk", chunk)
 	}
 	wantMsg := `Received message_start for message "msg_B" while message "msg_A" is still open.`
-	if provErr.Message != wantMsg {
-		t.Errorf("Message = %q, want %q", provErr.Message, wantMsg)
+	if chunk.Text != wantMsg {
+		t.Errorf("Text = %q, want %q", chunk.Text, wantMsg)
 	}
 
-	// The stream is now stuck on the error (Next() returns it again); the
-	// "spliced" text delta after the second message_start must never surface.
+	// Everything after the spliced message_start (including the "spliced" text
+	// delta and message_stop) is discarded; the stream ends without a finish
+	// chunk, exactly as TS never re-enqueues after hasInvalidMessageSequence.
 	next, err2 := stream.Next()
-	if next != nil || err2 != err {
-		t.Fatalf("expected the same error to persist, got chunk=%#v err=%v", next, err2)
+	if next != nil || err2 != io.EOF {
+		t.Fatalf("expected (nil, io.EOF) after the spliced-stream error, got chunk=%#v err=%v", next, err2)
 	}
 }
 
@@ -532,5 +525,52 @@ func TestUnknownClaudeModelUsesCurrentGenDefault(t *testing.T) {
 	wantDetails := `The model "claude-future-9" is unknown. The max output tokens have been limited to 128000. Set maxOutputTokens explicitly to override this limit.`
 	if len(result.Warnings) != 1 || result.Warnings[0].Details != wantDetails {
 		t.Fatalf("warnings = %#v, want details %q", result.Warnings, wantDetails)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fallbacks: 'default' (TS anthropic-language-model.test.ts "fallbacks"
+// describe block, cbdc990). The array-form fallbacks + empty-array cases are
+// already covered by TestOpus5FallbacksAndEffortLowering-adjacent coverage in
+// provider_updates_test.go; this covers the 'default' string variant.
+// ---------------------------------------------------------------------------
+
+// TestFallbacksDefaultSendsStringAndBeta ports "should pass fallbacks
+// 'default' through and add the 2026-07-01 beta header".
+func TestFallbacksDefaultSendsStringAndBeta(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeOpus5, &ModelOptions{
+		FallbacksDefault: true,
+	})
+
+	body := model.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}, false)
+	if got, ok := body["fallbacks"].(string); !ok || got != "default" {
+		t.Fatalf("fallbacks = %#v, want \"default\"", body["fallbacks"])
+	}
+	if h := model.getBetaHeaders(); !strings.Contains(h, BetaHeaderServerSideFallbackDefault) {
+		t.Fatalf("anthropic-beta = %q, want to contain %q", h, BetaHeaderServerSideFallbackDefault)
+	}
+	if h := model.getBetaHeaders(); strings.Contains(h, BetaHeaderServerSideFallback) {
+		t.Fatalf("anthropic-beta = %q, should not also contain the array-form beta %q", h, BetaHeaderServerSideFallback)
+	}
+}
+
+// TestFallbacksDefaultTakesPrecedenceOverArray ports the FallbacksDefault
+// precedence documented on ModelOptions: FallbacksDefault wins over Fallbacks
+// when both are set.
+func TestFallbacksDefaultTakesPrecedenceOverArray(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	maxTokens := 1000
+	model := NewLanguageModel(prov, ClaudeOpus5, &ModelOptions{
+		FallbacksDefault: true,
+		Fallbacks:        []FallbackConfig{{Model: ClaudeOpus4_8, MaxTokens: &maxTokens}},
+	})
+
+	body := model.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}, false)
+	if got, ok := body["fallbacks"].(string); !ok || got != "default" {
+		t.Fatalf("fallbacks = %#v, want \"default\" (FallbacksDefault takes precedence)", body["fallbacks"])
+	}
+	if h := model.getBetaHeaders(); !strings.Contains(h, BetaHeaderServerSideFallbackDefault) {
+		t.Fatalf("anthropic-beta = %q, want to contain %q", h, BetaHeaderServerSideFallbackDefault)
 	}
 }
