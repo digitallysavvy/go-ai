@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -56,10 +57,11 @@ type bedrockConverseStream struct {
 	usesJSONResponseTool bool
 	extractor            *jsonObjectTextExtractor
 
-	warnings        []types.Warning
-	modelID         string
-	responseHeaders map[string]string
-	requestID       string
+	warnings          []types.Warning
+	modelID           string
+	responseHeaders   map[string]string
+	requestID         string
+	responseTimestamp *time.Time
 
 	contentBlocks map[int]*bedrockStreamContentBlock
 	queue         []*provider.StreamChunk
@@ -94,14 +96,18 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 
 	if !s.startEmitted {
 		s.startEmitted = true
+		responseMetadata := &provider.ResponseMetadata{
+			ID:      s.requestID,
+			ModelID: s.modelID,
+			Headers: s.responseHeaders,
+		}
+		if s.responseTimestamp != nil {
+			responseMetadata.Timestamp = *s.responseTimestamp
+		}
 		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: s.warnings})
 		s.enqueue(&provider.StreamChunk{
-			Type: provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: &provider.ResponseMetadata{
-				ID:      s.requestID,
-				ModelID: s.modelID,
-				Headers: s.responseHeaders,
-			},
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: responseMetadata,
 		})
 		return s.Next()
 	}
@@ -130,6 +136,11 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(event.Data, &payload); err != nil {
+		// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
+		// language-model.ts): report the error but keep reading — the stream
+		// is not aborted — and mark finishReason as error in case the stream
+		// ends (via decoder EOF) before any later messageStop overwrites it.
+		s.finishReason = types.FinishReasonError
 		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)}, nil
 	}
 	delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
@@ -143,7 +154,14 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 	switch payloadType {
 	case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
 		s.finishReason = types.FinishReasonError
-		s.done = true
+		// Do NOT set s.done here. TS's enqueueError (amazon-bedrock-chat-
+		// language-model.ts) records the error and sets finishReason but lets
+		// the ReadableStream's own flush() run when the underlying connection
+		// closes, so a modeled exception is always followed by a terminal
+		// 'finish' part carrying finishReason:'error' and whatever usage/
+		// providerMetadata had accrued. Mirroring that: the next decoder.Next()
+		// call naturally returns io.EOF once AWS closes the stream after the
+		// exception frame, which drives s.done=true and s.flush() below.
 		message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
 		if m, ok := payload["message"].(string); ok && m != "" {
 			message = m

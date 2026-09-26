@@ -1057,6 +1057,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
 		finishReason:         types.FinishReasonOther,
 	}
+	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
+		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
+			stream.responseTimestamp = &ts
+		}
+	}
 	if extract := args.UsesJSONInstruction; extract {
 		stream.extractor = &jsonObjectTextExtractor{}
 	}

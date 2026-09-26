@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -528,6 +529,142 @@ func TestDoStream_SurfacesModeledException(t *testing.T) {
 	}
 	if !providerErr.IsRetryable() {
 		t.Fatal("expected serviceUnavailableException (503) to be retryable")
+	}
+}
+
+// TestDoStream_ModeledExceptionStillEmitsFinishChunk is a regression test:
+// TS's enqueueError (amazon-bedrock-chat-language-model.ts) records the error
+// and sets finishReason but relies on the ReadableStream's own flush() when
+// the connection closes, so a modeled exception is always followed by a
+// terminal 'finish' chunk (finishReason:'error', whatever usage/
+// providerMetadata had accrued) — the stream is never truncated right after
+// the error. Previously Go set s.done=true in the exception branch, so
+// s.flush() (and its ChunkTypeFinish chunk) was never reached.
+func TestDoStream_ModeledExceptionStillEmitsFinishChunk(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frame := buildBedrockEventFrame(map[string]string{
+			":message-type":   "exception",
+			":exception-type": "serviceUnavailableException",
+		}, []byte(`{"message":"overloaded"}`))
+		w.WriteHeader(200)
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var sawFinish bool
+	var finishReason types.FinishReason
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			sawFinish = true
+			finishReason = chunk.FinishReason
+		}
+	}
+	if !sawFinish {
+		t.Fatal("expected a terminal finish chunk after the modeled exception, matching TS's always-flush contract")
+	}
+	if finishReason != types.FinishReasonError {
+		t.Fatalf("finish chunk finishReason = %v, want error", finishReason)
+	}
+}
+
+// TestDoStream_UnparseableEventSetsFinishReasonError is a regression test:
+// TS's !chunk.success branch sets finishReason to 'error' (in addition to
+// emitting an error part) so that if the stream ends without a later
+// messageStop overwriting it, flush() still reports finishReason:'error'
+// rather than a stale default.
+func TestDoStream_UnparseableEventSetsFinishReasonError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frame := buildBedrockEventFrame(map[string]string{
+			":message-type": "event",
+			":event-type":   "contentBlockDelta",
+		}, []byte(`not valid json`))
+		w.WriteHeader(200)
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var sawFinish bool
+	var finishReason types.FinishReason
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			sawFinish = true
+			finishReason = chunk.FinishReason
+		}
+	}
+	if !sawFinish {
+		t.Fatal("expected a terminal finish chunk")
+	}
+	if finishReason != types.FinishReasonError {
+		t.Fatalf("finish chunk finishReason = %v, want error", finishReason)
+	}
+}
+
+// TestDoStream_ResponseMetadataIncludesTimestamp verifies the streaming
+// response-metadata chunk parses the "date" response header the same way
+// DoGenerate does, instead of always leaving Timestamp zero.
+func TestDoStream_ResponseMetadataIncludesTimestamp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("date", "Tue, 12 May 2026 10:30:00 GMT")
+		frame := buildBedrockEventFrame(map[string]string{
+			":message-type": "event",
+			":event-type":   "messageStop",
+		}, []byte(`{"stopReason":"end_turn"}`))
+		w.WriteHeader(200)
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var gotTimestamp time.Time
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeResponseMetadata {
+			gotTimestamp = chunk.ResponseMetadata.Timestamp
+		}
+	}
+	want, _ := time.Parse(time.RFC1123, "Tue, 12 May 2026 10:30:00 GMT")
+	if !gotTimestamp.Equal(want) {
+		t.Fatalf("ResponseMetadata.Timestamp = %v, want %v", gotTimestamp, want)
 	}
 }
 
