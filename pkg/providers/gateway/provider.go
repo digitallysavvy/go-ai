@@ -794,6 +794,11 @@ func (t *Tools) ExaSearch(config tools.ExaSearchConfig) tools.ExaSearchTool {
 	return tools.NewExaSearch(config)
 }
 
+// TakoSearch creates a Tako search tool with the given configuration.
+func (t *Tools) TakoSearch(config tools.TakoSearchConfig) tools.TakoSearchTool {
+	return tools.NewTakoSearch(config)
+}
+
 // NewTools creates a new Tools instance for accessing gateway-specific tools
 func NewTools() *Tools {
 	return &Tools{}

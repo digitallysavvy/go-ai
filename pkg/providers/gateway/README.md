@@ -335,6 +335,34 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 })
 ```
 
+### Tako Search
+
+Search Tako's curated Data Graph and the web for entities, metrics, and time series,
+returning rendered data cards and web results.
+
+```go
+takoSearch := tools.NewTakoSearch(tools.TakoSearchConfig{
+    Effort: "fast",
+    Sources: &tools.TakoSearchSources{
+        Data: &tools.TakoDataSourceConfig{
+            Count: intPtr(5),
+        },
+        Web: &tools.TakoWebSourceConfig{
+            Count:    intPtr(5),
+            Category: "finance",
+        },
+    },
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What has Tesla's stock price done this year?",
+    Tools: []types.Tool{
+        takoSearch.ToTool(),
+    },
+})
+```
+
 ## Video Generation via SSE
 
 The gateway video endpoint uses Server-Sent Events (SSE) with heartbeat keep-alives to prevent
@@ -487,6 +515,15 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `IncludeDomains` / `ExcludeDomains` ([]string): Domain filters
 - `StartPublishedDate` / `EndPublishedDate` (string): ISO 8601 published date filters
 - `Contents` (*ExaSearchContentsConfig): Text, highlight, freshness, subpage, and extras controls
+
+### Tako Search Config
+
+- `Effort` (string): `deep`, `fast` (default), or `instant`
+- `Sources` (*TakoSearchSources): `Data` (*TakoDataSourceConfig) and/or `Web` (*TakoWebSourceConfig); omit to search both
+- `Location` (*TakoSearchLocation): End-user latitude/longitude for localized results
+- `CountryCode` / `Locale` / `Timezone` (string): ISO 3166-1 country code, BCP-47 locale, IANA timezone
+- `OutputSettings` (*TakoSearchOutputSettings): `ImageDarkMode`, `ForceRefresh` (instant effort only)
+- `IncludeRelated` (*int): Maximum related search suggestions to include (1-20)
 
 ## Environment Variables
 
