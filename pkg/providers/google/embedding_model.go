@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -106,8 +108,83 @@ func (m *EmbeddingModel) ModelID() string {
 }
 
 // MaxEmbeddingsPerCall returns the maximum number of embeddings per call.
+// The Gemini batchEmbedContents endpoint accepts at most 100 requests; this
+// matches the TS SDK's GoogleEmbeddingModel.maxEmbeddingsPerCall. ai.EmbedMany
+// automatically splits larger inputs into batches of this size.
 func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
-	return 2048
+	return 100
+}
+
+// TransformEmbeddingProviderOptions implements
+// provider.EmbeddingModelProviderOptionsTransformer. When the "google"
+// provider options carry per-value multimodal Content, it validates that the
+// content length matches the full EmbedMany input and slices it to the batch
+// [StartIndex:EndIndex] so each batch keeps value/content alignment.
+// Other option shapes are returned unchanged; schema validation is left to
+// DoEmbed/DoEmbedMany (after middleware transforms options).
+func (m *EmbeddingModel) TransformEmbeddingProviderOptions(_ context.Context, input provider.EmbeddingProviderOptionsTransformInput) (map[string]interface{}, error) {
+	return transformGoogleEmbeddingProviderOptions(input)
+}
+
+func transformGoogleEmbeddingProviderOptions(input provider.EmbeddingProviderOptionsTransformInput) (map[string]interface{}, error) {
+	raw, ok := input.ProviderOptions["google"]
+	if !ok || raw == nil {
+		return input.ProviderOptions, nil
+	}
+	checkLength := func(n int) error {
+		if n != len(input.Values) {
+			return fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", n, len(input.Values))
+		}
+		return nil
+	}
+	var sliced interface{}
+	switch v := raw.(type) {
+	case GoogleEmbeddingProviderOptions:
+		if v.Content == nil {
+			return input.ProviderOptions, nil
+		}
+		if err := checkLength(len(v.Content)); err != nil {
+			return nil, err
+		}
+		v.Content = v.Content[input.StartIndex:input.EndIndex]
+		sliced = v
+	case *GoogleEmbeddingProviderOptions:
+		if v == nil || v.Content == nil {
+			return input.ProviderOptions, nil
+		}
+		if err := checkLength(len(v.Content)); err != nil {
+			return nil, err
+		}
+		cp := *v
+		cp.Content = cp.Content[input.StartIndex:input.EndIndex]
+		sliced = &cp
+	case map[string]interface{}:
+		content, ok := v["content"]
+		if !ok || content == nil {
+			return input.ProviderOptions, nil
+		}
+		rv := reflect.ValueOf(content)
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			return input.ProviderOptions, nil
+		}
+		if err := checkLength(rv.Len()); err != nil {
+			return nil, err
+		}
+		cp := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			cp[k] = val
+		}
+		cp["content"] = rv.Slice(input.StartIndex, input.EndIndex).Interface()
+		sliced = cp
+	default:
+		return input.ProviderOptions, nil
+	}
+	out := make(map[string]interface{}, len(input.ProviderOptions))
+	for k, val := range input.ProviderOptions {
+		out[k] = val
+	}
+	out["google"] = sliced
+	return out, nil
 }
 
 // SupportsParallelCalls returns whether parallel calls are supported
@@ -546,6 +623,28 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		// Preserve the HTTP status and headers so ai.EmbedMany/Embed retries
+		// follow the TS APICallError semantics (429/5xx retryable, retry-after).
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+		message := string(statusErr.Body)
+		code := ""
+		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
+			if payload.Error.Message != "" {
+				message = payload.Error.Message
+			}
+			code = payload.Error.Status
+		}
+		providerErr := providererrors.NewProviderError("google", statusErr.StatusCode, code, message, err)
+		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
+		return providerErr
+	}
 	return providererrors.NewProviderError("google", 0, "", err.Error(), err)
 }
 

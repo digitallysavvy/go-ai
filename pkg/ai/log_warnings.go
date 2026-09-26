@@ -35,11 +35,11 @@ type LogWarningsFunction func(options LogWarningsOptions)
 const FirstWarningInfoMessage = "AI SDK Warning System: To turn off warning logging, call ai.DisableLogWarnings() or set the AI_SDK_LOG_WARNINGS environment variable to false."
 
 var logWarningsState = struct {
-	mu             sync.Mutex
-	disabled       bool
-	custom         LogWarningsFunction
+	mu              sync.Mutex
+	disabled        bool
+	custom          LogWarningsFunction
 	hasLoggedBefore bool
-	output         io.Writer
+	output          io.Writer
 }{}
 
 // SetLogWarnings installs a global warning logger, the Go analog of assigning
