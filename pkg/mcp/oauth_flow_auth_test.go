@@ -308,6 +308,96 @@ func TestAuthExchangeRejectsStateMismatch(t *testing.T) {
 	}
 }
 
+// TestAuthAcceptsMatchingCallbackIssuer mirrors TS oauth.test.ts's "accepts a
+// matching authorization response issuer": when the authorization server
+// advertises the `authorization_response_iss_parameter_supported` behavior
+// and the callback's `iss` matches the pinned authorization server's issuer,
+// the code exchange proceeds normally.
+func TestAuthAcceptsMatchingCallbackIssuer(t *testing.T) {
+	provider := newFakeOAuthProvider()
+	provider.clientInfo = &OAuthClientInformation{ClientID: "existing-client"}
+	provider.codeVerifier = "verifier-xyz"
+	provider.storedState = strPtr("expected-state")
+	provider.asInfo = &OAuthAuthorizationServerInformation{
+		Issuer:                 "https://auth.example.com",
+		AuthorizationServerURL: "https://auth.example.com/",
+		TokenEndpoint:          "https://auth.example.com/token",
+	}
+
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/.well-known/oauth-protected-resource": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://auth.example.com/mcp","authorization_servers":["https://auth.example.com"]}`), nil
+		},
+		"/.well-known/oauth-authorization-server": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, oauthFlowASMetadataJSON), nil
+		},
+		"/token": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+
+	result, err := Auth(context.Background(), provider, AuthOptions{
+		ServerURL:            "https://auth.example.com/mcp",
+		HasAuthorizationCode: true,
+		AuthorizationCode:    "the-code",
+		CallbackState:        "expected-state",
+		CallbackIssuer:       "https://auth.example.com",
+		HTTPClient:           client,
+	})
+	if err != nil {
+		t.Fatalf("Auth error: %v", err)
+	}
+	if result != AuthResultAuthorized {
+		t.Fatalf("result = %s, want AUTHORIZED", result)
+	}
+}
+
+// TestAuthRejectsMismatchedCallbackIssuer mirrors TS oauth.test.ts's "rejects
+// a mismatched authorization response issuer before code exchange": an `iss`
+// on the callback that disagrees with the pinned authorization server's
+// issuer must fail before any token request is sent (protects against an
+// authorization-server mix-up / IdP-confusion attack).
+func TestAuthRejectsMismatchedCallbackIssuer(t *testing.T) {
+	provider := newFakeOAuthProvider()
+	provider.clientInfo = &OAuthClientInformation{ClientID: "existing-client"}
+	provider.codeVerifier = "verifier-xyz"
+	provider.storedState = strPtr("expected-state")
+	provider.asInfo = &OAuthAuthorizationServerInformation{
+		Issuer:                 "https://auth.example.com",
+		AuthorizationServerURL: "https://auth.example.com/",
+		TokenEndpoint:          "https://auth.example.com/token",
+	}
+
+	var tokenRequested bool
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/.well-known/oauth-protected-resource": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://auth.example.com/mcp","authorization_servers":["https://auth.example.com"]}`), nil
+		},
+		"/.well-known/oauth-authorization-server": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, oauthFlowASMetadataJSON), nil
+		},
+		"/token": func(req *http.Request) (*http.Response, error) {
+			tokenRequested = true
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+
+	_, err := Auth(context.Background(), provider, AuthOptions{
+		ServerURL:            "https://auth.example.com/mcp",
+		HasAuthorizationCode: true,
+		AuthorizationCode:    "the-code",
+		CallbackState:        "expected-state",
+		CallbackIssuer:       "https://evil.example",
+		HTTPClient:           client,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match expected issuer") {
+		t.Fatalf("err = %v, want issuer mismatch error", err)
+	}
+	if tokenRequested {
+		t.Fatal("token endpoint must not be called when the callback issuer is mismatched")
+	}
+}
+
 // TestAuthRefreshesExistingTokens mirrors TS auth()'s refresh path.
 func TestAuthRefreshesExistingTokens(t *testing.T) {
 	provider := newFakeOAuthProvider()

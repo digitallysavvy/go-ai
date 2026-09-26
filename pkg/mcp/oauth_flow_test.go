@@ -406,6 +406,29 @@ func TestRefreshOAuthAuthorizationPreservesRefreshToken(t *testing.T) {
 	}
 }
 
+// TestRefreshOAuthAuthorizationRejectsPrivateTokenEndpoint mirrors TS
+// refreshAuthorization's "rejects private token endpoints before sending the
+// refresh token" (oauth.test.ts): the SSRF guard must reject a link-local
+// token endpoint before the refresh token is ever sent over the wire.
+func TestRefreshOAuthAuthorizationRejectsPrivateTokenEndpoint(t *testing.T) {
+	client, _ := newOAuthCapturingClient(t, func(req *oauthCapturedRequest) (*http.Response, error) {
+		t.Fatal("request should have been rejected before it was sent")
+		return nil, nil
+	})
+	_, err := RefreshOAuthAuthorization(context.Background(), "https://attacker.example", RefreshOAuthAuthorizationParams{
+		Metadata:          &OAuthAuthorizationServerMetadata{TokenEndpoint: "http://169.254.169.254/latest/token"},
+		ClientInformation: OAuthClientInformation{ClientID: "cid"},
+		RefreshToken:      "real-refresh-token",
+		HTTPClient:        client,
+	})
+	if err == nil {
+		t.Fatal("expected SSRF guard error for link-local token endpoint")
+	}
+	if !strings.Contains(err.Error(), "OAuth endpoint URL is not allowed") {
+		t.Fatalf("err = %v, want SSRF guard message", err)
+	}
+}
+
 func TestRefreshOAuthAuthorizationUnsupportedGrantType(t *testing.T) {
 	_, err := RefreshOAuthAuthorization(context.Background(), "https://auth.example.com", RefreshOAuthAuthorizationParams{
 		Metadata:          &OAuthAuthorizationServerMetadata{TokenEndpoint: "https://auth.example.com/token", GrantTypesSupported: []string{"authorization_code"}},
