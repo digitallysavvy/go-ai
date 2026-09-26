@@ -73,6 +73,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		"input": inputs,
 		"model": m.modelID,
 	}
+	if mistralOpts := extractMistralEmbeddingOptions(opts); mistralOpts != nil {
+		if mistralOpts.Metadata != nil {
+			reqBody["metadata"] = mistralOpts.Metadata
+		}
+		if mistralOpts.OutputDimension != nil {
+			reqBody["output_dimension"] = *mistralOpts.OutputDimension
+		}
+		if mistralOpts.OutputDtype != "" {
+			reqBody["output_dtype"] = mistralOpts.OutputDtype
+		}
+	}
 	var response mistralEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -104,6 +115,49 @@ func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 		return nil
 	}
 	return opts.Headers
+}
+
+// mistralEmbeddingOptions mirrors mistralEmbeddingModelOptions in
+// ai/packages/mistral/src/mistral-embedding-model-options.ts.
+type mistralEmbeddingOptions struct {
+	// Metadata is additional metadata to attach to the embedding request.
+	Metadata map[string]interface{}
+
+	// OutputDimension is the dimension of the output embeddings, when
+	// supported by the model.
+	OutputDimension *int
+
+	// OutputDtype is the data type of the output embeddings, when supported
+	// by the model (e.g. "float", "int8", "uint8", "binary", "ubinary").
+	OutputDtype string
+}
+
+// extractMistralEmbeddingOptions reads providerOptions.mistral for the
+// embedding model. Returns nil when no mistral-keyed options are present.
+func extractMistralEmbeddingOptions(opts *provider.EmbedModelOptions) *mistralEmbeddingOptions {
+	if opts == nil || opts.ProviderOptions == nil {
+		return nil
+	}
+	raw, ok := opts.ProviderOptions["mistral"]
+	if !ok || raw == nil {
+		return nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	result := &mistralEmbeddingOptions{}
+	if v, ok := m["metadata"].(map[string]interface{}); ok {
+		result.Metadata = v
+	}
+	if v, ok := m["outputDimension"].(float64); ok {
+		iv := int(v)
+		result.OutputDimension = &iv
+	}
+	if v, ok := m["outputDtype"].(string); ok {
+		result.OutputDtype = v
+	}
+	return result
 }
 
 type mistralEmbedResponse struct {

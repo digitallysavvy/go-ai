@@ -25,11 +25,17 @@ func TestMistralProviderSurface(t *testing.T) {
 	if _, err := p.ImageModel("x"); err == nil {
 		t.Fatal("expected unsupported image")
 	}
-	if _, err := p.SpeechModel("x"); err == nil {
-		t.Fatal("expected unsupported speech")
+	if sm, err := p.SpeechModel("x"); err != nil || sm == nil || sm.ModelID() != "x" {
+		t.Fatalf("expected speech model, got model=%#v err=%v", sm, err)
 	}
-	if _, err := p.TranscriptionModel("x"); err == nil {
-		t.Fatal("expected unsupported transcription")
+	if tm, err := p.TranscriptionModel("x"); err != nil || tm == nil || tm.ModelID() != "x" {
+		t.Fatalf("expected transcription model, got model=%#v err=%v", tm, err)
+	}
+	if sm, err := p.SpeechModel(""); err != nil || sm.ModelID() != "voxtral-mini-tts-latest" {
+		t.Fatalf("expected default speech model id, got model=%#v err=%v", sm, err)
+	}
+	if tm, err := p.TranscriptionModel(""); err != nil || tm.ModelID() != "voxtral-mini-latest" {
+		t.Fatalf("expected default transcription model id, got model=%#v err=%v", tm, err)
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("expected unsupported reranking")
