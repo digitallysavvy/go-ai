@@ -801,6 +801,9 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	case "reasoning-start":
 		id, _ := chunk["id"].(string)
 		part := UIMessageChunk{"type": "reasoning", "text": "", "state": "streaming"}
+		if id != "" {
+			part["id"] = id
+		}
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
 		s.activeReasoning[id] = part
 		s.appendPart(part)
@@ -852,8 +855,19 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	case "start-step":
 		s.appendPart(UIMessageChunk{"type": "step-start"})
 	case "finish-step":
+		// Active parts are closed by their explicit end chunks, not by
+		// finish-step: a merged stream's step can finish while another
+		// stream's text/reasoning part is still active. Mirrors TS
+		// process-ui-message-stream.ts's now-empty 'finish-step' case.
+	case "reset-step":
+		// A model-call step is being retried (e.g. WorkflowAgent). Drop the
+		// parts added since the last step-start and clear in-flight state so
+		// the retried attempt starts clean. Mirrors TS 'reset-step'.
+		start := currentStepStartIndex(uiParts(s.message))
 		s.activeText = map[string]UIMessageChunk{}
 		s.activeReasoning = map[string]UIMessageChunk{}
+		s.partialTools = map[string]*uiPartialToolCall{}
+		truncateUIParts(s.message, start)
 	case "tool-input-start":
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
@@ -1100,18 +1114,43 @@ func (s *uiMessageCallbackState) findToolPart(toolCallID string) UIMessageChunk 
 	return nil
 }
 
+// currentStepStartIndex returns the index of the first part after the last
+// step-start part in parts (0 if there is no step-start). Mirrors TS
+// process-ui-message-stream.ts's getCurrentStepParts boundary search.
+func currentStepStartIndex(parts []interface{}) int {
+	i := len(parts) - 1
+	for i >= 0 {
+		if part := asUIPartChunk(parts[i]); part != nil && part["type"] == "step-start" {
+			break
+		}
+		i--
+	}
+	return i + 1
+}
+
+// truncateUIParts drops every part at or after start from message's parts
+// slice, preserving its concrete slice type ([]UIMessageChunk vs
+// []interface{}).
+func truncateUIParts(message UIMessageChunk, start int) {
+	if typedParts, ok := message["parts"].([]UIMessageChunk); ok {
+		if start < len(typedParts) {
+			message["parts"] = typedParts[:start]
+		}
+		return
+	}
+	if parts, ok := message["parts"].([]interface{}); ok {
+		if start < len(parts) {
+			message["parts"] = parts[:start]
+		}
+	}
+}
+
 // findCurrentStepToolPart finds a tool part with toolCallID after the last
 // step-start part. When dynamic is non-nil, only parts of that kind match.
 func (s *uiMessageCallbackState) findCurrentStepToolPart(toolCallID string, dynamic *bool) UIMessageChunk {
 	parts := uiParts(s.message)
-	start := len(parts) - 1
-	for start >= 0 {
-		if part := asUIPartChunk(parts[start]); part != nil && part["type"] == "step-start" {
-			break
-		}
-		start--
-	}
-	for _, raw := range parts[start+1:] {
+	start := currentStepStartIndex(parts)
+	for _, raw := range parts[start:] {
 		part := asUIPartChunk(raw)
 		if !isToolPartChunk(part) || part["toolCallId"] != toolCallID {
 			continue
