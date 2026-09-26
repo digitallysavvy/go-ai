@@ -8,14 +8,17 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	bedrockAnthropic "github.com/digitallysavvy/go-ai/pkg/providers/bedrock/anthropic"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Create Bedrock Anthropic provider with 5-minute cache TTL
-	ttl := bedrockAnthropic.CacheTTL5Minutes
+	// Create Bedrock Anthropic provider. Bedrock-Anthropic now wraps the
+	// shared Anthropic language model (WG-B2), so prompt caching is
+	// configured the same way as the direct Anthropic provider: via
+	// ModelOptions.CacheControl, rather than a Bedrock-specific CacheConfig.
 	provider := bedrockAnthropic.New(bedrockAnthropic.Config{
 		Region: "us-east-1",
 		Credentials: &bedrockAnthropic.AWSCredentials{
@@ -23,14 +26,12 @@ func main() {
 			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 		},
-		CacheConfig: bedrockAnthropic.NewCacheConfig(
-			bedrockAnthropic.WithCacheTTL(ttl),
-			bedrockAnthropic.WithSystemCache(),
-		),
 	})
 
 	// Get language model
-	model, err := provider.LanguageModel("us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	model, err := provider.LanguageModelWithOptions("us.anthropic.claude-sonnet-4-5-20250929-v1:0", &anthropicprovider.ModelOptions{
+		CacheControl: &anthropicprovider.CacheControlOption{Type: "ephemeral", TTL: "5m"},
+	})
 	if err != nil {
 		log.Fatalf("Failed to get model: %v", err)
 	}
