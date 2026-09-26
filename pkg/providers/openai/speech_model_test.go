@@ -59,6 +59,54 @@ func TestSpeechModelBuildRequestBodyDefaultsAndOptions(t *testing.T) {
 	}
 }
 
+// TestSpeechModelProviderOptionsSpeedInstructionsOverrideTopLevel covers
+// e13c32f: providerOptions.openai.speed/instructions win over the top-level
+// SpeechGenerateOptions fields when both are set, and providerOptions alone
+// (no top-level default) still forwards speed/instructions.
+func TestSpeechModelProviderOptionsSpeedInstructionsOverrideTopLevel(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewSpeechModel(p, "tts-1")
+
+	topSpeed := 1.0
+	body, warnings := m.buildRequestBody(&provider.SpeechGenerateOptions{
+		Text:         "hello",
+		Speed:        &topSpeed,
+		Instructions: "top-level",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"speed":        1.75,
+				"instructions": "provider-option wins",
+			},
+		},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if body["speed"] != 1.75 {
+		t.Fatalf("speed = %#v, want provider option override 1.75", body["speed"])
+	}
+	if body["instructions"] != "provider-option wins" {
+		t.Fatalf("instructions = %#v, want provider option override", body["instructions"])
+	}
+
+	// providerOptions alone, no top-level fields set.
+	body, warnings = m.buildRequestBody(&provider.SpeechGenerateOptions{
+		Text: "hello",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"speed":        0.5,
+				"instructions": "only provider option",
+			},
+		},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if body["speed"] != 0.5 || body["instructions"] != "only provider option" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestSpeechModelDoGenerateSuccessAndError(t *testing.T) {
 	var seenPath string
 	var seenBody map[string]interface{}

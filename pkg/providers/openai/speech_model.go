@@ -111,6 +111,18 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	if opts.Instructions != "" {
 		body["instructions"] = opts.Instructions
 	}
+	// providerOptions.openai.speed/instructions take priority over the
+	// top-level fields when explicitly set (e13c32f; no speed default).
+	if opts.ProviderOptions != nil {
+		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+			if v, ok := speechSpeedOption(openaiOpts["speed"]); ok {
+				body["speed"] = v
+			}
+			if instructions, ok := openaiOpts["instructions"].(string); ok && instructions != "" {
+				body["instructions"] = instructions
+			}
+		}
+	}
 	if opts.Language != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -119,4 +131,22 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		})
 	}
 	return body, warnings
+}
+
+// speechSpeedOption converts a JSON-decoded providerOptions.openai.speed
+// value (typically float64, but tolerate int/json.Number) to float64.
+func speechSpeedOption(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
