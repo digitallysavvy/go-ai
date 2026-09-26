@@ -254,5 +254,5 @@ Execute: func(ctx context.Context, input map[string]interface{}, opts types.Tool
 ## See Also
 
 - [Tool Reference Guide](./tool-reference.md) - Anthropic-specific tool-reference feature
-- [Tool Implementation Guide](./tools.md) - General tool development guide
-- [Anthropic Provider Documentation](../providers/anthropic.md) - Anthropic-specific features
+- [Tool Implementation Guide](../03-ai-sdk-core/15-tools-and-tool-calling.mdx) - General tool development guide
+- [Anthropic Provider Documentation](../05-providers/03-anthropic.mdx) - Anthropic-specific features

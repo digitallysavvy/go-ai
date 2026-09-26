@@ -306,6 +306,6 @@ if err != nil {
 
 ## See Also
 
-- [MCP Integration Guide](./mcp-integration.md)
-- [MCP Client API](./mcp-client.md)
-- [Tool Execution](./tool-execution.md)
+- [MCP Integration Guide](./03-ai-sdk-core/16-mcp-tools.mdx)
+- [MCP Client API](./03-ai-sdk-core/16-mcp-tools.mdx)
+- [Tool Execution](./03-ai-sdk-core/15-tools-and-tool-calling.mdx)

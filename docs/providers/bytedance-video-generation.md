@@ -224,5 +224,5 @@ func main() {
 ## References
 
 - [ByteDance Ark Platform](https://ark.volces.com)
-- [Provider package documentation](../../pkg/providers/bytedance/README.md)
+- [Provider package documentation](https://github.com/digitallysavvy/go-ai/blob/main/pkg/providers/bytedance/README.md)
 - [Example: text-to-video](../../examples/providers/bytedance/01-text-to-video.go)

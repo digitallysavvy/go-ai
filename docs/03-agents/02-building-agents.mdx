@@ -166,7 +166,7 @@ Each step represents one generation (which results in either text or a tool call
 - A tool call needs approval (if `ToolApprovalRequired` is true), or
 - The step limit configured with `StopWhen` is reached
 
-Learn more about [loop control](/docs/03-agents/04-loop-control.mdx).
+Learn more about [loop control](/docs/agents/loop-control).
 
 ### Generation Settings
 
@@ -571,7 +571,7 @@ OnStepFinish: func(step types.StepResult) {
 }
 ```
 
-See the [OnStepFinish examples](../../examples/agents/callbacks/) for complete working examples.
+See the [OnStepFinish examples](https://github.com/digitallysavvy/go-ai/tree/main/examples/agents/callbacks) for complete working examples.
 
 **Helper function for safely accessing token counts:**
 
