@@ -72,4 +72,20 @@ type ModelOptions struct {
 	// ServiceTier selects Bedrock service tier for inference: reserved,
 	// priority, default, or flex.
 	ServiceTier string `json:"serviceTier,omitempty"`
+
+	// ModelFamily overrides model-family detection. The only valid value is
+	// "anthropic", for use when the model ID does not identify the underlying
+	// model (e.g. an application inference profile ARN). Mirrors TS
+	// AmazonBedrockChatModelSettings.modelFamily.
+	ModelFamily string `json:"modelFamily,omitempty"`
+
+	// StructuredOutputMode selects how structured outputs are generated for
+	// Anthropic models: "outputFormat" (native output_config.format),
+	// "jsonTool" (a synthetic 'json' tool), or "auto" (default: outputFormat
+	// when supported, otherwise jsonTool).
+	StructuredOutputMode string `json:"structuredOutputMode,omitempty"`
+
+	// DisableParallelToolUse maps to the anthropic.disableParallelToolUse
+	// provider option for Anthropic models on Bedrock Converse.
+	DisableParallelToolUse *bool `json:"disableParallelToolUse,omitempty"`
 }

@@ -2,8 +2,11 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,1620 +276,507 @@ func TestAWSSignerExplicitKeysDoNotUseEnvSessionToken(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeRequest_DropsUnsignedReasoningBlocks(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
+// ─── Converse rewrite (WG-B1) ────────────────────────────────────────────────
+
+func newHTTPTestBedrockModel(t *testing.T, server *httptest.Server, modelID string) *LanguageModel {
+	t.Helper()
+	p := New(Config{
+		AWSAccessKeyID:     "test-key",
+		AWSSecretAccessKey: "test-secret",
+		Region:             "us-east-1",
+		BaseURL:            server.URL,
+	})
+	return NewLanguageModel(p, modelID)
+}
+
+func TestDoGenerate_PostsToConverseEndpoint(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("x-amzn-requestid", "req-123")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+			"stopReason": "end_turn",
+			"usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	res, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.TextContent{Text: "visible"},
-					types.ReasoningContent{Text: "foreign reasoning without signature"},
-				},
-			},
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
 		}},
 	})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("DoGenerate error = %v", err)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok || len(content) != 1 || content[0]["text"] != "visible" {
-		t.Fatalf("content = %#v, want only visible text block", messages[0]["content"])
+	if gotPath != "/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse" {
+		t.Fatalf("request path = %q, want the encoded /converse endpoint", gotPath)
+	}
+	if res.Text != "hello" {
+		t.Fatalf("Text = %q, want hello", res.Text)
+	}
+	if res.FinishReason != types.FinishReasonStop {
+		t.Fatalf("FinishReason = %v, want stop", res.FinishReason)
+	}
+	messages, _ := gotBody["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want 1 user message", gotBody["messages"])
+	}
+	if res.ResponseMetadata == nil || res.ResponseMetadata.ID != "req-123" {
+		t.Fatalf("ResponseMetadata = %#v, want request ID from header", res.ResponseMetadata)
 	}
 }
 
-func TestBuildClaudeRequest_SystemMessageCachePoint(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		AllowSystemMessages: true,
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleSystem,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "System Prompt",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{
-								"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"},
-							},
-						},
-					},
-				},
-			},
-			{
-				Role:    types.RoleUser,
-				Content: []types.ContentPart{types.TextContent{Text: "hello"}},
-			},
-		}},
+func TestDoGenerate_ParsesToolCallsReasoningAndUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [
+				{"reasoningContent": {"reasoningText": {"text": "thinking...", "signature": "sig123"}}},
+				{"toolUse": {"toolUseId": "tool_1", "name": "get_weather", "input": {"city": "SF"}}}
+			]}},
+			"stopReason": "tool_use",
+			"usage": {"inputTokens": 10, "outputTokens": 4, "totalTokens": 14, "cacheReadInputTokens": 2, "cacheWriteInputTokens": 1}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-opus-5")
+	res, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "weather?"},
+		Tools:  []types.Tool{{Type: types.ToolTypeFunction, Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}}},
 	})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("DoGenerate error = %v", err)
 	}
-	system, ok := body["system"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("system = %T, want block slice: %#v", body["system"], body["system"])
+	if res.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", res.FinishReason)
 	}
-	if len(system) != 2 {
-		t.Fatalf("system length = %d, want text/cachePoint: %#v", len(system), system)
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ToolName != "get_weather" || res.ToolCalls[0].ID != "tool_1" {
+		t.Fatalf("ToolCalls = %#v", res.ToolCalls)
 	}
-	if system[0]["text"] != "System Prompt" {
-		t.Fatalf("system text block = %#v", system[0])
+	if res.ToolCalls[0].Arguments["city"] != "SF" {
+		t.Fatalf("tool call arguments = %#v", res.ToolCalls[0].Arguments)
 	}
-	cachePoint := system[1]["cachePoint"].(map[string]interface{})
-	if cachePoint["type"] != "default" || cachePoint["ttl"] != "5m" {
-		t.Fatalf("system cachePoint = %#v", cachePoint)
+	if len(res.Content) != 1 {
+		t.Fatalf("Content = %#v, want one reasoning part", res.Content)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	if len(messages) != 1 || messages[0]["role"] != types.RoleUser {
-		t.Fatalf("messages = %#v, want only user message", messages)
+	reasoning, ok := res.Content[0].(types.ReasoningContent)
+	if !ok || reasoning.Text != "thinking..." || reasoning.Signature != "sig123" {
+		t.Fatalf("reasoning content = %#v", res.Content[0])
+	}
+	if res.Usage.InputTokens == nil || *res.Usage.InputTokens != 13 { // 10 + 2 + 1
+		t.Fatalf("Usage.InputTokens = %v, want 13", res.Usage.InputTokens)
+	}
+	if res.Usage.InputDetails == nil || *res.Usage.InputDetails.CacheReadTokens != 2 || *res.Usage.InputDetails.CacheWriteTokens != 1 {
+		t.Fatalf("Usage.InputDetails = %#v", res.Usage.InputDetails)
 	}
 }
 
-func TestBuildClaudeRequest_TopLevelSystemUsesContentBlocks(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{
-			System: "System Prompt",
-			Messages: []types.Message{
-				{
-					Role:    types.RoleUser,
-					Content: []types.ContentPart{types.TextContent{Text: "Hello"}},
-				},
-			},
-		},
+func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"message":"model not found","type":"ValidationException"}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "ValidationException: model not found") {
+		t.Fatalf("error = %v, want %q", err, "ValidationException: model not found")
+	}
+}
+
+func TestDoStream_EmitsTextToolCallAndFinish(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := buildBedrockEventStreamBody([][2]string{
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"Hi "}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"there"}}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"t1","name":"search"}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"q\":"}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"\"cats\"}"}}}`},
+			{"contentBlockStop", `{"contentBlockIndex":1}`},
+			{"messageStop", `{"stopReason":"tool_use"}`},
+			{"metadata", `{"usage":{"inputTokens":5,"outputTokens":6,"totalTokens":11}}`},
+		})
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{{Type: types.ToolTypeFunction, Name: "search", Parameters: map[string]interface{}{"type": "object"}}},
 	})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("DoStream error = %v", err)
 	}
-	system, ok := body["system"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("system = %T, want block slice: %#v", body["system"], body["system"])
+	defer stream.Close() //nolint:errcheck
+
+	var text strings.Builder
+	var sawToolInputStart, sawToolInputDelta, sawToolInputEnd bool
+	var toolCall *types.ToolCall
+	var finishReason types.FinishReason
+	var finishUsage *types.Usage
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeText:
+			text.WriteString(chunk.Text)
+		case provider.ChunkTypeToolInputStart:
+			sawToolInputStart = true
+		case provider.ChunkTypeToolInputDelta:
+			sawToolInputDelta = true
+		case provider.ChunkTypeToolInputEnd:
+			sawToolInputEnd = true
+		case provider.ChunkTypeToolCall:
+			toolCall = chunk.ToolCall
+		case provider.ChunkTypeFinish:
+			finishReason = chunk.FinishReason
+			finishUsage = chunk.Usage
+		}
 	}
-	if len(system) != 1 || system[0]["text"] != "System Prompt" {
-		t.Fatalf("system = %#v, want text block", system)
+	if text.String() != "Hi there" {
+		t.Fatalf("text = %q, want %q", text.String(), "Hi there")
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 || content[0]["text"] != "Hello" {
-		t.Fatalf("messages = %#v, want user text block", messages)
+	if !sawToolInputStart || !sawToolInputDelta || !sawToolInputEnd {
+		t.Fatalf("missing tool-input lifecycle chunks: start=%v delta=%v end=%v", sawToolInputStart, sawToolInputDelta, sawToolInputEnd)
+	}
+	if toolCall == nil || toolCall.ToolName != "search" || toolCall.ID != "t1" {
+		t.Fatalf("toolCall = %#v", toolCall)
+	}
+	if toolCall.Arguments["q"] != "cats" {
+		t.Fatalf("toolCall.Arguments = %#v", toolCall.Arguments)
+	}
+	if finishReason != types.FinishReasonToolCalls {
+		t.Fatalf("finishReason = %v, want tool-calls", finishReason)
+	}
+	if finishUsage == nil || finishUsage.OutputTokens == nil || *finishUsage.OutputTokens != 6 {
+		t.Fatalf("finish usage = %#v", finishUsage)
 	}
 }
 
-func TestBuildClaudeRequest_ReplaysOnlySignedReasoningBlocks(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.TextContent{Text: "visible"},
-					types.ReasoningContent{Text: "signed reasoning", Signature: "sig-1"},
-					types.ReasoningContent{Text: "unsigned reasoning"},
-				},
-			},
-		}},
-	})
+func TestDoStream_SurfacesModeledException(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frame := buildBedrockEventFrame(map[string]string{
+			":message-type":   "exception",
+			":exception-type": "serviceUnavailableException",
+		}, []byte(`{"message":"overloaded"}`))
+		w.WriteHeader(200)
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("DoStream error = %v", err)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
+	defer stream.Close() //nolint:errcheck
+
+	sawError := false
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			sawError = true
+			if !strings.Contains(chunk.Text, "overloaded") {
+				t.Fatalf("error text = %q, want to mention 'overloaded'", chunk.Text)
+			}
+		}
 	}
-	if len(content) != 2 {
-		t.Fatalf("content length = %d, want text + signed reasoning only: %#v", len(content), content)
-	}
-	rc := content[1]["reasoningContent"].(map[string]interface{})
-	rt := rc["reasoningText"].(map[string]interface{})
-	if rt["text"] != "signed reasoning" || rt["signature"] != "sig-1" {
-		t.Fatalf("reasoning block = %#v", content[1])
+	if !sawError {
+		t.Fatal("expected an error chunk for the modeled exception")
 	}
 }
 
-func TestBuildClaudeRequest_ReplaysBedrockReasoningProviderOptions(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.ReasoningContent{
-						Text: "provider option signature",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{"signature": "sig-provider"},
-						},
-					},
-					types.ReasoningContent{
-						Text: "foreign signature",
-						ProviderOptions: map[string]interface{}{
-							"anthropic": map[string]interface{}{"signature": "foreign-sig"},
-						},
-					},
-				},
-			},
-		}},
-	})
+func TestConverseURL_EncodesApplicationInferenceProfileARN(t *testing.T) {
+	arn := "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc-123"
+	model := newBedrockModelWithID(arn)
+	reqURL, rawPath, err := model.converseURL("https://bedrock-runtime.us-east-1.amazonaws.com", "/converse")
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("converseURL error = %v", err)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
+	wantEncoded := "arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Fabc-123"
+	wantPath := "/model/" + wantEncoded + "/converse"
+	if rawPath != wantPath {
+		t.Fatalf("rawPath = %q, want %q", rawPath, wantPath)
 	}
-	if len(content) != 1 {
-		t.Fatalf("content length = %d, want only Bedrock-signed reasoning: %#v", len(content), content)
-	}
-	rc := content[0]["reasoningContent"].(map[string]interface{})
-	rt := rc["reasoningText"].(map[string]interface{})
-	if rt["text"] != "provider option signature" || rt["signature"] != "sig-provider" {
-		t.Fatalf("reasoning block = %#v", content[0])
+	if reqURL.Opaque != wantPath {
+		t.Fatalf("reqURL.Opaque = %q, want %q", reqURL.Opaque, wantPath)
 	}
 }
 
-func TestBuildClaudeRequest_ReplaysEmptyRedactedReasoningProviderOption(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.ReasoningContent{
-						Text: "",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{"redactedData": ""},
-						},
-					},
-				},
-			},
-		}},
-	})
+func TestConverseURL_LiteralPathSurvivesOnTheWire(t *testing.T) {
+	var gotRequestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequestURI = r.URL.RequestURI()
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`))
+	}))
+	defer server.Close()
+
+	modelID := "us.anthropic.claude-v2:1"
+	model := newHTTPTestBedrockModel(t, server, modelID)
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	want := "/model/us.anthropic.claude-v2%3A1/converse"
+	if gotRequestURI != want {
+		t.Fatalf("server saw request-target %q, want %q", gotRequestURI, want)
+	}
+}
+
+func TestAWSSigner_DoubleEncodesOpaquePathForCanonicalRequest(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com", strings.NewReader("{}"))
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("NewRequest error = %v", err)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 {
-		t.Fatalf("content length = %d, want redacted reasoning: %#v", len(content), content)
-	}
-	rc := content[0]["reasoningContent"].(map[string]interface{})
-	redacted := rc["redactedReasoning"].(map[string]interface{})
-	if redacted["data"] != "" {
-		t.Fatalf("redacted reasoning = %#v, want empty data string", redacted)
+	req.URL.Opaque = "/model/anthropic.claude-v2%3A1/converse"
+	req.Header.Set("Content-Type", "application/json")
+
+	signer := NewAWSSigner("key", "secret", "", "us-east-1")
+	canonical := signer.buildCanonicalRequest(req, []byte("{}"))
+	wantURI := "/model/anthropic.claude-v2%253A1/converse"
+	if !strings.Contains(canonical, wantURI) {
+		t.Fatalf("canonical request = %q, want it to contain double-encoded URI %q", canonical, wantURI)
 	}
 }
 
-func TestBuildClaudeRequest_ReplaysEmptySignatureReasoningProviderOption(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.ReasoningContent{
-						Text: "reasoning",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{"signature": ""},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+func TestPrepareTools_FiltersUnsupportedWebToolsWithWarning(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_search_20250305", Name: "web_search"},
+		{Type: types.ToolTypeFunction, Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}},
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 {
-		t.Fatalf("content length = %d, want signed reasoning block: %#v", len(content), content)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil)
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "web_search_20250305 tool" {
+		t.Fatalf("warnings = %#v, want a single web_search_20250305 filter warning", result.Warnings)
 	}
-	rc := content[0]["reasoningContent"].(map[string]interface{})
-	rt := rc["reasoningText"].(map[string]interface{})
-	if rt["text"] != "reasoning" || rt["signature"] != "" {
-		t.Fatalf("reasoning block = %#v, want empty signature replayed", content[0])
+	if len(result.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected only the function tool to survive, got %#v", result.ToolConfig.Tools)
 	}
 }
 
-func TestBuildClaudeRequest_ReasoningDoesNotFallBackWhenAmazonBedrockPresent(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.ReasoningContent{
-						Text: "bedrock signature should not be used",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{},
-							"bedrock":       map[string]interface{}{"signature": "sig-bedrock"},
-						},
-					},
-					types.TextContent{Text: "answer"},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+func TestPrepareTools_StrictSchemaCompatibility(t *testing.T) {
+	compatible := map[string]interface{}{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 || content[0]["text"] != "answer" {
-		t.Fatalf("content = %#v, want unsigned reasoning skipped without bedrock fallback", content)
+	incompatible := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
+	}
+	if !isStrictToolSchemaCompatible(compatible) {
+		t.Fatal("expected compatible schema to pass")
+	}
+	if isStrictToolSchemaCompatible(incompatible) {
+		t.Fatal("expected incompatible schema (missing additionalProperties:false) to fail")
+	}
+
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "strict_tool", Strict: true, Parameters: incompatible},
+	}
+	// claude-3-5-sonnet is a legacy model (not in modelsWithoutStrictToolSupport),
+	// so strict tool support itself is allowed, but the schema is incompatible.
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil)
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if w.Feature == "strict" {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected a strict-schema warning, got %#v", result.Warnings)
+	}
+	toolSpec := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+	if _, ok := toolSpec["strict"]; ok {
+		t.Fatalf("expected strict to be omitted when schema is incompatible, got %#v", toolSpec)
 	}
 }
 
-func TestBuildClaudeRequest_PartLevelCachePointAfterContentBlock(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "cache me",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{"cachePoint": true},
-						},
-					},
-					types.TextContent{Text: "plain"},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+func TestPrepareTools_ModelsWithoutStrictSupportOmitStrict(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "t", Strict: true, Parameters: map[string]interface{}{"type": "object", "additionalProperties": false}},
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	toolSpec := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+	if _, ok := toolSpec["strict"]; ok {
+		t.Fatalf("expected strict omitted for claude-opus-5 (no strict tool support), got %#v", toolSpec)
 	}
-	if len(content) != 3 {
-		t.Fatalf("content length = %d, want text/cachePoint/text: %#v", len(content), content)
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if w.Feature == "strict" {
+			foundWarning = true
+		}
 	}
-	if content[0]["text"] != "cache me" {
-		t.Fatalf("first block = %#v", content[0])
-	}
-	cachePoint, ok := content[1]["cachePoint"].(map[string]interface{})
-	if !ok || cachePoint["type"] != "default" {
-		t.Fatalf("cachePoint block = %#v", content[1])
-	}
-	if content[2]["text"] != "plain" {
-		t.Fatalf("third block = %#v", content[2])
+	if !foundWarning {
+		t.Fatal("expected an unsupported strict warning")
 	}
 }
 
-func TestBuildClaudeRequest_PreservesCachePointConfigAndMessageCachePoint(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "part cache",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{
-								"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"},
-							},
-						},
-					},
-				},
-				ProviderOptions: map[string]interface{}{
-					"amazonBedrock": map[string]interface{}{
-						"cachePoint": map[string]interface{}{"type": "default", "ttl": "1h"},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
-	}
-	if len(content) != 3 {
-		t.Fatalf("content length = %d, want text/part cache/message cache: %#v", len(content), content)
-	}
-	partCache := content[1]["cachePoint"].(map[string]interface{})
-	if partCache["type"] != "default" || partCache["ttl"] != "5m" {
-		t.Fatalf("part cachePoint = %#v", partCache)
-	}
-	messageCache := content[2]["cachePoint"].(map[string]interface{})
-	if messageCache["type"] != "default" || messageCache["ttl"] != "1h" {
-		t.Fatalf("message cachePoint = %#v", messageCache)
-	}
-}
-
-func TestBuildClaudeRequest_CachePointFallsBackToLegacyBedrock(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "cache me",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{"guardContent": true},
-							"bedrock": map[string]interface{}{
-								"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
-	}
-	if len(content) != 2 {
-		t.Fatalf("content length = %d, want text/cachePoint: %#v", len(content), content)
-	}
-	cachePoint := content[1]["cachePoint"].(map[string]interface{})
-	if cachePoint["type"] != "default" || cachePoint["ttl"] != "5m" {
-		t.Fatalf("cachePoint = %#v", cachePoint)
-	}
-}
-
-func TestBuildClaudeRequest_CachePointFalseDoesNotFallBack(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "no cache",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{"cachePoint": false},
-							"bedrock": map[string]interface{}{
-								"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 {
-		t.Fatalf("content = %#v, want no fallback cachePoint", content)
-	}
-}
-
-func TestBuildClaudeRequest_CachePointAfterSkippedAssistantParts(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "\n\n",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"}},
-						},
-					},
-					types.ReasoningContent{
-						Text: "unsigned reasoning",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{"cachePoint": map[string]interface{}{"type": "default", "ttl": "1h"}},
-						},
-					},
-					types.TextContent{Text: "answer"},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 4 {
-		t.Fatalf("content = %#v, want text/cache/cache/text", content)
-	}
-	if content[0]["text"] != "\n\n" {
-		t.Fatalf("first block = %#v, want preserved empty text because reasoning is present", content[0])
-	}
-	firstCache := content[1]["cachePoint"].(map[string]interface{})
-	if firstCache["ttl"] != "5m" {
-		t.Fatalf("first cachePoint = %#v, want ttl 5m", firstCache)
-	}
-	secondCache := content[2]["cachePoint"].(map[string]interface{})
-	if secondCache["ttl"] != "1h" {
-		t.Fatalf("second cachePoint = %#v, want ttl 1h", secondCache)
-	}
-	if content[3]["text"] != "answer" {
-		t.Fatalf("fourth block = %#v, want answer text", content[3])
-	}
-}
-
-func TestBuildClaudeRequest_CachePointAfterSkippedEmptyAssistantText(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.TextContent{
-						Text: "  ",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{"cachePoint": map[string]interface{}{"type": "default", "ttl": "5m"}},
-						},
-					},
-					types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{}},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 2 {
-		t.Fatalf("content = %#v, want cache/toolUse", content)
-	}
-	cachePoint := content[0]["cachePoint"].(map[string]interface{})
-	if cachePoint["ttl"] != "5m" {
-		t.Fatalf("cachePoint = %#v, want ttl 5m", cachePoint)
-	}
-	if _, ok := content[1]["toolUse"]; !ok {
-		t.Fatalf("second block = %#v, want toolUse", content[1])
-	}
-}
-
-func TestBuildClaudeRequest_NormalizesMistralToolCallIDs(t *testing.T) {
-	model := newTestBedrockModelWithID(ModelMistralLarge2402V1)
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.ToolCallContent{
-						ToolCallID: "tooluse_xyz123ABC456-def",
-						ToolName:   "test-tool",
-						Arguments:  map[string]interface{}{"query": "test"},
-					},
-				},
-			},
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "tooluse_bpe71yCfRu2b5i-nKGDr5g",
-						ToolName:   "calculator",
-						Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "The result is 42"},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	assistantContent := messages[0]["content"].([]map[string]interface{})
-	toolUse := assistantContent[0]["toolUse"].(map[string]interface{})
-	if toolUse["toolUseId"] != "toolusexy" {
-		t.Fatalf("toolUseId = %v, want toolusexy", toolUse["toolUseId"])
-	}
-	toolContent := messages[1]["content"].([]map[string]interface{})
-	toolResult := toolContent[0]["toolResult"].(map[string]interface{})
-	if toolResult["toolUseId"] != "toolusebp" {
-		t.Fatalf("toolResult toolUseId = %v, want toolusebp", toolResult["toolUseId"])
-	}
-}
-
-func TestBuildClaudeRequest_PreservesNonMistralToolCallIDs(t *testing.T) {
-	model := newTestBedrockModel()
-	originalID := "tooluse_bpe71yCfRu2b5i-nKGDr5g"
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: originalID,
-						ToolName:   "calculator",
-						Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "The result is 42"},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	toolResult := content[0]["toolResult"].(map[string]interface{})
-	if toolResult["toolUseId"] != originalID {
-		t.Fatalf("toolResult toolUseId = %v, want %s", toolResult["toolUseId"], originalID)
-	}
-}
-
-func TestBuildClaudeRequest_RejectsUnsupportedImageMimeType(t *testing.T) {
-	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.ImageContent{Image: []byte("bmp"), MimeType: "image/bmp"},
-				},
-			},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "Unsupported image mime type") && !strings.Contains(err.Error(), "unsupported image mime type") {
-		t.Fatalf("buildClaudeRequest error = %v, want unsupported image mime type", err)
-	}
-}
-
-func TestBuildClaudeRequest_RejectsImageURLData(t *testing.T) {
-	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.ImageContent{URL: "https://example.com/image.png", MimeType: "image/png"},
-				},
-			},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "image URL data") {
-		t.Fatalf("buildClaudeRequest error = %v, want unsupported image URL data", err)
-	}
-}
-
-func TestBuildClaudeRequest_RejectsUnsupportedFileMimeType(t *testing.T) {
-	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.FileContent{Data: []byte("data"), MediaType: "application/json", Filename: "data.json"},
-				},
-			},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "Unsupported file mime type") && !strings.Contains(err.Error(), "unsupported file mime type") {
-		t.Fatalf("buildClaudeRequest error = %v, want unsupported file mime type", err)
-	}
-}
-
-func TestBuildClaudeRequest_RejectsUnsupportedFileDataKinds(t *testing.T) {
+func TestModelSupport_IsAnthropicModelID(t *testing.T) {
+	budget := 100
 	tests := []struct {
-		name    string
-		part    types.FileContent
-		wantErr string
+		name     string
+		modelID  string
+		family   string
+		budget   *int
+		expected bool
 	}{
-		{
-			name:    "url",
-			part:    types.FileContent{URL: "https://example.com/file.pdf", MediaType: "application/pdf"},
-			wantErr: "file URL data",
-		},
-		{
-			name:    "reference",
-			part:    types.FileContent{Reference: "file-123", MediaType: "application/pdf"},
-			wantErr: "provider references",
-		},
-		{
-			name:    "tagged url",
-			part:    types.FileContent{FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/file.pdf", MediaType: "application/pdf"}},
-			wantErr: "file URL data",
-		},
-		{
-			name:    "tagged reference",
-			part:    types.FileContent{FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"bedrock": "file-123"}, MediaType: "application/pdf"}},
-			wantErr: "provider references",
-		},
+		{"contains anthropic", "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, true},
+		{"modelFamily override", "some-custom-id", "anthropic", nil, true},
+		{"non-anthropic no override", "amazon.nova-pro-v1:0", "", nil, false},
+		{"inference profile ARN with budget", "arn:aws:bedrock:us-east-1:1:application-inference-profile/x", "", &budget, true},
+		{"inference profile ARN without budget", "arn:aws:bedrock:us-east-1:1:application-inference-profile/x", "", nil, false},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			model := newTestBedrockModel()
-			_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-				Prompt: types.Prompt{Messages: []types.Message{
-					{
-						Role:    types.RoleUser,
-						Content: []types.ContentPart{tt.part},
-					},
-				}},
-			})
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("buildClaudeRequest error = %v, want %q", err, tt.wantErr)
+			if got := isAnthropicModelID(tt.modelID, tt.family, tt.budget); got != tt.expected {
+				t.Errorf("isAnthropicModelID(%q, %q, %v) = %v, want %v", tt.modelID, tt.family, tt.budget, got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestBuildClaudeRequest_DocumentCitationsProviderOption(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.FileContent{
-						Data:      []byte{0, 1, 2, 3},
-						MediaType: "application/pdf",
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{
-								"citations": map[string]interface{}{"enabled": true},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	document := content[0]["document"].(map[string]interface{})
-	citations, ok := document["citations"].(map[string]interface{})
-	if !ok || citations["enabled"] != true {
-		t.Fatalf("document citations = %#v, want enabled true", document["citations"])
-	}
-}
-
-func TestBuildClaudeRequest_ToolResultDocumentFileContent(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "call-123",
-						ToolName:   "document-reader",
-						Output: &types.ToolResultOutput{
-							Type: types.ToolResultOutputContent,
-							Content: []types.ToolResultContentBlock{
-								types.FileContentBlock{
-									MediaType: "application/pdf",
-									Filename:  "tool-result.pdf",
-									FileData: types.FileData{
-										Type:       types.FileDataTypeData,
-										DataString: "base64data",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	toolResult := content[0]["toolResult"].(map[string]interface{})
-	blocks := toolResult["content"].([]map[string]interface{})
-	document := blocks[0]["document"].(map[string]interface{})
-	if document["format"] != "pdf" || document["name"] != "tool-result" {
-		t.Fatalf("document = %#v", document)
-	}
-	source := document["source"].(map[string]interface{})
-	if source["bytes"] != "base64data" {
-		t.Fatalf("document source = %#v, want bytes base64data", source)
-	}
-}
-
-func TestBuildClaudeRequest_CitationsDoNotFallBackWhenAmazonBedrockPresent(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.FileContent{
-						Data:      []byte{0, 1, 2, 3},
-						MediaType: "application/pdf",
-						ProviderOptions: map[string]interface{}{
-							"amazonBedrock": map[string]interface{}{},
-							"bedrock": map[string]interface{}{
-								"citations": map[string]interface{}{"enabled": true},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	document := content[0]["document"].(map[string]interface{})
-	if _, ok := document["citations"]; ok {
-		t.Fatalf("document citations = %#v, want no bedrock fallback when amazonBedrock is present", document["citations"])
-	}
-}
-
-func TestBuildClaudeRequest_DocumentNamesMatchTypeScript(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.FileContent{Data: []byte("a"), MediaType: "application/pdf", Filename: "archive.tar.gz"},
-					types.FileContent{Data: []byte("b"), MediaType: "text/plain"},
-					types.FileContent{Data: []byte("c"), MediaType: "text/plain"},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	names := []string{}
-	for _, block := range content {
-		document := block["document"].(map[string]interface{})
-		names = append(names, document["name"].(string))
-	}
-	want := []string{"archive", "document-1", "document-2"}
-	if len(names) != len(want) {
-		t.Fatalf("names = %#v, want %#v", names, want)
-	}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Fatalf("names = %#v, want %#v", names, want)
+func TestModelSupport_SupportsStrictToolsAndNativeSO(t *testing.T) {
+	strictUnsupported := []string{"anthropic.claude-opus-4-7", "anthropic.claude-opus-4-8", "anthropic.claude-opus-5", "anthropic.claude-fable-5", "anthropic.claude-sonnet-5"}
+	for _, id := range strictUnsupported {
+		if bedrockSupportsStrictTools(id) {
+			t.Errorf("bedrockSupportsStrictTools(%q) = true, want false", id)
+		}
+		if bedrockSupportsNativeStructuredOutput(id) {
+			t.Errorf("bedrockSupportsNativeStructuredOutput(%q) = true, want false", id)
 		}
 	}
-}
-
-func TestBuildClaudeRequest_PreservesExplicitEmptyInlineData(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.ImageContent{Image: []byte{}, MimeType: "image/png"},
-					types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{}, MediaType: "application/pdf"}},
-					types.FileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "", MediaType: "text/plain"}},
-					types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AA", MediaType: "application/pdf"}},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 4 {
-		t.Fatalf("content length = %d, want 4 blocks: %#v", len(content), content)
-	}
-
-	image := content[0]["image"].(map[string]interface{})
-	imageSource := image["source"].(map[string]interface{})
-	if imageSource["bytes"] != "" {
-		t.Fatalf("image bytes = %#v, want empty base64 string", imageSource["bytes"])
-	}
-
-	dataDocument := content[1]["document"].(map[string]interface{})
-	dataSource := dataDocument["source"].(map[string]interface{})
-	if dataSource["bytes"] != "" {
-		t.Fatalf("data document bytes = %#v, want empty base64 string", dataSource["bytes"])
-	}
-
-	textDocument := content[2]["document"].(map[string]interface{})
-	textSource := textDocument["source"].(map[string]interface{})
-	if textSource["bytes"] != "" {
-		t.Fatalf("text document bytes = %#v, want empty base64 string", textSource["bytes"])
-	}
-
-	stringDocument := content[3]["document"].(map[string]interface{})
-	stringSource := stringDocument["source"].(map[string]interface{})
-	if stringSource["bytes"] != "AA" {
-		t.Fatalf("string document bytes = %#v, want DataString passed through", stringSource["bytes"])
-	}
-}
-
-func TestBuildClaudeRequest_ResolvesTopLevelMediaTypesFromInlineData(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.FileContent{Data: []byte{0x89, 0x50, 0x4e, 0x47, 0x00}, MediaType: "image"},
-					types.FileContent{Data: []byte("%PDF-1.7"), MediaType: "application"},
-					types.FileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "hello", MediaType: "text"}},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	image := content[0]["image"].(map[string]interface{})
-	if image["format"] != "png" {
-		t.Fatalf("image block = %#v, want png format", image)
-	}
-	pdfDocument := content[1]["document"].(map[string]interface{})
-	if pdfDocument["format"] != "pdf" {
-		t.Fatalf("document block = %#v, want pdf format", pdfDocument)
-	}
-	textDocument := content[2]["document"].(map[string]interface{})
-	if textDocument["format"] != "txt" {
-		t.Fatalf("text document block = %#v, want txt format", textDocument)
-	}
-}
-
-func TestBuildClaudeRequest_AssistantTextFilteringAndTrim(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role:    types.RoleUser,
-				Content: []types.ContentPart{types.TextContent{Text: "hello"}},
-			},
-			{
-				Role: types.RoleAssistant,
-				Content: []types.ContentPart{
-					types.TextContent{Text: "\n\n"},
-					types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{}},
-					types.TextContent{Text: "answer  "},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[1]["content"].([]map[string]interface{})
-	if len(content) != 2 {
-		t.Fatalf("assistant content length = %d, want toolUse/text: %#v", len(content), content)
-	}
-	if _, ok := content[0]["toolUse"]; !ok {
-		t.Fatalf("first assistant block = %#v, want toolUse", content[0])
-	}
-	if content[1]["text"] != "answer" {
-		t.Fatalf("assistant final text = %#v, want trimmed answer", content[1])
-	}
-}
-
-func TestBuildClaudeRequest_KeepsAssistantTrailingWhitespaceBeforeUser(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role:    types.RoleAssistant,
-				Content: []types.ContentPart{types.TextContent{Text: "assistant  "}},
-			},
-			{
-				Role:    types.RoleUser,
-				Content: []types.ContentPart{types.TextContent{Text: "next"}},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	if len(content) != 1 || content[0]["text"] != "assistant  " {
-		t.Fatalf("assistant content = %#v, want trailing whitespace preserved", messages[0]["content"])
-	}
-}
-
-func TestBuildClaudeRequest_GroupsConsecutiveMessages(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi!"}}},
-			{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
-			{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "World"}}},
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{types.ToolResultContent{
-					ToolCallID: "call-1",
-					Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "tool result"},
-				}},
-			},
-			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	if len(messages) != 3 {
-		t.Fatalf("messages length = %d, want user/assistant/user groups: %#v", len(messages), messages)
-	}
-	if messages[0]["role"] != types.RoleUser || messages[1]["role"] != types.RoleAssistant || messages[2]["role"] != types.RoleUser {
-		t.Fatalf("messages roles = %#v", messages)
-	}
-	assistantContent := messages[1]["content"].([]map[string]interface{})
-	if len(assistantContent) != 2 || assistantContent[0]["text"] != "Hello" || assistantContent[1]["text"] != "World" {
-		t.Fatalf("assistant group content = %#v", assistantContent)
-	}
-	userContent := messages[2]["content"].([]map[string]interface{})
-	if len(userContent) != 2 {
-		t.Fatalf("user/tool group content = %#v, want toolResult + text", userContent)
-	}
-	if _, ok := userContent[0]["toolResult"]; !ok || userContent[1]["text"] != "again" {
-		t.Fatalf("user/tool group content = %#v", userContent)
-	}
-}
-
-func TestBuildClaudeRequest_RejectsSystemAfterUser(t *testing.T) {
-	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hello"}}},
-			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "late system"}}},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "system messages") {
-		t.Fatalf("buildClaudeRequest error = %v, want separated system message error", err)
-	}
-}
-
-func TestBuildClaudeRequest_NonImageToolResultFileBecomesDocument(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "call-1",
-						Output: &types.ToolResultOutput{
-							Type: types.ToolResultOutputContent,
-							Content: []types.ToolResultContentBlock{
-								types.FileContentBlock{MediaType: "application/pdf", Data: []byte("pdf")},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	toolResult := content[0]["toolResult"].(map[string]interface{})
-	blocks := toolResult["content"].([]map[string]interface{})
-	document := blocks[0]["document"].(map[string]interface{})
-	if document["format"] != "pdf" || document["name"] != "document-1" {
-		t.Fatalf("document = %#v", document)
-	}
-}
-
-func TestBuildClaudeRequest_PreservesExplicitEmptyToolResultFileData(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "call-1",
-						Output: &types.ToolResultOutput{
-							Type: types.ToolResultOutputContent,
-							Content: []types.ToolResultContentBlock{
-								types.FileContentBlock{MediaType: "image/png", Data: []byte{}},
-								types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{}, MediaType: "image/jpeg"}},
-								types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AA", MediaType: "image/webp"}},
-								types.FileContentBlock{MediaType: "image", Data: []byte{0x47, 0x49, 0x46}},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	messages := body["messages"].([]map[string]interface{})
-	content := messages[0]["content"].([]map[string]interface{})
-	toolResult := content[0]["toolResult"].(map[string]interface{})
-	toolContent := toolResult["content"].([]map[string]interface{})
-	if len(toolContent) != 4 {
-		t.Fatalf("tool result content length = %d, want 4: %#v", len(toolContent), toolContent)
-	}
-	for i, block := range toolContent {
-		image := block["image"].(map[string]interface{})
-		source := image["source"].(map[string]interface{})
-		want := ""
-		if i == 2 {
-			want = "AA"
-		} else if i == 3 {
-			want = "R0lG"
+	extraSONotSupported := []string{"anthropic.claude-sonnet-4-6-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0"}
+	for _, id := range extraSONotSupported {
+		if !bedrockSupportsStrictTools(id) {
+			t.Errorf("bedrockSupportsStrictTools(%q) = false, want true", id)
 		}
-		if i == 3 && image["format"] != "gif" {
-			t.Fatalf("tool result image = %#v, want gif format", image)
-		}
-		if source["bytes"] != want {
-			t.Fatalf("tool result image bytes = %#v, want %q", source["bytes"], want)
+		if bedrockSupportsNativeStructuredOutput(id) {
+			t.Errorf("bedrockSupportsNativeStructuredOutput(%q) = true, want false", id)
 		}
 	}
-}
-
-func TestBuildClaudeRequest_RejectsUnsupportedToolResultContentBlock(t *testing.T) {
-	model := newTestBedrockModel()
-	_, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "call-1",
-						Output: &types.ToolResultOutput{
-							Type: types.ToolResultOutputContent,
-							Content: []types.ToolResultContentBlock{
-								types.CustomContentBlock{ProviderOptions: map[string]interface{}{"bedrock": map[string]interface{}{}}},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported tool content part type") {
-		t.Fatalf("buildClaudeRequest error = %v, want unsupported tool content part type", err)
+	if !bedrockSupportsStrictTools("anthropic.claude-3-5-sonnet-20241022-v2:0") {
+		t.Error("expected strict tools supported for a model outside the exclusion lists")
+	}
+	if !bedrockSupportsNativeStructuredOutput("anthropic.claude-3-5-sonnet-20241022-v2:0") {
+		t.Error("expected native structured output supported for a model outside the exclusion lists")
 	}
 }
 
-func TestBuildClaudeRequest_ToolResultCachePoint(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleTool,
-				Content: []types.ContentPart{
-					types.ToolResultContent{
-						ToolCallID: "call-1",
-						Output: &types.ToolResultOutput{
-							Type:  types.ToolResultOutputText,
-							Value: "tool output",
-						},
-						ProviderOptions: map[string]interface{}{
-							"bedrock": map[string]interface{}{
-								"cachePoint": map[string]interface{}{"type": "default", "ttl": "1h"},
-							},
-						},
-					},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+func TestBedrockAPIError_FormatsTypeAndMessage(t *testing.T) {
+	err := bedrockAPIError(400, []byte(`{"message":"bad input","type":"ValidationException"}`), nil)
+	if err.Message != "ValidationException: bad input" {
+		t.Fatalf("Message = %q", err.Message)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	if messages[0]["role"] != types.RoleUser {
-		t.Fatalf("tool result message role = %v, want user", messages[0]["role"])
+	if err.StatusCode != 400 {
+		t.Fatalf("StatusCode = %d, want 400", err.StatusCode)
 	}
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
+
+	errNoType := bedrockAPIError(500, []byte(`{"message":"boom"}`), nil)
+	if errNoType.Message != "boom" {
+		t.Fatalf("Message = %q, want boom", errNoType.Message)
 	}
-	if len(content) != 2 {
-		t.Fatalf("content length = %d, want toolResult/cachePoint: %#v", len(content), content)
-	}
-	toolResult := content[0]["toolResult"].(map[string]interface{})
-	if toolResult["toolUseId"] != "call-1" {
-		t.Fatalf("toolResult = %#v", toolResult)
-	}
-	cachePoint := content[1]["cachePoint"].(map[string]interface{})
-	if cachePoint["type"] != "default" || cachePoint["ttl"] != "1h" {
-		t.Fatalf("cachePoint = %#v", cachePoint)
+
+	errUnparsable := bedrockAPIError(502, []byte("not json"), nil)
+	if errUnparsable.Message != "not json" {
+		t.Fatalf("Message = %q, want raw body fallback", errUnparsable.Message)
 	}
 }
 
-func TestBuildClaudeRequest_NoCachePointWhenPartOptionAbsent(t *testing.T) {
-	model := newTestBedrockModel()
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Messages: []types.Message{
-			{
-				Role: types.RoleUser,
-				Content: []types.ContentPart{
-					types.ImageContent{
-						Image:    []byte("png"),
-						MimeType: "image/png",
-					},
-				},
-			},
-		}},
+func TestResolveAmazonBedrockBaseURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		region string
+		want   string
+	}{
+		{"standard partition", "us-east-1", "https://bedrock-runtime.us-east-1.amazonaws.com"},
+		{"china partition", "cn-north-1", "https://bedrock-runtime.cn-north-1.amazonaws.com.cn"},
+		{"us-iso partition", "us-iso-east-1", "https://bedrock-runtime.us-iso-east-1.c2s.ic.gov"},
+		{"us-isob partition", "us-isob-east-1", "https://bedrock-runtime.us-isob-east-1.sc2s.sgov.gov"},
+		{"eu-isoe partition", "eu-isoe-west-1", "https://bedrock-runtime.eu-isoe-west-1.cloud.adc-e.uk"},
+		{"us-isof partition", "us-isof-south-1", "https://bedrock-runtime.us-isof-south-1.csp.hci.ic.gov"},
+		{"eusc partition", "eusc-de-east-1", "https://bedrock-runtime.eusc-de-east-1.amazonaws.eu"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+				Region:                               tt.region,
+				Service:                              "bedrock-runtime",
+				ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+			})
+			if err != nil {
+				t.Fatalf("resolveAmazonBedrockBaseURL error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://custom-runtime.example.com/")
+	t.Setenv("AWS_ENDPOINT_URL", "https://generic.example.com/")
+
+	got, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+		Region:                               "us-east-1",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
+		t.Fatalf("error = %v", err)
 	}
-	messages := body["messages"].([]map[string]interface{})
-	content, ok := messages[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content = %T, want block slice: %#v", messages[0]["content"], messages[0]["content"])
-	}
-	if len(content) != 1 {
-		t.Fatalf("content length = %d, want only image block: %#v", len(content), content)
-	}
-	if _, hasCache := content[0]["cachePoint"]; hasCache {
-		t.Fatalf("unexpected cachePoint: %#v", content)
-	}
-}
-
-// getToolSpec extracts the toolSpec map from the first entry in the tools array.
-func getToolSpec(t *testing.T, body map[string]interface{}) map[string]interface{} {
-	t.Helper()
-	toolsRaw, ok := body["tools"]
-	if !ok {
-		t.Fatal("tools key not found in request body")
-	}
-	tools, ok := toolsRaw.([]interface{})
-	if !ok || len(tools) == 0 {
-		t.Fatalf("expected non-empty tools slice, got %T %v", toolsRaw, toolsRaw)
-	}
-	entry, ok := tools[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected map for tools[0], got %T", tools[0])
-	}
-	spec, ok := entry["toolSpec"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected toolSpec map, got %T", entry["toolSpec"])
-	}
-	return spec
-}
-
-// TestBuildClaudeRequest_ToolsForwardedWithStrictMode verifies that tools are
-// forwarded in Bedrock's toolSpec format and that strict=true is included when
-// the tool has Strict set (#12893).
-func TestBuildClaudeRequest_ToolsForwardedWithStrictMode(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools: []types.Tool{
-			{
-				Name:        "get_weather",
-				Description: "Returns current weather",
-				Parameters:  map[string]interface{}{"type": "object"},
-				Strict:      true,
-			},
-		},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
+	if got != "https://custom-runtime.example.com" {
+		t.Fatalf("got %q, want service-specific env var to win (trailing slash stripped)", got)
 	}
 
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	spec := getToolSpec(t, body)
-
-	if spec["name"] != "get_weather" {
-		t.Errorf("name = %v, want get_weather", spec["name"])
-	}
-	if spec["strict"] != true {
-		t.Errorf("strict = %v, want true", spec["strict"])
-	}
-
-	inputSchema, ok := spec["inputSchema"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected inputSchema map, got %T", spec["inputSchema"])
-	}
-	if inputSchema["json"] == nil {
-		t.Error("inputSchema.json must not be nil")
-	}
-}
-
-// TestBuildClaudeRequest_ToolChoiceAuto verifies that ToolChoiceAuto maps to
-// Bedrock's { "auto": {} } format.
-func TestBuildClaudeRequest_ToolChoiceAuto(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt:     types.Prompt{Text: "hello"},
-		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	tc, ok := body["toolChoice"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("toolChoice is %T, want map", body["toolChoice"])
-	}
-	if _, hasAuto := tc["auto"]; !hasAuto {
-		t.Errorf("toolChoice should have 'auto' key, got %v", tc)
-	}
-}
-
-// TestBuildClaudeRequest_ToolChoiceRequired verifies that ToolChoiceRequired
-// maps to Bedrock's { "any": {} } format.
-func TestBuildClaudeRequest_ToolChoiceRequired(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt:     types.Prompt{Text: "hello"},
-		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	tc, ok := body["toolChoice"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("toolChoice is %T, want map", body["toolChoice"])
-	}
-	if _, hasAny := tc["any"]; !hasAny {
-		t.Errorf("toolChoice should have 'any' key for required, got %v", tc)
-	}
-}
-
-// TestBuildClaudeRequest_ToolChoiceTool_FiltersAndMapsCorrectly verifies that
-// ToolChoiceTool filters tools to the named tool and sets
-// { "tool": { "name": "..." } } (#12854).
-func TestBuildClaudeRequest_ToolChoiceTool_FiltersAndMapsCorrectly(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools: []types.Tool{
-			{Name: "search", Parameters: map[string]interface{}{}},
-			{Name: "calculator", Parameters: map[string]interface{}{}},
-		},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "calculator"},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	// Only the named tool should be in the tools array.
-	toolsRaw := body["tools"].([]interface{})
-	if len(toolsRaw) != 1 {
-		t.Errorf("expected 1 tool after filtering, got %d", len(toolsRaw))
-	}
-	spec := getToolSpec(t, body)
-	if spec["name"] != "calculator" {
-		t.Errorf("tool name = %v, want calculator", spec["name"])
-	}
-
-	// toolChoice should be { "tool": { "name": "calculator" } }.
-	tc, ok := body["toolChoice"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("toolChoice is %T, want map", body["toolChoice"])
-	}
-	toolEntry, ok := tc["tool"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("toolChoice.tool is %T, want map", tc["tool"])
-	}
-	if toolEntry["name"] != "calculator" {
-		t.Errorf("toolChoice.tool.name = %v, want calculator", toolEntry["name"])
-	}
-}
-
-// TestBuildClaudeRequest_ToolChoiceNone_NoToolsInBody verifies that when
-// ToolChoiceNone is set no tools or toolChoice are added to the request body.
-func TestBuildClaudeRequest_ToolChoiceNone_NoToolsInBody(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt:     types.Prompt{Text: "hello"},
-		Tools:      []types.Tool{{Name: "foo", Parameters: map[string]interface{}{}}},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceNone},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	if _, ok := body["tools"]; ok {
-		t.Error("tools must not be present when toolChoice is none")
-	}
-	if _, ok := body["toolChoice"]; ok {
-		t.Error("toolChoice must not be present when toolChoice is none")
-	}
-}
-
-// TestBuildClaudeRequest_StrictFalse_OmittedFromSpec verifies that strict is
-// not set in the toolSpec when Strict is false (omitempty behaviour).
-func TestBuildClaudeRequest_StrictFalse_OmittedFromSpec(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools: []types.Tool{
-			{Name: "bar", Parameters: map[string]interface{}{}, Strict: false},
-		},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	spec := getToolSpec(t, body)
-	if _, ok := spec["strict"]; ok {
-		t.Errorf("strict must be absent when Strict=false, got %v", spec["strict"])
-	}
-}
-
-func TestBuildClaudeRequest_AnthropicToolSearchProviderTools(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		Tools: []types.Tool{
-			{
-				Type:       types.ToolTypeProviderDefined,
-				ProviderID: "anthropic.tool_search_bm25_20251119",
-				Name:       "tool_search",
-			},
-			{
-				Type:       types.ToolTypeProviderDefined,
-				ProviderID: "anthropic.tool_search_regex_20251119",
-				Name:       "tool_search",
-			},
-		},
-		ToolChoice: types.ToolChoice{Type: types.ToolChoiceAuto},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	tools, ok := body["tools"].([]interface{})
-	if !ok || len(tools) != 2 {
-		t.Fatalf("tools = %#v, want 2 provider tools", body["tools"])
-	}
-	first := tools[0].(map[string]interface{})
-	second := tools[1].(map[string]interface{})
-	if first["type"] != "tool_search_tool_bm25_20251119" || first["name"] != "tool_search_tool_bm25" {
-		t.Errorf("bm25 tool = %#v", first)
-	}
-	if second["type"] != "tool_search_tool_regex_20251119" || second["name"] != "tool_search_tool_regex" {
-		t.Errorf("regex tool = %#v", second)
-	}
-}
-
-func TestBuildClaudeRequest_ServiceTier(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ProviderOptions: map[string]interface{}{
-			"bedrock": map[string]interface{}{"serviceTier": "priority"},
-		},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	serviceTier, ok := body["serviceTier"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("serviceTier = %#v, want map", body["serviceTier"])
-	}
-	if serviceTier["type"] != "priority" {
-		t.Errorf("serviceTier.type = %v, want priority", serviceTier["type"])
-	}
-}
-
-func TestBuildClaudeRequest_AdditionalModelRequestFieldsFromProviderOptions(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ProviderOptions: map[string]interface{}{
-			"amazonBedrock": map[string]interface{}{
-				"additionalModelRequestFields": map[string]interface{}{
-					"anthropic_beta": []interface{}{"beta-a"},
-					"custom":         map[string]interface{}{"enabled": true},
-				},
-			},
-		},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	if beta, ok := body["anthropic_beta"].([]interface{}); !ok || len(beta) != 1 || beta[0] != "beta-a" {
-		t.Fatalf("anthropic_beta = %#v, want forwarded provider option", body["anthropic_beta"])
-	}
-	custom, ok := body["custom"].(map[string]interface{})
-	if !ok || custom["enabled"] != true {
-		t.Fatalf("custom = %#v, want forwarded provider option", body["custom"])
-	}
-}
-
-func TestBuildClaudeRequest_AdditionalModelRequestFieldsPreferAmazonBedrockNamespace(t *testing.T) {
-	model := newTestBedrockModel()
-	opts := &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ProviderOptions: map[string]interface{}{
-			"amazonBedrock": map[string]interface{}{
-				"additionalModelRequestFields": map[string]interface{}{
-					"source": "current",
-				},
-			},
-			"bedrock": map[string]interface{}{
-				"additionalModelRequestFields": map[string]interface{}{
-					"source": "legacy",
-				},
-			},
-		},
-	}
-
-	body, err := model.buildClaudeRequest(opts)
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	if body["source"] != "current" {
-		t.Fatalf("source = %#v, want current namespace precedence", body["source"])
-	}
-}
-
-func TestBuildNovaRequest_AdditionalModelRequestFieldsFromProviderOptions(t *testing.T) {
-	model := newTestBedrockModelWithID("amazon.nova-pro-v1:0")
-	body, err := model.buildNovaRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ProviderOptions: map[string]interface{}{
-			"amazonBedrock": map[string]interface{}{
-				"additionalModelRequestFields": map[string]interface{}{
-					"reasoning_effort": "high",
-				},
-			},
-		},
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "")
+	got2, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+		Region:                               "us-east-1",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
 	if err != nil {
-		t.Fatalf("buildNovaRequest: %v", err)
+		t.Fatalf("error = %v", err)
 	}
-	if body["reasoning_effort"] != "high" {
-		t.Fatalf("reasoning_effort = %#v, want forwarded provider option", body["reasoning_effort"])
+	if got2 != "https://generic.example.com" {
+		t.Fatalf("got %q, want AWS_ENDPOINT_URL fallback", got2)
 	}
-}
 
-func TestBuildClaudeRequest_PartialReasoningConfigMerge(t *testing.T) {
-	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
-	model := NewLanguageModel(p, "anthropic.claude-3-5-sonnet-20241022-v2:0", &ModelOptions{
-		ReasoningConfig: &ReasoningConfig{Display: "summarized"},
-	})
-	level := types.ReasoningHigh
-
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt:    types.Prompt{Text: "hello"},
-		Reasoning: &level,
+	explicit, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+		BaseURL:                              "https://explicit.example.com",
+		Region:                               "us-east-1",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
 	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
+		t.Fatalf("error = %v", err)
 	}
-
-	rc, ok := body["reasoningConfig"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("reasoningConfig = %#v, want map", body["reasoningConfig"])
-	}
-	if rc["type"] != "enabled" || rc["budgetTokens"] != 16000 || rc["display"] != "summarized" {
-		t.Errorf("reasoningConfig = %#v, want derived type/budget plus display", rc)
-	}
-}
-
-func TestBuildClaudeRequest_OutputObjectSupport(t *testing.T) {
-	model := newTestBedrockModel()
-	schema := map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{"answer": map[string]interface{}{"type": "string"}},
-	}
-
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt:         types.Prompt{Text: "hello"},
-		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: schema},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest: %v", err)
-	}
-
-	outputConfig, ok := body["output_config"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("output_config = %#v, want map", body["output_config"])
-	}
-	format, ok := outputConfig["format"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("output_config.format = %#v, want map", outputConfig["format"])
-	}
-	if format["type"] != "json_schema" || format["schema"] == nil {
-		t.Errorf("format = %#v, want json_schema with schema", format)
-	}
-}
-
-func TestBuildClaudeRequest_DisablesNativeStructuredOutputForClaudeOpus47(t *testing.T) {
-	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
-	model := NewLanguageModel(p, "anthropic.claude-opus-4-7-20260219-v1:0")
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ResponseFormat: &provider.ResponseFormat{
-			Type:   "json_schema",
-			Schema: map[string]interface{}{"type": "object"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	if _, ok := body["output_config"]; ok {
-		t.Fatalf("output_config = %#v, want omitted for claude-opus-4-7", body["output_config"])
-	}
-}
-
-func TestBuildClaudeRequest_DisablesNativeStructuredOutputForClaudeOpus48(t *testing.T) {
-	p := New(Config{AWSAccessKeyID: "test-key", AWSSecretAccessKey: "test-secret", Region: "us-east-1"})
-	model := NewLanguageModel(p, ModelAnthropicClaudeOpus4_8)
-	body, err := model.buildClaudeRequest(&provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hello"},
-		ResponseFormat: &provider.ResponseFormat{
-			Type:   "json_schema",
-			Schema: map[string]interface{}{"type": "object"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("buildClaudeRequest error = %v", err)
-	}
-	if _, ok := body["output_config"]; ok {
-		t.Fatalf("output_config = %#v, want omitted for claude-opus-4-8", body["output_config"])
+	if explicit != "https://explicit.example.com" {
+		t.Fatalf("got %q, want explicit BaseURL to win over env vars", explicit)
 	}
 }

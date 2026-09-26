@@ -214,23 +214,27 @@ func (p *Provider) Region() string {
 }
 
 func (p *Provider) runtimeBaseURL() (string, error) {
-	if p.config.BaseURL != "" {
-		return strings.TrimRight(p.config.BaseURL, "/"), nil
-	}
-	if p.config.Region == "" {
+	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
 		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
-	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", p.config.Region), nil
+	return resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+		BaseURL:                              p.config.BaseURL,
+		Region:                               p.config.Region,
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
 }
 
 func (p *Provider) agentRuntimeBaseURL() (string, error) {
-	if p.config.BaseURL != "" {
-		return strings.TrimRight(p.config.BaseURL, "/"), nil
-	}
-	if p.config.Region == "" {
+	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
 		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
-	return fmt.Sprintf("https://bedrock-agent-runtime.%s.amazonaws.com", p.config.Region), nil
+	return resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+		BaseURL:                              p.config.BaseURL,
+		Region:                               p.config.Region,
+		Service:                              "bedrock-agent-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME",
+	})
 }
 
 func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request, payload []byte) error {

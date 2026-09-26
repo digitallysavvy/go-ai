@@ -67,10 +67,24 @@ func (s *AWSSigner) SignRequest(req *http.Request, payload []byte) error {
 }
 
 func (s *AWSSigner) buildCanonicalRequest(req *http.Request, payload []byte) string {
-	// Canonical URI
-	canonicalURI := req.URL.Path
-	if canonicalURI == "" {
-		canonicalURI = "/"
+	// Canonical URI. When the caller has set req.URL.Opaque (used by the
+	// Converse endpoints to preserve a literal, already-percent-encoded model
+	// ID/ARN on the wire — see converseURL/jsEncodeURIComponent), AWS SigV4
+	// requires the canonical URI to be that same wire path *encoded a second
+	// time* (RFC 3986 unreserved chars pass through, '/' stays a delimiter,
+	// everything else — including the '%' from the first encoding pass — is
+	// re-escaped). This is the standard SigV4 "double URI-encode" rule used by
+	// every AWS service except S3. Requests that don't set Opaque keep the
+	// prior, single-encoded behavior to avoid changing already-correct
+	// signing for the embeddings/image/rerank endpoints.
+	var canonicalURI string
+	if req.URL.Opaque != "" {
+		canonicalURI = awsDoubleEncodeURIPath(req.URL.Opaque)
+	} else {
+		canonicalURI = req.URL.Path
+		if canonicalURI == "" {
+			canonicalURI = "/"
+		}
 	}
 
 	// Canonical query string
@@ -193,4 +207,65 @@ func (s *AWSSigner) buildAuthorizationHeader(t time.Time, credentialScope string
 		credential,
 		signedHeaders,
 		signature)
+}
+
+// jsEncodeURIComponent mirrors JavaScript's encodeURIComponent: every byte is
+// percent-encoded except unreserved characters (letters, digits) and
+// `- _ . ! ~ * ' ( )`. Used to build the Converse endpoint path segment the
+// same way TS does (`/model/${encodeURIComponent(modelId)}/converse`), so
+// ARN model IDs containing '/' and ':' survive as a single path segment.
+func jsEncodeURIComponent(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isJSURIUnreservedByte(c) {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+func isJSURIUnreservedByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '-', '_', '.', '!', '~', '*', '\'', '(', ')':
+		return true
+	}
+	return false
+}
+
+// awsDoubleEncodeURIPath re-escapes a wire path (which may already contain
+// percent-encoded segments, e.g. from jsEncodeURIComponent) per AWS SigV4's
+// "URI-encode twice" canonicalization rule: '/' remains a literal path
+// separator, every other byte (including '%' from the first encoding pass)
+// is percent-encoded unless it is an RFC 3986 unreserved character
+// (A-Za-z0-9-_.~).
+func awsDoubleEncodeURIPath(raw string) string {
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == '/' || isAWSURIUnreservedByte(c) {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+func isAWSURIUnreservedByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '-', '_', '.', '~':
+		return true
+	}
+	return false
 }

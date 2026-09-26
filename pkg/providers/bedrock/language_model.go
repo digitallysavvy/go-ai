@@ -3,1065 +3,438 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	tool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
-// LanguageModel implements the provider.LanguageModel interface for AWS Bedrock
+// LanguageModel implements provider.LanguageModel for AWS Bedrock's Converse
+// API. It mirrors the TypeScript SDK's AmazonBedrockChatLanguageModel
+// (amazon-bedrock-chat-language-model.ts), posting to
+// /model/{id}/converse and /model/{id}/converse-stream.
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
 	options  *ModelOptions
 }
 
-// NewLanguageModel creates a new AWS Bedrock language model
+// NewLanguageModel creates a new AWS Bedrock language model.
 func NewLanguageModel(provider *Provider, modelID string, options ...*ModelOptions) *LanguageModel {
 	var opts *ModelOptions
 	if len(options) > 0 {
 		opts = options[0]
 	}
-	return &LanguageModel{
-		provider: provider,
-		modelID:  modelID,
-		options:  opts,
-	}
+	return &LanguageModel{provider: provider, modelID: modelID, options: opts}
 }
 
-// SpecificationVersion returns the specification version
-func (m *LanguageModel) SpecificationVersion() string {
-	return "v4"
-}
-
-// Provider returns the provider name
-func (m *LanguageModel) Provider() string {
-	return "amazon-bedrock"
-}
-
-// ModelID returns the model ID
-func (m *LanguageModel) ModelID() string {
-	return m.modelID
-}
-
-// SupportsTools returns whether the model supports tool calling
-func (m *LanguageModel) SupportsTools() bool {
-	// Claude models on Bedrock support tools
-	return true
-}
-
-// SupportsStructuredOutput returns whether the model supports structured output
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
+func (m *LanguageModel) Provider() string             { return "amazon-bedrock" }
+func (m *LanguageModel) ModelID() string              { return m.modelID }
+func (m *LanguageModel) SupportsTools() bool          { return true }
 func (m *LanguageModel) SupportsStructuredOutput() bool {
 	return true
 }
+func (m *LanguageModel) SupportsImageInput() bool { return true }
 
-// SupportsImageInput returns whether the model accepts image inputs
-func (m *LanguageModel) SupportsImageInput() bool {
-	// Claude models on Bedrock support vision
-	return true
+func (m *LanguageModel) modelFamily() string {
+	if m.options != nil {
+		return m.options.ModelFamily
+	}
+	return ""
 }
 
-// DoGenerate performs non-streaming text generation
-func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody, err := m.buildRequestBody(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Determine the model provider (Claude, Llama, etc.)
-	endpoint := m.getInvokeEndpoint()
-	baseURL, err := m.provider.runtimeBaseURL()
-	if err != nil {
-		return nil, err
-	}
-
-	// Create HTTP request
-	url := fmt.Sprintf("%s%s", baseURL, endpoint)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	m.provider.applyRequestHeaders(req, nil)
-
-	if err := m.provider.authenticateRequest(ctx, req, bodyBytes); err != nil {
-		return nil, err
-	}
-
-	// Make the request using provider-scoped transport so telemetry/patching applies.
-	httpClient := m.provider.Client().HTTPClient()
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("AWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	result, err := m.convertResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
-	return result, nil
+// converseArgs is the result of building a Converse request body, mirroring
+// TS getArgs()'s return shape.
+type converseArgs struct {
+	Body                 map[string]interface{}
+	Warnings             []types.Warning
+	UsesJSONInstruction  bool
+	UsesJSONResponseTool bool
 }
 
-// DoStream performs streaming text generation
-func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	// For simplicity, simulate streaming by chunking the non-streaming response
-	result, err := m.DoGenerate(ctx, opts)
-	if err != nil {
-		return nil, err
+// getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
+func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
+	warnings := []types.Warning{}
+
+	amazonBedrockOptions := cloneMap(bedrockProviderOptions(opts))
+	anthropicOptions := bedrockProviderOptionMap(opts.ProviderOptions, "anthropic")
+
+	caps := bedrockAnthropicModelCapabilities(m.modelID)
+
+	if opts.FrequencyPenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+	}
+	if opts.PresencePenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
 	}
 
-	stream := &bedrockStream{
-		result:   result,
-		position: 0,
-		done:     false,
-	}
+	temperature := opts.Temperature
+	topP := opts.TopP
+	topK := opts.TopK
 
-	return stream, nil
-}
-
-func (m *LanguageModel) getInvokeEndpoint() string {
-	// Bedrock model invocation endpoint
-	return fmt.Sprintf("/model/%s/invoke", m.modelID)
-}
-
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[string]interface{}, error) {
-	// Different Bedrock models have different request formats
-	// We'll support Claude models (most common on Bedrock)
-	if strings.Contains(m.modelID, "anthropic") || strings.Contains(m.modelID, "claude") {
-		return m.buildClaudeRequest(opts)
-	}
-
-	// Amazon Nova models use an OpenAI-compatible format
-	if strings.HasPrefix(m.modelID, "amazon.nova") {
-		return m.buildNovaRequest(opts)
-	}
-
-	// Default format for other models
-	return m.buildGenericRequest(opts)
-}
-
-// mapReasoningToBedrockAnthropicConfig converts a ReasoningLevel to the Bedrock
-// Anthropic-style reasoningConfig map. Returns nil when level is ReasoningDefault
-// (meaning "don't override").
-func mapReasoningToBedrockAnthropicConfig(level types.ReasoningLevel) map[string]interface{} {
-	switch level {
-	case types.ReasoningNone:
-		return map[string]interface{}{"type": "disabled"}
-	case types.ReasoningMinimal:
-		return map[string]interface{}{"type": "enabled", "budgetTokens": 1024}
-	case types.ReasoningLow:
-		return map[string]interface{}{"type": "enabled", "budgetTokens": 4000}
-	case types.ReasoningMedium:
-		return map[string]interface{}{"type": "enabled", "budgetTokens": 10000}
-	case types.ReasoningHigh:
-		return map[string]interface{}{"type": "enabled", "budgetTokens": 16000}
-	case types.ReasoningXHigh:
-		return map[string]interface{}{"type": "enabled", "budgetTokens": 32000}
-	default:
-		// ReasoningDefault: omit
-		return nil
-	}
-}
-
-// mapReasoningToOpenAIEffort converts a ReasoningLevel to the OpenAI-style
-// reasoning_effort string. Returns "" when level is ReasoningDefault (omit).
-func mapReasoningToOpenAIEffort(level types.ReasoningLevel) string {
-	switch level {
-	case types.ReasoningNone:
-		return "disabled"
-	case types.ReasoningMinimal, types.ReasoningLow:
-		return "low"
-	case types.ReasoningMedium:
-		return "medium"
-	case types.ReasoningHigh, types.ReasoningXHigh:
-		return "high"
-	default:
-		// ReasoningDefault: omit
-		return ""
-	}
-}
-
-func isMistralModel(modelID string) bool {
-	return strings.Contains(modelID, "mistral.")
-}
-
-func normalizeToolCallID(toolCallID string, isMistral bool) string {
-	if !isMistral {
-		return toolCallID
-	}
-	var b strings.Builder
-	b.Grow(9)
-	for _, r := range toolCallID {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			if b.Len() == 9 {
-				break
-			}
+	if caps.RejectsSamplingParams {
+		if temperature != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("temperature is not supported by %s and will be ignored", m.modelID)})
+			temperature = nil
+		}
+		if topK != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK", Details: fmt.Sprintf("topK is not supported by %s and will be ignored", m.modelID)})
+			topK = nil
+		}
+		if topP != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topP", Details: fmt.Sprintf("topP is not supported by %s and will be ignored", m.modelID)})
+			topP = nil
 		}
 	}
-	return b.String()
-}
 
-func (m *LanguageModel) buildClaudeRequest(opts *provider.GenerateOptions) (map[string]interface{}, error) {
-	messages := []map[string]interface{}{}
-	systemBlocks := []map[string]interface{}{}
-	documentCounter := 0
-	if opts.Prompt.System != "" {
-		systemBlocks = append(systemBlocks, map[string]interface{}{"text": opts.Prompt.System})
-	}
+	openAIModelID := openAIModelIDPattern.FindStringSubmatch(m.modelID)
+	isOpenAIModel := openAIModelID != nil
+	isOpenAIGptOssModel := isOpenAIModel && strings.HasPrefix(openAIModelID[1], "openai.gpt-oss-")
+	shouldNormalizeTemperature := !isOpenAIModel || isOpenAIGptOssModel
 
-	if opts.Prompt.IsMessages() {
-		seenNonSystem := false
-		for i := 0; i < len(opts.Prompt.Messages); {
-			msg := opts.Prompt.Messages[i]
-			switch msg.Role {
-			case types.RoleSystem:
-				if seenNonSystem {
-					return nil, fmt.Errorf("multiple system messages that are separated by user/assistant messages are not supported")
-				}
-				systemBlocks = append(systemBlocks, m.toClaudeSystemContent(msg)...)
-				i++
-			case types.RoleUser, types.RoleTool:
-				seenNonSystem = true
-				content := []map[string]interface{}{}
-				for i < len(opts.Prompt.Messages) && (opts.Prompt.Messages[i].Role == types.RoleUser || opts.Prompt.Messages[i].Role == types.RoleTool) {
-					blocks, err := m.toClaudeMessageContent(opts.Prompt.Messages[i], false, &documentCounter)
-					if err != nil {
-						return nil, err
-					}
-					content = append(content, blocks...)
-					i++
-				}
-				messages = append(messages, map[string]interface{}{
-					"role":    types.RoleUser,
-					"content": content,
-				})
-			case types.RoleAssistant:
-				seenNonSystem = true
-				groupEnd := i
-				for groupEnd < len(opts.Prompt.Messages) && opts.Prompt.Messages[groupEnd].Role == types.RoleAssistant {
-					groupEnd++
-				}
-				isLastBlock := groupEnd == len(opts.Prompt.Messages)
-				content := []map[string]interface{}{}
-				for i < groupEnd {
-					blocks, err := m.toClaudeMessageContent(opts.Prompt.Messages[i], isLastBlock && i == groupEnd-1, &documentCounter)
-					if err != nil {
-						return nil, err
-					}
-					content = append(content, blocks...)
-					i++
-				}
-				messages = append(messages, map[string]interface{}{
-					"role":    types.RoleAssistant,
-					"content": content,
-				})
-			default:
-				return nil, fmt.Errorf("unsupported role: %s", msg.Role)
-			}
+	if shouldNormalizeTemperature && temperature != nil {
+		if *temperature > 1 {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v exceeds bedrock maximum of 1.0. clamped to 1.0", *temperature)})
+			clamped := 1.0
+			temperature = &clamped
+		} else if *temperature < 0 {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v is below bedrock minimum of 0. clamped to 0", *temperature)})
+			clamped := 0.0
+			temperature = &clamped
 		}
-	} else if opts.Prompt.IsSimple() {
-		messages = append(messages, map[string]interface{}{
-			"role":    "user",
-			"content": []map[string]interface{}{{"text": opts.Prompt.Text}},
-		})
 	}
 
-	reqBody := map[string]interface{}{
-		"messages":          messages,
-		"anthropic_version": "bedrock-2023-05-31",
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "" && opts.ResponseFormat.Type != "text" && opts.ResponseFormat.Type != "json" {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "responseFormat", Details: "Only text and json response formats are supported."})
 	}
-	if len(systemBlocks) > 0 {
-		reqBody["system"] = systemBlocks
-	}
-	for k, v := range m.bedrockProviderOptions(opts) {
-		if k == "serviceTier" || k == "reasoningConfig" || k == "additionalModelRequestFields" {
-			continue
+
+	// Determine reasoning budget tokens from provider options (used by
+	// isAnthropicModelID's application-inference-profile ARN detection).
+	var reasoningBudgetTokens *int
+	if rc, ok := amazonBedrockOptions["reasoningConfig"].(map[string]interface{}); ok {
+		if bt, ok := intOption(rc["budgetTokens"]); ok {
+			reasoningBudgetTokens = &bt
 		}
-		reqBody[k] = v
 	}
+
+	isAnthropic := isAnthropicModelID(m.modelID, m.modelFamily(), reasoningBudgetTokens)
+
+	existingReasoningConfig := mergeReasoningConfigSources(m.options, amazonBedrockOptions)
+	resolvedReasoningConfig := resolveBedrockReasoningConfig(opts.Reasoning, existingReasoningConfig, isAnthropic, m.modelID, &warnings)
+	if resolvedReasoningConfig != nil {
+		amazonBedrockOptions["reasoningConfig"] = reasoningConfigToMap(resolvedReasoningConfig)
+	}
+
+	isThinkingEnabled := resolvedReasoningConfig != nil && (resolvedReasoningConfig.Type == "enabled" || resolvedReasoningConfig.Type == "adaptive")
+
+	structuredOutputMode := stringOption(amazonBedrockOptions["structuredOutputMode"])
+	if structuredOutputMode == "" {
+		structuredOutputMode = stringOption(anthropicOptions["structuredOutputMode"])
+	}
+	if structuredOutputMode == "" && m.options != nil {
+		structuredOutputMode = m.options.StructuredOutputMode
+	}
+	if structuredOutputMode == "" {
+		structuredOutputMode = "auto"
+	}
+
+	additionalModelRequestFields := map[string]interface{}{}
 	if m.options != nil {
 		for k, v := range m.options.AdditionalModelRequestFields {
-			reqBody[k] = v
+			additionalModelRequestFields[k] = v
 		}
 	}
-	if additional, ok := m.additionalModelRequestFields(opts); ok {
-		for k, v := range additional {
-			reqBody[k] = v
+	if raw, ok := amazonBedrockOptions["additionalModelRequestFields"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			additionalModelRequestFields[k] = v
 		}
 	}
 
-	if opts.MaxTokens != nil {
-		reqBody["max_tokens"] = *opts.MaxTokens
-	} else {
-		reqBody["max_tokens"] = 4096 // Claude requires max_tokens
+	if structuredOutputMode == "jsonTool" {
+		if outputConfig, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
+			without := cloneMap(outputConfig)
+			delete(without, "format")
+			if len(without) > 0 {
+				additionalModelRequestFields["output_config"] = without
+			} else {
+				delete(additionalModelRequestFields, "output_config")
+			}
+		}
 	}
 
-	if opts.Temperature != nil {
-		reqBody["temperature"] = *opts.Temperature
+	modelSupportsNativeSO := bedrockSupportsNativeStructuredOutput(m.modelID) &&
+		(caps.SupportsStructuredOutput || isThinkingEnabled || m.modelFamily() == "anthropic")
+
+	responseFormatIsJSON := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil
+
+	useNativeStructuredOutput := isAnthropic && responseFormatIsJSON &&
+		(structuredOutputMode == "outputFormat" || (structuredOutputMode == "auto" && modelSupportsNativeSO))
+
+	useJSONInstructionForStructuredOutput := !useNativeStructuredOutput && isAnthropic && responseFormatIsJSON &&
+		(caps.RejectsForcedToolUse ||
+			(structuredOutputMode != "jsonTool" && !bedrockSupportsStrictTools(m.modelID) && len(opts.Tools) > 0))
+
+	var jsonResponseTool *types.Tool
+	if responseFormatIsJSON && !useNativeStructuredOutput && !useJSONInstructionForStructuredOutput {
+		jsonResponseTool = &types.Tool{
+			Type:        types.ToolTypeFunction,
+			Name:        "json",
+			Description: "Respond with a JSON object.",
+			Parameters:  opts.ResponseFormat.Schema,
+		}
 	}
 
-	if opts.TopP != nil {
-		reqBody["top_p"] = *opts.TopP
+	toolsForPrep := opts.Tools
+	toolChoiceForPrep := opts.ToolChoice
+	hasToolChoice := opts.ToolChoice.Type != ""
+	if jsonResponseTool != nil {
+		toolsForPrep = append(append([]types.Tool{}, opts.Tools...), *jsonResponseTool)
+		toolChoiceForPrep = types.RequiredToolChoice()
+		hasToolChoice = true
 	}
 
-	// Map top-level Reasoning to Bedrock Anthropic-style reasoningConfig and
-	// merge partial caller/model config over the derived defaults.
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		if rc := mapReasoningToBedrockAnthropicConfig(*opts.Reasoning); rc != nil {
-			reqBody["reasoningConfig"] = rc
-		}
-	} else if m.options != nil && m.options.Thinking != nil {
-		// Fall back to model-level Thinking option (existing behavior)
-		thinkingConfig := map[string]interface{}{
-			"type": string(m.options.Thinking.Type),
-		}
-		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
-			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
-		}
-		reqBody["thinking"] = thinkingConfig
+	var disableParallelToolUse *bool
+	if v, ok := anthropicOptions["disableParallelToolUse"].(bool); ok {
+		disableParallelToolUse = &v
+	} else if m.options != nil {
+		disableParallelToolUse = m.options.DisableParallelToolUse
 	}
-	if rc := m.mergedReasoningConfig(opts, reqBody["reasoningConfig"]); rc != nil {
-		reqBody["reasoningConfig"] = rc
+
+	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse)
+	warnings = append(warnings, prepared.Warnings...)
+	for k, v := range prepared.AdditionalTools {
+		additionalModelRequestFields[k] = v
 	}
-	if bedrockSupportsNativeStructuredOutput(m.modelID) &&
-		opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
-		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
+
+	if anthropicBetaRaw, ok := amazonBedrockOptions["anthropicBeta"].([]interface{}); ok && len(anthropicBetaRaw) > 0 {
+		additionalModelRequestFields["anthropic_beta"] = anthropicBetaRaw
+	}
+
+	thinkingType := ""
+	var thinkingBudget *int
+	thinkingDisplay := ""
+	if resolvedReasoningConfig != nil {
+		thinkingType = resolvedReasoningConfig.Type
+		if thinkingType == "enabled" {
+			thinkingBudget = resolvedReasoningConfig.BudgetTokens
+		}
+		if thinkingType == "adaptive" {
+			thinkingDisplay = resolvedReasoningConfig.Display
+		}
+	}
+	isAnthropicThinkingEnabled := isAnthropic && isThinkingEnabled
+
+	inferenceConfig := map[string]interface{}{}
+	maxTokens := opts.MaxTokens
+	if maxTokens != nil {
+		inferenceConfig["maxTokens"] = *maxTokens
+	}
+	if temperature != nil {
+		inferenceConfig["temperature"] = *temperature
+	}
+	if topP != nil {
+		inferenceConfig["topP"] = *topP
+	}
+	if topK != nil {
+		inferenceConfig["topK"] = *topK
+	}
+	if len(opts.StopSequences) > 0 {
+		inferenceConfig["stopSequences"] = opts.StopSequences
+	}
+
+	if isAnthropicThinkingEnabled {
+		if thinkingBudget != nil {
+			if v, ok := inferenceConfig["maxTokens"].(int); ok {
+				inferenceConfig["maxTokens"] = v + *thinkingBudget
+			} else {
+				inferenceConfig["maxTokens"] = *thinkingBudget + 4096
+			}
+			additionalModelRequestFields["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": *thinkingBudget}
+		} else if thinkingType == "adaptive" {
+			thinking := map[string]interface{}{"type": "adaptive"}
+			if thinkingDisplay != "" {
+				thinking["display"] = thinkingDisplay
+			}
+			additionalModelRequestFields["thinking"] = thinking
+		}
+	} else if !isAnthropic {
+		if thinkingBudget != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "budgetTokens", Details: "budgetTokens applies only to Anthropic models on Bedrock and will be ignored for this model."})
+		}
+		if thinkingType == "adaptive" {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "adaptive thinking", Details: "adaptive thinking type applies only to Anthropic models on Bedrock."})
+		}
+	}
+
+	maxReasoningEffort := ""
+	if resolvedReasoningConfig != nil {
+		maxReasoningEffort = resolvedReasoningConfig.MaxReasoningEffort
+	}
+	if maxReasoningEffort != "" {
+		switch {
+		case isAnthropic:
+			outputConfig := map[string]interface{}{}
+			if existing, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
+				outputConfig = cloneMap(existing)
+			}
+			outputConfig["effort"] = maxReasoningEffort
+			additionalModelRequestFields["output_config"] = outputConfig
+		case isOpenAIModel && isOpenAIGptOssModel:
+			additionalModelRequestFields["reasoning_effort"] = maxReasoningEffort
+		case isOpenAIModel:
+			reasoning := map[string]interface{}{}
+			if existing, ok := additionalModelRequestFields["reasoning"].(map[string]interface{}); ok {
+				reasoning = cloneMap(existing)
+			}
+			reasoning["effort"] = maxReasoningEffort
+			additionalModelRequestFields["reasoning"] = reasoning
+		default:
+			rc := map[string]interface{}{}
+			if thinkingType != "" && thinkingType != "adaptive" {
+				rc["type"] = thinkingType
+			}
+			if thinkingBudget != nil {
+				rc["budgetTokens"] = *thinkingBudget
+			}
+			rc["maxReasoningEffort"] = maxReasoningEffort
+			additionalModelRequestFields["reasoningConfig"] = rc
+		}
+	}
+
+	if useNativeStructuredOutput {
 		outputConfig := map[string]interface{}{}
-		if existing, ok := reqBody["output_config"].(map[string]interface{}); ok {
+		if existing, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
 			outputConfig = cloneMap(existing)
 		}
 		outputConfig["format"] = map[string]interface{}{
 			"type":   "json_schema",
-			"schema": opts.ResponseFormat.Schema,
+			"schema": tool.SanitizeAnthropicSchema(opts.ResponseFormat.Schema),
 		}
-		reqBody["output_config"] = outputConfig
+		additionalModelRequestFields["output_config"] = outputConfig
 	}
 
-	if serviceTier := m.serviceTier(opts); serviceTier != "" {
-		reqBody["serviceTier"] = map[string]interface{}{"type": serviceTier}
+	if isAnthropicThinkingEnabled {
+		if _, ok := inferenceConfig["temperature"]; ok {
+			delete(inferenceConfig, "temperature")
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: "temperature is not supported when thinking is enabled"})
+		}
+		if _, ok := inferenceConfig["topP"]; ok {
+			delete(inferenceConfig, "topP")
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topP", Details: "topP is not supported when thinking is enabled"})
+		}
+		if _, ok := inferenceConfig["topK"]; ok {
+			delete(inferenceConfig, "topK")
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK", Details: "topK is not supported when thinking is enabled"})
+		}
 	}
 
-	// Add tools and tool choice (#12893 strict mode, #12854 tool choice enforcement).
-	// When toolChoice is "none" the tools array is cleared and no toolChoice is sent.
-	if len(opts.Tools) > 0 && opts.ToolChoice.Type != types.ToolChoiceNone {
-		// Filter to the single requested tool when a specific tool is named.
-		toolList := opts.Tools
-		if opts.ToolChoice.Type == types.ToolChoiceTool && opts.ToolChoice.ToolName != "" {
-			filtered := make([]types.Tool, 0, 1)
-			for _, t := range opts.Tools {
-				if t.Name == opts.ToolChoice.ToolName {
-					filtered = append(filtered, t)
-				}
-			}
-			toolList = filtered
+	if isOpenAIModel {
+		unsupported := []string{"temperature", "topP", "stopSequences"}
+		if isOpenAIGptOssModel {
+			unsupported = []string{"stopSequences"}
 		}
-
-		bedrockTools := make([]interface{}, 0, len(toolList))
-		for _, t := range toolList {
-			if providerTool := bedrockAnthropicProviderTool(t); providerTool != nil {
-				bedrockTools = append(bedrockTools, providerTool)
-				continue
-			}
-			toolSpec := map[string]interface{}{
-				"name": t.Name,
-			}
-			if t.Description != "" {
-				toolSpec["description"] = t.Description
-			}
-			if t.Strict {
-				toolSpec["strict"] = true
-			}
-			var inputSchema interface{}
-			if t.Parameters != nil {
-				inputSchema = t.Parameters
-			} else {
-				inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-			}
-			toolSpec["inputSchema"] = map[string]interface{}{"json": inputSchema}
-			bedrockTools = append(bedrockTools, map[string]interface{}{"toolSpec": toolSpec})
-		}
-		reqBody["tools"] = bedrockTools
-
-		// Map SDK tool choice to Bedrock's format.
-		switch opts.ToolChoice.Type {
-		case types.ToolChoiceAuto:
-			reqBody["toolChoice"] = map[string]interface{}{"auto": map[string]interface{}{}}
-		case types.ToolChoiceRequired:
-			reqBody["toolChoice"] = map[string]interface{}{"any": map[string]interface{}{}}
-		case types.ToolChoiceTool:
-			reqBody["toolChoice"] = map[string]interface{}{
-				"tool": map[string]interface{}{"name": opts.ToolChoice.ToolName},
+		for _, feature := range unsupported {
+			if _, ok := inferenceConfig[feature]; ok {
+				delete(inferenceConfig, feature)
+				warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature, Details: fmt.Sprintf("%s is not supported by this OpenAI model on the Converse API", feature)})
 			}
 		}
 	}
 
-	return reqBody, nil
-}
-
-func bedrockSupportsNativeStructuredOutput(modelID string) bool {
-	return !strings.Contains(modelID, "claude-opus-4-7") &&
-		!strings.Contains(modelID, "claude-opus-4-8")
-}
-
-func (m *LanguageModel) toClaudeSystemContent(msg types.Message) []map[string]interface{} {
-	blocks := []map[string]interface{}{}
-	for _, part := range msg.Content {
-		if text, ok := part.(types.TextContent); ok {
-			blocks = append(blocks, map[string]interface{}{"text": text.Text})
-			blocks = appendCachePointBlock(blocks, text.ProviderOptions)
-		}
-	}
-	blocks = appendCachePointBlock(blocks, msg.ProviderOptions)
-	return blocks
-}
-
-func (m *LanguageModel) toClaudeMessageContent(msg types.Message, trimFinalAssistantText bool, documentCounter *int) ([]map[string]interface{}, error) {
-	blocks := make([]map[string]interface{}, 0, len(msg.Content))
-	normalizeMistralToolIDs := isMistralModel(m.modelID)
-	hasReasoningBlocks := false
-	for _, part := range msg.Content {
-		if _, ok := part.(types.ReasoningContent); ok {
-			hasReasoningBlocks = true
-			break
-		}
-	}
-
-	for i, part := range msg.Content {
-		switch p := part.(type) {
-		case types.TextContent:
-			partText := p.Text
-			if msg.Role == types.RoleAssistant && strings.TrimSpace(partText) == "" && !hasReasoningBlocks {
-				blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-				break
-			}
-			if msg.Role == types.RoleAssistant && trimFinalAssistantText && i == len(msg.Content)-1 {
-				partText = strings.TrimSpace(partText)
-			}
-			blocks = append(blocks, map[string]interface{}{"text": partText})
-			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-		case types.ImageContent:
-			if p.Image == nil {
-				if p.URL != "" {
-					return nil, fmt.Errorf("image URL data is not supported")
-				}
-				return nil, fmt.Errorf("image content requires inline data")
-			}
-			format, err := bedrockImageFormat(p.MimeType)
-			if err != nil {
-				return nil, err
-			}
-			blocks = append(blocks, map[string]interface{}{
-				"image": map[string]interface{}{
-					"format": format,
-					"source": map[string]interface{}{"bytes": base64.StdEncoding.EncodeToString(p.Image)},
-				},
+	hasAnyTools := len(prepared.ToolConfig.Tools) > 0 || len(prepared.AdditionalTools) > 0
+	filteredMessages := normalizePromptMessages(opts.Prompt)
+	if !hasAnyTools {
+		filtered, removed := filterToolContent(filteredMessages)
+		filteredMessages = filtered
+		if removed {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "toolContent",
+				Details: "Tool calls and results removed from conversation because Bedrock does not support tool content without active tools.",
 			})
-			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-		case types.FileContent:
-			block, ok, err := bedrockFileBlock(p, documentCounter)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				blocks = append(blocks, block)
-				blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-			}
-		case types.ReasoningContent:
-			signature, hasSignature, redactedData, hasRedactedData := bedrockReasoningMetadata(p)
-			if hasSignature {
-				blocks = append(blocks, map[string]interface{}{
-					"reasoningContent": map[string]interface{}{
-						"reasoningText": map[string]interface{}{
-							"text":      p.Text,
-							"signature": signature,
-						},
-					},
-				})
-			} else if hasRedactedData {
-				blocks = append(blocks, map[string]interface{}{
-					"reasoningContent": map[string]interface{}{
-						"redactedReasoning": map[string]interface{}{"data": redactedData},
-					},
-				})
-			}
-			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-		case types.ToolCallContent:
-			input := map[string]interface{}{}
-			if p.Input != "" {
-				_ = json.Unmarshal([]byte(p.Input), &input)
-			}
-			if p.Arguments != nil {
-				input = p.Arguments
-			}
-			blocks = append(blocks, map[string]interface{}{
-				"toolUse": map[string]interface{}{
-					"toolUseId": normalizeToolCallID(p.ToolCallID, normalizeMistralToolIDs),
-					"name":      p.ToolName,
-					"input":     input,
-				},
-			})
-			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-		case types.ToolResultContent:
-			content, err := bedrockToolResultContent(p, documentCounter)
-			if err != nil {
-				return nil, err
-			}
-			blocks = append(blocks, map[string]interface{}{
-				"toolResult": map[string]interface{}{
-					"toolUseId": normalizeToolCallID(p.ToolCallID, normalizeMistralToolIDs),
-					"content":   content,
-				},
-			})
-			blocks = appendCachePointBlock(blocks, p.ProviderOptions)
-		default:
-			return nil, fmt.Errorf("unsupported content part type: %s", part.ContentType())
 		}
-	}
-	if hasBedrockCachePoint(msg.ProviderOptions) {
-		blocks = appendCachePointBlock(blocks, msg.ProviderOptions)
 	}
 
-	return blocks, nil
-}
-
-func bedrockToolResultContent(part types.ToolResultContent, documentCounter *int) ([]map[string]interface{}, error) {
-	if part.Output == nil {
-		if part.Error != "" {
-			return []map[string]interface{}{{"text": part.Error}}, nil
-		}
-		if part.Result != nil {
-			return []map[string]interface{}{{"text": fmt.Sprint(part.Result)}}, nil
-		}
-		return []map[string]interface{}{{"text": ""}}, nil
-	}
-	switch part.Output.Type {
-	case types.ToolResultOutputContent:
-		out := make([]map[string]interface{}, 0, len(part.Output.Content))
-		for _, block := range part.Output.Content {
-			switch b := block.(type) {
-			case types.TextContentBlock:
-				out = append(out, map[string]interface{}{"text": b.Text})
-			case types.ImageContentBlock:
-				format, err := bedrockImageFormat(b.MediaType)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, map[string]interface{}{
-					"image": map[string]interface{}{
-						"format": format,
-						"source": map[string]interface{}{"bytes": base64.StdEncoding.EncodeToString(b.Data)},
-					},
-				})
-			case types.FileContentBlock:
-				mediaType, payload, err := toolResultFileContentPayload(b)
-				if err != nil {
-					return nil, err
-				}
-				mediaType, err = resolveBedrockDataMediaType(mediaType, payload)
-				if err != nil {
-					return nil, err
-				}
-				if !strings.HasPrefix(mediaType, "image/") {
-					format, err := bedrockDocumentFormat(mediaType)
-					if err != nil {
-						return nil, err
-					}
-					name := stripBedrockFileExtension(b.Filename)
-					if name == "" {
-						if documentCounter != nil {
-							(*documentCounter)++
-							name = fmt.Sprintf("document-%d", *documentCounter)
-						} else {
-							name = "document-1"
-						}
-					}
-					document := map[string]interface{}{
-						"format": format,
-						"name":   name,
-						"source": map[string]interface{}{"bytes": payload.bytes},
-					}
-					if bedrockCitationsEnabled(b.ProviderOptions) {
-						document["citations"] = map[string]interface{}{"enabled": true}
-					}
-					out = append(out, map[string]interface{}{"document": document})
-					continue
-				}
-				format, err := bedrockImageFormat(mediaType)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, map[string]interface{}{
-					"image": map[string]interface{}{
-						"format": format,
-						"source": map[string]interface{}{"bytes": payload.bytes},
-					},
-				})
-			default:
-				return nil, fmt.Errorf("unsupported tool content part type: %s", block.ToolResultContentType())
-			}
-		}
-		return out, nil
-	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
-		return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
-	case types.ToolResultOutputExecutionDenied:
-		reason := part.Output.Reason
-		if reason == "" {
-			reason = "Tool call execution denied."
-		}
-		return []map[string]interface{}{{"text": reason}}, nil
-	case types.ToolResultOutputJSON:
-		fallthrough
-	default:
-		data, err := json.Marshal(part.Output.Value)
-		if err != nil {
-			return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
-		}
-		return []map[string]interface{}{{"text": string(data)}}, nil
-	}
-}
-
-func bedrockProviderOptionMaps(providerOptions map[string]interface{}) []map[string]interface{} {
-	maps := make([]map[string]interface{}, 0, 2)
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		maps = append(maps, raw)
-	}
-	return maps
-}
-
-func bedrockProviderOptionMap(providerOptions map[string]interface{}, providerName string) map[string]interface{} {
-	raw, ok := providerOptions[providerName].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return raw
-}
-
-func bedrockCachePoint(providerOptions map[string]interface{}) (map[string]interface{}, bool) {
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		cachePoint, ok := raw["cachePoint"]
-		if !ok || cachePoint == nil {
-			continue
-		}
-		if disabled, ok := cachePoint.(bool); ok && !disabled {
-			return nil, false
-		}
-		if cfg, ok := cachePoint.(map[string]interface{}); ok {
-			return cloneMap(cfg), true
-		}
-		return map[string]interface{}{"type": "default"}, true
-	}
-	return nil, false
-}
-
-func hasBedrockCachePoint(providerOptions map[string]interface{}) bool {
-	_, ok := bedrockCachePoint(providerOptions)
-	return ok
-}
-
-func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, hasSignature bool, redactedData string, hasRedactedData bool) {
-	signature = part.Signature
-	hasSignature = part.Signature != ""
-	redactedData = part.RedactedData
-	hasRedactedData = part.RedactedData != ""
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(part.ProviderOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		if value, ok := raw["signature"].(string); ok {
-			signature = value
-			hasSignature = true
-		}
-		if value, ok := raw["redactedData"].(string); ok {
-			redactedData = value
-			hasRedactedData = true
-		}
-		break
-	}
-	return signature, hasSignature, redactedData, hasRedactedData
-}
-
-func appendCachePointBlock(blocks []map[string]interface{}, providerOptions map[string]interface{}) []map[string]interface{} {
-	cachePoint, ok := bedrockCachePoint(providerOptions)
-	if !ok {
-		return blocks
-	}
-	return append(blocks, map[string]interface{}{
-		"cachePoint": cachePoint,
-	})
-}
-
-func bedrockCitationsEnabled(providerOptions map[string]interface{}) bool {
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		citations, ok := raw["citations"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-		enabled, _ := citations["enabled"].(bool)
-		return enabled
-	}
-	return false
-}
-
-func fileContentMediaType(file types.FileContent) string {
-	if file.MediaType != "" {
-		return file.MediaType
-	}
-	if file.MimeType != "" {
-		return file.MimeType
-	}
-	return file.FileData.MediaType
-}
-
-type bedrockFilePayload struct {
-	bytes       string
-	raw         []byte
-	hasRawBytes bool
-	hasData     bool
-}
-
-func fileContentPayload(file types.FileContent) bedrockFilePayload {
-	if file.Data != nil {
-		return bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(file.Data), raw: file.Data, hasRawBytes: true, hasData: true}
-	}
-	switch file.FileData.Type {
-	case types.FileDataTypeData:
-		if file.FileData.DataString != "" {
-			payload := bedrockFilePayload{bytes: file.FileData.DataString, hasData: true}
-			if decoded, err := types.DecodeFileDataString(file.FileData.DataString); err == nil {
-				payload.raw = decoded
-				payload.hasRawBytes = true
-			}
-			return payload
-		}
-		if file.FileData.Data != nil {
-			return bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(file.FileData.Data), raw: file.FileData.Data, hasRawBytes: true, hasData: true}
-		}
-		return bedrockFilePayload{hasRawBytes: true, hasData: true}
-	case types.FileDataTypeText:
-		raw := []byte(file.FileData.Text)
-		return bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(raw), raw: raw, hasRawBytes: true, hasData: true}
-	}
-	if file.FileData.Data != nil {
-		return bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(file.FileData.Data), raw: file.FileData.Data, hasRawBytes: true, hasData: true}
-	}
-	if file.Text != "" {
-		raw := []byte(file.Text)
-		return bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(raw), raw: raw, hasRawBytes: true, hasData: true}
-	}
-	return bedrockFilePayload{}
-}
-
-func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrockFilePayload, error) {
-	if block.Reference != "" || block.FileData.Type == types.FileDataTypeReference {
-		return "", bedrockFilePayload{}, fmt.Errorf("unsupported tool result file data of type: reference")
-	}
-	if block.URL != "" || block.FileData.Type == types.FileDataTypeURL {
-		return "", bedrockFilePayload{}, fmt.Errorf("unsupported tool result file data of type: url")
+	if useJSONInstructionForStructuredOutput {
+		filteredMessages = injectBedrockJSONInstruction(filteredMessages, opts.ResponseFormat.Schema)
 	}
 
-	mediaType := block.MediaType
-	if mediaType == "" {
-		mediaType = block.FileData.MediaType
-	}
-
-	if block.Data != nil {
-		return mediaType, bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(block.Data), raw: block.Data, hasRawBytes: true, hasData: true}, nil
-	}
-	if block.FileData.Type == types.FileDataTypeData {
-		if block.FileData.DataString != "" {
-			payload := bedrockFilePayload{bytes: block.FileData.DataString, hasData: true}
-			if decoded, err := types.DecodeFileDataString(block.FileData.DataString); err == nil {
-				payload.raw = decoded
-				payload.hasRawBytes = true
-			}
-			return mediaType, payload, nil
-		}
-		if block.FileData.Data != nil {
-			return mediaType, bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(block.FileData.Data), raw: block.FileData.Data, hasRawBytes: true, hasData: true}, nil
-		}
-		return mediaType, bedrockFilePayload{hasRawBytes: true, hasData: true}, nil
-	}
-	if block.FileData.Data != nil {
-		return mediaType, bedrockFilePayload{bytes: base64.StdEncoding.EncodeToString(block.FileData.Data), raw: block.FileData.Data, hasRawBytes: true, hasData: true}, nil
-	}
-	return mediaType, bedrockFilePayload{}, fmt.Errorf("unsupported tool result file data for media type: %s", mediaType)
-}
-
-func isFullMediaType(mediaType string) bool {
-	slash := strings.Index(mediaType, "/")
-	return slash >= 0 && slash < len(mediaType)-1 && mediaType[slash+1:] != "*"
-}
-
-func topLevelMediaType(mediaType string) string {
-	if slash := strings.Index(mediaType, "/"); slash >= 0 {
-		return mediaType[:slash]
-	}
-	return mediaType
-}
-
-func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (string, error) {
-	if isFullMediaType(mediaType) {
-		return mediaType, nil
-	}
-	if !payload.hasRawBytes {
-		return "", fmt.Errorf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
-	}
-	switch topLevelMediaType(mediaType) {
-	case "image":
-		switch {
-		case len(payload.raw) >= 4 && payload.raw[0] == 0x89 && payload.raw[1] == 0x50 && payload.raw[2] == 0x4e && payload.raw[3] == 0x47:
-			return "image/png", nil
-		case len(payload.raw) >= 3 && payload.raw[0] == 0x47 && payload.raw[1] == 0x49 && payload.raw[2] == 0x46:
-			return "image/gif", nil
-		case len(payload.raw) >= 2 && payload.raw[0] == 0xff && payload.raw[1] == 0xd8:
-			return "image/jpeg", nil
-		case len(payload.raw) >= 12 && payload.raw[0] == 0x52 && payload.raw[1] == 0x49 && payload.raw[2] == 0x46 && payload.raw[3] == 0x46 && payload.raw[8] == 0x57 && payload.raw[9] == 0x45 && payload.raw[10] == 0x42 && payload.raw[11] == 0x50:
-			return "image/webp", nil
-		}
-	case "application":
-		if len(payload.raw) >= 4 && payload.raw[0] == 0x25 && payload.raw[1] == 0x50 && payload.raw[2] == 0x44 && payload.raw[3] == 0x46 {
-			return "application/pdf", nil
-		}
-	}
-	return "", fmt.Errorf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
-}
-
-func bedrockImageFormat(mediaType string) (string, error) {
-	switch mediaType {
-	case "image/jpeg":
-		return "jpeg", nil
-	case "image/png":
-		return "png", nil
-	case "image/gif":
-		return "gif", nil
-	case "image/webp":
-		return "webp", nil
-	default:
-		return "", fmt.Errorf("unsupported image mime type: %s, expected one of: image/jpeg, image/png, image/gif, image/webp", mediaType)
-	}
-}
-
-func bedrockDocumentFormat(mediaType string) (string, error) {
-	switch mediaType {
-	case "application/pdf":
-		return "pdf", nil
-	case "text/csv":
-		return "csv", nil
-	case "application/msword":
-		return "doc", nil
-	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-		return "docx", nil
-	case "application/vnd.ms-excel":
-		return "xls", nil
-	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-		return "xlsx", nil
-	case "text/html":
-		return "html", nil
-	case "text/plain":
-		return "txt", nil
-	case "text/markdown":
-		return "md", nil
-	default:
-		return "", fmt.Errorf("unsupported file mime type: %s, expected one of: application/pdf, text/csv, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.ms-excel, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/html, text/plain, text/markdown", mediaType)
-	}
-}
-
-func bedrockFileBlock(file types.FileContent, documentCounter *int) (map[string]interface{}, bool, error) {
-	if file.Reference != "" || file.FileData.Type == types.FileDataTypeReference {
-		return nil, false, fmt.Errorf("file parts with provider references are not supported")
-	}
-	if file.URL != "" || file.FileData.Type == types.FileDataTypeURL {
-		return nil, false, fmt.Errorf("file URL data is not supported")
-	}
-	mediaType := fileContentMediaType(file)
-	payload := fileContentPayload(file)
-	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
-		if !isFullMediaType(mediaType) {
-			mediaType = "text/plain"
-		}
-	} else if payload.hasData {
-		resolved, err := resolveBedrockDataMediaType(mediaType, payload)
-		if err != nil {
-			return nil, false, err
-		}
-		mediaType = resolved
-	}
-	if !payload.hasData {
-		return nil, false, nil
-	}
-	if strings.HasPrefix(mediaType, "image/") {
-		format, err := bedrockImageFormat(mediaType)
-		if err != nil {
-			return nil, false, err
-		}
-		return map[string]interface{}{
-			"image": map[string]interface{}{
-				"format": format,
-				"source": map[string]interface{}{"bytes": payload.bytes},
-			},
-		}, true, nil
-	}
-	format, err := bedrockDocumentFormat(mediaType)
+	isMistral := isMistralModel(m.modelID)
+	system, messages, err := convertToBedrockChatMessages(filteredMessages, isMistral)
 	if err != nil {
-		return nil, false, err
-	}
-	name := stripBedrockFileExtension(file.Filename)
-	if name == "" {
-		if documentCounter != nil {
-			(*documentCounter)++
-			name = fmt.Sprintf("document-%d", *documentCounter)
-		} else {
-			name = "document-1"
-		}
-	}
-	document := map[string]interface{}{
-		"format": format,
-		"name":   name,
-		"source": map[string]interface{}{"bytes": payload.bytes},
-	}
-	if bedrockCitationsEnabled(file.ProviderOptions) {
-		document["citations"] = map[string]interface{}{"enabled": true}
-	}
-	return map[string]interface{}{"document": document}, true, nil
-}
-
-func stripBedrockFileExtension(filename string) string {
-	if dot := strings.Index(filename, "."); dot >= 0 {
-		return filename[:dot]
-	}
-	return filename
-}
-
-func (m *LanguageModel) buildGenericRequest(opts *provider.GenerateOptions) (map[string]interface{}, error) {
-	var prompt string
-	if opts.Prompt.IsMessages() {
-		for _, msg := range opts.Prompt.Messages {
-			content := ""
-			for _, c := range msg.Content {
-				if tc, ok := c.(types.TextContent); ok {
-					content += tc.Text
-				}
-			}
-			prompt += fmt.Sprintf("%s: %s\n", msg.Role, content)
-		}
-	} else if opts.Prompt.IsSimple() {
-		prompt = opts.Prompt.Text
+		return nil, err
 	}
 
-	reqBody := map[string]interface{}{
-		"prompt": prompt,
+	// TS always includes `system` (even as an empty array) in the Converse
+	// command; match that here for wire-format parity.
+	if system == nil {
+		system = []map[string]interface{}{}
 	}
-
-	if opts.MaxTokens != nil {
-		reqBody["max_tokens"] = *opts.MaxTokens
+	if messages == nil {
+		messages = []map[string]interface{}{}
 	}
-
-	if opts.Temperature != nil {
-		reqBody["temperature"] = *opts.Temperature
-	}
-	if additional, ok := m.additionalModelRequestFields(opts); ok {
-		for k, v := range additional {
-			reqBody[k] = v
-		}
-	}
-
-	return reqBody, nil
-}
-
-// buildNovaRequest builds a request for Amazon Nova models using OpenAI-compatible format.
-// Nova models support reasoning_effort instead of reasoningConfig.
-func (m *LanguageModel) buildNovaRequest(opts *provider.GenerateOptions) (map[string]interface{}, error) {
-	messages := []map[string]interface{}{}
-
-	if opts.Prompt.IsMessages() {
-		for _, msg := range opts.Prompt.Messages {
-			content := ""
-			for _, c := range msg.Content {
-				if tc, ok := c.(types.TextContent); ok {
-					content += tc.Text
-				}
-			}
-			messages = append(messages, map[string]interface{}{
-				"role":    msg.Role,
-				"content": content,
-			})
-		}
-	} else if opts.Prompt.IsSimple() {
-		messages = append(messages, map[string]interface{}{
-			"role":    "user",
-			"content": opts.Prompt.Text,
-		})
-	}
-
-	reqBody := map[string]interface{}{
+	body := map[string]interface{}{
 		"messages": messages,
+		"system":   system,
 	}
-
-	if opts.MaxTokens != nil {
-		reqBody["max_tokens"] = *opts.MaxTokens
+	if len(additionalModelRequestFields) > 0 {
+		body["additionalModelRequestFields"] = additionalModelRequestFields
 	}
-	if opts.Temperature != nil {
-		reqBody["temperature"] = *opts.Temperature
+	if isAnthropic {
+		body["additionalModelResponseFieldPaths"] = []string{"/delta/stop_sequence"}
 	}
-
-	// Map top-level Reasoning to OpenAI-compatible reasoning_effort for Nova models.
-	if opts.Reasoning != nil {
-		if effort := mapReasoningToOpenAIEffort(*opts.Reasoning); effort != "" {
-			reqBody["reasoning_effort"] = effort
+	if len(inferenceConfig) > 0 {
+		body["inferenceConfig"] = inferenceConfig
+	}
+	if serviceTier := stringOption(amazonBedrockOptions["serviceTier"]); serviceTier != "" {
+		body["serviceTier"] = map[string]interface{}{"type": serviceTier}
+	} else if m.options != nil && m.options.ServiceTier != "" {
+		body["serviceTier"] = map[string]interface{}{"type": m.options.ServiceTier}
+	}
+	// Forward any remaining, unrecognized amazonBedrock/bedrock provider
+	// options verbatim (e.g. guardrailConfig), excluding the fields already
+	// handled above.
+	for _, key := range []string{"reasoningConfig", "additionalModelRequestFields", "serviceTier", "structuredOutputMode", "anthropicBeta"} {
+		delete(amazonBedrockOptions, key)
+	}
+	for k, v := range amazonBedrockOptions {
+		body[k] = v
+	}
+	if len(prepared.ToolConfig.Tools) > 0 {
+		toolConfig := map[string]interface{}{"tools": prepared.ToolConfig.Tools}
+		if prepared.ToolConfig.ToolChoice != nil {
+			toolConfig["toolChoice"] = prepared.ToolConfig.ToolChoice
 		}
-	}
-	if serviceTier := m.serviceTier(opts); serviceTier != "" {
-		reqBody["serviceTier"] = map[string]interface{}{"type": serviceTier}
-	}
-	if additional, ok := m.additionalModelRequestFields(opts); ok {
-		for k, v := range additional {
-			reqBody[k] = v
-		}
+		body["toolConfig"] = toolConfig
 	}
 
-	return reqBody, nil
+	return &converseArgs{
+		Body:                 body,
+		Warnings:             warnings,
+		UsesJSONInstruction:  useJSONInstructionForStructuredOutput,
+		UsesJSONResponseTool: jsonResponseTool != nil,
+	}, nil
 }
 
-func (m *LanguageModel) bedrockProviderOptions(opts *provider.GenerateOptions) map[string]interface{} {
+var openAIModelIDPattern = regexp.MustCompile(`^(?:[^.]+\.)?(openai\..+)$`)
+
+// bedrockProviderOptions extracts the amazonBedrock (falling back to legacy
+// bedrock) provider-options map for a call.
+func bedrockProviderOptions(opts *provider.GenerateOptions) map[string]interface{} {
 	if opts == nil || opts.ProviderOptions == nil {
 		return nil
 	}
@@ -1074,66 +447,37 @@ func (m *LanguageModel) bedrockProviderOptions(opts *provider.GenerateOptions) m
 	return nil
 }
 
-func (m *LanguageModel) serviceTier(opts *provider.GenerateOptions) string {
-	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
-		if v, ok := provOpts["serviceTier"].(string); ok && v != "" {
-			return v
+func mergeReasoningConfigSources(modelOptions *ModelOptions, amazonBedrockOptions map[string]interface{}) *ReasoningConfig {
+	var result *ReasoningConfig
+	if modelOptions != nil && modelOptions.ReasoningConfig != nil {
+		clone := *modelOptions.ReasoningConfig
+		result = &clone
+	}
+	if rc, ok := amazonBedrockOptions["reasoningConfig"].(map[string]interface{}); ok {
+		if result == nil {
+			result = &ReasoningConfig{}
+		}
+		if t, ok := rc["type"].(string); ok {
+			result.Type = t
+		}
+		if bt, ok := intOption(rc["budgetTokens"]); ok {
+			result.BudgetTokens = &bt
+		}
+		if e, ok := rc["maxReasoningEffort"].(string); ok {
+			result.MaxReasoningEffort = e
+		}
+		if d, ok := rc["display"].(string); ok {
+			result.Display = d
 		}
 	}
-	if m.options != nil {
-		return m.options.ServiceTier
-	}
-	return ""
+	return result
 }
 
-func (m *LanguageModel) additionalModelRequestFields(opts *provider.GenerateOptions) (map[string]interface{}, bool) {
-	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
-		if additional, ok := provOpts["additionalModelRequestFields"].(map[string]interface{}); ok {
-			return additional, true
-		}
-	}
-	return nil, false
-}
-
-func (m *LanguageModel) mergedReasoningConfig(opts *provider.GenerateOptions, derived interface{}) map[string]interface{} {
-	var out map[string]interface{}
-	if existing, ok := derived.(map[string]interface{}); ok {
-		out = cloneMap(existing)
-	}
-	if out == nil && m.optionsReasoningConfig() != nil {
-		out = map[string]interface{}{}
-	}
-	overlayReasoningConfig(out, m.optionsReasoningConfig())
-	if provOpts := m.bedrockProviderOptions(opts); provOpts != nil {
-		if rc, ok := provOpts["reasoningConfig"].(map[string]interface{}); ok {
-			if out == nil {
-				out = map[string]interface{}{}
-			}
-			for k, v := range rc {
-				out[k] = v
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func (m *LanguageModel) optionsReasoningConfig() *ReasoningConfig {
-	if m.options == nil {
-		return nil
-	}
-	return m.options.ReasoningConfig
-}
-
-func overlayReasoningConfig(out map[string]interface{}, rc *ReasoningConfig) {
+func reasoningConfigToMap(rc *ReasoningConfig) map[string]interface{} {
 	if rc == nil {
-		return
+		return nil
 	}
-	if out == nil {
-		return
-	}
+	out := map[string]interface{}{}
 	if rc.Type != "" {
 		out["type"] = rc.Type
 	}
@@ -1146,200 +490,536 @@ func overlayReasoningConfig(out map[string]interface{}, rc *ReasoningConfig) {
 	if rc.Display != "" {
 		out["display"] = rc.Display
 	}
-}
-
-func cloneMap(in map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
 	return out
 }
 
-func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
-	id := t.ProviderID
-	if id == "" && t.Type == types.ToolTypeProviderDefined {
-		id = t.Name
+// normalizePromptMessages folds a types.Prompt's simple-text or system-string
+// forms into a unified message list, mirroring how the TS SDK's core prompt
+// standardization builds a LanguageModelV4Prompt before calling into the
+// provider.
+func normalizePromptMessages(prompt types.Prompt) []types.Message {
+	var messages []types.Message
+	if prompt.System != "" {
+		messages = append(messages, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
 	}
-	switch id {
-	case "anthropic.tool_search_bm25_20251119", "anthropic_bm25_tool_search":
-		return map[string]interface{}{
-			"name": "tool_search_tool_bm25",
-			"type": "tool_search_tool_bm25_20251119",
+	if prompt.IsMessages() {
+		messages = append(messages, prompt.Messages...)
+	} else if prompt.IsSimple() {
+		messages = append(messages, types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt.Text}}})
+	}
+	return messages
+}
+
+// filterToolContent removes tool-call and tool-result parts from non-system
+// messages (dropping messages left empty), matching TS getArgs()'s
+// hasAnyTools filtering. Returns the filtered messages and whether anything
+// was removed.
+func filterToolContent(messages []types.Message) ([]types.Message, bool) {
+	removed := false
+	out := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			out = append(out, msg)
+			continue
 		}
-	case "anthropic.tool_search_regex_20251119", "anthropic_regex_tool_search":
-		return map[string]interface{}{
-			"name": "tool_search_tool_regex",
-			"type": "tool_search_tool_regex_20251119",
+		filteredContent := make([]types.ContentPart, 0, len(msg.Content))
+		for _, part := range msg.Content {
+			switch part.(type) {
+			case types.ToolCallContent, types.ToolResultContent:
+				removed = true
+			default:
+				filteredContent = append(filteredContent, part)
+			}
 		}
-	default:
+		if len(filteredContent) > 0 {
+			clone := msg
+			clone.Content = filteredContent
+			out = append(out, clone)
+		} else if len(msg.Content) > 0 {
+			removed = true
+		}
+	}
+	return out, removed
+}
+
+// injectBedrockJSONInstruction ports TS provider-utils
+// injectJsonInstructionIntoMessages for the Opus 4.7-style "JSON instruction"
+// structured-output fallback.
+func injectBedrockJSONInstruction(messages []types.Message, schema interface{}) []types.Message {
+	const suffix = "You MUST answer with only a JSON object that matches the JSON schema above. Do not wrap it in markdown fences or include any other text."
+
+	var existingText string
+	hasSystem := len(messages) > 0 && messages[0].Role == types.RoleSystem
+	if hasSystem {
+		for _, part := range messages[0].Content {
+			if t, ok := part.(types.TextContent); ok {
+				existingText += t.Text
+			}
+		}
+	}
+
+	schemaJSON, _ := json.Marshal(schema)
+
+	lines := []string{}
+	if existingText != "" {
+		lines = append(lines, existingText, "")
+	}
+	lines = append(lines, "JSON schema:", string(schemaJSON), suffix)
+
+	newSystem := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}}
+
+	if hasSystem {
+		out := make([]types.Message, 0, len(messages))
+		out = append(out, newSystem)
+		out = append(out, messages[1:]...)
+		return out
+	}
+	out := make([]types.Message, 0, len(messages)+1)
+	out = append(out, newSystem)
+	out = append(out, messages...)
+	return out
+}
+
+// jsonObjectTextExtractor ports TS
+// amazon-bedrock-chat-language-model.ts#JsonObjectTextExtractor: it
+// incrementally extracts the JSON object substring from a text stream that
+// may contain a leading/trailing instruction wrapper.
+type jsonObjectTextExtractor struct {
+	started, completed, inString, escaped bool
+	depth                                 int
+}
+
+func (e *jsonObjectTextExtractor) process(text string) string {
+	var result strings.Builder
+	for _, ch := range text {
+		if e.completed {
+			break
+		}
+		if !e.started {
+			if ch != '{' {
+				continue
+			}
+			e.started = true
+			e.depth = 1
+			result.WriteRune(ch)
+			continue
+		}
+		result.WriteRune(ch)
+		if e.escaped {
+			e.escaped = false
+			continue
+		}
+		if ch == '\\' && e.inString {
+			e.escaped = true
+			continue
+		}
+		if ch == '"' {
+			e.inString = !e.inString
+			continue
+		}
+		if e.inString {
+			continue
+		}
+		if ch == '{' {
+			e.depth++
+		} else if ch == '}' {
+			e.depth--
+			if e.depth == 0 {
+				e.completed = true
+			}
+		}
+	}
+	return result.String()
+}
+
+// ─── HTTP request construction ─────────────────────────────────────────────
+
+// converseURL builds the Converse (or Converse-stream) endpoint URL and
+// returns the raw wire path used both for the actual HTTP request-target and
+// for AWS SigV4 canonicalization. Ports TS getUrl(): encodeURIComponent(id)
+// so ARNs (which may contain '/' and ':') survive as a single path segment.
+func (m *LanguageModel) converseURL(baseURL, suffix string) (*url.URL, string, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, "", err
+	}
+	rawPath := "/model/" + jsEncodeURIComponent(m.modelID) + suffix
+	reqURL := &url.URL{Scheme: base.Scheme, Host: base.Host, Opaque: rawPath}
+	return reqURL, rawPath, nil
+}
+
+func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, body []byte) (*http.Request, error) {
+	baseURL, err := m.provider.runtimeBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	// Build the request against the plain base URL first so http.NewRequest
+	// sets up Host/ContentLength/GetBody correctly, then swap in the opaque,
+	// doubly-escapable raw path so literal percent-encoding (e.g. an
+	// application-inference-profile ARN's '/' and ':') survives on the wire.
+	// Go's url.URL otherwise decodes %2F/%3A back into '/' and ':' when
+	// populating .Path.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	reqURL, _, err := m.converseURL(baseURL, suffix)
+	if err != nil {
+		return nil, err
+	}
+	req.URL = reqURL
+	req.Host = reqURL.Host
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	m.provider.applyRequestHeaders(req, nil)
+	if err := m.provider.authenticateRequest(ctx, req, body); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// ─── DoGenerate ─────────────────────────────────────────────────────────────
+
+func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	args, err := m.getArgs(opts)
+	if err != nil {
+		return nil, err
+	}
+	bodyBytes, err := json.Marshal(args.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := m.newConverseRequest(ctx, "/converse", bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	httpClient := m.provider.Client().HTTPClient()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, providerErrorFromTransport(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
+	}
+
+	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
+	if err != nil {
+		return nil, err
+	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
+	result.RawRequest = args.Body
+	if result.ResponseMetadata == nil {
+		result.ResponseMetadata = &types.ResponseMetadata{}
+	}
+	result.ResponseMetadata.ID = resp.Header.Get("x-amzn-requestid")
+	result.ResponseMetadata.ModelID = m.modelID
+	result.ResponseMetadata.Headers = result.ResponseHeaders
+	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
+		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
+			result.ResponseMetadata.Timestamp = ts
+		}
+	}
+	result.Warnings = args.Warnings
+	return result, nil
+}
+
+func providerErrorFromTransport(err error) error {
+	return fmt.Errorf("amazon-bedrock request failed: %w", err)
+}
+
+// ─── Response conversion ────────────────────────────────────────────────────
+
+type bedrockConverseToolUse struct {
+	ToolUseID string          `json:"toolUseId"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+}
+
+type bedrockConverseReasoningContent struct {
+	ReasoningText *struct {
+		Text      string `json:"text"`
+		Signature string `json:"signature"`
+	} `json:"reasoningText"`
+	RedactedReasoning *struct {
+		Data string `json:"data"`
+	} `json:"redactedReasoning"`
+	RedactedContent string `json:"redactedContent"`
+}
+
+type bedrockConverseContentBlock struct {
+	Text             *string                          `json:"text"`
+	CitationsContent *bedrockCitationsContent         `json:"citationsContent"`
+	ToolUse          *bedrockConverseToolUse          `json:"toolUse"`
+	ReasoningContent *bedrockConverseReasoningContent `json:"reasoningContent"`
+}
+
+type bedrockCitationsContent struct {
+	Content []struct {
+		Text *string `json:"text"`
+	} `json:"content"`
+}
+
+type bedrockConverseResponse struct {
+	Output struct {
+		Message struct {
+			Content []bedrockConverseContentBlock `json:"content"`
+			Role    string                        `json:"role"`
+		} `json:"message"`
+	} `json:"output"`
+	StopReason                    string                       `json:"stopReason"`
+	AdditionalModelResponseFields *bedrockAdditionalRespFields `json:"additionalModelResponseFields"`
+	Trace                         json.RawMessage              `json:"trace"`
+	PerformanceConfig             map[string]interface{}       `json:"performanceConfig"`
+	ServiceTier                   map[string]interface{}       `json:"serviceTier"`
+	Usage                         json.RawMessage              `json:"usage"`
+}
+
+type bedrockAdditionalRespFields struct {
+	Delta *struct {
+		StopSequence *string `json:"stop_sequence"`
+	} `json:"delta"`
+}
+
+func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction, usesJSONResponseTool bool) (*types.GenerateResult, error) {
+	var resp bedrockConverseResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
+	}
+
+	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}
+	isMistral := isMistralModel(m.modelID)
+
+	var extractor *jsonObjectTextExtractor
+	if usesJSONInstruction {
+		extractor = &jsonObjectTextExtractor{}
+	}
+
+	isJSONResponseFromTool := false
+
+	for _, part := range resp.Output.Message.Content {
+		var textParts []string
+		if part.Text != nil {
+			textParts = append(textParts, *part.Text)
+		} else if part.CitationsContent != nil {
+			for _, c := range part.CitationsContent.Content {
+				if c.Text != nil {
+					textParts = append(textParts, *c.Text)
+				}
+			}
+		}
+		for _, text := range textParts {
+			if extractor != nil {
+				text = extractor.process(text)
+			}
+			result.Text += text
+		}
+
+		if rc := part.ReasoningContent; rc != nil {
+			switch {
+			case rc.ReasoningText != nil:
+				reasoning := types.ReasoningContent{Text: rc.ReasoningText.Text}
+				if rc.ReasoningText.Signature != "" {
+					reasoning.Signature = rc.ReasoningText.Signature
+				}
+				result.Content = append(result.Content, reasoning)
+			case rc.RedactedReasoning != nil:
+				result.Content = append(result.Content, types.ReasoningContent{RedactedData: rc.RedactedReasoning.Data})
+			case rc.RedactedContent != "":
+				result.Content = append(result.Content, types.ReasoningContent{
+					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
+						"amazonBedrock": map[string]interface{}{"redactedContent": rc.RedactedContent},
+						"bedrock":       map[string]interface{}{"redactedContent": rc.RedactedContent},
+					}),
+				})
+			}
+		}
+
+		if part.ToolUse != nil {
+			if usesJSONResponseTool && part.ToolUse.Name == "json" {
+				isJSONResponseFromTool = true
+				result.Text = string(part.ToolUse.Input)
+				continue
+			}
+			var args map[string]interface{}
+			_ = json.Unmarshal(part.ToolUse.Input, &args)
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+				ID:        normalizeToolCallID(part.ToolUse.ToolUseID, isMistral),
+				ToolName:  part.ToolUse.Name,
+				Arguments: args,
+			})
+		}
+	}
+
+	var stopSequence *string
+	if resp.AdditionalModelResponseFields != nil && resp.AdditionalModelResponseFields.Delta != nil {
+		stopSequence = resp.AdditionalModelResponseFields.Delta.StopSequence
+	}
+
+	var usageMap map[string]interface{}
+	_ = json.Unmarshal(resp.Usage, &usageMap)
+	result.Usage = convertBedrockConverseUsage(resp.Usage)
+
+	result.FinishReason = mapBedrockFinishReason(resp.StopReason, isJSONResponseFromTool)
+
+	metadataPayload := map[string]interface{}{}
+	if len(resp.Trace) > 0 && string(resp.Trace) != "null" {
+		var trace interface{}
+		if json.Unmarshal(resp.Trace, &trace) == nil {
+			metadataPayload["trace"] = trace
+		}
+	}
+	if len(resp.PerformanceConfig) > 0 {
+		metadataPayload["performanceConfig"] = resp.PerformanceConfig
+	}
+	if len(resp.ServiceTier) > 0 {
+		metadataPayload["serviceTier"] = resp.ServiceTier
+	}
+	if usageMap != nil {
+		usageMeta := map[string]interface{}{}
+		if v, ok := usageMap["cacheWriteInputTokens"]; ok {
+			usageMeta["cacheWriteInputTokens"] = v
+		}
+		if v, ok := usageMap["cacheDetails"]; ok {
+			usageMeta["cacheDetails"] = v
+		}
+		if len(usageMeta) > 0 {
+			metadataPayload["usage"] = usageMeta
+		}
+	}
+	if isJSONResponseFromTool {
+		metadataPayload["isJsonResponseFromTool"] = true
+	}
+	if stopSequence != nil {
+		metadataPayload["stopSequence"] = *stopSequence
+	} else {
+		metadataPayload["stopSequence"] = nil
+	}
+	if len(metadataPayload) > 1 || metadataPayload["stopSequence"] != nil {
+		result.ProviderMetadata = map[string]interface{}{
+			"amazonBedrock": metadataPayload,
+			"bedrock":       metadataPayload,
+		}
+	}
+
+	return result, nil
+}
+
+func mustMarshalProviderMetadata(v interface{}) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
 		return nil
 	}
+	return data
 }
 
-// bedrockUsage represents Bedrock usage information with detailed token tracking
-type bedrockUsage struct {
-	InputTokens           int `json:"input_tokens"`
-	OutputTokens          int `json:"output_tokens"`
-	TotalTokens           int `json:"total_tokens,omitempty"`
-	CacheReadInputTokens  int `json:"cache_read_input_tokens,omitempty"`     // v6.0
-	CacheWriteInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
+func mapBedrockFinishReason(stopReason string, isJSONResponseFromTool bool) types.FinishReason {
+	switch stopReason {
+	case "stop_sequence", "end_turn", "stop":
+		return types.FinishReasonStop
+	case "max_tokens", "length":
+		return types.FinishReasonLength
+	case "content_filtered", "guardrail_intervened", "content-filter":
+		return types.FinishReasonContentFilter
+	case "tool_use", "tool-calls":
+		if isJSONResponseFromTool {
+			return types.FinishReasonStop
+		}
+		return types.FinishReasonToolCalls
+	default:
+		return types.FinishReasonOther
+	}
 }
 
-// convertBedrockUsage converts Bedrock usage to detailed Usage struct
-// Implements v6.0 detailed token tracking with cache support
-// Bedrock supports BOTH cache read and cache write tokens
-func convertBedrockUsage(usage bedrockUsage) types.Usage {
+// convertBedrockConverseUsage ports TS convert-amazon-bedrock-usage.ts.
+func convertBedrockConverseUsage(raw json.RawMessage) types.Usage {
+	var usage struct {
+		InputTokens           int `json:"inputTokens"`
+		OutputTokens          int `json:"outputTokens"`
+		CacheReadInputTokens  int `json:"cacheReadInputTokens"`
+		CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
+	}
+	_ = json.Unmarshal(raw, &usage)
+
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
 	cacheReadTokens := int64(usage.CacheReadInputTokens)
 	cacheWriteTokens := int64(usage.CacheWriteInputTokens)
-
-	// Calculate totals
-	totalInputTokens := inputTokens
-	totalTokens := totalInputTokens + outputTokens
+	totalInput := inputTokens + cacheReadTokens + cacheWriteTokens
+	totalTokens := totalInput + outputTokens
 
 	result := types.Usage{
-		InputTokens:  &totalInputTokens,
+		InputTokens:  &totalInput,
 		OutputTokens: &outputTokens,
 		TotalTokens:  &totalTokens,
-	}
-
-	// Set input token details (Bedrock provides BOTH cache read and write)
-	if cacheReadTokens > 0 || cacheWriteTokens > 0 {
-		noCacheTokens := inputTokens - cacheReadTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &noCacheTokens,
+		InputDetails: &types.InputTokenDetails{
+			NoCacheTokens:    &inputTokens,
 			CacheReadTokens:  &cacheReadTokens,
 			CacheWriteTokens: &cacheWriteTokens,
-		}
+		},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: &outputTokens},
 	}
 
-	// Bedrock doesn't provide reasoning tokens breakdown yet
-	result.OutputDetails = &types.OutputTokenDetails{
-		TextTokens:      &outputTokens,
-		ReasoningTokens: nil,
-	}
-
-	// Store raw usage
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-	}
-
-	if usage.TotalTokens > 0 {
-		result.Raw["total_tokens"] = usage.TotalTokens
-	}
-	if usage.CacheReadInputTokens > 0 {
-		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
-	}
-	if usage.CacheWriteInputTokens > 0 {
-		result.Raw["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+	var rawMap map[string]interface{}
+	if json.Unmarshal(raw, &rawMap) == nil {
+		result.Raw = rawMap
 	}
 
 	return result
 }
 
-func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, error) {
-	// Try Claude response format
-	// Updated in v6.0 to support detailed usage tracking
-	var claudeResp struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		StopReason string       `json:"stop_reason"`
-		Usage      bedrockUsage `json:"usage"`
+// ─── DoStream ───────────────────────────────────────────────────────────────
+
+func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	args, err := m.getArgs(opts)
+	if err != nil {
+		return nil, err
+	}
+	bodyBytes, err := json.Marshal(args.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	if err := json.Unmarshal(body, &claudeResp); err == nil && len(claudeResp.Content) > 0 {
-		text := ""
-		for _, content := range claudeResp.Content {
-			if content.Type == "text" {
-				text += content.Text
-			}
-		}
-
-		finishReason := types.FinishReasonStop
-		if claudeResp.StopReason == "max_tokens" {
-			finishReason = types.FinishReasonLength
-		}
-
-		return &types.GenerateResult{
-			Text:         text,
-			FinishReason: finishReason,
-			Usage:        convertBedrockUsage(claudeResp.Usage),
-			RawResponse:  claudeResp,
-		}, nil
+	req, err := m.newConverseRequest(ctx, "/converse-stream", bodyBytes)
+	if err != nil {
+		return nil, err
 	}
 
-	// Try generic response format
-	var genericResp struct {
-		Completion string `json:"completion"`
-		Generation string `json:"generation"`
+	httpClient := m.provider.Client().HTTPClient()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, providerErrorFromTransport(err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
 	}
 
-	if err := json.Unmarshal(body, &genericResp); err == nil {
-		text := genericResp.Completion
-		if text == "" {
-			text = genericResp.Generation
-		}
-
-		// Generic format doesn't provide usage information
-		return &types.GenerateResult{
-			Text:         text,
-			FinishReason: types.FinishReasonStop,
-			Usage:        types.Usage{}, // Empty usage
-			RawResponse:  genericResp,
-		}, nil
+	stream := &bedrockConverseStream{
+		decoder:              eventstream.NewDecoder(resp.Body),
+		body:                 resp.Body,
+		isMistral:            isMistralModel(m.modelID),
+		usesJSONResponseTool: args.UsesJSONResponseTool,
+		warnings:             args.Warnings,
+		modelID:              m.modelID,
+		responseHeaders:      providerutils.ExtractHeaders(resp.Header),
+		requestID:            resp.Header.Get("x-amzn-requestid"),
+		contentBlocks:        map[int]*bedrockStreamContentBlock{},
+		finishReason:         types.FinishReasonOther,
 	}
-
-	return nil, fmt.Errorf("unexpected response format from Bedrock: %s", string(body))
-}
-
-type bedrockStream struct {
-	result   *types.GenerateResult
-	position int
-	done     bool
-}
-
-func (s *bedrockStream) Next() (*provider.StreamChunk, error) {
-	if s.done {
-		return nil, fmt.Errorf("stream exhausted")
+	if extract := args.UsesJSONInstruction; extract {
+		stream.extractor = &jsonObjectTextExtractor{}
 	}
-
-	chunkSize := 10
-	text := s.result.Text
-
-	if s.position >= len(text) {
-		s.done = true
-		return &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			Text:         "",
-			FinishReason: s.result.FinishReason,
-			Usage:        &s.result.Usage,
-		}, nil
-	}
-
-	end := s.position + chunkSize
-	if end > len(text) {
-		end = len(text)
-	}
-
-	chunk := text[s.position:end]
-	s.position = end
-
-	return &provider.StreamChunk{
-		Type: provider.ChunkTypeText,
-		Text: chunk,
-	}, nil
-}
-
-func (s *bedrockStream) Err() error {
-	return nil
-}
-
-func (s *bedrockStream) Close() error {
-	s.done = true
-	return nil
+	return stream, nil
 }
