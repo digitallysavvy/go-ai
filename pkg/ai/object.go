@@ -526,10 +526,20 @@ type GenerateObjectOptions struct {
 	// They fire in addition to (not instead of) the legacy OnFinish callback.
 	// ========================================================================
 
-	// ExperimentalOnStart is called once before any LLM call is made.
+	// OnStart is called once before any LLM call is made.
+	OnStart func(ctx context.Context, e ObjectOnStartEvent)
+
+	// ExperimentalOnStart is a deprecated alias for OnStart.
+	//
+	// Deprecated: use OnStart.
 	ExperimentalOnStart func(ctx context.Context, e ObjectOnStartEvent)
 
-	// ExperimentalOnStepStart is called just before the provider is called.
+	// OnStepStart is called just before the provider is called.
+	OnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
+
+	// ExperimentalOnStepStart is a deprecated alias for OnStepStart.
+	//
+	// Deprecated: use OnStepStart.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
 	// OnStepEnd is called after the provider returns, before JSON parsing.
@@ -540,16 +550,48 @@ type GenerateObjectOptions struct {
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
 
-	// OnFinishEvent is called when the operation completes with a typed event.
+	// OnEnd is called when the operation completes with a typed event.
 	// For GenerateObject, the event Error field is always nil.
+	OnEnd func(ctx context.Context, e ObjectOnFinishEvent)
+
+	// OnFinishEvent is a deprecated alias for OnEnd.
+	//
+	// Deprecated: use OnEnd.
 	OnFinishEvent func(ctx context.Context, e ObjectOnFinishEvent)
 
 	// Legacy callback — kept for backward compatibility.
-	// Prefer OnFinishEvent for structured access.
+	// Prefer OnEnd for structured access.
 	OnFinish func(ctx context.Context, result *GenerateObjectResult, userContext interface{})
 
 	// ExperimentalContext allows passing custom context through generation lifecycle
 	ExperimentalContext interface{}
+}
+
+// resolveObjectOnStart returns onStart if set, else its deprecated alias
+// experimentalOnStart.
+func resolveObjectOnStart(onStart, experimentalOnStart func(context.Context, ObjectOnStartEvent)) func(context.Context, ObjectOnStartEvent) {
+	if onStart != nil {
+		return onStart
+	}
+	return experimentalOnStart
+}
+
+// resolveObjectOnStepStart returns onStepStart if set, else its deprecated
+// alias experimentalOnStepStart.
+func resolveObjectOnStepStart(onStepStart, experimentalOnStepStart func(context.Context, ObjectOnStepStartEvent)) func(context.Context, ObjectOnStepStartEvent) {
+	if onStepStart != nil {
+		return onStepStart
+	}
+	return experimentalOnStepStart
+}
+
+// resolveObjectOnEnd returns onEnd if set, else its deprecated alias
+// onFinishEvent.
+func resolveObjectOnEnd(onEnd, onFinishEvent func(context.Context, ObjectOnFinishEvent)) func(context.Context, ObjectOnFinishEvent) {
+	if onEnd != nil {
+		return onEnd
+	}
+	return onFinishEvent
 }
 
 func resolveObjectOnStepEnd(onStepEnd, onStepFinish func(context.Context, ObjectOnStepFinishEvent)) func(context.Context, ObjectOnStepFinishEvent) {
@@ -753,7 +795,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		RecordOutputs:     recordOutputs,
 		FunctionID:        cbFuncID,
 		Metadata:          cbMeta,
-	}, opts.ExperimentalOnStart)
+	}, resolveObjectOnStart(opts.OnStart, opts.ExperimentalOnStart))
 
 	callCtx := objectCallCtx{
 		callID:   callID,
@@ -837,7 +879,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		PromptMessages:  &genOpts.Prompt,
 		FunctionID:      cc.funcID,
 		Metadata:        cc.metadata,
-	}, opts.ExperimentalOnStepStart)
+	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
 	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
@@ -910,7 +952,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Request:          reqMeta,
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnFinishEvent)
+	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
@@ -975,7 +1017,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		PromptMessages:  &genOpts.Prompt,
 		FunctionID:      cc.funcID,
 		Metadata:        cc.metadata,
-	}, opts.ExperimentalOnStepStart)
+	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
 	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
@@ -1046,7 +1088,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Request:          arrReqMeta,
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnFinishEvent)
+	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
@@ -1109,7 +1151,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		PromptMessages:  &genOpts.Prompt,
 		FunctionID:      cc.funcID,
 		Metadata:        cc.metadata,
-	}, opts.ExperimentalOnStepStart)
+	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
 	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
@@ -1180,7 +1222,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Request:          enumReqMeta,
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnFinishEvent)
+	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
@@ -1237,7 +1279,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		PromptMessages:  &genOpts.Prompt,
 		FunctionID:      cc.funcID,
 		Metadata:        cc.metadata,
-	}, opts.ExperimentalOnStepStart)
+	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
 	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
@@ -1308,7 +1350,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Request:          nsReqMeta,
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
-	}, opts.OnFinishEvent)
+	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
 		opts.OnFinish(ctx, result, opts.ExperimentalContext)
@@ -1396,10 +1438,20 @@ type StreamObjectOptions struct {
 	// These callbacks receive typed event structs and are panic-safe.
 	// ========================================================================
 
-	// ExperimentalOnStart is called once before any LLM call is made.
+	// OnStart is called once before any LLM call is made.
+	OnStart func(ctx context.Context, e ObjectOnStartEvent)
+
+	// ExperimentalOnStart is a deprecated alias for OnStart.
+	//
+	// Deprecated: use OnStart.
 	ExperimentalOnStart func(ctx context.Context, e ObjectOnStartEvent)
 
-	// ExperimentalOnStepStart is called just before the provider is called.
+	// OnStepStart is called just before the provider is called.
+	OnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
+
+	// ExperimentalOnStepStart is a deprecated alias for OnStepStart.
+	//
+	// Deprecated: use OnStepStart.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
 	// OnStepEnd is called after the provider returns, before JSON parsing.
@@ -1410,8 +1462,13 @@ type StreamObjectOptions struct {
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
 
-	// OnFinishEvent is called when the operation completes.
+	// OnEnd is called when the operation completes.
 	// For StreamObject, the event Error field may be set if parsing failed.
+	OnEnd func(ctx context.Context, e ObjectOnFinishEvent)
+
+	// OnFinishEvent is a deprecated alias for OnEnd.
+	//
+	// Deprecated: use OnEnd.
 	OnFinishEvent func(ctx context.Context, e ObjectOnFinishEvent)
 
 	// OnError is called when the stream itself encounters an error.
@@ -1535,7 +1592,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		RecordOutputs:     recordOutputs,
 		FunctionID:        cbFuncID,
 		Metadata:          cbMeta,
-	}, opts.ExperimentalOnStart)
+	}, resolveObjectOnStart(opts.OnStart, opts.ExperimentalOnStart))
 
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
@@ -1572,7 +1629,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		PromptMessages:  &genOpts.Prompt,
 		FunctionID:      cbFuncID,
 		Metadata:        cbMeta,
-	}, opts.ExperimentalOnStepStart)
+	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
 	stream, err := doStreamWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil || stream == nil {
@@ -1734,7 +1791,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-		}, opts.OnFinishEvent)
+		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 		return nil, fmt.Errorf("stream error: %w", streamErr)
 	}
 
@@ -1794,7 +1851,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Request:          streamReqMeta,
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
-		}, opts.OnFinishEvent)
+		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 		return nil, parseErr
 	}
 	finalObject = parsedObject
@@ -1829,7 +1886,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Request:          streamReqMeta,
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
-	}, opts.OnFinishEvent)
+	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	// Call legacy OnFinish if provided
 	if opts.OnFinish != nil {

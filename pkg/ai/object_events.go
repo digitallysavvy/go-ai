@@ -209,3 +209,18 @@ type ObjectOnFinishEvent struct {
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{}
 }
+
+// Canonical event type name aliases (TS parity, 29d8cf4 event renames). The
+// deprecated Object-prefixed names remain for backward compatibility.
+
+// GenerateObjectStartEvent is the canonical name for ObjectOnStartEvent.
+type GenerateObjectStartEvent = ObjectOnStartEvent
+
+// GenerateObjectStepStartEvent is the canonical name for ObjectOnStepStartEvent.
+type GenerateObjectStepStartEvent = ObjectOnStepStartEvent
+
+// GenerateObjectStepEndEvent is the canonical name for ObjectOnStepFinishEvent.
+type GenerateObjectStepEndEvent = ObjectOnStepFinishEvent
+
+// GenerateObjectEndEvent is the canonical name for ObjectOnFinishEvent.
+type GenerateObjectEndEvent = ObjectOnFinishEvent

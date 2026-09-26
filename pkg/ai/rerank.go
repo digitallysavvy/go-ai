@@ -83,6 +83,14 @@ type RerankOnFinishEvent struct {
 	FunctionID string
 }
 
+// RerankStartEvent is the canonical name for RerankOnStartEvent (TS parity,
+// 29d8cf4 event renames).
+type RerankStartEvent = RerankOnStartEvent
+
+// RerankEndEvent is the canonical name for RerankOnFinishEvent (TS parity,
+// 29d8cf4 event renames).
+type RerankEndEvent = RerankOnFinishEvent
+
 // RerankOptions contains options for document reranking
 type RerankOptions struct {
 	// Model to use for reranking
@@ -128,15 +136,25 @@ type RerankOptions struct {
 	// Callback called when reranking finishes
 	OnFinish func(result *RerankResult)
 
-	// ExperimentalOnStart is called before the reranking model is invoked.
+	// OnStart is called before the reranking model is invoked.
+	OnStart func(event RerankOnStartEvent)
+
+	// ExperimentalOnStart is a deprecated alias for OnStart.
+	//
+	// Deprecated: use OnStart.
 	ExperimentalOnStart func(event RerankOnStartEvent)
 
-	// ExperimentalOnEnd is called after the reranking model returns.
+	// OnEnd is called after the reranking model returns.
+	OnEnd func(event RerankOnFinishEvent)
+
+	// ExperimentalOnEnd is a deprecated alias for OnEnd.
+	//
+	// Deprecated: use OnEnd.
 	ExperimentalOnEnd func(event RerankOnFinishEvent)
 
-	// ExperimentalOnFinish is called after the reranking model returns.
+	// ExperimentalOnFinish is a deprecated alias for OnEnd.
 	//
-	// Deprecated: use ExperimentalOnEnd.
+	// Deprecated: use OnEnd.
 	ExperimentalOnFinish func(event RerankOnFinishEvent)
 }
 
@@ -244,7 +262,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		if telemetry.Enabled(opts.ExperimentalTelemetry) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, emptyStartEvent)
 		}
-		if opts.ExperimentalOnStart != nil {
+		if opts.OnStart != nil {
+			opts.OnStart(emptyStartEvent)
+		} else if opts.ExperimentalOnStart != nil {
 			opts.ExperimentalOnStart(emptyStartEvent)
 		}
 
@@ -281,11 +301,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		if telemetry.Enabled(opts.ExperimentalTelemetry) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, emptyFinishEvent)
 		}
-		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(emptyFinishEvent)
-		}
-		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(emptyFinishEvent)
+		if opts.OnEnd != nil {
+			opts.OnEnd(emptyFinishEvent)
+		} else {
+			if opts.ExperimentalOnEnd != nil {
+				opts.ExperimentalOnEnd(emptyFinishEvent)
+			}
+			if opts.ExperimentalOnFinish != nil {
+				opts.ExperimentalOnFinish(emptyFinishEvent)
+			}
 		}
 		return emptyResult, nil
 	}
@@ -316,7 +340,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, startEvent)
 	}
-	if opts.ExperimentalOnStart != nil {
+	if opts.OnStart != nil {
+		opts.OnStart(startEvent)
+	} else if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
@@ -444,11 +470,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, finishEvent)
 	}
-	if opts.ExperimentalOnEnd != nil {
-		opts.ExperimentalOnEnd(finishEvent)
-	}
-	if opts.ExperimentalOnFinish != nil {
-		opts.ExperimentalOnFinish(finishEvent)
+	if opts.OnEnd != nil {
+		opts.OnEnd(finishEvent)
+	} else {
+		if opts.ExperimentalOnEnd != nil {
+			opts.ExperimentalOnEnd(finishEvent)
+		}
+		if opts.ExperimentalOnFinish != nil {
+			opts.ExperimentalOnFinish(finishEvent)
+		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
 		Settings:      opts.ExperimentalTelemetry,
