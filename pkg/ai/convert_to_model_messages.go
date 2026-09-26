@@ -58,6 +58,8 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 		ctx = context.Background()
 	}
 
+	warnIfUIMessagesHaveDeprecatedRawInput(messages)
+
 	if options.IgnoreIncompleteToolCalls {
 		filtered := make([]UIMessage, len(messages))
 		for i, message := range messages {

@@ -102,6 +102,8 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 		return fail(err)
 	}
 
+	warnIfUIMessagesHaveDeprecatedRawInput(messages)
+
 	if opts.MetadataSchema != nil {
 		for i := range messages {
 			message := &messages[i]

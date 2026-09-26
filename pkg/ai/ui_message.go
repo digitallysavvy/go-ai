@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // UIMessageRole is the role of a UI message. Mirrors the TypeScript
@@ -242,6 +244,30 @@ func IsToolUIPart(part UIMessagePart) bool {
 func IsToolOutputErrorUIPart(part UIMessagePart) bool {
 	tool, ok := AsToolUIPart(part)
 	return ok && tool.State == ToolStateOutputError
+}
+
+// rawInputDeprecationWarning mirrors TS
+// warn-if-ui-message-has-deprecated-raw-input.ts's rawInputDeprecationWarning.
+var rawInputDeprecationWarning = types.Warning{
+	Type:    "deprecated",
+	Setting: "rawInput in output-error UI message parts",
+	Message: `Use the "input" field instead. The "rawInput" field will be removed in the next major version.`,
+}
+
+// warnIfUIMessagesHaveDeprecatedRawInput logs a deprecation warning (via
+// LogWarnings) when any message has an output-error tool part still carrying
+// the deprecated RawInput field. Mirrors TS
+// warnIfUIMessageHasDeprecatedRawInput.
+func warnIfUIMessagesHaveDeprecatedRawInput(messages []UIMessage) {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			tool, ok := AsToolUIPart(part)
+			if ok && tool.State == ToolStateOutputError && tool.RawInput != nil {
+				LogWarnings(LogWarningsOptions{Warnings: []types.Warning{rawInputDeprecationWarning}})
+				return
+			}
+		}
+	}
 }
 
 // AsToolUIPart returns the tool part behind part (value or pointer).

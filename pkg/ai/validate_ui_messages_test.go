@@ -293,6 +293,9 @@ func TestValidateUIMessages_ToolParts(t *testing.T) {
 	})
 
 	t.Run("should preserve rawInput when state is output-error", func(t *testing.T) {
+		// also ports the rawInput-deprecation-warning assertion from
+		// validate-ui-messages.test.ts.
+		buf := setupLogWarnings(t)
 		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
 			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
 				{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad","rawInput":"legacy"}
@@ -302,6 +305,19 @@ func TestValidateUIMessages_ToolParts(t *testing.T) {
 		require.NoError(t, err)
 		part := msgs[0].Parts[0].(*ToolUIPart)
 		assert.Equal(t, "legacy", part.RawInput)
+		assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+	})
+
+	t.Run("should not log a deprecation warning when rawInput is absent", func(t *testing.T) {
+		buf := setupLogWarnings(t)
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad"}
+			]}]`),
+			Tools: tools,
+		})
+		require.NoError(t, err)
+		assert.Empty(t, buf.String())
 	})
 
 	t.Run("should throw error when no tool schema is found", func(t *testing.T) {

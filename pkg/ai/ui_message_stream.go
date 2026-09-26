@@ -905,6 +905,9 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			update["rawInput"] = chunk["input"]
 		}
 		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
+		if !dynamic {
+			warnIfUIMessageMapHasDeprecatedRawInput(s.message)
+		}
 	case "tool-output-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1186,6 +1189,31 @@ func uiParts(message UIMessageChunk) []interface{} {
 		return parts
 	}
 	return nil
+}
+
+// warnIfUIMessageMapHasDeprecatedRawInput logs the rawInput deprecation
+// warning when message (a raw UIMessageChunk, as used by the streaming
+// reducer) has an output-error tool part carrying a non-nil "rawInput" key.
+// Mirrors TS warnIfUIMessageHasDeprecatedRawInput([state.message]) at
+// process-ui-message-stream.ts's tool-input-error handler.
+func warnIfUIMessageMapHasDeprecatedRawInput(message UIMessageChunk) {
+	for _, raw := range uiParts(message) {
+		part, ok := asUIMap(raw)
+		if !ok {
+			continue
+		}
+		typ, _ := part["type"].(string)
+		if typ != "dynamic-tool" && !strings.HasPrefix(typ, "tool-") {
+			continue
+		}
+		if state, _ := part["state"].(string); state != "output-error" {
+			continue
+		}
+		if rawInput, ok := part["rawInput"]; ok && rawInput != nil {
+			LogWarnings(LogWarningsOptions{Warnings: []types.Warning{rawInputDeprecationWarning}})
+			return
+		}
+	}
 }
 
 func copyIfPresent(dst UIMessageChunk, src UIMessageChunk, from, to string) {
