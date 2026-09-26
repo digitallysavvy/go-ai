@@ -259,8 +259,11 @@ func TestStreamText_GatewayNonRetryableErrorsDoNotRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -281,8 +284,11 @@ func TestStreamText_GatewayPlainErrorsDoNotRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -303,8 +309,11 @@ func TestStreamText_GatewayZeroMaxRetriesDisablesRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -336,10 +345,11 @@ func TestStreamText_RejectsNegativeMaxRetries(t *testing.T) {
 func TestStreamText_RejectsSystemMessagesByDefault(t *testing.T) {
 	t.Parallel()
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	doStreamCalled := false
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model: &testutil.MockLanguageModel{
 			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
-				t.Fatal("DoStream should not be called when system messages are rejected")
+				doStreamCalled = true
 				return nil, nil
 			},
 		},
@@ -350,9 +360,19 @@ func TestStreamText_RejectsSystemMessagesByDefault(t *testing.T) {
 			},
 		},
 	})
+	// Prompt normalization now happens in the background (matching TS
+	// standardizePrompt, which runs inside streamText's async IIFE), so the
+	// rejection surfaces through Err()/ReadAll(), not the return value.
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	_, err = result.ReadAll()
 	var unsupported *promptutils.UnsupportedSystemMessageError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("StreamText() error = %T, want UnsupportedSystemMessageError", err)
+	}
+	if doStreamCalled {
+		t.Fatal("DoStream should not be called when system messages are rejected")
 	}
 }
 
@@ -923,11 +943,18 @@ func TestStreamText_ErrorHandling(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "Hello",
 	})
 
+	// StreamText returns immediately, matching TS streamText(): the first
+	// provider stream request happens in the background, so a failure there
+	// surfaces through Err()/ReadAll(), not the return value.
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	_, err = result.ReadAll()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1070,13 +1097,19 @@ func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:      model,
 		Prompt:     "use a tool",
 		ToolChoice: types.RequiredToolChoice(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// The first provider request now happens in the background (matching TS,
+	// where streamText() returns before any I/O), so wait for it before
+	// reading the value DoStreamFunc captured.
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
 	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
@@ -2793,11 +2826,18 @@ func TestStreamTextStepTimeoutCoversInitialDoStream(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "test",
 		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
 	})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	// The first provider request (and the step timeout that covers it) now
+	// happens in the background, so wait for it via ReadAll instead of
+	// checking StreamText's return value.
+	_, err = result.ReadAll()
 	if err == nil {
 		t.Fatal("StreamText() expected step timeout")
 	}

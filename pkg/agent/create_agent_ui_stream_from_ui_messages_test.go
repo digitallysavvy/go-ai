@@ -239,10 +239,25 @@ func TestCreateAgentUIStreamFromUIMessages_RejectsSystemMessageByDefault(t *test
 		Model: simpleStreamModel(),
 	})
 
-	_, _, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
 		UIMessages: json.RawMessage(systemMessageUIHistory),
 	})
-	if err == nil {
+	if err != nil {
+		t.Fatalf("unexpected error before streaming started: %v", err)
+	}
+	// ai.StreamText (which agent.Stream delegates to) now returns
+	// immediately and normalizes the prompt in the background, so the
+	// rejection surfaces on the errs channel rather than as a synchronous
+	// error here.
+	for range chunks {
+	}
+	var gotErr error
+	for e := range errs {
+		if e != nil {
+			gotErr = e
+		}
+	}
+	if gotErr == nil {
 		t.Fatal("expected an error rejecting the system-role message, got nil")
 	}
 }

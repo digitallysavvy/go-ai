@@ -205,12 +205,33 @@ type StreamTextOptions struct {
 	// adapters use this for work resolved before the next model step while
 	// preserving stream event ordering.
 	InitialStreamChunks []provider.StreamChunk
-	// OnEnd is called when the stream is fully consumed.
+	// OnEnd is called when the stream is fully consumed, with the full
+	// *StreamTextResult (Text(), Usage(), ToolCalls(), etc. give the same
+	// data TS's onEnd event carries). This is a Go-only convenience
+	// signature that predates OnEndEvent below; it is NOT the same field as
+	// GenerateTextOptions.OnEnd (whose signature is
+	// func(ctx, *GenerateTextResult, userContext) — StreamText's per-step
+	// and per-call analogues of that tuple shape are OnStepEnd below and
+	// OnEndEvent/OnFinishEvent, since a StreamTextResult is a different Go
+	// type from a GenerateTextResult and can't share that field's type).
+	// For code that wants the same shared, TS-parity event struct that
+	// GenerateText/Agent use, prefer OnEndEvent.
 	OnEnd func(result *StreamTextResult)
 	// OnFinish is called when the stream is fully consumed.
 	//
 	// Deprecated: use OnEnd.
 	OnFinish func(result *StreamTextResult)
+
+	// OnStepEnd is called after each step completes, mirroring
+	// GenerateTextOptions.OnStepEnd exactly (same func type, since
+	// types.StepResult — unlike *GenerateTextResult/*StreamTextResult — is
+	// shared between generate and stream). TS shares one onStepEnd callback
+	// type between generateText and streamText; this is the Go equivalent.
+	OnStepEnd func(ctx context.Context, step types.StepResult, userContext interface{})
+	// OnStepFinish is called after each step completes.
+	//
+	// Deprecated: use OnStepEnd.
+	OnStepFinish func(ctx context.Context, step types.StepResult, userContext interface{})
 
 	// ========================================================================
 	// Structured Event Callbacks (v6.1)
@@ -458,6 +479,7 @@ type StreamTextResult struct {
 	// Stored here so processStream can fire them when the stream completes.
 	cbCallID              string
 	cbOnEnd               func(result *StreamTextResult)
+	cbOnStepEnd           func(ctx context.Context, step types.StepResult, userContext interface{})
 	cbOnStepFinishEvent   func(ctx context.Context, e OnStepFinishEvent)
 	cbOnEndEvent          func(ctx context.Context, e OnFinishEvent)
 	cbOnToolCallStart     func(ctx context.Context, e OnToolCallStartEvent)
@@ -515,24 +537,69 @@ type StreamTextResult struct {
 	chunkBufReader *chunkBufferReader
 
 	processingDone chan struct{}
+
+	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
+	// interrupt in-flight bootstrap work (resuming approved tool calls, or
+	// making the first provider stream request) that hasn't produced a
+	// stream yet — see the StreamText/bootstrapAndStream split below.
+	cancelBootstrap context.CancelFunc
 }
 
-// StreamText performs streaming text generation
+// StreamText performs streaming text generation.
+//
+// It returns almost immediately, matching TS streamText(): that is a plain
+// synchronous function (packages/ai/src/generate-text/stream-text.ts) that
+// constructs a DefaultStreamTextResult and hands it back to the caller before
+// any I/O happens; everything else — normalizing the prompt, firing OnStart,
+// resuming approved tool calls from the input history, and making the first
+// provider stream request — runs in an async IIFE afterward. Go mirrors that
+// with bootstrapAndStream, running in the background: a slow resumed tool
+// call or a slow model connection no longer blocks the caller from getting a
+// *StreamTextResult back (review finding F6 — approval resume must not run
+// before StreamText returns).
 func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult, error) {
-	// Validate options
+	// Validate options. These are pure, in-memory checks with no I/O — the Go
+	// equivalent of the synchronous `prepareRetries` throw inside TS's
+	// DefaultStreamTextResult constructor, which happens before its async
+	// work begins.
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
-	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
-	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
-	system := effectiveSystem(opts.System, opts.Instructions)
 	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
 	if err := validateInstructionMessages(instructionMessages); err != nil {
 		return nil, err
 	}
+
+	bootstrapCtx, cancelBootstrap := context.WithCancel(ctx)
+	result := &StreamTextResult{
+		status:          StreamStatusSubmitted, // actively streaming; set before any chunks arrive
+		timeout:         opts.Timeout,
+		cancelBootstrap: cancelBootstrap,
+	}
+	result.chunkBuf = newChunkBuffer()
+	result.processingDone = make(chan struct{})
+
+	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
+
+	return result, nil
+}
+
+// bootstrapAndStream runs everything that TS's streamText() does inside its
+// async IIFE before the first step's stream loop starts: normalizing the
+// prompt, firing OnStart, resuming approved tool calls from the input
+// history, running PrepareStep and firing OnStepStart for the first step,
+// and making the first provider stream request. On success it hands off to
+// processStream; on failure it fails the result the same way a mid-stream
+// error does (via fail), so Err()/ReadAll()/Stream() behave identically
+// regardless of which phase produced the error — matching TS, where none of
+// this can make streamText() itself throw or return a rejected promise.
+func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTextOptions, instructionMessages []types.Message) {
+	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
+	system := effectiveSystem(opts.System, opts.Instructions)
 	if len(instructionMessages) > 0 {
 		// System-message instructions take precedence over text instructions.
 		system = ""
@@ -574,7 +641,12 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
 
-	// Apply total timeout if configured
+	// Apply total timeout if configured. This cancel must live for the
+	// lifetime of this goroutine — which now always runs processStream to
+	// completion — not for the lifetime of the StreamText() call, which
+	// returns almost immediately (previously this defer fired essentially
+	// immediately after starting the background goroutine, cancelling the
+	// total-timeout context before step 1 could stream anything).
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
 		var cancel context.CancelFunc
 		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
@@ -587,7 +659,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
 	if normErr != nil {
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
-		return nil, normErr
+		r.fail(normErr)
+		return
 	}
 	prompt = normalizedPrompt
 	opts.RuntimeContext = runtimeContext
@@ -601,6 +674,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	onStepEndEvent := opts.OnStepEndEvent
 	if onStepEndEvent == nil {
 		onStepEndEvent = opts.OnStepFinishEvent
+	}
+	onStepEndSimple := opts.OnStepEnd
+	if onStepEndSimple == nil {
+		onStepEndSimple = opts.OnStepFinish
 	}
 	onEnd := opts.OnEnd
 	if onEnd == nil {
@@ -682,10 +759,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		// TS runs approval resume inside streamText's output stream, so a
 		// failure there (e.g. an invalid approval signature) surfaces as a
 		// stream error rather than a synchronous StreamText() error — the
-		// caller still gets a *StreamTextResult back and reads the error via
+		// caller already has this *StreamTextResult and reads the error via
 		// Err()/ReadAll()/Stream(), matching review finding F6.
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: resumeErr})
-		return newErroredStreamResult(resumeErr), nil
+		r.fail(resumeErr)
+		return
 	}
 	initialResponseMessages := resumed.responseMessages
 
@@ -729,7 +807,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		}
 		if len(prepared.InstructionMessages) > 0 {
 			if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
-				return nil, err
+				r.fail(err)
+				return
 			}
 			stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
 			stepSystem = ""
@@ -811,7 +890,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: rfErr})
-				return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
+				r.fail(fmt.Errorf("output.ResponseFormat failed: %w", rfErr))
+				return
 			}
 			responseFormat = rf
 		}
@@ -823,7 +903,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
-		return nil, fmt.Errorf("prompt normalization failed: %w", normErr)
+		r.fail(fmt.Errorf("prompt normalization failed: %w", normErr))
+		return
 	}
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
@@ -899,7 +980,8 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		} else {
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
-		return nil, fmt.Errorf("failed to start stream: %w", err)
+		r.fail(fmt.Errorf("failed to start stream: %w", err))
+		return
 	}
 
 	// Create result
@@ -909,45 +991,46 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		prefix = append(prefix, opts.InitialStreamChunks...)
 		stream = &prefixedTextStream{prefix: prefix, base: stream}
 	}
-	result := &StreamTextResult{
-		stream:            stream,
-		status:            StreamStatusSubmitted, // actively streaming; set before any chunks arrive
-		timeout:           opts.Timeout,
-		initialStepCtx:    stepCtx,
-		initialStepCancel: stepCancel,
-		telemetryCtx:      telemetryCtx,
-		telemetrySettings: telemetrySettings,
-		outputSpec:        outputSpec,
-		// Structured event callbacks
-		cbCallID:                     callID,
-		cbOnEnd:                      onEnd,
-		cbOnStepFinishEvent:          onStepEndEvent,
-		cbOnEndEvent:                 onEndEvent,
-		cbOnToolCallStart:            opts.OnToolExecutionStart,
-		cbOnToolCallFinish:           opts.OnToolExecutionEnd,
-		cbFuncID:                     cbFuncID,
-		cbMeta:                       cbMeta,
-		cbModelProvider:              stepModel.Provider(),
-		cbModelID:                    stepModel.ModelID(),
-		cbExperimentalCtx:            runtimeContext,
-		cbRuntimeCtx:                 runtimeContext,
-		cbSensitiveRuntimeCtx:        opts.SensitiveRuntimeContext,
-		cbToolsCtx:                   toolsContext,
-		cbInclude:                    include,
-		cbMessages:                   stepMessages,
-		cbTools:                      stepTools,
-		cbSystem:                     stepSystem,
-		cbInstructionMessages:        stepInstructionMessages,
-		cbInitialInstructionMessages: cloneInstructionMessages(instructionMessages),
-		cbExperimentalSandbox:        stepSandbox,
-		// Retained for deferred provider tool continuation.
-		cbModel:      stepModel,
-		cbStreamOpts: opts,
-		// Resumed approval outputs precede the first step.
-		initialResponseMessages: initialResponseMessages,
-		cbResponseMessages:      responseMessagesWithInitial(initialResponseMessages, nil),
-		resumeChunksRemaining:   len(resumed.chunks),
-	}
+
+	// r.stream and r.initialStepCtx/Cancel are set through synchronized
+	// setters (not plain field assignment) because Close() may already have
+	// been called concurrently, from the caller, while this bootstrap work
+	// was still in flight — see setStream/setInitialStep and Close() below.
+	r.setStream(stream)
+	r.setInitialStep(stepCtx, stepCancel)
+	r.telemetryCtx = telemetryCtx
+	r.telemetrySettings = telemetrySettings
+	r.outputSpec = outputSpec
+	// Structured event callbacks
+	r.cbCallID = callID
+	r.cbOnEnd = onEnd
+	r.cbOnStepEnd = onStepEndSimple
+	r.cbOnStepFinishEvent = onStepEndEvent
+	r.cbOnEndEvent = onEndEvent
+	r.cbOnToolCallStart = opts.OnToolExecutionStart
+	r.cbOnToolCallFinish = opts.OnToolExecutionEnd
+	r.cbFuncID = cbFuncID
+	r.cbMeta = cbMeta
+	r.cbModelProvider = stepModel.Provider()
+	r.cbModelID = stepModel.ModelID()
+	r.cbExperimentalCtx = runtimeContext
+	r.cbRuntimeCtx = runtimeContext
+	r.cbSensitiveRuntimeCtx = opts.SensitiveRuntimeContext
+	r.cbToolsCtx = toolsContext
+	r.cbInclude = include
+	r.cbMessages = stepMessages
+	r.cbTools = stepTools
+	r.cbSystem = stepSystem
+	r.cbInstructionMessages = stepInstructionMessages
+	r.cbInitialInstructionMessages = cloneInstructionMessages(instructionMessages)
+	r.cbExperimentalSandbox = stepSandbox
+	// Retained for deferred provider tool continuation.
+	r.cbModel = stepModel
+	r.cbStreamOpts = opts
+	// Resumed approval outputs precede the first step.
+	r.initialResponseMessages = initialResponseMessages
+	r.cbResponseMessages = responseMessagesWithInitial(initialResponseMessages, nil)
+	r.resumeChunksRemaining = len(resumed.chunks)
 
 	// Always run the multi-step processing loop, matching the TypeScript SDK:
 	// streamText's transform stream (which executes tools and continues the
@@ -956,23 +1039,64 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// the raw single-step provider stream directly when no callback was set,
 	// which meant tool calls were never executed and later steps never ran.
 	//
-	// chunkBuf gives every consumption path (Stream, Chunks, ReadAll) a
-	// replayable view of the same fully-processed chunk sequence that
-	// processStream produces, so they no longer race with processStream's own
-	// reads of the raw per-step stream.
-	buf := newChunkBuffer()
-	result.chunkBuf = buf
+	// chunkBuf/processingDone were already created synchronously in
+	// StreamText, before this goroutine started, so Stream()/Chunks()/
+	// ReadAll() work correctly even if called before bootstrap reaches this
+	// point; they give every consumption path a replayable view of the same
+	// fully-processed chunk sequence that processStream produces, so they
+	// never race with processStream's own reads of the raw per-step stream.
 	userOnChunk := opts.OnChunk
 	combinedOnChunk := func(c provider.StreamChunk) {
-		buf.push(c)
+		r.chunkBuf.push(c)
 		if userOnChunk != nil {
 			userOnChunk(c)
 		}
 	}
-	result.processingDone = make(chan struct{})
-	go result.processStream(ctx, combinedOnChunk, onEnd)
+	r.processStream(ctx, combinedOnChunk, onEnd)
+}
 
-	return result, nil
+// fail records a failure that happened before the per-step stream loop ever
+// started (prompt normalization, resuming approved tool calls, PrepareStep,
+// or making the first provider stream request) and finalizes the result the
+// same way a mid-stream failure does (processStream's own deferred cleanup),
+// so Err()/ReadAll()/Stream() behave identically regardless of which phase
+// produced the error.
+func (r *StreamTextResult) fail(err error) {
+	r.err = err
+	r.mu.Lock()
+	r.status = StreamStatusDone
+	r.mu.Unlock()
+	if r.chunkBuf != nil {
+		r.chunkBuf.close(err)
+	}
+	if r.processingDone != nil {
+		close(r.processingDone)
+	}
+}
+
+// setStream and currentStream synchronize the stream field against Close(),
+// which may run concurrently with bootstrapAndStream before it has obtained
+// a stream (e.g. Close() called immediately after StreamText returns, while
+// the first provider request is still in flight).
+func (r *StreamTextResult) setStream(s provider.TextStream) {
+	r.mu.Lock()
+	r.stream = s
+	r.mu.Unlock()
+}
+
+func (r *StreamTextResult) currentStream() provider.TextStream {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stream
+}
+
+// setInitialStep synchronizes the first step's timeout context/cancel
+// against Close() for the same reason as setStream.
+func (r *StreamTextResult) setInitialStep(ctx context.Context, cancel context.CancelFunc) {
+	r.mu.Lock()
+	r.initialStepCtx = ctx
+	r.initialStepCancel = cancel
+	r.mu.Unlock()
 }
 
 // processStream processes the stream and calls callbacks.
@@ -1701,6 +1825,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbSteps = append([]types.StepResult(nil), allSteps...)
 		r.cbResponseMessages = responseMessagesWithInitial(r.initialResponseMessages, allSteps)
 		r.mu.Unlock()
+		// Call the simple step-end callback (mirrors GenerateTextOptions.OnStepEnd
+		// exactly — see the doc comment on StreamTextOptions.OnStepEnd).
+		if r.cbOnStepEnd != nil {
+			r.cbOnStepEnd(ctx, stepResult, r.cbRuntimeCtx)
+		}
 		Notify(ctx, OnStepFinishEvent{
 			CallID:             r.cbCallID,
 			StepNumber:         stepResult.StepNumber,
@@ -1971,7 +2100,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		pendingStepCtx = nextStepCtx
 		pendingStepCancel = nextStepCancel
-		r.stream = newStream
+		r.setStream(newStream)
 	}
 
 	if r.err == nil {
@@ -2377,17 +2506,26 @@ func (r *StreamTextResult) PipeUIMessageStreamToResponse(ctx context.Context, w 
 
 // Text returns the accumulated text so far
 func (r *StreamTextResult) Text() string {
+	// processStream now always runs in a background goroutine (even with no
+	// callbacks registered), so an unsynchronized read here would race with
+	// its writes to r.text. ensureConsumed blocks until processStream (or the
+	// legacy synchronous path) has fully finished, which — via the
+	// processingDone channel close — establishes a happens-before edge for
+	// every field processStream wrote, matching the pattern used by Usage().
+	_ = r.ensureConsumed()
 	return r.text
 }
 
 // FinishReason returns the finish reason (only available after stream completes)
 func (r *StreamTextResult) FinishReason() types.FinishReason {
+	_ = r.ensureConsumed()
 	return r.finishReason
 }
 
 // StopReason returns the reason from the stop condition that ended the loop.
 // It is empty when the stream ended naturally.
 func (r *StreamTextResult) StopReason() string {
+	_ = r.ensureConsumed()
 	return r.stopReason
 }
 
@@ -2405,6 +2543,7 @@ func (r *StreamTextResult) TotalUsage() types.Usage {
 // ContextManagement returns context management statistics (Anthropic-specific)
 // Only available after stream completes
 func (r *StreamTextResult) ContextManagement() interface{} {
+	_ = r.ensureConsumed()
 	return r.contextManagement
 }
 
@@ -2520,7 +2659,14 @@ func (r *StreamTextResult) RawFinishReason() string {
 
 // ResponseHeaders returns the raw HTTP response headers from the provider.
 // Only available after stream completes.
+//
+// The mu.Lock below only serializes concurrent callers of this method
+// against each other; processStream does not take r.mu when populating
+// r.responseHeaders, so it is ensureConsumed — which blocks until
+// processStream has fully finished — that actually makes this race free,
+// the same as ResponseHeaders().
 func (r *StreamTextResult) ResponseHeadersMap() map[string]string {
+	_ = r.ensureConsumed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.responseHeaders
@@ -2565,6 +2711,7 @@ func (r *StreamTextResult) Resume(ctx context.Context) error {
 
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
+	_ = r.ensureConsumed()
 	return r.err
 }
 
@@ -2619,12 +2766,27 @@ func (r *StreamTextResult) ensureConsumed() error {
 	return err
 }
 
-// Close closes the stream
+// Close closes the stream. It also cancels any in-flight bootstrap work
+// (resuming approved tool calls, or making the first provider stream
+// request) that hasn't produced a stream yet: Close() may be called
+// immediately after StreamText returns, before that background work
+// finishes, so r.stream/r.initialStepCancel are read under the same lock
+// bootstrapAndStream uses to set them (see setStream/setInitialStep).
 func (r *StreamTextResult) Close() error {
-	if r.initialStepCancel != nil {
-		r.initialStepCancel()
+	if r.cancelBootstrap != nil {
+		r.cancelBootstrap()
 	}
-	return r.stream.Close()
+	r.mu.Lock()
+	cancel := r.initialStepCancel
+	s := r.stream
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if s == nil {
+		return nil
+	}
+	return s.Close()
 }
 
 // ReadAll returns the complete generated text once streaming (and, for
@@ -3071,11 +3233,17 @@ func includedRequestMessages(include bool, messages []types.Message) []types.Mes
 	return append([]types.Message(nil), messages...)
 }
 
-// nextChunk reads the next chunk with optional per-chunk timeout
+// nextChunk reads the next chunk with optional per-chunk timeout.
+//
+// It reads r.stream once, through currentStream(), rather than referencing
+// r.stream directly: bootstrapAndStream/processStream (the only writers) use
+// setStream under r.mu, and Close() (callable concurrently by the consumer)
+// reads under the same lock, so an unsynchronized read here would race.
 func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk, error) {
+	stream := r.currentStream()
 	if r.timeout == nil || !r.timeout.HasPerChunk() {
 		if ctx == nil || ctx.Done() == nil {
-			return r.stream.Next()
+			return stream.Next()
 		}
 		select {
 		case <-ctx.Done():
@@ -3088,7 +3256,7 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 		}
 		resultCh := make(chan chunkResult, 1)
 		go func() {
-			chunk, err := r.stream.Next()
+			chunk, err := stream.Next()
 			resultCh <- chunkResult{chunk: chunk, err: err}
 		}()
 		select {
@@ -3117,7 +3285,7 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 	chunkCtx, cancel := r.timeout.CreateTimeoutContext(parentCtx, "chunk")
 	defer cancel()
 	if chunkCtx == parentCtx && chunkCtx.Done() == nil {
-		return r.stream.Next()
+		return stream.Next()
 	}
 
 	// Channel to receive the chunk
@@ -3129,7 +3297,7 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 
 	// Start goroutine to read chunk
 	go func() {
-		chunk, err := r.stream.Next()
+		chunk, err := stream.Next()
 		resultCh <- chunkResult{chunk: chunk, err: err}
 	}()
 
@@ -3180,6 +3348,7 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 // ResponseHeaders returns the raw HTTP response headers received from the provider.
 // Populated once a ChunkTypeResponseMetadata chunk has been processed.
 func (r *StreamTextResult) ResponseHeaders() map[string]string {
+	_ = r.ensureConsumed()
 	return r.responseHeaders
 }
 
@@ -3204,6 +3373,7 @@ func responseIDFromMetadata(metadata *provider.ResponseMetadata) string {
 
 // Warnings returns any provider warnings surfaced via stream-start chunks.
 func (r *StreamTextResult) Warnings() []types.Warning {
+	_ = r.ensureConsumed()
 	return r.warnings
 }
 
