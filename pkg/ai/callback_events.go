@@ -217,20 +217,21 @@ type OnToolCallStartEvent struct {
 
 	// Args contains the arguments the model passed to the tool
 	//
-	// Deprecated: use ToolCall.Arguments.
-	Args map[string]any
+	// Deprecated: use ToolCall.Arguments. Excluded from JSON so a serialized
+	// event matches the TypeScript event shape exactly.
+	Args map[string]any `json:"-"`
 
 	// StepNumber is the 0-indexed step in which this tool call occurs.
 	//
 	// Deprecated: removed from the TypeScript event; correlate with step
-	// events instead.
-	StepNumber int
+	// events instead. Excluded from JSON.
+	StepNumber int `json:"-"`
 
 	// ModelProvider and ModelID identify the step model.
 	//
-	// Deprecated: removed from the TypeScript event.
-	ModelProvider string
-	ModelID       string
+	// Deprecated: removed from the TypeScript event. Excluded from JSON.
+	ModelProvider string `json:"-"`
+	ModelID       string `json:"-"`
 
 	// Messages that were sent to the model to initiate the response that
 	// contained the tool call.
@@ -273,34 +274,36 @@ type OnToolCallFinishEvent struct {
 
 	// Args contains the arguments the model passed to the tool
 	//
-	// Deprecated: use ToolCall.Arguments.
-	Args map[string]any
+	// Deprecated: use ToolCall.Arguments. Excluded from JSON so a serialized
+	// event matches the TypeScript event shape exactly.
+	Args map[string]any `json:"-"`
 
 	// Result is the tool's return value on success (nil on failure)
 	//
-	// Deprecated: use ToolOutput.Result.
-	Result any
+	// Deprecated: use ToolOutput.Result. Excluded from JSON.
+	Result any `json:"-"`
 
 	// Error is non-nil when the tool execution failed (nil on success)
 	//
-	// Deprecated: use ToolOutput.Error.
-	Error error
+	// Deprecated: use ToolOutput.Error. Excluded from JSON (a raw error value
+	// generally isn't JSON-serializable anyway).
+	Error error `json:"-"`
 
 	// DurationMs is the wall-clock execution time of the tool in milliseconds
 	//
-	// Deprecated: use ToolExecutionMs.
-	DurationMs int64
+	// Deprecated: use ToolExecutionMs. Excluded from JSON.
+	DurationMs int64 `json:"-"`
 
 	// StepNumber is the 0-indexed step in which this tool call occurred.
 	//
-	// Deprecated: removed from the TypeScript event.
-	StepNumber int
+	// Deprecated: removed from the TypeScript event. Excluded from JSON.
+	StepNumber int `json:"-"`
 
 	// ModelProvider and ModelID identify the step model.
 	//
-	// Deprecated: removed from the TypeScript event.
-	ModelProvider string
-	ModelID       string
+	// Deprecated: removed from the TypeScript event. Excluded from JSON.
+	ModelProvider string `json:"-"`
+	ModelID       string `json:"-"`
 
 	// Messages available at tool execution time (full conversation context)
 	Messages []types.Message
