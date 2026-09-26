@@ -30,10 +30,11 @@ func NewMCPToolConverter(client *MCPClient) *MCPToolConverter {
 	}
 }
 
-// ConvertToGoAITools fetches MCP tools and converts them to Go-AI tools
+// ConvertToGoAITools fetches MCP tools and converts them to Go-AI tools.
+// Fetches every page of tools/list (following NextCursor), matching
+// TypeScript's client.tools() (mcp-client.ts, hash 1175434).
 func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool, error) {
-	// List tools from MCP server
-	mcpTools, err := c.client.ListTools(ctx)
+	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
 	}
@@ -44,8 +45,10 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 // ConvertToGoAIToolsWithSchemas fetches MCP tools and applies a schemas map,
 // matching TypeScript client.tools({ schemas }). Tools not present in schemas
 // are omitted, and per-tool input/output schemas override discovered schemas.
+// Fetches every page of tools/list (following NextCursor), matching
+// TypeScript's client.tools() (mcp-client.ts, hash 1175434).
 func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
-	mcpTools, err := c.client.ListTools(ctx)
+	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
 	}
@@ -84,6 +87,9 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 	}
 	if hasResolvedTitle {
 		mcpMetadata["title"] = resolvedTitle
+	}
+	if annotations := extractMCPToolAnnotations(mcpTool.Annotations); annotations != nil {
+		mcpMetadata["annotations"] = annotations
 	}
 	appMeta, err := GetMCPAppToolMeta(mcpTool)
 	if err != nil {
@@ -162,6 +168,29 @@ func resolveMCPToolTitle(tool MCPTool) (string, bool) {
 		return annotationsTitle, true
 	}
 	return "", false
+}
+
+// extractMCPToolAnnotations surfaces the known McpToolAnnotations hint keys
+// from a raw MCP tool's annotations object, matching TS toolsFromDefinitions
+// (mcp-client.ts). Unknown keys are dropped. Returns nil when annotations is
+// nil (the "annotations" property was absent from the tool definition);
+// returns a (possibly empty) map otherwise, matching TS's `annotations != null`
+// check, which still emits an "annotations" key when the object carries none
+// of the five known hints.
+func extractMCPToolAnnotations(annotations map[string]interface{}) map[string]interface{} {
+	if annotations == nil {
+		return nil
+	}
+	out := map[string]interface{}{}
+	if title, ok := annotations["title"].(string); ok {
+		out["title"] = title
+	}
+	for _, key := range []string{"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"} {
+		if value, ok := annotations[key].(bool); ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]interface{} {

@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -614,5 +616,249 @@ func TestGetSerializableToolsVsListTools(t *testing.T) {
 	// GetSerializableTools should have pagination info, ListTools doesn't expose it
 	if serializableResult.NextCursor == "" {
 		t.Error("GetSerializableTools should include NextCursor for pagination")
+	}
+}
+
+// pagedToolsTransport serves tools/list across two pages, keyed by the
+// requested cursor, for testing ConvertToGoAITools' full pagination fetch
+// (TS MCPClient.tools(), hash 1175434).
+type pagedToolsTransport struct {
+	messages  chan *MCPMessage
+	connected bool
+	mu        sync.Mutex
+	cursors   []string
+}
+
+func newPagedToolsTransport() *pagedToolsTransport {
+	return &pagedToolsTransport{messages: make(chan *MCPMessage, 10)}
+}
+
+func (t *pagedToolsTransport) Connect(ctx context.Context) error { t.connected = true; return nil }
+func (t *pagedToolsTransport) Close() error {
+	t.connected = false
+	if t.messages != nil {
+		close(t.messages)
+	}
+	return nil
+}
+func (t *pagedToolsTransport) IsConnected() bool           { return t.connected }
+func (t *pagedToolsTransport) SetProtocolVersion(_ string) {}
+
+func (t *pagedToolsTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	switch msg.Method {
+	case "initialize":
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "paged-server", Version: "1.0.0"}}
+		data, _ := json.Marshal(result)
+		response.Result = data
+		t.messages <- response
+	case "tools/list":
+		var params ListToolsParams
+		_ = json.Unmarshal(msg.Params, &params)
+		t.mu.Lock()
+		t.cursors = append(t.cursors, params.Cursor)
+		t.mu.Unlock()
+
+		var result ListToolsResult
+		switch params.Cursor {
+		case "":
+			result = ListToolsResult{
+				Tools:      []MCPTool{{Name: "tool-page-1", InputSchema: map[string]interface{}{"type": "object"}}},
+				NextCursor: "page-2",
+			}
+		case "page-2":
+			result = ListToolsResult{
+				Tools: []MCPTool{{Name: "tool-page-2", InputSchema: map[string]interface{}{"type": "object"}}},
+			}
+		}
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		data, _ := json.Marshal(result)
+		response.Result = data
+		t.messages <- response
+	}
+	return nil
+}
+
+func (t *pagedToolsTransport) Receive(ctx context.Context) (*MCPMessage, error) {
+	select {
+	case msg, ok := <-t.messages:
+		if !ok {
+			return nil, context.Canceled
+		}
+		return msg, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestConvertToGoAIToolsFetchesAllPaginatedPages(t *testing.T) {
+	transport := newPagedToolsTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	tools, err := GetMCPToolsForAgent(context.Background(), client)
+	if err != nil {
+		t.Fatalf("GetMCPToolsForAgent failed: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("tools = %#v, want 2 tools across both pages", tools)
+	}
+	names := map[string]bool{tools[0].Name: true, tools[1].Name: true}
+	if !names["tool-page-1"] || !names["tool-page-2"] {
+		t.Fatalf("tool names = %v, want tool-page-1 and tool-page-2", names)
+	}
+
+	transport.mu.Lock()
+	cursors := append([]string(nil), transport.cursors...)
+	transport.mu.Unlock()
+	if len(cursors) != 2 || cursors[0] != "" || cursors[1] != "page-2" {
+		t.Fatalf("cursors seen = %#v, want [\"\", \"page-2\"]", cursors)
+	}
+}
+
+// retryableCallTransport fails the first failFirstN "tools/call" attempts at
+// the transport level (simulating a connection error), then succeeds. Used to
+// exercise MCPClientConfig.MaxRetries (TS mcp-client.ts callToolWithRetry,
+// hash 8c616f0).
+type retryableCallTransport struct {
+	messages     chan *MCPMessage
+	connected    bool
+	mu           sync.Mutex
+	callAttempts int
+	failFirstN   int
+	failErr      error
+}
+
+func newRetryableCallTransport(failFirstN int, failErr error) *retryableCallTransport {
+	return &retryableCallTransport{messages: make(chan *MCPMessage, 10), failFirstN: failFirstN, failErr: failErr}
+}
+
+func (t *retryableCallTransport) Connect(ctx context.Context) error { t.connected = true; return nil }
+func (t *retryableCallTransport) Close() error {
+	t.connected = false
+	if t.messages != nil {
+		close(t.messages)
+	}
+	return nil
+}
+func (t *retryableCallTransport) IsConnected() bool           { return t.connected }
+func (t *retryableCallTransport) SetProtocolVersion(_ string) {}
+
+func (t *retryableCallTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	switch msg.Method {
+	case "initialize":
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "retry-server", Version: "1.0.0"}}
+		data, _ := json.Marshal(result)
+		response.Result = data
+		t.messages <- response
+	case "tools/call":
+		t.mu.Lock()
+		t.callAttempts++
+		attempt := t.callAttempts
+		t.mu.Unlock()
+		if attempt <= t.failFirstN {
+			return t.failErr
+		}
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := CallToolResult{Content: []ToolResultContent{{Type: "text", Text: "ok"}}}
+		data, _ := json.Marshal(result)
+		response.Result = data
+		t.messages <- response
+	}
+	return nil
+}
+
+func (t *retryableCallTransport) Receive(ctx context.Context) (*MCPMessage, error) {
+	select {
+	case msg, ok := <-t.messages:
+		if !ok {
+			return nil, context.Canceled
+		}
+		return msg, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *retryableCallTransport) attempts() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.callAttempts
+}
+
+// TestCallToolRetriesTransientTransportFailures mirrors TS mcp-client.test.ts
+// "should retry network-style tool call failures when maxRetries is
+// configured".
+func TestCallToolRetriesTransientTransportFailures(t *testing.T) {
+	transport := newRetryableCallTransport(1, fmt.Errorf("dial tcp 127.0.0.1:1234: connect: %w", syscall.ECONNREFUSED))
+	client := NewMCPClient(transport, MCPClientConfig{MaxRetries: 1})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	result, err := client.CallTool(context.Background(), "retry-tool", nil)
+	if err != nil {
+		t.Fatalf("CallTool failed after retry: %v", err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Text != "ok" {
+		t.Fatalf("result = %#v", result)
+	}
+	if transport.attempts() != 2 {
+		t.Fatalf("attempts = %d, want 2 (1 failure + 1 retry)", transport.attempts())
+	}
+}
+
+// TestCallToolDoesNotRetryByDefault mirrors TS mcp-client.test.ts "should not
+// retry tool calls by default".
+func TestCallToolDoesNotRetryByDefault(t *testing.T) {
+	transport := newRetryableCallTransport(1, fmt.Errorf("dial tcp 127.0.0.1:1234: connect: %w", syscall.ECONNREFUSED))
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	if _, err := client.CallTool(context.Background(), "retry-tool", nil); err == nil {
+		t.Fatal("expected CallTool to fail without a retry")
+	}
+	if transport.attempts() != 1 {
+		t.Fatalf("attempts = %d, want 1 (no retry by default)", transport.attempts())
+	}
+}
+
+// TestIsRetryableMCPToolCallError mirrors the retry classification in TS
+// mcp-client.ts isRetryableMCPToolCallError and mcp-client.test.ts's "should
+// not retry HTTP status codes outside the default retry list" / "should not
+// retry invalid argument JSON-RPC errors" / "should not retry auth failures".
+func TestIsRetryableMCPToolCallError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"HTTP 429 is retryable", &MCPClientError{StatusCode: 429}, true},
+		{"HTTP 500 is retryable", &MCPClientError{StatusCode: 500}, true},
+		{"HTTP 408 is retryable", &MCPClientError{StatusCode: 408}, true},
+		{"HTTP 409 is retryable", &MCPClientError{StatusCode: 409}, true},
+		{"HTTP 400 is not retryable", &MCPClientError{StatusCode: 400}, false},
+		{"HTTP 404 is not retryable", &MCPClientError{StatusCode: 404}, false},
+		{"HTTP 401 auth failure is not retryable", &MCPClientError{StatusCode: 401}, false},
+		{"JSON-RPC invalid params error is not retryable", &MCPClientError{Code: ErrorCodeInvalidParams, Message: "bad args"}, false},
+		{"JSON-RPC tool-not-found error is not retryable", &MCPClientError{Code: ErrorCodeToolNotFound}, false},
+		{"connection refused is retryable", fmt.Errorf("dial: %w", syscall.ECONNREFUSED), true},
+		{"connection reset is retryable", fmt.Errorf("read: %w", syscall.ECONNRESET), true},
+		{"generic error is not retryable", fmt.Errorf("boom"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRetryableMCPToolCallError(tc.err); got != tc.want {
+				t.Fatalf("isRetryableMCPToolCallError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

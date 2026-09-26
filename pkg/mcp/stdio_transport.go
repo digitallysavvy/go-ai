@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -53,6 +55,29 @@ type StdioTransportConfig struct {
 	Config TransportConfig
 }
 
+// validateStdioCommandForWindows rejects stdio commands/args containing CR or
+// LF on Windows, mirroring TS createChildProcess (mcp-stdio/create-child-process.ts,
+// hash b352a6a): a line break in the command or an argument can be used to
+// smuggle extra shell command shim (e.g. npx.cmd) invocations on Windows.
+func validateStdioCommandForWindows(command string, args []string) error {
+	return validateStdioCommandForGOOS(runtime.GOOS, command, args)
+}
+
+// validateStdioCommandForGOOS is validateStdioCommandForWindows parameterized
+// by GOOS so tests can exercise the Windows branch on any platform.
+func validateStdioCommandForGOOS(goos, command string, args []string) error {
+	if goos != "windows" {
+		return nil
+	}
+	values := append([]string{command}, args...)
+	for _, value := range values {
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("stdio MCP commands and arguments must not contain line breaks on Windows")
+		}
+	}
+	return nil
+}
+
 // NewStdioTransport creates a new stdio transport
 func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 	return &StdioTransport{
@@ -69,6 +94,10 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 
 	if t.connected {
 		return fmt.Errorf("already connected")
+	}
+
+	if err := validateStdioCommandForWindows(t.command, t.args); err != nil {
+		return err
 	}
 
 	// Create command

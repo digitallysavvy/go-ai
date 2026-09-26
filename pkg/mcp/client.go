@@ -2,9 +2,16 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // MCPClient represents an MCP client that can communicate with MCP servers
@@ -55,6 +62,17 @@ type MCPClientConfig struct {
 
 	// EnableLogging enables client-level logging
 	EnableLogging bool
+
+	// MaxRetries is the maximum number of times a failed "tools/call" request
+	// is retried with exponential backoff, matching TypeScript's
+	// MCPClient maxRetries option. Default: 0 (no retries). Negative values
+	// are clamped to 0.
+	//
+	// Only transient failures are retried: HTTP status 408/409/429/>=500 and
+	// transport-level connection errors (refused/reset/timeout/broken pipe/
+	// closed). JSON-RPC application errors (a non-zero MCPClientError.Code)
+	// and successful results with IsError=true are never retried.
+	MaxRetries int
 }
 
 // NewMCPClient creates a new MCP client with the given transport
@@ -71,6 +89,9 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	}
 	if config.RequestTimeoutMS == 0 {
 		config.RequestTimeoutMS = 30000 // 30 seconds
+	}
+	if config.MaxRetries < 0 {
+		config.MaxRetries = 0
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,6 +194,45 @@ func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
 	return result.Tools, nil
 }
 
+// ListToolsWithCursor lists one page of tools from the MCP server, honoring
+// an explicit pagination cursor (empty string requests the first page). It
+// returns the full ListToolsResult (including NextCursor) so callers can
+// paginate manually.
+func (c *MCPClient) ListToolsWithCursor(ctx context.Context, cursor string) (*ListToolsResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	params := ListToolsParams{Cursor: cursor}
+	var result ListToolsResult
+	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+		return nil, fmt.Errorf("failed to list tools: %w", err)
+	}
+	return &result, nil
+}
+
+// ListAllTools fetches every page of tools from the MCP server, following
+// NextCursor until exhausted. This matches TypeScript's MCPClient.tools()
+// (mcp-client.ts, hash 1175434), which is used by ConvertToGoAITools /
+// ConvertToGoAIToolsWithSchemas so the resulting tool set is complete even
+// when the server paginates tools/list.
+func (c *MCPClient) ListAllTools(ctx context.Context) ([]MCPTool, error) {
+	var allTools []MCPTool
+	cursor := ""
+	for {
+		result, err := c.ListToolsWithCursor(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		allTools = append(allTools, result.Tools...)
+		if result.NextCursor == "" {
+			break
+		}
+		cursor = result.NextCursor
+	}
+	return allTools, nil
+}
+
 // GetSerializableTools returns tool definitions in a format that can be stored or transmitted.
 // Unlike ListTools, this returns the complete ListToolsResult including pagination support.
 // The result is JSON-serializable and can be used for caching, storage, or transmission.
@@ -198,23 +258,103 @@ func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult,
 	return &result, nil
 }
 
-// CallTool calls a tool on the MCP server
+// CallTool calls a tool on the MCP server. Failed calls are retried with
+// exponential backoff up to MCPClientConfig.MaxRetries times (mirrors
+// TypeScript mcp-client.ts callToolWithRetry / DEFAULT_MAX_TOOL_CALL_RETRIES).
 func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[string]interface{}) (*CallToolResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := CallToolParams{
-		Name:      name,
-		Arguments: arguments,
+	return c.callToolWithRetry(ctx, func() (*CallToolResult, error) {
+		params := CallToolParams{
+			Name:      name,
+			Arguments: arguments,
+		}
+
+		var result CallToolResult
+		if err := c.call(ctx, "tools/call", params, &result); err != nil {
+			return nil, fmt.Errorf("failed to call tool: %w", err)
+		}
+
+		return &result, nil
+	})
+}
+
+// callToolWithRetry mirrors TypeScript's MCPClient.callToolWithRetry: with
+// MaxRetries==0 (the default) it just executes once; otherwise it retries
+// transient failures with exponential backoff.
+func (c *MCPClient) callToolWithRetry(ctx context.Context, execute func() (*CallToolResult, error)) (*CallToolResult, error) {
+	if c.config.MaxRetries <= 0 {
+		return execute()
 	}
 
-	var result CallToolResult
-	if err := c.call(ctx, "tools/call", params, &result); err != nil {
-		return nil, fmt.Errorf("failed to call tool: %w", err)
+	var result *CallToolResult
+	cfg := retry.Config{
+		MaxRetries:   c.config.MaxRetries,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
+		Multiplier:   2.0,
+		ShouldRetry:  isRetryableMCPToolCallError,
 	}
 
-	return &result, nil
+	err := retry.Do(ctx, cfg, func(ctx context.Context) error {
+		r, err := execute()
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		var retryErr *providererrors.RetryError
+		if errors.As(err, &retryErr) {
+			return nil, NewMCPClientError(0, retryErr.Message, nil)
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+// isRetryableMCPToolCallError mirrors TypeScript's isRetryableMCPToolCallError
+// in mcp-client.ts: HTTP status 408/409/429/>=500 is retryable; a JSON-RPC
+// application error (non-zero MCPClientError.Code) is never retryable;
+// otherwise fall back to transport-level connection error detection (the Go
+// analogue of TS's DEFAULT_RETRY_ERROR_CODES string codes).
+func isRetryableMCPToolCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mcpErr *MCPClientError
+	if errors.As(err, &mcpErr) {
+		if mcpErr.StatusCode != 0 {
+			return mcpErr.StatusCode == 408 || mcpErr.StatusCode == 409 || mcpErr.StatusCode == 429 || mcpErr.StatusCode >= 500
+		}
+		if mcpErr.Code != 0 {
+			return false
+		}
+	}
+	return isRetryableMCPTransportError(err)
+}
+
+// isRetryableMCPTransportError detects connection-level failures equivalent
+// to TS DEFAULT_RETRY_ERROR_CODES: ConnectionRefused, ConnectionClosed,
+// FailedToOpenSocket, ECONNRESET, ECONNREFUSED, ETIMEDOUT, EPIPE.
+func isRetryableMCPTransportError(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{"connection refused", "connection reset", "broken pipe", "connection closed", "i/o timeout"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ListResources lists all available resources from the MCP server

@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+// TestValidateStdioCommandForGOOS mirrors TS createChildProcess's Windows
+// line-break guard (mcp-stdio/create-child-process.ts, hash b352a6a):
+// commands/args with CR or LF are rejected only on Windows.
+func TestValidateStdioCommandForGOOS(t *testing.T) {
+	t.Run("rejects command with line break on windows", func(t *testing.T) {
+		if err := validateStdioCommandForGOOS("windows", "node\n", nil); err == nil {
+			t.Fatal("expected error for command containing a line break on windows")
+		}
+	})
+
+	t.Run("rejects arg with carriage return on windows", func(t *testing.T) {
+		if err := validateStdioCommandForGOOS("windows", "npx", []string{"-y", "some-arg\r"}); err == nil {
+			t.Fatal("expected error for arg containing a carriage return on windows")
+		}
+	})
+
+	t.Run("allows clean command and args on windows", func(t *testing.T) {
+		if err := validateStdioCommandForGOOS("windows", "npx.cmd", []string{"-y", "mcp-server"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("does not check line breaks on non-windows platforms", func(t *testing.T) {
+		if err := validateStdioCommandForGOOS("darwin", "node\n", []string{"arg\r"}); err != nil {
+			t.Fatalf("unexpected error on non-windows platform: %v", err)
+		}
+	})
+}
+
 func TestStdioTransportConnectSendReceiveAndClose(t *testing.T) {
 	transport := NewStdioTransport(StdioTransportConfig{
 		Command: "cat",

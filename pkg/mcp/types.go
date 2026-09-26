@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 )
 
 // ProtocolVersion is the MCP protocol version this client advertises as its
@@ -197,6 +198,7 @@ type ClientInfo struct {
 // ServerInfo represents information about the MCP server
 type ServerInfo struct {
 	Name    string `json:"name"`
+	Title   string `json:"title,omitempty"`
 	Version string `json:"version"`
 }
 
@@ -276,6 +278,28 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	_, r.structuredContentPresent = raw["structuredContent"]
 	_, r.toolResultPresent = raw["toolResult"]
 	_, r.metadataPresent = raw["_meta"]
+
+	// Mirror TS CallToolResultWithStructuredContentSchema (types.ts): when a
+	// result carries structuredContent but no content field at all, synthesize
+	// a single text content block from it (JSON.stringify equivalent) and
+	// default isError to false, tolerating any JSON-serializable value
+	// (object/array/string/number/boolean/null).
+	if !r.contentPresent && r.structuredContentPresent {
+		text, marshalErr := json.Marshal(out.StructuredContent)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to synthesize text content from structuredContent: %w", marshalErr)
+		}
+		r.Content = []ToolResultContent{{
+			Type:              "text",
+			Text:              string(text),
+			textPresent:       true,
+			textStringPresent: true,
+		}}
+		r.contentPresent = true
+		if !r.isErrorPresent {
+			r.IsError = false
+		}
+	}
 	return nil
 }
 
@@ -628,10 +652,23 @@ type PromptContent struct {
 // McpProviderMetadata is attached to converted MCP tools and propagated through
 // tool calls/results under the "mcp" provider metadata key.
 type McpProviderMetadata struct {
-	ClientName string                 `json:"clientName,omitempty"`
-	Title      string                 `json:"title,omitempty"`
-	ToolName   string                 `json:"toolName,omitempty"`
-	App        map[string]interface{} `json:"app,omitempty"`
+	ClientName  string                 `json:"clientName,omitempty"`
+	Title       string                 `json:"title,omitempty"`
+	ToolName    string                 `json:"toolName,omitempty"`
+	Annotations *McpToolAnnotations    `json:"annotations,omitempty"`
+	App         map[string]interface{} `json:"app,omitempty"`
+}
+
+// McpToolAnnotations carries behavioral hints reported by an MCP server for a
+// tool. These annotations are untrusted unless the server itself is trusted.
+//
+// See https://modelcontextprotocol.io/specification/2026-07-28/schema#toolannotations
+type McpToolAnnotations struct {
+	Title           *string `json:"title,omitempty"`
+	ReadOnlyHint    *bool   `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool   `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool   `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool   `json:"openWorldHint,omitempty"`
 }
 
 // LoggingLevel represents the level of logging
