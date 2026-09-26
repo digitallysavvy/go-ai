@@ -16,7 +16,22 @@ type EmbeddingOptions struct {
 
 	// Nova-specific options (for amazon.nova-* embed models)
 	NovaOptions *NovaEmbeddingOptions
+
+	// ModelFamily overrides model-family detection ("titan", "cohere", or
+	// "nova"). Use this when the model ID does not identify the underlying
+	// model family (e.g. a custom inference profile). Mirrors TS
+	// AmazonBedrockEmbeddingModelSettings.modelFamily.
+	ModelFamily string
 }
+
+// EmbeddingModelFamily identifies which wire format an embedding request/response uses.
+type EmbeddingModelFamily string
+
+const (
+	EmbeddingModelFamilyTitan  EmbeddingModelFamily = "titan"
+	EmbeddingModelFamilyCohere EmbeddingModelFamily = "cohere"
+	EmbeddingModelFamilyNova   EmbeddingModelFamily = "nova"
+)
 
 // CohereEmbeddingOptions extends options for Cohere embedding models on Bedrock
 type CohereEmbeddingOptions struct {

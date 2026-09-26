@@ -78,7 +78,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, fmt.Errorf("failed to read rerank response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("AWS Bedrock rerank API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
 	}
 
 	var parsed struct {

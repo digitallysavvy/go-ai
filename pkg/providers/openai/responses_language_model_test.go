@@ -151,6 +151,53 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 	}
 }
 
+// TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse verifies
+// that Config.SupportsWebSearchSourcesInclude=false (used by Amazon Bedrock
+// Mantle, which rejects the include value) skips
+// "web_search_call.action.sources", and that the per-call provider option
+// "includeWebSearchSources" can override it in either direction.
+func TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse(t *testing.T) {
+	unsupported := false
+	p := New(Config{APIKey: "test-key", SupportsWebSearchSourcesInclude: &unsupported})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{})},
+	}
+	body, _, err := model.buildRequestBody(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if include, ok := body["include"].([]string); ok {
+		for _, f := range include {
+			if f == "web_search_call.action.sources" {
+				t.Fatalf("expected web_search_call.action.sources to be omitted, got %#v", include)
+			}
+		}
+	}
+
+	// Per-call override wins over the Config default.
+	optsOverride := &provider.GenerateOptions{
+		Prompt:          opts.Prompt,
+		Tools:           opts.Tools,
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"includeWebSearchSources": true}},
+	}
+	bodyOverride, _, err := model.buildRequestBody(optsOverride, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	include, _ := bodyOverride["include"].([]string)
+	found := false
+	for _, f := range include {
+		if f == "web_search_call.action.sources" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider option override to re-enable the include, got %#v", include)
+	}
+}
+
 func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(t *testing.T) {
 	webSearchItem := json.RawMessage(`{"type":"web_search_call","id":"ws_preview","status":"completed","action":{"type":"search","queries":[],"sources":[]}}`)
 

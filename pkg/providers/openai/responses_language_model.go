@@ -263,6 +263,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		systemMsgMode = v
 	}
 
+	// Whether to include "web_search_call.action.sources" when a web_search
+	// tool is present. Defaults to the provider Config
+	// (SupportsWebSearchSourcesInclude, itself defaulting to true), overridable
+	// per call via providerOptions.openai.includeWebSearchSources. Some
+	// backends (e.g. Amazon Bedrock Mantle) reject this include value.
+	includeWebSearchSources := true
+	if m.provider.config.SupportsWebSearchSourcesInclude != nil {
+		includeWebSearchSources = *m.provider.config.SupportsWebSearchSourcesInclude
+	}
+	if v, ok := openaiOpts["includeWebSearchSources"].(bool); ok {
+		includeWebSearchSources = v
+	}
+
 	// Convert prompt to Responses API input format.
 	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
@@ -421,7 +434,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if !store && isReasoning {
 		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
 	}
-	if hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview") {
+	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
 		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
 	}
 	if hasTool(opts.Tools, "openai.code_interpreter") {
