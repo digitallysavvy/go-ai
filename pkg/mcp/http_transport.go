@@ -43,6 +43,13 @@ type HTTPTransport struct {
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
 	refreshErr error
+
+	// Streamable HTTP session (hash 241a8c5): sessionID is captured from an
+	// `mcp-session-id` response header and echoed on subsequent requests.
+	sessionID               string
+	onSessionIDChange       func(sessionID string)
+	onSessionExpired        func(sessionID string)
+	terminateSessionOnClose bool
 }
 
 // HTTPTransportConfig contains configuration for HTTP transport
@@ -67,6 +74,23 @@ type HTTPTransportConfig struct {
 	// HTTPClient when supplied. It lets callers provide custom event-stream
 	// transports, TLS settings, proxy behavior, or dialers.
 	SSEClient SSEClient
+
+	// InitialSessionID resumes a previously established streamable HTTP
+	// session (hash 241a8c5), sent as `mcp-session-id` on every request until
+	// the server issues a new one.
+	InitialSessionID string
+
+	// OnSessionIDChange is called whenever the server assigns or changes the
+	// session id (from an `mcp-session-id` response header).
+	OnSessionIDChange func(sessionID string) `json:"-"`
+
+	// OnSessionExpired is called when the server responds 404 to a request
+	// carrying a session id, indicating that session is no longer valid.
+	OnSessionExpired func(sessionID string) `json:"-"`
+
+	// TerminateSessionOnClose sends a best-effort DELETE with the session id
+	// when Close is called. Default true.
+	TerminateSessionOnClose *bool
 }
 
 // SSEClient is the minimal interface needed by custom SSE-capable transports.
@@ -124,14 +148,78 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		}
 	}
 
-	return &HTTPTransport{
-		url:          config.URL,
-		client:       httpClient,
-		sseClient:    config.SSEClient,
-		receiveQueue: make([]*MCPMessage, 0),
-		config:       config.Config,
-		oauth:        config.OAuth,
+	terminateSessionOnClose := true
+	if config.TerminateSessionOnClose != nil {
+		terminateSessionOnClose = *config.TerminateSessionOnClose
 	}
+
+	return &HTTPTransport{
+		url:                     config.URL,
+		client:                  httpClient,
+		sseClient:               config.SSEClient,
+		receiveQueue:            make([]*MCPMessage, 0),
+		config:                  config.Config,
+		oauth:                   config.OAuth,
+		sessionID:               config.InitialSessionID,
+		onSessionIDChange:       config.OnSessionIDChange,
+		onSessionExpired:        config.OnSessionExpired,
+		terminateSessionOnClose: terminateSessionOnClose,
+	}
+}
+
+// SessionID returns the current streamable HTTP session id, or "" if none
+// has been established yet (hash 241a8c5).
+func (t *HTTPTransport) SessionID() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sessionID
+}
+
+func (t *HTTPTransport) setSessionID(sessionID string) {
+	t.mu.Lock()
+	changed := t.sessionID != sessionID
+	t.sessionID = sessionID
+	onChange := t.onSessionIDChange
+	t.mu.Unlock()
+	if changed && onChange != nil {
+		onChange(sessionID)
+	}
+}
+
+// expireSessionID clears the session id after the server responds 404 to a
+// request that carried it, matching TS HTTPTransport.expireSessionId (hash
+// 241a8c5).
+func (t *HTTPTransport) expireSessionID(expired string) {
+	t.mu.Lock()
+	if t.sessionID != expired {
+		t.mu.Unlock()
+		return
+	}
+	t.sessionID = ""
+	onExpired := t.onSessionExpired
+	t.mu.Unlock()
+	if onExpired != nil {
+		onExpired(expired)
+	}
+}
+
+// applyStandardHeaders sets the headers common to every streamable HTTP
+// request, including the `mcp-session-id` header when a session is
+// established, and returns the session id (if any) that was attached so the
+// caller can detect a 404 session-expiry for this specific request.
+func (t *HTTPTransport) applyStandardHeaders(req *http.Request) (sentSessionID string) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", mcpHTTPAcceptHeader)
+	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
+	for k, v := range t.config.Headers {
+		req.Header.Set(k, v)
+	}
+	sessionID := t.SessionID()
+	if sessionID != "" {
+		req.Header.Set("mcp-session-id", sessionID)
+		sentSessionID = sessionID
+	}
+	return sentSessionID
 }
 
 // Connect establishes a connection to the HTTP server
@@ -162,12 +250,42 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the connection
+// Close closes the connection. When a streamable HTTP session is
+// established and TerminateSessionOnClose is enabled (the default), it sends
+// a best-effort DELETE with the session id before disconnecting (hash
+// 241a8c5); a failure to terminate is ignored, matching TS's fire-and-forget
+// session termination.
 func (t *HTTPTransport) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
+	sessionID := t.sessionID
+	terminate := t.terminateSessionOnClose
+	url := t.url
+	httpClient := t.client
+	sseClient := t.sseClient
+	protocolVersion := t.protocolVersion
 	t.connected = false
+	t.mu.Unlock()
+
+	if terminate && sessionID != "" {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, url, nil)
+		if err == nil {
+			req.Header.Set("mcp-session-id", sessionID)
+			if protocolVersion != "" {
+				req.Header.Set("mcp-protocol-version", protocolVersion)
+			}
+			client := SSEClient(httpClient)
+			if sseClient != nil {
+				client = sseClient
+			}
+			if resp, doErr := client.Do(req); doErr == nil && resp != nil {
+				if resp.Body != nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					resp.Body.Close() //nolint:errcheck
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -197,13 +315,9 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		return NewTransportError("failed to create request", err)
 	}
 
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", mcpHTTPAcceptHeader)
-	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
-	for k, v := range t.config.Headers {
-		req.Header.Set(k, v)
-	}
+	// Set headers, including mcp-session-id when a session is established
+	// (hash 241a8c5).
+	sentSessionID := t.applyStandardHeaders(req)
 
 	// Set OAuth token if available
 	if token, expired, ok := t.oauthTokenSnapshot(); ok {
@@ -246,16 +360,18 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 		if err != nil {
 			return NewTransportError("failed to create request", err)
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", mcpHTTPAcceptHeader)
-		req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
-		for k, v := range t.config.Headers {
-			req.Header.Set(k, v)
-		}
+		sentSessionID = t.applyStandardHeaders(req)
 		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+
+	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+		t.setSessionID(sessionID)
+	} else if resp.StatusCode == http.StatusNotFound && sentSessionID != "" {
+		t.expireSessionID(sentSessionID)
+	}
+
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
