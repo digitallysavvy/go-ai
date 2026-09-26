@@ -156,19 +156,60 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["stream"] = true
 	}
 
+	// Extract the "openai" provider options map once; every option below reads
+	// from it.
+	var openaiOpts map[string]interface{}
+	if opts.ProviderOptions != nil {
+		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
+	}
+
 	// Extract store flag early — needed before message conversion so we can
 	// filter unencrypted reasoning parts from assistant messages when store=false.
 	// storeExplicit tracks whether the caller set the flag (so we only send it
 	// in the request body when explicitly provided, not by default).
 	store := true // effective value; default is server-side persistence
 	storeExplicit := false
-	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
-			if v, ok := openaiOpts["store"].(bool); ok {
-				store = v
-				storeExplicit = true
-			}
-		}
+	if v, ok := openaiOpts["store"].(bool); ok {
+		store = v
+		storeExplicit = true
+	}
+
+	// isReasoningModel (TS getArgs: `openaiOptions.forceReasoning ??
+	// modelCapabilities.isReasoningModel`). forceReasoning lets callers treat an
+	// unrecognized "stealth" reasoning model ID as one, applying the same
+	// parameter-compatibility rules and developer-role default.
+	isReasoningModel := capabilities.IsReasoningModel
+	if v, ok := openaiOpts["forceReasoning"].(bool); ok {
+		isReasoningModel = v
+	}
+
+	// Resolve reasoning_effort: an explicit providerOptions.openai.reasoningEffort
+	// string wins (TS getArgs: `openaiOptions.reasoningEffort ?? (isCustomReasoning(reasoning) ? reasoning : undefined)`).
+	// types.ReasoningLevel's string values ("none", "minimal", "low", "medium",
+	// "high", "xhigh") are the exact literals TS's top-level `reasoning` field
+	// uses and forwards verbatim -- TS does NOT collapse "minimal" into "low" or
+	// "xhigh" into "high"; it sends the level straight through as-is (isCustomReasoning
+	// is true for anything except "provider-default"). Resolved early because the
+	// reasoning-model parameter-compatibility gating below needs to know whether
+	// the effective effort is "none" (TS getArgs).
+	resolvedReasoningEffort := ""
+	if v, ok := openaiOpts["reasoningEffort"].(string); ok && v != "" {
+		resolvedReasoningEffort = v
+	}
+	if resolvedReasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		resolvedReasoningEffort = string(*opts.Reasoning)
+	}
+
+	// GPT-6+ models restrict reasoning effort to a fixed set (34c53c0); drop
+	// and warn on anything outside it (matches TS getArgs()).
+	if resolvedReasoningEffort != "" && capabilities.SupportedReasoningEfforts != nil &&
+		!chatStringSliceContains(capabilities.SupportedReasoningEfforts, resolvedReasoningEffort) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningEffort",
+			Details: m.modelID + " only supports the following reasoning efforts: " + strings.Join(capabilities.SupportedReasoningEfforts, ", "),
+		})
+		resolvedReasoningEffort = ""
 	}
 
 	// Convert messages, filtering unencrypted reasoning from assistant messages
@@ -188,24 +229,52 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		return filtered
 	}
 
+	// SanitizeReplayedToolCallArguments matches TS's OpenAI-only
+	// serializeToolCallArguments (convert-to-openai-chat-messages.ts): a
+	// replayed tool-call RawArguments string that doesn't parse to a JSON
+	// object is sent as "{}" rather than forwarded verbatim. This is unique
+	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
+	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(convertMessages(opts.Prompt.Messages))
+		body["messages"] = prompt.ToOpenAIMessages(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 
 	// Add system message if present.
 	// Reasoning models (o1, o3, o4-mini, gpt-5.x non-chat, GPT-6+) require the
 	// "developer" role instead of "system" per OpenAI's API specification
-	// (34c53c0: GetLanguageModelCapabilities.SystemMessageMode).
+	// (34c53c0: GetLanguageModelCapabilities.SystemMessageMode). A caller may
+	// override the mode explicitly via providerOptions.openai.systemMessageMode
+	// (TS convertToOpenAIChatMessages: 'system' | 'developer' | 'remove'),
+	// which takes precedence over the capability-derived default (TS getArgs:
+	// `openaiOptions.systemMessageMode ?? (isReasoningModel ? 'developer' :
+	// modelCapabilities.systemMessageMode)`).
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
 		role := capabilities.SystemMessageMode
-		systemMsg := map[string]interface{}{
-			"role":    role,
-			"content": opts.Prompt.System,
+		if isReasoningModel {
+			role = "developer"
 		}
-		body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
+			role = v
+		}
+		switch role {
+		case "remove":
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "system messages are removed for this model",
+				Details: "system messages are removed for this model",
+			})
+			body["messages"] = messages
+		default:
+			systemMsg := map[string]interface{}{
+				"role":    role,
+				"content": opts.Prompt.System,
+			}
+			body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		}
 	}
 
 	// Add optional parameters
@@ -229,6 +298,140 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
+	}
+	// maxCompletionTokens (TS: openaiOptions.maxCompletionTokens, useful for
+	// reasoning models). Forwarded unconditionally like TS baseArgs; the
+	// reasoning-model gating below only backfills max_completion_tokens from
+	// max_tokens when this was not already explicitly set.
+	if v, ok := openaiOpts["maxCompletionTokens"]; ok && v != nil {
+		if n, ok := intFromInterface(v); ok {
+			body["max_completion_tokens"] = n
+		}
+	}
+	// logitBias forwards as-is (TS: z.record(coerced numeric token id, bias)).
+	if v, ok := openaiOpts["logitBias"]; ok && v != nil {
+		body["logit_bias"] = v
+	}
+	// logprobs / top_logprobs (TS getArgs):
+	//   logprobs: true when openaiOptions.logprobs === true or is a number.
+	//   top_logprobs: the number when openaiOptions.logprobs is a number;
+	//   0 when it is boolean true; omitted otherwise.
+	if v, ok := openaiOpts["logprobs"]; ok && v != nil {
+		switch lp := v.(type) {
+		case bool:
+			if lp {
+				body["logprobs"] = true
+				body["top_logprobs"] = 0
+			}
+		default:
+			if n, ok := intFromInterface(v); ok {
+				body["logprobs"] = true
+				body["top_logprobs"] = n
+			}
+		}
+	}
+	if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
+		body["parallel_tool_calls"] = v
+	}
+	if v, ok := openaiOpts["user"].(string); ok && v != "" {
+		body["user"] = v
+	}
+	if v, ok := openaiOpts["metadata"]; ok && v != nil {
+		body["metadata"] = v
+	}
+	if v, ok := openaiOpts["prediction"]; ok && v != nil {
+		body["prediction"] = v
+	}
+	if v, ok := openaiOpts["safetyIdentifier"].(string); ok && v != "" {
+		body["safety_identifier"] = v
+	}
+	if v, ok := openaiOpts["promptCacheKey"].(string); ok && v != "" {
+		body["prompt_cache_key"] = v
+	}
+
+	// Remove unsupported sampling settings for reasoning models (TS getArgs;
+	// see https://platform.openai.com/docs/guides/reasoning#limitations).
+	// GPT-5.1+ (but not GPT-6+) models allow temperature/topP/logprobs when
+	// reasoningEffort resolves to "none"
+	// (GetLanguageModelCapabilities.SupportsNonReasoningParameters).
+	if isReasoningModel {
+		if resolvedReasoningEffort != "none" || !capabilities.SupportsNonReasoningParameters {
+			if _, ok := body["temperature"]; ok {
+				delete(body, "temperature")
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "temperature",
+					Details: "temperature is not supported for reasoning models",
+				})
+			}
+			if _, ok := body["top_p"]; ok {
+				delete(body, "top_p")
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "topP",
+					Details: "topP is not supported for reasoning models",
+				})
+			}
+			if _, ok := body["logprobs"]; ok {
+				delete(body, "logprobs")
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: "logprobs is not supported for reasoning models",
+					Details: "logprobs is not supported for reasoning models",
+				})
+			}
+		}
+
+		if _, ok := body["frequency_penalty"]; ok {
+			delete(body, "frequency_penalty")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "frequencyPenalty",
+				Details: "frequencyPenalty is not supported for reasoning models",
+			})
+		}
+		if _, ok := body["presence_penalty"]; ok {
+			delete(body, "presence_penalty")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "presencePenalty",
+				Details: "presencePenalty is not supported for reasoning models",
+			})
+		}
+		if _, ok := body["logit_bias"]; ok {
+			delete(body, "logit_bias")
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "logitBias is not supported for reasoning models",
+				Details: "logitBias is not supported for reasoning models",
+			})
+		}
+		if _, ok := body["top_logprobs"]; ok {
+			delete(body, "top_logprobs")
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "topLogprobs is not supported for reasoning models",
+				Details: "topLogprobs is not supported for reasoning models",
+			})
+		}
+
+		// Reasoning models use max_completion_tokens instead of max_tokens.
+		if maxTokens, ok := body["max_tokens"]; ok {
+			if _, hasMCT := body["max_completion_tokens"]; !hasMCT {
+				body["max_completion_tokens"] = maxTokens
+			}
+			delete(body, "max_tokens")
+		}
+	} else if strings.HasPrefix(m.modelID, "gpt-4o-search-preview") ||
+		strings.HasPrefix(m.modelID, "gpt-4o-mini-search-preview") {
+		if _, ok := body["temperature"]; ok {
+			delete(body, "temperature")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "temperature",
+				Details: "temperature is not supported for the search preview models and has been removed.",
+			})
+		}
 	}
 
 	// Add tools if present. Function tool parameter schemas are normalized
@@ -277,100 +480,59 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		warnings = append(warnings, fmtWarnings...)
 	}
 
-	// Resolve reasoning_effort: an explicit providerOptions.openai.reasoningEffort
-	// string wins (TS: openaiOptions.reasoningEffort ?? reasoning); otherwise map
-	// top-level Reasoning. none → "disabled", minimal/low → "low",
-	// medium → "medium", high/xhigh → "high". provider-default → omit.
-	resolvedReasoningEffort := ""
-	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
-			if v, ok := openaiOpts["reasoningEffort"].(string); ok && v != "" {
-				resolvedReasoningEffort = v
-			}
-		}
-	}
-	if resolvedReasoningEffort == "" && opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			resolvedReasoningEffort = "disabled"
-		case types.ReasoningMinimal, types.ReasoningLow:
-			resolvedReasoningEffort = "low"
-		case types.ReasoningMedium:
-			resolvedReasoningEffort = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh:
-			resolvedReasoningEffort = "high"
-			// ReasoningDefault: omit
-		}
-	}
-
-	// GPT-6+ models restrict reasoning effort to a fixed set (34c53c0); drop
-	// and warn on anything outside it (matches TS getArgs()).
-	if resolvedReasoningEffort != "" && capabilities.SupportedReasoningEfforts != nil &&
-		!chatStringSliceContains(capabilities.SupportedReasoningEfforts, resolvedReasoningEffort) {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoningEffort",
-			Details: m.modelID + " only supports the following reasoning efforts: " + strings.Join(capabilities.SupportedReasoningEfforts, ", "),
-		})
-		resolvedReasoningEffort = ""
-	}
 	if resolvedReasoningEffort != "" {
 		body["reasoning_effort"] = resolvedReasoningEffort
 	}
 
 	// Apply OpenAI-specific provider options
-	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
-			// Add prompt cache retention if present.
-			// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
-			// GPT-6+ models don't support it; use promptCacheOptions instead
-			// (b2b1bb9).
-			if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
-				if capabilities.SupportedReasoningEfforts != nil {
-					warnings = append(warnings, types.Warning{
-						Type:    "unsupported",
-						Feature: "promptCacheRetention",
-						Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
-					})
-				} else {
-					body["prompt_cache_retention"] = promptCacheRetention
-				}
-			}
-			// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
-			// prompt_cache_options.
-			if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
-				body["prompt_cache_options"] = promptCacheOptions
-			}
-			// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
-			// priority/fast require supportsPriorityProcessing.
-			if serviceTier, ok := openaiOpts["serviceTier"].(string); ok && serviceTier != "" {
-				switch {
-				case serviceTier == "flex" && !capabilities.SupportsFlexProcessing:
-					warnings = append(warnings, types.Warning{
-						Type:    "unsupported",
-						Feature: "serviceTier",
-						Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
-					})
-				case (serviceTier == "priority" || serviceTier == "fast") && !capabilities.SupportsPriorityProcessing:
-					warnings = append(warnings, types.Warning{
-						Type:    "unsupported",
-						Feature: "serviceTier",
-						Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
-					})
-				default:
-					body["service_tier"] = serviceTier
-				}
-			}
-			// Forward store only when explicitly set (already extracted above).
-			if storeExplicit {
-				body["store"] = store
-			}
-			// textVerbosity controls the length/detail of the model's text response.
-			// Maps to top-level "verbosity" in the Chat Completions API.
-			if v, ok := openaiOpts["textVerbosity"].(string); ok {
-				body["verbosity"] = v
-			}
+	// Add prompt cache retention if present.
+	// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
+	// GPT-6+ models don't support it; use promptCacheOptions instead
+	// (b2b1bb9).
+	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
+		if capabilities.SupportedReasoningEfforts != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "promptCacheRetention",
+				Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+			})
+		} else {
+			body["prompt_cache_retention"] = promptCacheRetention
 		}
+	}
+	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
+	// prompt_cache_options.
+	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
+		body["prompt_cache_options"] = promptCacheOptions
+	}
+	// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
+	// priority/fast require supportsPriorityProcessing.
+	if serviceTier, ok := openaiOpts["serviceTier"].(string); ok && serviceTier != "" {
+		switch {
+		case serviceTier == "flex" && !capabilities.SupportsFlexProcessing:
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "serviceTier",
+				Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
+			})
+		case (serviceTier == "priority" || serviceTier == "fast") && !capabilities.SupportsPriorityProcessing:
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "serviceTier",
+				Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
+			})
+		default:
+			body["service_tier"] = serviceTier
+		}
+	}
+	// Forward store only when explicitly set (already extracted above).
+	if storeExplicit {
+		body["store"] = store
+	}
+	// textVerbosity controls the length/detail of the model's text response.
+	// Maps to top-level "verbosity" in the Chat Completions API.
+	if v, ok := openaiOpts["textVerbosity"].(string); ok {
+		body["verbosity"] = v
 	}
 
 	return body, warnings, nil
