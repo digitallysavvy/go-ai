@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewaytools "github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -284,7 +285,6 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 		provider: &Provider{
 			config: Config{
 				DisallowPromptTraining: true,
-				HIPAACompliant:         true,
 				QuotaEntityID:          "quota-123",
 			},
 		},
@@ -307,7 +307,7 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 	if !ok {
 		t.Fatalf("gateway options type = %T", got["gateway"])
 	}
-	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["hipaaCompliant"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
+	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
 		t.Fatalf("missing config-derived gateway options: %#v", gatewayOpts)
 	}
 	if _, ok := gatewayOpts["only"]; !ok {
@@ -395,5 +395,34 @@ func TestGatewayLanguageModelBuildRequestBodyProviderExecutedToolIncludesProvide
 	args := tool["args"].(map[string]interface{})
 	if args["numResults"] != 5 || args["category"] != "news" {
 		t.Fatalf("provider tool args = %#v", args)
+	}
+}
+
+// TestGatewayLanguageModelBuildRequestBodyIncludesTakoSearchTool is a
+// request-shape test (a371615) confirming tools.NewTakoSearch produces a
+// gateway.tako_search provider-defined tool wire entry end to end.
+func TestGatewayLanguageModelBuildRequestBodyIncludesTakoSearchTool(t *testing.T) {
+	model := newTestGatewayLanguageModel("openai/gpt-5")
+
+	takoTool := gatewaytools.NewTakoSearch(gatewaytools.TakoSearchConfig{Effort: "deep"})
+
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{takoTool.ToTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody error = %v", err)
+	}
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	tool := tools[0]
+	if tool["name"] != "tako_search" || tool["type"] != "provider" || tool["id"] != "gateway.tako_search" {
+		t.Fatalf("provider tool wire identity = %#v", tool)
+	}
+	args := tool["args"].(map[string]interface{})
+	if args["effort"] != "deep" {
+		t.Fatalf("tako_search args = %#v", args)
 	}
 }

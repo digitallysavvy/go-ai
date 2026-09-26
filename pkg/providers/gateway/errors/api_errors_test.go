@@ -248,8 +248,126 @@ func TestCreateGatewayErrorFromResponseTypedCases(t *testing.T) {
 	if forbiddenErr.IsRetryable() {
 		t.Fatal("forbidden should not be retryable")
 	}
+	if forbiddenErr.RuleID != "r1" {
+		t.Fatalf("forbidden RuleID = %q, want r1", forbiddenErr.RuleID)
+	}
 	if !errors.As(err, &details) || details.GetRawType() != "forbidden" || details.GetCode() != "rule" {
 		t.Fatalf("forbidden details = %#v", details)
+	}
+
+	// ruleId missing from param: RuleID stays empty.
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"blocked","type":"forbidden","param":{}}}`),
+		403,
+		"default",
+		cause,
+		"api-key",
+	)
+	if !errors.As(err, &forbiddenErr) {
+		t.Fatalf("error type = %T, want *GatewayForbiddenError", err)
+	}
+	if forbiddenErr.RuleID != "" {
+		t.Fatalf("forbidden RuleID = %q, want empty when param missing ruleId", forbiddenErr.RuleID)
+	}
+
+	// param missing entirely: RuleID stays empty.
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"blocked","type":"forbidden"}}`),
+		403,
+		"default",
+		cause,
+		"api-key",
+	)
+	if !errors.As(err, &forbiddenErr) {
+		t.Fatalf("error type = %T, want *GatewayForbiddenError", err)
+	}
+	if forbiddenErr.RuleID != "" {
+		t.Fatalf("forbidden RuleID = %q, want empty when param is absent", forbiddenErr.RuleID)
+	}
+
+	// ruleId non-string: RuleID stays empty (best-effort decode).
+	err = CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"blocked","type":"forbidden","param":{"ruleId":123}}}`),
+		403,
+		"default",
+		cause,
+		"api-key",
+	)
+	if !errors.As(err, &forbiddenErr) {
+		t.Fatalf("error type = %T, want *GatewayForbiddenError", err)
+	}
+	if forbiddenErr.RuleID != "" {
+		t.Fatalf("forbidden RuleID = %q, want empty when ruleId is non-string", forbiddenErr.RuleID)
+	}
+}
+
+// TestCreateGatewayErrorFromResponseNotFound covers the `not_found` error
+// type (936719b), distinct from `model_not_found`, used for unknown
+// Gateway resources such as async batch/video job ids.
+func TestCreateGatewayErrorFromResponseNotFound(t *testing.T) {
+	cause := errors.New("origin")
+	err := CreateGatewayErrorFromResponse(
+		[]byte(`{"error":{"message":"Resource not found","type":"not_found"},"generationId":"gen_nf"}`),
+		404,
+		"default",
+		cause,
+		"api-key",
+	)
+	var notFoundErr *GatewayNotFoundError
+	if !errors.As(err, &notFoundErr) {
+		t.Fatalf("error type = %T, want *GatewayNotFoundError", err)
+	}
+	if notFoundErr.GetType() != "not_found" {
+		t.Fatalf("type = %q, want not_found", notFoundErr.GetType())
+	}
+	if notFoundErr.GetStatusCode() != 404 {
+		t.Fatalf("status = %d, want 404", notFoundErr.GetStatusCode())
+	}
+	if notFoundErr.GetGenerationID() != "gen_nf" {
+		t.Fatalf("generationID = %q, want gen_nf", notFoundErr.GetGenerationID())
+	}
+	if notFoundErr.IsRetryable() {
+		t.Fatal("not_found should not be retryable")
+	}
+}
+
+func TestNewGatewayNotFoundErrorDefaults(t *testing.T) {
+	err := NewGatewayNotFoundError("", 0, nil, "")
+	if err.Error() != "Resource not found" {
+		t.Fatalf("Error() = %q, want default message", err.Error())
+	}
+	if err.GetStatusCode() != 404 {
+		t.Fatalf("status = %d, want 404", err.GetStatusCode())
+	}
+	if !IsGatewayError(err) {
+		t.Fatal("expected IsGatewayError=true")
+	}
+}
+
+// TestGatewayResponseErrorRetryableOverride covers the explicit isRetryable
+// override (90192f1): it takes precedence over the status-code default in
+// both directions.
+func TestGatewayResponseErrorRetryableOverride(t *testing.T) {
+	trueVal := true
+	falseVal := false
+
+	// Status 200 would default to not-retryable; override forces retryable.
+	retryable := NewGatewayResponseErrorWithRetryable("msg", 200, nil, nil, nil, "", &trueVal)
+	if !retryable.IsRetryable() {
+		t.Fatal("expected explicit override to force IsRetryable=true")
+	}
+
+	// Status 500 would default to retryable; override forces not-retryable
+	// (e.g. a JSON decode failure, which will never succeed on retry).
+	notRetryable := NewGatewayResponseErrorWithRetryable("msg", 500, nil, nil, nil, "", &falseVal)
+	if notRetryable.IsRetryable() {
+		t.Fatal("expected explicit override to force IsRetryable=false")
+	}
+
+	// No override: falls back to the status-code default.
+	defaulted := NewGatewayResponseError("msg", 500, nil, nil, nil, "")
+	if !defaulted.IsRetryable() {
+		t.Fatal("expected status-code default IsRetryable=true for 500")
 	}
 }
 

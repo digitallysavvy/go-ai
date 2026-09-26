@@ -81,7 +81,6 @@ Gateway routing options can be configured globally on the provider or per call u
 provider, err := gateway.New(gateway.Config{
     APIKey:                  "your-api-key",
     DisallowPromptTraining:  true,
-    HIPAACompliant:          true,
     QuotaEntityID:           "tenant-123",
 })
 
@@ -93,6 +92,11 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
             "only":  []string{"anthropic", "openai"},
             "order": []string{"anthropic", "openai"},
             "sort":  "cost", // "cost", "ttft", or "tps"
+            // Restrict routing to models with given capabilities/weight formats.
+            "has": []string{
+                gateway.GatewayHasReasoning,
+                gateway.GatewayHasQuantization("fp8"),
+            },
         },
     },
 })
@@ -223,6 +227,31 @@ Gateway origin with `{"model": "...", "expiresIn": ...}` and the normal Gateway
 auth headers. Realtime event parsing and client event serialization are identity
 codecs because Gateway speaks the normalized AI SDK realtime protocol.
 
+### Transcription Client Secrets
+
+The same mechanism mints a token bound to the streaming transcription surface
+by setting `routeKind: "transcription"` in the mint request body:
+
+```go
+expires := 60
+token, err := provider.GetTranscriptionToken(context.Background(), "openai/gpt-realtime-whisper", &gateway.TranscriptionClientSecretOptions{
+    ExpiresAfterSeconds: &expires,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(token.Token, token.URL) // token.URL: wss://.../v4/ai/transcription-model?ai-model-id=openai%2Fgpt-realtime-whisper
+
+model := provider.ExperimentalTranscription("openai/gpt-realtime-whisper")
+```
+
+`gateway.ToGatewayTranscriptionURL(baseURL, modelID)` builds the streaming
+transcription WebSocket URL directly (HTTP(S) base upgraded to WS(S), model
+id passed as the `ai-model-id` query parameter). Streaming transcription
+itself (`TranscriptionModel.DoStream` over WebSocket) is not yet implemented;
+`TranscriptionModel.DoTranscribe` (non-streaming, HTTP) is available today.
+
 ## Provider-Executed Tools
 
 The Gateway provider includes search tools that are executed server-side by the gateway.
@@ -331,6 +360,34 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 })
 ```
 
+### Tako Search
+
+Search Tako's curated Data Graph and the web for entities, metrics, and time series,
+returning rendered data cards and web results.
+
+```go
+takoSearch := tools.NewTakoSearch(tools.TakoSearchConfig{
+    Effort: "fast",
+    Sources: &tools.TakoSearchSources{
+        Data: &tools.TakoDataSourceConfig{
+            Count: intPtr(5),
+        },
+        Web: &tools.TakoWebSourceConfig{
+            Count:    intPtr(5),
+            Category: "finance",
+        },
+    },
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What has Tesla's stock price done this year?",
+    Tools: []types.Tool{
+        takoSearch.ToTool(),
+    },
+})
+```
+
 ## Video Generation via SSE
 
 The gateway video endpoint uses Server-Sent Events (SSE) with heartbeat keep-alives to prevent
@@ -431,7 +488,6 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `HTTPClient` (*http.Client): Custom HTTP client
 - `ZeroDataRetention` (bool): Enable zero data retention mode
 - `DisallowPromptTraining` (bool): Restrict routing to providers that do not train on prompt data
-- `HIPAACompliant` (bool): Restrict routing to HIPAA-compliant providers
 - `QuotaEntityID` (string): Entity ID for quota tracking and tenant/account attribution
 - `ProjectID` (*string): Project identifier forwarded as `ai-o11y-project-id` for observability (or set `VERCEL_PROJECT_ID` env var)
 
@@ -444,8 +500,18 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `models` ([]string): Fallback model list
 - `zeroDataRetention` (bool): Per-call zero data retention
 - `disallowPromptTraining` (bool): Per-call no-prompt-training restriction
-- `hipaaCompliant` (bool): Per-call HIPAA-capable provider restriction
 - `quotaEntityId` (string): Per-call quota identity
+- `has` ([]string): Restrict routing to models with all given capability tags
+  (`GatewayHasImplicitCaching`, `GatewayHasReasoning`, `GatewayHasToolUse`,
+  `GatewayHasVision`) or weight-format conditions built with
+  `GatewayHasQuantization("fp8")` / `GatewayHasNotQuantization("fp8")`
+- `idempotencyKey` (string): Idempotency key for `experimental_startBatch` retries
+- `caching` (string): Enables automatic caching behavior when supported by the Gateway (only valid value: `"auto"`, see `GatewayCachingAuto`)
+
+> **Breaking change:** the `hipaaCompliant` provider option and `Config.HIPAACompliant`
+> field were removed to match the upstream TypeScript SDK (`hipaaCompliant` was dropped
+> from `@ai-sdk/gateway` in the Sep 23 2026 cycle). Callers relying on it should remove
+> the field; the Gateway service no longer recognizes it.
 
 ### Parallel Search Config
 
@@ -474,6 +540,15 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `IncludeDomains` / `ExcludeDomains` ([]string): Domain filters
 - `StartPublishedDate` / `EndPublishedDate` (string): ISO 8601 published date filters
 - `Contents` (*ExaSearchContentsConfig): Text, highlight, freshness, subpage, and extras controls
+
+### Tako Search Config
+
+- `Effort` (string): `deep`, `fast` (default), or `instant`
+- `Sources` (*TakoSearchSources): `Data` (*TakoDataSourceConfig) and/or `Web` (*TakoWebSourceConfig); omit to search both
+- `Location` (*TakoSearchLocation): End-user latitude/longitude for localized results
+- `CountryCode` / `Locale` / `Timezone` (string): ISO 3166-1 country code, BCP-47 locale, IANA timezone
+- `OutputSettings` (*TakoSearchOutputSettings): `ImageDarkMode`, `ForceRefresh` (instant effort only)
+- `IncludeRelated` (*int): Maximum related search suggestions to include (1-20)
 
 ## Environment Variables
 
@@ -522,6 +597,9 @@ Inline `[]byte` file data in Gateway language-model requests is base64-encoded e
 ## Error Handling
 
 Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types preserve the raw type through `GatewayErrorDetails`.
+
+- `GatewayForbiddenError.RuleID` identifies which routing rule denied the request, when the Gateway reports one.
+- `GatewayNotFoundError` (type `not_found`) is returned for unknown Gateway resources (e.g. an async batch/video job id) and is distinct from `GatewayModelNotFoundError`, which is model-specific.
 
 ```go
 var gatewayErr gatewayerrors.GatewayError

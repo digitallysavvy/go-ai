@@ -87,19 +87,44 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
-	// Make API request
-	var result types.GenerateResult
+	// Make API request. Warnings are decoded separately as raw JSON (TS parity:
+	// gateway-language-model.ts doGenerate spreads `responseBody.warnings ?? []`)
+	// so that an absent field defaults to an empty slice and a malformed one
+	// does not fail the whole decode.
+	var wire struct {
+		types.GenerateResult
+		Warnings json.RawMessage `json:"warnings,omitempty"`
+	}
 	err = m.provider.client.DoJSON(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/language-model",
 		Body:    reqBody,
 		Headers: headers,
-	}, &result)
+	}, &wire)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
+	result := wire.GenerateResult
+	result.Warnings = parseGatewayWarnings(wire.Warnings)
+
 	return &result, nil
+}
+
+// parseGatewayWarnings tolerantly decodes a gateway response's "warnings"
+// field. TS parity: `responseBody.warnings ?? []` always yields an array;
+// Go additionally falls back to an empty (non-nil) slice when the field is
+// present but does not parse as []types.Warning, instead of failing the
+// entire response decode.
+func parseGatewayWarnings(raw json.RawMessage) []types.Warning {
+	if len(raw) == 0 || string(raw) == "null" {
+		return []types.Warning{}
+	}
+	var warnings []types.Warning
+	if err := json.Unmarshal(raw, &warnings); err != nil || warnings == nil {
+		return []types.Warning{}
+	}
+	return warnings
 }
 
 // DoStream performs streaming text generation
@@ -631,9 +656,6 @@ func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
 	out := map[string]interface{}{}
 	if p.config.DisallowPromptTraining {
 		out["disallowPromptTraining"] = true
-	}
-	if p.config.HIPAACompliant {
-		out["hipaaCompliant"] = true
 	}
 	if p.config.QuotaEntityID != "" {
 		out["quotaEntityId"] = p.config.QuotaEntityID

@@ -106,7 +106,13 @@ func NewGatewayFailedDependencyError(message string, statusCode int, cause error
 	return &GatewayFailedDependencyError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "failed_dependency", cause: cause, generationID: generationID}}
 }
 
-type GatewayForbiddenError struct{ baseGatewayError }
+// GatewayForbiddenError indicates the request was rejected by policy (e.g. a
+// routing rule), not an authentication failure. RuleID identifies which
+// routing rule denied the request, when the Gateway reports one.
+type GatewayForbiddenError struct {
+	baseGatewayError
+	RuleID string
+}
 
 func NewGatewayForbiddenError(message string, statusCode int, cause error, generationID string) *GatewayForbiddenError {
 	if message == "" {
@@ -118,10 +124,40 @@ func NewGatewayForbiddenError(message string, statusCode int, cause error, gener
 	return &GatewayForbiddenError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "forbidden", cause: cause, generationID: generationID}}
 }
 
+// NewGatewayForbiddenErrorWithRuleID is like NewGatewayForbiddenError but
+// additionally sets RuleID from the parsed forbidden-error param.
+func NewGatewayForbiddenErrorWithRuleID(message string, statusCode int, cause error, generationID string, ruleID string) *GatewayForbiddenError {
+	err := NewGatewayForbiddenError(message, statusCode, cause, generationID)
+	err.RuleID = ruleID
+	return err
+}
+
+// GatewayNotFoundError indicates the requested Gateway resource does not
+// exist or is not visible to the caller (e.g. an unknown async batch/video
+// job id). Distinct from GatewayModelNotFoundError, which is model-specific.
+type GatewayNotFoundError struct{ baseGatewayError }
+
+func NewGatewayNotFoundError(message string, statusCode int, cause error, generationID string) *GatewayNotFoundError {
+	if message == "" {
+		message = "Resource not found"
+	}
+	if statusCode == 0 {
+		statusCode = 404
+	}
+	return &GatewayNotFoundError{baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "not_found", cause: cause, generationID: generationID}}
+}
+
 type GatewayResponseError struct {
 	baseGatewayError
 	Response        interface{}
 	ValidationError error
+
+	// Retryable overrides the default status-code-based IsRetryable
+	// classification when set. TS parity: GatewayError's constructor accepts
+	// an explicit isRetryable that overrides the status-code default, used by
+	// asGatewayError to mark transient network/body-read errors as retryable
+	// and JSON decode errors as not retryable regardless of status code.
+	Retryable *bool
 }
 
 func NewGatewayResponseError(message string, statusCode int, response interface{}, validationError error, cause error, generationID string) *GatewayResponseError {
@@ -138,6 +174,22 @@ func NewGatewayResponseError(message string, statusCode int, response interface{
 	}
 }
 
+// NewGatewayResponseErrorWithRetryable is like NewGatewayResponseError but
+// additionally sets an explicit IsRetryable override.
+func NewGatewayResponseErrorWithRetryable(message string, statusCode int, response interface{}, validationError error, cause error, generationID string, retryable *bool) *GatewayResponseError {
+	err := NewGatewayResponseError(message, statusCode, response, validationError, cause, generationID)
+	err.Retryable = retryable
+	return err
+}
+
+// IsRetryable overrides baseGatewayError.IsRetryable when Retryable is set.
+func (e *GatewayResponseError) IsRetryable() bool {
+	if e.Retryable != nil {
+		return *e.Retryable
+	}
+	return e.baseGatewayError.IsRetryable()
+}
+
 type gatewayErrorPayload struct {
 	Error *struct {
 		Message *string         `json:"message"`
@@ -150,6 +202,10 @@ type gatewayErrorPayload struct {
 
 type modelNotFoundParam struct {
 	ModelID string `json:"modelId"`
+}
+
+type forbiddenParam struct {
+	RuleID string `json:"ruleId"`
 }
 
 func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, defaultMessage string, cause error, authMethod string) error {
@@ -185,12 +241,16 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		var param modelNotFoundParam
 		_ = json.Unmarshal(payload.Error.Param, &param) // best effort
 		err = newGatewayModelNotFoundErrorFromResponse(message, statusCode, param.ModelID, cause, generationID)
+	case "not_found":
+		err = NewGatewayNotFoundError(message, statusCode, cause, generationID)
 	case "internal_server_error":
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	case "failed_dependency":
 		err = NewGatewayFailedDependencyError(message, statusCode, cause, generationID)
 	case "forbidden":
-		err = NewGatewayForbiddenError(message, statusCode, cause, generationID)
+		var param forbiddenParam
+		_ = json.Unmarshal(payload.Error.Param, &param) // best effort; non-string/missing ruleId leaves RuleID empty
+		err = NewGatewayForbiddenErrorWithRuleID(message, statusCode, cause, generationID, param.RuleID)
 	default:
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	}
@@ -278,6 +338,8 @@ func withGatewayResponseDetails(err error, rawType string, rawCode, rawParam int
 	case *GatewayRateLimitError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayModelNotFoundError:
+		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
+	case *GatewayNotFoundError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayInternalServerError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
