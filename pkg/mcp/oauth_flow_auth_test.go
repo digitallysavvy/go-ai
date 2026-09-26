@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -487,3 +489,105 @@ func TestAuthRetriesOnceAfterInvalidGrant(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// authenticatingOAuthProvider wraps fakeOAuthProvider with a custom
+// AddClientAuthentication, matching TS's optional
+// OAuthClientProvider.addClientAuthentication override (hash 78e0023): when
+// a provider implements OAuthClientAuthenticator, Auth's token-request
+// authentication calls it instead of the default
+// client_secret_basic/client_secret_post/none selection.
+type authenticatingOAuthProvider struct {
+	*fakeOAuthProvider
+	addClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error
+}
+
+func (p *authenticatingOAuthProvider) AddClientAuthentication(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error {
+	return p.addClientAuthentication(ctx, headers, params, tokenURL, metadata)
+}
+
+var _ OAuthClientAuthenticator = (*authenticatingOAuthProvider)(nil)
+
+// TestAuthUsesCustomClientAuthenticatorForTokenExchange mirrors TS
+// oauth.test.ts's "exchanges code for tokens with auth" (addClientAuthentication
+// override): when the provider implements a custom client authenticator,
+// Auth's token exchange calls it instead of applying the default
+// client_secret_basic/client_secret_post/none selection, and the headers and
+// params the authenticator sets reach the actual token request untouched by
+// the default logic.
+func TestAuthUsesCustomClientAuthenticatorForTokenExchange(t *testing.T) {
+	var capturedAuth string
+	var capturedExampleParam string
+	var capturedExampleURL string
+	var capturedClientID string
+	var capturedClientSecret string
+
+	base := newFakeOAuthProvider()
+	base.clientInfo = &OAuthClientInformation{ClientID: "existing-client", ClientSecret: "existing-secret"}
+	base.codeVerifier = "verifier-xyz"
+	base.storedState = strPtr("expected-state")
+	base.asInfo = &OAuthAuthorizationServerInformation{
+		Issuer:                 "https://auth.example.com",
+		AuthorizationServerURL: "https://auth.example.com/",
+		TokenEndpoint:          "https://auth.example.com/token",
+	}
+
+	provider := &authenticatingOAuthProvider{
+		fakeOAuthProvider: base,
+		addClientAuthentication: func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error {
+			headers.Set("Authorization", "Bearer custom-authenticator-token")
+			params.Set("example_param", "example_value")
+			params.Set("example_url", tokenURL)
+			return nil
+		},
+	}
+
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/.well-known/oauth-protected-resource": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://auth.example.com/mcp","authorization_servers":["https://auth.example.com"]}`), nil
+		},
+		"/.well-known/oauth-authorization-server": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, oauthFlowASMetadataJSON), nil
+		},
+		"/token": func(req *http.Request) (*http.Response, error) {
+			capturedAuth = req.Header.Get("Authorization")
+			body, _ := io.ReadAll(req.Body)
+			values, _ := url.ParseQuery(string(body))
+			capturedExampleParam = values.Get("example_param")
+			capturedExampleURL = values.Get("example_url")
+			capturedClientID = values.Get("client_id")
+			capturedClientSecret = values.Get("client_secret")
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+
+	result, err := Auth(context.Background(), provider, AuthOptions{
+		ServerURL:            "https://auth.example.com/mcp",
+		HasAuthorizationCode: true,
+		AuthorizationCode:    "the-code",
+		CallbackState:        "expected-state",
+		HTTPClient:           client,
+	})
+	if err != nil {
+		t.Fatalf("Auth error: %v", err)
+	}
+	if result != AuthResultAuthorized {
+		t.Fatalf("result = %s, want AUTHORIZED", result)
+	}
+	if capturedAuth != "Bearer custom-authenticator-token" {
+		t.Fatalf("Authorization header = %q, want custom authenticator's value", capturedAuth)
+	}
+	if capturedExampleParam != "example_value" {
+		t.Fatalf("example_param = %q, want custom authenticator's value", capturedExampleParam)
+	}
+	if capturedExampleURL != "https://auth.example.com/token" {
+		t.Fatalf("example_url = %q, want the resolved token endpoint passed to the authenticator", capturedExampleURL)
+	}
+	// The default client_secret_basic/post authentication (which would have
+	// set client_id/client_secret) must NOT have run: a custom authenticator
+	// fully replaces the default, matching TS's addClientAuthentication
+	// override semantics (oauth.ts: `if (addClientAuthentication) { ... }
+	// else { applyClientAuthentication(...) }`).
+	if capturedClientID != "" || capturedClientSecret != "" {
+		t.Fatalf("client_id=%q client_secret=%q, want both empty: default auth must not run when a custom authenticator is set", capturedClientID, capturedClientSecret)
+	}
+}
