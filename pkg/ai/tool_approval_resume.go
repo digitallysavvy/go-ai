@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -143,7 +144,14 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 		noApproval := types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
 		})
-		executed, err = executeTools(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+		if opts.streaming {
+			// TS streamText's initial tool-execution stream runs resumed
+			// approvals in parallel (Promise.all); generateText's resume
+			// stays sequential, matching executeTools elsewhere.
+			executed, err = executeToolsParallel(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+		} else {
+			executed, err = executeTools(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+		}
 		if err != nil {
 			return out, err
 		}
@@ -353,4 +361,48 @@ func attachInputSchemaInputs(parts []types.ContentPart, inputs map[string]interf
 		}
 	}
 	return parts
+}
+
+// executeToolsParallel runs each of calls through executeTools independently
+// and concurrently, collecting results in the original call order (TS
+// Promise.all semantics for the initial resumed-approval tool execution in
+// streamText — see collect-tool-approvals.ts / stream-text.ts). Each call
+// gets its own *types.Usage accumulator so concurrent tool Execute functions
+// never race on the same pointer; the totals are merged into usage once every
+// goroutine has finished.
+func executeToolsParallel(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
+	if len(calls) <= 1 {
+		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
+	}
+
+	perCallResults := make([][]types.ToolResult, len(calls))
+	perCallUsage := make([]types.Usage, len(calls))
+	errs := make([]error, len(calls))
+
+	var wg sync.WaitGroup
+	wg.Add(len(calls))
+	for i, call := range calls {
+		go func(i int, call types.ToolCall) {
+			defer wg.Done()
+			results, err := executeTools(ctx, []types.ToolCall{call}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], callbacks)
+			perCallResults[i] = results
+			errs[i] = err
+		}(i, call)
+	}
+	wg.Wait()
+
+	merged := usage.Add(types.Usage{})
+	out := make([]types.ToolResult, 0, len(calls))
+	for i := range calls {
+		merged = merged.Add(perCallUsage[i])
+		out = append(out, perCallResults[i]...)
+	}
+	*usage = merged
+
+	for _, err := range errs {
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -914,8 +915,12 @@ func TestStreamText_ResumeDeniedApprovalStreamsOutputDenied(t *testing.T) {
 	}
 }
 
+// A forged approval signature is a resume-time failure. TS runs approval
+// resume inside streamText's output stream, so this surfaces as a stream
+// error (via ReadAll/Err) rather than StreamText() itself returning an
+// error (review finding F6) — StreamText still returns a non-nil result.
 func TestStreamText_ResumeRejectsForgedSignature(t *testing.T) {
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model: newRecordingModel("ok"),
 		Tools: []types.Tool{{
 			Name: "tool1",
@@ -927,8 +932,17 @@ func TestStreamText_ResumeRejectsForgedSignature(t *testing.T) {
 		ExperimentalToolApprovalSecret: []byte("secret"),
 		Messages:                       approvalHistory("tool1", map[string]interface{}{"value": "v"}, "forged-signature", true, ""),
 	})
-	if !IsInvalidToolApprovalSignatureError(err) {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatalf("StreamText() error = %v, want nil (error surfaces via the stream)", err)
+	}
+	if result == nil {
+		t.Fatal("expected a non-nil result")
+	}
+	if _, err := result.ReadAll(); !IsInvalidToolApprovalSignatureError(err) {
+		t.Fatalf("ReadAll() err = %v, want InvalidToolApprovalSignatureError", err)
+	}
+	if !IsInvalidToolApprovalSignatureError(result.Err()) {
+		t.Fatalf("result.Err() = %v, want InvalidToolApprovalSignatureError", result.Err())
 	}
 }
 
@@ -1068,5 +1082,102 @@ func TestGenerateText_RefinedApprovedInputRoundTrip(t *testing.T) {
 	}
 	if executedWith["value"] != "trimmed" {
 		t.Fatalf("executed with %v", executedWith)
+	}
+}
+
+// twoToolApprovalHistory builds a history with two approved tool-approval
+// requests answered in the same tool message, for exercising resumed
+// approval execution across more than one call.
+func twoToolApprovalHistory(toolName string) []types.Message {
+	return []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test-input"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "call-1", ToolName: toolName, Arguments: map[string]interface{}{"value": "a"}},
+			types.ToolApprovalRequestContent{ApprovalID: "approval-1", ToolCallID: "call-1"},
+			types.ToolCallContent{ToolCallID: "call-2", ToolName: toolName, Arguments: map[string]interface{}{"value": "b"}},
+			types.ToolApprovalRequestContent{ApprovalID: "approval-2", ToolCallID: "call-2"},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "approval-1", Approved: true},
+			types.ToolApprovalResponseContent{ApprovalID: "approval-2", Approved: true},
+		}},
+	}
+}
+
+// TS parity (F6): streamText's initial resumed-approval tool execution runs
+// approved tools in parallel (Promise.all), not sequentially. Two Execute
+// functions each block until both have started, which only completes if
+// they run concurrently; a sequential executor would deadlock and this test
+// would time out.
+func TestStreamText_ResumeExecutesApprovedToolsInParallel(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	arrived := 0
+
+	makeExec := func(name string) types.ToolExecutor {
+		return func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			// Whichever call is second to arrive opens the gate for both.
+			// This only happens if the two calls run concurrently — a
+			// sequential executor would block on the first call forever,
+			// since the second call (which releases it) would never start.
+			mu.Lock()
+			arrived++
+			isSecond := arrived == 2
+			mu.Unlock()
+			if isSecond {
+				close(release)
+			}
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+				t.Errorf("tool %s timed out waiting for its sibling to start — approvals ran sequentially", name)
+			}
+			return name + "-result", nil
+		}
+	}
+
+	tool := types.Tool{
+		Name:         "tool1",
+		Parameters:   valueStringSchema(),
+		ToolApproval: types.ToolApprovalStatusUserApproval,
+		Execute:      makeExec("call"),
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    newRecordingModel("done"),
+		Tools:    []types.Tool{tool},
+		Messages: twoToolApprovalHistory("tool1"),
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	// Resumed approvals are answered by a tool message prepended ahead of
+	// the model's own response messages (see initialResponseMessages in
+	// stream.go), not exposed through ToolResults().
+	msgs := result.ResponseMessages()
+	if len(msgs) == 0 || msgs[0].Role != types.RoleTool || len(msgs[0].Content) != 2 {
+		t.Fatalf("expected a leading tool message with 2 results, got %+v", msgs)
+	}
+	parts := msgs[0].Content
+	first, ok := parts[0].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("part 0 = %T, want ToolResultContent", parts[0])
+	}
+	second, ok := parts[1].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("part 1 = %T, want ToolResultContent", parts[1])
+	}
+	// Results must come back in the original call order despite running
+	// concurrently.
+	if first.ToolCallID != "call-1" || second.ToolCallID != "call-2" {
+		t.Fatalf("results out of order: first=%+v second=%+v", first, second)
+	}
+	if first.Output == nil || first.Output.Value != "call-result" || second.Output == nil || second.Output.Value != "call-result" {
+		t.Fatalf("unexpected results: first=%+v second=%+v", first, second)
 	}
 }
