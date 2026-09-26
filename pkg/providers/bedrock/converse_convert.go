@@ -387,6 +387,30 @@ func cloneMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+// addAnthropicBeta merges beta into the existing additionalModelRequestFields
+// "anthropic_beta" value (nil, []interface{}, or []string — the latter two
+// are the shapes a caller-supplied providerOptions.amazonBedrock.anthropicBeta
+// or a prior append can produce), returning a new []interface{} with beta
+// appended if it is not already present. Mirrors TS's `betas: Set<string>`
+// dedup semantics (amazon-bedrock-chat-language-model.ts:381-390).
+func addAnthropicBeta(existing interface{}, beta string) []interface{} {
+	var betas []interface{}
+	switch v := existing.(type) {
+	case []interface{}:
+		betas = append(betas, v...)
+	case []string:
+		for _, s := range v {
+			betas = append(betas, s)
+		}
+	}
+	for _, b := range betas {
+		if s, ok := b.(string); ok && s == beta {
+			return betas
+		}
+	}
+	return append(betas, beta)
+}
+
 // ─── Reasoning metadata ─────────────────────────────────────────────────────
 
 func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, hasSignature bool, redactedData string, hasRedactedData bool, redactedContent string, hasRedactedContent bool) {
@@ -937,7 +961,12 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 			}
 		}
 		return out, nil
-	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText:
+		// Ports TS convertToolResultOutput's 'text'/'error-text' case
+		// (convert-to-amazon-bedrock-chat-messages.ts:682-684): raw value
+		// passthrough, no JSON encoding. ToolResultOutputError has no TS
+		// equivalent; it is a Go-only generic error shape, treated the same as
+		// error-text (a message string) rather than JSON-encoded.
 		return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
 	case types.ToolResultOutputExecutionDenied:
 		reason := part.Output.Reason
@@ -945,9 +974,11 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 			reason = "Tool call execution denied."
 		}
 		return []map[string]interface{}{{"text": reason}}, nil
-	case types.ToolResultOutputJSON:
+	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		fallthrough
 	default:
+		// Ports TS's 'json'/'error-json'/default case (ts:687-690):
+		// JSON.stringify(output.value).
 		data, err := json.Marshal(part.Output.Value)
 		if err != nil {
 			return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
