@@ -437,7 +437,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGoogle Vertex AI does not support reranking")
+	return nil, fmt.Errorf("Google Vertex AI does not support reranking")
 }
 
 // VideoModel returns a video generation model by ID
