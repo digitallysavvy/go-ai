@@ -139,6 +139,17 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			fmt.Sprintf("failed to decode JSON response: %v", err), err)
 	}
 
+	// If any generated image was blocked by content moderation, the xAI API
+	// still returns a 2xx response but flags the image with
+	// respect_moderation: false. Surface this as an error, matching the TS
+	// SDK's xai-image-model.ts behavior.
+	for _, d := range resp.Data {
+		if d.RespectModeration != nil && !*d.RespectModeration {
+			return nil, providererrors.NewProviderError("xai", 0, "",
+				"Image generation was blocked due to a content policy violation.", nil)
+		}
+	}
+
 	// Check if we have at least one image
 	if len(resp.Data) == 0 {
 		return nil, providererrors.NewProviderError("xai.image", 0, "",
@@ -428,7 +439,8 @@ type xaiImageUsage struct {
 
 // xaiImageData represents image data in the response
 type xaiImageData struct {
-	URL           string  `json:"url,omitempty"`
-	B64JSON       string  `json:"b64_json,omitempty"`
-	RevisedPrompt *string `json:"revised_prompt,omitempty"`
+	URL               string  `json:"url,omitempty"`
+	B64JSON           string  `json:"b64_json,omitempty"`
+	RevisedPrompt     *string `json:"revised_prompt,omitempty"`
+	RespectModeration *bool   `json:"respect_moderation,omitempty"`
 }

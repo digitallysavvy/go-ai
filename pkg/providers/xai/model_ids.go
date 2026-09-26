@@ -70,6 +70,15 @@ const (
 	// ModelGrok43 — Grok 4.3 language model
 	ModelGrok43 = "grok-4.3"
 
+	// ModelGrok45 — Grok 4.5 language model
+	ModelGrok45 = "grok-4.5"
+
+	// ModelGrok46 — Grok 4.6 language model
+	ModelGrok46 = "grok-4.6"
+
+	// ModelGrok47 — Grok 4.7 language model
+	ModelGrok47 = "grok-4.7"
+
 	// ModelGrokLatest — latest Grok language model alias
 	ModelGrokLatest = "grok-latest"
 )
@@ -90,4 +99,15 @@ const (
 
 	// ModelGrokImagineImagePro — Grok Imagine Pro image generation model (higher quality)
 	ModelGrokImagineImagePro = "grok-imagine-image-pro"
+)
+
+// Video model ID constants for xAI Grok video generation models.
+// Use these constants instead of raw strings to avoid typos and get IDE support.
+// See https://docs.x.ai/docs for the full list.
+const (
+	// ModelGrokImagineVideo — Grok Imagine standard video generation model
+	ModelGrokImagineVideo = "grok-imagine-video"
+
+	// ModelGrokImagineVideo15 — Grok Imagine video generation model v1.5 (adds native 1080p support)
+	ModelGrokImagineVideo15 = "grok-imagine-video-1.5"
 )

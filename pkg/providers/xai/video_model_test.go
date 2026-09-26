@@ -3,9 +3,9 @@ package xai
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1002,7 +1002,9 @@ func TestVideoModel_NoVideoURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "no video URL")
 }
 
-// TestXAIVideoModerationError verifies that a moderated video status returns a ModerationError.
+// TestXAIVideoModerationError verifies that a moderated video status is
+// surfaced as a normal job-failed error (via polling.JobResult), not a
+// thrown ModerationError/ProviderError.
 func TestXAIVideoModerationError(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1040,11 +1042,7 @@ func TestXAIVideoModerationError(t *testing.T) {
 	_, err := model.DoGenerate(ctx, opts)
 
 	require.Error(t, err)
-
-	// Must be (or wrap) a ModerationError.
-	var modErr *ModerationError
-	require.True(t, errors.As(err, &modErr), "error type = %T, want *ModerationError (possibly wrapped)", err)
-	assert.Contains(t, modErr.Message, "content policy violation")
+	assert.Contains(t, err.Error(), "content policy violation")
 }
 
 // TestXAIVideoPassthroughOptions verifies that unrecognized provider options are passed
@@ -1154,4 +1152,429 @@ func TestXAIVideoCostMetadata(t *testing.T) {
 	xaiMeta, ok := resp.ProviderMetadata["xai"].(map[string]interface{})
 	require.True(t, ok, "xai metadata type = %T, want map[string]interface{}", resp.ProviderMetadata["xai"])
 	assert.Contains(t, xaiMeta, "costInUsdTicks")
+}
+
+// TestVideoModel_Resolution1080p_MapsFromSize verifies that the standard
+// "1920x1080" size maps to the xAI "1080p" resolution value.
+func TestVideoModel_Resolution1080p_MapsFromSize(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "1080p", body["resolution"])
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt:     "A sunset",
+		Resolution: "1920x1080",
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+}
+
+// TestVideoModel_Resolution1080p_OldModelWarns verifies that requesting
+// 1080p on the original grok-imagine-video model still sends the request but
+// adds an unsupported warning.
+func TestVideoModel_Resolution1080p_OldModelWarns(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "1080p", body["resolution"])
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"resolution": "1080p"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if strings.Contains(w.Message, "does not support 1080p") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected an unsupported-1080p warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_ExtendVideo verifies that mode "extend-video" hits the
+// /v1/videos/extensions endpoint, sends the source video, allows duration,
+// but does not send `user`.
+func TestVideoModel_ExtendVideo(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			assert.Equal(t, "/videos/extensions", r.URL.Path)
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			video, ok := body["video"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, "https://example.com/source.mp4", video["url"])
+			assert.Equal(t, 5.0, body["duration"])
+			assert.NotContains(t, body, "user")
+			assert.NotContains(t, body, "aspect_ratio")
+			assert.NotContains(t, body, "resolution")
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/extended.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	duration := 5.0
+	user := "user-123"
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt:      "Continue the scene",
+		Duration:    &duration,
+		AspectRatio: "16:9",
+		Resolution:  "1280x720",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"mode":     "extend-video",
+				"videoUrl": "https://example.com/source.mp4",
+				"user":     user,
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "https://example.com/extended.mp4", resp.Videos[0].URL)
+
+	// aspectRatio + resolution should have produced warnings for extension mode.
+	assert.GreaterOrEqual(t, len(resp.Warnings), 2)
+}
+
+// TestVideoModel_ReferenceToVideo verifies R2V mode sends reference_images
+// and reference_audios, and is capped at 720p.
+func TestVideoModel_ReferenceToVideo(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			assert.Equal(t, "/videos/generations", r.URL.Path)
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+
+			refImages, ok := body["reference_images"].([]interface{})
+			require.True(t, ok, "expected reference_images in body, got: %+v", body)
+			require.Len(t, refImages, 2)
+
+			refAudios, ok := body["reference_audios"].([]interface{})
+			require.True(t, ok, "expected reference_audios in body, got: %+v", body)
+			require.Len(t, refAudios, 2)
+			firstAudio := refAudios[0].(map[string]interface{})
+			assert.Equal(t, "voice-1", firstAudio["voice_id"])
+
+			// R2V requested 1080p; must be downgraded to 720p.
+			assert.Equal(t, "720p", body["resolution"])
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/r2v.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A dancing robot",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"referenceImageUrls": []string{
+					"https://example.com/ref1.png",
+					"https://example.com/ref2.png",
+				},
+				"referenceVoiceIds": []string{"voice-1", "voice-2"},
+				"resolution":        "1080p",
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "https://example.com/r2v.mp4", resp.Videos[0].URL)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if strings.Contains(w.Message, "downgraded from 1080p to 720p") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a 1080p downgrade warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_ReferenceVoiceIds_TooMany verifies that more than 3
+// referenceVoiceIds are truncated with a warning.
+func TestVideoModel_ReferenceVoiceIds_TooMany(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			refAudios, ok := body["reference_audios"].([]interface{})
+			require.True(t, ok)
+			assert.Len(t, refAudios, 3)
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/r2v.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A dancing robot",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"referenceImageUrls": []string{"https://example.com/ref1.png"},
+				"referenceVoiceIds":  []string{"voice-1", "voice-2", "voice-3", "voice-4"},
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if strings.Contains(w.Message, "at most 3 referenceVoiceIds") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a too-many-voice-ids warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_ReferenceVoiceIds_OutsideR2V_Warns verifies referenceVoiceIds
+// are ignored (with a warning) when not in reference-to-video mode.
+func TestVideoModel_ReferenceVoiceIds_OutsideR2V_Warns(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.NotContains(t, body, "reference_audios")
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"referenceVoiceIds": []string{"voice-1"},
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if strings.Contains(w.Message, "only supports reference voices for reference-to-video") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected an outside-R2V warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_User_SentForGeneration_NotForExtension verifies the `user`
+// option is sent for standard generation but omitted for extend-video.
+func TestVideoModel_User_SentForGeneration_NotForExtension(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "user-abc", body["user"])
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"user": "user-abc"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+}
+
+// TestVideoModel_StatusPending202EmptyBody verifies that a 202 status
+// response with an empty body is treated as "pending" rather than an error.
+func TestVideoModel_StatusPending202EmptyBody(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		case 2:
+			// 202 with a completely empty body.
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 50},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "https://example.com/video.mp4", resp.Videos[0].URL)
+}
+
+// TestVideoModel_StatusPending202InvalidJSON verifies that a 202 status
+// response with an unparsable body is treated as "pending" rather than an
+// error.
+func TestVideoModel_StatusPending202InvalidJSON(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		case 2:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("not json"))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"video":  map[string]interface{}{"url": "https://example.com/video.mp4"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 50},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "https://example.com/video.mp4", resp.Videos[0].URL)
 }
