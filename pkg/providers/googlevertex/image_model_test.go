@@ -897,14 +897,49 @@ func TestImageModel_DoGenerate_Gemini_ErrorMaskNotSupported(t *testing.T) {
 	assert.Contains(t, err.Error(), "image editing with masks is not supported")
 }
 
-// TestImageModel_DoGenerate_Gemini_ErrorMultipleImages verifies that requesting N > 1 from
-// a Gemini image model returns an unsupported error (matches TS behavior).
-func TestImageModel_DoGenerate_Gemini_ErrorMultipleImages(t *testing.T) {
-	prov, _ := New(Config{
+// TestImageModel_DoGenerate_Gemini_IgnoresN verifies that Gemini image
+// models do not error on N > 1: TS google-image-model.ts has no N/count
+// concept, and MaxImagesPerCall() declares the per-call limit of 1 so the
+// core GenerateImage helper issues multiple single-image calls instead.
+func TestImageModel_DoGenerate_Gemini_IgnoresN(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if _, ok := reqBody["n"]; ok {
+			t.Errorf("request body should not include an 'n' field: %+v", reqBody)
+		}
+		response := vertexGeminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
+			}{
+				{Content: struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				}{Parts: []struct {
+					Text       string                  `json:"text,omitempty"`
+					InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+				}{{InlineData: &vertexGeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
 		Project:     "test-project",
 		Location:    "us-central1",
 		AccessToken: "test-token",
+		BaseURL:     server.URL,
 	})
+	require.NoError(t, err)
 	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	n := 3
 
@@ -913,9 +948,12 @@ func TestImageModel_DoGenerate_Gemini_ErrorMultipleImages(t *testing.T) {
 		N:      &n,
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "do not support generating multiple images")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Len(t, result.Images, 1)
+	if model.MaxImagesPerCall() != 1 {
+		t.Fatalf("MaxImagesPerCall() = %d, want 1", model.MaxImagesPerCall())
+	}
 }
 
 // TestImageModel_DoGenerate_Imagen_WithSeed verifies that the seed is included in

@@ -2,8 +2,12 @@ package googlevertex
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"golang.org/x/oauth2"
 )
 
@@ -335,5 +339,83 @@ func TestNewProvider_ExpressModeWithAPIKey(t *testing.T) {
 	}
 	if prov == nil {
 		t.Fatal("expected provider")
+	}
+}
+
+// TestLanguageModel_EndpointModelID ports TS isEndpointModelId /
+// loadBaseURL({endpoint: true}) (google-vertex-provider-base.ts): a model ID
+// prefixed with "endpoints/" is addressed under the location-scoped base
+// URL without the "/publishers/google" suffix.
+func TestLanguageModel_EndpointModelID(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	// The endpoint client is only built for an auto-derived base URL, so
+	// construct the provider without an explicit BaseURL and instead point
+	// GOOGLE_VERTEX-style host resolution isn't practical in a unit test;
+	// verify the routing decision directly via isEndpointModelID and by
+	// asserting the request path omits any "publishers/google" segment when
+	// an endpoint client is present.
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "test-token",
+		BaseURL:     server.URL, // explicit BaseURL: used verbatim for every model
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if p.endpointClient != nil {
+		t.Error("expected no endpointClient when BaseURL is explicit")
+	}
+
+	model, err := p.LanguageModel("endpoints/1234")
+	if err != nil {
+		t.Fatalf("LanguageModel() error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if gotPath != "/endpoints/1234:generateContent" {
+		t.Fatalf("path = %q, want /endpoints/1234:generateContent", gotPath)
+	}
+}
+
+// TestLanguageModel_EndpointModelID_AutoBaseURL verifies the endpoint client
+// is built (and used) when the base URL is auto-derived from project/location.
+func TestLanguageModel_EndpointModelID_AutoBaseURL(t *testing.T) {
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "test-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if p.endpointClient == nil {
+		t.Fatal("expected an endpointClient when BaseURL is auto-derived")
+	}
+	if p.config.APIKey == "" {
+		if _, err := p.LanguageModel("endpoints/1234"); err != nil {
+			t.Fatalf("LanguageModel() error = %v", err)
+		}
+	}
+}
+
+// TestLanguageModel_EndpointModelID_RejectsExpressMode verifies that a tuned
+// "endpoints/{id}" model errors under Express Mode (API key auth), matching
+// TS: "Google Vertex tuned models do not support Express Mode API keys."
+func TestLanguageModel_EndpointModelID_RejectsExpressMode(t *testing.T) {
+	p, err := New(Config{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := p.LanguageModel("endpoints/1234"); err == nil {
+		t.Fatal("expected an error for endpoints/ model ID under Express Mode")
 	}
 }

@@ -42,6 +42,17 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// MaxImagesPerCall returns the maximum number of images generated per
+// DoGenerate call. Gemini image models generate exactly one image per call;
+// the core GenerateImage helper splits a larger request into multiple
+// calls. Imagen models are unaffected (0 defers to the caller/default).
+func (m *ImageModel) MaxImagesPerCall() int {
+	if isGeminiModel(m.modelID) {
+		return 1
+	}
+	return 0
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	// Determine if this is a Gemini model or Imagen model
@@ -176,11 +187,6 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if opts.Mask != nil {
 		return nil, fmt.Errorf("image editing with masks is not supported for Gemini image models")
 	}
-	// Gemini image models only support generating a single image at a time.
-	if opts.N != nil && *opts.N > 1 {
-		return nil, fmt.Errorf("LGemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
-	}
-
 	// Gemini image models use the language model API with responseModalities: ["IMAGE"]
 	genConfig := map[string]interface{}{
 		"responseModalities": []string{"IMAGE"},

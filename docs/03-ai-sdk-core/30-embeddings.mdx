@@ -9,7 +9,7 @@ Embeddings are a way to represent words, phrases, or images as vectors in a high
 
 ## Embedding a Single Value
 
-The Go AI SDK provides the [`ai.Embed()`](../07-reference/ai/embed.md) function to embed single values, which is useful for tasks such as finding similar words or phrases or clustering text.
+The Go AI SDK provides the [`ai.Embed()`](../07-reference/ai/embed.mdx) function to embed single values, which is useful for tasks such as finding similar words or phrases or clustering text.
 
 ```go
 package main
@@ -48,7 +48,7 @@ func main() {
 
 When loading data, e.g. when preparing a data store for retrieval-augmented generation (RAG), it is often useful to embed many values at once (batch embedding).
 
-The Go AI SDK provides the [`ai.EmbedMany()`](../07-reference/ai/embed-many.md) function for this purpose.
+The Go AI SDK provides the [`ai.EmbedMany()`](../07-reference/ai/embed-many.mdx) function for this purpose.
 
 ```go
 package main
@@ -748,14 +748,14 @@ func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model 
 
 ## Next Steps
 
-- Learn about [Reranking](./06-reranking.md)
-- Explore [RAG Patterns](../06-advanced/01-prompt-engineering.md)
-- See [Embedding Examples](../examples/05-embeddings.md)
+- Learn about [Reranking](./31-reranking.mdx)
+- Explore [RAG Patterns](../06-advanced/01-prompt-engineering.mdx)
+- See [Embedding Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
 ## See Also
 
-- [Similarity Functions](../07-reference/ai/similarity-functions.md)
-- [Providers](../providers/01-overview.md)
-- [Middleware](./11-middleware.md)
-- [API Reference: Embed](../07-reference/ai/embed.md)
-- [API Reference: EmbedMany](../07-reference/ai/embed-many.md)
+- [Similarity Functions](../07-reference/ai/cosine-similarity.mdx)
+- [Providers](../05-providers/01-overview.mdx)
+- [Middleware](./40-middleware.mdx)
+- [API Reference: Embed](../07-reference/ai/embed.mdx)
+- [API Reference: EmbedMany](../07-reference/ai/embed-many.mdx)

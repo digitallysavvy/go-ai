@@ -26,28 +26,59 @@ type Response struct {
 	Candidates     []Candidate     `json:"candidates"`
 	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
+	// ResponseID is the provider-assigned response ID (TS: response.responseId).
+	ResponseID string `json:"responseId,omitempty"`
 	// ServiceTier is kept for compatibility with older responses. Current
 	// Gemini API responses report it inside usageMetadata.
 	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
+// tokenDetail is one entry of a *TokensDetails array (modality + token count).
+type tokenDetail struct {
+	Modality   string `json:"modality,omitempty"`
+	TokenCount int    `json:"tokenCount,omitempty"`
+}
+
 // UsageMetadata represents token usage information returned by Gemini.
+// Field set matches TS GoogleUsageMetadata (convert-google-usage.ts) so that
+// json.Marshal(UsageMetadata) reproduces the same raw usage object.
 type UsageMetadata struct {
-	PromptTokenCount        int    `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount    int    `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount         int    `json:"totalTokenCount,omitempty"`
-	CachedContentTokenCount int    `json:"cachedContentTokenCount,omitempty"`
-	ThoughtsTokenCount      int    `json:"thoughtsTokenCount,omitempty"`
-	TrafficType             string `json:"trafficType,omitempty"`
-	ServiceTier             string `json:"serviceTier,omitempty"`
-	PromptTokensDetails     []struct {
-		Modality   string `json:"modality,omitempty"`
-		TokenCount int    `json:"tokenCount,omitempty"`
-	} `json:"promptTokensDetails,omitempty"`
-	CandidatesTokensDetails []struct {
-		Modality   string `json:"modality,omitempty"`
-		TokenCount int    `json:"tokenCount,omitempty"`
-	} `json:"candidatesTokensDetails,omitempty"`
+	PromptTokenCount           int           `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount       int           `json:"candidatesTokenCount,omitempty"`
+	ToolUsePromptTokenCount    int           `json:"toolUsePromptTokenCount,omitempty"`
+	TotalTokenCount            int           `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount    int           `json:"cachedContentTokenCount,omitempty"`
+	ThoughtsTokenCount         int           `json:"thoughtsTokenCount,omitempty"`
+	TrafficType                string        `json:"trafficType,omitempty"`
+	ServiceTier                string        `json:"serviceTier,omitempty"`
+	PromptTokensDetails        []tokenDetail `json:"promptTokensDetails,omitempty"`
+	CacheTokensDetails         []tokenDetail `json:"cacheTokensDetails,omitempty"`
+	CandidatesTokensDetails    []tokenDetail `json:"candidatesTokensDetails,omitempty"`
+	ToolUsePromptTokensDetails []tokenDetail `json:"toolUsePromptTokensDetails,omitempty"`
+}
+
+// promptFeedbackBlockReason extracts the blockReason field from a raw
+// promptFeedback payload, if present.
+func promptFeedbackBlockReason(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var pf struct {
+		BlockReason string `json:"blockReason"`
+	}
+	if err := json.Unmarshal(raw, &pf); err != nil {
+		return ""
+	}
+	return pf.BlockReason
+}
+
+// isConfirmedPromptBlockReason reports whether blockReason represents an
+// actual prompt block (TS isConfirmedPromptBlockReason): present, non-empty,
+// and not one of the "unspecified" sentinel values.
+func isConfirmedPromptBlockReason(blockReason string) bool {
+	return blockReason != "" &&
+		blockReason != "BLOCK_REASON_UNSPECIFIED" &&
+		blockReason != "BLOCKED_REASON_UNSPECIFIED"
 }
 
 type ModalityTokenCounts struct {
@@ -96,6 +127,10 @@ func decodeInlineData(encoded string) []byte {
 }
 
 // convertUsage converts a Gemini UsageMetadata payload to the SDK Usage struct.
+// Mirrors TS convertGoogleUsage (convert-google-usage.ts): input tokens are
+// promptTokenCount + toolUsePromptTokenCount, noCache/cacheRead and the
+// output text/reasoning split are always populated (not gated on being
+// non-zero), and Raw carries the full usage object.
 func convertUsage(usage *UsageMetadata) types.Usage {
 	if usage == nil {
 		return types.Usage{}
@@ -103,19 +138,17 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 
 	promptTokens := int64(usage.PromptTokenCount)
 	candidatesTokens := int64(usage.CandidatesTokenCount)
+	toolUsePromptTokens := int64(usage.ToolUsePromptTokenCount)
 	cachedContentTokens := int64(usage.CachedContentTokenCount)
 	thoughtsTokens := int64(usage.ThoughtsTokenCount)
 
-	totalOutputTokens := candidatesTokens + thoughtsTokens
-	totalTokens := promptTokens + totalOutputTokens
+	inputTokens := promptTokens + toolUsePromptTokens
+	noCacheTokens := inputTokens - cachedContentTokens
+	outputTokens := candidatesTokens + thoughtsTokens
+	totalTokens := inputTokens + outputTokens
 
-	result := types.Usage{
-		InputTokens:  &promptTokens,
-		OutputTokens: &totalOutputTokens,
-		TotalTokens:  &totalTokens,
-	}
-
-	// Input token details: cache breakdown and text/image split.
+	// Input token details: cache breakdown (always) plus text/image split
+	// (Go-only addition; TS convertGoogleUsage has no modality split).
 	var textTokens *int64
 	var imageTokens *int64
 	for _, detail := range usage.PromptTokensDetails {
@@ -128,38 +161,28 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 			imageTokens = &v
 		}
 	}
-	if cachedContentTokens > 0 || textTokens != nil || imageTokens != nil {
-		noCacheTokens := promptTokens - cachedContentTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &noCacheTokens,
-			CacheReadTokens:  &cachedContentTokens,
-			CacheWriteTokens: nil, // Gemini does not report cache write tokens separately
-			TextTokens:       textTokens,
-			ImageTokens:      imageTokens,
-		}
-	}
 
-	// Output token details: text vs reasoning split.
-	if thoughtsTokens > 0 {
-		result.OutputDetails = &types.OutputTokenDetails{
+	result := types.Usage{
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+		TotalTokens:  &totalTokens,
+		InputDetails: &types.InputTokenDetails{
+			NoCacheTokens:   &noCacheTokens,
+			CacheReadTokens: &cachedContentTokens,
+			TextTokens:      textTokens,
+			ImageTokens:     imageTokens,
+		},
+		OutputDetails: &types.OutputTokenDetails{
 			TextTokens:      &candidatesTokens,
 			ReasoningTokens: &thoughtsTokens,
-		}
+		},
 	}
 
-	result.Raw = map[string]interface{}{
-		"promptTokenCount":     usage.PromptTokenCount,
-		"candidatesTokenCount": usage.CandidatesTokenCount,
-		"totalTokenCount":      usage.TotalTokenCount,
-	}
-	if usage.CachedContentTokenCount > 0 {
-		result.Raw["cachedContentTokenCount"] = usage.CachedContentTokenCount
-	}
-	if usage.ThoughtsTokenCount > 0 {
-		result.Raw["thoughtsTokenCount"] = usage.ThoughtsTokenCount
-	}
-	if usage.TrafficType != "" {
-		result.Raw["trafficType"] = usage.TrafficType
+	if raw, err := json.Marshal(usage); err == nil {
+		var rawMap map[string]interface{}
+		if json.Unmarshal(raw, &rawMap) == nil {
+			result.Raw = rawMap
+		}
 	}
 
 	return result

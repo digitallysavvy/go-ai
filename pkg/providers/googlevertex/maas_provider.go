@@ -1,8 +1,11 @@
 package googlevertex
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	stdhttp "net/http"
 	"os"
 	"strings"
@@ -13,6 +16,39 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
+
+// maasMaxOutputTokensByModel mirrors TS maxOutputTokensByModel
+// (google-vertex-maas-provider.ts): some MaaS-hosted models silently truncate
+// output at a low default unless max_tokens is set explicitly.
+var maasMaxOutputTokensByModel = map[string]int{
+	"meta/llama-4-maverick-17b-128e-instruct-maas": 8192,
+	"meta/llama-4-scout-17b-16e-instruct-maas":     8192,
+}
+
+// applyMaasMaxTokensDefault ports TS transformGoogleVertexMaasRequestBody:
+// when the request targets a model in maasMaxOutputTokensByModel and does
+// not already set max_tokens, inject the model's default. Any error, or a
+// request body that isn't a JSON object, leaves body unchanged.
+func applyMaasMaxTokensDefault(body []byte) []byte {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	modelID, _ := m["model"].(string)
+	maxTokens, ok := maasMaxOutputTokensByModel[modelID]
+	if !ok {
+		return body
+	}
+	if _, exists := m["max_tokens"]; exists {
+		return body
+	}
+	m["max_tokens"] = maxTokens
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
 
 type HeadersResolver func(ctx context.Context) (map[string]string, error)
 
@@ -71,6 +107,16 @@ type maasAuthTransport struct {
 
 func (t *maasAuthTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	clone := req.Clone(req.Context())
+	if clone.Body != nil && clone.Method == stdhttp.MethodPost {
+		bodyBytes, err := io.ReadAll(clone.Body)
+		_ = clone.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		bodyBytes = applyMaasMaxTokensDefault(bodyBytes)
+		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		clone.ContentLength = int64(len(bodyBytes))
+	}
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
 		if err != nil {

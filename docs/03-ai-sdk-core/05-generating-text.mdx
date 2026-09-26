@@ -12,11 +12,11 @@ The Go AI SDK Core provides two functions to generate text from LLMs:
 - [`ai.GenerateText()`](#generatetext) - Generates text for a given prompt and model.
 - [`ai.StreamText()`](#streamtext) - Streams text from a given prompt and model.
 
-Advanced LLM features such as [tool calling](./04-tools-and-tool-calling.md) and [structured data generation](./03-generating-structured-data.md) are built on top of text generation.
+Advanced LLM features such as [tool calling](./15-tools-and-tool-calling.mdx) and [structured data generation](./10-generating-structured-data.mdx) are built on top of text generation.
 
 ## GenerateText
 
-You can generate text using the [`ai.GenerateText()`](../07-reference/ai/generate-text.md) function. This function is ideal for non-interactive use cases where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
+You can generate text using the [`ai.GenerateText()`](../07-reference/ai/generate-text.mdx) function. This function is ideal for non-interactive use cases where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
 
 ```go
 package main
@@ -49,7 +49,7 @@ func main() {
 }
 ```
 
-You can use more [advanced prompts](../02-foundations/03-prompts.md) to generate text with more complex instructions and content:
+You can use more [advanced prompts](../02-foundations/03-prompts.mdx) to generate text with more complex instructions and content:
 
 ```go
 article := "..." // your article text
@@ -182,7 +182,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 Depending on your model and prompt, it can take a large language model (LLM) up to a minute to finish generating its response. This delay can be unacceptable for interactive use cases such as chatbots or real-time applications, where users expect immediate responses.
 
-The Go AI SDK Core provides the [`ai.StreamText()`](../07-reference/ai/stream-text.md) function which simplifies streaming text from LLMs:
+The Go AI SDK Core provides the [`ai.StreamText()`](../07-reference/ai/stream-text.mdx) function which simplifies streaming text from LLMs:
 
 ```go
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -421,7 +421,7 @@ fmt.Println(result.Text)
 // Output: The weather in London is sunny with a temperature of 72°F.
 ```
 
-See [Tools and Tool Calling](./04-tools-and-tool-calling.md) for more details.
+See [Tools and Tool Calling](./15-tools-and-tool-calling.mdx) for more details.
 
 ### Step-by-Step Processing
 
@@ -536,7 +536,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-See [Settings](./10-settings.md) for all available options.
+See [Settings](./25-settings.mdx) for all available options.
 
 ## Error Handling
 
@@ -561,7 +561,7 @@ if err != nil {
 }
 ```
 
-See [Error Handling](./13-error-handling.md) for comprehensive error handling strategies.
+See [Error Handling](./50-error-handling.mdx) for comprehensive error handling strategies.
 
 ## Best Practices
 
@@ -724,15 +724,15 @@ In multi-turn conversations, `CustomContent` and `ReasoningFileContent` appear i
 
 ## Next Steps
 
-- Learn about [Generating Structured Data](./03-generating-structured-data.md)
-- Explore [Tools and Tool Calling](./04-tools-and-tool-calling.md)
-- Build [Agents](../03-agents/01-overview.md)
+- Learn about [Generating Structured Data](./10-generating-structured-data.mdx)
+- Explore [Tools and Tool Calling](./15-tools-and-tool-calling.mdx)
+- Build [Agents](../03-agents/01-overview.mdx)
 
 ## See Also
 
-- [Prompts](../02-foundations/03-prompts.md)
-- [Streaming](../02-foundations/05-streaming.md)
-- [Settings](./10-settings.md)
-- [Error Handling](./13-error-handling.md)
-- [API Reference: GenerateText](../07-reference/ai/generate-text.md)
-- [API Reference: StreamText](../07-reference/ai/stream-text.md)
+- [Prompts](../02-foundations/03-prompts.mdx)
+- [Streaming](../02-foundations/05-streaming.mdx)
+- [Settings](./25-settings.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [API Reference: StreamText](../07-reference/ai/stream-text.mdx)

@@ -147,3 +147,33 @@ func TestIntegration_Gemini31ProPreview(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ModelGemini31ProPreview, model.ModelID())
 }
+
+// TestModelConstants_Gemini35Through38 ports TS GoogleModelId's
+// gemini-3.5/3.6/3.7/3.8 flash entries (google-language-model-options.ts).
+func TestModelConstants_Gemini35Through38(t *testing.T) {
+	assert.Equal(t, "gemini-3.5-flash-lite", ModelGemini35FlashLite)
+	assert.Equal(t, "gemini-3.6-flash", ModelGemini36Flash)
+	assert.Equal(t, "gemini-3.7-flash", ModelGemini37Flash)
+	assert.Equal(t, "gemini-3.8-flash", ModelGemini38Flash)
+}
+
+// TestModelConstants_SpeechTranscriptionLyriaVeo covers the remaining Sep 23
+// 2026 parity model ID additions (google-speech-model-options.ts,
+// transcription/google-transcription-model-options.ts,
+// interactions/google-interactions-language-model-options.ts,
+// google-video-settings.ts).
+func TestModelConstants_SpeechTranscriptionLyriaVeo(t *testing.T) {
+	assert.Equal(t, "gemini-3.8-flash-tts", ModelGemini38FlashTTS)
+	assert.Equal(t, "gemini-3.8-flash-lite-tts", ModelGemini38FlashLiteTTS)
+	assert.Equal(t, "gemini-3.5-transcribe", ModelGemini35Transcribe)
+	assert.Equal(t, "gemini-3.5-transcribe-live", ModelGemini35TranscribeLive)
+	assert.Equal(t, "lyria-3-clip-preview", InteractionsModelLyria3ClipPreview)
+	assert.Equal(t, "lyria-3-pro-preview", InteractionsModelLyria3ProPreview)
+	assert.Equal(t, "veo-3.1-fast-generate-preview", ModelVeo31FastGeneratePreview)
+	assert.Equal(t, "veo-3.1-generate-preview", ModelVeo31GeneratePreview)
+	assert.Equal(t, "veo-3.1-generate", ModelVeo31Generate)
+	assert.Equal(t, "veo-3.1-lite-generate-preview", ModelVeo31LiteGeneratePreview)
+	assert.Equal(t, "veo-3.0-generate-001", ModelVeo30Generate001)
+	assert.Equal(t, "veo-3.0-fast-generate-001", ModelVeo30FastGenerate001)
+	assert.Equal(t, "veo-2.0-generate-001", ModelVeo20Generate001)
+}

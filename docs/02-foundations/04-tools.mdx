@@ -5,7 +5,7 @@ description: Learn about tools with the Go AI SDK.
 
 # Tools
 
-While [large language models (LLMs)](./01-overview.md#large-language-models) have incredible generation capabilities, they struggle with discrete tasks (e.g. mathematics) and interacting with the outside world (e.g. getting the weather).
+While [large language models (LLMs)](./01-overview.mdx#large-language-models) have incredible generation capabilities, they struggle with discrete tasks (e.g. mathematics) and interacting with the outside world (e.g. getting the weather).
 
 Tools are actions that an LLM can invoke. The results of these actions can be reported back to the LLM to be considered in the next response.
 
@@ -13,7 +13,7 @@ For example, when you ask an LLM for the "weather in London", and there is a wea
 
 ## What is a tool?
 
-A tool is an object that can be called by the model to perform a specific task. You can use tools with [`ai.GenerateText()`](../07-reference/ai/generate-text.md) and [`ai.StreamText()`](../07-reference/ai/stream-text.md) by passing one or more tools to the `Tools` field.
+A tool is an object that can be called by the model to perform a specific task. You can use tools with [`ai.GenerateText()`](../07-reference/ai/generate-text.mdx) and [`ai.StreamText()`](../07-reference/ai/stream-text.mdx) by passing one or more tools to the `Tools` field.
 
 A tool in Go consists of several properties:
 
@@ -28,7 +28,7 @@ type Tool struct {
 
 If the LLM decides to use a tool, it will generate a tool call. Tools with an `Execute` function are run automatically when these calls are generated. The output of the tool calls are returned using tool result objects.
 
-You can automatically pass tool results back to the LLM using [multi-step calls](../03-ai-sdk-core/04-tools-and-tool-calling.md#multi-step-calls) with `StreamText` and `GenerateText`.
+You can automatically pass tool results back to the LLM using [multi-step calls](../03-ai-sdk-core/15-tools-and-tool-calling.mdx#multi-step-calls) with `StreamText` and `GenerateText`.
 
 ## Basic Tool Example
 
@@ -92,7 +92,7 @@ func main() {
 
 ## Tool Schemas
 
-Schemas define the parameters for tools and validate the [tool calls](../03-ai-sdk-core/04-tools-and-tool-calling.md). The Go AI SDK uses JSON Schema format for tool parameters.
+Schemas define the parameters for tools and validate the [tool calls](../03-ai-sdk-core/15-tools-and-tool-calling.mdx). The Go AI SDK uses JSON Schema format for tool parameters.
 
 ### JSON Schema
 
@@ -469,13 +469,13 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ## Next Steps
 
-- Learn about [Streaming](./05-streaming.md)
-- Explore [Tools and Tool Calling](../03-ai-sdk-core/04-tools-and-tool-calling.md)
-- Build [Agents](../03-agents/01-overview.md)
+- Learn about [Streaming](./05-streaming.mdx)
+- Explore [Tools and Tool Calling](../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
+- Build [Agents](../03-agents/01-overview.mdx)
 
 ## See Also
 
-- [Generating Text](../03-ai-sdk-core/02-generating-text.md)
-- [Tool Types Reference](../07-reference/types/tools.md)
-- [Error Handling](../03-ai-sdk-core/13-error-handling.md)
-- [Agent Overview](../03-agents/01-overview.md)
+- [Generating Text](../03-ai-sdk-core/05-generating-text.mdx)
+- [Tool Types Reference](../07-reference/types/tools.mdx)
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)
+- [Agent Overview](../03-agents/01-overview.mdx)

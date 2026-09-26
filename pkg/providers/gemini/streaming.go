@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -35,7 +38,7 @@ type stream struct {
 	// so that a STOP finish reason can be mapped to tool-calls.
 	hasToolCalls bool
 
-	// Code execution state (used only when cfg.SupportsCodeExecution is true).
+	// Code execution state. TS parses these parts for both Google and Vertex.
 	codeExecCount  int
 	lastCodeExecID string
 
@@ -52,6 +55,31 @@ type stream struct {
 	toolInputState map[string]*toolInputAccum
 	toolInputOrder []string
 	drainedOnDone  bool
+
+	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
+	// custom names, mirroring TS createToolNameMapping.
+	tnm toolNameMapping
+
+	// httpHeaders/modelID feed the single response-metadata chunk emitted on
+	// the first SSE event (previously done by an external
+	// providerutils.WithResponseMetadata wrapper; now internal so the Gemini
+	// responseId, TS "hasEmittedResponseMetadata", can be included too).
+	httpHeaders             http.Header
+	modelID                 string
+	emittedResponseMetadata bool
+
+	// finishReason/hasFinished hold the terminal finish reason. TS only
+	// enqueues the 'finish' chunk once, from the stream's flush handler, not
+	// per SSE event — so we track state here and emit at end-of-stream.
+	finishReason types.FinishReason
+	hasFinished  bool
+
+	// confirmedPromptBlockReason freezes content processing once a genuine
+	// (non-"unspecified") promptFeedback.blockReason is seen: later chunks
+	// still contribute usage/metadata but no more content (TS: "A confirmed
+	// prompt block is terminal for generated content, but later chunks can
+	// still contribute usage and provider metadata.").
+	confirmedPromptBlockReason string
 }
 
 type toolInputAccum struct {
@@ -63,12 +91,18 @@ type toolInputAccum struct {
 }
 
 // newStream creates a stream with the given reader and provider configuration.
-func newStream(reader io.ReadCloser, cfg Config) *stream {
+// httpHeaders/modelID are used for the single response-metadata chunk; both
+// may be zero-valued (e.g. in tests constructing the stream directly).
+func newStream(reader io.ReadCloser, cfg Config, tnm toolNameMapping, httpHeaders http.Header, modelID string) *stream {
 	return &stream{
 		reader:         reader,
 		parser:         streaming.NewSSEParser(reader),
 		cfg:            cfg,
 		toolInputState: make(map[string]*toolInputAccum),
+		tnm:            tnm,
+		httpHeaders:    httpHeaders,
+		modelID:        modelID,
+		finishReason:   types.FinishReasonOther,
 	}
 }
 
@@ -98,17 +132,19 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 
 	event, err := s.parser.Next()
 	if err != nil {
+		// The underlying reader can end without an explicit "[DONE]" SSE
+		// event (e.g. in tests, or providers that just close the connection).
+		// TS always calls its stream's flush() exactly once regardless of how
+		// the stream ends, so finalize here too.
+		if err == io.EOF && s.finalizeOnce() {
+			return s.Next()
+		}
 		s.err = err
 		return nil, err
 	}
 	if streaming.IsStreamDone(event) {
-		if !s.drainedOnDone {
-			s.closeOpenBlocks()
-			s.flushToolInputs()
-			s.drainedOnDone = true
-			if len(s.chunkBuffer) > 0 {
-				return s.Next()
-			}
+		if s.finalizeOnce() {
+			return s.Next()
 		}
 		s.err = io.EOF
 		return nil, io.EOF
@@ -123,12 +159,39 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 	return s.Next()
 }
 
-// processSSEEvent converts one SSE event into structured chunks appended to
-// s.chunkBuffer. Mirrors the TS SDK TransformStream transform + flush handlers.
-func (s *stream) processSSEEvent(chunkData Response) {
-	if chunkData.PromptFeedback != nil {
-		s.lastPromptFeedback = chunkData.PromptFeedback
+// finalizeOnce closes any open blocks/tool inputs and appends the single
+// 'finish' chunk, exactly once. Returns true the first time it runs (in
+// which case the caller should drain s.chunkBuffer via s.Next()), false on
+// any subsequent call.
+func (s *stream) finalizeOnce() bool {
+	if s.drainedOnDone {
+		return false
 	}
+	s.closeOpenBlocks()
+	s.flushToolInputs()
+	s.chunkBuffer = append(s.chunkBuffer, s.buildFinishChunk())
+	s.drainedOnDone = true
+	return true
+}
+
+// processSSEEvent converts one SSE event into structured chunks appended to
+// s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
+// 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
+func (s *stream) processSSEEvent(chunkData Response) {
+	if !s.emittedResponseMetadata {
+		s.emittedResponseMetadata = true
+		headers := providerutils.ExtractHeaders(s.httpHeaders)
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: &provider.ResponseMetadata{
+				ID:        chunkData.ResponseID,
+				Headers:   headers,
+				ModelID:   s.modelID,
+				Timestamp: time.Now(),
+			},
+		})
+	}
+
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
 		if chunkData.UsageMetadata.ServiceTier != "" {
@@ -137,7 +200,19 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	} else if chunkData.ServiceTier != "" {
 		s.lastServiceTier = chunkData.ServiceTier
 	}
-	if len(chunkData.Candidates) == 0 {
+
+	if chunkData.PromptFeedback != nil && s.confirmedPromptBlockReason == "" {
+		s.lastPromptFeedback = chunkData.PromptFeedback
+		if reason := promptFeedbackBlockReason(chunkData.PromptFeedback); isConfirmedPromptBlockReason(reason) {
+			s.confirmedPromptBlockReason = reason
+			s.finishReason = types.FinishReasonContentFilter
+			s.hasFinished = true
+		}
+	}
+
+	// A confirmed prompt block is terminal for generated content, but later
+	// chunks can still contribute usage and provider metadata (handled above).
+	if s.confirmedPromptBlockReason != "" || len(chunkData.Candidates) == 0 {
 		return
 	}
 	candidate := chunkData.Candidates[0]
@@ -169,11 +244,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		}
 	}
 
-	// Finish reason: close open blocks, then emit the finish chunk.
 	if candidate.FinishReason != "" {
-		s.closeOpenBlocks()
-		s.flushToolInputs()
-
 		var fr types.FinishReason
 		switch candidate.FinishReason {
 		case "STOP":
@@ -191,15 +262,24 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		default:
 			fr = types.FinishReasonOther
 		}
+		s.finishReason = fr
+		s.hasFinished = true
+	}
+}
 
-		finishChunk := &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: fr,
-		}
-		if provMeta := s.buildFinishMeta(); provMeta != nil {
-			finishChunk.ProviderMetadata = provMeta
-		}
-		s.chunkBuffer = append(s.chunkBuffer, finishChunk)
+// buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream
+// (TS: flush(controller)), after any open blocks/tool inputs are closed.
+func (s *stream) buildFinishChunk() *provider.StreamChunk {
+	fr := s.finishReason
+	if !s.hasFinished {
+		fr = types.FinishReasonOther
+	}
+	usage := convertUsage(s.lastUsageMetadata)
+	return &provider.StreamChunk{
+		Type:             provider.ChunkTypeFinish,
+		FinishReason:     fr,
+		Usage:            &usage,
+		ProviderMetadata: s.buildFinishMeta(),
 	}
 }
 
@@ -254,25 +334,20 @@ func (s *stream) closeOpenBlocks() {
 }
 
 // buildFinishMeta assembles the ProviderMetadata JSON for the finish chunk.
-// Returns nil if there is nothing to include.
+// Always fully populated (null for absent fields), matching TS
+// GoogleProviderMetadata, and written under every configured metadata key.
 func (s *stream) buildFinishMeta() json.RawMessage {
-	meta := map[string]json.RawMessage{}
-	if s.lastPromptFeedback != nil {
-		meta["promptFeedback"] = s.lastPromptFeedback
-	}
-	if s.lastGroundingMetadata != nil {
-		meta["groundingMetadata"] = s.lastGroundingMetadata
-	}
-	if s.lastUrlContextMetadata != nil {
-		meta["urlContextMetadata"] = s.lastUrlContextMetadata
-	}
-	if s.lastSafetyRatings != nil {
-		meta["safetyRatings"] = s.lastSafetyRatings
+	meta := map[string]json.RawMessage{
+		"promptFeedback":     rawOrNull(s.lastPromptFeedback),
+		"groundingMetadata":  rawOrNull(s.lastGroundingMetadata),
+		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
+		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
 	}
 	if s.lastFinishMessage != "" {
-		if fm, err := json.Marshal(s.lastFinishMessage); err == nil {
-			meta["finishMessage"] = fm
-		}
+		fm, _ := json.Marshal(s.lastFinishMessage)
+		meta["finishMessage"] = fm
+	} else {
+		meta["finishMessage"] = json.RawMessage("null")
 	}
 	if s.lastUsageMetadata != nil {
 		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
@@ -281,6 +356,8 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		if mtc, err := json.Marshal(modalityTokenCounts(s.lastUsageMetadata)); err == nil {
 			meta["modalityTokenCounts"] = mtc
 		}
+	} else {
+		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
 	if s.lastServiceTier != "" {
@@ -290,18 +367,15 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 	} else {
 		meta["serviceTier"] = json.RawMessage("null")
 	}
-	if len(meta) == 0 {
-		return nil
-	}
-	provMeta, _ := json.Marshal(map[string]interface{}{s.cfg.MetadataKey: meta})
+	provMeta, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
 	return provMeta
 }
 
 // processNonFuncPart converts a non-function-call part into chunks.
 // Handles code execution, inlineData, and text/reasoning block management.
 func (s *stream) processNonFuncPart(part Part) {
-	// Code execution (Google only).
-	if s.cfg.SupportsCodeExecution {
+	// Code execution. TS parses these for both Google and Vertex.
+	{
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
 			s.codeExecCount++
 			toolCallID := fmt.Sprintf("code-exec-%d", s.codeExecCount)
@@ -310,7 +384,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
 					ID:               toolCallID,
-					ToolName:         "code_execution",
+					ToolName:         s.tnm.toCustomToolName("code_execution"),
 					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
 					ProviderExecuted: true,
 				},
@@ -318,13 +392,15 @@ func (s *stream) processNonFuncPart(part Part) {
 			return
 		}
 		if part.CodeExecutionResult != nil && s.lastCodeExecID != "" {
+			// Do not clear lastCodeExecID: TS associates a result only with the
+			// most recently seen executable code part, but does not reset the
+			// pointer after emitting the result.
 			toolCallID := s.lastCodeExecID
-			s.lastCodeExecID = ""
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: toolCallID,
-					ToolName:   "code_execution",
+					ToolName:   s.tnm.toCustomToolName("code_execution"),
 					Result: map[string]interface{}{
 						"outcome": part.CodeExecutionResult.Outcome,
 						"output":  part.CodeExecutionResult.Output,
@@ -363,11 +439,9 @@ func (s *stream) processNonFuncPart(part Part) {
 	// Build provider metadata for thoughtSignature, if present.
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(map[string]interface{}{
-			s.cfg.MetadataKey: map[string]interface{}{
-				"thoughtSignature": part.ThoughtSignature,
-			},
-		})
+		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+			"thoughtSignature": part.ThoughtSignature,
+		}))
 	}
 
 	// Empty text + thoughtSignature on an open text block → text-delta with metadata only.
@@ -449,11 +523,9 @@ func (s *stream) processFuncCallPart(part Part) {
 
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(map[string]interface{}{
-			s.cfg.MetadataKey: map[string]interface{}{
-				"thoughtSignature": part.ThoughtSignature,
-			},
-		})
+		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+			"thoughtSignature": part.ThoughtSignature,
+		}))
 	}
 
 	args := part.FunctionCall.Args

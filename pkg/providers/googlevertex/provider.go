@@ -5,6 +5,7 @@ import (
 	"fmt"
 	stdhttp "net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,21 @@ const (
 type Provider struct {
 	config Config
 	client *http.Client
+
+	// endpointClient targets the endpoint-style base URL (no
+	// "/publishers/google" suffix), used for tuned models addressed as
+	// "endpoints/{id}" (TS isEndpointModelId / loadBaseURL({endpoint: true})).
+	// nil when the caller supplied an explicit BaseURL, matching TS: an
+	// explicit baseURL is used verbatim regardless of the endpoint flag.
+	endpointClient *http.Client
+}
+
+// isEndpointModelID mirrors TS isEndpointModelId: tuned models are served
+// from a deployed endpoint and addressed by their "endpoints/{id}" resource,
+// which replaces "publishers/google/models/{id}".
+// https://cloud.google.com/vertex-ai/generative-ai/docs/deploy/overview
+func isEndpointModelID(modelID string) bool {
+	return strings.HasPrefix(modelID, "endpoints/")
 }
 
 // Config contains configuration for the Google Vertex AI provider
@@ -62,6 +78,19 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
+
+	// ToolResultDownloads configures downloading of remote files referenced
+	// by tool-result content before sending them to Vertex as inline data
+	// (Vertex function responses only accept inline data, unlike the Google
+	// Generative AI API). Matches TS GoogleVertexProviderSettings.toolResultDownloads.
+	ToolResultDownloads ToolResultDownloadsConfig
+}
+
+// ToolResultDownloadsConfig configures the Vertex tool-result file downloader.
+type ToolResultDownloadsConfig struct {
+	// MaxBytes is the maximum size in bytes for each downloaded file.
+	// Defaults to 7 MiB (TS toolResultDownloads.maxBytes default) when zero.
+	MaxBytes int64
 }
 
 type cachedTokenSource struct {
@@ -114,7 +143,9 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
 	}
 
+	explicitBaseURL := cfg.BaseURL != ""
 	baseURL := cfg.BaseURL
+	var endpointBaseURL string
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -122,6 +153,8 @@ func New(cfg Config) (*Provider, error) {
 
 	if cfg.APIKey != "" {
 		// Vertex express mode (TS parity): API key auth and publishers/google base URL.
+		// Tuned "endpoints/{id}" models are rejected in Express Mode (checked
+		// in LanguageModel), so no endpoint-style base URL is needed here.
 		if baseURL == "" {
 			baseURL = "https://aiplatform.googleapis.com/v1/publishers/google"
 		}
@@ -139,6 +172,12 @@ func New(cfg Config) (*Provider, error) {
 		}
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
+				vertexHost(cfg.Location), cfg.Project, cfg.Location)
+			// Tuned models are addressed via their deployed endpoint
+			// ".../locations/{region}/endpoints/{id}" instead of the
+			// base-model ".../publishers/google/models/{id}" path, so they
+			// omit the "/publishers/google" suffix (TS loadBaseURL({endpoint: true})).
+			endpointBaseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s",
 				vertexHost(cfg.Location), cfg.Project, cfg.Location)
 		}
 
@@ -185,15 +224,29 @@ func New(cfg Config) (*Provider, error) {
 		}
 	}
 
+	mergedHeaders := version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex"))
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex")),
+		Headers:    mergedHeaders,
 		HTTPClient: httpClient,
 	})
 
+	var endpointClient *http.Client
+	// An explicit BaseURL is used verbatim for every model (TS: loadBaseURL
+	// returns `options.baseURL` unconditionally when set, ignoring the
+	// endpoint flag), so the alternate client only exists for auto-derived URLs.
+	if !explicitBaseURL && endpointBaseURL != "" {
+		endpointClient = http.NewClient(http.Config{
+			BaseURL:    endpointBaseURL,
+			Headers:    mergedHeaders,
+			HTTPClient: httpClient,
+		})
+	}
+
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:         cfg,
+		client:         client,
+		endpointClient: endpointClient,
 	}, nil
 }
 
@@ -233,6 +286,9 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	// Validate model ID
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if isEndpointModelID(modelID) && p.config.APIKey != "" {
+		return nil, fmt.Errorf("google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
 	}
 
 	return NewLanguageModel(p, modelID), nil
