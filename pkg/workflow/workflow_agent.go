@@ -21,7 +21,14 @@ type StepEndCallback func(ctx context.Context, e ai.OnStepFinishEvent)
 // Deprecated: use StepEndCallback.
 type StepFinishCallback func(ctx context.Context, e ai.OnStepFinishEvent)
 
+// EndCallback is called once after workflow completion. Mirrors TS
+// WorkflowAgent's stable `onEnd` (workflow-agent.ts), which shares the same
+// OnFinishEvent-shaped event as generateText/streamText/ToolLoopAgent.
+type EndCallback func(ctx context.Context, e ai.OnFinishEvent)
+
 // FinishCallback is called once after workflow completion.
+//
+// Deprecated: use EndCallback.
 type FinishCallback func(ctx context.Context, e ai.OnFinishEvent)
 
 // ErrorCallback is called when workflow execution returns an error.
@@ -105,9 +112,11 @@ type WorkflowAgent struct {
 	OnStepEnd            StepEndCallback
 	// Deprecated: use OnStepEnd.
 	OnStepFinish StepFinishCallback
-	OnFinish     FinishCallback
-	OnError      ErrorCallback
-	OnAbort      AbortCallback
+	OnEnd        EndCallback
+	// Deprecated: use OnEnd.
+	OnFinish FinishCallback
+	OnError  ErrorCallback
+	OnAbort  AbortCallback
 
 	PrepareCall       PrepareCallHook
 	PrepareStep       PrepareStepHook
@@ -136,6 +145,10 @@ type WorkflowAgent struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret signs issued approval requests and
 	// verifies resumed approvals before approved tools execute.
 	ExperimentalToolApprovalSecret []byte
@@ -159,6 +172,10 @@ type WorkflowGenerateOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
 
@@ -169,9 +186,11 @@ type WorkflowGenerateOptions struct {
 	OnStepEnd            StepEndCallback
 	// Deprecated: use OnStepEnd.
 	OnStepFinish StepFinishCallback
-	OnFinish     FinishCallback
-	OnError      ErrorCallback
-	OnAbort      AbortCallback
+	OnEnd        EndCallback
+	// Deprecated: use OnEnd.
+	OnFinish FinishCallback
+	OnError  ErrorCallback
+	OnAbort  AbortCallback
 }
 
 // WorkflowStreamOptions configures a single stream invocation.
@@ -194,6 +213,10 @@ type WorkflowStreamOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
 
@@ -205,9 +228,11 @@ type WorkflowStreamOptions struct {
 	OnStepEnd            StepEndCallback
 	// Deprecated: use OnStepEnd.
 	OnStepFinish StepFinishCallback
-	OnFinish     FinishCallback
-	OnError      ErrorCallback
-	OnAbort      AbortCallback
+	OnEnd        EndCallback
+	// Deprecated: use OnEnd.
+	OnFinish FinishCallback
+	OnError  ErrorCallback
+	OnAbort  AbortCallback
 }
 
 // WorkflowResult is the final non-streaming workflow result.
@@ -679,6 +704,16 @@ func resolveStepEnd(onStepEnd StepEndCallback, onStepFinish StepFinishCallback) 
 	}
 	return onStepFinish
 }
+
+// resolveEnd returns onEnd if set (converted to the FinishCallback shape used
+// internally), else its deprecated alias onFinish. Mirrors resolveStepEnd and
+// resolveAgentOnEnd (pkg/agent/toolloop.go).
+func resolveEnd(onEnd EndCallback, onFinish FinishCallback) FinishCallback {
+	if onEnd != nil {
+		return func(ctx context.Context, e ai.OnFinishEvent) { onEnd(ctx, e) }
+	}
+	return onFinish
+}
 func mergeFinish(a, b FinishCallback) FinishCallback {
 	if a == nil {
 		return b
@@ -810,11 +845,18 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		refineToolInput = ovr.ExperimentalRefineToolInput
 	}
 	repairToolCall := w.RepairToolCall
+	if repairToolCall == nil {
+		repairToolCall = w.ExperimentalRepairToolCall
+	}
 	if govr.RepairToolCall != nil {
 		repairToolCall = govr.RepairToolCall
+	} else if govr.ExperimentalRepairToolCall != nil {
+		repairToolCall = govr.ExperimentalRepairToolCall
 	}
 	if ovr.RepairToolCall != nil {
 		repairToolCall = ovr.RepairToolCall
+	} else if ovr.ExperimentalRepairToolCall != nil {
+		repairToolCall = ovr.ExperimentalRepairToolCall
 	}
 	approvalSecret := w.effectiveToolApprovalSecret(ovr, govr)
 	telemetry := w.Telemetry
@@ -852,7 +894,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
 		OnStepFinishEvent:              mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
-		OnFinishEvent:                  mergeFinish(w.OnFinish, mergeFinish(govr.OnFinish, ovr.OnFinish)),
+		OnFinishEvent:                  mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish))),
 	})
 }
 
@@ -897,6 +939,7 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish
+		legacy.OnEnd = opts.OnEnd
 		legacy.OnFinish = opts.OnFinish
 	}
 	return w.GenerateWithOptions(ctx, legacy)
@@ -978,6 +1021,7 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish
+		legacy.OnEnd = opts.OnEnd
 		legacy.OnFinish = opts.OnFinish
 	}
 	return w.StreamWithOptions(ctx, legacy)
