@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rivo/uniseg"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -1322,10 +1324,21 @@ func minInt(a, b int) int {
 	return b
 }
 
+// dropLastRune removes the last full grapheme cluster from value, mirroring
+// the TS terminal-renderer's removeLastGrapheme (uses Intl.Segmenter with
+// granularity: 'grapheme'). A single backspace/DEL keypress must delete an
+// entire user-perceived character in one step, so multi-rune clusters such as
+// ZWJ emoji sequences ("👨‍👩‍👧‍👦"), regional-indicator flag pairs ("🇺🇸"),
+// and base+combining-mark sequences ("e" + U+0301) are removed as one unit
+// rather than one rune at a time.
 func dropLastRune(value string) string {
 	if value == "" {
 		return ""
 	}
-	runes := []rune(value)
-	return string(runes[:len(runes)-1])
+	lastClusterStart := 0
+	gr := uniseg.NewGraphemes(value)
+	for gr.Next() {
+		lastClusterStart, _ = gr.Positions()
+	}
+	return value[:lastClusterStart]
 }

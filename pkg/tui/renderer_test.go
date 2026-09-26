@@ -75,6 +75,79 @@ func TestTerminalRendererReadsPromptWithKeyEditing(t *testing.T) {
 	}
 }
 
+// TestTerminalRendererBackspaceRemovesFullGraphemeCluster mirrors the TS
+// terminal-renderer.test.ts "removes the complete final grapheme for $name"
+// table: a single backspace/DEL keypress must delete an entire
+// user-perceived character, not just one UTF-8 rune. Covers a ZWJ emoji
+// family sequence, a flag emoji (regional indicator pair), and a base +
+// combining-mark sequence, plus the TS-covered simple emoji + DEL/BS cases.
+func TestTerminalRendererBackspaceRemovesFullGraphemeCluster(t *testing.T) {
+	cases := []struct {
+		name      string
+		inputText string
+		backspace string
+	}{
+		{name: "an emoji with DEL", inputText: "hello 😀", backspace: "\u007f"},
+		{name: "an emoji with BS", inputText: "hello 😀", backspace: "\b"},
+		{name: "a combining character sequence", inputText: "hello é", backspace: "\u007f"},
+		{name: "a joined ZWJ emoji family sequence", inputText: "hello 👨‍👩‍👧‍👦", backspace: "\u007f"},
+		{name: "a flag emoji (regional indicator pair)", inputText: "hello 🇺🇸", backspace: "\u007f"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			out := &recordingWriter{}
+			useSync := false
+			frame := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
+			renderer := NewTerminalRenderer(TerminalRendererOptions{
+				Input:       strings.NewReader(tc.inputText + tc.backspace + "\r"),
+				Output:      out,
+				FrameBuffer: frame,
+				Columns:     40,
+				Rows:        12,
+			})
+
+			prompt, ok, err := renderer.ReadPrompt(context.Background(), TerminalSessionOptions{Title: "Test"})
+			if err != nil {
+				t.Fatalf("ReadPrompt error: %v", err)
+			}
+			if !ok {
+				t.Fatal("ReadPrompt returned ok=false")
+			}
+			if prompt != "hello " {
+				t.Fatalf("prompt = %q, want %q", prompt, "hello ")
+			}
+		})
+	}
+}
+
+func TestDropLastRuneRemovesFullGraphemeCluster(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "ZWJ family emoji", input: "👨‍👩‍👧‍👦", want: ""},
+		{name: "ZWJ family emoji with prefix", input: "x👨‍👩‍👧‍👦", want: "x"},
+		{name: "flag emoji regional indicator pair", input: "🇺🇸", want: ""},
+		{name: "flag emoji with prefix", input: "x🇺🇸", want: "x"},
+		{name: "base plus combining mark", input: "é", want: ""},
+		{name: "base plus combining mark with prefix", input: "xé", want: "x"},
+		{name: "plain ascii", input: "abc", want: "ab"},
+		{name: "empty string", input: "", want: ""},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dropLastRune(tc.input); got != tc.want {
+				t.Fatalf("dropLastRune(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTerminalRendererPromptInterruptsOnCtrlC(t *testing.T) {
 	out := &recordingWriter{}
 	useSync := false

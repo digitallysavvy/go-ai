@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 // TerminalPartDisplayMode controls how terminal UI sections for stream parts are displayed.
@@ -36,9 +37,24 @@ const (
 )
 
 // RunAgentTUIOptions configures RunAgentTUI.
+//
+// Exactly one of Agent or Transport must be set, mirroring TS
+// run-agent-tui.ts's RunAgentTUIOptions union: `{ agent, sandbox? }` XOR
+// `{ transport }`. Providing both, or neither, returns an error.
 type RunAgentTUIOptions struct {
-	// Agent is the agent to run.
+	// Agent is the agent to run. Mutually exclusive with Transport.
 	Agent agent.Agent
+
+	// Transport communicates with a remote or embedded agent instead of
+	// running one in-process. Mutually exclusive with Agent (and Sandbox,
+	// which only applies to the Agent path).
+	Transport ai.ChatTransport
+
+	// ChatID identifies the conversation sent with every Transport
+	// SendMessages call. Only used when Transport is set; if empty, a
+	// per-runner id is generated automatically (mirrors TS
+	// AgentTUIRunner's `chatId = generateId()`).
+	ChatID string
 
 	// Title is shown in the terminal UI header.
 	Title string
@@ -68,8 +84,11 @@ type RunAgentTUIOptions struct {
 // RunAgentTUI runs an agent in the default terminal UI until input ends,
 // the context is cancelled, or the process receives an interrupt signal.
 func RunAgentTUI(ctx context.Context, opts RunAgentTUIOptions) error {
-	if opts.Agent == nil {
-		return fmt.Errorf("agent is required")
+	if opts.Agent == nil && opts.Transport == nil {
+		return fmt.Errorf("agent or transport is required")
+	}
+	if opts.Agent != nil && opts.Transport != nil {
+		return fmt.Errorf("agent and transport are mutually exclusive")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -84,6 +103,8 @@ func RunAgentTUI(ctx context.Context, opts RunAgentTUIOptions) error {
 
 	runner := NewAgentTUIRunner(AgentTUIRunnerOptions{
 		Agent:              opts.Agent,
+		Transport:          opts.Transport,
+		ChatID:             opts.ChatID,
 		Title:              opts.Title,
 		Tools:              opts.Tools,
 		Reasoning:          opts.Reasoning,
