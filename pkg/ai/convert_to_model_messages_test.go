@@ -254,7 +254,7 @@ func TestConvertToModelMessages_AssistantMessage(t *testing.T) {
 				{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
 					&ToolUIPart{
 						Type: "tool-calculator", State: ToolStateOutputError, ToolCallID: "call1",
-						Input: map[string]interface{}{"operation": "add", "numbers": []interface{}{1, 2}},
+						Input:     map[string]interface{}{"operation": "add", "numbers": []interface{}{1, 2}},
 						ErrorText: "Error: Invalid input",
 					},
 				}},
@@ -270,7 +270,7 @@ func TestConvertToModelMessages_AssistantMessage(t *testing.T) {
 			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
 				&ToolUIPart{
 					Type: "tool-calculator", State: ToolStateOutputAvailable, ToolCallID: "call1",
-					Input: map[string]interface{}{"operation": "add", "numbers": []interface{}{1, 2}},
+					Input:  map[string]interface{}{"operation": "add", "numbers": []interface{}{1, 2}},
 					Output: "3", ProviderExecuted: boolPtr(true),
 				},
 			}},
@@ -376,7 +376,7 @@ func TestConvertToModelMessages_IgnoreIncompleteToolCalls(t *testing.T) {
 			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
 				&ToolUIPart{
 					Type: "tool-calculator", State: ToolStateApprovalResponded, ToolCallID: "call1",
-					Input: map[string]interface{}{},
+					Input:    map[string]interface{}{},
 					Approval: &ToolUIPartApproval{ID: "a1", Approved: boolPtr(true)},
 				},
 			}},
