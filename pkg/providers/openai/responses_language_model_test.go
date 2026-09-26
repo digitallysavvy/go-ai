@@ -347,7 +347,12 @@ func TestResponsesLanguageModel_AllowedToolsProviderOption(t *testing.T) {
 	}
 }
 
-func TestResponsesLanguageModel_AllowedToolsMapsProviderToolNames(t *testing.T) {
+// TestResponsesLanguageModel_AllowedToolsResolvesBuiltinToolType covers row
+// a062795: an allowedTools entry naming a built-in provider tool must
+// resolve to that tool's own type (e.g. `{type:"web_search"}`), never to
+// `{type:"function", name:...}` — the API rejects the latter for a tool that
+// isn't actually a function.
+func TestResponsesLanguageModel_AllowedToolsResolvesBuiltinToolType(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
 
@@ -372,8 +377,80 @@ func TestResponsesLanguageModel_AllowedToolsMapsProviderToolNames(t *testing.T) 
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
-	if choice.Tools[0].Name != "web_search" {
-		t.Fatalf("allowed tool name = %q, want provider mapped web_search", choice.Tools[0].Name)
+	if choice.Tools[0].Type != "web_search" || choice.Tools[0].Name != "" {
+		t.Fatalf("allowed tool entry = %#v, want built-in web_search entry without a name", choice.Tools[0])
+	}
+}
+
+// TestResponsesLanguageModel_AllowedToolsFunctionAndUnknown covers the
+// function and "not part of this request" branches of a062795.
+func TestResponsesLanguageModel_AllowedToolsFunctionAndUnknown(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "lookup",
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"lookup", "not_in_request"},
+					"mode":      "required",
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
+	if choice.Mode != "required" || len(choice.Tools) != 2 {
+		t.Fatalf("allowed tools choice = %#v", choice)
+	}
+	if choice.Tools[0].Type != "function" || choice.Tools[0].Name != "lookup" {
+		t.Fatalf("allowed tool[0] = %#v, want function lookup", choice.Tools[0])
+	}
+	if choice.Tools[1].Type != "function" || choice.Tools[1].Name != "not_in_request" {
+		t.Fatalf("allowed tool[1] = %#v, want unknown name sent through as function", choice.Tools[1])
+	}
+	if len(warnings) != 1 || warnings[0].Feature != `allowedTools entry "not_in_request"` {
+		t.Fatalf("warnings = %#v, want unknown allowedTools entry warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_AllowedToolsAllDroppedErrors covers the
+// UnsupportedFunctionalityError path: when every requested tool name is
+// unsupported for allow-listing, buildRequestBody must return an error.
+func TestResponsesLanguageModel_AllowedToolsAllDroppedErrors(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "deferred_tool",
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{"deferLoading": true},
+			},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"deferred_tool"},
+				},
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("expected an error when every allowedTools entry is dropped")
 	}
 }
 
@@ -970,16 +1047,24 @@ func TestResponsesLanguageModel_ConversationSkipsStoredReasoningAndWarnsWithPrev
 	if len(input) != 1 {
 		t.Fatalf("input length = %d, want only assistant message", len(input))
 	}
-	msg := input[0].(responses.AssistantMessageItem)
-	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
-		t.Fatalf("assistant message item = %#v", msg)
+	msg := input[0].(map[string]interface{})
+	if msg["role"] != "assistant" || msg["content"] != "answer" || msg["type"] != nil {
+		t.Fatalf("assistant message item = %#v, want easy input message without id/type", msg)
 	}
 	if len(warnings) != 1 || warnings[0].Feature != "conversation" {
 		t.Fatalf("warnings = %#v, want conversation warning", warnings)
 	}
 }
 
-func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredFunctionCalls(t *testing.T) {
+// TestResponsesLanguageModel_PreviousResponseIdKeepsPlainFunctionCallsInFull
+// verifies that plain client-executed function calls are always resent in
+// full when chaining with previousResponseId, never as an item_reference.
+// Only provider-defined tool calls (local_shell/shell/apply_patch/computer/
+// custom) may be reduced to an item_reference in that case. See TS
+// convert-to-openai-responses-input.ts (row d302134): sending an
+// item_reference for a plain function call breaks call/output pairing
+// because function_call_output can only reference by call_id.
+func TestResponsesLanguageModel_PreviousResponseIdKeepsPlainFunctionCallsInFull(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
 
@@ -1014,12 +1099,16 @@ func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredFunctionCalls(t *te
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	input := body["input"].([]interface{})
-	if len(input) != 1 {
-		t.Fatalf("input length = %d, want only fresh function call", len(input))
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want both plain function calls resent in full: %#v", len(input), input)
 	}
-	call := input[0].(responses.FunctionCallItem)
-	if call.CallID != "call_2" || call.Name != "fresh" {
-		t.Fatalf("unexpected function call item: %#v", call)
+	first := input[0].(responses.FunctionCallItem)
+	if first.CallID != "call_1" || first.Name != "lookup" || first.ID != "" {
+		t.Fatalf("unexpected first function call item: %#v", first)
+	}
+	second := input[1].(responses.FunctionCallItem)
+	if second.CallID != "call_2" || second.Name != "fresh" {
+		t.Fatalf("unexpected second function call item: %#v", second)
 	}
 }
 
@@ -1056,9 +1145,9 @@ func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredReasoning(t *testin
 	if len(input) != 1 {
 		t.Fatalf("input length = %d, want only assistant message", len(input))
 	}
-	msg := input[0].(responses.AssistantMessageItem)
-	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
-		t.Fatalf("assistant message item = %#v", msg)
+	msg := input[0].(map[string]interface{})
+	if msg["role"] != "assistant" || msg["content"] != "answer" || msg["type"] != nil {
+		t.Fatalf("assistant message item = %#v, want easy input message without id/type", msg)
 	}
 }
 
@@ -1701,5 +1790,45 @@ func TestResponsesModel_Factory(t *testing.T) {
 	}
 	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q, want v4", model.SpecificationVersion())
+	}
+}
+
+// TestResponsesLanguageModel_CompactionTrigger covers row b6fff2e: the
+// compactionTrigger option appends a compaction_trigger item to the end of
+// the input array.
+func TestResponsesLanguageModel_CompactionTrigger(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"compactionTrigger": true},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	last := input[len(input)-1].(map[string]interface{})
+	if last["type"] != "compaction_trigger" {
+		t.Fatalf("last input item = %#v, want compaction_trigger", last)
+	}
+
+	// Without the option, no compaction_trigger item is appended.
+	body, _, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "compaction_trigger" {
+			t.Fatalf("unexpected compaction_trigger without the option: %#v", body["input"])
+		}
 	}
 }

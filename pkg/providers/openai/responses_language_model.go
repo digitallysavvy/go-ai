@@ -138,7 +138,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	var topLogprobs interface{}
 	var contextManagement []map[string]interface{}
 	contextManagementExplicit := false
-	var allowedTools *responses.AllowedToolsToolChoice
+	var allowedToolNames []string
+	var allowedToolsMode string
 	providerOptionsName := m.provider.responsesProviderOptionsName()
 	var openaiOpts map[string]interface{}
 
@@ -221,7 +222,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if contextManagementExplicit {
 				contextManagement = responsesContextManagement(openaiOpts["contextManagement"])
 			}
-			allowedTools = parseAllowedTools(openaiOpts["allowedTools"], opts.Tools)
+			if raw, ok := openaiOpts["allowedTools"].(map[string]interface{}); ok {
+				allowedToolNames = stringSliceFromInterface(raw["toolNames"])
+				allowedToolsMode, _ = raw["mode"].(string)
+			}
 		}
 	}
 
@@ -264,7 +268,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Convert prompt to Responses API input format.
-	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
+	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
 		HasPreviousResponseID:       previousResponseID != "",
 		HasConversation:             conversation != "",
@@ -273,11 +277,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		HasLocalShellTool:           hasTool(opts.Tools, "openai.local_shell"),
 		HasShellTool:                hasTool(opts.Tools, "openai.shell"),
 		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
+		HasComputerTool:             hasTool(opts.Tools, "openai.computer"),
 		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:         providerOptionsName,
+		ToolSearchToolName:          toolSearchToolName(opts.Tools),
+		OutputSchemaToolNames:       outputSchemaToolNames(opts.Tools),
 	})
 	if err != nil {
 		return nil, store, warnings, err
+	}
+	warnings = append(warnings, inputWarnings...)
+
+	// compactionTrigger: append a compaction_trigger item to the end of input.
+	if v, ok := openaiOpts["compactionTrigger"].(bool); ok && v {
+		input = append(input, map[string]interface{}{"type": "compaction_trigger"})
 	}
 
 	body := map[string]interface{}{
@@ -408,8 +421,15 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			return nil, false, nil, err
 		}
 		body["tools"] = preparedTools
-		if allowedTools != nil {
-			body["tool_choice"] = *allowedTools
+		if len(allowedToolNames) > 0 {
+			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
+			warnings = append(warnings, allowedToolWarnings...)
+			if err != nil {
+				return nil, false, warnings, err
+			}
+			if allowedTools != nil {
+				body["tool_choice"] = *allowedTools
+			}
 		} else if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
@@ -533,31 +553,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	return body, store, warnings, nil
-}
-
-func parseAllowedTools(value interface{}, tools []types.Tool) *responses.AllowedToolsToolChoice {
-	raw, ok := value.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	names := stringSliceFromInterface(raw["toolNames"])
-	if len(names) == 0 {
-		return nil
-	}
-	mode, _ := raw["mode"].(string)
-	if mode == "" {
-		mode = "auto"
-	}
-	entries := make([]responses.AllowedToolsToolEntry, len(names))
-	for i, name := range names {
-		mapped, _ := resolveResponsesToolChoiceName(name, tools)
-		entries[i] = responses.AllowedToolsToolEntry{Type: "function", Name: mapped}
-	}
-	return &responses.AllowedToolsToolChoice{
-		Type:  "allowed_tools",
-		Mode:  mode,
-		Tools: entries,
-	}
 }
 
 func stringSliceFromInterface(value interface{}) []string {
@@ -774,6 +769,45 @@ func hasTool(tools []types.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+// toolSearchToolName returns the SDK tool name of the tool whose ProviderID
+// is "openai.tool_search", if any is present in this request. Matches TS
+// `getOpenAIToolName('openai.tool_search')`.
+func toolSearchToolName(tools []types.Tool) string {
+	for _, tool := range tools {
+		if tool.ProviderID == "openai.tool_search" {
+			return tool.Name
+		}
+	}
+	return ""
+}
+
+// outputSchemaToolNames returns the set of function tool names that declared
+// providerOptions.openai.outputSchema, so the input converter can JSON-encode
+// their text-like results.
+func outputSchemaToolNames(tools []types.Tool) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		options, ok := tool.ProviderOptions.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		openaiOptions, ok := options["openai"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if openaiOptions["outputSchema"] != nil {
+			names[tool.Name] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 func responsesWebSearchToolName(tools []types.Tool) string {

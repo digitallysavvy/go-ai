@@ -336,7 +336,9 @@ type AllowedToolsToolChoice struct {
 
 type AllowedToolsToolEntry struct {
 	Type string `json:"type"`
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
+	// ServerLabel identifies an "mcp" entry (mutually exclusive with Name).
+	ServerLabel string `json:"server_label,omitempty"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

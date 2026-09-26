@@ -21,7 +21,7 @@ import (
 //   - FunctionCallItem
 //   - FunctionCallOutputItem
 func ConvertPromptToInput(prompt types.Prompt, systemMessageMode string) []interface{} {
-	input, _ := ConvertPromptToInputWithOptions(prompt, systemMessageMode, ConvertOptions{PassThroughUnsupportedFiles: true})
+	input, _, _ := ConvertPromptToInputWithOptions(prompt, systemMessageMode, ConvertOptions{PassThroughUnsupportedFiles: true})
 	return input
 }
 
@@ -35,14 +35,44 @@ type ConvertOptions struct {
 	HasLocalShellTool           bool
 	HasShellTool                bool
 	HasApplyPatchTool           bool
+	HasComputerTool             bool
 	FileIDPrefixes              []string
 	ProviderOptionsName         string
+	// ExplicitMessageItemType, when true, adds `"type":"message"` to easy-input
+	// assistant messages (required by Azure Foundry projects). See TS
+	// convert-to-openai-responses-input.ts `explicitMessageItemType`.
+	ExplicitMessageItemType bool
+	// ToolSearchToolName is the exact SDK tool name whose ProviderID is
+	// "openai.tool_search" for this request, if any. Only a tool call/result
+	// with this exact name is treated as the tool_search feature; a regular
+	// function tool that happens to be named "tool_search" is not.
+	ToolSearchToolName string
+	// OutputSchemaToolNames holds the names of function tools that declared
+	// providerOptions.openai.outputSchema. OpenAI parses their
+	// function_call_output.output as JSON, so text-like results must be
+	// JSON-encoded (JSON.stringify'd) before being sent.
+	OutputSchemaToolNames map[string]bool
+}
+
+// toolSearchName returns the configured tool_search tool name, defaulting to
+// the literal "tool_search" for backward compatibility when no tool in the
+// request declares ProviderID "openai.tool_search".
+func (o ConvertOptions) toolSearchName() string {
+	if o.ToolSearchToolName != "" {
+		return o.ToolSearchToolName
+	}
+	// The Go tool_search factory (openaitool.ToolSearch) always sets both Name
+	// and ProviderID to "openai.tool_search" (Go does not support renaming
+	// this tool), so that is the correct default when no request-specific
+	// name has been resolved (e.g. direct ConvertOptions calls in tests).
+	return "openai.tool_search"
 }
 
 // ConvertPromptToInputWithOptions converts a prompt to Responses API input and
 // validates file media types according to OpenAI Responses defaults.
-func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, error) {
+func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
+	var warnings []types.Warning
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -57,17 +87,19 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
 			if err != nil {
-				return nil, err
+				return nil, warnings, err
 			}
 			input = append(input, userMessage)
 		case types.RoleAssistant:
-			input = append(input, convertAssistantItems(msg, opts)...)
+			items, itemWarnings := convertAssistantItems(msg, opts)
+			input = append(input, items...)
+			warnings = append(warnings, itemWarnings...)
 		case types.RoleTool:
 			input = append(input, convertToolItems(msg, opts)...)
 		}
 	}
 
-	return input, nil
+	return input, warnings, nil
 }
 
 // convertUserMessage maps a user-role Message to a UserMessage.
@@ -262,8 +294,9 @@ func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFile
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
 // Responses API input items.
-func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{} {
+func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{}, []types.Warning) {
 	items := make([]interface{}, 0, 1+len(msg.ToolCalls))
+	var warnings []types.Warning
 	providerName := openAIProviderOptionsName(opts)
 
 	reasoningItems := map[string]map[string]interface{}{}
@@ -313,7 +346,9 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 		}
 	}
 	if !opts.Store {
-		items = filterReasoningItemsWithoutEncryptedContent(items)
+		filtered, filterWarnings := filterReasoningItemsWithoutEncryptedContent(items)
+		items = filtered
+		warnings = append(warnings, filterWarnings...)
 	}
 
 	// Each ToolCall on the message becomes a function_call item.
@@ -331,9 +366,10 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 			}
 			continue
 		}
-		if opts.HasPreviousResponseID && opts.Store && itemID != "" {
-			continue
-		}
+		// Plain client-executed function calls must always be resent in full,
+		// even when chaining with previousResponseId: the matching
+		// function_call_output can only reference the call by call_id, which
+		// the API cannot reconcile with an item id or item_reference.
 		args := tc.Arguments
 		if args == nil {
 			args = map[string]interface{}{}
@@ -354,7 +390,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 		})
 	}
 
-	return items
+	return items, warnings
 }
 
 func convertAssistantToolCallContentItem(part types.ToolCallContent, opts ConvertOptions) interface{} {
@@ -376,9 +412,8 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	if item, handled := convertAssistantToolCallItem(tc, itemID, opts); handled {
 		return item
 	}
-	if opts.HasPreviousResponseID && opts.Store && itemID != "" {
-		return nil
-	}
+	// Plain client-executed function calls must always be resent in full (see
+	// the comment in convertAssistantItems).
 	namespace := ""
 	if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
 		if rawNS, ok := openaiMeta["namespace"].(string); ok {
@@ -417,7 +452,7 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 
 func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool) {
 	toolName := normalizeOpenAIToolName(tc.ToolName)
-	if toolName == "tool_search" {
+	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
@@ -445,7 +480,13 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
-		return nil, true
+		// Without response storage, shell calls must be reconstructed together
+		// with their matching shell_call_output; every other provider-executed
+		// call type is simply omitted when not stored.
+		if opts.Store || !opts.HasShellTool || toolName != "shell" {
+			return nil, true
+		}
+		// fall through to the shell reconstruction branch below.
 	}
 	if opts.Store && itemID != "" && isProviderDefinedResponsesTool(toolName, tc.ToolName, opts) {
 		if opts.HasPreviousResponseID {
@@ -503,10 +544,16 @@ func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string,
 	return (opts.HasLocalShellTool && normalizedToolName == "local_shell") ||
 		(opts.HasShellTool && normalizedToolName == "shell") ||
 		(opts.HasApplyPatchTool && normalizedToolName == "apply_patch") ||
+		(opts.HasComputerTool && normalizedToolName == "computer") ||
 		opts.CustomToolNames[originalToolName] ||
 		opts.CustomToolNames[normalizedToolName]
 }
 
+// convertAssistantTextItem builds an "easy input message" for assistant text.
+// Per TS convert-to-openai-responses-input.ts, this never includes an `id`
+// field (an id present with store=false is simply dropped, since the text is
+// being resent as fresh content); `type` is only added when
+// opts.ExplicitMessageItemType is set (Azure Foundry projects).
 func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) interface{} {
 	itemID, phase := openAITextMetadata(part, openAIProviderOptionsName(opts))
 	if opts.HasConversation && itemID != "" {
@@ -518,21 +565,17 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) inter
 			"id":   itemID,
 		}
 	}
-	return AssistantMessageItem{
-		Type: "message",
-		Role: "assistant",
-		ID:   itemID,
-		Phase: func() *string {
-			if phase == "" {
-				return nil
-			}
-			return &phase
-		}(),
-		Content: []AssistantMessageContent{{
-			Type: "output_text",
-			Text: part.Text,
-		}},
+	item := map[string]interface{}{
+		"role":    "assistant",
+		"content": part.Text,
 	}
+	if opts.ExplicitMessageItemType {
+		item["type"] = "message"
+	}
+	if phase != "" {
+		item["phase"] = phase
+	}
+	return item
 }
 
 func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) interface{} {
@@ -600,16 +643,25 @@ func appendReasoningSummary(existing interface{}, additional []map[string]interf
 	return append(summary, additional...)
 }
 
-func filterReasoningItemsWithoutEncryptedContent(items []interface{}) []interface{} {
+func filterReasoningItemsWithoutEncryptedContent(items []interface{}) ([]interface{}, []types.Warning) {
 	filtered := items[:0]
+	var warnings []types.Warning
+	dropped := false
 	for _, item := range items {
 		reasoning, ok := item.(map[string]interface{})
 		if ok && reasoning["type"] == "reasoning" && reasoning["encrypted_content"] == nil {
+			dropped = true
 			continue
 		}
 		filtered = append(filtered, item)
 	}
-	return filtered
+	if dropped {
+		warnings = append(warnings, types.Warning{
+			Type:    "other",
+			Message: "Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts.",
+		})
+	}
+	return filtered, warnings
 }
 
 func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) interface{} {
@@ -620,7 +672,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		return nil
 	}
 	toolName := normalizeOpenAIToolName(part.ToolName)
-	if toolName == "tool_search" {
+	if part.ToolName == opts.toolSearchName() {
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
 		if opts.Store {
 			return map[string]interface{}{
@@ -832,7 +884,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
-			if opts.Store {
+			if opts.Store && !opts.HasConversation && !opts.HasPreviousResponseID {
 				items = append(items, map[string]interface{}{
 					"type": "item_reference",
 					"id":   p.ApprovalID,
@@ -848,7 +900,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
-			if opts.Store {
+			if opts.Store && !opts.HasConversation && !opts.HasPreviousResponseID {
 				items = append(items, map[string]interface{}{
 					"type": "item_reference",
 					"id":   p.ApprovalID,
@@ -912,10 +964,11 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 	if part.Output == nil || part.Output.Type != types.ToolResultOutputJSON {
 		return nil
 	}
+	if part.ToolName == opts.toolSearchName() {
+		return convertToolSearchOutput(part, "client")
+	}
 	toolName := normalizeOpenAIToolName(part.ToolName)
 	switch toolName {
-	case "tool_search":
-		return convertToolSearchOutput(part, "client")
 	case "local_shell":
 		if !opts.HasLocalShellTool {
 			return nil
@@ -1189,21 +1242,33 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 
 func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions) interface{} {
 	providerName := openAIProviderOptionsName(opts)
+	// OpenAI parses function_call_output.output as JSON when the function
+	// declared output_schema. Text-like results therefore need to be
+	// JSON-encoded to become valid JSON string literals.
+	hasOutputSchema := opts.OutputSchemaToolNames[tr.ToolName]
+	scalarOutput := func(value string) interface{} {
+		if !hasOutputSchema {
+			return value
+		}
+		b, _ := json.Marshal(value)
+		return string(b)
+	}
 	if tr.Output != nil {
 		switch tr.Output.Type {
 		case types.ToolResultOutputText:
 			if s, ok := tr.Output.Value.(string); ok {
-				return s
+				return scalarOutput(s)
 			}
 		case types.ToolResultOutputJSON:
 			if b, err := json.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
+			reason := tr.Output.Reason
+			if reason == "" {
+				reason = "Tool call execution denied."
 			}
-			return "Tool call execution denied."
+			return scalarOutput(reason)
 		case types.ToolResultOutputContent:
 			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))
 			for _, block := range tr.Output.Content {
@@ -1228,6 +1293,8 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 						switch {
 						case b.URL != "":
 							fileDataType = types.FileDataTypeURL
+						case b.Reference != "" || len(b.FileData.Reference) > 0:
+							fileDataType = types.FileDataTypeReference
 						case len(b.Data) > 0:
 							fileDataType = types.FileDataTypeData
 						case b.FileData.DataString != "" || len(b.FileData.Data) > 0:
@@ -1235,6 +1302,23 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 						}
 					}
 					switch fileDataType {
+					case types.FileDataTypeReference:
+						reference := firstNonEmpty(providerReferenceString(b.FileData.Reference, providerName), b.Reference)
+						if reference == "" {
+							continue
+						}
+						if isImageMediaType(mediaType) {
+							parts = append(parts, CustomToolCallOutputPart{
+								Type:   "input_image",
+								FileID: reference,
+								Detail: openAIResponsesImageDetail(b.ProviderOptions, providerName),
+							})
+						} else {
+							parts = append(parts, CustomToolCallOutputPart{
+								Type:   "input_file",
+								FileID: reference,
+							})
+						}
 					case types.FileDataTypeURL:
 						url := firstNonEmpty(b.FileData.URL, b.URL)
 						if url == "" {

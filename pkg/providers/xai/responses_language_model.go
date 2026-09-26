@@ -151,7 +151,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		return nil, err
 	}
 
-	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
+	input, _, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
 		PassThroughUnsupportedFiles: true,
 	})
 	if err != nil {
