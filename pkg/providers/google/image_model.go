@@ -84,6 +84,18 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// MaxImagesPerCall returns the maximum number of images generated per
+// DoGenerate call. Gemini image models generate exactly one image per call
+// (TS google-image-model.ts has no N/count concept at all); the core
+// GenerateImage helper splits a larger request into multiple calls. Imagen
+// models are unaffected (0 defers to the caller/default).
+func (m *ImageModel) MaxImagesPerCall() int {
+	if isGeminiModel(m.modelID) {
+		return 1
+	}
+	return 0
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	// Determine if this is a Gemini model or Imagen model
@@ -195,11 +207,6 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if opts.Mask != nil {
 		return nil, fmt.Errorf("image editing with masks is not supported for Gemini image models")
 	}
-	// Gemini image models only support generating a single image at a time.
-	if opts.N != nil && *opts.N > 1 {
-		return nil, fmt.Errorf("Gemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
-	}
-
 	providerOptions, googleSearch := geminiImageProviderOptions(opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
@@ -248,10 +255,21 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		Usage:        usage,
 		Warnings:     warnings,
 		ProviderMetadata: map[string]interface{}{
-			"google": googleImageProviderMetadata(lmResult.ProviderMetadata),
+			"google": googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse)),
 		},
 		Response: lmResult.ResponseMetadata,
 	}, nil
+}
+
+// rawFinishReason extracts the raw Gemini candidate finishReason string from
+// a GenerateResult's RawResponse, mirroring TS `result.finishReason.raw`.
+// Returns "" when unavailable.
+func rawFinishReason(raw interface{}) string {
+	resp, ok := raw.(gemini.Response)
+	if !ok || len(resp.Candidates) == 0 {
+		return ""
+	}
+	return resp.Candidates[0].FinishReason
 }
 
 func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
@@ -314,24 +332,29 @@ func firstGeneratedImage(content []types.ContentPart) (types.GeneratedFileConten
 	return types.GeneratedFileContent{}, false
 }
 
-func googleImageProviderMetadata(providerMetadata map[string]interface{}) map[string]interface{} {
+func googleImageProviderMetadata(providerMetadata map[string]interface{}, finishReason string) map[string]interface{} {
 	googleMetadata := map[string]interface{}{"images": []map[string]interface{}{{}}}
 	raw, ok := providerMetadata["google"]
-	if !ok {
-		return googleMetadata
-	}
-	switch meta := raw.(type) {
-	case map[string]json.RawMessage:
-		for key, value := range meta {
-			googleMetadata[key] = value
-		}
-	case map[string]interface{}:
-		for key, value := range meta {
-			googleMetadata[key] = value
+	if ok {
+		switch meta := raw.(type) {
+		case map[string]json.RawMessage:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
+		case map[string]interface{}:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
 		}
 	}
 	if _, ok := googleMetadata["images"]; !ok {
 		googleMetadata["images"] = []map[string]interface{}{{}}
+	}
+	// finishReason (raw) mirrors TS: `finishReason: result.finishReason.raw ?? null`.
+	if finishReason != "" {
+		googleMetadata["finishReason"] = finishReason
+	} else {
+		googleMetadata["finishReason"] = nil
 	}
 	return googleMetadata
 }
