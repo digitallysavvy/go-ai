@@ -1,108 +1,70 @@
 ---
-title: Migrating from v5.0 to v6.0
-description: Guide for upgrading your Go AI SDK code from v5.0 to v6.0
+title: Migrating from v0.1.x to v0.2.0
+description: Breaking changes in Go AI SDK v0.2.0, the TypeScript AI SDK v6.0 parity release.
 ---
 
-# Migrating from v5.0 to v6.0
+# Migrate Go AI SDK v0.1.x to v0.2.0
 
-The Go AI SDK v6.0 introduces breaking changes to achieve complete feature parity with the TypeScript AI SDK v6.0. This guide helps you migrate your existing v5.0 code.
+Go AI SDK v0.2.0 aligned the public API with TypeScript AI SDK v6.0: pointer-based usage tracking, a `ToolExecutionOptions` parameter on tool execution, request-scoped context in callbacks, and a typed `Output` system. This guide is for anyone still on v0.1.0.
 
-## Overview of Changes
+If you're upgrading from a later version instead, see [migrating from v0.3.x to v0.4.0](/docs/migration-guides/from-v0.3-to-v0.4) or [migrating from v0.4.x to v0.5.0](/docs/migration-guides/from-v0.4-to-v0.5), which cover the `RuntimeContext`/`ToolsContext` split and other renames introduced after this release.
 
-v6.0 includes the following breaking changes:
+## Recommended migration process
 
-1. **Usage Tracking** - All Usage fields now use pointers (`*int64`)
-2. **Tool Execution** - ToolExecutor signature includes new `opts` parameter
-3. **Callbacks** - OnStepFinish and OnFinish callbacks include `ctx` and `userContext` parameters
-4. **GenerateObject** - Now requires explicit `Schema` parameter
+1. Update: `go get github.com/digitallysavvy/go-ai@v0.2.0`
+2. Update `Usage` field access to handle `nil`, or switch to the `Get*Tokens()` helpers.
+3. Add the `opts types.ToolExecutionOptions` parameter to every tool `Execute` function.
+4. Add `ctx context.Context` and `userContext interface{}` parameters to `OnStepFinish`/`OnFinish` callbacks on `GenerateText` and `GenerateObject`.
+5. Build and test: `go build ./...` and `go test ./...`.
 
-## 1. Usage Tracking API Changes
+## Breaking changes
 
-### The Problem
+### Usage fields are pointers
 
-In v5.0, Usage fields were `int64` values. This meant you couldn't distinguish between "not set" (0) and "actually zero tokens" (0).
+**Impact:** breaking
 
-### The Solution
+`Usage.InputTokens`, `OutputTokens`, and `TotalTokens` changed from plain integers to `*int64`, so `nil` can mean "not reported" instead of `0`. `Usage` also gained `InputDetails`, `OutputDetails`, and `Raw`.
 
-v6.0 uses pointer types (`*int64`) to properly represent optional values:
+**Before (v0.1.0 — no longer compiles):**
 
 ```go
-// v5.0
-type Usage struct {
-    InputTokens  int64
-    OutputTokens int64
-    TotalTokens  int64
+usage := types.Usage{
+    InputTokens:  10,
+    OutputTokens: 20,
+    TotalTokens:  30,
 }
-
-// v6.0
-type Usage struct {
-    InputTokens  *int64
-    OutputTokens *int64
-    TotalTokens  *int64
-    // Plus new detailed breakdown fields
-    InputDetails  *InputTokenDetails
-    OutputDetails *OutputTokenDetails
-    Raw           map[string]interface{}
-}
-```
-
-### Migration Steps
-
-**Before (v5.0):**
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Hello",
-})
 
 if result.Usage.TotalTokens > 0 {
     fmt.Printf("Used %d tokens\n", result.Usage.TotalTokens)
 }
 ```
 
-**After (v6.0):**
+**After (v0.2.0):**
+
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Hello",
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 if result.Usage.GetTotalTokens() > 0 {
     fmt.Printf("Used %d tokens\n", result.Usage.GetTotalTokens())
 }
 ```
 
-### Helper Pattern
+`GetInputTokens()`, `GetOutputTokens()`, and `GetTotalTokens()` return `0` for `nil`, so most call sites only need this one change.
 
-For cleaner code, prefer the built-in getter methods when nil should behave like zero:
+### ToolExecutor takes a ToolExecutionOptions parameter
 
-```go
-tokens := result.Usage.GetTotalTokens()
-fmt.Printf("Used %d tokens\n", tokens)
-```
+**Impact:** breaking
 
-## 2. Tool Execution API Changes
+`types.ToolExecutor` gained a third parameter carrying the tool call ID, accumulated usage, and any value passed through `ExperimentalContext`.
 
-### The Problem
+**Before (v0.1.0 — no longer compiles):**
 
-v5.0 didn't provide tool execution context like the tool call ID or accumulated usage.
-
-### The Solution
-
-v6.0 adds a `ToolExecutionOptions` parameter:
-
-```go
-type ToolExecutionOptions struct {
-    ToolCallID  string      // Unique ID for this tool call
-    UserContext interface{} // Flow custom context
-    Usage       Usage       // Accumulated token usage
-    Metadata    map[string]interface{} // Additional metadata
-}
-```
-
-### Migration Steps
-
-**Before (v5.0):**
 ```go
 weatherTool := types.Tool{
     Name:        "weather",
@@ -116,15 +78,13 @@ weatherTool := types.Tool{
     },
     Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
         location := input["location"].(string)
-        return map[string]interface{}{
-            "temperature": 72,
-            "condition":   "sunny",
-        }, nil
+        return map[string]interface{}{"temperature": 72, "condition": "sunny"}, nil
     },
 }
 ```
 
-**After (v6.0):**
+**After (v0.2.0):**
+
 ```go
 weatherTool := types.Tool{
     Name:        "weather",
@@ -138,39 +98,22 @@ weatherTool := types.Tool{
     },
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         location := input["location"].(string)
-
-        // Now you can access tool call ID and other metadata
-        log.Printf("Executing tool call %s", opts.ToolCallID)
-
-        return map[string]interface{}{
-            "temperature": 72,
-            "condition":   "sunny",
-        }, nil
+        log.Printf("executing tool call %s for %s", opts.ToolCallID, location)
+        return map[string]interface{}{"temperature": 72, "condition": "sunny"}, nil
     },
 }
 ```
 
-### What This Enables
+### OnStepFinish and OnFinish add ctx and userContext
 
-The new parameter enables:
-- **Logging** - Track which specific tool call is executing
-- **Caching** - Cache results by tool call ID
-- **Usage Tracking** - See accumulated tokens before tool execution
-- **Context Flow** - Access user context passed through generation
+**Impact:** breaking
 
-## 3. Callback Signature Changes
+`GenerateTextOptions.OnStepFinish`, `OnFinish`, and the matching callbacks on `GenerateObjectOptions` now take a leading `ctx context.Context` and a trailing `userContext interface{}`. `userContext` is whatever you pass through the new `ExperimentalContext` option.
 
-### The Problem
+**`StreamTextOptions.OnFinish` did not change** — it still takes only `*StreamTextResult`. Don't add parameters to it.
 
-v5.0 callbacks couldn't access the generation context or flow custom data.
+**Before (v0.1.0 — no longer compiles):**
 
-### The Solution
-
-v6.0 adds `ctx context.Context` and `userContext interface{}` parameters:
-
-### OnStepFinish Callback
-
-**Before (v5.0):**
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
@@ -182,309 +125,80 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-**After (v6.0):**
+**After (v0.2.0):**
+
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Solve this problem",
     Tools:  tools,
+    ExperimentalContext: map[string]interface{}{
+        "userId": "user123",
+    },
     OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Printf("Step %d complete\n", step.StepNumber)
-
-        // Now you can check context cancellation
-        if ctx.Err() != nil {
-            log.Println("Context cancelled")
-        }
-    },
-})
-```
-
-### OnFinish Callback
-
-**Before (v5.0):**
-```go
-result, err := ai.StreamText(ctx, ai.StreamTextOptions{
-    Model:  model,
-    Prompt: "Write a story",
-    OnFinish: func(result *ai.StreamTextResult) {
-        fmt.Println("Generation complete")
-    },
-})
-```
-
-**After (v6.0):**
-```go
-result, err := ai.StreamText(ctx, ai.StreamTextOptions{
-    Model:  model,
-    Prompt: "Write a story",
-    OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
-        fmt.Println("Generation complete")
-
-        // Access user context if provided
-        if userID, ok := userContext.(string); ok {
-            log.Printf("User %s generation complete", userID)
-        }
-    },
-})
-```
-
-### Using ExperimentalContext
-
-Pass custom context through the generation lifecycle:
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Hello",
-    ExperimentalContext: map[string]interface{}{
-        "userId":    "user123",
-        "sessionId": "session456",
     },
     OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userContext interface{}) {
         if data, ok := userContext.(map[string]interface{}); ok {
-            log.Printf("User %s finished", data["userId"])
+            log.Printf("user %v finished", data["userId"])
         }
     },
 })
 ```
 
-## 4. GenerateObject API Changes
+`OnStepFinish` and `OnFinish` are now deprecated aliases for `OnStepEnd` and `OnEnd`, added in a later release — both spellings take the same arguments.
 
-### The Problem
+## New in v0.2.0
 
-v5.0 used a generic `Output` parameter which was ambiguous.
+These are additive; existing code keeps compiling without them.
 
-### The Solution
-
-v6.0 requires an explicit `Schema` parameter for better validation control:
-
-**Before (v5.0):**
-```go
-type Recipe struct {
-    Name        string   `json:"name"`
-    Ingredients []string `json:"ingredients"`
-}
-
-result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
-    Model:  model,
-    Prompt: "Generate a lasagna recipe",
-    Output: &Recipe{},
-})
-```
-
-**After (v6.0):**
-```go
-type Recipe struct {
-    Name        string   `json:"name"`
-    Ingredients []string `json:"ingredients"`
-}
-
-recipeSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
-    "type": "object",
-    "properties": map[string]interface{}{
-        "name": map[string]interface{}{"type": "string"},
-        "ingredients": map[string]interface{}{
-            "type": "array",
-            "items": map[string]interface{}{"type": "string"},
-        },
-    },
-    "required": []string{"name", "ingredients"},
-})
-
-result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
-    Model:  model,
-    Prompt: "Generate a lasagna recipe",
-    Schema: recipeSchema,
-})
-
-var recipe Recipe
-json.Unmarshal([]byte(result.Object), &recipe)
-```
-
-### Why This Change?
-
-Explicit schemas provide:
-- **Better validation** - Provider can validate against your exact schema
-- **Flexibility** - Different schemas for different use cases
-- **Clarity** - Obvious what structure you expect
-- **Provider features** - Enable provider-specific features like OpenAI's strict mode
-
-## 5. New v6.0 Features
-
-### Detailed Usage Tracking
-
-v6.0 provides token breakdown:
+**Detailed usage.** `Usage.InputDetails` and `OutputDetails` expose cache and reasoning token counts when a provider reports them; `Usage.Raw` carries the provider's raw usage payload.
 
 ```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Hello",
-})
-
-// Access detailed usage information
-if result.Usage.InputDetails != nil {
-    fmt.Printf("Cache read tokens: %d\n",
-        getTokens(result.Usage.InputDetails.CacheReadTokens))
+if result.Usage.InputDetails != nil && result.Usage.InputDetails.CacheReadTokens != nil {
+    fmt.Printf("cache read tokens: %d\n", *result.Usage.InputDetails.CacheReadTokens)
 }
-
-if result.Usage.OutputDetails != nil {
-    fmt.Printf("Reasoning tokens: %d\n",
-        getTokens(result.Usage.OutputDetails.ReasoningTokens))
-}
-
-// Access raw provider data
-fmt.Printf("Raw usage: %+v\n", result.Usage.Raw)
 ```
 
-### Enhanced Tool System
-
-v6.0 adds new tool fields:
+**New tool fields.** `Tool.Title`, `Strict`, `NeedsApproval`, and `InputExamples` (`[]types.ToolInputExample`, not `[]map[string]interface{}`):
 
 ```go
 weatherTool := types.Tool{
-    Name:        "weather",
-    Description: "Get weather for a location",
-    Title:       "Weather Lookup", // NEW: Human-readable title
-    Strict:      true,             // NEW: Enable strict validation
-    NeedsApproval: true,           // NEW: Require approval before execution
-    InputExamples: []map[string]interface{}{ // NEW: Example inputs
-        {"location": "San Francisco, CA"},
-        {"location": "Tokyo, Japan"},
+    Name:   "weather",
+    Title:  "Weather Lookup",
+    Strict: true,
+    InputExamples: []types.ToolInputExample{
+        {Input: map[string]interface{}{"location": "San Francisco, CA"}},
     },
-    Parameters: map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "location": map[string]interface{}{"type": "string"},
-        },
-        "required": []string{"location"},
-    },
-    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-        // Implementation
-        return nil, nil
-    },
+    // Parameters, Execute, ...
 }
 ```
 
-### Output Objects System
-
-v6.0 provides type-safe output specifications:
+**Typed `Output` system.** `ai.ObjectOutput[T]`, `ai.ArrayOutput[T]`, and `ai.ChoiceOutput[T]` build an `Output` value for `GenerateTextOptions.Output` — an alternative to `ai.GenerateObject` that returns a typed result directly from `GenerateText`. Note that the options types are themselves generic:
 
 ```go
-// Object output
-recipeOutput := ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{
-    Schema:      recipeSchema,
-    Name:        "recipe",
-    Description: "A cooking recipe",
-})
-
-// Array output
-tasksOutput := ai.ArrayOutput[Task](ai.ArrayOutputOptions{
+tasksOutput := ai.ArrayOutput[Task](ai.ArrayOutputOptions[Task]{
     ElementSchema: taskSchema,
     Name:          "tasks",
-    Description:   "List of tasks",
 })
 
-// Choice output (enum)
-priorityOutput := ai.ChoiceOutput[string](ai.ChoiceOutputOptions{
-    Options: []string{"low", "medium", "high"},
-    Name:    "priority",
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate 3 tasks",
+    Output: tasksOutput,
 })
-```
-
-## Migration Checklist
-
-Use this checklist when upgrading:
-
-### Code Changes
-- [ ] Update all `result.Usage.*` accesses to handle nil pointers
-- [ ] Add `opts types.ToolExecutionOptions` parameter to all tool Execute functions
-- [ ] Update `OnStepFinish` callbacks to include `ctx` and `userContext` parameters
-- [ ] Update `OnFinish` callbacks to include `ctx` and `userContext` parameters
-- [ ] Replace `Output` with explicit `Schema` in GenerateObject calls
-- [ ] Update test mocks to use new signatures
-
-### Testing
-- [ ] Run all tests with updated code
-- [ ] Verify tool execution still works
-- [ ] Test streaming with callbacks
-- [ ] Validate structured output generation
-- [ ] Check usage tracking is accurate
-
-### Optional Enhancements
-- [ ] Add InputDetails/OutputDetails usage tracking
-- [ ] Use ExperimentalContext for request-scoped data
-- [ ] Add tool titles and input examples
-- [ ] Implement tool approval workflow
-- [ ] Use new Output Objects system
-
-## Common Issues
-
-### Issue: "cannot use int64 as *int64"
-
-**Problem:**
-```go
-usage := types.Usage{
-    InputTokens: 10,  // Error: cannot use int64 as *int64
+if err != nil {
+    log.Fatal(err)
 }
+tasks := result.Output.([]Task)
 ```
 
-**Solution:**
-```go
-input := int64(10)
-usage := types.Usage{
-    InputTokens: &input,
-}
-```
+## Common compile errors
 
-### Issue: "not enough arguments in call to tool.Execute"
-
-**Problem:**
-```go
-Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
-    // Old signature
-}
-```
-
-**Solution:**
-```go
-Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-    // New signature with opts parameter
-}
-```
-
-### Issue: "cannot use func literal as OnStepFinish"
-
-**Problem:**
-```go
-OnStepFinish: func(step types.StepResult) {
-    // Old signature
-}
-```
-
-**Solution:**
-```go
-OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
-    // New signature
-}
-```
-
-## Getting Help
-
-If you encounter issues during migration:
-
-1. Check the [CHANGELOG.md](https://github.com/digitallysavvy/go-ai/blob/main/CHANGELOG.md) for detailed breaking changes
-2. Review the [v6.0 features example](../../examples/v6_features/main.go)
-3. See [API Reference](../07-reference/index.mdx) for updated signatures
-4. Open an issue on [GitHub](https://github.com/digitallysavvy/go-ai/issues)
-
-## Summary
-
-v6.0 brings the Go AI SDK to complete feature parity with TypeScript AI SDK v6.0. While there are breaking changes, they enable powerful new features like detailed usage tracking, context flow, and enhanced tool capabilities.
-
-The migration is straightforward:
-1. Update Usage pointer handling
-2. Add opts parameter to tool Execute functions
-3. Update callback signatures
-4. Use explicit schemas for GenerateObject
-
-Once migrated, you'll have access to all v6.0 features and improvements!
+| Error | Fix |
+|---|---|
+| `cannot use 10 (untyped int constant) as *int64 value in struct literal` | Take the address of a variable: `n := int64(10); usage.InputTokens = &n`. |
+| `cannot use func(ctx context.Context, input map[string]interface{}) (interface{}, error) {…} as types.ToolExecutor value` | Add the third parameter: `func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error)`. |
+| `cannot use func(step types.StepResult) {…} as func(ctx context.Context, step types.StepResult, userContext interface{}) value` | Add `ctx context.Context` and `userContext interface{}` to the callback signature. |
+| `unknown field Output in struct literal of type ai.GenerateObjectOptions` | `Output` is a field on `GenerateTextOptions` (the new typed-output system), not `GenerateObjectOptions`. `GenerateObjectOptions` still takes `Schema`. |
+| `cannot use generic type ai.ArrayOutputOptions[ELEMENT any] without instantiation` | Supply the type parameter: `ai.ArrayOutputOptions[Task]{...}` (same for `ChoiceOutputOptions[T]`). |
