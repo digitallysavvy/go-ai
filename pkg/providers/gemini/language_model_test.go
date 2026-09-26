@@ -67,11 +67,7 @@ func TestConvertResponse_ThoughtPartDoesNotBlockFunctionCall(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{Text: "thinking", Thought: true},
-				{FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "get_weather", Args: map[string]interface{}{"city": "SF"}}},
+				{FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]interface{}{"city": "SF"}, ArgsSet: true}},
 			}},
 			FinishReason: "STOP",
 		}},
@@ -396,11 +392,7 @@ func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{
-					FunctionCall: &struct {
-						ID   string                 `json:"id,omitempty"`
-						Name string                 `json:"name"`
-						Args map[string]interface{} `json:"args"`
-					}{Name: "search", Args: map[string]interface{}{"q": "test"}},
+					FunctionCall:     &FunctionCall{Name: "search", Args: map[string]interface{}{"q": "test"}, ArgsSet: true},
 					ThoughtSignature: "sig-abc-123",
 				},
 			}},
@@ -713,11 +705,7 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{{
-				FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "read_screen"},
+				FunctionCall:     &FunctionCall{Name: "read_screen"},
 				ThoughtSignature: "sig-no-args",
 			}}},
 			FinishReason: "STOP",
