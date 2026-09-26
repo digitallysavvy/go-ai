@@ -251,3 +251,72 @@ func TestStreamTextInstructionMessages(t *testing.T) {
 		t.Fatalf("expected InstructionMessages content in the provider prompt, got %v", capturedSystemTexts)
 	}
 }
+
+// HANDOFF.md item 7: InstructionMessages' per-message ProviderOptions must
+// reach provider.GenerateOptions.Prompt.Messages unchanged, for both
+// GenerateText and StreamText.
+func TestGenerateTextInstructionMessagesProviderOptionsReachPrompt(t *testing.T) {
+	t.Parallel()
+	providerOpts := map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}
+
+	var captured map[string]interface{}
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			for _, m := range opts.Prompt.Messages {
+				if m.Role == types.RoleSystem {
+					captured = m.ProviderOptions
+				}
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		InstructionMessages: []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "instructions"}}, ProviderOptions: providerOpts},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	if captured == nil || captured["anthropic"] == nil {
+		t.Fatalf("expected ProviderOptions to reach the prompt, got %+v", captured)
+	}
+}
+
+func TestStreamTextInstructionMessagesProviderOptionsReachPrompt(t *testing.T) {
+	t.Parallel()
+	providerOpts := map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}
+
+	var captured map[string]interface{}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			for _, m := range opts.Prompt.Messages {
+				if m.Role == types.RoleSystem {
+					captured = m.ProviderOptions
+				}
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		InstructionMessages: []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "instructions"}}, ProviderOptions: providerOpts},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if captured == nil || captured["anthropic"] == nil {
+		t.Fatalf("expected ProviderOptions to reach the prompt, got %+v", captured)
+	}
+}
