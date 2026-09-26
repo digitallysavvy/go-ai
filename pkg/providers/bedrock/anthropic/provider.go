@@ -149,6 +149,10 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsStrictTools:            &strictTools,
 		SupportsImageInput:             &supportsImageInput,
+		// Bedrock-Anthropic forces base64 conversion instead of passing URLs
+		// through, matching TS amazon-bedrock-anthropic-provider.ts
+		// (`supportedUrls: () => ({})`).
+		SupportedURLs: func(string) map[string][]string { return map[string][]string{} },
 		MessagesPath: func(id string, stream bool) string {
 			action := "invoke"
 			if stream {

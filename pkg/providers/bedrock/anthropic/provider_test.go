@@ -269,3 +269,22 @@ func TestEncodeURIComponent(t *testing.T) {
 		}
 	}
 }
+
+// Ports the `config.supportedUrls?.()` toEqual({}) assertion in
+// amazon-bedrock-anthropic-provider.test.ts (ai@7.0.113): Bedrock-Anthropic
+// never passes image/PDF URLs through directly.
+func TestBedrockAnthropicSupportedURLsForcesBase64Conversion(t *testing.T) {
+	p := New(Config{Region: "us-east-1", BearerToken: "token"})
+	model, err := p.LanguageModel("anthropic.claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	urlsProvider, ok := model.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("model does not implement SupportedURLs()")
+	}
+	got := urlsProvider.SupportedURLs()
+	if got == nil || len(got) != 0 {
+		t.Errorf("SupportedURLs() = %#v, want non-nil empty map", got)
+	}
+}
