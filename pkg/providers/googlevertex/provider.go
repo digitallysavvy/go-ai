@@ -294,6 +294,63 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
+// Interactions returns a language model backed by the Gemini Interactions
+// API (`.../locations/{region}/interactions`) on Vertex. It reuses the base
+// google package's InteractionsLanguageModel (TS: the exact same
+// GoogleInteractionsLanguageModel class, just constructed with a
+// Vertex-flavored config) with Vertex's OAuth-authenticated client and
+// location-scoped, endpoint-style base URL (no "/publishers/google" suffix).
+func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+	}
+	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
+}
+
+// InteractionsAgent returns a Vertex Interactions API model for a Gemini
+// agent preset (e.g. Deep Research).
+func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, error) {
+	if agent == "" {
+		return nil, fmt.Errorf("agent cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+	}
+	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
+}
+
+// InteractionsManagedAgent returns a Vertex Interactions API model for a
+// user-defined agent created via the Agent Builder API.
+func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, error) {
+	if id == "" {
+		return nil, fmt.Errorf("managed agent id cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+	}
+	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
+}
+
+// interactionsConfig builds the InteractionsConfig for Vertex: the
+// endpoint-style client when available (no "/publishers/google" suffix,
+// matching TS `createConfig('interactions', { endpoint: true })`), falling
+// back to the regular client when the caller supplied an explicit BaseURL
+// (TS loadBaseURL returns an explicit baseURL verbatim regardless of the
+// endpoint flag, so there is no separate endpoint client in that case).
+func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
+	client := p.client
+	if p.endpointClient != nil {
+		client = p.endpointClient
+	}
+	return googleprovider.InteractionsConfig{
+		ProviderName: "google.vertex.interactions",
+		Client:       client,
+	}
+}
+
 // AnthropicModel returns a Claude language model routed through Vertex AI's
 // Anthropic publisher endpoint.
 func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider.ModelOptions) (provider.LanguageModel, error) {

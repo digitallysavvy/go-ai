@@ -121,6 +121,16 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 	return NewInteractionsAgentModel(p, agent), nil
 }
 
+// InteractionsManagedAgent returns an Interactions API model for a
+// user-defined agent created via the Agent Builder API (TS
+// `google.interactions({ managedAgent: id })`).
+func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, error) {
+	if id == "" {
+		return nil, fmt.Errorf("managed agent id cannot be empty")
+	}
+	return NewInteractionsManagedAgentModel(p, id), nil
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	// Validate model ID

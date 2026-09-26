@@ -24,26 +24,81 @@ const (
 	defaultInteractionsPollTimeout      = 30 * time.Minute
 )
 
+// InteractionsConfig carries everything InteractionsLanguageModel needs to
+// make HTTP requests, generalized (TS `GoogleInteractionsConfig`) so both the
+// google and googlevertex packages can construct one: google.Provider points
+// it at its own API-key-authenticated client, and googlevertex.Provider
+// points it at a location-scoped, OAuth-authenticated client (the OAuth
+// token is injected by Client's underlying *http.Client transport, not by
+// this config) — see googlevertex's Interactions() constructor.
+type InteractionsConfig struct {
+	// ProviderName is the LanguageModel.Provider() string, e.g.
+	// "google.generative-ai.interactions" or "google.vertex.interactions".
+	ProviderName string
+	// Client issues the actual /interactions HTTP requests.
+	Client *internalhttp.Client
+	// GenerateID generates fallback tool-call/source IDs (TS
+	// `GoogleInteractionsConfig.generateId`). Reserved for future use; the
+	// current implementation derives fallback IDs from the response/step
+	// shape instead (matching existing Go behavior).
+	GenerateID func() string
+}
+
 // InteractionsLanguageModel targets the Gemini Interactions API
 // (POST /interactions) instead of the Gemini generateContent API.
 type InteractionsLanguageModel struct {
-	provider *Provider
-	modelID  string
-	agent    string
+	cfg     InteractionsConfig
+	modelID string
+	agent   string
+}
+
+// interactionsConfigFromProvider builds the InteractionsConfig for the base
+// (API-key) Google provider: the Interactions API is served from the same
+// host as generateContent, so it reuses the provider's own client verbatim.
+func interactionsConfigFromProvider(p *Provider) InteractionsConfig {
+	return InteractionsConfig{ProviderName: p.Name() + ".interactions", Client: p.client}
 }
 
 func NewInteractionsLanguageModel(p *Provider, modelID string) *InteractionsLanguageModel {
-	return &InteractionsLanguageModel{provider: p, modelID: modelID}
+	return NewInteractionsLanguageModelWithConfig(interactionsConfigFromProvider(p), modelID)
 }
 
 func NewInteractionsAgentModel(p *Provider, agent string) *InteractionsLanguageModel {
-	return &InteractionsLanguageModel{provider: p, modelID: agent, agent: agent}
+	return NewInteractionsAgentModelWithConfig(interactionsConfigFromProvider(p), agent)
+}
+
+// NewInteractionsManagedAgentModel creates an Interactions API model for a
+// user-defined agent created via the Agent Builder API (TS
+// `GoogleInteractionsModelInput`'s `{ managedAgent: string }` shape). On the
+// wire it behaves identically to a preset agent: the request body sends
+// `agent: <id>` and rejects `generation_config` the same way.
+func NewInteractionsManagedAgentModel(p *Provider, id string) *InteractionsLanguageModel {
+	return NewInteractionsManagedAgentModelWithConfig(interactionsConfigFromProvider(p), id)
+}
+
+// NewInteractionsLanguageModelWithConfig builds an Interactions model from an
+// explicit InteractionsConfig, letting other packages (googlevertex) reuse
+// this implementation with their own client/base URL/auth.
+func NewInteractionsLanguageModelWithConfig(cfg InteractionsConfig, modelID string) *InteractionsLanguageModel {
+	return &InteractionsLanguageModel{cfg: cfg, modelID: modelID}
+}
+
+// NewInteractionsAgentModelWithConfig is the InteractionsConfig-based
+// counterpart of NewInteractionsAgentModel.
+func NewInteractionsAgentModelWithConfig(cfg InteractionsConfig, agent string) *InteractionsLanguageModel {
+	return &InteractionsLanguageModel{cfg: cfg, modelID: agent, agent: agent}
+}
+
+// NewInteractionsManagedAgentModelWithConfig is the InteractionsConfig-based
+// counterpart of NewInteractionsManagedAgentModel.
+func NewInteractionsManagedAgentModelWithConfig(cfg InteractionsConfig, id string) *InteractionsLanguageModel {
+	return &InteractionsLanguageModel{cfg: cfg, modelID: id, agent: id}
 }
 
 func (m *InteractionsLanguageModel) SpecificationVersion() string { return "v4" }
 
 func (m *InteractionsLanguageModel) Provider() string {
-	return m.provider.Name() + ".interactions"
+	return m.cfg.ProviderName
 }
 
 func (m *InteractionsLanguageModel) ModelID() string { return m.modelID }
@@ -76,7 +131,7 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 	}
 
 	var response interactionsResponse
-	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/interactions",
 		Body:    args,
@@ -106,7 +161,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 
 	if m.agent != "" {
 		var response interactionsResponse
-		resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodPost,
 			Path:    "/interactions",
 			Body:    args,
@@ -121,12 +176,12 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 		if isTerminalInteractionStatus(response.Status) {
 			return newSynthesizedInteractionsStream(response, warnings, resp.Headers), nil
 		}
-		return newInteractionsStream(ctx, m.provider, response.ID, headers, warnings, providerutils.ExtractHeaders(resp.Headers), interactionsOpts.PollingTimeoutMs)
+		return newInteractionsStream(ctx, m.cfg.Client, response.ID, headers, warnings, providerutils.ExtractHeaders(resp.Headers), interactionsOpts.PollingTimeoutMs)
 	}
 
 	streamArgs := args
 	streamArgs.Stream = true
-	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
+	httpResp, err := m.cfg.Client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/interactions",
 		Body:   streamArgs,
@@ -137,7 +192,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newInteractionsEventStream(ctx, m.provider, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0), nil
+	return newInteractionsEventStream(ctx, m.cfg.Client, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0), nil
 }
 
 func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ bool) (interactionsRequest, []types.Warning, GoogleInteractionsProviderOptions, error) {
@@ -159,16 +214,18 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	isAgent := m.agent != ""
 	warnings := make([]types.Warning, 0)
 
+	// Agents keep tools (TS `hasTools` gate is unconditional on isAgent): the
+	// Interactions API accepts `tools`/`tool_choice` on agent requests too
+	// (e.g. `google.file_search` for Deep Research agents).
 	toolsForBody, toolChoice, toolWarnings := prepareInteractionsTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
-	if isAgent && len(opts.Tools) > 0 {
-		warnings = append(warnings, types.Warning{
-			Type:    "other",
-			Message: "google.interactions: tools are not supported when an agent is set; tools will be omitted from the request body.",
-			Details: "google.interactions: tools are not supported when an agent is set; tools will be omitted from the request body.",
-		})
-		toolsForBody = nil
-		toolChoice = nil
+	if !isAgent {
+		if opts.FrequencyPenalty != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+		}
+		if opts.PresencePenalty != nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+		}
 	}
 
 	input, systemInstruction, convWarnings, err := m.convertPrompt(normalizedOpts.Prompt, interactionsOpts)
@@ -186,8 +243,21 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		systemInstruction = interactionsOpts.SystemInstruction
 	}
 
-	var responseMimeType string
-	var responseFormat interface{}
+	/*
+	 * response_format is a polymorphic array of entries. Three sources
+	 * contribute, in order:
+	 *
+	 *  1. AI SDK call-level responseFormat:{type:'json',schema} ->
+	 *     {type:'text', mime_type:'application/json', schema?} (agent calls
+	 *     drop this with a warning; the Interactions API cannot combine
+	 *     structured output with an agent).
+	 *  2. providerOptions.google.responseFormat entries (camelCase ->
+	 *     snake_case), sent for both model and agent calls.
+	 *  3. providerOptions.google.imageConfig (deprecated fallback), model
+	 *     calls only: contributes an image entry only when responseFormat
+	 *     didn't already supply one.
+	 */
+	var responseFormatEntries []map[string]interface{}
 	if opts.ResponseFormat != nil && (opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" || opts.ResponseFormat.Type == "json_object") {
 		if isAgent {
 			warnings = append(warnings, types.Warning{
@@ -196,10 +266,44 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 				Details: "google.interactions: structured output (responseFormat) is not supported when an agent is set; responseFormat will be ignored.",
 			})
 		} else {
-			responseMimeType = "application/json"
+			entry := map[string]interface{}{"type": "text", "mime_type": "application/json"}
 			if opts.ResponseFormat.Schema != nil {
-				responseFormat = opts.ResponseFormat.Schema
+				entry["schema"] = opts.ResponseFormat.Schema
 			}
+			responseFormatEntries = append(responseFormatEntries, entry)
+		}
+	}
+	hasImageEntry := false
+	for _, entry := range interactionsOpts.ResponseFormat {
+		switch stringValue(entry["type"]) {
+		case "text":
+			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+				"type":      "text",
+				"mime_type": entry["mimeType"],
+				"schema":    entry["schema"],
+			}))
+		case "image":
+			hasImageEntry = true
+			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+				"type":         "image",
+				"mime_type":    entry["mimeType"],
+				"aspect_ratio": entry["aspectRatio"],
+				"image_size":   entry["imageSize"],
+			}))
+		case "audio":
+			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+				"type":      "audio",
+				"mime_type": entry["mimeType"],
+			}))
+		case "video":
+			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+				"type":         "video",
+				"aspect_ratio": entry["aspectRatio"],
+				"resolution":   entry["resolution"],
+				"duration":     entry["duration"],
+				"delivery":     entry["delivery"],
+				"gcs_uri":      entry["gcsUri"],
+			}))
 		}
 	}
 
@@ -214,22 +318,42 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		generationConfig = pruneMap(map[string]interface{}{
 			"temperature":        derefFloat(opts.Temperature),
 			"top_p":              derefFloat(opts.TopP),
+			"top_k":              derefInt(opts.TopK),
 			"seed":               derefInt(opts.Seed),
 			"stop_sequences":     nonEmptyStrings(opts.StopSequences),
 			"max_output_tokens":  derefInt(opts.MaxTokens),
 			"thinking_level":     emptyToNil(interactionsOpts.ThinkingLevel),
 			"thinking_summaries": emptyToNil(interactionsOpts.ThinkingSummaries),
-			"image_config":       emptyMapToNil(snakeImageConfig(interactionsOpts.ImageConfig)),
 			"tool_choice":        toolChoice,
 		})
+
+		// Deprecated fallback: imageConfig contributes an image entry only
+		// when responseFormat didn't already supply one. Always warn.
+		if len(interactionsOpts.ImageConfig) > 0 {
+			msg := "google.interactions: providerOptions.google.imageConfig is deprecated. Use providerOptions.google.responseFormat with a { type: \"image\", ... } entry instead."
+			if hasImageEntry {
+				msg = "google.interactions: providerOptions.google.imageConfig is deprecated and was ignored because providerOptions.google.responseFormat already supplies an image entry. Use responseFormat exclusively."
+			}
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+			if !hasImageEntry {
+				snake := snakeImageConfig(interactionsOpts.ImageConfig)
+				entry := map[string]interface{}{"type": "image", "mime_type": "image/png"}
+				if v, ok := snake["aspect_ratio"]; ok {
+					entry["aspect_ratio"] = v
+				}
+				if v, ok := snake["image_size"]; ok {
+					entry["image_size"] = v
+				}
+				responseFormatEntries = append(responseFormatEntries, entry)
+			}
+		}
 	}
 
 	body := interactionsRequest{
 		Input:                 input,
 		SystemInstruction:     systemInstruction,
 		Tools:                 toolsForBody,
-		ResponseFormat:        responseFormat,
-		ResponseMimeType:      responseMimeType,
+		ResponseFormat:        responseFormatEntries,
 		ResponseModalities:    interactionsOpts.ResponseModalities,
 		PreviousInteractionID: interactionsOpts.PreviousInteractionID,
 		ServiceTier:           interactionsOpts.ServiceTier,
@@ -268,8 +392,9 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		serviceTier = headers["x-gemini-service-tier"]
 	}
 	googleMeta := pruneMap(map[string]interface{}{
-		"interactionId": emptyToNil(normalizedInteractionID(response.ID)),
-		"serviceTier":   emptyToNil(serviceTier),
+		"interactionId":          emptyToNil(normalizedInteractionID(response.ID)),
+		"serviceTier":            emptyToNil(serviceTier),
+		"outputTokensByModality": outputTokensByModalityMap(response.Usage),
 	})
 	if googleMeta == nil {
 		googleMeta = map[string]interface{}{}
@@ -323,7 +448,7 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 		}
 
 		var response interactionsResponse
-		resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodGet,
 			Path:    "/interactions/" + url.PathEscape(interactionID),
 			Headers: headers,
@@ -348,7 +473,7 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 	if interactionID == "" {
 		return nil
 	}
-	_, err := m.provider.client.Do(ctx, internalhttp.Request{
+	_, err := m.cfg.Client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/interactions/" + url.PathEscape(interactionID) + "/cancel",
 		Headers: headers,
@@ -413,6 +538,15 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		}
 		if imageConfig, ok := v["imageConfig"].(map[string]interface{}); ok {
 			out.ImageConfig = snakeImageConfig(imageConfig)
+		}
+		if rf, ok := v["responseFormat"].([]interface{}); ok {
+			for _, item := range rf {
+				if m, ok := item.(map[string]interface{}); ok {
+					out.ResponseFormat = append(out.ResponseFormat, m)
+				}
+			}
+		} else if rf, ok := v["responseFormat"].([]map[string]interface{}); ok {
+			out.ResponseFormat = rf
 		}
 		if agentConfig, ok := v["agentConfig"].(map[string]interface{}); ok {
 			out.AgentConfig = snakeAgentConfig(agentConfig)
@@ -529,6 +663,15 @@ func droppedAgentGenerationFields(opts *provider.GenerateOptions, googleOpts Goo
 	if opts.TopP != nil {
 		dropped = append(dropped, "topP")
 	}
+	if opts.TopK != nil {
+		dropped = append(dropped, "topK")
+	}
+	if opts.FrequencyPenalty != nil {
+		dropped = append(dropped, "frequencyPenalty")
+	}
+	if opts.PresencePenalty != nil {
+		dropped = append(dropped, "presencePenalty")
+	}
 	if opts.Seed != nil {
 		dropped = append(dropped, "seed")
 	}
@@ -583,6 +726,14 @@ func emptyToNil(v string) interface{} {
 		return nil
 	}
 	return v
+}
+
+// stringValue extracts a string from an interface{}, returning "" for any
+// other type (used to read the "type" discriminator out of a raw
+// responseFormat entry map).
+func stringValue(v interface{}) string {
+	s, _ := v.(string)
+	return s
 }
 
 func emptyMapToNil(v map[string]interface{}) map[string]interface{} {
@@ -726,6 +877,26 @@ func splitContent(content []types.ContentPart) (string, []types.ReasoningContent
 	return text.String(), reasoning, files, nil
 }
 
+// outputTokensByModalityMap extracts the per-modality output token
+// breakdown from an Interactions usage record (e.g. {"video":57920,"text":12}),
+// mirroring TS getGoogleInteractionsOutputTokensByModality. Returns nil
+// (pruned by pruneMap) when there is no usage or no by-modality data.
+func outputTokensByModalityMap(usage *interactionsUsage) map[string]interface{} {
+	if usage == nil || len(usage.OutputTokensByModality) == 0 {
+		return nil
+	}
+	out := map[string]interface{}{}
+	for _, entry := range usage.OutputTokensByModality {
+		if entry.Modality != "" && entry.Tokens != nil {
+			out[entry.Modality] = *entry.Tokens
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func providerMetaRaw(signature, interactionID string) json.RawMessage {
 	google := pruneMap(map[string]interface{}{
 		"signature":     emptyToNil(signature),
@@ -747,6 +918,23 @@ func providerMetaMap(signature, interactionID string) map[string]interface{} {
 		return nil
 	}
 	return map[string]interface{}{"google": google}
+}
+
+// processingMeta builds the providerMetadata.google payload for
+// `google.processing_call`/`google.processing_result` custom content parts
+// (TS googleProviderMetadata's processingId/processingCallId fields).
+func processingMeta(signature, interactionID, processingID, processingCallID string) json.RawMessage {
+	google := pruneMap(map[string]interface{}{
+		"signature":        emptyToNil(signature),
+		"interactionId":    emptyToNil(interactionID),
+		"processingId":     emptyToNil(processingID),
+		"processingCallId": emptyToNil(processingCallID),
+	})
+	if len(google) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(map[string]interface{}{"google": google})
+	return raw
 }
 
 func signatureFromRawMetadata(raw json.RawMessage) string {
