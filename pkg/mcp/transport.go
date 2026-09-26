@@ -47,6 +47,14 @@ type MCPToolParameterHeadersTransport interface {
 	SupportsMCPToolParameterHeaders() bool
 }
 
+// HeaderedSendTransport is implemented by transports that can attach
+// additional per-request HTTP headers to a single JSON-RPC message, used to
+// carry x-mcp-header-derived `Mcp-Param-*` headers on a `tools/call` request
+// (hash 0c60a40).
+type HeaderedSendTransport interface {
+	SendWithHeaders(ctx context.Context, message *MCPMessage, headers map[string]string) error
+}
+
 // MCPRedirectMode controls how the HTTP transport handles HTTP redirects from
 // MCP servers. The default is MCPRedirectError (fail on redirect) — MCP servers
 // should not silently redirect clients to other endpoints, as this can mask

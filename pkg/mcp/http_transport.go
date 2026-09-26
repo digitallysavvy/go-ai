@@ -291,6 +291,17 @@ func (t *HTTPTransport) Close() error {
 
 // Send sends a message to the MCP server
 func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
+	return t.send(ctx, message, nil)
+}
+
+// SendWithHeaders sends message with additional per-request HTTP headers
+// merged in on top of the standard headers (hash 0c60a40), used to carry
+// x-mcp-header-derived `Mcp-Param-*` headers on a `tools/call` request.
+func (t *HTTPTransport) SendWithHeaders(ctx context.Context, message *MCPMessage, headers map[string]string) error {
+	return t.send(ctx, message, headers)
+}
+
+func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHeaders map[string]string) error {
 	t.mu.Lock()
 	connected := t.connected
 	t.mu.Unlock()
@@ -318,6 +329,9 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 	// Set headers, including mcp-session-id when a session is established
 	// (hash 241a8c5).
 	sentSessionID := t.applyStandardHeaders(req)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	// Set OAuth token if available
 	if token, expired, ok := t.oauthTokenSnapshot(); ok {
@@ -361,6 +375,9 @@ func (t *HTTPTransport) Send(ctx context.Context, message *MCPMessage) error {
 			return NewTransportError("failed to create request", err)
 		}
 		sentSessionID = t.applyStandardHeaders(req)
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
 		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}

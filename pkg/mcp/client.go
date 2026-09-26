@@ -38,6 +38,13 @@ type MCPClient struct {
 	// modern-era request `_meta` (hash e6a9927).
 	protocolVersion string
 
+	// toolHeaderBindings caches, per tool name, the x-mcp-header bindings
+	// computed the last time tools were listed (hash 0c60a40). Only
+	// populated in the modern protocol era on a transport that supports
+	// per-tool parameter headers.
+	toolHeaderBindingsMu sync.Mutex
+	toolHeaderBindings   map[string][]MCPToolHeaderBinding
+
 	// Client info
 	clientInfo ClientInfo
 
@@ -89,6 +96,12 @@ type MCPClientConfig struct {
 	// when the transport implements ProtocolVersionDiscoveryTransport and
 	// reports support (only HTTPTransport does today).
 	ProtocolVersionDiscovery *bool
+
+	// OnError, when set, receives non-fatal diagnostics the client would
+	// otherwise drop silently: a tool skipped because its x-mcp-header
+	// annotation is invalid, or a tool call whose header binding failed
+	// (hash 0c60a40).
+	OnError func(error) `json:"-"`
 }
 
 // protocolVersionDiscoveryEnabled reports the effective value of
@@ -278,14 +291,8 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 
 // ListTools lists all available tools from the MCP server
 func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
-	if !c.initialized {
-		return nil, fmt.Errorf("client not initialized")
-	}
-
-	params := ListToolsParams{}
-	var result ListToolsResult
-
-	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+	result, err := c.ListToolsWithCursor(ctx, "")
+	if err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
 
@@ -309,7 +316,76 @@ func (c *MCPClient) ListToolsWithCursor(ctx context.Context, cursor string) (*Li
 	if err := c.call(ctx, "tools/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
+	c.prepareToolDefinitions(&result, cursor == "")
 	return &result, nil
+}
+
+// prepareToolDefinitions computes and caches x-mcp-header bindings for each
+// tool (hash 0c60a40), filtering out any tool whose input schema has an
+// invalid x-mcp-header annotation (reported via MCPClientConfig.OnError,
+// when set). Matches TS MCPClient.prepareToolDefinitions. Only applies in
+// the modern protocol era, and only when the transport supports per-tool
+// parameter headers. resetHeaderBindings clears the previously cached
+// bindings first, matching TS's behavior of resetting the cache on an
+// unpaginated (cursor-less) listing.
+func (c *MCPClient) prepareToolDefinitions(result *ListToolsResult, resetHeaderBindings bool) {
+	if c.protocolEra != "modern" {
+		return
+	}
+	transport, ok := c.transport.(MCPToolParameterHeadersTransport)
+	if !ok || !transport.SupportsMCPToolParameterHeaders() {
+		return
+	}
+
+	c.toolHeaderBindingsMu.Lock()
+	if resetHeaderBindings || c.toolHeaderBindings == nil {
+		c.toolHeaderBindings = map[string][]MCPToolHeaderBinding{}
+	}
+	c.toolHeaderBindingsMu.Unlock()
+
+	tools := make([]MCPTool, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		bindings, err := GetMCPToolHeaderBindings(tool.InputSchema)
+		if err != nil {
+			if c.config.OnError != nil {
+				c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Ignoring MCP tool %q: %s", tool.Name, err.Error()), nil))
+			}
+			continue
+		}
+		c.toolHeaderBindingsMu.Lock()
+		c.toolHeaderBindings[tool.Name] = bindings
+		c.toolHeaderBindingsMu.Unlock()
+		tools = append(tools, tool)
+	}
+	result.Tools = tools
+}
+
+// toolCallHeaders computes the x-mcp-header-derived request headers for a
+// `tools/call` invocation, matching TS getToolRequestHeaders (mcp-client.ts,
+// hash 0c60a40). Returns nil outside the modern era, for any other method,
+// or when the tool has no header bindings.
+func (c *MCPClient) toolCallHeaders(method string, params interface{}) map[string]string {
+	if c.protocolEra != "modern" || method != "tools/call" {
+		return nil
+	}
+	callParams, ok := params.(CallToolParams)
+	if !ok {
+		return nil
+	}
+	c.toolHeaderBindingsMu.Lock()
+	bindings := c.toolHeaderBindings[callParams.Name]
+	c.toolHeaderBindingsMu.Unlock()
+	if len(bindings) == 0 {
+		return nil
+	}
+	headers, err := CreateMCPToolHeaders(bindings, callParams.Arguments)
+	if err != nil {
+		if c.config.OnError != nil {
+			c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Failed to create MCP headers for tool %q", callParams.Name), err))
+		}
+		return nil
+	}
+	return headers
 }
 
 // ListAllTools fetches every page of tools from the MCP server, following
@@ -586,8 +662,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		c.pendingMu.Unlock()
 	}()
 
-	// Send request
-	if err := c.transport.Send(ctx, msg); err != nil {
+	// Send request, attaching x-mcp-header-derived headers for a modern-era
+	// tools/call when the transport supports per-request headers (hash
+	// 0c60a40).
+	if err := c.sendMessage(ctx, msg, c.toolCallHeaders(method, params)); err != nil {
 		return NewTransportError("failed to send request", err)
 	}
 
@@ -773,6 +851,18 @@ func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessag
 		return NewMCPClientError(0, "Server requested additional input, but multi round-trip requests are not supported yet", nil)
 	}
 	return nil
+}
+
+// sendMessage sends msg via the transport, attaching headers through
+// HeaderedSendTransport when the transport supports it and headers is
+// non-empty (hash 0c60a40).
+func (c *MCPClient) sendMessage(ctx context.Context, msg *MCPMessage, headers map[string]string) error {
+	if len(headers) > 0 {
+		if headered, ok := c.transport.(HeaderedSendTransport); ok {
+			return headered.SendWithHeaders(ctx, msg, headers)
+		}
+	}
+	return c.transport.Send(ctx, msg)
 }
 
 func intSliceContains(values []int, want int) bool {
