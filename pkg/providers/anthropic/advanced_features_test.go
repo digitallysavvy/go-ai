@@ -159,7 +159,7 @@ func TestAdaptiveThinkingConfiguration(t *testing.T) {
 			},
 			wantThinkingKey: true,
 			wantType:        "enabled",
-			wantBudget:      false,
+			wantBudget:      true // TS defaults the budget to 1024 with a warning,
 		},
 		{
 			name: "disabled thinking",

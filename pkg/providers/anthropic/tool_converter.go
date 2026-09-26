@@ -26,16 +26,20 @@ var anthropicBuiltinToolTypes = map[string]builtinToolDef{
 	"anthropic.text_editor_20250124": {apiType: "text_editor_20250124", name: "str_replace_editor"},
 	"anthropic.text_editor_20250429": {apiType: "text_editor_20250429", name: "str_replace_based_edit_tool"},
 
-	// code execution — Anthropic API requires type only, no name field
-	"anthropic.code_execution_20250522": {apiType: "code_execution_20250522"},
-	"anthropic.code_execution_20250825": {apiType: "code_execution_20250825"},
-	"anthropic.code_execution_20260120": {apiType: "code_execution_20260120"},
+	// code execution (TS prepareTools sends name "code_execution")
+	"anthropic.code_execution_20250522": {apiType: "code_execution_20250522", name: "code_execution"},
+	"anthropic.code_execution_20250825": {apiType: "code_execution_20250825", name: "code_execution"},
+	"anthropic.code_execution_20260120": {apiType: "code_execution_20260120", name: "code_execution"},
 
 	// memory
 	"anthropic.memory_20250818": {apiType: "memory_20250818", name: "memory"},
 
 	// advisor
 	"anthropic.advisor_20260301": {apiType: "advisor_20260301", name: "advisor"},
+
+	// tool search
+	"anthropic.tool_search_regex_20251119": {apiType: "tool_search_tool_regex_20251119", name: "tool_search_tool_regex"},
+	"anthropic.tool_search_bm25_20251119":  {apiType: "tool_search_tool_bm25_20251119", name: "tool_search_tool_bm25"},
 }
 
 // anthropicAPIMapper is satisfied by ProviderOptions types that produce their own

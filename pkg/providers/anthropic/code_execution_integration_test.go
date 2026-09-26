@@ -81,8 +81,8 @@ func TestAnthropicCodeExecution_Integration(t *testing.T) {
 	}
 }
 
-// TestAnthropicCodeExecution_BetaHeaderInjected verifies the beta header is included
-// in the request when the code execution tool is in the tool list.
+// TestAnthropicCodeExecution_BetaHeaderInjected verifies no beta header is
+// added for the GA code_execution_20260120 tool.
 func TestAnthropicCodeExecution_BetaHeaderInjected(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, "claude-opus-4-6", nil)
@@ -93,11 +93,9 @@ func TestAnthropicCodeExecution_BetaHeaderInjected(t *testing.T) {
 		Tools:  []types.Tool{codeExecTool},
 	}
 
+	// code_execution_20260120 is GA: TS prepareTools adds no beta for it.
 	header := model.combineBetaHeaders(opts, false)
-	if header == "" {
-		t.Error("Expected beta header to be set when code execution tool is present")
-	}
-	if header != BetaHeaderCodeExecution {
-		t.Errorf("Beta header = %q, want %q", header, BetaHeaderCodeExecution)
+	if header != "" {
+		t.Errorf("Beta header = %q, want none", header)
 	}
 }

@@ -15,15 +15,15 @@ import (
 // skill id and version are path-encoded in the credentialed version URL.
 func TestSkillsAPI_EncodesProviderReturnedIDs(t *testing.T) {
 	tests := []struct{ id, version, want string }{
-		{"skill_123", "1", "/v1/skills/skill_123/versions/1"},
-		{"abc/../../internal", "..", "/v1/skills/abc%2F..%2F..%2Finternal/versions/%252E%252E"},
-		{".", "1?x=y", "/v1/skills/%252E/versions/1%3Fx%3Dy"},
+		{"skill_123", "1", "/skills/skill_123/versions/1"},
+		{"abc/../../internal", "..", "/skills/abc%2F..%2F..%2Finternal/versions/%252E%252E"},
+		{".", "1?x=y", "/skills/%252E/versions/1%3Fx%3Dy"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {
 			var versionPath string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/skills" {
+				if r.URL.Path == "/skills" {
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"id":             tt.id,
 						"latest_version": tt.version,
