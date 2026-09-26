@@ -18,6 +18,13 @@ type LanguageModel struct {
 
 // NewLanguageModel creates a Google Vertex AI language model.
 func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
+	client := p.client
+	if isEndpointModelID(modelID) && p.endpointClient != nil {
+		// Tuned models are served from ".../locations/{region}/endpoints/{id}",
+		// which omits the "/publishers/google" suffix the base-model paths
+		// carry (TS isEndpointModelId / loadBaseURL({endpoint: true})).
+		client = p.endpointClient
+	}
 	cfg := gemini.Config{
 		ProviderName: "google-vertex",
 		MetadataKey:  "vertex",
@@ -28,20 +35,31 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		MetadataKeys:        []string{"googleVertex", "vertex"},
 		IsVertex:            true,
 		GeneratePath: func(id string) string {
-			return fmt.Sprintf("/models/%s:generateContent", id)
+			return fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(id))
 		},
 		StreamPath: func(id string) string {
-			return fmt.Sprintf("/models/%s:streamGenerateContent?alt=sse", id)
+			return fmt.Sprintf("/%s:streamGenerateContent?alt=sse", gemini.GetModelPath(id))
 		},
-		Client:             p.client,
+		Client:             client,
 		SupportsImageInput: vertexSupportsImageInput,
 		SupportedURLs: func(string) map[string][]string {
 			return map[string][]string{
 				"*": {`^https?:\/\/.*$`, `^gs:\/\/.*$`},
 			}
 		},
+		ToolResultDownloadMaxBytes: vertexToolResultDownloadMaxBytes(p.config.ToolResultDownloads),
 	}
 	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
+}
+
+// vertexToolResultDownloadMaxBytes returns the configured max download size,
+// defaulting to gemini.DefaultToolResultDownloadMaxBytes (7 MiB) when unset,
+// matching TS toolResultDownloads.maxBytes default.
+func vertexToolResultDownloadMaxBytes(cfg ToolResultDownloadsConfig) int64 {
+	if cfg.MaxBytes > 0 {
+		return cfg.MaxBytes
+	}
+	return gemini.DefaultToolResultDownloadMaxBytes
 }
 
 // vertexSupportsImageInput reports whether a Vertex AI model accepts image inputs.

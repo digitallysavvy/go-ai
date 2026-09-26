@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 // TestLanguageModel_GenerateText_MockServer tests text generation with a mock server.
@@ -527,5 +528,18 @@ func TestSupportedURLs_Vertex(t *testing.T) {
 		if !matched {
 			t.Errorf("expected %q to be supported", url)
 		}
+	}
+}
+
+// TestVertexToolResultDownloadMaxBytes_Default verifies the tool-result
+// downloader max size defaults to 7 MiB (gemini.DefaultToolResultDownloadMaxBytes)
+// and can be overridden via Config.ToolResultDownloads, matching TS
+// GoogleVertexProviderSettings.toolResultDownloads.maxBytes.
+func TestVertexToolResultDownloadMaxBytes_Default(t *testing.T) {
+	if got := vertexToolResultDownloadMaxBytes(ToolResultDownloadsConfig{}); got != gemini.DefaultToolResultDownloadMaxBytes {
+		t.Fatalf("default maxBytes = %d, want %d", got, gemini.DefaultToolResultDownloadMaxBytes)
+	}
+	if got := vertexToolResultDownloadMaxBytes(ToolResultDownloadsConfig{MaxBytes: 42}); got != 42 {
+		t.Fatalf("overridden maxBytes = %d, want 42", got)
 	}
 }

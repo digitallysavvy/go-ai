@@ -2,9 +2,21 @@ package gemini
 
 import (
 	"context"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 )
+
+// GetModelPath mirrors TS get-model-path.ts getModelPath: a model ID that
+// already contains a "/" (e.g. a Vertex tuned model "endpoints/{id}", or a
+// fully-qualified "tunedModels/{id}") is used verbatim as the path segment;
+// otherwise it is prefixed with "models/".
+func GetModelPath(modelID string) string {
+	if strings.Contains(modelID, "/") {
+		return modelID
+	}
+	return "models/" + modelID
+}
 
 // Config parameterizes the shared Gemini language model implementation
 // for both the google and googlevertex providers.

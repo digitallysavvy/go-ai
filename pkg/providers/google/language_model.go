@@ -24,10 +24,10 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		MetadataKey:         "google",
 		ProviderOptionsKeys: []string{"google"},
 		GeneratePath: func(id string) string {
-			return fmt.Sprintf("/models/%s:generateContent", id)
+			return fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(id))
 		},
 		StreamPath: func(id string) string {
-			return fmt.Sprintf("/models/%s:streamGenerateContent?alt=sse", id)
+			return fmt.Sprintf("/%s:streamGenerateContent?alt=sse", gemini.GetModelPath(id))
 		},
 		Client:             p.client,
 		SupportsImageInput: googleSupportsImageInput,
