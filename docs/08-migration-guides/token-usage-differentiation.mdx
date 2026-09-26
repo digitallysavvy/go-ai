@@ -25,7 +25,7 @@ Support varies by provider:
 
 | Provider | Populates TextTokens / ImageTokens |
 |---|---|
-| OpenAI, XAI, Azure, DeepSeek, Together, Fireworks, Perplexity | Yes — parsed from the OpenAI-compatible `prompt_tokens_details.text_tokens` / `image_tokens` wire fields |
+| OpenAI, XAI, Azure, DeepSeek, Together, Fireworks, Perplexity, Groq, Mistral | Yes — parsed from the OpenAI-compatible `prompt_tokens_details.text_tokens` / `image_tokens` wire fields |
 | Google | Yes — computed from Gemini's per-modality token counts |
 | Anthropic | No — both fields stay `nil`; the API doesn't report a text/image split |
 

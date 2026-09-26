@@ -53,7 +53,7 @@ This code is unchanged between v0.3.x and v0.4.0. What changes is the order `OnC
 ```go
 provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
 
-model, _ := provider.LanguageModel("grok-3")                     // Responses API (new default)
+model, _ := provider.LanguageModel("grok-3")                    // Responses API (new default)
 chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3") // Chat Completions API (v0.3.x behavior)
 ```
 
@@ -109,7 +109,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-`AddTelemetryIntegration()` fans out to multiple backends, `ClearTelemetryIntegrations()` resets the registry, and `telemetry.NoopTelemetryIntegration{}` disables telemetry globally.
+If you relied on the default global tracer rather than a custom `Tracer`, register `telemetry.OTelTelemetryIntegration{}` — it uses `otel.Tracer("ai-sdk")` when no custom tracer is set. `AddTelemetryIntegration()` fans out to multiple backends, `ClearTelemetryIntegrations()` resets the registry, and `telemetry.NoopTelemetryIntegration{}` disables telemetry globally.
 
 ## New in v0.4.0
 
@@ -120,4 +120,5 @@ These are additive; existing code keeps compiling without them.
 - **`CustomContent` and `ReasoningFileContent`** content types
 - **Tool-level timeouts** via `TimeoutConfig.ToolMs` / `TimeoutConfig.Tools`
 - **Embed/rerank `OnStart`/`OnFinish` callbacks** — see [Embeddings](/docs/ai-sdk-core/embeddings)
-- **New providers** — [Prodia](/docs/providers/prodia) and [KlingAI v3.0 motion control](/docs/providers/klingai)
+- **[KlingAI v3.0 motion control](/docs/providers/klingai)** — new video generation capability
+- **[Prodia](/docs/providers/prodia) language and video models** — Prodia's existing image generation provider gains a language model and a video model
