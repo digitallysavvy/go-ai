@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -26,8 +27,11 @@ type RerankOnStartEvent struct {
 	Documents interface{}
 	// TopN is the requested number of top results (nil means return all).
 	TopN *int
-	// MaxRetries is the configured retry limit (0 if not set).
+	// MaxRetries is the configured retry limit (resolved; defaults to 2).
 	MaxRetries int
+	// RuntimeContext is the user-defined runtime context passed via the
+	// options (unfiltered; treat as immutable).
+	RuntimeContext interface{}
 	// Headers are any extra HTTP headers forwarded to the model.
 	Headers map[string]string
 	// ProviderOptions holds provider-specific options keyed by provider name.
@@ -56,6 +60,9 @@ type RerankOnFinishEvent struct {
 	Documents interface{}
 	// Query is the query that documents were reranked against.
 	Query string
+	// RuntimeContext is the user-defined runtime context passed via the
+	// options (unfiltered; treat as immutable).
+	RuntimeContext interface{}
 	// Ranking is the reranked results sorted by relevance score (descending).
 	Ranking []RerankItem
 	// Warnings are any non-fatal warnings emitted by the provider.
@@ -91,8 +98,16 @@ type RerankOptions struct {
 	// If nil or 0, all documents are returned
 	TopN *int
 
-	// MaxRetries is the number of times to retry on transient failure (0 = no retries).
-	MaxRetries int
+	// MaxRetries is the number of times to retry a model call on a retryable
+	// provider failure (HTTP 408/409/429/5xx), with exponential backoff that
+	// respects retry-after headers. nil means unset and defaults to 2 (TS
+	// default); 0 disables retries; negative values are rejected. This
+	// mirrors the *int convention used by GenerateTextOptions.MaxRetries.
+	MaxRetries *int
+
+	// RuntimeContext is user-defined context passed to the start/end callbacks
+	// unchanged. Treat it as immutable.
+	RuntimeContext interface{}
 
 	// Headers are additional HTTP headers forwarded to the model on each request.
 	Headers map[string]string
@@ -191,19 +206,6 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		return nil, fmt.Errorf("documents must be []string, []map[string]interface{}, or []interface{}")
 	}
 
-	if len(documentsSlice) == 0 {
-		// Return empty result for empty documents
-		return &RerankResult{
-			OriginalDocuments: opts.Documents,
-			Ranking:           []RerankItem{},
-			RerankedDocuments: opts.Documents,
-			Response: types.RerankResponse{
-				ModelID:   opts.Model.ModelID(),
-				Timestamp: timeNow(),
-			},
-		}, nil
-	}
-
 	// Generate a unique call ID for correlating start/finish events.
 	callID := newCallID()
 
@@ -218,6 +220,81 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
 	}
 
+	if len(documentsSlice) == 0 {
+		// TS rerank(): documents.length === 0 short-circuits before
+		// prepareRetries, but still fires onStart/onEnd (rerank.test.ts
+		// "should fire callbacks for empty documents").
+		emptyStartEvent := RerankOnStartEvent{
+			CallID:          callID,
+			OperationID:     "ai.rerank",
+			Provider:        opts.Model.Provider(),
+			ModelID:         opts.Model.ModelID(),
+			Query:           opts.Query,
+			Documents:       opts.Documents,
+			TopN:            opts.TopN,
+			MaxRetries:      preparedMaxRetries(opts.MaxRetries),
+			RuntimeContext:  opts.RuntimeContext,
+			Headers:         opts.Headers,
+			ProviderOptions: opts.ProviderOptions,
+			IsEnabled:       telEnabled,
+			RecordInputs:    telRecordInputs,
+			RecordOutputs:   telRecordOutputs,
+			FunctionID:      telFuncID,
+		}
+		if telemetry.Enabled(opts.ExperimentalTelemetry) {
+			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, emptyStartEvent)
+		}
+		if opts.ExperimentalOnStart != nil {
+			opts.ExperimentalOnStart(emptyStartEvent)
+		}
+
+		emptyResponse := types.RerankResponse{
+			ModelID:   opts.Model.ModelID(),
+			Timestamp: timeNow(),
+		}
+		emptyResult := &RerankResult{
+			OriginalDocuments: opts.Documents,
+			Ranking:           []RerankItem{},
+			RerankedDocuments: opts.Documents,
+			Response:          emptyResponse,
+		}
+		if opts.OnFinish != nil {
+			opts.OnFinish(emptyResult)
+		}
+		emptyFinishEvent := RerankOnFinishEvent{
+			CallID:         callID,
+			OperationID:    "ai.rerank",
+			Provider:       opts.Model.Provider(),
+			ModelID:        opts.Model.ModelID(),
+			Documents:      opts.Documents,
+			Query:          opts.Query,
+			RuntimeContext: opts.RuntimeContext,
+			Ranking:        []RerankItem{},
+			Warnings:       []types.Warning{},
+			Response:       emptyResponse,
+			Result:         emptyResult,
+			IsEnabled:      telEnabled,
+			RecordInputs:   telRecordInputs,
+			RecordOutputs:  telRecordOutputs,
+			FunctionID:     telFuncID,
+		}
+		if telemetry.Enabled(opts.ExperimentalTelemetry) {
+			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, emptyFinishEvent)
+		}
+		if opts.ExperimentalOnEnd != nil {
+			opts.ExperimentalOnEnd(emptyFinishEvent)
+		}
+		if opts.ExperimentalOnFinish != nil {
+			opts.ExperimentalOnFinish(emptyFinishEvent)
+		}
+		return emptyResult, nil
+	}
+
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
+
 	// Fire ExperimentalOnStart callback
 	startEvent := RerankOnStartEvent{
 		CallID:          callID,
@@ -227,7 +304,8 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		Query:           opts.Query,
 		Documents:       opts.Documents,
 		TopN:            opts.TopN,
-		MaxRetries:      opts.MaxRetries,
+		MaxRetries:      resolvedMaxRetries,
+		RuntimeContext:  opts.RuntimeContext,
 		Headers:         opts.Headers,
 		ProviderOptions: opts.ProviderOptions,
 		IsEnabled:       telEnabled,
@@ -260,34 +338,56 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		ProviderOptions: opts.ProviderOptions,
 	}
 
-	// Call the model
+	// Call the model, retried per withEmbedRetry (TS prepareRetries policy):
+	// exponential backoff from 2s, respecting retry-after headers, retrying
+	// only retryable provider errors. The per-attempt doRerank telemetry
+	// fires inside the retry loop, as in TS rerank().
 	documentsType := rerankDocumentsType(opts.Documents)
-	telemetry.FireOnRerankStart(ctx, telemetry.RerankingModelCallStartEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		OperationID:   "ai.rerank.doRerank",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Documents:     opts.Documents,
-		DocumentsType: documentsType,
-		Query:         opts.Query,
-		TopN:          opts.TopN,
+	var modelResult *types.RerankResult
+	err := withEmbedRetry(ctx, resolvedMaxRetries, func(attemptCtx context.Context) error {
+		telemetry.FireOnRerankStart(attemptCtx, telemetry.RerankingModelCallStartEvent{
+			Settings:      opts.ExperimentalTelemetry,
+			CallID:        callID,
+			OperationID:   "ai.rerank.doRerank",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Documents:     opts.Documents,
+			DocumentsType: documentsType,
+			Query:         opts.Query,
+			TopN:          opts.TopN,
+		})
+		res, callErr := opts.Model.DoRerank(attemptCtx, rerankOpts)
+		if callErr != nil {
+			return callErr
+		}
+		telemetry.FireOnRerankEnd(attemptCtx, telemetry.RerankingModelCallEndEvent{
+			Settings:      opts.ExperimentalTelemetry,
+			CallID:        callID,
+			OperationID:   "ai.rerank.doRerank",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			DocumentsType: documentsType,
+			Ranking:       res.Ranking,
+		})
+		modelResult = res
+		return nil
 	})
-	modelResult, err := opts.Model.DoRerank(ctx, rerankOpts)
 	if err != nil {
 		wrappedErr := fmt.Errorf("reranking failed: %w", err)
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
 		return nil, wrappedErr
 	}
-	telemetry.FireOnRerankEnd(ctx, telemetry.RerankingModelCallEndEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		OperationID:   "ai.rerank.doRerank",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		DocumentsType: documentsType,
-		Ranking:       modelResult.Ranking,
-	})
+
+	// TS rerank(): validateRankingIndices runs after the retry resolves and
+	// before logWarnings/onEnd — an invalid index fails the call without
+	// retrying and without firing onEnd (rerank.test.ts "should reject
+	// invalid provider ranking index").
+	if err := validateRankingIndices(modelResult.Ranking, documentsSlice); err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		return nil, err
+	}
+
+	logModelWarnings(modelResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	// Build result
 	ranking := make([]RerankItem, len(modelResult.Ranking))
@@ -307,7 +407,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		Ranking:           ranking,
 		RerankedDocuments: rerankedDocs,
 		Response:          modelResult.Response,
-		Warnings:          modelResult.Warnings,
+		Warnings:          warningsOrEmpty(modelResult.Warnings),
 		ProviderMetadata:  modelResult.ProviderMetadata,
 	}
 
@@ -330,6 +430,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		ModelID:          opts.Model.ModelID(),
 		Documents:        opts.Documents,
 		Query:            opts.Query,
+		RuntimeContext:   opts.RuntimeContext,
 		Ranking:          result.Ranking,
 		Warnings:         result.Warnings,
 		Response:         result.Response,
@@ -358,6 +459,20 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	})
 
 	return result, nil
+}
+
+// validateRankingIndices rejects a ranking that references an out-of-range
+// document index (TS rerank.ts validateRankingIndices). It must run before
+// any code indexes documentsSlice[item.Index], which would otherwise panic
+// on a bad index.
+func validateRankingIndices(ranking []types.RerankItem, documents []interface{}) error {
+	for _, item := range ranking {
+		if item.Index < 0 || item.Index >= len(documents) {
+			return providererrors.NewInvalidResponseDataError(ranking,
+				fmt.Sprintf("Invalid ranking index %d. Expected an integer between 0 and %d.", item.Index, len(documents)-1))
+		}
+	}
+	return nil
 }
 
 func rerankDocumentsType(documents interface{}) string {

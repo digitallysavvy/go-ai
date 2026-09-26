@@ -201,6 +201,8 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 		return nil, &NoVideoGeneratedError{Responses: responses}
 	}
 
+	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
+
 	return &GenerateVideoResult{
 		Video:            videos[0],
 		Videos:           videos,
@@ -408,6 +410,7 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
+	logModelWarnings(warnings, model.Provider(), model.ModelID())
 
 	return &GenerateVideoResult{
 		Video:            videos[0],
