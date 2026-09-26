@@ -195,9 +195,11 @@ func speechHeadersWithUserAgent(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(headers, version.UserAgent())
 }
 
+// resolveGeneratedSpeechMediaType mirrors the "audio" top-level branch of the
+// TypeScript SDK's `detectMediaType({data, topLevelType: 'audio'})` call in
+// generate-speech.ts, falling back to audio/mp3 when no signature matches.
 func resolveGeneratedSpeechMediaType(data []byte) string {
-	mediaType := fileutil.DetectMediaType(data).MimeType
-	if strings.HasPrefix(mediaType, "audio/") {
+	if mediaType, ok := fileutil.DetectMediaTypeSignature(data, "audio"); ok {
 		return mediaType
 	}
 	return "audio/mp3"
