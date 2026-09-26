@@ -413,6 +413,16 @@ func (t *HTTPTransport) SetProtocolVersion(version string) {
 	t.protocolVersion = version
 }
 
+// SupportsProtocolVersionDiscovery reports that HTTPTransport (streamable
+// HTTP) supports probing `server/discover` (hash e6a9927), matching TS
+// StreamableHTTPClientTransport.supportsProtocolVersionDiscovery.
+func (t *HTTPTransport) SupportsProtocolVersionDiscovery() bool { return true }
+
+// SupportsMCPToolParameterHeaders reports that HTTPTransport supports
+// binding tool call arguments to HTTP headers via `x-mcp-header` (hash
+// 0c60a40), matching TS StreamableHTTPClientTransport.supportsMcpToolParameterHeaders.
+func (t *HTTPTransport) SupportsMCPToolParameterHeaders() bool { return true }
+
 // ProtocolVersion returns the negotiated protocol version, or the latest
 // supported version before initialization completes.
 func (t *HTTPTransport) ProtocolVersion() string {

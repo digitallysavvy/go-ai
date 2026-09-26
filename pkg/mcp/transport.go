@@ -31,6 +31,22 @@ type ProtocolVersionTransport interface {
 	SetProtocolVersion(version string)
 }
 
+// ProtocolVersionDiscoveryTransport is implemented by transports that support
+// probing the 2026-07-28 `server/discover` method before falling back to a
+// legacy `initialize` handshake (hash e6a9927). Only HTTPTransport
+// (streamable HTTP) reports true, matching TS StreamableHTTPClientTransport;
+// stdio and legacy SSE transports do not implement this interface.
+type ProtocolVersionDiscoveryTransport interface {
+	SupportsProtocolVersionDiscovery() bool
+}
+
+// MCPToolParameterHeadersTransport is implemented by transports that support
+// binding tool call arguments to HTTP headers via the `x-mcp-header` JSON
+// Schema extension (hash 0c60a40). Only HTTPTransport reports true.
+type MCPToolParameterHeadersTransport interface {
+	SupportsMCPToolParameterHeaders() bool
+}
+
 // MCPRedirectMode controls how the HTTP transport handles HTTP redirects from
 // MCP servers. The default is MCPRedirectError (fail on redirect) — MCP servers
 // should not silently redirect clients to other endpoints, as this can mask

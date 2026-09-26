@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -28,6 +29,14 @@ type MCPClient struct {
 	serverInfo         ServerInfo
 	serverCapability   ServerCapabilities
 	serverInstructions string
+
+	// protocolEra is "legacy" (classic `initialize` handshake) or "modern"
+	// (negotiated via `server/discover`, hash e6a9927). The zero value
+	// ("") behaves as "legacy".
+	protocolEra string
+	// protocolVersion is the negotiated MCP protocol version, injected into
+	// modern-era request `_meta` (hash e6a9927).
+	protocolVersion string
 
 	// Client info
 	clientInfo ClientInfo
@@ -73,6 +82,19 @@ type MCPClientConfig struct {
 	// closed). JSON-RPC application errors (a non-zero MCPClientError.Code)
 	// and successful results with IsError=true are never retried.
 	MaxRetries int
+
+	// ProtocolVersionDiscovery controls whether the client probes the
+	// 2026-07-28 `server/discover` method before falling back to the legacy
+	// `initialize` handshake (hash e6a9927). Default true. Only takes effect
+	// when the transport implements ProtocolVersionDiscoveryTransport and
+	// reports support (only HTTPTransport does today).
+	ProtocolVersionDiscovery *bool
+}
+
+// protocolVersionDiscoveryEnabled reports the effective value of
+// ProtocolVersionDiscovery, defaulting to true when unset.
+func (c MCPClientConfig) protocolVersionDiscoveryEnabled() bool {
+	return c.ProtocolVersionDiscovery == nil || *c.ProtocolVersionDiscovery
 }
 
 // NewMCPClient creates a new MCP client with the given transport
@@ -110,7 +132,11 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	}
 }
 
-// Connect connects to the MCP server and initializes the connection
+// Connect connects to the MCP server and initializes the connection. When
+// the transport supports it (hash e6a9927), it first probes the 2026-07-28
+// `server/discover` method with a short timeout; on any failure other than a
+// hard modern-protocol error it falls back to the legacy `initialize`
+// handshake.
 func (c *MCPClient) Connect(ctx context.Context) error {
 	// Connect transport
 	if err := c.transport.Connect(ctx); err != nil {
@@ -120,12 +146,85 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	// Start message receiver
 	go c.receiveLoop()
 
+	if c.supportsProtocolVersionDiscovery() {
+		discovered, err := c.tryProtocolDiscovery(ctx)
+		if err != nil {
+			return fmt.Errorf("protocol discovery failed: %w", err)
+		}
+		if discovered {
+			c.initialized = true
+			return nil
+		}
+	}
+
+	c.protocolEra = "legacy"
+	c.protocolVersion = LatestLegacyProtocolVersion
+
 	// Send initialize request
 	if err := c.initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
 
 	c.initialized = true
+	return nil
+}
+
+// supportsProtocolVersionDiscovery reports whether protocol-version
+// discovery should be attempted: the config option is enabled (default
+// true) and the transport implements ProtocolVersionDiscoveryTransport and
+// reports support.
+func (c *MCPClient) supportsProtocolVersionDiscovery() bool {
+	if !c.config.protocolVersionDiscoveryEnabled() {
+		return false
+	}
+	transport, ok := c.transport.(ProtocolVersionDiscoveryTransport)
+	return ok && transport.SupportsProtocolVersionDiscovery()
+}
+
+// tryProtocolDiscovery probes `server/discover`, matching TS
+// MCPClient.tryProtocolDiscovery (mcp-client.ts, hash e6a9927). It returns
+// (true, nil) when modern-era negotiation succeeded; (false, nil) when the
+// server does not support server/discover (or its result doesn't match, in
+// which case the caller should fall back to the legacy initialize
+// handshake); and (false, err) when the server reported a hard
+// modern-protocol error (a JSON-RPC error whose code is in
+// ModernProtocolErrorCodes).
+func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
+	c.protocolEra = "modern"
+	c.protocolVersion = LatestProtocolVersion
+	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
+		versionTransport.SetProtocolVersion(c.protocolVersion)
+	}
+
+	discoverCtx, cancel := context.WithTimeout(ctx, time.Duration(DefaultProtocolDiscoveryTimeoutMS)*time.Millisecond)
+	defer cancel()
+
+	var result DiscoverResult
+	if err := c.call(discoverCtx, "server/discover", map[string]interface{}{}, &result); err != nil {
+		var mcpErr *MCPClientError
+		if errors.As(err, &mcpErr) && intSliceContains(ModernProtocolErrorCodes, mcpErr.Code) {
+			return false, err
+		}
+		return false, nil
+	}
+
+	if err := c.applyDiscoverResult(result); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// applyDiscoverResult validates and applies a `server/discover` result,
+// matching TS applyDiscoverResult (mcp-client.ts).
+func (c *MCPClient) applyDiscoverResult(result DiscoverResult) error {
+	if !containsOAuthString(result.SupportedVersions, c.protocolVersion) {
+		return fmt.Errorf("server does not support the requested protocol version: %s", c.protocolVersion)
+	}
+	if info, ok := DiscoverResultServerInfo(result); ok {
+		c.serverInfo = info
+	}
+	c.serverCapability = result.Capabilities
+	c.serverInstructions = result.Instructions
 	return nil
 }
 
@@ -147,7 +246,7 @@ func (c *MCPClient) Close() error {
 // initialize sends the initialize request to the server
 func (c *MCPClient) initialize(ctx context.Context) error {
 	params := InitializeParams{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: c.protocolVersion,
 		Capabilities:    c.config.Capabilities,
 		ClientInfo:      c.clientInfo,
 	}
@@ -163,6 +262,8 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 	c.serverInfo = result.ServerInfo
 	c.serverCapability = result.Capabilities
 	c.serverInstructions = result.Instructions
+	c.protocolEra = "legacy"
+	c.protocolVersion = result.ProtocolVersion
 	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
 		versionTransport.SetProtocolVersion(result.ProtocolVersion)
 	}
@@ -426,6 +527,24 @@ func (c *MCPClient) GetPrompt(ctx context.Context, name string, arguments map[st
 	return &result, nil
 }
 
+// Complete requests argument autocompletion suggestions from the server for
+// a prompt or resource template reference (hash 68a739a). It errors if the
+// server did not advertise the completions capability.
+func (c *MCPClient) Complete(ctx context.Context, params CompleteRequestParams) (*CompleteResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+	if c.serverCapability.Completions == nil {
+		return nil, NewMCPClientError(0, "Server does not support completions", nil)
+	}
+
+	var result CompleteResult
+	if err := c.call(ctx, "completion/complete", params, &result); err != nil {
+		return nil, fmt.Errorf("failed to complete: %w", err)
+	}
+	return &result, nil
+}
+
 // ServerInfo returns information about the connected server
 func (c *MCPClient) ServerInfo() ServerInfo {
 	return c.serverInfo
@@ -445,7 +564,11 @@ func (c *MCPClient) ServerInstructions() string {
 // call makes a JSON-RPC call and waits for the response
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
 	id := c.idGen.Next()
-	msg, err := CreateRequest(id, method, params)
+	preparedParams, err := c.prepareRequestParams(method, params)
+	if err != nil {
+		return err
+	}
+	msg, err := CreateRequest(id, method, preparedParams)
 	if err != nil {
 		return err
 	}
@@ -482,6 +605,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		// Check for error
 		if response.Error != nil {
 			return GetError(response)
+		}
+
+		if err := c.validateModernResult(method, response.Result); err != nil {
+			return err
 		}
 
 		// Parse result
@@ -583,6 +710,74 @@ func (c *MCPClient) handleRequest(msg *MCPMessage) {
 func isSupportedProtocolVersion(version string) bool {
 	for _, supported := range SupportedProtocolVersions {
 		if version == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// prepareRequestParams injects the modern-era `_meta` protocol/capabilities/
+// client-info fields into params, matching TS's request() preparedRequest
+// (mcp-client.ts, hash e6a9927). Legacy-era requests and `initialize` itself
+// are left unchanged.
+func (c *MCPClient) prepareRequestParams(method string, params interface{}) (interface{}, error) {
+	if c.protocolEra != "modern" || method == "initialize" {
+		return params, nil
+	}
+
+	paramMap := map[string]interface{}{}
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > 0 && string(data) != "null" {
+			if err := json.Unmarshal(data, &paramMap); err != nil {
+				// params did not marshal to a JSON object (e.g. a bare
+				// array/string); there is nowhere to attach _meta, so send
+				// it unmodified rather than losing the original params.
+				return params, nil
+			}
+		}
+	}
+
+	meta, _ := paramMap["_meta"].(map[string]interface{})
+	if meta == nil {
+		meta = map[string]interface{}{}
+	}
+	meta["io.modelcontextprotocol/protocolVersion"] = c.protocolVersion
+	meta["io.modelcontextprotocol/clientCapabilities"] = c.config.Capabilities
+	meta["io.modelcontextprotocol/clientInfo"] = c.clientInfo
+	paramMap["_meta"] = meta
+	return paramMap, nil
+}
+
+// validateModernResult enforces the modern-era result invariant: every
+// result must carry a `resultType`, and `input_required` is rejected because
+// multi-round-trip requests are not yet supported. Matches TS's generic
+// response handler (mcp-client.ts, hash e6a9927).
+func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessage) error {
+	if c.protocolEra != "modern" {
+		return nil
+	}
+	var probe struct {
+		ResultType *string `json:"resultType"`
+	}
+	if len(rawResult) > 0 {
+		_ = json.Unmarshal(rawResult, &probe)
+	}
+	if probe.ResultType == nil {
+		return NewMCPClientError(0, "Modern MCP result is missing resultType", nil)
+	}
+	if *probe.ResultType == "input_required" {
+		return NewMCPClientError(0, "Server requested additional input, but multi round-trip requests are not supported yet", nil)
+	}
+	return nil
+}
+
+func intSliceContains(values []int, want int) bool {
+	for _, v := range values {
+		if v == want {
 			return true
 		}
 	}

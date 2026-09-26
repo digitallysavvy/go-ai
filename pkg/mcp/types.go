@@ -6,21 +6,48 @@ import (
 	"fmt"
 )
 
-// ProtocolVersion is the MCP protocol version this client advertises as its
-// preferred version during initialization. It is always set to the newest
-// supported version.
-const ProtocolVersion = "2025-11-25"
+// ProtocolVersion is the legacy MCP protocol version this client advertises
+// during a classic `initialize` handshake. It is an alias of
+// LatestLegacyProtocolVersion, kept for source compatibility.
+//
+// Deprecated: use LatestLegacyProtocolVersion. Prefer LatestProtocolVersion
+// when probing the 2026 `server/discover` handshake (see
+// MCPClientConfig.ProtocolVersionDiscovery).
+const ProtocolVersion = LatestLegacyProtocolVersion
+
+// LatestProtocolVersion is the newest ("modern era") MCP protocol version,
+// negotiated via the `server/discover` method (hash e6a9927). Matches TS
+// LATEST_PROTOCOL_VERSION (types.ts).
+const LatestProtocolVersion = "2026-07-28"
+
+// LatestLegacyProtocolVersion is the newest protocol version negotiated via
+// the classic `initialize` handshake (the "legacy era", used by every MCP
+// client before the 2026-07-28 `server/discover` addition). Matches TS
+// LATEST_LEGACY_PROTOCOL_VERSION (types.ts).
+const LatestLegacyProtocolVersion = "2025-11-25"
 
 // SupportedProtocolVersions lists all MCP protocol versions this client
 // understands, in order of preference (newest first). During capability
 // negotiation the client advertises these versions so that the server can
 // select the highest mutually-supported version.
 var SupportedProtocolVersions = []string{
-	"2025-11-25",
+	LatestProtocolVersion,
+	LatestLegacyProtocolVersion,
 	"2025-06-18",
 	"2025-03-26",
 	"2024-11-05",
 }
+
+// DefaultProtocolDiscoveryTimeout bounds how long the client waits for a
+// `server/discover` response before falling back to the legacy `initialize`
+// handshake. Matches TS DEFAULT_PROTOCOL_DISCOVERY_TIMEOUT (mcp-client.ts).
+const DefaultProtocolDiscoveryTimeoutMS = 1000
+
+// ModernProtocolErrorCodes are JSON-RPC error codes a server uses to signal a
+// hard failure during modern-era protocol negotiation (as opposed to simply
+// not supporting `server/discover`, which the client treats as "fall back to
+// legacy"). Matches TS MODERN_PROTOCOL_ERROR_CODES (mcp-client.ts).
+var ModernProtocolErrorCodes = []int{-32020, -32021, -32022}
 
 // MCPMessage represents a generic MCP protocol message
 type MCPMessage struct {
@@ -157,10 +184,16 @@ type ClientCapabilities struct {
 type ServerCapabilities struct {
 	Experimental map[string]interface{} `json:"experimental,omitempty"`
 	Logging      *LoggingCapability     `json:"logging,omitempty"`
-	Prompts      *PromptsCapability     `json:"prompts,omitempty"`
-	Resources    *ResourcesCapability   `json:"resources,omitempty"`
-	Tools        *ToolsCapability       `json:"tools,omitempty"`
+	// Completions advertises support for the completion/complete method
+	// (hash 68a739a). See (*MCPClient).Complete.
+	Completions *CompletionsCapability `json:"completions,omitempty"`
+	Prompts     *PromptsCapability     `json:"prompts,omitempty"`
+	Resources   *ResourcesCapability   `json:"resources,omitempty"`
+	Tools       *ToolsCapability       `json:"tools,omitempty"`
 }
+
+// CompletionsCapability represents the completions capability.
+type CompletionsCapability struct{}
 
 // RootsCapability represents the roots capability
 type RootsCapability struct {
@@ -669,6 +702,106 @@ type McpToolAnnotations struct {
 	DestructiveHint *bool   `json:"destructiveHint,omitempty"`
 	IdempotentHint  *bool   `json:"idempotentHint,omitempty"`
 	OpenWorldHint   *bool   `json:"openWorldHint,omitempty"`
+}
+
+// DiscoverResult is the result of the modern-era `server/discover` request,
+// matching TS DiscoverResultSchema (types.ts, hash e6a9927). ServerInfo, when
+// present, is extracted from Meta["io.modelcontextprotocol/serverInfo"].
+type DiscoverResult struct {
+	SupportedVersions []string               `json:"supportedVersions"`
+	Capabilities      ServerCapabilities     `json:"capabilities"`
+	Instructions      string                 `json:"instructions,omitempty"`
+	TTLMs             *float64               `json:"ttlMs,omitempty"`
+	CacheScope        string                 `json:"cacheScope,omitempty"`
+	ResultType        string                 `json:"resultType,omitempty"`
+	Meta              map[string]interface{} `json:"_meta,omitempty"`
+}
+
+// DiscoverResultServerInfo extracts the server's Implementation info from a
+// DiscoverResult's `_meta["io.modelcontextprotocol/serverInfo"]`, matching TS
+// applyDiscoverResult (mcp-client.ts).
+func DiscoverResultServerInfo(result DiscoverResult) (ServerInfo, bool) {
+	raw, ok := result.Meta["io.modelcontextprotocol/serverInfo"]
+	if !ok {
+		return ServerInfo{}, false
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return ServerInfo{}, false
+	}
+	name, nameOK := obj["name"].(string)
+	version, versionOK := obj["version"].(string)
+	if !nameOK || !versionOK {
+		return ServerInfo{}, false
+	}
+	info := ServerInfo{Name: name, Version: version}
+	if title, ok := obj["title"].(string); ok {
+		info.Title = title
+	}
+	return info, true
+}
+
+// PromptReference identifies a prompt argument being completed.
+type PromptReference struct {
+	Type string `json:"type"` // "ref/prompt"
+	Name string `json:"name"`
+}
+
+// ResourceReference identifies a resource template argument being completed.
+type ResourceReference struct {
+	Type string `json:"type"` // "ref/resource"
+	URI  string `json:"uri"`
+}
+
+// CompletionArgument is the argument being completed in a completion/complete
+// request.
+type CompletionArgument struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// CompletionContext carries previously-resolved argument values for a
+// completion request.
+type CompletionContext struct {
+	Arguments map[string]string `json:"arguments"`
+}
+
+// CompleteRequestParams are the parameters of a completion/complete request.
+// Exactly one of PromptRef/ResourceRef should be set.
+type CompleteRequestParams struct {
+	PromptRef   *PromptReference   `json:"-"`
+	ResourceRef *ResourceReference `json:"-"`
+	Argument    CompletionArgument `json:"argument"`
+	Context     *CompletionContext `json:"context,omitempty"`
+}
+
+// MarshalJSON emits `ref` as whichever of PromptRef/ResourceRef is set.
+func (p CompleteRequestParams) MarshalJSON() ([]byte, error) {
+	var ref interface{}
+	switch {
+	case p.PromptRef != nil:
+		ref = p.PromptRef
+	case p.ResourceRef != nil:
+		ref = p.ResourceRef
+	}
+	return json.Marshal(struct {
+		Ref      interface{}        `json:"ref"`
+		Argument CompletionArgument `json:"argument"`
+		Context  *CompletionContext `json:"context,omitempty"`
+	}{Ref: ref, Argument: p.Argument, Context: p.Context})
+}
+
+// CompleteResultCompletion is the completion payload of a CompleteResult.
+type CompleteResultCompletion struct {
+	Values  []string `json:"values"`
+	Total   *int     `json:"total,omitempty"`
+	HasMore bool     `json:"hasMore,omitempty"`
+}
+
+// CompleteResult is the result of a completion/complete request.
+type CompleteResult struct {
+	Completion CompleteResultCompletion `json:"completion"`
+	ResultType string                   `json:"resultType,omitempty"`
 }
 
 // LoggingLevel represents the level of logging
