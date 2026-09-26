@@ -457,6 +457,14 @@ type StreamTextResult struct {
 	cbModel      provider.LanguageModel
 	cbStreamOpts StreamTextOptions
 
+	// chunkBuf backs Stream()/Chunks() with a replayable copy of every chunk
+	// processStream forwards, so callers can consume the full multi-step
+	// stream without racing processStream's own consumption of the raw
+	// per-step provider stream. nil for StreamTextResult values built by hand
+	// (e.g. in tests exercising the lower-level stream helpers directly),
+	// which fall back to the raw stream field.
+	chunkBuf *chunkBuffer
+
 	processingDone chan struct{}
 }
 
@@ -826,17 +834,28 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		resumeChunksRemaining:   len(resumed.chunks),
 	}
 
-	// Start the processing loop when any callback depends on post-stream tool
-	// execution or multi-step continuation.
-	if opts.OnChunk != nil || onEnd != nil ||
-		opts.OnStepStart != nil ||
-		opts.OnStepEndEvent != nil || opts.OnStepFinishEvent != nil || onEndEvent != nil ||
-		opts.OnToolExecutionStart != nil || opts.OnToolExecutionEnd != nil ||
-		opts.OnToolCallStart != nil || opts.OnToolCallFinish != nil ||
-		opts.OnError != nil || opts.OnAbort != nil {
-		result.processingDone = make(chan struct{})
-		go result.processStream(ctx, opts.OnChunk, onEnd)
+	// Always run the multi-step processing loop, matching the TypeScript SDK:
+	// streamText's transform stream (which executes tools and continues the
+	// step loop) runs unconditionally, regardless of whether the caller
+	// registered any callbacks. Previously, Stream()/Chunks()/ReadAll() read
+	// the raw single-step provider stream directly when no callback was set,
+	// which meant tool calls were never executed and later steps never ran.
+	//
+	// chunkBuf gives every consumption path (Stream, Chunks, ReadAll) a
+	// replayable view of the same fully-processed chunk sequence that
+	// processStream produces, so they no longer race with processStream's own
+	// reads of the raw per-step stream.
+	buf := newChunkBuffer()
+	result.chunkBuf = buf
+	userOnChunk := opts.OnChunk
+	combinedOnChunk := func(c provider.StreamChunk) {
+		buf.push(c)
+		if userOnChunk != nil {
+			userOnChunk(c)
+		}
 	}
+	result.processingDone = make(chan struct{})
+	go result.processStream(ctx, combinedOnChunk, onEnd)
 
 	return result, nil
 }
@@ -854,6 +873,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provider.StreamChunk), onFinish func(*StreamTextResult)) {
 	if r.processingDone != nil {
 		defer close(r.processingDone)
+	}
+	if r.chunkBuf != nil {
+		defer func() { r.chunkBuf.close(r.err) }()
 	}
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
@@ -1839,6 +1861,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if len(allSteps) > 0 {
 		lastStep = allSteps[len(allSteps)-1]
 	}
+	// Populate the Request()/Response() accessors from the final step. These
+	// were previously only set by ReadAll's now-removed duplicate stream
+	// consumption, which left them empty whenever any callback was set.
+	r.mu.Lock()
+	r.stepRequest = lastStep.Request
+	r.stepResponse = lastStep.Response
+	r.mu.Unlock()
 	stepsForEvent := allSteps
 	if len(stepsForEvent) == 0 {
 		stepsForEvent = []types.StepResult{lastStep}
@@ -1970,8 +1999,19 @@ func mergeStreamedToolResults(executedResults []types.ToolResult, streamedResult
 	return merged
 }
 
-// Stream returns the underlying text stream
+// Stream returns the full, processed multi-step chunk stream: every chunk
+// forwarded by processStream (tool calls, tool results, later steps, etc.),
+// matching the TypeScript SDK's fullStream. Each call returns an independent
+// reader starting from the first chunk (tee semantics), so Stream() may be
+// called more than once, and concurrently with OnChunk-based consumption.
+//
+// StreamTextResult values built directly (bypassing StreamText, e.g. in
+// tests exercising the lower-level stream helpers) have no backing buffer
+// and fall back to the raw stream field.
 func (r *StreamTextResult) Stream() provider.TextStream {
+	if r.chunkBuf != nil {
+		return r.chunkBuf.reader()
+	}
 	return r.stream
 }
 
@@ -2309,10 +2349,29 @@ func (r *StreamTextResult) Close() error {
 	return r.stream.Close()
 }
 
-// ReadAll reads all chunks from the stream and returns the complete text.
-// Tool call chunks are collected and stored in the result, but Execute is not
-// called — use StreamText with callbacks for tool execution.
+// ReadAll returns the complete generated text once streaming (and, for
+// results produced by StreamText, the full multi-step tool-calling loop) has
+// finished. Tool calls are executed as part of that loop; ReadAll never has
+// to execute them itself.
+//
+// StreamTextResult values produced by StreamText always run processStream in
+// the background (see StreamText), so ReadAll only needs to wait for it to
+// finish. StreamTextResult values built directly (bypassing StreamText, e.g.
+// in tests exercising the lower-level stream helpers) have no background
+// processor and fall back to consuming the raw stream directly, without tool
+// execution or multi-step continuation — matching their previous behavior.
 func (r *StreamTextResult) ReadAll() (string, error) {
+	if r.processingDone != nil {
+		<-r.processingDone
+		return r.text, r.err
+	}
+	return r.readAllLegacy()
+}
+
+// readAllLegacy is the pre-existing single-step stream consumer, kept only
+// for StreamTextResult values that were built by hand rather than returned
+// from StreamText (which now always populates processingDone).
+func (r *StreamTextResult) readAllLegacy() (string, error) {
 	ctx := context.Background()
 	stepCtx := ctx
 	cancelStep := func() {}
@@ -2870,21 +2929,21 @@ func (r *StreamTextResult) Warnings() []types.Warning {
 	return r.warnings
 }
 
-// Chunks returns a channel that streams chunks
-// This provides an idiomatic Go way to consume the stream
+// Chunks returns a channel that streams the full, processed multi-step chunk
+// sequence (see Stream). This provides an idiomatic Go way to consume the
+// stream.
 func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 	ch := make(chan provider.StreamChunk, 10)
+	stream := r.Stream()
 
 	go func() {
 		defer close(ch)
-		ctx := context.Background()
 		for {
-			chunk, err := r.nextChunk(ctx)
+			chunk, err := stream.Next()
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
-				r.err = err
 				break
 			}
 
