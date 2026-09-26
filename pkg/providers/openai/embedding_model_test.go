@@ -18,7 +18,7 @@ import (
 func TestEmbeddingModelMetadataAndLimits(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewEmbeddingModel(p, "text-embedding-3-large")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "openai" || m.ModelID() != "text-embedding-3-large" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "openai" || m.ModelID() != "text-embedding-3-large" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {

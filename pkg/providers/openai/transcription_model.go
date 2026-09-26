@@ -30,7 +30,7 @@ func NewTranscriptionModel(provider *Provider, modelID string) *TranscriptionMod
 
 // SpecificationVersion returns the specification version
 func (m *TranscriptionModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
