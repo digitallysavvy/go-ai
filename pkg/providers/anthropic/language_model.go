@@ -1113,6 +1113,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 	// Get next SSE event
 	event, err := s.parser.Next()
 	if err != nil {
+		if s.spliced {
+			// A spliced stream ends without a finish chunk: TS never
+			// re-enqueues after hasInvalidMessageSequence is set, and the
+			// ReadableStream simply closes once the underlying byte stream
+			// ends (no synthesized finish part).
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 		if err == io.EOF && s.finish != nil && !s.finishIssued {
 			s.finishIssued = true
 			s.err = io.EOF
@@ -1120,6 +1128,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.err = err
 		return nil, err
+	}
+
+	// Once a spliced-stream error chunk has been emitted, every remaining
+	// event is silently discarded (TS hasInvalidMessageSequence guard).
+	if s.spliced {
+		return s.Next()
 	}
 
 	// Anthropic uses different event types
@@ -1361,11 +1375,20 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				if s.activeMessageID == msg.Message.ID {
 					return s.Next()
 				}
-				// A spliced stream: everything after this point is dropped.
-				s.err = providererrors.NewProviderError("anthropic", 0, "invalid_response_data", fmt.Sprintf(
-					"Received message_start for message %s while message %s is still open.",
-					jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)), nil)
-				return nil, s.err
+				// A spliced stream: emit an error chunk in the stream itself
+				// (matching TS, which enqueues an 'error' stream part rather
+				// than throwing) and discard everything after it. This is
+				// not a fatal Go error: the generation already produced
+				// output, so the failure must surface the same way other
+				// mid-stream provider errors do (see openai/language_model.go
+				// for the analogous outputStarted convention).
+				s.spliced = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: fmt.Sprintf(
+						"Received message_start for message %s while message %s is still open.",
+						jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)),
+				}, nil
 			}
 			s.isMessageOpen = true
 			s.activeMessageID = msg.Message.ID
