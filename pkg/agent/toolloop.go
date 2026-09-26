@@ -518,6 +518,34 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	currentMessages := make([]types.Message, len(messages))
 	copy(currentMessages, messages)
 
+	// Resume tool approvals from the input messages before the first step
+	// (review finding F5): this loop previously signed approval requests
+	// (see agentToolResultsToContentParts) but never resumed them, so a
+	// history ending in an approved tool-approval-response silently
+	// continued without executing the tool or verifying its signature.
+	resumed, resumeErr := ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
+		Messages:             currentMessages,
+		Tools:                a.config.Tools,
+		ToolApproval:         a.config.ToolApproval,
+		ToolsContext:         a.config.ToolsContext,
+		RuntimeContext:       a.runtimeContext(),
+		Secret:               a.config.ExperimentalToolApprovalSecret,
+		RefineToolInput:      a.config.ExperimentalRefineToolInput,
+		ModelProvider:        a.config.Model.Provider(),
+		ModelID:              a.config.Model.ModelID(),
+		OnToolExecutionStart: cbs.onToolCallStart,
+		OnToolExecutionEnd:   cbs.onToolCallFinish,
+	})
+	if resumeErr != nil {
+		if a.config.OnChainError != nil {
+			a.config.OnChainError(resumeErr)
+		}
+		return nil, resumeErr
+	}
+	if len(resumed.ResponseMessages) > 0 {
+		currentMessages = append(currentMessages, resumed.ResponseMessages...)
+	}
+
 	// Custom data for PrepareCall (persists across steps)
 	var customData interface{}
 

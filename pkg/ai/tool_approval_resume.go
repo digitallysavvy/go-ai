@@ -406,3 +406,85 @@ func executeToolsParallel(ctx context.Context, calls []types.ToolCall, tools []t
 	}
 	return out, nil
 }
+
+// ResumeToolApprovalsOptions configures ResumeToolApprovals, the exported
+// entry point other packages (e.g. pkg/agent's legacy tool-loop) use to
+// resume tool approvals collected from the tail of a message history:
+// re-validate approved calls (signature, input schema, approval policy),
+// execute approved local tools, report invalid inputs as tool errors, and
+// synthesize execution-denied results for denials.
+type ResumeToolApprovalsOptions struct {
+	// Messages is the input history to scan for a trailing
+	// tool-approval-response message.
+	Messages []types.Message
+	// Tools are the tools available to resolve approved calls against.
+	Tools []types.Tool
+	// ToolApproval configures automatic approval handling.
+	ToolApproval types.ToolApprovalConfig
+	// ToolsContext contains per-tool execution context keyed by tool name.
+	ToolsContext map[string]interface{}
+	// RuntimeContext is user-defined context passed to callbacks and tools.
+	RuntimeContext interface{}
+	// Secret verifies (and, when re-signing, produces) approval signatures.
+	// Nil disables signature verification.
+	Secret []byte
+	// RefineToolInput refines parsed tool inputs by tool name before
+	// re-validation and execution.
+	RefineToolInput map[string]ToolInputRefiner
+	// CallID correlates emitted tool execution events with the caller's call.
+	CallID string
+	// ModelProvider and ModelID identify the model for emitted events.
+	ModelProvider string
+	ModelID       string
+	// OnToolExecutionStart/OnToolExecutionEnd are notified around each
+	// approved tool's execution.
+	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
+	OnToolExecutionEnd   func(ctx context.Context, e OnToolCallFinishEvent)
+}
+
+// ResumeToolApprovalsResult is the outcome of ResumeToolApprovals.
+type ResumeToolApprovalsResult struct {
+	// ResponseMessages is the tool message (if any) produced by resuming
+	// approvals: executed results, invalid-input errors, and
+	// execution-denied outputs. Empty when the history had no pending or
+	// resolved approvals to resume.
+	ResponseMessages []types.Message
+	// Usage is the token usage consumed by any tools that ran.
+	Usage types.Usage
+}
+
+// ResumeToolApprovals resumes tool approvals found at the end of messages.
+// It is the exported form of the same logic GenerateText/StreamText apply
+// to their input messages before the first model call, for callers (such as
+// pkg/agent's legacy ToolLoopAgent.Execute/ExecuteWithMessages/GenerateAgent
+// loop) that implement their own generation loop instead of delegating to
+// GenerateText/StreamText (review finding F5,
+// state/parity/sep_23_2026/review-p0-1-p0-2-round1.md).
+func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (ResumeToolApprovalsResult, error) {
+	var usage types.Usage
+	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
+		messages:       opts.Messages,
+		tools:          opts.Tools,
+		toolApproval:   opts.ToolApproval,
+		toolsContext:   opts.ToolsContext,
+		runtimeContext: opts.RuntimeContext,
+		secret:         opts.Secret,
+		refine:         opts.RefineToolInput,
+		usage:          &usage,
+		callbacks: toolCallEventCallbacks{
+			callID:              opts.CallID,
+			onStart:             opts.OnToolExecutionStart,
+			onFinish:            opts.OnToolExecutionEnd,
+			modelProvider:       opts.ModelProvider,
+			modelID:             opts.ModelID,
+			messages:            opts.Messages,
+			experimentalContext: opts.RuntimeContext,
+			runtimeContext:      opts.RuntimeContext,
+			toolsContext:        opts.ToolsContext,
+		},
+	})
+	if err != nil {
+		return ResumeToolApprovalsResult{}, err
+	}
+	return ResumeToolApprovalsResult{ResponseMessages: resumed.responseMessages, Usage: usage}, nil
+}
