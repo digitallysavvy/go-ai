@@ -114,8 +114,10 @@ func TestLangSmithDeploymentTransportSendMessagesAndReconnect(t *testing.T) {
 		t.Fatalf("graphID = %q, want custom-agent", transport.graphID)
 	}
 
-	out, errs := transport.SendMessages(context.Background(), []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hello"}}},
+	out, errs := transport.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hello"}}},
+		},
 	})
 	chunks := collectOutputChunks(t, out, errs)
 	if len(gotMessages) != 1 || gotMessages[0]["type"] != "human" {
@@ -125,7 +127,7 @@ func TestLangSmithDeploymentTransportSendMessagesAndReconnect(t *testing.T) {
 		t.Fatalf("missing data-progress chunk: %#v", chunks)
 	}
 
-	_, reconnectErrs := transport.ReconnectToStream(context.Background(), "chat-1")
+	_, reconnectErrs := transport.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "chat-1"})
 	if err := <-reconnectErrs; err == nil || err.Error() != "Method not implemented." {
 		t.Fatalf("reconnect err = %v", err)
 	}
@@ -145,7 +147,7 @@ func TestLangSmithDeploymentTransportSendMessagesReportsStreamError(t *testing.T
 			return nil, want
 		},
 	})
-	out, errs := transport.SendMessages(context.Background(), nil)
+	out, errs := transport.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{})
 	if _, ok := <-out; ok {
 		t.Fatal("expected closed output")
 	}

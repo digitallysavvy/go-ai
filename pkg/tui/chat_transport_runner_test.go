@@ -47,6 +47,17 @@ func (f *fakeChatTransport) SendMessages(ctx context.Context, req ai.ChatTranspo
 	return chunks, errs
 }
 
+// ReconnectToStream satisfies ai.ChatTransport; the fake never has an active
+// stream to resume, matching TS's "resolves to null" case (both channels
+// close immediately with nothing sent).
+func (f *fakeChatTransport) ReconnectToStream(context.Context, ai.ChatTransportReconnectToStreamRequest) (<-chan ai.UIMessageChunk, <-chan error) {
+	chunks := make(chan ai.UIMessageChunk)
+	errs := make(chan error)
+	close(chunks)
+	close(errs)
+	return chunks, errs
+}
+
 func (f *fakeChatTransport) requests() []ai.ChatTransportSendMessagesRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
