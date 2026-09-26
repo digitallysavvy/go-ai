@@ -1,5 +1,23 @@
 // Records the frames the real TS runBridge (ai@7.0.113 packages/harness/src/bridge/index.ts)
 // sends to a host, for the Go bridge transport tests.
+//
+// Regenerating the *.ndjson fixtures in this directory:
+//   1. In a scratch directory: `npm init -y && npm pkg set type=module && npm i ws@8`.
+//   2. Copy `ai/packages/harness/src/bridge/index.ts` there as `bridge.ts`,
+//      together with `harness-bridge-capability-unsupported-error.ts` (the
+//      relative import `runBridge` pulls in).
+//   3. In that copy of `bridge.ts`, change the
+//      `./harness-bridge-capability-unsupported-error` import to use the
+//      explicit `.ts` extension (Node's type-stripping loader needs it).
+//   4. Copy this script into the same scratch directory and run
+//      `node record.mts > rec.out` (Node >= 24, which strips types natively).
+//   5. Split `rec.out` on the `### <name>` headers into `<name>.ndjson` files
+//      here, and set the port in `ready.ndjson` to 4319 (a fixed, readable
+//      value — the real recording used whatever ephemeral port the OS
+//      assigned `runBridge`'s `port: 0`).
+// The `{"_close":{...}}` lines are recorder annotations appended by this
+// script (see `record('unauthorized', ...)`/`record('resume', ...)` below),
+// not real bridge frames — Go's fixture-replay test skips them.
 import { WebSocket } from 'ws';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
