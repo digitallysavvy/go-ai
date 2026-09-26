@@ -4,237 +4,249 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"hash/crc32"
 	"io"
-	"strings"
+	"net/http"
 	"testing"
 )
 
-// buildEventStreamMessage builds a test AWS EventStream message
-func buildEventStreamMessage(messageType, eventType, payload string) []byte {
-	// Build headers
-	headers := buildHeaders(map[string]string{
-		":message-type": messageType,
-		":event-type":   eventType,
-	})
+// encodeEventStreamMessage builds a raw AWS event-stream binary frame with
+// the given string headers and payload, mirroring @smithy/eventstream-codec's
+// EventStreamCodec.encode used by amazon-bedrock-anthropic-fetch.test.ts.
+func encodeEventStreamMessage(t *testing.T, headers map[string]string, payload []byte) []byte {
+	t.Helper()
+	var headerBuf bytes.Buffer
+	for name, value := range headers {
+		headerBuf.WriteByte(byte(len(name)))
+		headerBuf.WriteString(name)
+		headerBuf.WriteByte(7) // string type
+		var lenBuf [2]byte
+		binary.BigEndian.PutUint16(lenBuf[:], uint16(len(value)))
+		headerBuf.Write(lenBuf[:])
+		headerBuf.WriteString(value)
+	}
+	headerBytes := headerBuf.Bytes()
 
-	// Calculate lengths
-	headersLength := uint32(len(headers))
-	payloadBytes := []byte(payload)
-	payloadLength := uint32(len(payloadBytes))
-	totalLength := 12 + headersLength + payloadLength + 4 // prelude + headers + payload + crc
+	totalLength := uint32(12 + len(headerBytes) + len(payload) + 4)
+	headersLength := uint32(len(headerBytes))
 
-	// Build prelude
 	prelude := make([]byte, 12)
 	binary.BigEndian.PutUint32(prelude[0:4], totalLength)
 	binary.BigEndian.PutUint32(prelude[4:8], headersLength)
 	preludeCRC := crc32.ChecksumIEEE(prelude[0:8])
 	binary.BigEndian.PutUint32(prelude[8:12], preludeCRC)
 
-	// Build message
-	message := make([]byte, 0, totalLength)
-	message = append(message, prelude...)
-	message = append(message, headers...)
-	message = append(message, payloadBytes...)
+	var msg bytes.Buffer
+	msg.Write(prelude)
+	msg.Write(headerBytes)
+	msg.Write(payload)
 
-	// Calculate and append message CRC
-	messageCRC := crc32.ChecksumIEEE(message)
-	crcBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(crcBytes, messageCRC)
-	message = append(message, crcBytes...)
+	messageCRC := crc32.ChecksumIEEE(msg.Bytes())
+	var crcBuf [4]byte
+	binary.BigEndian.PutUint32(crcBuf[:], messageCRC)
+	msg.Write(crcBuf[:])
 
-	return message
+	return msg.Bytes()
 }
 
-// buildHeaders builds the headers section
-func buildHeaders(headers map[string]string) []byte {
-	var buf bytes.Buffer
-
-	for name, value := range headers {
-		// Header name length (1 byte)
-		buf.WriteByte(byte(len(name)))
-		// Header name
-		buf.WriteString(name)
-		// Header value type (7 = string)
-		buf.WriteByte(7)
-		// Header value length (2 bytes, big-endian)
-		valueLengthBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(valueLengthBytes, uint16(len(value)))
-		buf.Write(valueLengthBytes)
-		// Header value
-		buf.WriteString(value)
-	}
-
-	return buf.Bytes()
-}
-
-func TestEventStreamDecoder_ReadEvent(t *testing.T) {
-	// Create a test chunk event
+func TestEventStreamDecoder_ChunkEvent(t *testing.T) {
 	anthropicEvent := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`
-	chunkPayload := map[string]string{
-		"bytes": base64.StdEncoding.EncodeToString([]byte(anthropicEvent)),
-	}
-	chunkPayloadJSON, _ := json.Marshal(chunkPayload)
+	chunkPayload := `{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(anthropicEvent)) + `"}`
 
-	message := buildEventStreamMessage("event", "chunk", string(chunkPayloadJSON))
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(chunkPayload))
 
-	// Create decoder
-	decoder := NewEventStreamDecoder(bytes.NewReader(message))
-
-	// Read event
+	decoder := NewEventStreamDecoder(bytes.NewReader(frame))
 	event, err := decoder.ReadEvent()
 	if err != nil {
-		t.Fatalf("failed to read event: %v", err)
+		t.Fatalf("ReadEvent: %v", err)
 	}
-
-	// Verify event
-	if event.MessageType != "event" {
-		t.Errorf("expected message type 'event', got '%s'", event.MessageType)
+	if event.MessageType != "event" || event.EventType != "chunk" {
+		t.Fatalf("event = %#v", event)
 	}
-	if event.EventType != "chunk" {
-		t.Errorf("expected event type 'chunk', got '%s'", event.EventType)
-	}
-
-	// Parse chunk data
-	var chunkData struct {
-		Bytes string `json:"bytes"`
-	}
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		t.Fatalf("failed to parse chunk data: %v", err)
-	}
-
-	// Decode base64
-	decodedBytes, err := base64.StdEncoding.DecodeString(chunkData.Bytes)
-	if err != nil {
-		t.Fatalf("failed to decode base64: %v", err)
-	}
-
-	if string(decodedBytes) != anthropicEvent {
-		t.Errorf("expected decoded data '%s', got '%s'", anthropicEvent, string(decodedBytes))
+	if event.Data != chunkPayload {
+		t.Fatalf("event.Data = %q, want %q", event.Data, chunkPayload)
 	}
 }
 
-func TestEventStreamDecoder_MessageStop(t *testing.T) {
-	message := buildEventStreamMessage("event", "messageStop", "{}")
+func TestEventStreamDecoder_ExceptionTypeCaptured(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type":   "exception",
+		":exception-type": "ThrottlingException",
+	}, []byte(`{"message":"Rate limit exceeded"}`))
 
-	decoder := NewEventStreamDecoder(bytes.NewReader(message))
-
+	decoder := NewEventStreamDecoder(bytes.NewReader(frame))
 	event, err := decoder.ReadEvent()
 	if err != nil {
-		t.Fatalf("failed to read event: %v", err)
+		t.Fatalf("ReadEvent: %v", err)
 	}
-
-	if event.MessageType != "event" {
-		t.Errorf("expected message type 'event', got '%s'", event.MessageType)
-	}
-	if event.EventType != "messageStop" {
-		t.Errorf("expected event type 'messageStop', got '%s'", event.EventType)
-	}
-}
-
-func TestEventStreamDecoder_Exception(t *testing.T) {
-	message := buildEventStreamMessage("exception", "error", `{"message":"test error"}`)
-
-	decoder := NewEventStreamDecoder(bytes.NewReader(message))
-
-	event, err := decoder.ReadEvent()
-	if err != nil {
-		t.Fatalf("failed to read event: %v", err)
-	}
-
 	if event.MessageType != "exception" {
-		t.Errorf("expected message type 'exception', got '%s'", event.MessageType)
+		t.Fatalf("MessageType = %q, want exception", event.MessageType)
+	}
+	if event.ExceptionType != "ThrottlingException" {
+		t.Fatalf("ExceptionType = %q, want ThrottlingException", event.ExceptionType)
 	}
 }
 
-func TestEventStreamDecoder_EOF(t *testing.T) {
-	decoder := NewEventStreamDecoder(bytes.NewReader([]byte{}))
+// TestTransformEventStreamToSSE_ChunkEvent ports "should transform Bedrock
+// event stream to SSE format".
+func TestTransformEventStreamToSSE_ChunkEvent(t *testing.T) {
+	anthropicEvent := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`
+	chunkPayload := `{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(anthropicEvent)) + `"}`
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(chunkPayload))
 
-	_, err := decoder.ReadEvent()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF, got %v", err)
-	}
-}
-
-func TestSSEStreamReader(t *testing.T) {
-	// Create test events
-	anthropicEvent1 := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`
-	chunkPayload1 := map[string]string{
-		"bytes": base64.StdEncoding.EncodeToString([]byte(anthropicEvent1)),
-	}
-	chunkPayloadJSON1, _ := json.Marshal(chunkPayload1)
-	message1 := buildEventStreamMessage("event", "chunk", string(chunkPayloadJSON1))
-
-	anthropicEvent2 := `{"type":"content_block_delta","delta":{"type":"text_delta","text":" World"}}`
-	chunkPayload2 := map[string]string{
-		"bytes": base64.StdEncoding.EncodeToString([]byte(anthropicEvent2)),
-	}
-	chunkPayloadJSON2, _ := json.Marshal(chunkPayload2)
-	message2 := buildEventStreamMessage("event", "chunk", string(chunkPayloadJSON2))
-
-	messageStop := buildEventStreamMessage("event", "messageStop", "{}")
-
-	// Combine messages
-	var buf bytes.Buffer
-	buf.Write(message1)
-	buf.Write(message2)
-	buf.Write(messageStop)
-
-	// Create SSE stream reader
-	reader := NewSSEStreamReader(&buf)
-
-	// Read all data
-	data, err := io.ReadAll(reader)
-	if err != nil && err != io.EOF {
-		t.Fatalf("failed to read stream: %v", err)
-	}
-
-	// Verify output
-	output := string(data)
-	if !strings.Contains(output, "data: "+anthropicEvent1) {
-		t.Errorf("expected output to contain first event")
-	}
-	if !strings.Contains(output, "data: "+anthropicEvent2) {
-		t.Errorf("expected output to contain second event")
-	}
-	if !strings.Contains(output, "data: [DONE]") {
-		t.Errorf("expected output to contain [DONE]")
-	}
-}
-
-func TestTransformToSSE(t *testing.T) {
-	// Create test chunk event
-	anthropicEvent := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Test"}}`
-	chunkPayload := map[string]string{
-		"bytes": base64.StdEncoding.EncodeToString([]byte(anthropicEvent)),
-	}
-	chunkPayloadJSON, _ := json.Marshal(chunkPayload)
-	message := buildEventStreamMessage("event", "chunk", string(chunkPayloadJSON))
-
-	messageStop := buildEventStreamMessage("event", "messageStop", "{}")
-
-	// Combine messages
-	var input bytes.Buffer
-	input.Write(message)
-	input.Write(messageStop)
-
-	// Create decoder
-	decoder := NewEventStreamDecoder(&input)
-
-	// Transform to SSE
-	var output bytes.Buffer
-	err := decoder.TransformToSSE(&output)
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
 	if err != nil {
-		t.Fatalf("failed to transform to SSE: %v", err)
+		t.Fatalf("ReadAll: %v", err)
 	}
+	want := "data: " + anthropicEvent + "\n\n"
+	if string(data) != want {
+		t.Fatalf("got %q, want %q", string(data), want)
+	}
+}
 
-	// Verify output
-	outputStr := output.String()
-	if !strings.Contains(outputStr, "data: "+anthropicEvent) {
-		t.Errorf("expected output to contain event data")
+// TestTransformEventStreamToSSE_MessageStop ports "should handle messageStop
+// event and emit [DONE]".
+func TestTransformEventStreamToSSE_MessageStop(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "messageStop",
+	}, []byte(`{}`))
+
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
 	}
-	if !strings.Contains(outputStr, "data: [DONE]") {
-		t.Errorf("expected output to contain [DONE]")
+	if string(data) != "data: [DONE]\n\n" {
+		t.Fatalf("got %q, want %q", string(data), "data: [DONE]\n\n")
 	}
+}
+
+// TestTransformEventStreamToSSE_Exception ports "should handle exception
+// messages" (without the statusCode/isRetryable metadata enrichment, which is
+// WG-B1 scope — see the stream.go doc comment).
+func TestTransformEventStreamToSSE_Exception(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type":   "exception",
+		":exception-type": "ThrottlingException",
+	}, []byte(`{"message":"Rate limit exceeded"}`))
+
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`"type":"error"`,
+		`"type":"ThrottlingException"`,
+		`"message":"Rate limit exceeded"`,
+	} {
+		if !bytes.Contains([]byte(got), []byte(want)) {
+			t.Errorf("output %q missing %q", got, want)
+		}
+	}
+}
+
+// TestTransformEventStreamToSSE_MultipleEvents ports "should handle multiple
+// events in sequence".
+func TestTransformEventStreamToSSE_MultipleEvents(t *testing.T) {
+	event1 := `{"type":"message_start","message":{"id":"msg_123"}}`
+	event2 := `{"type":"content_block_delta","delta":{"text":"Hi"}}`
+
+	chunk1 := encodeEventStreamMessage(t, map[string]string{":message-type": "event", ":event-type": "chunk"},
+		[]byte(`{"bytes":"`+base64.StdEncoding.EncodeToString([]byte(event1))+`"}`))
+	chunk2 := encodeEventStreamMessage(t, map[string]string{":message-type": "event", ":event-type": "chunk"},
+		[]byte(`{"bytes":"`+base64.StdEncoding.EncodeToString([]byte(event2))+`"}`))
+	stop := encodeEventStreamMessage(t, map[string]string{":message-type": "event", ":event-type": "messageStop"}, []byte(`{}`))
+
+	var combined bytes.Buffer
+	combined.Write(chunk1)
+	combined.Write(chunk2)
+	combined.Write(stop)
+
+	out := transformEventStreamToSSE(io.NopCloser(&combined), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	full := string(data)
+	for _, want := range []string{"data: " + event1 + "\n\n", "data: " + event2 + "\n\n", "data: [DONE]\n\n"} {
+		if !bytes.Contains([]byte(full), []byte(want)) {
+			t.Errorf("output missing %q; got %q", want, full)
+		}
+	}
+}
+
+// TestTransformEventStreamToSSE_ChunkedNetworkRead ports "should handle
+// chunked event data spanning multiple network chunks" by wrapping the frame
+// in a reader that only returns a few bytes per Read call.
+func TestTransformEventStreamToSSE_ChunkedNetworkRead(t *testing.T) {
+	anthropicEvent := `{"type":"content_block_delta","delta":{"text":"Hello World"}}`
+	chunkPayload := `{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(anthropicEvent)) + `"}`
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(chunkPayload))
+
+	out := transformEventStreamToSSE(io.NopCloser(&slowReader{data: frame, chunkSize: 3}), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := "data: " + anthropicEvent + "\n\n"
+	if string(data) != want {
+		t.Fatalf("got %q, want %q", string(data), want)
+	}
+}
+
+// TestTransformEventStreamToSSE_MissingBytesFallback ports "should handle
+// chunk events with missing bytes field".
+func TestTransformEventStreamToSSE_MissingBytesFallback(t *testing.T) {
+	chunkPayload := `{"someOtherField":"value"}`
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(chunkPayload))
+
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := "data: " + chunkPayload + "\n\n"
+	if string(data) != want {
+		t.Fatalf("got %q, want %q", string(data), want)
+	}
+}
+
+// slowReader returns at most chunkSize bytes per Read call, simulating
+// network fragmentation of a single event-stream frame.
+type slowReader struct {
+	data      []byte
+	chunkSize int
+	pos       int
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.pos+n > len(r.data) {
+		n = len(r.data) - r.pos
+	}
+	copy(p, r.data[r.pos:r.pos+n])
+	r.pos += n
+	return n, nil
 }

@@ -2,15 +2,26 @@ package anthropic
 
 import (
 	"fmt"
+	"io"
 	stdhttp "net/http"
+	"os"
+	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 const (
-	// DefaultBaseURL is the default Anthropic API base URL
-	DefaultBaseURL = "https://api.anthropic.com"
+	// DefaultBaseURL is the default Anthropic API base URL. Like the TS SDK,
+	// the base URL includes the /v1 version prefix; request paths are
+	// relative to it ("/messages", "/files", "/skills").
+	DefaultBaseURL = "https://api.anthropic.com/v1"
+
+	// anthropicAPIURL is the unversioned API host. A base URL equal to it is
+	// normalized to DefaultBaseURL.
+	anthropicAPIURL = "https://api.anthropic.com"
 
 	// DefaultAPIVersion is the default Anthropic API version
 	DefaultAPIVersion = "2023-06-01"
@@ -31,7 +42,11 @@ type Config struct {
 	// LanguageModel.Provider(). Defaults to "anthropic".
 	Name string
 
-	// BaseURL is the base URL for the Anthropic API (default: https://api.anthropic.com)
+	// BaseURL is the URL prefix for API calls, including the version path
+	// (default: https://api.anthropic.com/v1, or ANTHROPIC_BASE_URL). The bare
+	// host https://api.anthropic.com is normalized to .../v1. A base URL that
+	// is set but empty after trimming whitespace makes New panic, matching the
+	// TS validateBaseURL error ("baseURL must be a non-empty string.").
 	BaseURL string
 
 	// APIVersion is the Anthropic API version (default: 2023-06-01)
@@ -45,7 +60,7 @@ type Config struct {
 	HTTPClient *stdhttp.Client `json:"-"`
 
 	// MessagesPath builds the request path for messages API calls. Defaults to
-	// "/v1/messages".
+	// "/messages" (relative to BaseURL).
 	MessagesPath func(modelID string, stream bool) string `json:"-"`
 
 	// TransformRequestBody can rewrite the Anthropic messages request body before
@@ -53,8 +68,21 @@ type Config struct {
 	// inject anthropic_version in the JSON body.
 	TransformRequestBody func(body map[string]interface{}, stream bool) map[string]interface{} `json:"-"`
 
-	// SupportsNativeStructuredOutput overrides model capability detection. A nil
-	// value preserves the default Anthropic model-based behavior.
+	// TransformRequestBodyWithBetas rewrites the request body with access to
+	// the request's anthropic-beta flags (TS transformRequestBody(args, betas)).
+	// It runs before TransformRequestBody. Bedrock-Anthropic uses it.
+	TransformRequestBodyWithBetas func(body map[string]interface{}, betas []string, stream bool) map[string]interface{} `json:"-"`
+
+	// TransformStreamBody wraps the streaming response body before SSE
+	// parsing (for example to convert an AWS event stream into SSE).
+	TransformStreamBody func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser `json:"-"`
+
+	// TransformErrorBody rewrites a non-2xx response body into the Anthropic
+	// error shape before it is parsed.
+	TransformErrorBody func(body []byte) []byte `json:"-"`
+
+	// SupportsNativeStructuredOutput gates native structured output. A nil
+	// value means true; the model capability must also allow it.
 	SupportsNativeStructuredOutput *bool
 
 	// SupportsImageInput overrides model capability detection. A nil value
@@ -62,7 +90,8 @@ type Config struct {
 	SupportsImageInput *bool
 
 	// SupportsStrictTools controls whether strict mode on function tools is sent
-	// to Anthropic. A nil value preserves the default Anthropic behavior.
+	// to Anthropic. A nil value means true; the model capability must also
+	// allow it.
 	SupportsStrictTools *bool
 
 	// Headers are custom HTTP headers to include in requests.
@@ -71,7 +100,10 @@ type Config struct {
 
 // New creates a new Anthropic provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
+	baseURL, err := NormalizeBaseURL(cfg.BaseURL)
+	if err != nil {
+		panic(err)
+	}
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -100,6 +132,27 @@ func New(cfg Config) *Provider {
 		config: cfg,
 		client: client,
 	}
+}
+
+// NormalizeBaseURL validates and normalizes an Anthropic base URL (TS
+// normalizeBaseURL): whitespace-only values are rejected, a trailing slash is
+// removed and the bare https://api.anthropic.com host gains the /v1 prefix.
+// An empty value falls back to ANTHROPIC_BASE_URL and otherwise returns "".
+func NormalizeBaseURL(baseURL string) (string, error) {
+	if baseURL == "" {
+		baseURL = os.Getenv("ANTHROPIC_BASE_URL")
+		if baseURL == "" {
+			return "", nil
+		}
+	}
+	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
+		return "", err
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == anthropicAPIURL {
+		return DefaultBaseURL, nil
+	}
+	return baseURL, nil
 }
 
 // CreateAnthropic creates a new Anthropic provider.

@@ -62,8 +62,10 @@ func TestLanguageModelNonStreamingRequest(t *testing.T) {
 	if gotBody["anthropic_version"] != DefaultVertexAPIVersion {
 		t.Fatalf("anthropic_version = %v, want %s", gotBody["anthropic_version"], DefaultVertexAPIVersion)
 	}
-	if gotBody["stream"] != false {
-		t.Fatalf("stream = %v, want false", gotBody["stream"])
+	// TS anthropic-language-model.ts sets `stream: stream === true ? true : undefined`,
+	// so a non-streaming request omits the "stream" key entirely rather than sending false.
+	if _, ok := gotBody["stream"]; ok {
+		t.Fatalf("stream = %v, want key absent for non-streaming request", gotBody["stream"])
 	}
 	if result.Text != "ok" {
 		t.Fatalf("Text = %q, want ok", result.Text)

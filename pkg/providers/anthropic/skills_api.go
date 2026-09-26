@@ -46,7 +46,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 
 	resp, err := s.provider.client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
-		Path:    "/v1/skills",
+		Path:    "/skills",
 		Body:    &body,
 		Headers: headers,
 	})
@@ -106,7 +106,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 }, error) {
 	resp, err := s.provider.client.Do(ctx, internalhttp.Request{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/v1/skills/%s/versions/%s", providerutils.EncodePathSegment(skillID), providerutils.EncodePathSegment(version)),
+		Path:    fmt.Sprintf("/skills/%s/versions/%s", providerutils.EncodePathSegment(skillID), providerutils.EncodePathSegment(version)),
 		Headers: headers,
 	})
 	if err != nil || resp.StatusCode >= 400 {

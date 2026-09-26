@@ -124,8 +124,10 @@ func TestAnthropicReasoningAllLevels(t *testing.T) {
 	}
 }
 
-// TestAnthropicReasoningOverridesModelOption verifies that call-level Reasoning
-// takes precedence over the model-level Thinking option.
+// TestAnthropicReasoningOverridesModelOption verifies that the model-level
+// Thinking option takes precedence over call-level Reasoning for thinking,
+// while the reasoning effort still applies (TS: provider options win;
+// reasoning only fills thinking when it is unset).
 func TestAnthropicReasoningOverridesModelOption(t *testing.T) {
 	prov := makeTestProvider()
 	budget := 5000
@@ -146,8 +148,8 @@ func TestAnthropicReasoningOverridesModelOption(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'thinking' field, got: %v", body["thinking"])
 	}
-	if thinking["type"] != "adaptive" {
-		t.Errorf("expected call-level adaptive thinking, got: %v", thinking["type"])
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != 5000 {
+		t.Errorf("expected model-level enabled thinking with budget 5000, got: %v", thinking)
 	}
 	oc, ok := body["output_config"].(map[string]interface{})
 	if !ok {
