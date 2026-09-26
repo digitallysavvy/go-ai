@@ -95,9 +95,13 @@ const (
 	ModelGeminiLive20FlashExp     = "gemini-live-2.0-flash-exp"
 )
 
-// Transcription model IDs (Gemini 3.5 Transcribe). Not yet wired to
-// Provider.TranscriptionModel(), which still returns an unsupported error;
-// see WG-G5 in the Sep 23 2026 parity handoff (deferred).
+// Transcription model IDs (Gemini 3.5 Transcribe), served through the
+// Interactions API. Provider.TranscriptionModel() routes any model ID to
+// TranscriptionModel; the unary variant (ModelGemini35Transcribe) supports
+// DoTranscribe. The "-live" variant only supports streaming transcription
+// over a WebSocket (TS doStream), which the Go SDK's TranscriptionModel
+// interface does not yet expose (no DoStream) — DoTranscribe rejects it with
+// an explanatory error instead of silently doing the wrong thing.
 const (
 	ModelGemini35Transcribe     = "gemini-3.5-transcribe"
 	ModelGemini35TranscribeLive = "gemini-3.5-transcribe-live"

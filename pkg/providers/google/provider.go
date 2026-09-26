@@ -161,10 +161,21 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a Gemini 3.5 Transcribe speech-to-text model by
+// ID (TS `provider.transcriptionModel`/`provider.transcription`), served
+// through the Interactions API. A "-live" model ID is accepted (matching TS
+// GoogleTranscriptionModelId) but DoTranscribe rejects it at call time: the
+// Go SDK's TranscriptionModel interface has no streaming counterpart yet.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	// Google doesn't provide transcription through this API
-	return nil, fmt.Errorf("LGoogle does not support transcription through this API")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewTranscriptionModel(p, modelID), nil
+}
+
+// Transcription is an alias for TranscriptionModel (TS `provider.transcription`).
+func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, error) {
+	return p.TranscriptionModel(modelID)
 }
 
 // RerankingModel returns a reranking model by ID

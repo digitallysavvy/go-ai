@@ -70,8 +70,17 @@ func TestProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if emptySpeech.ModelID() != "" {
 		t.Fatalf("SpeechModel(\"\").ModelID() = %q, want empty string", emptySpeech.ModelID())
 	}
-	if _, err := p.TranscriptionModel("any"); err == nil {
-		t.Fatal("TranscriptionModel expected unsupported error")
+	// Gemini 3.5 Transcribe is now wired through the Interactions API (TS
+	// routes any model ID through GoogleTranscriptionModel unconditionally).
+	transcription, err := p.TranscriptionModel("any")
+	if err != nil {
+		t.Fatalf("TranscriptionModel() error = %v", err)
+	}
+	if transcription.ModelID() != "any" {
+		t.Fatalf("TranscriptionModel().ModelID() = %q, want %q", transcription.ModelID(), "any")
+	}
+	if _, err := p.TranscriptionModel(""); err == nil {
+		t.Fatal("TranscriptionModel(\"\") expected an empty-model-ID error")
 	}
 	if _, err := p.RerankingModel("any"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")
