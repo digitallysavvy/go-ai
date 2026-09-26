@@ -167,6 +167,67 @@ func TestBedrockTaskBudgetForwardsToOutputConfig(t *testing.T) {
 	if taskBudget["type"] != "conversation" || taskBudget["total"] != 10000 || taskBudget["remaining"] != 500 {
 		t.Fatalf("task_budget = %#v", taskBudget)
 	}
+
+	// Regression: the underlying Anthropic model gates output_config.
+	// task_budget on the task-budgets-2026-03-13 beta (pkg/providers/
+	// anthropic/request.go, anthropic-language-model.ts:984-986); Bedrock
+	// forwards taskBudget to that same backend via additionalModelRequestFields.
+	// anthropic_beta and must add the beta itself, or the request is rejected.
+	betas, ok := fields["anthropic_beta"].([]interface{})
+	if !ok {
+		t.Fatalf("anthropic_beta = %#v, want a []interface{} containing task-budgets-2026-03-13", fields["anthropic_beta"])
+	}
+	found := false
+	for _, b := range betas {
+		if b == "task-budgets-2026-03-13" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("anthropic_beta = %#v, want task-budgets-2026-03-13", betas)
+	}
+}
+
+// TestBedrockTaskBudgetMergesWithExistingAnthropicBeta verifies that
+// taskBudget's automatic beta add merges with (rather than overwrites) a
+// caller-supplied providerOptions.amazonBedrock.anthropicBeta list, and does
+// not add a duplicate if the caller already included it.
+func TestBedrockTaskBudgetMergesWithExistingAnthropicBeta(t *testing.T) {
+	model := newBedrockModelWithID("anthropic.claude-opus-5")
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"anthropicBeta": []interface{}{"some-other-beta-2026-01-01"},
+			},
+			"anthropic": map[string]interface{}{
+				"taskBudget": map[string]interface{}{"type": "conversation", "total": 10000},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+	betas, ok := fields["anthropic_beta"].([]interface{})
+	if !ok {
+		t.Fatalf("anthropic_beta = %#v, want a []interface{}", fields["anthropic_beta"])
+	}
+	if len(betas) != 2 {
+		t.Fatalf("anthropic_beta = %#v, want exactly 2 entries (existing + task-budgets)", betas)
+	}
+	hasExisting, hasTaskBudget := false, false
+	for _, b := range betas {
+		switch b {
+		case "some-other-beta-2026-01-01":
+			hasExisting = true
+		case "task-budgets-2026-03-13":
+			hasTaskBudget = true
+		}
+	}
+	if !hasExisting || !hasTaskBudget {
+		t.Fatalf("anthropic_beta = %#v, want both the existing and task-budgets betas", betas)
+	}
 }
 
 // TestBedrockTaskBudgetIgnoredForNonAnthropicModels verifies taskBudget is

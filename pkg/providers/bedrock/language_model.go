@@ -341,6 +341,15 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 				}
 				outputConfig["task_budget"] = taskBudget
 				additionalModelRequestFields["output_config"] = outputConfig
+
+				// The underlying Anthropic model gates output_config.task_budget
+				// on the task-budgets-2026-03-13 beta (pkg/providers/anthropic/
+				// request.go, anthropic-language-model.ts:984-986); Bedrock
+				// forwards it to that same backend via additionalModelRequestFields.
+				// anthropic_beta, so it must be added here too or the request will
+				// be rejected server-side.
+				additionalModelRequestFields["anthropic_beta"] = addAnthropicBeta(
+					additionalModelRequestFields["anthropic_beta"], anthropic.BetaHeaderTaskBudgets)
 			}
 		}
 	}
