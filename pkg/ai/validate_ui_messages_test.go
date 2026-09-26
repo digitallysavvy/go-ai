@@ -64,6 +64,89 @@ func TestValidateUIMessages_ParameterValidation(t *testing.T) {
 	})
 }
 
+// TestValidateUIMessagesStructure_ToolPartRequiredFields ports the TS
+// uiMessagesSchema's per-state requirement that `input` (and, for
+// output-available, `output`) is a required key (any value, including
+// null, satisfies z.unknown()) for every tool state except input-streaming
+// and output-error, where it is optional. This runs at the structural
+// (schema) validation layer, before any Tools/DataSchemas are considered.
+func TestValidateUIMessagesStructure_ToolPartRequiredFields(t *testing.T) {
+	build := func(state, extra string) string {
+		return `[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"` + state + `"` + extra + `}]}]`
+	}
+
+	requiresInput := []string{"input-available", "approval-requested", "approval-responded", "output-denied"}
+	for _, state := range requiresInput {
+		state := state
+		t.Run("state "+state+" rejects a part with no input key", func(t *testing.T) {
+			extra := ""
+			switch state {
+			case "approval-requested":
+				extra = `,"approval":{"id":"a1"}`
+			case "approval-responded":
+				extra = `,"approval":{"id":"a1","approved":true}`
+			case "output-denied":
+				extra = `,"approval":{"id":"a1","approved":false}`
+			}
+			_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+				Messages: json.RawMessage(build(state, extra)),
+			})
+			require.Error(t, err)
+		})
+
+		t.Run("state "+state+" accepts an explicit null input", func(t *testing.T) {
+			extra := `,"input":null`
+			switch state {
+			case "approval-requested":
+				extra += `,"approval":{"id":"a1"}`
+			case "approval-responded":
+				extra += `,"approval":{"id":"a1","approved":true}`
+			case "output-denied":
+				extra += `,"approval":{"id":"a1","approved":false}`
+			}
+			_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+				Messages: json.RawMessage(build(state, extra)),
+			})
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("state output-available rejects a part with no input or output key", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(build("output-available", "")),
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("state output-available rejects a part with input but no output key", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(build("output-available", `,"input":{}`)),
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("state output-available accepts explicit null input and output", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(build("output-available", `,"input":null,"output":null`)),
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("state input-streaming accepts a part with no input key", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(build("input-streaming", "")),
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("state output-error accepts a part with no input key", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(build("output-error", `,"errorText":"boom"`)),
+		})
+		require.NoError(t, err)
+	})
+}
+
 // ports describe('metadata')
 func TestValidateUIMessages_Metadata(t *testing.T) {
 	t.Run("should validate a user message with metadata when no metadata schema is provided", func(t *testing.T) {
@@ -293,6 +376,9 @@ func TestValidateUIMessages_ToolParts(t *testing.T) {
 	})
 
 	t.Run("should preserve rawInput when state is output-error", func(t *testing.T) {
+		// also ports the rawInput-deprecation-warning assertion from
+		// validate-ui-messages.test.ts.
+		buf := setupLogWarnings(t)
 		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
 			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
 				{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad","rawInput":"legacy"}
@@ -302,6 +388,19 @@ func TestValidateUIMessages_ToolParts(t *testing.T) {
 		require.NoError(t, err)
 		part := msgs[0].Parts[0].(*ToolUIPart)
 		assert.Equal(t, "legacy", part.RawInput)
+		assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+	})
+
+	t.Run("should not log a deprecation warning when rawInput is absent", func(t *testing.T) {
+		buf := setupLogWarnings(t)
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad"}
+			]}]`),
+			Tools: tools,
+		})
+		require.NoError(t, err)
+		assert.Empty(t, buf.String())
 	})
 
 	t.Run("should throw error when no tool schema is found", func(t *testing.T) {

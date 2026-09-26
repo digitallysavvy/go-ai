@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // ChunkDetector finds the first complete chunk at the start of buffer.
@@ -103,7 +104,7 @@ func resolveSmoothStreamDetector(chunking interface{}) (smoothStreamDetector, er
 		case "line":
 			return regexSmoothStreamDetector(smoothStreamLineRegexp), nil
 		default:
-			return nil, fmt.Errorf("chunking must be \"word\", \"line\", a *regexp.Regexp, or a ChunkDetector function. Received: %v", chunking)
+			return nil, newSmoothStreamChunkingError(chunking)
 		}
 	case *regexp.Regexp:
 		return regexSmoothStreamDetector(c), nil
@@ -112,7 +113,16 @@ func resolveSmoothStreamDetector(chunking interface{}) (smoothStreamDetector, er
 	case func(string) (string, bool):
 		return customSmoothStreamDetector(c), nil
 	default:
-		return nil, fmt.Errorf("chunking must be \"word\", \"line\", a *regexp.Regexp, or a ChunkDetector function. Received: %v", chunking)
+		return nil, newSmoothStreamChunkingError(chunking)
+	}
+}
+
+// newSmoothStreamChunkingError mirrors TS smoothStream's
+// `throw new InvalidArgumentError({argument: 'chunking', message: ...})`.
+func newSmoothStreamChunkingError(chunking interface{}) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "chunking",
+		Message: fmt.Sprintf("chunking must be \"word\", \"line\", a *regexp.Regexp, or a ChunkDetector function. Received: %v", chunking),
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -185,6 +186,8 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS embed(): headersWithUserAgent = withUserAgentSuffix(headers ?? {}, `ai/${VERSION}`).
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
 	// Create telemetry span if enabled
 	var span trace.Span
@@ -471,6 +474,8 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	}
 	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS embedMany(): headersWithUserAgent = withUserAgentSuffix(headers ?? {}, `ai/${VERSION}`).
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
 	// Create telemetry span if enabled
 	var span trace.Span

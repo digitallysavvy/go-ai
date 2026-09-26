@@ -237,3 +237,77 @@ func TestReadUIMessages_RepeatedToolCallIDAcrossSteps(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"q": "second"}, toolParts[1].Input)
 	assert.Equal(t, "result-2", toolParts[1].Output)
 }
+
+// ports process-ui-message-stream.test.ts > describe('finish-step') > "preserves
+// active text and reasoning parts across interleaved step boundaries": a
+// merged stream's step can finish-step while another stream's text/reasoning
+// part is still open, so finish-step must not force-close active parts.
+func TestReadUIMessages_FinishStepPreservesActiveTextAndReasoning(t *testing.T) {
+	snapshots, err := sendChunks(t, nil, []UIMessageChunk{
+		{"type": "start"},
+		{"type": "text-start", "id": "text-1"},
+		{"type": "text-delta", "id": "text-1", "delta": "first "},
+		{"type": "reasoning-start", "id": "reasoning-1"},
+		{"type": "reasoning-delta", "id": "reasoning-1", "delta": "thinking "},
+		{"type": "start-step"},
+		{"type": "finish-step"},
+		{"type": "text-delta", "id": "text-1", "delta": "second"},
+		{"type": "reasoning-delta", "id": "reasoning-1", "delta": "continued"},
+		{"type": "text-end", "id": "text-1"},
+		{"type": "reasoning-end", "id": "reasoning-1"},
+		{"type": "finish"},
+	})
+	require.NoError(t, err)
+	final := snapshots[len(snapshots)-1]
+	require.Len(t, final.Parts, 3)
+
+	text, ok := final.Parts[0].(*TextUIPart)
+	require.True(t, ok, "expected a text part, got %#v", final.Parts[0])
+	assert.Equal(t, "first second", text.Text)
+	assert.Equal(t, UIPartState("done"), text.State)
+
+	reasoning, ok := final.Parts[1].(*ReasoningUIPart)
+	require.True(t, ok, "expected a reasoning part, got %#v", final.Parts[1])
+	assert.Equal(t, "reasoning-1", reasoning.ID)
+	assert.Equal(t, "thinking continued", reasoning.Text)
+	assert.Equal(t, UIPartState("done"), reasoning.State)
+
+	assert.Equal(t, "step-start", final.Parts[2].UIPartType())
+}
+
+// ports the tool-input-error branch of process-ui-message-stream.ts, which
+// calls warnIfUIMessageHasDeprecatedRawInput([state.message]) only for
+// static (non-dynamic) tool parts, since the deprecated field is only set on
+// those.
+func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
+	t.Run("static tool part logs the deprecation warning", func(t *testing.T) {
+		buf := setupLogWarnings(t)
+		snapshots, err := sendChunks(t, nil, []UIMessageChunk{
+			{"type": "start"},
+			{"type": "start-step"},
+			{"type": "tool-input-error", "toolCallId": "call-1", "toolName": "search", "input": "bad json", "errorText": "parse error"},
+			{"type": "finish-step"},
+			{"type": "finish"},
+		})
+		require.NoError(t, err)
+		final := snapshots[len(snapshots)-1]
+		part := findToolUIMessagePart(final, "tool-search")
+		require.NotNil(t, part)
+		assert.Equal(t, ToolStateOutputError, part.State)
+		assert.Equal(t, "bad json", part.RawInput)
+		assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+	})
+
+	t.Run("dynamic tool part does not set rawInput and does not warn", func(t *testing.T) {
+		buf := setupLogWarnings(t)
+		_, err := sendChunks(t, nil, []UIMessageChunk{
+			{"type": "start"},
+			{"type": "start-step"},
+			{"type": "tool-input-error", "toolCallId": "call-1", "toolName": "search", "dynamic": true, "input": "bad json", "errorText": "parse error"},
+			{"type": "finish-step"},
+			{"type": "finish"},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, buf.String())
+	})
+}

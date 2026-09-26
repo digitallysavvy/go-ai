@@ -325,7 +325,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		ModelID:        opts.Model.ModelID(),
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, map[string]interface{}{"query": opts.Query, "documents": opts.Documents}),
-		RuntimeContext: map[string]interface{}{},
+		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
 		ToolsContext:   map[string]interface{}{},
 	})
 

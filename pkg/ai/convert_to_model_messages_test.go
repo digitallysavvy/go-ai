@@ -236,6 +236,10 @@ func TestConvertToModelMessages_AssistantMessage(t *testing.T) {
 		})
 
 		t.Run("preserve the deprecated rawInput fallback when input is null", func(t *testing.T) {
+			// also ports the rawInput-deprecation-warning assertion from
+			// convert-to-model-messages.test.ts ("logs a deprecation warning
+			// when a message has a rawInput field")
+			buf := setupLogWarnings(t)
 			result, err := ConvertToModelMessages(context.Background(), []UIMessage{
 				{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
 					&ToolUIPart{
@@ -247,6 +251,22 @@ func TestConvertToModelMessages_AssistantMessage(t *testing.T) {
 			require.NoError(t, err)
 			call := result[0].Content[0].(types.ToolCallContent)
 			assert.Equal(t, "legacy input", call.Input)
+			assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+		})
+
+		t.Run("no deprecation warning when rawInput is absent", func(t *testing.T) {
+			buf := setupLogWarnings(t)
+			_, err := ConvertToModelMessages(context.Background(), []UIMessage{
+				{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+					&ToolUIPart{
+						Type: "tool-calculator", State: ToolStateOutputError, ToolCallID: "call1",
+						Input:     map[string]interface{}{"operation": "add", "numbers": []interface{}{1, 2}},
+						ErrorText: "Error: Invalid input",
+					},
+				}},
+			})
+			require.NoError(t, err)
+			assert.Empty(t, buf.String())
 		})
 
 		t.Run("no raw input", func(t *testing.T) {

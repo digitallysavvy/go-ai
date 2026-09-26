@@ -102,6 +102,8 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 		return fail(err)
 	}
 
+	warnIfUIMessagesHaveDeprecatedRawInput(messages)
+
 	if opts.MetadataSchema != nil {
 		for i := range messages {
 			message := &messages[i]
@@ -486,20 +488,47 @@ func uiToolPartIssue(part map[string]interface{}) string {
 		}
 		return ""
 	}
+	// required reports a part missing a key the TS zod schema declares
+	// non-optional for this state (e.g. `input: z.unknown()`). The key only
+	// needs to be present, per zod's own semantics for z.unknown() (any
+	// value, including null, satisfies it) — unlike requireString, which
+	// also checks the value's type.
+	required := func(keys ...string) string {
+		for _, key := range keys {
+			if _, exists := part[key]; !exists {
+				return fmt.Sprintf("Invalid input: %s is required in state %s", key, state)
+			}
+		}
+		return ""
+	}
 	switch ToolUIPartState(state) {
-	case ToolStateInputStreaming, ToolStateInputAvailable:
+	case ToolStateInputStreaming:
+		return never("output", "errorText", "approval")
+	case ToolStateInputAvailable:
+		if msg := required("input"); msg != "" {
+			return msg
+		}
 		return never("output", "errorText", "approval")
 	case ToolStateApprovalRequested:
+		if msg := required("input"); msg != "" {
+			return msg
+		}
 		if msg := never("output", "errorText"); msg != "" {
 			return msg
 		}
 		return approvalIssue(part, "requested", false)
 	case ToolStateApprovalResponded:
+		if msg := required("input"); msg != "" {
+			return msg
+		}
 		if msg := never("output", "errorText"); msg != "" {
 			return msg
 		}
 		return approvalIssue(part, "responded", false)
 	case ToolStateOutputAvailable:
+		if msg := required("input", "output"); msg != "" {
+			return msg
+		}
 		if msg := never("errorText"); msg != "" {
 			return msg
 		}
@@ -522,6 +551,9 @@ func uiToolPartIssue(part map[string]interface{}) string {
 		}
 		return approvalIssue(part, "granted", true)
 	case ToolStateOutputDenied:
+		if msg := required("input"); msg != "" {
+			return msg
+		}
 		if msg := never("output", "errorText"); msg != "" {
 			return msg
 		}
