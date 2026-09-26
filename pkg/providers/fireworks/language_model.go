@@ -159,32 +159,45 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	// Handle Fireworks-specific options (thinking and reasoning for Kimi K2.5)
-	if opts.ProviderOptions != nil {
-		// Extract thinking options
-		if thinking, ok := opts.ProviderOptions["thinking"].(map[string]interface{}); ok {
-			thinkingBody := make(map[string]interface{})
+	// Fireworks-specific options (providerOptions.fireworks; TS
+	// fireworksLanguageModelOptions/fireworks-provider.ts's
+	// transformRequestBody). All of these previously read from
+	// opts.ProviderOptions[...] directly (the top-level namespace) instead of
+	// the "fireworks" provider-options namespace resolved above, so they were
+	// silently ignored whenever a caller correctly namespaced them under
+	// providerOptions.fireworks.
+	if thinking, ok := fireworksOptions["thinking"].(map[string]interface{}); ok {
+		thinkingBody := make(map[string]interface{})
 
-			if thinkingType, ok := thinking["type"].(string); ok {
-				thinkingBody["type"] = thinkingType
-			}
-
-			// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
-			if budgetTokens, ok := thinking["budgetTokens"].(int); ok {
-				thinkingBody["budget_tokens"] = budgetTokens
-			} else if budgetTokens, ok := thinking["budgetTokens"].(float64); ok {
-				thinkingBody["budget_tokens"] = int(budgetTokens)
-			}
-
-			if len(thinkingBody) > 0 {
-				body["thinking"] = thinkingBody
-			}
+		if thinkingType, ok := thinking["type"].(string); ok {
+			thinkingBody["type"] = thinkingType
 		}
 
-		// Extract reasoningHistory and convert to snake_case (reasoning_history)
-		if reasoningHistory, ok := opts.ProviderOptions["reasoningHistory"].(string); ok {
-			body["reasoning_history"] = reasoningHistory
+		// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
+		if budgetTokens, ok := providerutils.OpenAICompatibleIntOption(thinking, "budgetTokens"); ok {
+			thinkingBody["budget_tokens"] = budgetTokens
 		}
+
+		if len(thinkingBody) > 0 {
+			body["thinking"] = thinkingBody
+		}
+	}
+
+	// Extract reasoningHistory and convert to snake_case (reasoning_history)
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok {
+		body["reasoning_history"] = reasoningHistory
+	}
+
+	// A stable key for routing requests with shared prompt prefixes to the
+	// same prompt cache.
+	if promptCacheKey, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "promptCacheKey"); ok {
+		body["prompt_cache_key"] = promptCacheKey
+	}
+
+	// Fireworks Priority serving path for higher reliability during peak
+	// traffic.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "serviceTier"); ok {
+		body["service_tier"] = serviceTier
 	}
 
 	return body
@@ -225,6 +238,9 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if parsed := parseFireworksProviderError(err); parsed != nil {
+		return parsed
+	}
 	return providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
 }
 

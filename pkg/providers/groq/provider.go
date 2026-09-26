@@ -83,9 +83,13 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return nil, fmt.Errorf("groq does not support speech synthesis")
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID (Groq Whisper,
+// POST /audio/transcriptions). Batch/non-streaming only.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGroq does not support transcription")
+	if modelID == "" {
+		modelID = "whisper-large-v3-turbo"
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID

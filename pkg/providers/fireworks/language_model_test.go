@@ -119,7 +119,11 @@ func TestBuildRequestBodyWithThinking(t *testing.T) {
 				Prompt: types.Prompt{
 					Text: "Test prompt",
 				},
-				ProviderOptions: tt.providerOpts,
+				// Fireworks-specific options must be namespaced under
+				// providerOptions.fireworks (they were previously read from
+				// the top level, which silently ignored correctly-namespaced
+				// options from real callers).
+				ProviderOptions: map[string]interface{}{"fireworks": tt.providerOpts},
 			}
 
 			body := model.buildRequestBody(opts, false)
@@ -225,11 +229,13 @@ func TestCamelCaseToSnakeCaseConversion(t *testing.T) {
 			Text: "Test prompt",
 		},
 		ProviderOptions: map[string]interface{}{
-			"thinking": map[string]interface{}{
-				"type":         "enabled",
-				"budgetTokens": 4096, // camelCase
+			"fireworks": map[string]interface{}{
+				"thinking": map[string]interface{}{
+					"type":         "enabled",
+					"budgetTokens": 4096, // camelCase
+				},
+				"reasoningHistory": "interleaved", // camelCase
 			},
-			"reasoningHistory": "interleaved", // camelCase
 		},
 	}
 
