@@ -78,6 +78,14 @@ type Config struct {
 	// Nil defaults to []string{"file-"} to match the TypeScript OpenAI provider;
 	// set an empty non-nil slice to disable this compatibility path.
 	FileIDPrefixes []string
+
+	// SupportsWebSearchSourcesInclude controls whether the Responses API
+	// request automatically includes "web_search_call.action.sources" when a
+	// web_search tool is present. Defaults to true (nil). Set to a pointer to
+	// false for backends that reject that include value (e.g. Amazon Bedrock
+	// Mantle). Callers can also override this per-call via the Responses
+	// provider option "includeWebSearchSources".
+	SupportsWebSearchSourcesInclude *bool
 }
 
 // New creates a new OpenAI provider with the given configuration

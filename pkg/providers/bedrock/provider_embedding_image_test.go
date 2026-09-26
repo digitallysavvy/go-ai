@@ -1,9 +1,11 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
 
 func TestBedrockProviderSurfaceAndCredentialHelpers(t *testing.T) {
@@ -284,8 +287,8 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if cohere.SpecificationVersion() != "v4" || cohere.Provider() != "amazon-bedrock" || cohere.ModelID() != "cohere.embed-v4" {
 		t.Fatalf("cohere embedding metadata mismatch")
 	}
-	if cohere.MaxEmbeddingsPerCall() != 1 || !cohere.SupportsParallelCalls() {
-		t.Fatalf("cohere limits mismatch")
+	if cohere.MaxEmbeddingsPerCall() != 96 || !cohere.SupportsParallelCalls() {
+		t.Fatalf("cohere limits mismatch: MaxEmbeddingsPerCall=%d", cohere.MaxEmbeddingsPerCall())
 	}
 	one, err := cohere.DoEmbed(context.Background(), "hello", &provider.EmbedModelOptions{Headers: map[string]string{"X-Test": "1"}})
 	if err != nil || len(one.Embedding) != 3 {
@@ -399,6 +402,59 @@ func TestBedrockEmbeddingCohereInferenceProfileUsesCohereShape(t *testing.T) {
 	}
 }
 
+func TestBedrockEmbeddingCohereDoEmbedManyBatchesUpTo96PerRequest(t *testing.T) {
+	var requestTextCounts []int
+	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			var payload struct {
+				Texts []string `json:"texts"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode cohere batch request: %v", err)
+			}
+			requestTextCounts = append(requestTextCounts, len(payload.Texts))
+			embeddings := make([][]float64, len(payload.Texts))
+			for i := range embeddings {
+				embeddings[i] = []float64{float64(i)}
+			}
+			respBody, _ := json.Marshal(map[string]interface{}{"embeddings": embeddings})
+			respHeader := http.Header{}
+			respHeader.Set("x-amzn-bedrock-input-token-count", "10")
+			return &http.Response{
+				StatusCode: 200,
+				Header:     respHeader,
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}, nil
+		})},
+	})
+
+	model := NewEmbeddingModel(p, "cohere.embed-v4")
+	inputs := make([]string, 150) // exceeds MaxEmbeddingsPerCall (96): must batch into 2 requests.
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("text-%d", i)
+	}
+	result, err := model.DoEmbedMany(context.Background(), inputs, nil)
+	if err != nil {
+		t.Fatalf("DoEmbedMany error = %v", err)
+	}
+	if len(result.Embeddings) != len(inputs) {
+		t.Fatalf("Embeddings len = %d, want %d", len(result.Embeddings), len(inputs))
+	}
+	if len(requestTextCounts) != 2 || requestTextCounts[0] != 96 || requestTextCounts[1] != 54 {
+		t.Fatalf("expected 2 batched requests of 96 and 54, got %v", requestTextCounts)
+	}
+	if result.Usage.InputTokens != 20 { // 10 + 10, one header count per batch
+		t.Fatalf("InputTokens = %d, want 20", result.Usage.InputTokens)
+	}
+	if len(result.Responses) != 2 {
+		t.Fatalf("Responses len = %d, want 2 (one per batch call)", len(result.Responses))
+	}
+}
+
 func TestBedrockEmbeddingProviderOptionsMatchTS(t *testing.T) {
 	var bodies []map[string]interface{}
 	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
@@ -486,7 +542,7 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 		Seed:        &seed,
 		AspectRatio: "1:1",
 		ProviderOptions: map[string]interface{}{
-			"amazonBedrock": map[string]interface{}{"quality": "premium", "cfgScale": 7.5, "negativeText": "rain", "style": "photographic"},
+			"amazonBedrock": map[string]interface{}{"quality": "premium", "cfgScale": 7.5, "negativeText": "rain", "style": "PHOTOREALISM"},
 			"bedrock":       map[string]interface{}{"negativeText": "legacy"},
 		},
 	})
@@ -501,7 +557,7 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 		t.Fatalf("imageGenerationConfig mismatch: %#v", config)
 	}
 	params := body["textToImageParams"].(map[string]interface{})
-	if params["text"] != "cat" || params["negativeText"] != "rain" || params["style"] != "photographic" {
+	if params["text"] != "cat" || params["negativeText"] != "rain" || params["style"] != "PHOTOREALISM" {
 		t.Fatalf("textToImageParams mismatch: %#v", params)
 	}
 	body, _, err = model.buildRequestBody(&provider.ImageGenerateOptions{
@@ -593,6 +649,89 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 	}
 }
 
+// TestBedrockImageOptions_RejectsInvalidEnumValues verifies typed/validated
+// image provider options (audit row 5cd0e38): invalid enum values return an
+// error instead of being silently forwarded to Bedrock.
+func TestBedrockImageOptions_RejectsInvalidEnumValues(t *testing.T) {
+	model := NewImageModel(New(Config{Region: "us-east-1"}), "amazon.nova-canvas-v1:0")
+
+	tests := []struct {
+		name    string
+		options map[string]interface{}
+	}{
+		{"quality", map[string]interface{}{"quality": "ultra"}},
+		{"style", map[string]interface{}{"style": "photographic"}},
+		{"taskType", map[string]interface{}{"taskType": "UPSCALE"}},
+		{"outPaintingMode", map[string]interface{}{"outPaintingMode": "FUZZY"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := model.buildRequestBody(&provider.ImageGenerateOptions{
+				Prompt:          "cat",
+				ProviderOptions: map[string]interface{}{"amazonBedrock": tt.options},
+			})
+			if err == nil {
+				t.Fatalf("expected validation error for invalid %s", tt.name)
+			}
+		})
+	}
+
+	// Valid enum values should pass through without error.
+	_, _, err := model.buildRequestBody(&provider.ImageGenerateOptions{
+		Prompt: "cat",
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{"quality": "premium", "style": "MAXIMALISM", "taskType": "TEXT_IMAGE"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected valid enum values to pass, got %v", err)
+	}
+}
+
+// TestBedrockImageModel_ErrorUsesTypeAndMessage verifies image_model.go's
+// error path uses the shared bedrockAPIError formatter (audit row c559a12).
+func TestBedrockImageModel_ErrorUsesTypeAndMessage(t *testing.T) {
+	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 400,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"message":"bad request","type":"ValidationException"}`)),
+			}, nil
+		})},
+	})
+	model := NewImageModel(p, "amazon.nova-canvas-v1:0")
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
+	if err == nil || !strings.Contains(err.Error(), "ValidationException: bad request") {
+		t.Fatalf("error = %v, want ValidationException: bad request", err)
+	}
+}
+
+// TestBedrockRerankingModel_ErrorUsesTypeAndMessage verifies
+// reranking_model.go's error path uses the shared bedrockAPIError formatter.
+func TestBedrockRerankingModel_ErrorUsesTypeAndMessage(t *testing.T) {
+	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: "https://bedrock-agent-runtime.us-east-1.amazonaws.com",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 403,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"message":"not authorized","type":"AccessDeniedException"}`)),
+			}, nil
+		})},
+	})
+	model := NewRerankingModel(p, "cohere.rerank-v3-5:0")
+	_, err := model.DoRerank(context.Background(), &provider.RerankOptions{Query: "q", Documents: []string{"a"}})
+	if err == nil || !strings.Contains(err.Error(), "AccessDeniedException: not authorized") {
+		t.Fatalf("error = %v, want AccessDeniedException: not authorized", err)
+	}
+}
+
 func TestBedrockImageAndLanguageDoGenerateAndStream(t *testing.T) {
 	p := New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b"})
 	p.client = internalhttp.NewClient(internalhttp.Config{
@@ -606,14 +745,30 @@ func TestBedrockImageAndLanguageDoGenerateAndStream(t *testing.T) {
 					Body:       io.NopCloser(strings.NewReader(`{"images":["imgdata"]}`)),
 				}, nil
 			}
-			if strings.Contains(req.URL.Path, "/model/meta.llama-3/invoke") {
+			if strings.Contains(req.URL.RequestURI(), "/model/meta.llama-3/converse-stream") {
+				body := buildBedrockEventStreamBody([][2]string{
+					{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"hello world"}}`},
+					{"messageStop", `{"stopReason":"end_turn"}`},
+					{"metadata", `{"usage":{"inputTokens":1,"outputTokens":2,"totalTokens":3}}`},
+				})
+				return &http.Response{
+					StatusCode: 200,
+					Header:     http.Header{"X-Req": []string{"lm-stream"}},
+					Body:       io.NopCloser(bytes.NewReader(body)),
+				}, nil
+			}
+			if strings.Contains(req.URL.RequestURI(), "/model/meta.llama-3/converse") {
 				return &http.Response{
 					StatusCode: 200,
 					Header:     http.Header{"X-Req": []string{"lm"}},
-					Body:       io.NopCloser(strings.NewReader(`{"completion":"hello world"}`)),
+					Body: io.NopCloser(strings.NewReader(`{
+						"output": {"message": {"role": "assistant", "content": [{"text": "hello world"}]}},
+						"stopReason": "end_turn",
+						"usage": {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3}
+					}`)),
 				}, nil
 			}
-			return nil, errors.New("unexpected request path: " + req.URL.Path)
+			return nil, errors.New("unexpected request path: " + req.URL.RequestURI())
 		})},
 	})
 
@@ -661,41 +816,70 @@ func TestBedrockLanguageHelpersAndStream(t *testing.T) {
 	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {
 		t.Fatalf("capability mismatch")
 	}
-	if ep := lm.getInvokeEndpoint(); ep != "/model/anthropic.claude/invoke" {
-		t.Fatalf("invoke endpoint mismatch: %s", ep)
+
+	reqURL, rawPath, err := lm.converseURL("https://bedrock-runtime.us-east-1.amazonaws.com", "/converse")
+	if err != nil {
+		t.Fatalf("converseURL error = %v", err)
+	}
+	if rawPath != "/model/anthropic.claude/converse" || reqURL.Opaque != rawPath {
+		t.Fatalf("converseURL mismatch: %s / %#v", rawPath, reqURL)
 	}
 
-	usage := convertBedrockUsage(bedrockUsage{InputTokens: 10, OutputTokens: 5, CacheReadInputTokens: 2, CacheWriteInputTokens: 1})
+	usage := convertBedrockConverseUsage([]byte(`{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":2,"cacheWriteInputTokens":1}`))
 	if usage.InputDetails == nil || usage.OutputDetails == nil || usage.Raw == nil {
 		t.Fatalf("usage conversion mismatch: %#v", usage)
 	}
-
-	res, err := lm.convertResponse([]byte(`{"content":[{"type":"text","text":"hello"}],"stop_reason":"max_tokens","usage":{"input_tokens":1,"output_tokens":2}}`))
-	if err != nil || res.Text != "hello" || res.FinishReason != "length" {
-		t.Fatalf("claude convert mismatch result=%#v err=%v", res, err)
-	}
-	res2, err := lm.convertResponse([]byte(`{"completion":"world"}`))
-	if err != nil || res2.Text != "world" {
-		t.Fatalf("generic convert mismatch result=%#v err=%v", res2, err)
+	if *usage.InputTokens != 13 { // 10 + 2 + 1
+		t.Fatalf("usage.InputTokens = %d, want 13", *usage.InputTokens)
 	}
 
-	stream := &bedrockStream{result: res2}
-	ch1, err := stream.Next()
-	if err != nil || ch1.Type != provider.ChunkTypeText {
-		t.Fatalf("stream first chunk mismatch chunk=%#v err=%v", ch1, err)
+	res, err := lm.convertConverseResponse([]byte(`{
+		"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+		"stopReason": "max_tokens",
+		"usage": {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3}
+	}`), false, false)
+	if err != nil || res.Text != "hello" || res.FinishReason != types.FinishReasonLength {
+		t.Fatalf("converse convert mismatch result=%#v err=%v", res, err)
 	}
-	for i := 0; i < 5; i++ {
+
+	// Streaming: decode a synthetic AWS event-stream body.
+	body := buildBedrockEventStreamBody([][2]string{
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"world"}}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":1,"outputTokens":2,"totalTokens":3}}`},
+	})
+	stream := &bedrockConverseStream{
+		decoder:       eventstream.NewDecoder(bytes.NewReader(body)),
+		body:          io.NopCloser(bytes.NewReader(nil)),
+		contentBlocks: map[int]*bedrockStreamContentBlock{},
+		finishReason:  types.FinishReasonOther,
+	}
+	gotText := false
+	gotFinish := false
+	for i := 0; i < 20; i++ {
 		ch, e := stream.Next()
+		if e == io.EOF {
+			break
+		}
 		if e != nil {
 			t.Fatalf("unexpected stream err = %v", e)
 		}
-		if ch.Type == provider.ChunkTypeFinish {
-			break
+		if ch.Type == provider.ChunkTypeText && ch.Text == "world" {
+			gotText = true
 		}
+		if ch.Type == provider.ChunkTypeFinish {
+			gotFinish = true
+			if ch.FinishReason != types.FinishReasonStop {
+				t.Fatalf("finish reason = %v, want stop", ch.FinishReason)
+			}
+		}
+	}
+	if !gotText || !gotFinish {
+		t.Fatalf("stream missing expected chunks: gotText=%v gotFinish=%v", gotText, gotFinish)
 	}
 	stream.Close() //nolint:errcheck
 	if stream.Err() != nil {
-		t.Fatalf("expected nil Err for bedrockStream")
+		t.Fatalf("expected nil Err for bedrockConverseStream")
 	}
 }
 

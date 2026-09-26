@@ -42,6 +42,28 @@ var anthropicBuiltinToolTypes = map[string]builtinToolDef{
 	"anthropic.tool_search_bm25_20251119":  {apiType: "tool_search_tool_bm25_20251119", name: "tool_search_tool_bm25"},
 }
 
+// BuiltinToolAPIName returns the short Anthropic API "name" for a simple
+// built-in provider tool identified by its Go SDK tool Name (e.g.
+// "anthropic.tool_search_bm25_20251119" -> "tool_search_tool_bm25"). Exported
+// so other packages that forward Anthropic provider-defined tools through a
+// different wire API (e.g. pkg/providers/bedrock's Converse toolConfig, which
+// has no separate "type" field and instead needs a plain
+// {name, inputSchema}) can reuse the same name table instead of keeping a
+// separate copy — mirrors how TS bedrock imports `anthropicTools` from
+// '@ai-sdk/anthropic/internal' to do a generic tool-id lookup. Only covers
+// the simple builtins in anthropicBuiltinToolTypes (bash, text editors,
+// code execution, memory, advisor, tool search); self-serializing tools
+// (computer, text_editor_20250728, web_search, web_fetch) require
+// per-instance config this helper does not have access to and are not
+// included.
+func BuiltinToolAPIName(name string) (string, bool) {
+	def, ok := anthropicBuiltinToolTypes[name]
+	if !ok || def.name == "" {
+		return "", false
+	}
+	return def.name, true
+}
+
 // anthropicAPIMapper is satisfied by ProviderOptions types that produce their own
 // Anthropic API tool map. Used by tools that require per-instance config fields:
 // computer tools (display dims), text_editor_20250728 (max_characters), web tools (filters).

@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,44 @@ func TestEventStreamDecoder_ExceptionTypeCaptured(t *testing.T) {
 
 // TestTransformEventStreamToSSE_ChunkEvent ports "should transform Bedrock
 // event stream to SSE format".
+// TestEventStreamDecoder_TruncatedFrameErrors verifies that switching to the
+// shared pkg/providers/bedrock/eventstream decoder (WG-B1) gives
+// Bedrock-Anthropic the "N buffered bytes remain" truncated-frame error for
+// free (TS row 1ac9af8), rather than a generic io.ErrUnexpectedEOF.
+func TestEventStreamDecoder_TruncatedFrameErrors(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"aGVsbG8="}`))
+	truncated := frame[:len(frame)-3]
+
+	decoder := NewEventStreamDecoder(bytes.NewReader(truncated))
+	_, err := decoder.ReadEvent()
+	if err == nil {
+		t.Fatal("expected an error for a truncated frame")
+	}
+	if !strings.Contains(err.Error(), "Incomplete Amazon Bedrock event-stream frame") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+// TestEventStreamDecoder_CorruptFrameErrors verifies CRC mismatches are
+// surfaced as decode errors rather than silently producing garbage output
+// (TS row e0776b9).
+func TestEventStreamDecoder_CorruptFrameErrors(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"aGVsbG8="}`))
+	corrupted := append([]byte{}, frame...)
+	corrupted[len(corrupted)-5] ^= 0xFF
+
+	decoder := NewEventStreamDecoder(bytes.NewReader(corrupted))
+	if _, err := decoder.ReadEvent(); err == nil {
+		t.Fatal("expected a CRC mismatch error for a corrupted frame")
+	}
+}
+
 func TestTransformEventStreamToSSE_ChunkEvent(t *testing.T) {
 	anthropicEvent := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`
 	chunkPayload := `{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(anthropicEvent)) + `"}`
@@ -130,8 +169,7 @@ func TestTransformEventStreamToSSE_MessageStop(t *testing.T) {
 }
 
 // TestTransformEventStreamToSSE_Exception ports "should handle exception
-// messages" (without the statusCode/isRetryable metadata enrichment, which is
-// WG-B1 scope — see the stream.go doc comment).
+// messages".
 func TestTransformEventStreamToSSE_Exception(t *testing.T) {
 	frame := encodeEventStreamMessage(t, map[string]string{
 		":message-type":   "exception",
