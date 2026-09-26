@@ -1,38 +1,28 @@
 ---
 title: Migrating from v0.3.x to v0.4.0
-description: Guide for upgrading your Go AI SDK code from v0.3.x to v0.4.0
+description: Runtime behavior changes in Go AI SDK v0.4.0 — deferred streaming tool execution, xAI's Responses API default, and stricter MCP redirect handling.
 ---
 
 # Migrate Go AI SDK v0.3.x to v0.4.0
 
-The Go AI SDK v0.4.0 introduces breaking changes to streaming behavior, provider defaults, MCP security, and telemetry. This guide helps you migrate your existing v0.3.x code.
+Go AI SDK v0.4.0 changes when streaming tools execute, switches xAI's default API, removes two retired xAI model IDs, and rejects MCP server redirects by default. None of these rename or remove a Go type or function signature, so v0.3.x code keeps compiling — what changes is runtime behavior. This guide is for anyone still on v0.3.x.
 
 ## Recommended migration process
 
-Follow these five steps to upgrade:
+1. Update: `go get github.com/digitallysavvy/go-ai@v0.4.0`
+2. If a `StreamText` consumer expects tool-result chunks interleaved with text, move that handling to run after the stream ends.
+3. Replace `grok-2` and `grok-2-vision-1212` model IDs with a `grok-3` or later model.
+4. If you rely on xAI's Chat Completions API, call `ChatCompletionsLanguageModel()` explicitly.
+5. If an MCP server needs redirects, opt in with `Redirect: mcp.MCPRedirectFollow`.
+6. Build and test: `go build ./...` and `go test ./...`.
 
-1. **Ensure all tests pass on v0.3.x.** Run `go test ./...` before making any changes so you have a clean baseline.
-2. **Update to v0.4.0:**
-   ```bash
-   go get github.com/digitallysavvy/go-ai@v0.4.0
-   ```
-3. **Follow the breaking changes below** to update your code.
-4. **Build and test:**
-   ```bash
-   go build ./...
-   go test ./...
-   ```
-5. **Commit** once everything passes.
+## Behavior changes
 
-## Breaking changes
+### Streaming tool execution moves to after the stream
 
-### Streaming tool execution deferred
+**Impact:** runtime only — no compile change.
 
-Tools passed to `StreamText` now execute **after** the stream is fully consumed, not mid-stream. In v0.3.x, tool-result chunks could arrive interleaved with text chunks. In v0.4.0, the stream delivers all provider chunks (text, reasoning, custom content) first, then executes tools and delivers tool-result chunks after the stream ends.
-
-This ensures consumers receive all content before any tool side-effects fire. If your application depends on processing tool results mid-stream, restructure your logic to handle them after the stream completes.
-
-**Before (v0.3.x):**
+`StreamText` forwards every provider chunk (text, reasoning, custom content) to `OnChunk` before running any tool's `Execute` callback; `ChunkTypeToolResult` chunks now arrive only after the stream ends. In v0.3.x they could interleave with text chunks. This applies to tools with a Go `Execute` callback — provider-executed results (`ProviderExecuted: true`, e.g. Google code execution) still arrive inline as the provider produces them.
 
 ```go
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -40,7 +30,6 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
     OnChunk: func(chunk provider.StreamChunk) {
-        // v0.3.x: tool-result chunks could arrive between text chunks
         fmt.Print(chunk.Text)
     },
 })
@@ -53,102 +42,47 @@ for range result.Chunks() {
 }
 ```
 
-**After (v0.4.0):**
+This code is unchanged between v0.3.x and v0.4.0. What changes is the order `OnChunk` sees: in v0.3.x a `ChunkTypeToolResult` chunk could arrive between text chunks; in v0.4.0 it always arrives after the stream's text and reasoning chunks have finished.
+
+### XAI's default language model uses the Responses API
+
+**Impact:** runtime only — no compile change.
+
+`xai.Provider.LanguageModel()` now returns a model backed by xAI's Responses API instead of Chat Completions. The Responses API adds image input and finer-grained reasoning effort levels. Call `ChatCompletionsLanguageModel()` for the v0.3.x behavior.
 
 ```go
-result, err := ai.StreamText(ctx, ai.StreamTextOptions{
-    Model:  model,
-    Prompt: "What's the weather?",
-    Tools:  []types.Tool{weatherTool},
-    OnChunk: func(chunk provider.StreamChunk) {
-        // v0.4.0: all provider chunks arrive first,
-        // then tool-result chunks after stream end.
-        // Order: provider chunks -> stream end -> tool execution -> tool-result
-        fmt.Print(chunk.Text)
-    },
-})
-if err != nil {
-    log.Fatal(err)
-}
-defer result.Close()
-
-for range result.Chunks() {
-}
-```
-
-### XAI default API changed to Responses API
-
-`xai.Provider.LanguageModel()` now returns a model backed by the Responses API instead of the Chat Completions API. The Responses API supports additional features like image input and more granular reasoning effort levels. If you need the legacy Chat Completions behavior, use `ChatCompletionsLanguageModel()` instead.
-
-**Before (v0.3.x):**
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/providers/xai"
-
 provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
 
-// v0.3.x: LanguageModel() used the Chat Completions API
+model, _ := provider.LanguageModel("grok-3")                    // Responses API (new default)
+chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3") // Chat Completions API (v0.3.x behavior)
+```
+
+### XAI removed grok-2 model IDs
+
+**Impact:** runtime only. `LanguageModel()` never validated model ID strings at compile time or call time, so this doesn't produce a Go error either — the request reaches xAI, and xAI rejects the retired model.
+
+```go
+model, _ := provider.LanguageModel("grok-2")             // xAI: model not found
+model, _ := provider.LanguageModel("grok-2-vision-1212") // xAI: model not found
+
+// Use instead:
 model, _ := provider.LanguageModel("grok-3")
+model, _ := provider.LanguageModel("grok-3-mini")
 ```
 
-**After (v0.4.0):**
+### MCP HTTP transport rejects redirects by default
+
+**Impact:** runtime only — no compile change; may break an MCP integration that relied on a redirect.
+
+`MCPRedirectMode`'s zero value is `MCPRedirectError`, so `mcp.NewHTTPTransport` now rejects a redirect instead of following it. This closes an SSRF path where a malicious MCP server redirects requests to an internal service.
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/providers/xai"
-
-provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
-
-// v0.4.0: LanguageModel() now uses the Responses API (new default)
-model, _ := provider.LanguageModel("grok-3")
-
-// To explicitly use the Chat Completions API:
-chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3")
-```
-
-### XAI model IDs removed
-
-`grok-2` and `grok-2-vision-1212` have been removed from the XAI provider. Use `grok-3` family models instead.
-
-**Before (v0.3.x):**
-
-```go
-model, _ := provider.LanguageModel("grok-2")             // Removed
-model, _ := provider.LanguageModel("grok-2-vision-1212") // Removed
-```
-
-**After (v0.4.0):**
-
-```go
-model, _ := provider.LanguageModel("grok-3")        // Use grok-3 family
-model, _ := provider.LanguageModel("grok-3-mini")   // Or grok-3-mini
-```
-
-### MCP default redirect mode changed
-
-MCP HTTP transport previously followed redirects by default. In v0.4.0, the default is `MCPRedirectError` — redirects cause an error. This prevents SSRF attacks where a malicious MCP server redirects requests to internal services.
-
-**Before (v0.3.x):**
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/mcp"
-
-// v0.3.x: redirects followed automatically (potential SSRF risk)
 transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
     URL: "https://mcp.example.com",
 })
-```
+// v0.4.0: a redirect from this server now returns an error.
 
-**After (v0.4.0):**
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/mcp"
-
-// v0.4.0: redirects rejected by default (MCPRedirectError)
-transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
-    URL: "https://mcp.example.com",
-})
-
-// To restore old behavior (only if you trust the MCP server):
+// To allow redirects (only for a server you trust):
 transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
     URL: "https://mcp.example.com",
     Config: mcp.TransportConfig{
@@ -157,103 +91,34 @@ transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
 })
 ```
 
-> **Security note:** Only set `Redirect: mcp.MCPRedirectFollow` when you trust the MCP server and have verified it does not redirect to internal services.
+### Telemetry: register an integration instead of passing a Tracer per call
 
-### Telemetry global registry
-
-The `Tracer` field on `ExperimentalTelemetry` settings is no longer the recommended way to configure custom OpenTelemetry tracers. Instead, register a telemetry integration once at startup using `RegisterTelemetryIntegration()`. Use the stable `Telemetry` option for per-call control of `IsEnabled`, `RecordInputs`, `RecordOutputs`, `FunctionID`, local `Integrations`, and context include settings. `ExperimentalTelemetry` remains as a deprecated alias for migration.
-
-**Before (v0.3.x):**
+**Impact:** low. `telemetry.Options.Tracer` still works; `RegisterTelemetryIntegration` is the supported path for new code.
 
 ```go
-import (
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/telemetry"
-    "go.opentelemetry.io/otel/trace"
-)
+telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
 
-tracer := trace.NewNoopTracerProvider().Tracer("my-app")
-
-// v0.3.x: custom tracer passed per-call
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Hello",
     Telemetry: &telemetry.Options{
-        IsEnabled: telemetry.Bool(true),
-        Tracer:    tracer, // custom tracer passed directly
+        IsEnabled:    telemetry.Bool(true),
+        RecordInputs: true,
+        FunctionID:   "my-chat",
     },
 })
 ```
 
-**After (v0.4.0):**
+If you relied on the default global tracer rather than a custom `Tracer`, register `telemetry.OTelTelemetryIntegration{}` — it uses `otel.Tracer("ai-sdk")` when no custom tracer is set. `AddTelemetryIntegration()` fans out to multiple backends, `ClearTelemetryIntegrations()` resets the registry, and `telemetry.NoopTelemetryIntegration{}` disables telemetry globally.
 
-```go
-import (
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/telemetry"
-)
+## New in v0.4.0
 
-// v0.4.0: register integration once at startup
-func main() {
-    telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
+These are additive; existing code keeps compiling without them.
 
-    // All subsequent calls automatically use the registered integration
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model:  model,
-        Prompt: "Hello",
-        // Telemetry is available for per-call control:
-        Telemetry: &telemetry.Options{
-            IsEnabled: telemetry.Bool(true),
-            RecordInputs: true,
-            FunctionID:   "my-chat",
-        },
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result.Text)
-}
-```
-
-If you were not passing a custom `Tracer` and relied on the default global tracer, register `telemetry.OTelTelemetryIntegration{}` once at startup. `OTelTelemetryIntegration` uses `otel.Tracer("ai-sdk")` when no custom tracer is provided.
-
-The global registry supports multiple integrations via `AddTelemetryIntegration()` for fan-out to multiple backends. Use `ClearTelemetryIntegrations()` to reset, or pass `telemetry.NoopTelemetryIntegration{}` to `RegisterTelemetryIntegration()` to disable telemetry.
-
-## New features
-
-v0.4.0 also introduces several new capabilities:
-
-- **Top-level Reasoning parameter** — Configure reasoning effort (`low`, `medium`, `high`) directly on `GenerateText` and `StreamText` options instead of per-provider settings. See [Generating Text](/docs/ai-sdk-core/generating-text).
-- **Deferred provider tool results** — Providers can now mark tool calls as `ProviderExecuted: true` (e.g., Google code execution), returning results inline without requiring client-side execution. See [Tools and Tool Calling](/docs/ai-sdk-core/tools-and-tool-calling).
-- **CustomContent and ReasoningFileContent types** — New content block types for provider-specific content (`CustomContent`) and reasoning trace files (`ReasoningFileContent`). See [Generating Text](/docs/ai-sdk-core/generating-text).
-- **Tool-level timeouts** — Set a `Timeout` duration on individual tools to limit execution time independently of the overall request context. See [Tools and Tool Calling](/docs/ai-sdk-core/tools-and-tool-calling).
-- **Embed/rerank callbacks** — `OnStart` and `OnFinish` callbacks for `Embed`, `EmbedMany`, and `Rerank` operations, with provider options forwarding and HTTP response metadata. See [Embeddings](/docs/ai-sdk-core/embeddings).
-- **New providers** — [Prodia](/docs/providers/prodia) image generation provider and [KlingAI v3.0](/docs/providers/klingai) motion control for video generation.
-
-## Migration checklist
-
-### Code changes
-
-- [ ] Update `StreamText` consumers that depend on mid-stream tool results to handle deferred execution
-- [ ] Replace `xai.Provider.LanguageModel()` with `ChatCompletionsLanguageModel()` if you need Chat Completions API behavior
-- [ ] Replace `grok-2` and `grok-2-vision-1212` model IDs with `grok-3` family models
-- [ ] Add `Config: mcp.TransportConfig{Redirect: mcp.MCPRedirectFollow}` to MCP transport configs that need redirects
-- [ ] Move custom `Tracer` setup to `telemetry.RegisterTelemetryIntegration()` at startup
-
-### Testing
-
-- [ ] Run `go build ./...` to verify compilation
-- [ ] Run `go test ./...` to verify all tests pass
-- [ ] Verify streaming consumers handle deferred tool execution correctly
-- [ ] Test XAI integrations with new Responses API default
-- [ ] Verify MCP transport behavior with redirect changes
-
-## Getting help
-
-If you encounter issues during migration:
-
-1. Check the [CHANGELOG.md](https://github.com/digitallysavvy/go-ai/blob/main/CHANGELOG.md) for detailed breaking changes
-2. Check the [v0.4.0 Release Notes](https://github.com/digitallysavvy/go-ai/blob/main/release_notes/RELEASE_NOTES_V0.4.0.md) for full details
-3. See [API Reference](../07-reference/index.mdx) for updated signatures
-4. Open an issue on [GitHub](https://github.com/digitallysavvy/go-ai/issues)
+- **Top-level `Reasoning`** on `GenerateTextOptions`/`StreamTextOptions` — see [Generating text](/docs/ai-sdk-core/generating-text)
+- **Deferred provider tool results** via `Tool.SupportsDeferredResults` — see [Tools and tool calling](/docs/ai-sdk-core/tools-and-tool-calling)
+- **`CustomContent` and `ReasoningFileContent`** content types
+- **Tool-level timeouts** via `TimeoutConfig.ToolMs` / `TimeoutConfig.Tools`
+- **Embed/rerank `OnStart`/`OnFinish` callbacks** — see [Embeddings](/docs/ai-sdk-core/embeddings)
+- **[KlingAI v3.0 motion control](/docs/providers/klingai)** — new video generation capability
+- **[Prodia](/docs/providers/prodia) language and video models** — Prodia's existing image generation provider gains a language model and a video model
