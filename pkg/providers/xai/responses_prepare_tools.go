@@ -100,12 +100,15 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return m
 
 	default:
-		// Regular function tool
+		// Regular function tool. Parameters are sent unchanged, including any
+		// `additionalProperties: false` in the JSON schema (row 6e405ae:
+		// xAI's upstream removal of the additionalProperties flag was itself
+		// reverted, so the SDK must stop stripping it).
 		return map[string]interface{}{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
-			"parameters":  stripAdditionalPropertiesFalse(t.Parameters),
+			"parameters":  t.Parameters,
 		}
 	}
 }

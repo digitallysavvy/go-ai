@@ -90,24 +90,6 @@ func TestXAIDefaultUsesResponsesAPI(t *testing.T) {
 	}
 }
 
-// TestXAIChatCompletionsLanguageModelIsLegacy verifies that ChatCompletionsLanguageModel()
-// returns a Chat Completions model, not a Responses API model.
-func TestXAIChatCompletionsLanguageModelIsLegacy(t *testing.T) {
-	p := New(Config{APIKey: "test-key"})
-
-	model, err := p.ChatCompletionsLanguageModel("grok-3")
-	if err != nil {
-		t.Fatalf("ChatCompletionsLanguageModel() error: %v", err)
-	}
-
-	if model.Provider() != "xai" {
-		t.Errorf("ChatCompletionsLanguageModel().Provider() = %q, want %q", model.Provider(), "xai")
-	}
-	if _, ok := model.(*LanguageModel); !ok {
-		t.Errorf("ChatCompletionsLanguageModel() returned %T, want *LanguageModel", model)
-	}
-}
-
 // TestRemovedModelsNotInList verifies that removed model IDs are not present in model_ids.go.
 // Grok 2 IDs were shut down by XAI and must not be re-added.
 func TestRemovedModelsNotInList(t *testing.T) {

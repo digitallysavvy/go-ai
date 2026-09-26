@@ -25,11 +25,8 @@ provider := xai.New(xai.Config{
     APIKey: os.Getenv("XAI_API_KEY"),
 })
 
-// Default: Responses API (recommended)
+// Responses API (the only language model API xAI supports)
 model, err := provider.LanguageModel("grok-3")
-
-// Opt-in: Chat Completions API (legacy)
-chatModel, err := provider.ChatCompletionsLanguageModel("grok-3")
 ```
 
 ### Get API key
@@ -82,9 +79,9 @@ speechModel, _ := provider.SpeechModel("")
 transcriptionModel, _ := provider.TranscriptionModel("")
 ```
 
-## Responses API (default)
+## Responses API (only)
 
-Starting in v0.4.0, `LanguageModel()` returns a Responses API model. This is the recommended API for new development. Use `ChatCompletionsLanguageModel()` if you need the legacy Chat Completions API.
+`LanguageModel()` returns a Responses API model. Starting in v0.4.0 this was the default (with the legacy Chat Completions API available as an opt-in escape hatch); as of this release the Chat Completions API (`ChatCompletionsLanguageModel()`) has been removed entirely, matching the upstream TypeScript SDK. See the migration guide if you were still using `ChatCompletionsLanguageModel()`.
 
 ```go
 model, _ := provider.LanguageModel("grok-3")
