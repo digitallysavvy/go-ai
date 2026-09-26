@@ -37,10 +37,6 @@ type Config struct {
 	// Client is the pre-configured HTTP client with auth headers already set.
 	Client *internalhttp.Client
 
-	// SupportsCodeExecution enables handling of executableCode and
-	// codeExecutionResult parts. True for Google Generative AI, false for Vertex.
-	SupportsCodeExecution bool
-
 	// SupportsImageInput returns whether a given model ID accepts image inputs.
 	// When nil, the method returns false.
 	SupportsImageInput func(modelID string) bool

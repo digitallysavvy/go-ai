@@ -35,7 +35,7 @@ type stream struct {
 	// so that a STOP finish reason can be mapped to tool-calls.
 	hasToolCalls bool
 
-	// Code execution state (used only when cfg.SupportsCodeExecution is true).
+	// Code execution state. TS parses these parts for both Google and Vertex.
 	codeExecCount  int
 	lastCodeExecID string
 
@@ -52,6 +52,10 @@ type stream struct {
 	toolInputState map[string]*toolInputAccum
 	toolInputOrder []string
 	drainedOnDone  bool
+
+	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
+	// custom names, mirroring TS createToolNameMapping.
+	tnm toolNameMapping
 }
 
 type toolInputAccum struct {
@@ -63,12 +67,13 @@ type toolInputAccum struct {
 }
 
 // newStream creates a stream with the given reader and provider configuration.
-func newStream(reader io.ReadCloser, cfg Config) *stream {
+func newStream(reader io.ReadCloser, cfg Config, tnm toolNameMapping) *stream {
 	return &stream{
 		reader:         reader,
 		parser:         streaming.NewSSEParser(reader),
 		cfg:            cfg,
 		toolInputState: make(map[string]*toolInputAccum),
+		tnm:            tnm,
 	}
 }
 
@@ -300,8 +305,8 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 // processNonFuncPart converts a non-function-call part into chunks.
 // Handles code execution, inlineData, and text/reasoning block management.
 func (s *stream) processNonFuncPart(part Part) {
-	// Code execution (Google only).
-	if s.cfg.SupportsCodeExecution {
+	// Code execution. TS parses these for both Google and Vertex.
+	{
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
 			s.codeExecCount++
 			toolCallID := fmt.Sprintf("code-exec-%d", s.codeExecCount)
@@ -310,7 +315,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
 					ID:               toolCallID,
-					ToolName:         "code_execution",
+					ToolName:         s.tnm.toCustomToolName("code_execution"),
 					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
 					ProviderExecuted: true,
 				},
@@ -318,13 +323,15 @@ func (s *stream) processNonFuncPart(part Part) {
 			return
 		}
 		if part.CodeExecutionResult != nil && s.lastCodeExecID != "" {
+			// Do not clear lastCodeExecID: TS associates a result only with the
+			// most recently seen executable code part, but does not reset the
+			// pointer after emitting the result.
 			toolCallID := s.lastCodeExecID
-			s.lastCodeExecID = ""
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: toolCallID,
-					ToolName:   "code_execution",
+					ToolName:   s.tnm.toCustomToolName("code_execution"),
 					Result: map[string]interface{}{
 						"outcome": part.CodeExecutionResult.Outcome,
 						"output":  part.CodeExecutionResult.Output,

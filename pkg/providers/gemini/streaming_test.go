@@ -25,9 +25,8 @@ func sseStream(payloads ...string) io.ReadCloser {
 // code execution enabled) for use in white-box tests.
 func newTestStream(reader io.ReadCloser) *stream {
 	return newStream(reader, Config{
-		MetadataKey:           "google",
-		SupportsCodeExecution: true,
-	})
+		MetadataKey: "google",
+	}, nil)
 }
 
 // chunkTypes returns chunk type strings for diagnostic output.
@@ -542,7 +541,7 @@ func TestStream_MetadataKeyAppearsInFinishChunk(t *testing.T) {
 	})
 
 	// Test with vertex key.
-	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"})
+	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"}, nil)
 	defer sv.Close() //nolint:errcheck
 	var vertexChunks []*provider.StreamChunk
 	for {

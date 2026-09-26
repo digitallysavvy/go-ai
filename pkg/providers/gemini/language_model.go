@@ -14,7 +14,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
-
 // LanguageModel implements provider.LanguageModel using the Gemini wire format.
 // It is shared by both the google and googlevertex packages; provider-specific
 // details (auth, base URL, metadata keys) are injected via Config.
@@ -68,7 +67,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result := m.convertResponse(response, newToolNameMapping(opts.Tools))
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -92,7 +91,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	stream := providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg), httpResp.Header, m.ModelID())
+	stream := providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools)), httpResp.Header, m.ModelID())
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -102,7 +101,7 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // convertResponse converts a Gemini API Response to a GenerateResult.
-func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertUsage(response.UsageMetadata),
 		RawResponse: response,
@@ -143,31 +142,31 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 			}
 			continue
 		}
-		// Code execution parts (Google only; safe to check because Part fields are nil on Vertex).
-		if m.cfg.SupportsCodeExecution {
-			if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
-				toolCallID := fmt.Sprintf("code-exec-%d", len(result.ToolCalls)+1)
-				lastCodeExecID = toolCallID
-				result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-					ID:               toolCallID,
-					ToolName:         "code_execution",
-					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
-					ProviderExecuted: true,
-				})
-				continue
-			}
-			if part.CodeExecutionResult != nil && lastCodeExecID != "" {
-				result.Content = append(result.Content, types.ToolResultContent{
-					ToolCallID: lastCodeExecID,
-					ToolName:   "code_execution",
-					Result: map[string]interface{}{
-						"outcome": part.CodeExecutionResult.Outcome,
-						"output":  part.CodeExecutionResult.Output,
-					},
-				})
-				lastCodeExecID = ""
-				continue
-			}
+		// Code execution parts. TS parses these for both Google and Vertex.
+		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
+			toolCallID := fmt.Sprintf("code-exec-%d", len(result.ToolCalls)+1)
+			lastCodeExecID = toolCallID
+			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         tnm.toCustomToolName("code_execution"),
+				Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
+				ProviderExecuted: true,
+			})
+			continue
+		}
+		if part.CodeExecutionResult != nil && lastCodeExecID != "" {
+			result.Content = append(result.Content, types.ToolResultContent{
+				ToolCallID: lastCodeExecID,
+				ToolName:   tnm.toCustomToolName("code_execution"),
+				Result: map[string]interface{}{
+					"outcome": part.CodeExecutionResult.Outcome,
+					"output":  part.CodeExecutionResult.Output,
+				},
+			})
+			// Do not clear lastCodeExecID: TS associates a result only with the
+			// most recently seen executable code part, but does not reset the
+			// pointer, matching google-language-model.ts convertGenerateContentResponse.
+			continue
 		}
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
 		if part.Text != "" {

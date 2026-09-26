@@ -29,7 +29,7 @@ func TestConvertResponse_SkipsThoughtParts(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.Text != "The answer is 42." {
 		t.Errorf("Text: got %q, want %q", result.Text, "The answer is 42.")
 	}
@@ -51,7 +51,7 @@ func TestConvertResponse_AllThoughtPartsProducesEmptyText(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.Text != "" {
 		t.Errorf("Text: got %q, want empty (all thought parts)", result.Text)
 	}
@@ -77,7 +77,7 @@ func TestConvertResponse_ThoughtPartDoesNotBlockFunctionCall(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
 	}
@@ -101,12 +101,12 @@ func TestConvertResponse_MetadataKeyUsed(t *testing.T) {
 		}},
 	}
 
-	googleResult := mGoogle.convertResponse(resp)
+	googleResult := mGoogle.convertResponse(resp, nil)
 	if _, ok := googleResult.ProviderMetadata["google"]; !ok {
 		t.Errorf("google result: expected 'google' key in ProviderMetadata")
 	}
 
-	vertexResult := mVertex.convertResponse(resp)
+	vertexResult := mVertex.convertResponse(resp, nil)
 	if _, ok := vertexResult.ProviderMetadata["vertex"]; !ok {
 		t.Errorf("vertex result: expected 'vertex' key in ProviderMetadata")
 	}
@@ -408,7 +408,7 @@ func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
@@ -434,7 +434,7 @@ func TestConvertResponse_ThoughtPartsBecomesReasoningContent(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.Text != "Here is the answer." {
 		t.Errorf("Text = %q, want %q", result.Text, "Here is the answer.")
@@ -484,7 +484,7 @@ func TestConvertResponse_ReasoningFilesMarkedCorrectly(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.Text != "The answer." {
 		t.Errorf("Text = %q, want %q", result.Text, "The answer.")
@@ -516,7 +516,7 @@ func TestConvertResponse_GroundingMetadataInProviderMetadata(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata must be set when groundingMetadata is present")
@@ -598,7 +598,7 @@ func TestConvertResponse_ServiceTierInMetadata(t *testing.T) {
 		}},
 		UsageMetadata: &UsageMetadata{ServiceTier: "SERVICE_TIER_PRIORITY"},
 	}
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata is nil")
 	}
@@ -626,7 +626,7 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 			FinishReason: "STOP",
 		}},
 	}
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	// serviceTier is always emitted (as null) per TS SDK parity.
 	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
 	if !ok {
@@ -697,7 +697,7 @@ func TestConvertResponse_ModalityTokenCountsInMetadata(t *testing.T) {
 		},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
 	if !ok {
 		t.Fatal("expected google providerMetadata")
@@ -730,7 +730,7 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("ToolCalls len = %d, want 1", len(result.ToolCalls))
 	}
