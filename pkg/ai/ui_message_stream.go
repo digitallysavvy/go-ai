@@ -33,11 +33,43 @@ type UIMessageStreamOnEndCallback func(ctx map[string]interface{})
 // Deprecated: use UIMessageStreamOnEndCallback.
 type UIMessageStreamOnFinishCallback = UIMessageStreamOnEndCallback
 
+// UIMessageStreamOutcomeStatus is the operation-level status of a UI message
+// stream. Mirrors TS UIMessageStreamOutcome['status'].
+type UIMessageStreamOutcomeStatus string
+
+const (
+	UIMessageStreamOutcomeCompleted UIMessageStreamOutcomeStatus = "completed"
+	UIMessageStreamOutcomeFailed    UIMessageStreamOutcomeStatus = "failed"
+	UIMessageStreamOutcomeAborted   UIMessageStreamOutcomeStatus = "aborted"
+	UIMessageStreamOutcomeUnknown   UIMessageStreamOutcomeStatus = "unknown"
+)
+
+// UIMessageStreamOutcome is the operation-level outcome of a UI message
+// stream. This is separate from model finish reasons and individual stream
+// chunks. Fatal stream-processing failures override outcomes declared by the
+// stream owner. Consumer cancellation before an outcome is declared keeps
+// the "unknown" status and is reported separately through the end
+// callback's "isCancelled" field. Mirrors TS UIMessageStreamOutcome.
+type UIMessageStreamOutcome struct {
+	Status UIMessageStreamOutcomeStatus
+	// Error is set when Status is UIMessageStreamOutcomeFailed.
+	Error error
+}
+
+func uiMessageStreamOutcomeMap(outcome UIMessageStreamOutcome) map[string]interface{} {
+	m := map[string]interface{}{"status": string(outcome.Status)}
+	if outcome.Status == UIMessageStreamOutcomeFailed && outcome.Error != nil {
+		m["error"] = outcome.Error
+	}
+	return m
+}
+
 // UIMessageStreamWriter is used by CreateUIMessageStreamWithOptions to write chunks.
 type UIMessageStreamWriter struct {
-	writeFn func(UIMessageChunk)
-	mergeFn func(<-chan UIMessageChunk)
-	onError func(error) string
+	writeFn      func(UIMessageChunk)
+	mergeFn      func(<-chan UIMessageChunk)
+	onError      func(error) string
+	setOutcomeFn func(UIMessageStreamOutcome)
 }
 
 // Write appends a data stream part.
@@ -51,6 +83,16 @@ func (w UIMessageStreamWriter) Write(part UIMessageChunk) {
 func (w UIMessageStreamWriter) Merge(stream <-chan UIMessageChunk) {
 	if w.mergeFn != nil {
 		w.mergeFn(stream)
+	}
+}
+
+// SetOutcome declares the operation-level outcome of the stream. The first
+// non-unknown outcome wins; a fatal processing failure (an Execute panic or
+// a merged stream error) always overrides it. Mirrors TS
+// createUIMessageStream's `writer.setOutcome`.
+func (w UIMessageStreamWriter) SetOutcome(outcome UIMessageStreamOutcome) {
+	if w.setOutcomeFn != nil {
+		w.setOutcomeFn(outcome)
 	}
 }
 
@@ -170,7 +212,26 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			case <-ctx.Done():
 			}
 		}
+		var outcomeMu sync.Mutex
+		hasFatalFailure := false
+		var fatalErr error
+		declaredOutcome := UIMessageStreamOutcome{Status: UIMessageStreamOutcomeUnknown}
+		setOutcome := func(newOutcome UIMessageStreamOutcome) {
+			outcomeMu.Lock()
+			defer outcomeMu.Unlock()
+			if declaredOutcome.Status == UIMessageStreamOutcomeUnknown && newOutcome.Status != UIMessageStreamOutcomeUnknown {
+				declaredOutcome = newOutcome
+			}
+		}
+		failOutcome := func(err error) {
+			outcomeMu.Lock()
+			defer outcomeMu.Unlock()
+			hasFatalFailure = true
+			fatalErr = err
+		}
+
 		enqueueError := func(err error) {
+			failOutcome(err)
 			appendErrorChunk(onError, safeEnqueue, err)
 		}
 
@@ -185,12 +246,25 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			if onEnd == nil {
 				return
 			}
+			outcomeMu.Lock()
+			outcome := declaredOutcome
+			if hasFatalFailure {
+				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: fatalErr}
+			} else if outcome.Status == UIMessageStreamOutcomeUnknown && uiState.isAborted {
+				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted}
+			}
+			outcomeMu.Unlock()
+			isCancelled := ctx.Err() != nil && outcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
 				"isContinuation":  uiState.isContinuation,
-				"isAborted":       ctx.Err() != nil || uiState.isAborted,
+				"isAborted":       uiState.isAborted || outcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 				"finishReason":    uiState.finishReason,
+				"outcome":         uiMessageStreamOutcomeMap(outcome),
+			}
+			if isCancelled {
+				finishEvent["isCancelled"] = true
 			}
 			defer func() {
 				_ = recover()
@@ -254,9 +328,10 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}
 
 		writer := UIMessageStreamWriter{
-			writeFn: processAndEnqueue,
-			mergeFn: merge,
-			onError: onError,
+			writeFn:      processAndEnqueue,
+			mergeFn:      merge,
+			onError:      onError,
+			setOutcomeFn: setOutcome,
 		}
 
 		func() {
@@ -330,6 +405,26 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 
 		uiState := newUIMessageCallbackState(options.OriginalMessages, callbackMessageID)
 
+		// sourceOutcome mirrors TS to-ui-message-stream.ts's setSourceOutcome/
+		// failOutcome: derives the operation-level outcome from the source
+		// stream's own finish/abort/error parts (audit row #103).
+		sourceOutcome := UIMessageStreamOutcome{Status: UIMessageStreamOutcomeUnknown}
+		hasFatalOutcomeFailure := false
+		setSourceOutcome := func(newOutcome UIMessageStreamOutcome) {
+			if hasFatalOutcomeFailure ||
+				sourceOutcome.Status == UIMessageStreamOutcomeCompleted ||
+				sourceOutcome.Status == UIMessageStreamOutcomeAborted ||
+				newOutcome.Status == UIMessageStreamOutcomeUnknown ||
+				(sourceOutcome.Status != UIMessageStreamOutcomeUnknown && newOutcome.Status == UIMessageStreamOutcomeFailed) {
+				return
+			}
+			sourceOutcome = newOutcome
+		}
+		failSourceOutcome := func(err error) {
+			hasFatalOutcomeFailure = true
+			sourceOutcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: err}
+		}
+
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
 		callOnEnd := func(finishReason types.FinishReason) {
 			if onEnd == nil {
@@ -337,10 +432,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			finishEvent := map[string]interface{}{
 				"isContinuation":  uiState.isContinuation,
-				"isAborted":       ctx.Err() != nil || uiState.isAborted,
+				"isAborted":       ctx.Err() != nil || uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 				"finishReason":    finishReason,
+				"outcome":         uiMessageStreamOutcomeMap(sourceOutcome),
 			}
 			defer func() {
 				_ = recover()
@@ -503,6 +599,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					break
 				}
 				if isAbortErr(ctx, err) {
+					setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
 					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 					abortChunk := UIMessageChunk{"type": "abort"}
 					if err.Error() != "" {
@@ -514,6 +611,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					callOnEnd(finishReason)
 					return
 				}
+				failSourceOutcome(err)
 				errCh <- err
 				appendErrorChunk(onError, safeEnqueue, err)
 				callOnEnd(finishReason)
@@ -524,12 +622,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				sawTerminal = true
 				sawFinishChunk = true
 				finishReason = chunk.FinishReason
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
 				if finishReason == "" {
 					finishReason = types.FinishReasonError
 				}
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New(chunk.Text)})
 			}
 			if isModelOutputChunkType(chunk.Type) {
 				sawOutput = true
@@ -602,6 +702,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		if !sawTerminal {
 			if !sawOutput {
 				err := newIncompleteModelStreamError()
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: err})
 				appendErrorChunk(onError, processChunk, err)
 				processMessageMetadata(provider.StreamChunk{
 					Type: provider.ChunkTypeError,

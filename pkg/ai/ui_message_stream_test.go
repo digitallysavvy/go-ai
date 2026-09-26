@@ -2066,3 +2066,267 @@ func TestCreateUIMessageStreamAcceptsPrototypeNameStateIDs(t *testing.T) {
 		t.Fatalf("prototype-name IDs were not stored as ordinary map keys: %#v", responseMessage)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Ports of create-ui-message-stream.test.ts's operation-level outcome cases
+// (audit rows #103/#10). collectOutcome drains the stream and returns what
+// OnEnd observed.
+// ---------------------------------------------------------------------------
+
+func collectOutcome(t *testing.T, execute func(writer UIMessageStreamWriter)) map[string]interface{} {
+	t.Helper()
+	var end map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: execute,
+		OnError: func(err error) string { return err.Error() },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	<-errs
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	return end
+}
+
+func outcomeStatus(t *testing.T, end map[string]interface{}) string {
+	t.Helper()
+	outcome, ok := end["outcome"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("outcome missing or wrong type: %#v", end["outcome"])
+	}
+	status, _ := outcome["status"].(string)
+	return status
+}
+
+// ports "undeclaredEof" from the outcome inline-snapshot test: no outcome
+// declared, no error -> status stays unknown.
+func TestCreateUIMessageStreamWithOptions_Outcome_UndeclaredEOF(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {})
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports "errorChunk": writing a literal {type:'error'} chunk (not a real Go
+// panic) does not by itself declare a failed outcome.
+func TestCreateUIMessageStreamWithOptions_Outcome_ErrorChunkDoesNotFail(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.Write(UIMessageChunk{"type": "error", "errorText": "recoverable error"})
+	})
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+}
+
+// ports "declaredCompleted".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredCompleted(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+	})
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports "declaredCompletedBeforeFailed": the first non-unknown declared
+// outcome wins; a later SetOutcome is ignored.
+func TestCreateUIMessageStreamWithOptions_Outcome_FirstDeclaredWins(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New("ignored")})
+	})
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+}
+
+// ports "declaredFailed".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredFailed(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New("declared failure")})
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+	outcome := end["outcome"].(map[string]interface{})
+	if err, _ := outcome["error"].(error); err == nil || err.Error() != "declared failure" {
+		t.Fatalf("outcome error = %#v, want declared failure", outcome["error"])
+	}
+}
+
+// ports "declaredAborted".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredAborted(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
+	})
+	if got := outcomeStatus(t, end); got != "aborted" {
+		t.Fatalf("status = %q, want aborted", got)
+	}
+	if end["isAborted"] != true {
+		t.Fatalf("isAborted = %v, want true", end["isAborted"])
+	}
+}
+
+// ports "executeRejection": an Execute panic always reports failed.
+func TestCreateUIMessageStreamWithOptions_Outcome_ExecutePanicFails(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		panic(errors.New("execute failure"))
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
+
+// ports "executeRejectionAfterCompleted": a fatal failure always overrides an
+// already-declared outcome, even "completed".
+func TestCreateUIMessageStreamWithOptions_Outcome_FatalFailureOverridesDeclared(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+		panic(errors.New("execute failure after completion"))
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
+
+// ports the "should report consumer cancellation when the consumer cancels
+// before an outcome is declared" case. Go has no reader.cancel(); the
+// closest analog is the caller cancelling ctx before Execute returns.
+func TestCreateUIMessageStreamWithOptions_Outcome_ConsumerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var end map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "start"})
+			<-release
+		},
+		OnError: func(err error) string { return err.Error() },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+
+	if _, ok := <-chunks; !ok {
+		t.Fatal("expected a start chunk")
+	}
+	cancel()
+	close(release)
+
+	for range chunks {
+	}
+	<-errs
+
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+	if end["isCancelled"] != true {
+		t.Fatalf("isCancelled = %v, want true", end["isCancelled"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ports of to-ui-message-stream.ts's setSourceOutcome/failOutcome cases
+// (audit row #103): ToUIMessageStream derives completed/failed/aborted from
+// the source stream's own finish/abort/error parts.
+// ---------------------------------------------------------------------------
+
+// ports setSourceOutcome({status: 'completed'}) on part.type === 'finish'.
+func TestToUIMessageStream_Outcome_CompletedOnFinishChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports setSourceOutcome({status: 'aborted'}) on part.type === 'abort'.
+func TestToUIMessageStream_Outcome_AbortedOnAbortError(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "aborted" {
+		t.Fatalf("status = %q, want aborted", got)
+	}
+	if end["isAborted"] != true {
+		t.Fatalf("isAborted = %v, want true", end["isAborted"])
+	}
+}
+
+// ports setSourceOutcome({status: 'failed', error}) on part.type === 'error'.
+func TestToUIMessageStream_Outcome_FailedOnErrorChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeError, Text: "chunk error"},
+	})
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled chunk error" },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+	outcome := end["outcome"].(map[string]interface{})
+	if err, _ := outcome["error"].(error); err == nil || err.Error() != "chunk error" {
+		t.Fatalf("outcome error = %#v, want chunk error", outcome["error"])
+	}
+}
+
+// ports failOutcome on a fatal transport-level stream error (not an abort).
+func TestToUIMessageStream_Outcome_FailedOnTransportError(t *testing.T) {
+	streamErr := errors.New("transport failure")
+	stream := &errorTextStream{err: streamErr}
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled" },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; !ok || err != streamErr {
+		t.Fatalf("err = %v, want %v", err, streamErr)
+	}
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
