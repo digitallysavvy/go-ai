@@ -880,6 +880,40 @@ func TestProvider_LanguageModel_DoGenerate_NestedCauseSerializesErrorBody(t *tes
 	}
 }
 
+// TestGatewayErrorMessage mirrors TS provider-utils
+// createJsonErrorResponseHandler + getErrorMessage (@ai-sdk/provider): an
+// empty or non-JSON body falls back to the HTTP status text
+// (response.statusText), a JSON string body is used as-is, a JSON `null`
+// body yields "unknown error", and any other JSON value is re-serialized.
+// Regression test for a bug where a literal JSON `null` body unmarshaled
+// into a Go string as "" (no error) and slipped past the empty-body check.
+func TestGatewayErrorMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		statusCode int
+		want       string
+	}{
+		{"empty body falls back to status text", "", http.StatusTooManyRequests, "Too Many Requests"},
+		{"empty body with unknown status falls back to unknown error", "", 0, "unknown error"},
+		{"non-JSON body falls back to status text", "not json", http.StatusBadRequest, "Bad Request"},
+		{"literal null", "null", http.StatusInternalServerError, "unknown error"},
+		{"whitespace-only null", " null \n", http.StatusInternalServerError, "unknown error"},
+		{"JSON string body used as-is", `"boom"`, http.StatusInternalServerError, "boom"},
+		{"JSON empty string body", `""`, http.StatusInternalServerError, ""},
+		{"JSON object body re-serialized", `{"b":2,"a":1}`, http.StatusInternalServerError, `{"a":1,"b":2}`},
+		{"JSON number body re-serialized", `42`, http.StatusInternalServerError, "42"},
+		{"JSON boolean body re-serialized", `false`, http.StatusInternalServerError, "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayErrorMessage([]byte(tt.body), tt.statusCode); got != tt.want {
+				t.Fatalf("gatewayErrorMessage(%q, %d) = %q, want %q", tt.body, tt.statusCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 	var capturedBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

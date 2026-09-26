@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -656,7 +657,7 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         gatewayErrorMessage(resp.Body),
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
 		ResponseBody:    string(resp.Body),
 		Data:            gatewayErrorData(resp.Body),
@@ -664,27 +665,43 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
 }
 
-// gatewayErrorMessage mirrors TS getErrorMessage (@ai-sdk/provider): a string
-// error body is used as-is, otherwise the parsed JSON value is
-// re-serialized. Used to populate the nested cause's message with the full
-// error body instead of the generic "Gateway request failed" placeholder.
-func gatewayErrorMessage(body []byte) string {
-	if len(body) == 0 {
-		return "unknown error"
-	}
-	var str string
-	if json.Unmarshal(body, &str) == nil {
-		return str
+// gatewayErrorMessage mirrors TS provider-utils createJsonErrorResponseHandler
+// + getErrorMessage (@ai-sdk/provider): an empty response body or one that
+// fails to parse as JSON falls back to the HTTP status text (TS
+// `response.statusText`); a JSON string body is used as-is; a JSON `null`
+// body yields "unknown error" (TS getErrorMessage(null)); any other JSON
+// value is re-serialized. Used to populate the nested cause's message with
+// the full error body instead of the generic "Gateway request failed"
+// placeholder.
+func gatewayErrorMessage(body []byte, statusCode int) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return gatewayStatusTextFallback(statusCode)
 	}
 	var value interface{}
 	if err := json.Unmarshal(body, &value); err != nil {
-		return string(body)
+		return gatewayStatusTextFallback(statusCode)
+	}
+	if value == nil {
+		return "unknown error"
+	}
+	if str, ok := value.(string); ok {
+		return str
 	}
 	serialized, err := json.Marshal(value)
 	if err != nil {
-		return string(body)
+		return gatewayStatusTextFallback(statusCode)
 	}
 	return string(serialized)
+}
+
+// gatewayStatusTextFallback returns the standard HTTP status text for
+// statusCode (TS `response.statusText`), or "unknown error" for codes with
+// no standard text (e.g. 0, from a response the SDK never received).
+func gatewayStatusTextFallback(statusCode int) string {
+	if text := http.StatusText(statusCode); text != "" {
+		return text
+	}
+	return "unknown error"
 }
 
 // gatewayErrorData best-effort decodes the response body into a generic
@@ -715,7 +732,7 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         gatewayErrorMessage(resp.Body),
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
 		ResponseBody:    string(resp.Body),
 		Data:            gatewayErrorData(resp.Body),
