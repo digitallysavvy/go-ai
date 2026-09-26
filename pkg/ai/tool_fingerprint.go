@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // ToolDrift is the result of DetectToolDrift.
@@ -95,7 +96,14 @@ func tagToolDescription(tool types.Tool) map[string]interface{} {
 }
 
 // fingerprintInputSchema resolves a tool's input schema the way TS asSchema
-// does: nil becomes the empty strict object schema.
+// does: nil becomes the empty strict object schema. A schema.Schema (e.g.
+// *schema.SimpleJSONSchema, the common Go idiom for a tool's Parameters) only
+// exposes its JSON Schema through its Validator, not a top-level JSONSchema
+// method, so it must be resolved explicitly -- otherwise it falls through to
+// json.Marshal of the struct, which serializes as "{}" because its only field
+// is unexported, and two tools with different schemas would fingerprint
+// identically. An unresolvable schema type is a hard error rather than a
+// silent "{}" digest, since that would defeat MCP rug-pull detection.
 func fingerprintInputSchema(parameters interface{}) (interface{}, error) {
 	switch p := parameters.(type) {
 	case nil:
@@ -104,10 +112,14 @@ func fingerprintInputSchema(parameters interface{}) (interface{}, error) {
 			"properties":           map[string]interface{}{},
 			"additionalProperties": false,
 		}, nil
+	case map[string]interface{}:
+		return p, nil
 	case interface{ JSONSchema() map[string]interface{} }:
 		return p.JSONSchema(), nil
+	case schema.Schema:
+		return p.Validator().JSONSchema(), nil
 	default:
-		return parameters, nil
+		return nil, fmt.Errorf("unsupported tool input schema type %T", parameters)
 	}
 }
 
@@ -139,7 +151,13 @@ func writeFingerprintCanonical(buf *bytes.Buffer, value interface{}) error {
 	case bool:
 		buf.WriteString(strconv.FormatBool(v))
 	case json.Number:
-		buf.WriteString(v.String())
+		// Normalize like JS (JSON.stringify(1.0) === "1", not "1.0"), rather
+		// than writing the decoded literal verbatim.
+		f, err := v.Float64()
+		if err != nil {
+			return err
+		}
+		writeJSNumber(buf, f)
 	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		b, err := json.Marshal(v)
 		if err != nil {
