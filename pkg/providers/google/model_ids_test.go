@@ -46,12 +46,6 @@ func TestModelConstants_AllGemini3Series(t *testing.T) {
 	}
 }
 
-func TestModelConstants_ImagenModels(t *testing.T) {
-	assert.Equal(t, "imagen-4.0-generate-001", ModelImagen40Generate001)
-	assert.Equal(t, "imagen-4.0-ultra-generate-001", ModelImagen40UltraGenerate001)
-	assert.Equal(t, "imagen-4.0-fast-generate-001", ModelImagen40FastGenerate001)
-}
-
 func TestProvider_LanguageModel_Gemini31ProPreview(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model, err := prov.LanguageModel(ModelGemini31ProPreview)

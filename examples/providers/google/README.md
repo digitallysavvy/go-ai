@@ -129,13 +129,10 @@ GO_AI_RUN_LIVE_EXAMPLES=1 GOOGLE_GENERATIVE_AI_API_KEY=... go run ../../realtime
 
 ## Image Models
 
-### Imagen models (use `:predict` API)
-
-| Constant | Model ID |
-|---|---|
-| `google.ModelImagen40Generate001` | `imagen-4.0-generate-001` |
-| `google.ModelImagen40UltraGenerate001` | `imagen-4.0-ultra-generate-001` |
-| `google.ModelImagen40FastGenerate001` | `imagen-4.0-fast-generate-001` |
+Only Gemini image models are supported; Imagen (`:predict` API) is no longer
+supported, matching the upstream TypeScript AI SDK (`ai@7.0.113`).
+`ImageModel()` accepts only model IDs starting with `gemini-`; other IDs
+return an error at `DoGenerate` time.
 
 ### Gemini image models (use `:generateContent` API)
 
@@ -149,7 +146,7 @@ GO_AI_RUN_LIVE_EXAMPLES=1 GOOGLE_GENERATIVE_AI_API_KEY=... go run ../../realtime
 
 Image generation supports the following aspect ratios via `provider.ImageGenerateOptions.AspectRatio`:
 
-**Standard (Imagen + Gemini):**
+**Standard:**
 - `google.ImageAspectRatio1x1` - `1:1`
 - `google.ImageAspectRatio3x4` - `3:4`
 - `google.ImageAspectRatio4x3` - `4:3`

@@ -140,13 +140,6 @@ const (
 	InteractionsAgentDeepResearch = InteractionsAgentDeepResearchProPreview
 )
 
-// Imagen model IDs for Google Generative AI image generation (use :predict API)
-const (
-	ModelImagen40Generate001      = "imagen-4.0-generate-001"
-	ModelImagen40UltraGenerate001 = "imagen-4.0-ultra-generate-001"
-	ModelImagen40FastGenerate001  = "imagen-4.0-fast-generate-001"
-)
-
 // Gemini image model IDs for Google Generative AI (use :generateContent API)
 // These are multimodal output language models that produce images.
 // The constants below are aliases to the language model constants above for clarity.

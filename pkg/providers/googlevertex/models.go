@@ -102,16 +102,6 @@ const (
 	ModelGeminiProVision = "gemini-pro-vision"
 )
 
-// Imagen model ID constants for Google Vertex AI image generation
-const (
-	ModelImagen30Generate001      = "imagen-3.0-generate-001"
-	ModelImagen30Generate002      = "imagen-3.0-generate-002"
-	ModelImagen30FastGenerate001  = "imagen-3.0-fast-generate-001"
-	ModelImagen40Generate001      = "imagen-4.0-generate-001"
-	ModelImagen40UltraGenerate001 = "imagen-4.0-ultra-generate-001"
-	ModelImagen40FastGenerate001  = "imagen-4.0-fast-generate-001"
-)
-
 // Veo video generation model IDs for Google Vertex AI, matching TS
 // GoogleVertexVideoModelId (google-vertex-video-settings.ts). Not yet wired
 // to Provider.VideoModel(), which still returns an unimplemented error.

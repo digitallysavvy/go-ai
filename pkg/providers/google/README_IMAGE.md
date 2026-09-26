@@ -1,10 +1,13 @@
 # Google Generative AI - Image Generation
 
-This package provides image generation capabilities for Google Generative AI, supporting both **Imagen** and **Gemini** image models.
+This package provides image generation capabilities for Google Generative AI using **Gemini** image models.
+
+> **Note:** Imagen (`:predict` API) models are no longer supported, matching the
+> upstream TypeScript AI SDK (`ai@7.0.113`). `ImageModel()` accepts only model
+> IDs starting with `gemini-`; other IDs return an error at `DoGenerate` time.
 
 ## Features
 
-- ✅ **Imagen Models**: `imagen-4.0-generate-001`, `imagen-4.0-ultra-generate-001`, `imagen-4.0-fast-generate-001`
 - ✅ **Gemini Image Models**: `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`
 - ✅ **Text-to-Image Generation**: Create images from text prompts
 - ✅ **Aspect Ratio Control**: Automatic conversion from size to aspect ratio
@@ -27,54 +30,11 @@ export GOOGLE_GENERATIVE_AI_API_KEY=your-api-key
 
 ## Supported Models
 
-### Imagen Models
-- `imagen-4.0-generate-001` - Latest Imagen model, highest quality
-- `imagen-4.0-ultra-generate-001` - Ultra high quality
-- `imagen-4.0-fast-generate-001` - Faster generation
-
 ### Gemini Image Models
 - `gemini-2.5-flash-image` - Fast image generation with Gemini
 - `gemini-3-pro-image-preview` - Advanced Gemini image generation
 
 ## Usage
-
-### Basic Text-to-Image (Imagen)
-
-```go
-package main
-
-import (
-    "context"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/providers/google"
-)
-
-func main() {
-    // Create provider
-    prov := google.New(google.Config{
-        APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
-    })
-
-    // Create image model
-    model, _ := prov.ImageModel("imagen-4.0-generate-001")
-
-    // Generate image
-    n := 1
-    result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-        Prompt: "A serene mountain landscape at sunset",
-        N:      &n,
-        Size:   "1024x1024", // Automatically converts to 1:1 aspect ratio
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // Save image
-    os.WriteFile("output.png", result.Image, 0644)
-}
-```
 
 ### Text-to-Image with Gemini
 
@@ -142,15 +102,11 @@ type ImageUsage struct {
 
 | Model | Speed | Quality | Best For |
 |-------|-------|---------|----------|
-| `imagen-4.0-ultra-generate-001` | Slower | Highest | Professional/creative work |
-| `imagen-4.0-generate-001` | Medium | High | General purpose |
-| `imagen-4.0-fast-generate-001` | Fastest | Good | Rapid prototyping |
 | `gemini-2.5-flash-image` | Very Fast | Good | Quick iterations |
 | `gemini-3-pro-image-preview` | Fast | High | Advanced generation |
 
 ## Limitations
 
-- **Imagen**: Does not support image editing through Google Generative AI API (use Vertex AI for editing)
 - **Gemini**: Generates one image per request (N parameter not supported)
 - **Rate Limits**: Subject to Google API quotas
 
@@ -158,7 +114,6 @@ type ImageUsage struct {
 
 See the [examples/image-generation](../../../examples/image-generation) directory for complete examples:
 
-- `google_imagen.go` - Basic Imagen generation
 - `google_gemini.go` - Gemini image generation
 
 ## Error Handling
@@ -200,7 +155,6 @@ type ImageModel interface {
 ## Resources
 
 - [Google AI Studio](https://makersuite.google.com/)
-- [Imagen API Documentation](https://ai.google.dev/gemini-api/docs/imagen)
 - [Gemini API Documentation](https://ai.google.dev/gemini-api/docs)
 
 ## License
