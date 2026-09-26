@@ -268,3 +268,86 @@ func (s *delayedChunksTextStream) Next() (*provider.StreamChunk, error) {
 
 func (s *delayedChunksTextStream) Close() error { return nil }
 func (s *delayedChunksTextStream) Err() error   { return nil }
+
+// TestStreamText_CtxCancelledMidToolExecutionDoesNotHang covers the
+// remaining concurrency scenario from the review brief: a caller cancels the
+// context passed to StreamText while a client tool's Execute is blocked
+// mid-run (the tool call is executed synchronously inside processStream's
+// per-step loop — pkg/ai/stream.go's executeTools call — on the background
+// goroutine started by StreamText/bootstrapAndStream). The tool honors ctx
+// the way any well-behaved Go tool must; StreamText must not hang or leak
+// that goroutine once the tool returns, and the caller must be able to
+// observe completion (via ReadAll/Err) within a bounded time.
+func TestStreamText_CtxCancelledMidToolExecutionDoesNotHang(t *testing.T) {
+	t.Parallel()
+
+	toolStarted := make(chan struct{})
+	toolSawCancel := make(chan struct{})
+	tool := types.Tool{
+		Name:       "waitForCancel",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			close(toolSawCancel)
+			return nil, ctx.Err()
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: "call-1", ToolName: "waitForCancel", Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := StreamText(ctx, StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		Tools:  []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-toolStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool never started executing")
+	}
+	cancel()
+
+	select {
+	case <-toolSawCancel:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool never observed context cancellation")
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := result.ReadAll()
+		errCh <- err
+	}()
+	select {
+	case <-errCh:
+		// Either an error (ctx cancellation surfacing as a step/stream
+		// error) or nil (the tool's error was captured as a tool-result and
+		// the loop otherwise completed) is acceptable here — what matters is
+		// that processStream's background goroutine actually terminates
+		// instead of hanging, so ReadAll() returns at all.
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadAll() hung after ctx was cancelled mid-tool-execution")
+	}
+
+	// ReadAll() only returns once processingDone is closed, so the
+	// background goroutine has fully terminated by now; Status() must
+	// reflect that rather than being left in limbo.
+	if result.Status() != StreamStatusDone {
+		t.Fatalf("Status() = %v, want %v after the background goroutine finished", result.Status(), StreamStatusDone)
+	}
+}
