@@ -370,6 +370,12 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			t.Fatalf("valid signature: %+v, %v", got, err)
 		}
 
+		// TS only reports "missing signature" for a null/undefined
+		// signature, which it can distinguish from an explicit empty
+		// string; Go's plain string field cannot represent that
+		// distinction, so an empty signature falls through to
+		// verification and fails as "invalid signature" like TS reports
+		// for an explicit empty string.
 		missing := approval(input)
 		_, err = ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
 			ApprovedToolApprovals: []CollectedToolApproval{missing},
@@ -377,7 +383,7 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			ToolApprovalSecret:    secret,
 		})
 		var sigErr *InvalidToolApprovalSignatureError
-		if !errors.As(err, &sigErr) || sigErr.Reason != "missing signature" {
+		if !errors.As(err, &sigErr) || sigErr.Reason != "invalid signature" {
 			t.Fatalf("missing signature err = %v", err)
 		}
 
@@ -642,6 +648,11 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 	})
 
 	t.Run("missing signature rejected", func(t *testing.T) {
+		// An empty signature is Go's only representation of "no signature
+		// sent" (a plain string field cannot distinguish absent from
+		// empty, unlike TS's null/undefined). It falls through to
+		// verification and is rejected as "invalid signature", matching
+		// what TS itself reports for an explicit empty-string signature.
 		executed := 0
 		_, err := GenerateText(context.Background(), GenerateTextOptions{
 			Model:                          failingModel,
@@ -649,7 +660,7 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 			ExperimentalToolApprovalSecret: secret,
 			Messages:                       approvalHistory("tool1", input, "", true, ""),
 		})
-		if err == nil || !strings.Contains(err.Error(), "missing signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
+		if err == nil || !strings.Contains(err.Error(), "invalid signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
 			t.Fatalf("err=%v executed=%d", err, executed)
 		}
 	})
