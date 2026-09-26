@@ -154,9 +154,24 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 // TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse verifies
 // that Config.SupportsWebSearchSourcesInclude=false (used by Amazon Bedrock
 // Mantle, which rejects the include value) skips
-// "web_search_call.action.sources", and that the per-call provider option
-// "includeWebSearchSources" can override it in either direction.
+// "web_search_call.action.sources". Ports TS openai-responses-language-
+// model.ts:500-503's `config.supportsWebSearchSourcesInclude !== false &&
+// openaiOptions?.includeWebSearchSources !== false` — an AND of two
+// "not explicitly false" checks: a false Config value cannot be overridden
+// back on by a per-call providerOptions.openai.includeWebSearchSources=true,
+// but a per-call false always disables it even when Config allows it.
 func TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse(t *testing.T) {
+	hasInclude := func(t *testing.T, body map[string]interface{}) bool {
+		t.Helper()
+		include, _ := body["include"].([]string)
+		for _, f := range include {
+			if f == "web_search_call.action.sources" {
+				return true
+			}
+		}
+		return false
+	}
+
 	unsupported := false
 	p := New(Config{APIKey: "test-key", SupportsWebSearchSourcesInclude: &unsupported})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
@@ -168,33 +183,49 @@ func TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse(t *testing.
 	if err != nil {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
-	if include, ok := body["include"].([]string); ok {
-		for _, f := range include {
-			if f == "web_search_call.action.sources" {
-				t.Fatalf("expected web_search_call.action.sources to be omitted, got %#v", include)
-			}
-		}
+	if hasInclude(t, body) {
+		t.Fatalf("expected web_search_call.action.sources to be omitted, got %#v", body["include"])
 	}
 
-	// Per-call override wins over the Config default.
-	optsOverride := &provider.GenerateOptions{
+	// A false Config value cannot be overridden back to true by the per-call
+	// provider option (matches TS's AND-of-not-false semantics exactly).
+	optsOverrideTrue := &provider.GenerateOptions{
 		Prompt:          opts.Prompt,
 		Tools:           opts.Tools,
 		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"includeWebSearchSources": true}},
 	}
-	bodyOverride, _, err := model.buildRequestBody(optsOverride, false)
+	bodyOverrideTrue, _, err := model.buildRequestBody(optsOverrideTrue, false)
 	if err != nil {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
-	include, _ := bodyOverride["include"].([]string)
-	found := false
-	for _, f := range include {
-		if f == "web_search_call.action.sources" {
-			found = true
-		}
+	if hasInclude(t, bodyOverrideTrue) {
+		t.Fatalf("expected a false Config.SupportsWebSearchSourcesInclude to stay disabled even with includeWebSearchSources:true, got %#v", bodyOverrideTrue["include"])
 	}
-	if !found {
-		t.Fatalf("expected provider option override to re-enable the include, got %#v", include)
+
+	// A per-call false disables the include even when Config allows it
+	// (default/unset Config).
+	defaultProvider := New(Config{APIKey: "test-key"})
+	defaultModel := NewResponsesLanguageModel(defaultProvider, "gpt-4o")
+	optsPerCallFalse := &provider.GenerateOptions{
+		Prompt:          opts.Prompt,
+		Tools:           opts.Tools,
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"includeWebSearchSources": false}},
+	}
+	bodyPerCallFalse, _, err := defaultModel.buildRequestBody(optsPerCallFalse, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if hasInclude(t, bodyPerCallFalse) {
+		t.Fatalf("expected a per-call includeWebSearchSources:false to disable the include, got %#v", bodyPerCallFalse["include"])
+	}
+
+	// Baseline: default Config + no per-call override still includes it.
+	bodyDefault, _, err := defaultModel.buildRequestBody(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if !hasInclude(t, bodyDefault) {
+		t.Fatalf("expected web_search_call.action.sources to be included by default, got %#v", bodyDefault["include"])
 	}
 }
 

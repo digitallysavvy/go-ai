@@ -264,16 +264,21 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Whether to include "web_search_call.action.sources" when a web_search
-	// tool is present. Defaults to the provider Config
-	// (SupportsWebSearchSourcesInclude, itself defaulting to true), overridable
-	// per call via providerOptions.openai.includeWebSearchSources. Some
-	// backends (e.g. Amazon Bedrock Mantle) reject this include value.
+	// tool is present. Ports TS openai-responses-language-model.ts:500-503:
+	// `config.supportsWebSearchSourcesInclude !== false &&
+	// openaiOptions?.includeWebSearchSources !== false` — an AND of two
+	// "not explicitly false" checks, so EITHER one being explicitly false
+	// disables the include and cannot be overridden back on by the other.
+	// In particular a backend that sets Config.SupportsWebSearchSourcesInclude
+	// = false (e.g. Amazon Bedrock Mantle, which rejects this include value)
+	// cannot have it re-enabled by a per-call providerOptions.openai.
+	// includeWebSearchSources = true.
 	includeWebSearchSources := true
-	if m.provider.config.SupportsWebSearchSourcesInclude != nil {
-		includeWebSearchSources = *m.provider.config.SupportsWebSearchSourcesInclude
+	if m.provider.config.SupportsWebSearchSourcesInclude != nil && !*m.provider.config.SupportsWebSearchSourcesInclude {
+		includeWebSearchSources = false
 	}
-	if v, ok := openaiOpts["includeWebSearchSources"].(bool); ok {
-		includeWebSearchSources = v
+	if v, ok := openaiOpts["includeWebSearchSources"].(bool); ok && !v {
+		includeWebSearchSources = false
 	}
 
 	// Convert prompt to Responses API input format.
