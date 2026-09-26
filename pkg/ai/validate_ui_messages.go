@@ -102,6 +102,8 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 		return fail(err)
 	}
 
+	warnIfUIMessagesHaveDeprecatedRawInput(messages)
+
 	if opts.MetadataSchema != nil {
 		for i := range messages {
 			message := &messages[i]
@@ -194,6 +196,33 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 	}
 
 	return SafeValidateUIMessagesResult{Success: true, Data: messages}
+}
+
+// deprecatedRawInputWarning mirrors TS's rawInputDeprecationWarning constant
+// (warn-if-ui-message-has-deprecated-raw-input.ts).
+var deprecatedRawInputWarning = types.Warning{
+	Type:    "deprecated",
+	Setting: "rawInput in output-error UI message parts",
+	Message: `Use the "input" field instead. The "rawInput" field will be removed in the next major version.`,
+}
+
+// warnIfUIMessagesHaveDeprecatedRawInput logs a single deprecation warning
+// (via LogWarnings) when any message contains a static or dynamic tool part
+// in the output-error state that still carries the deprecated RawInput
+// field. Mirrors TS warnIfUIMessageHasDeprecatedRawInput, called from
+// ValidateUIMessages/SafeValidateUIMessages right after the messages are
+// decoded (issue #51).
+func warnIfUIMessagesHaveDeprecatedRawInput(messages []UIMessage) {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if IsToolOutputErrorUIPart(part) {
+				if tool, ok := AsToolUIPart(part); ok && tool.RawInput != nil {
+					LogWarnings(LogWarningsOptions{Warnings: []types.Warning{deprecatedRawInputWarning}})
+					return
+				}
+			}
+		}
+	}
 }
 
 func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUIPart, value interface{}, hasInputSchemaInput bool, refine ToolInputRefiner, field string) error {
