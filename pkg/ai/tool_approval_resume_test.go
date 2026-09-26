@@ -370,6 +370,12 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			t.Fatalf("valid signature: %+v, %v", got, err)
 		}
 
+		// TS only reports "missing signature" for a null/undefined
+		// signature, which it can distinguish from an explicit empty
+		// string; Go's plain string field cannot represent that
+		// distinction, so an empty signature falls through to
+		// verification and fails as "invalid signature" like TS reports
+		// for an explicit empty string.
 		missing := approval(input)
 		_, err = ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
 			ApprovedToolApprovals: []CollectedToolApproval{missing},
@@ -377,7 +383,7 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			ToolApprovalSecret:    secret,
 		})
 		var sigErr *InvalidToolApprovalSignatureError
-		if !errors.As(err, &sigErr) || sigErr.Reason != "missing signature" {
+		if !errors.As(err, &sigErr) || sigErr.Reason != "invalid signature" {
 			t.Fatalf("missing signature err = %v", err)
 		}
 
@@ -642,6 +648,11 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 	})
 
 	t.Run("missing signature rejected", func(t *testing.T) {
+		// An empty signature is Go's only representation of "no signature
+		// sent" (a plain string field cannot distinguish absent from
+		// empty, unlike TS's null/undefined). It falls through to
+		// verification and is rejected as "invalid signature", matching
+		// what TS itself reports for an explicit empty-string signature.
 		executed := 0
 		_, err := GenerateText(context.Background(), GenerateTextOptions{
 			Model:                          failingModel,
@@ -649,7 +660,7 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 			ExperimentalToolApprovalSecret: secret,
 			Messages:                       approvalHistory("tool1", input, "", true, ""),
 		})
-		if err == nil || !strings.Contains(err.Error(), "missing signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
+		if err == nil || !strings.Contains(err.Error(), "invalid signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
 			t.Fatalf("err=%v executed=%d", err, executed)
 		}
 	})
@@ -1068,5 +1079,202 @@ func TestGenerateText_RefinedApprovedInputRoundTrip(t *testing.T) {
 	}
 	if executedWith["value"] != "trimmed" {
 		t.Fatalf("executed with %v", executedWith)
+	}
+}
+
+// TestGenerateText_RefinedApprovedInputRoundTripWithRawArguments guards
+// against F1: every real provider populates ToolCall.RawArguments alongside
+// Arguments. RefineToolCalls only updates Arguments, so RawArguments stays
+// the pre-refinement JSON. The persisted tool-call part and
+// message.ToolCalls must still carry the refined value end to end -- both
+// the HMAC signature (when a secret is configured) and the schema
+// revalidation on resume are computed from that persisted value, and must
+// agree with what was actually approved.
+func TestGenerateText_RefinedApprovedInputRoundTripWithRawArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		secret []byte
+	}{
+		{name: "without secret"},
+		{name: "with secret", secret: []byte("raw-arguments-secret")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var executedWith map[string]interface{}
+			tool := types.Tool{
+				Name:         "tool1",
+				Parameters:   valueStringSchema(),
+				ToolApproval: types.ToolApprovalStatusUserApproval,
+				Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+					executedWith = in
+					return "ok", nil
+				},
+			}
+			refine := map[string]ToolInputRefiner{
+				"tool1": func(ctx context.Context, opts ToolInputRefinementOptions) (map[string]interface{}, error) {
+					return map[string]interface{}{"value": strings.TrimSpace(opts.ToolCall.Arguments["value"].(string))}, nil
+				},
+			}
+			first := &testutil.MockLanguageModel{
+				ToolSupport: true,
+				DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+					return &types.GenerateResult{
+						FinishReason: types.FinishReasonToolCalls,
+						ToolCalls: []types.ToolCall{{
+							ID:           "call-1",
+							ToolName:     "tool1",
+							Arguments:    map[string]interface{}{"value": " trimmed "},
+							RawArguments: `{"value":" trimmed "}`,
+						}},
+					}, nil
+				},
+			}
+			initial := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}}}
+			res, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model:                          first,
+				Tools:                          []types.Tool{tool},
+				Messages:                       initial,
+				ExperimentalRefineToolInput:    refine,
+				ExperimentalToolApprovalSecret: tc.secret,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var approvalID string
+			for _, msg := range res.ResponseMessages {
+				for _, part := range msg.Content {
+					if call, ok := part.(types.ToolCallContent); ok {
+						if call.Arguments["value"] != "trimmed" {
+							t.Fatalf("persisted tool-call part arguments = %#v, want refined value \"trimmed\"", call.Arguments)
+						}
+					}
+					if req, ok := part.(types.ToolApprovalRequestContent); ok {
+						approvalID = req.ApprovalID
+					}
+				}
+				for _, call := range msg.ToolCalls {
+					if call.Arguments["value"] != "trimmed" {
+						t.Fatalf("persisted message.ToolCalls arguments = %#v, want refined value \"trimmed\"", call.Arguments)
+					}
+				}
+			}
+			if approvalID == "" {
+				t.Fatal("no approval request")
+			}
+			history := append(append(initial, res.ResponseMessages...), types.Message{
+				Role:    types.RoleTool,
+				Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: approvalID, Approved: true}},
+			})
+			if _, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model:                          newRecordingModel("done"),
+				Tools:                          []types.Tool{tool},
+				Messages:                       history,
+				ExperimentalRefineToolInput:    refine,
+				ExperimentalToolApprovalSecret: tc.secret,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if executedWith["value"] != "trimmed" {
+				t.Fatalf("executed with %v", executedWith)
+			}
+		})
+	}
+}
+
+// TestStreamText_RefinedApprovedInputRoundTripWithRawArguments is the
+// streaming counterpart of
+// TestGenerateText_RefinedApprovedInputRoundTripWithRawArguments (see F1).
+func TestStreamText_RefinedApprovedInputRoundTripWithRawArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		secret []byte
+	}{
+		{name: "without secret"},
+		{name: "with secret", secret: []byte("raw-arguments-secret-stream")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var executedWith map[string]interface{}
+			tool := types.Tool{
+				Name:         "tool1",
+				Parameters:   valueStringSchema(),
+				ToolApproval: types.ToolApprovalStatusUserApproval,
+				Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+					executedWith = in
+					return "ok", nil
+				},
+			}
+			refine := map[string]ToolInputRefiner{
+				"tool1": func(ctx context.Context, opts ToolInputRefinementOptions) (map[string]interface{}, error) {
+					return map[string]interface{}{"value": strings.TrimSpace(opts.ToolCall.Arguments["value"].(string))}, nil
+				},
+			}
+			first := &testutil.MockLanguageModel{
+				ToolSupport: true,
+				DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+					return testutil.NewMockTextStream([]provider.StreamChunk{
+						{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+							ID:           "call-1",
+							ToolName:     "tool1",
+							Arguments:    map[string]interface{}{"value": " trimmed "},
+							RawArguments: `{"value":" trimmed "}`,
+						}},
+						{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+					}), nil
+				},
+			}
+			initial := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}}}
+			res, err := StreamText(context.Background(), StreamTextOptions{
+				Model:                          first,
+				Tools:                          []types.Tool{tool},
+				Messages:                       initial,
+				ExperimentalRefineToolInput:    refine,
+				ExperimentalToolApprovalSecret: tc.secret,
+				OnChunk:                        func(c provider.StreamChunk) {},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = res.Steps() // waits for the processing goroutine
+			msgs := res.ResponseMessages()
+			var approvalID string
+			for _, msg := range msgs {
+				for _, part := range msg.Content {
+					if call, ok := part.(types.ToolCallContent); ok {
+						if call.Arguments["value"] != "trimmed" {
+							t.Fatalf("persisted tool-call part arguments = %#v, want refined value \"trimmed\"", call.Arguments)
+						}
+					}
+					if req, ok := part.(types.ToolApprovalRequestContent); ok {
+						approvalID = req.ApprovalID
+					}
+				}
+				for _, call := range msg.ToolCalls {
+					if call.Arguments["value"] != "trimmed" {
+						t.Fatalf("persisted message.ToolCalls arguments = %#v, want refined value \"trimmed\"", call.Arguments)
+					}
+				}
+			}
+			if approvalID == "" {
+				t.Fatal("no approval request")
+			}
+			history := append(append(initial, msgs...), types.Message{
+				Role:    types.RoleTool,
+				Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: approvalID, Approved: true}},
+			})
+			result2, err := StreamText(context.Background(), StreamTextOptions{
+				Model:                          newRecordingModel("done"),
+				Tools:                          []types.Tool{tool},
+				Messages:                       history,
+				ExperimentalRefineToolInput:    refine,
+				ExperimentalToolApprovalSecret: tc.secret,
+				OnChunk:                        func(c provider.StreamChunk) {},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = result2.Steps() // waits for the processing goroutine
+			if executedWith["value"] != "trimmed" {
+				t.Fatalf("executed with %v", executedWith)
+			}
+		})
 	}
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -179,6 +181,116 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+// fakeDNSResolver implements fileutil.Resolver with a fixed hostname->IP
+// answer set, for tests that need to prove a hop was resolved and pinned
+// through fileutil.SafeTransport rather than dialed via a plain transport.
+type fakeDNSResolver struct {
+	answers map[string][]string
+}
+
+func (r *fakeDNSResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	addrs, ok := r.answers[host]
+	if !ok {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	out := make([]net.IPAddr, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, net.IPAddr{IP: net.ParseIP(a)})
+	}
+	return out, nil
+}
+
+// TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned guards against
+// F3: a trusted URL (same-origin with the configured base URL, so it skips
+// the SSRF string check) redirects to a foreign hostname. That redirect hop
+// must still be validated and dialed through the DNS-pinning transport, not
+// the plain transport picked for the (trusted) first hop. Before the fix,
+// the whole client used a single transport chosen from the first URL, so a
+// hostname resolving to a link-local/metadata address (169.254.169.254)
+// would have been dialed unpinned and, with the old code path, without ever
+// going through the injected resolver at all.
+func TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned(t *testing.T) {
+	// Not parallel: overrides the package-level downloadTransport.
+	oldDownloadTransport := downloadTransport
+	resolver := &fakeDNSResolver{answers: map[string][]string{"evil.internal": {"169.254.169.254"}}}
+	downloadTransport = func() http.RoundTripper {
+		return fileutil.NewSafeTransport(fileutil.SafeDialOptions{Resolver: resolver})
+	}
+	t.Cleanup(func() { downloadTransport = oldDownloadTransport })
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			_, _ = w.Write([]byte(`{"id":"req-1","polling_url":"` + server.URL + `/poll"}`))
+		case "/poll":
+			// The sample URL is same-origin with the configured base URL, so
+			// it is trusted, but the server redirects it to a foreign host.
+			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"` + server.URL + `/redirect"}}`))
+		case "/redirect":
+			http.Redirect(w, r, "http://evil.internal/image.png", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	m := NewImageModel(p, "flux-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a mountain",
+		ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected the foreign redirect target to be rejected as a disallowed IP")
+	}
+	if !strings.Contains(err.Error(), "disallowed IP address 169.254.169.254") {
+		t.Fatalf("error = %v, want a DNS-pinning rejection of the resolved disallowed IP", err)
+	}
+}
+
+// TestBFLImageModel_TrustedSelfHostedLocalhostBaseURL guards against the F3
+// minor: ValidateDownloadURL used to run unconditionally on the initial URL
+// even when it was trusted, so a self-hosted BaseURL such as
+// "http://localhost:PORT" was rejected outright. A trusted hop must skip the
+// generic SSRF validator entirely, matching TS (trusted hops skip
+// validation).
+func TestBFLImageModel_TrustedSelfHostedLocalhostBaseURL(t *testing.T) {
+	var localhostBaseURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			_, _ = w.Write([]byte(`{"id":"req-1","polling_url":"` + localhostBaseURL + `/poll"}`))
+		case "/poll":
+			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"` + localhostBaseURL + `/image.png"}}`))
+		case "/image.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("image-bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	localhostBaseURL = strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+
+	p := New(Config{APIKey: "k", BaseURL: localhostBaseURL})
+	m := NewImageModel(p, "flux-pro")
+	res, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a mountain",
+		ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("self-hosted localhost base URL must be trusted, got error: %v", err)
+	}
+	if string(res.Image) != "image-bytes" {
+		t.Fatalf("image = %q, want image-bytes", res.Image)
+	}
 }
 
 func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
