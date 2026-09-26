@@ -39,7 +39,7 @@ type ConvertOptions struct {
 	FileIDPrefixes              []string
 	ProviderOptionsName         string
 	// ExplicitMessageItemType, when true, adds `"type":"message"` to easy-input
-	// assistant messages (required by Azure Foundry projects). See TS
+	// assistant/system messages (required by Azure Foundry projects). See TS
 	// convert-to-openai-responses-input.ts `explicitMessageItemType`.
 	ExplicitMessageItemType bool
 	// ToolSearchToolName is the exact SDK tool name whose ProviderID is
@@ -76,10 +76,14 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
-		input = append(input, SystemMessage{
+		sysMsg := SystemMessage{
 			Role:    systemMessageMode,
 			Content: prompt.System,
-		})
+		}
+		if opts.ExplicitMessageItemType {
+			sysMsg.Type = "message"
+		}
+		input = append(input, sysMsg)
 	}
 
 	for _, msg := range prompt.Messages {
@@ -223,7 +227,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 		}
 	}
 
-	return UserMessage{Role: "user", Content: parts}, nil
+	userMsg := UserMessage{Role: "user", Content: parts}
+	if opts.ExplicitMessageItemType {
+		userMsg.Type = "message"
+	}
+	return userMsg, nil
 }
 
 func openAIFileMediaType(part types.FileContent) string {

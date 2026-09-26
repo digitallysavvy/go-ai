@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	stdhttp "net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -20,6 +21,55 @@ type Provider struct {
 	config     Config
 	client     *http.Client
 	httpClient *stdhttp.Client
+	urlInfo    azureBaseURLInfo
+}
+
+// azureBaseURLInfo classifies an Azure OpenAI base URL the same way the
+// TypeScript SDK's getAzureOpenAIBaseURLInfo does, so URL/query construction
+// can decide whether to append "/v1" and "api-version".
+type azureBaseURLInfo struct {
+	// isAzureOpenAI is true when the base URL's host is a recognized Azure
+	// OpenAI / AI Foundry / Cognitive Services host (or when no base URL was
+	// given, i.e. the default resource-based URL is used).
+	isAzureOpenAI bool
+	// isFoundryProject is true for Azure AI Foundry project base URLs
+	// (host ends in .services.ai.azure.com and the path starts with
+	// /api/projects/). Foundry URLs never get an api-version query param.
+	isFoundryProject bool
+	// isVersioned is true when an Azure OpenAI base URL already ends in
+	// "/openai/v1" (case-insensitive) -- the caller owns versioning already.
+	isVersioned bool
+}
+
+// getAzureOpenAIBaseURLInfo mirrors the TypeScript
+// getAzureOpenAIBaseURLInfo(baseURL) helper in azure-openai-provider.ts.
+func getAzureOpenAIBaseURLInfo(baseURL string) azureBaseURLInfo {
+	if baseURL == "" {
+		return azureBaseURLInfo{isAzureOpenAI: true}
+	}
+
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		// Match the TS behavior of `new URL(baseURL)` throwing: fall back to
+		// treating it like the default (Azure) case rather than panicking.
+		return azureBaseURLInfo{isAzureOpenAI: true}
+	}
+
+	hostname := u.Hostname()
+	isAzureOpenAI := strings.HasSuffix(hostname, ".openai.azure.com") ||
+		strings.HasSuffix(hostname, ".services.ai.azure.com") ||
+		strings.HasSuffix(hostname, ".cognitiveservices.azure.com")
+	pathname := strings.TrimRight(u.Path, "/")
+
+	isFoundryProject := strings.HasSuffix(hostname, ".services.ai.azure.com") &&
+		strings.HasPrefix(pathname, "/api/projects/")
+	isVersioned := isAzureOpenAI && strings.HasSuffix(strings.ToLower(pathname), "/openai/v1")
+
+	return azureBaseURLInfo{
+		isAzureOpenAI:    isAzureOpenAI,
+		isFoundryProject: isFoundryProject,
+		isVersioned:      isVersioned,
+	}
 }
 
 // Config contains configuration for the Azure OpenAI provider
@@ -111,6 +161,7 @@ func New(cfg Config) (*Provider, error) {
 		},
 		client:     client,
 		httpClient: httpClient,
+		urlInfo:    getAzureOpenAIBaseURLInfo(cfg.BaseURL),
 	}, nil
 }
 
@@ -146,14 +197,22 @@ func (p *Provider) Chat(modelID string) (provider.LanguageModel, error) {
 // DeepSeekModel returns an Azure-hosted DeepSeek chat model.
 func (p *Provider) DeepSeekModel(modelID string) (provider.LanguageModel, error) {
 	supportsThinking := false
+	supportsPenaltySampling := true
+	supportsStructuredOutputs := true
+	chatPath := "/chat/completions"
+	if p.includeAPIVersionQuery() {
+		chatPath += "?api-version=" + p.config.APIVersion
+	}
 	deepseekProvider := deepseek.New(deepseek.Config{
-		BaseURL:             p.responsesBaseURL(modelID),
-		Headers:             p.staticAuthHeaders(),
-		Name:                "azure.deepseek",
-		ProviderOptionsName: "azure",
-		ChatCompletionsPath: "/chat/completions?api-version=" + p.config.APIVersion,
-		SupportsThinking:    &supportsThinking,
-		HTTPClient:          p.httpClient,
+		BaseURL:                   p.responsesBaseURL(modelID),
+		Headers:                   p.staticAuthHeaders(),
+		Name:                      "azure.deepseek",
+		ProviderOptionsName:       "azure",
+		ChatCompletionsPath:       chatPath,
+		SupportsThinking:          &supportsThinking,
+		SupportsPenaltySampling:   &supportsPenaltySampling,
+		SupportsStructuredOutputs: &supportsStructuredOutputs,
+		HTTPClient:                p.httpClient,
 	})
 	return deepseek.NewLanguageModel(deepseekProvider, modelID), nil
 }
@@ -168,13 +227,17 @@ func (p *Provider) DeepSeek(modelID string) (provider.LanguageModel, error) {
 func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
 	headers := p.staticAuthHeaders()
 
+	var completionQuery map[string]string
+	if p.includeAPIVersionQuery() {
+		completionQuery = map[string]string{"api-version": p.config.APIVersion}
+	}
 	completionProvider := openai.New(openai.Config{
 		Name:                          "azure",
 		BaseURL:                       p.responsesBaseURL(modelID),
 		Headers:                       headers,
 		CompletionProviderName:        "azure.completion",
 		CompletionProviderOptionsName: "azure",
-		CompletionQuery:               map[string]string{"api-version": p.config.APIVersion},
+		CompletionQuery:               completionQuery,
 		HTTPClient:                    p.httpClient,
 	})
 
@@ -192,14 +255,19 @@ func (p *Provider) Completion(modelID string) (provider.LanguageModel, error) {
 func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error) {
 	headers := p.staticAuthHeaders()
 
+	var responsesQuery map[string]string
+	if p.includeAPIVersionQuery() {
+		responsesQuery = map[string]string{"api-version": p.config.APIVersion}
+	}
 	responsesProvider := openai.New(openai.Config{
 		Name:                         "azure",
 		BaseURL:                      p.responsesBaseURL(modelID),
 		Headers:                      headers,
 		ResponsesProviderName:        "azure.responses",
 		ResponsesProviderOptionsName: "azure",
-		ResponsesQuery:               map[string]string{"api-version": p.config.APIVersion},
+		ResponsesQuery:               responsesQuery,
 		FileIDPrefixes:               []string{"assistant-"},
+		ExplicitMessageItemType:      p.urlInfo.isFoundryProject,
 		HTTPClient:                   p.httpClient,
 	})
 
@@ -211,6 +279,13 @@ func (p *Provider) Responses(modelID string) (provider.LanguageModel, error) {
 	return p.ResponsesModel(modelID)
 }
 
+// responsesBaseURL builds the base URL prefix used by the openai-package
+// backed models (Responses, Completion, DeepSeek). It mirrors the `url()`
+// helper in azure-openai-provider.ts:
+//   - useDeploymentBasedUrls: append /deployments/{modelID}
+//   - non-Azure host, or an already-versioned Azure "/openai/v1" host: used
+//     as-is (the caller owns routing/versioning)
+//   - otherwise (a bare Azure OpenAI host): append /v1
 func (p *Provider) responsesBaseURL(modelID string) string {
 	baseURL := p.config.BaseURL
 	if baseURL == "" {
@@ -220,17 +295,38 @@ func (p *Provider) responsesBaseURL(modelID string) string {
 	if p.config.UseDeploymentBasedURLs {
 		return fmt.Sprintf("%s/deployments/%s", baseURL, modelID)
 	}
-	if strings.HasSuffix(baseURL, "/v1") {
+	if !p.urlInfo.isAzureOpenAI || p.urlInfo.isVersioned {
 		return baseURL
 	}
 	return baseURL + "/v1"
 }
 
+// includeAPIVersionQuery reports whether an "api-version" query parameter
+// should be appended, mirroring TypeScript's:
+//
+//	options.useDeploymentBasedUrls || (isAzureOpenAI && !isVersioned && !isFoundryProject)
+func (p *Provider) includeAPIVersionQuery() bool {
+	return p.config.UseDeploymentBasedURLs ||
+		(p.urlInfo.isAzureOpenAI && !p.urlInfo.isVersioned && !p.urlInfo.isFoundryProject)
+}
+
+// endpointPath builds the request path (plus query string) for the
+// Go-native Azure models (chat, embeddings, images, speech, transcription)
+// that share p.client, whose BaseURL never has "/v1" pre-appended.
 func (p *Provider) endpointPath(modelID, apiPath string) string {
-	if p.config.UseDeploymentBasedURLs {
-		return fmt.Sprintf("/deployments/%s%s?api-version=%s", modelID, apiPath, p.config.APIVersion)
+	var path string
+	switch {
+	case p.config.UseDeploymentBasedURLs:
+		path = fmt.Sprintf("/deployments/%s%s", modelID, apiPath)
+	case !p.urlInfo.isAzureOpenAI || p.urlInfo.isVersioned:
+		path = apiPath
+	default:
+		path = "/v1" + apiPath
 	}
-	return fmt.Sprintf("/v1%s?api-version=%s", apiPath, p.config.APIVersion)
+	if p.includeAPIVersionQuery() {
+		return path + "?api-version=" + p.config.APIVersion
+	}
+	return path
 }
 
 func (p *Provider) staticAuthHeaders() map[string]string {

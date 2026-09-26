@@ -347,8 +347,10 @@ type AllowedToolsToolEntry struct {
 
 // SystemMessage is sent as the first input item for system/developer prompts.
 type SystemMessage struct {
-	Type    string `json:"type,omitempty"` // omit; legacy field
-	Role    string `json:"role"`           // "system" or "developer"
+	// Type is set to "message" only for Azure AI Foundry projects
+	// (ExplicitMessageItemType); otherwise omitted.
+	Type    string `json:"type,omitempty"`
+	Role    string `json:"role"` // "system" or "developer"
 	Content string `json:"content"`
 }
 
@@ -356,6 +358,9 @@ type SystemMessage struct {
 // Content is either a plain string (for text-only messages) or a slice of
 // UserTextPart / UserImageURLPart / UserFilePart for multi-modal input.
 type UserMessage struct {
+	// Type is set to "message" only for Azure AI Foundry projects
+	// (ExplicitMessageItemType); otherwise omitted.
+	Type    string      `json:"type,omitempty"`
 	Role    string      `json:"role"` // "user"
 	Content interface{} `json:"content"`
 }

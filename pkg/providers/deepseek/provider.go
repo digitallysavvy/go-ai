@@ -38,6 +38,18 @@ type Config struct {
 	// DeepSeek thinking field. Defaults to true.
 	SupportsThinking *bool
 
+	// SupportsPenaltySampling controls whether frequency_penalty/presence_penalty
+	// are sent to the API. The upstream DeepSeek API deprecated these fields,
+	// but Azure-hosted DeepSeek deployments still accept them. Defaults to
+	// false (matching TypeScript's `this.config.supportsPenaltySampling === true`).
+	SupportsPenaltySampling *bool
+
+	// SupportsStructuredOutputs controls whether a JSON response format with a
+	// schema is sent as `response_format:{type:"json_schema",...}` instead of
+	// `response_format:{type:"json_object"}`. Azure-hosted DeepSeek deployments
+	// support this; the upstream DeepSeek API does not. Defaults to false.
+	SupportsStructuredOutputs *bool
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
 }
@@ -101,6 +113,14 @@ func (p *Provider) supportsThinking() bool {
 		return true
 	}
 	return *p.config.SupportsThinking
+}
+
+func (p *Provider) supportsPenaltySampling() bool {
+	return p.config.SupportsPenaltySampling != nil && *p.config.SupportsPenaltySampling
+}
+
+func (p *Provider) supportsStructuredOutputs() bool {
+	return p.config.SupportsStructuredOutputs != nil && *p.config.SupportsStructuredOutputs
 }
 
 // LanguageModel returns a language model by ID

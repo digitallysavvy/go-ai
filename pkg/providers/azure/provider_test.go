@@ -201,11 +201,14 @@ func TestCompletionModelUsesAzureCompletionURLHeadersAndOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if capturedPath != "/openai/v1/completions" {
+	// server.URL is a plain http://127.0.0.1:port host, which is not a
+	// recognized Azure OpenAI hostname -- per 2f10cdf, a non-Azure custom
+	// gateway baseURL is used as-is: no "/v1" insertion, no api-version query.
+	if capturedPath != "/openai/completions" {
 		t.Fatalf("path = %q", capturedPath)
 	}
-	if capturedQuery != "api-version=2025-04-01-preview" {
-		t.Fatalf("query = %q", capturedQuery)
+	if capturedQuery != "" {
+		t.Fatalf("query = %q, want empty for a non-Azure gateway baseURL", capturedQuery)
 	}
 	if capturedAPIKey != "azure-key" {
 		t.Fatalf("api-key = %q", capturedAPIKey)
@@ -283,7 +286,9 @@ func TestDeepSeekModelUsesAzureNamespaceReasoningAndURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if capturedPath != "/openai/v1/chat/completions" || capturedQuery != "api-version=v1" {
+	// server.URL is a non-Azure hostname (2f10cdf): no "/v1" insertion, no
+	// api-version query.
+	if capturedPath != "/openai/chat/completions" || capturedQuery != "" {
 		t.Fatalf("url path/query = %q?%s", capturedPath, capturedQuery)
 	}
 	if capturedAPIKey != "azure-key" {
@@ -308,7 +313,7 @@ func TestDeepSeekModelUsesConfiguredHTTPClient(t *testing.T) {
 	var capturedURL string
 	p := mustNewProvider(t, Config{
 		APIKey:     "azure-key",
-		BaseURL:    "https://azure.example/openai",
+		BaseURL:    "https://test-resource.openai.azure.com/openai",
 		APIVersion: "v1",
 		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
 			capturedURL = r.URL.String()
@@ -330,7 +335,7 @@ func TestDeepSeekModelUsesConfiguredHTTPClient(t *testing.T) {
 	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if capturedURL != "https://azure.example/openai/v1/chat/completions?api-version=v1" {
+	if capturedURL != "https://test-resource.openai.azure.com/openai/v1/chat/completions?api-version=v1" {
 		t.Fatalf("url = %q", capturedURL)
 	}
 }
@@ -631,11 +636,13 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 	if result.Text != "done" {
 		t.Fatalf("Text = %q, want done", result.Text)
 	}
-	if capturedPath != "/openai/v1/responses" {
-		t.Fatalf("path = %q, want /openai/v1/responses", capturedPath)
+	// server.URL is a non-Azure hostname (2f10cdf): no "/v1" insertion, no
+	// api-version query.
+	if capturedPath != "/openai/responses" {
+		t.Fatalf("path = %q, want /openai/responses", capturedPath)
 	}
-	if capturedQuery != "api-version=v1" {
-		t.Fatalf("query = %q, want api-version=v1", capturedQuery)
+	if capturedQuery != "" {
+		t.Fatalf("query = %q, want empty", capturedQuery)
 	}
 	if capturedHeaders.Get("api-key") != "test-api-key" {
 		t.Fatalf("api-key header missing: %#v", capturedHeaders)

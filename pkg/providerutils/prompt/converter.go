@@ -129,7 +129,17 @@ func openAIToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		arguments := tc.RawArguments
-		if arguments == "" {
+		if arguments != "" {
+			// 2523403: a replayed RawArguments string that doesn't parse to a
+			// JSON object (e.g. an array, string, number, or invalid JSON) is
+			// sent as "{}" instead of forwarded verbatim.
+			var probe interface{}
+			if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
+				arguments = "{}"
+			} else if _, isObject := probe.(map[string]interface{}); !isObject {
+				arguments = "{}"
+			}
+		} else {
 			args := tc.Arguments
 			if args == nil {
 				args = map[string]interface{}{}
