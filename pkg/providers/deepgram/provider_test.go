@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestProviderUnsupportedModels(t *testing.T) {
@@ -23,11 +24,19 @@ func TestProviderUnsupportedModels(t *testing.T) {
 	if _, err := p.ImageModel("x"); err == nil {
 		t.Fatal("ImageModel should return unsupported error")
 	}
-	if _, err := p.SpeechModel("x"); err == nil {
-		t.Fatal("SpeechModel should return unsupported error")
-	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel should return unsupported error")
+	}
+}
+
+func TestProviderSpeechModel(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	sm, err := p.SpeechModel("aura-2")
+	if err != nil {
+		t.Fatalf("SpeechModel: %v", err)
+	}
+	if sm.ModelID() != "aura-2" {
+		t.Fatalf("ModelID = %q", sm.ModelID())
 	}
 }
 
@@ -101,6 +110,9 @@ func TestDoTranscribe_RequestShapeAndResponseMapping(t *testing.T) {
 	if !strings.Contains(seenQuery, "punctuate=true") || !strings.Contains(seenQuery, "utterances=true") {
 		t.Fatalf("query missing timestamp flags: %s", seenQuery)
 	}
+	if strings.Contains(seenQuery, "diarize") {
+		t.Fatalf("diarize should not be defaulted: %s", seenQuery)
+	}
 	if got.Text != "hello deepgram" {
 		t.Fatalf("Text = %q", got.Text)
 	}
@@ -112,10 +124,55 @@ func TestDoTranscribe_RequestShapeAndResponseMapping(t *testing.T) {
 	}
 }
 
+func TestDoTranscribe_ProviderOptions(t *testing.T) {
+	t.Parallel()
+
+	var seenQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"metadata": map[string]interface{}{"duration": 1.0},
+			"results":  map[string]interface{}{"channels": []map[string]interface{}{}},
+		})
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "dg-key", BaseURL: srv.URL})
+	mAny, _ := p.TranscriptionModel("nova-2")
+
+	_, err := mAny.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("bytes"),
+		MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{
+			"deepgram": map[string]interface{}{
+				"keyterm":    "Vercel",
+				"paragraphs": true,
+				"intents":    true,
+				"sentiment":  true,
+				"replace":    "foo:bar",
+				"diarize":    false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
+
+	for _, want := range []string{"keyterm=Vercel", "paragraphs=true", "intents=true", "sentiment=true", "replace=foo:bar", "diarize=false"} {
+		if !strings.Contains(seenQuery, want) {
+			t.Fatalf("query missing %q: %s", want, seenQuery)
+		}
+	}
+}
+
 func TestDoTranscribe_APIErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"bad request"}`))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"err_code":   "INVALID_QUERY_PARAMETER",
+			"err_msg":    "Invalid 'model' value",
+			"request_id": "req-1",
+		})
 	}))
 	defer srv.Close()
 
@@ -125,7 +182,13 @@ func TestDoTranscribe_APIErrorStatus(t *testing.T) {
 		Audio:    []byte("x"),
 		MimeType: "audio/mpeg",
 	})
-	if err == nil || !strings.Contains(err.Error(), "status 400") {
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "Invalid 'model' value") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !providererrors.IsProviderError(err) {
+		t.Fatalf("expected ProviderError, got %T: %v", err, err)
 	}
 }

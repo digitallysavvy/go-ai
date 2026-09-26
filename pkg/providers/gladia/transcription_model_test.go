@@ -5,179 +5,224 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 func TestTranscriptionModel_DoTranscribe(t *testing.T) {
-	// Mock API response
-	mockResponse := gladiaTranscriptionResponse{
-		Result: struct {
-			Transcription struct {
-				FullTranscript string `json:"full_transcript"`
-				Utterances     []struct {
-					Text  string  `json:"text"`
-					Start float64 `json:"start"`
-					End   float64 `json:"end"`
-				} `json:"utterances"`
-			} `json:"transcription"`
-		}{
-			Transcription: struct {
-				FullTranscript string `json:"full_transcript"`
-				Utterances     []struct {
-					Text  string  `json:"text"`
-					Start float64 `json:"start"`
-					End   float64 `json:"end"`
-				} `json:"utterances"`
-			}{
-				FullTranscript: "Galileo was an American robotic space program that studied the planet Jupiter and its moons.",
-				Utterances: []struct {
-					Text  string  `json:"text"`
-					Start float64 `json:"start"`
-					End   float64 `json:"end"`
-				}{
-					{
-						Text:  "Galileo was an American robotic space program",
-						Start: 0.14,
-						End:   5.341,
-					},
-					{
-						Text:  "that studied the planet Jupiter and its moons.",
-						Start: 5.662,
-						End:   8.099,
+	var (
+		seenInitiateBody map[string]interface{}
+		seenPollAuth     string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			if r.Header.Get("x-gladia-key") != "test-api-key" {
+				t.Errorf("upload: expected API key header, got %q", r.Header.Get("x-gladia-key"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"audio_url": "https://api.gladia.io/file/audio-1",
+			})
+		case "/v2/pre-recorded":
+			_ = json.NewDecoder(r.Body).Decode(&seenInitiateBody)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":         "job-1",
+				"result_url": "http://" + r.Host + "/v2/pre-recorded/job-1",
+			})
+		case "/v2/pre-recorded/job-1":
+			seenPollAuth = r.Header.Get("x-gladia-key")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"result": map[string]interface{}{
+					"metadata": map[string]interface{}{"audio_duration": 36.74},
+					"transcription": map[string]interface{}{
+						"full_transcript": "Galileo was an American robotic space program.",
+						"languages":       []string{"en"},
+						"utterances": []map[string]interface{}{
+							{
+								"text":  "Galileo was an American robotic space program.",
+								"start": 0.14, "end": 5.341,
+								"confidence": 0.98, "channel": 0, "speaker": 0, "language": "en",
+								"words": []map[string]interface{}{
+									{"word": "Galileo", "start": 0.14, "end": 0.64, "confidence": 0.94},
+								},
+							},
+						},
 					},
 				},
-			},
-		},
-		Metadata: struct {
-			Duration float64 `json:"duration"`
-		}{
-			Duration: 36.74,
-		},
-	}
-
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request method and headers
-		if r.Method != http.MethodPost {
-			t.Errorf("Expected POST request, got %s", r.Method)
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-
-		apiKey := r.Header.Get("x-gladia-key")
-		if apiKey != "test-api-key" {
-			t.Errorf("Expected API key 'test-api-key', got '%s'", apiKey)
-		}
-
-		// Return mock response
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(mockResponse) //nolint:errcheck
 	}))
 	defer server.Close()
 
-	// Create provider with test server URL
-	p := New(Config{
-		APIKey:  "test-api-key",
-		BaseURL: server.URL,
-	})
-
-	model, err := p.TranscriptionModel("whisper-v3")
+	p := New(Config{APIKey: "test-api-key", BaseURL: server.URL + "/v2"})
+	model, err := p.TranscriptionModel("default")
 	if err != nil {
-		t.Fatalf("Failed to create transcription model: %v", err)
+		t.Fatalf("TranscriptionModel: %v", err)
 	}
 
-	t.Run("basic transcription", func(t *testing.T) {
-		audioData := []byte("fake audio data")
-
-		result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
-			Audio:    audioData,
-			MimeType: "audio/mpeg",
-			Language: "en",
-		})
-
-		if err != nil {
-			t.Fatalf("DoTranscribe failed: %v", err)
-		}
-
-		// Verify transcription text
-		expectedText := "Galileo was an American robotic space program that studied the planet Jupiter and its moons."
-		if result.Text != expectedText {
-			t.Errorf("Expected text '%s', got '%s'", expectedText, result.Text)
-		}
-
-		// Verify usage metadata
-		if result.Usage.DurationSeconds != 36.74 {
-			t.Errorf("Expected duration 36.74, got %f", result.Usage.DurationSeconds)
-		}
-
-		// Verify no timestamps by default
-		if len(result.Timestamps) != 0 {
-			t.Errorf("Expected no timestamps, got %d", len(result.Timestamps))
-		}
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("fake audio data"),
+		MimeType: "audio/mpeg",
+		Language: "en",
 	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
 
-	t.Run("transcription with timestamps", func(t *testing.T) {
-		audioData := []byte("fake audio data")
+	if seenInitiateBody["audio_url"] != "https://api.gladia.io/file/audio-1" {
+		t.Fatalf("audio_url = %#v", seenInitiateBody["audio_url"])
+	}
+	if seenPollAuth != "test-api-key" {
+		t.Fatalf("poll auth header = %q, want test-api-key (same-origin poll should be trusted)", seenPollAuth)
+	}
 
-		result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
-			Audio:      audioData,
-			MimeType:   "audio/mpeg",
-			Language:   "en",
-			Timestamps: true,
-		})
+	if result.Text != "Galileo was an American robotic space program." {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if result.Language != "en" {
+		t.Fatalf("Language = %q", result.Language)
+	}
+	if result.Usage.DurationSeconds != 36.74 {
+		t.Fatalf("Usage.DurationSeconds = %v", result.Usage.DurationSeconds)
+	}
+	if len(result.Segments) != 1 || result.Segments[0].Start != 0.14 || result.Segments[0].End != 5.341 {
+		t.Fatalf("Segments = %#v", result.Segments)
+	}
 
-		if err != nil {
-			t.Fatalf("DoTranscribe failed: %v", err)
+	meta, ok := result.ProviderMetadata["gladia"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected gladia providerMetadata, got %#v", result.ProviderMetadata)
+	}
+	res, ok := meta["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result in metadata, got %#v", meta)
+	}
+	transcription, ok := res["transcription"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected transcription in metadata, got %#v", res)
+	}
+	utterances, ok := transcription["utterances"].([]interface{})
+	if !ok || len(utterances) != 1 {
+		t.Fatalf("expected 1 utterance in metadata, got %#v", transcription["utterances"])
+	}
+	firstUtterance, ok := utterances[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("utterance not a map: %#v", utterances[0])
+	}
+	if firstUtterance["speaker"] != float64(0) || firstUtterance["channel"] != float64(0) {
+		t.Fatalf("utterance speaker/channel = %#v", firstUtterance)
+	}
+	if firstUtterance["confidence"] != 0.98 || firstUtterance["language"] != "en" {
+		t.Fatalf("utterance confidence/language = %#v", firstUtterance)
+	}
+	if _, ok := firstUtterance["words"].([]interface{}); !ok {
+		t.Fatalf("utterance words missing: %#v", firstUtterance)
+	}
+
+	if result.Response == nil || result.Response.ModelID != "default" {
+		t.Fatalf("Response.ModelID = %#v, want default", result.Response)
+	}
+}
+
+func TestTranscriptionModel_PollTimesOutIsNotHitByDoneFirstPoll(t *testing.T) {
+	// Sanity check: when the first poll returns "done", DoTranscribe does not
+	// wait for the full poll interval before returning.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"audio_url": "u"})
+		case "/v2/pre-recorded":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result_url": "http://" + r.Host + "/v2/result"})
+		case "/v2/result":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"result": map[string]interface{}{
+					"metadata":      map[string]interface{}{"audio_duration": 1.0},
+					"transcription": map[string]interface{}{"full_transcript": "hi", "languages": []string{"en"}, "utterances": []interface{}{}},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+	}))
+	defer server.Close()
 
-		// Verify timestamps are included
-		if len(result.Timestamps) != 2 {
-			t.Errorf("Expected 2 timestamps, got %d", len(result.Timestamps))
-		}
+	p := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"})
+	model, _ := p.TranscriptionModel("default")
 
-		if len(result.Timestamps) >= 1 {
-			firstTimestamp := result.Timestamps[0]
-			if firstTimestamp.Text != "Galileo was an American robotic space program" {
-				t.Errorf("Unexpected first timestamp text: %s", firstTimestamp.Text)
-			}
-			if firstTimestamp.Start != 0.14 {
-				t.Errorf("Expected start time 0.14, got %f", firstTimestamp.Start)
-			}
-			if firstTimestamp.End != 5.341 {
-				t.Errorf("Expected end time 5.341, got %f", firstTimestamp.End)
-			}
-		}
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("a"),
+		MimeType: "audio/mpeg",
 	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
+	if result.Text != "hi" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestTranscriptionModel_JobFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"audio_url": "u"})
+		case "/v2/pre-recorded":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result_url": "http://" + r.Host + "/v2/result"})
+		case "/v2/result":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "error_code": 42})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"})
+	model, _ := p.TranscriptionModel("default")
+
+	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("a"),
+		MimeType: "audio/mpeg",
+	})
+	if err == nil || !strings.Contains(err.Error(), "transcription job failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestTranscriptionModel_ErrorHandling(t *testing.T) {
-	// Create test server that returns error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error": "Invalid API key"}`))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{"message": "Invalid API key", "code": 401},
+		})
 	}))
 	defer server.Close()
 
 	p := New(Config{
 		APIKey:  "invalid-key",
-		BaseURL: server.URL,
+		BaseURL: server.URL + "/v2",
 	})
 
-	model, err := p.TranscriptionModel("whisper-v3")
+	model, err := p.TranscriptionModel("default")
 	if err != nil {
 		t.Fatalf("Failed to create transcription model: %v", err)
 	}
 
-	audioData := []byte("fake audio data")
-
 	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
-		Audio:    audioData,
+		Audio:    []byte("fake audio data"),
 		MimeType: "audio/mpeg",
 	})
-
 	if err == nil {
-		t.Error("Expected error for unauthorized request, got nil")
+		t.Fatal("Expected error for unauthorized request, got nil")
+	}
+	if !strings.Contains(err.Error(), "Invalid API key") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -201,7 +246,7 @@ func TestTranscriptionModel_ModelInfo(t *testing.T) {
 		t.Errorf("Expected model ID 'whisper-v3', got '%s'", tm.ModelID())
 	}
 
-	if tm.SpecificationVersion() != "v1" {
-		t.Errorf("Expected specification version 'v1', got '%s'", tm.SpecificationVersion())
+	if tm.SpecificationVersion() != "v4" {
+		t.Errorf("Expected specification version 'v4', got '%s'", tm.SpecificationVersion())
 	}
 }
