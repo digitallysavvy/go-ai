@@ -151,7 +151,12 @@ func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCa
 func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error) {
 	call := opts.ToolCall
 	if len(opts.Tools) == 0 {
-		if call.ProviderExecuted {
+		// TS parseToolCall: `toolCall.providerExecuted && toolCall.dynamic`.
+		// A provider-executed call that isn't marked dynamic (e.g. Anthropic
+		// web_search/web_fetch, which rely on a matching registered tool)
+		// must still raise NoSuchToolError when no tools are registered at
+		// all — it is not implicitly treated as a dynamic provider tool.
+		if call.ProviderExecuted && call.Dynamic {
 			return parseProviderExecutedDynamicToolCall(call)
 		}
 		return types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
@@ -237,8 +242,11 @@ func waitForRepair(ctx context.Context, opts ParseToolCallOptions, parseErr erro
 func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, error) {
 	tool := findToolForCall(call, tools)
 	if tool == nil {
-		// Provider-executed dynamic tools are not part of the tool list.
-		if call.ProviderExecuted {
+		// Provider-executed dynamic tools are not part of the tool list (TS:
+		// `toolCall.providerExecuted && toolCall.dynamic`). A call that is
+		// providerExecuted but not dynamic still raises NoSuchToolError when
+		// unmatched, matching TS doParseToolCall exactly.
+		if call.ProviderExecuted && call.Dynamic {
 			return parseProviderExecutedDynamicToolCall(call)
 		}
 		return types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName, AvailableTools: toolNames(tools)}

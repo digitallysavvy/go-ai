@@ -86,6 +86,25 @@ func TestParseToolCall(t *testing.T) {
 			tools:     tools,
 			wantValid: true,
 		},
+		{
+			// TS parseToolCall/doParseToolCall check `providerExecuted &&
+			// dynamic` together (e.g. mcp_tool_use sets both; Anthropic
+			// web_search/web_fetch set only providerExecuted and rely on a
+			// matching registered tool). A providerExecuted call that is NOT
+			// dynamic and has no matching tool must still raise
+			// NoSuchToolError, not be silently accepted.
+			name:    "provider-executed non-dynamic tool calls without a matching tool are still NoSuchToolError",
+			call:    types.ToolCall{ID: "1", ToolName: "remote", RawArguments: `{"q":1}`, ProviderExecuted: true},
+			tools:   tools,
+			wantErr: IsNoSuchToolError,
+			wantMsg: "Model tried to call unavailable tool 'remote'. Available tools: testTool.",
+		},
+		{
+			name:    "provider-executed non-dynamic tool calls without a matching tool are NoSuchToolError even with no tools registered",
+			call:    types.ToolCall{ID: "1", ToolName: "remote", RawArguments: `{"q":1}`, ProviderExecuted: true},
+			wantErr: IsNoSuchToolError,
+			wantMsg: "Model tried to call unavailable tool 'remote'. No tools are available.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
