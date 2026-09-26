@@ -97,6 +97,46 @@ type ThinkingConfig struct {
 	// Requires a minimum of 1,024 tokens and counts towards the max_tokens limit.
 	// Optional for "enabled" type, not used for "adaptive" type.
 	BudgetTokens *int `json:"budget_tokens,omitempty"`
+
+	// Display controls how thinking is returned for "adaptive" thinking:
+	// ThinkingDisplayOmitted, ThinkingDisplaySummarized or
+	// ThinkingDisplayUpdates (adds the thinking-display-updates beta).
+	// Ignored for other thinking types.
+	Display ThinkingDisplay `json:"display,omitempty"`
+
+	// BlockBinding configures preserved-thinking block binding
+	// (thinking.block_binding). It may be set with Type "adaptive" or alone
+	// (empty Type) for binding-only recovery requests. Adds the
+	// thinking-binding-controls beta.
+	BlockBinding *ThinkingBlockBinding `json:"blockBinding,omitempty"`
+}
+
+// ThinkingDisplay controls how adaptive thinking content is returned.
+type ThinkingDisplay string
+
+const (
+	ThinkingDisplayOmitted    ThinkingDisplay = "omitted"
+	ThinkingDisplaySummarized ThinkingDisplay = "summarized"
+	ThinkingDisplayUpdates    ThinkingDisplay = "updates"
+)
+
+// ThinkingBlockBinding configures how the API treats replayed thinking blocks
+// whose prefix does not match. Serialized as
+// thinking.block_binding.prefix_mismatch_behavior.
+type ThinkingBlockBinding struct {
+	// PrefixMismatchBehavior is "error" or "drop_block".
+	PrefixMismatchBehavior string `json:"prefixMismatchBehavior"`
+}
+
+// Safeguard configures an Anthropic safeguard classifier. Serialized as
+// safeguards[{type, classifier_context?}] and adds the
+// dangerous-tool-use-2026-09-03 beta.
+type Safeguard struct {
+	// Type is "dangerous_tool_use".
+	Type string `json:"type"`
+
+	// ClassifierContext is optional context passed to the classifier.
+	ClassifierContext map[string]interface{} `json:"classifierContext,omitempty"`
 }
 
 // ModelOptions contains optional configuration for Anthropic language models.
@@ -178,7 +218,7 @@ type ModelOptions struct {
 
 	// Effort controls the model's reasoning effort level.
 	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax.
-	// Requires the "effort-2025-11-24" beta header (injected automatically).
+	// Sent as output_config.effort (no beta header is required).
 	//
 	// Example:
 	//   options := anthropic.ModelOptions{
@@ -198,9 +238,27 @@ type ModelOptions struct {
 	// Fallbacks configures Anthropic server-side fallback attempts.
 	Fallbacks []FallbackConfig `json:"fallbacks,omitempty"`
 
+	// FallbacksDefault sends fallbacks: "default" to use Anthropic's default
+	// server-side fallback chain (beta server-side-fallback-2026-07-01). It
+	// takes precedence over Fallbacks.
+	FallbacksDefault bool `json:"fallbacksDefault,omitempty"`
+
+	// ServiceTier selects the Anthropic service tier: "auto" or
+	// "standard_only". Serialized as service_tier.
+	ServiceTier string `json:"serviceTier,omitempty"`
+
+	// AnthropicBeta lists additional anthropic-beta flags to send.
+	AnthropicBeta []string `json:"anthropicBeta,omitempty"`
+
+	// Safeguards configures safeguard classifiers (for example
+	// dangerous_tool_use). Classifier verdicts are returned in
+	// providerMetadata.anthropic.safeguardResults.
+	Safeguards []Safeguard `json:"safeguards,omitempty"`
+
 	// ToolStreaming controls whether fine-grained tool streaming is enabled.
-	// Deprecated: the fine-grained-tool-streaming beta header is obsolete in the
-	// TypeScript SDK and is no longer injected by the Go provider.
+	// When nil or true, streaming requests set eager_input_streaming: true on
+	// function tools that do not set ToolOptions.EagerInputStreaming. Set it
+	// to false to disable that default.
 	//
 	// Example (disable):
 	//   disabled := false
@@ -209,13 +267,15 @@ type ModelOptions struct {
 
 	// DisableParallelToolUse prevents the model from calling multiple tools in a
 	// single response. When true, adds {disable_parallel_tool_use: true} to the
-	// tool_choice object sent to the API.
+	// tool_choice object sent to the API. An explicit false is ignored (with a
+	// warning) when the JSON response tool is used for structured output.
 	//
 	// Example:
+	//   disable := true
 	//   options := anthropic.ModelOptions{
-	//       DisableParallelToolUse: true,
+	//       DisableParallelToolUse: &disable,
 	//   }
-	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
+	DisableParallelToolUse *bool `json:"disable_parallel_tool_use,omitempty"`
 
 	// MCPServers configures remote MCP servers for native server-side tool invocation.
 	// The Anthropic API connects to these MCP servers directly, exposing their tools

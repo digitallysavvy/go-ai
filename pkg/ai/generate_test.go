@@ -1490,6 +1490,79 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	}
 }
 
+// ports #105: a user-approval ToolApprovalResult with a Reason must land on
+// ToolApprovalRequestContent.Reason (request reason), and the reason must
+// survive into ResponseMessages so a resumed conversation still shows why
+// approval was requested.
+func TestGenerateText_ToolApprovalUserApprovalWithReason(t *testing.T) {
+	t.Parallel()
+
+	reviewReason := "requires operator review"
+	tool := types.Tool{
+		Name: "needs_human",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("user-approval tool should not execute")
+			return nil, nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "needs_human", Arguments: map[string]interface{}{"x": 1}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{tool},
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reviewReason}
+		}),
+		StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FinishReason != types.FinishReasonUserApproval {
+		t.Fatalf("expected user-approval finish reason, got %s", result.FinishReason)
+	}
+
+	var req *types.ToolApprovalRequestContent
+	for i := range result.Content {
+		if r, ok := result.Content[i].(types.ToolApprovalRequestContent); ok {
+			req = &r
+			break
+		}
+	}
+	if req == nil {
+		t.Fatalf("no ToolApprovalRequestContent found in result.Content: %#v", result.Content)
+	}
+	if req.Reason != reviewReason {
+		t.Fatalf("ToolApprovalRequestContent.Reason = %q, want %q", req.Reason, reviewReason)
+	}
+
+	// The reason must also survive into the accumulated response messages
+	// (what a caller persists and resumes the conversation with).
+	foundInResponseMessages := false
+	for _, msg := range result.ResponseMessages {
+		for _, part := range msg.Content {
+			if r, ok := part.(types.ToolApprovalRequestContent); ok && r.ApprovalID == req.ApprovalID {
+				if r.Reason != reviewReason {
+					t.Fatalf("ResponseMessages ToolApprovalRequestContent.Reason = %q, want %q", r.Reason, reviewReason)
+				}
+				foundInResponseMessages = true
+			}
+		}
+	}
+	if !foundInResponseMessages {
+		t.Fatalf("expected ToolApprovalRequestContent with reason in ResponseMessages: %#v", result.ResponseMessages)
+	}
+}
+
 func TestGenerateText_ToolApprovalEmptySecretStillSigns(t *testing.T) {
 	t.Parallel()
 

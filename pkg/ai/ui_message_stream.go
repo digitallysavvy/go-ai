@@ -892,6 +892,11 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
+		// When a part already exists for this toolCallId in the current step,
+		// honour its type so it is updated in place.
+		if existing := s.findCurrentStepToolPart(toolCallID, nil); existing != nil {
+			dynamic = existing["type"] == "dynamic-tool"
+		}
 		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"]}
 		if dynamic {
 			update["input"] = chunk["input"]
@@ -908,7 +913,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		toolName, dynamic := toolInfoFromPart(part)
-		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
 			"state":       "output-available",
 			"input":       part["input"],
 			"output":      chunk["output"],
@@ -922,7 +927,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		toolName, dynamic := toolInfoFromPart(part)
-		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
 			"state":     "output-error",
 			"input":     part["input"],
 			"rawInput":  part["rawInput"],
@@ -940,6 +945,11 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		if part := s.findToolPart(toolCallID); part != nil {
 			part["state"] = "approval-requested"
 			approval := UIMessageChunk{"id": chunk["approvalId"]}
+			copyIfPresent(approval, chunk, "approvalDescriptor", "descriptor")
+			if inputSchemaInput, ok := chunk["inputSchemaInput"]; ok {
+				approval["inputSchemaInput"] = inputSchemaInput
+			}
+			copyIfPresent(approval, chunk, "reason", "requestReason")
 			if auto, ok := chunk["isAutomatic"].(bool); ok && auto {
 				approval["isAutomatic"] = true
 			}
@@ -952,13 +962,19 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		approvalID := stringValue(chunk["approvalId"])
 		if part := s.findToolPartByApprovalID(approvalID); part != nil {
 			part["state"] = "approval-responded"
-			approval := UIMessageChunk{"id": chunk["approvalId"], "approved": chunk["approved"]}
-			copyIfPresent(approval, chunk, "reason", "reason")
-			if previous, _ := part["approval"].(UIMessageChunk); previous != nil {
-				if auto, _ := previous["isAutomatic"].(bool); auto {
-					approval["isAutomatic"] = true
+			// Start from the previous approval so descriptor, requestReason,
+			// isAutomatic, signature and inputSchemaInput survive the
+			// approval-responded transition (also when the approval was
+			// restored from a persisted message).
+			approval := UIMessageChunk{}
+			if previous, ok := asUIMap(part["approval"]); ok {
+				for key, value := range previous {
+					approval[key] = value
 				}
 			}
+			approval["id"] = chunk["approvalId"]
+			approval["approved"] = chunk["approved"]
+			copyIfPresent(approval, chunk, "reason", "reason")
 			part["approval"] = approval
 			copyIfPresent(part, chunk, "providerExecuted", "providerExecuted")
 			copyIfPresent(part, chunk, "providerMetadata", "callProviderMetadata")
@@ -1024,8 +1040,20 @@ func (s *uiMessageCallbackState) upsertDataPart(chunk UIMessageChunk) {
 	s.appendPart(cloneUIMessageChunk(chunk))
 }
 
+// updateToolPart updates the tool part of the same kind (static or dynamic)
+// with toolCallID in the current step, or appends a new part. Tool call IDs
+// can repeat across steps, so earlier steps are never updated here.
 func (s *uiMessageCallbackState) updateToolPart(toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
-	part := s.findToolPart(toolCallID)
+	part := s.findCurrentStepToolPart(toolCallID, &dynamic)
+	s.applyToolPartUpdate(part, toolCallID, toolName, dynamic, update, source)
+}
+
+// updateExistingToolPart updates a tool invocation located by findToolPart.
+func (s *uiMessageCallbackState) updateExistingToolPart(part UIMessageChunk, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
+	s.applyToolPartUpdate(part, stringValue(part["toolCallId"]), toolName, dynamic, update, source)
+}
+
+func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
 	if part == nil {
 		if dynamic {
 			part = UIMessageChunk{"type": "dynamic-tool", "toolName": toolName, "toolCallId": toolCallID}
@@ -1052,19 +1080,63 @@ func (s *uiMessageCallbackState) updateToolPart(toolCallID, toolName string, dyn
 	}
 }
 
+// findToolPart returns the tool invocation for toolCallID, preferring the
+// current step and falling back to the latest matching part in the message
+// (TS getToolInvocation).
 func (s *uiMessageCallbackState) findToolPart(toolCallID string) UIMessageChunk {
-	for _, raw := range uiParts(s.message) {
-		part, ok := raw.(UIMessageChunk)
-		if !ok {
-			if m, ok := raw.(map[string]interface{}); ok {
-				part = UIMessageChunk(m)
-			}
-		}
-		if part != nil && part["toolCallId"] == toolCallID {
+	if part := s.findCurrentStepToolPart(toolCallID, nil); part != nil {
+		return part
+	}
+	parts := uiParts(s.message)
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := asUIPartChunk(parts[i])
+		if isToolPartChunk(part) && part["toolCallId"] == toolCallID {
 			return part
 		}
 	}
 	return nil
+}
+
+// findCurrentStepToolPart finds a tool part with toolCallID after the last
+// step-start part. When dynamic is non-nil, only parts of that kind match.
+func (s *uiMessageCallbackState) findCurrentStepToolPart(toolCallID string, dynamic *bool) UIMessageChunk {
+	parts := uiParts(s.message)
+	start := len(parts) - 1
+	for start >= 0 {
+		if part := asUIPartChunk(parts[start]); part != nil && part["type"] == "step-start" {
+			break
+		}
+		start--
+	}
+	for _, raw := range parts[start+1:] {
+		part := asUIPartChunk(raw)
+		if !isToolPartChunk(part) || part["toolCallId"] != toolCallID {
+			continue
+		}
+		if dynamic != nil && (part["type"] == "dynamic-tool") != *dynamic {
+			continue
+		}
+		return part
+	}
+	return nil
+}
+
+func asUIPartChunk(raw interface{}) UIMessageChunk {
+	switch part := raw.(type) {
+	case UIMessageChunk:
+		return part
+	case map[string]interface{}:
+		return UIMessageChunk(part)
+	}
+	return nil
+}
+
+func isToolPartChunk(part UIMessageChunk) bool {
+	if part == nil {
+		return false
+	}
+	partType := stringValue(part["type"])
+	return partType == "dynamic-tool" || strings.HasPrefix(partType, "tool-")
 }
 
 func (s *uiMessageCallbackState) findToolPartByApprovalID(approvalID string) UIMessageChunk {
@@ -1633,6 +1705,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalRequest.InputSchemaInput != nil {
 			part["inputSchemaInput"] = chunk.ToolApprovalRequest.InputSchemaInput
 		}
+		if chunk.ToolApprovalRequest.Reason != "" {
+			part["reason"] = chunk.ToolApprovalRequest.Reason
+		}
 		out = append(out, part)
 	case provider.ChunkTypeToolApprovalResponse:
 		if chunk.ToolApprovalResponse == nil {
@@ -1681,6 +1756,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			}
 			if chunk.ToolResult.ApprovalSignature != "" {
 				request["signature"] = chunk.ToolResult.ApprovalSignature
+			}
+			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusUserApproval && chunk.ToolResult.ApprovalReason != nil {
+				request["reason"] = *chunk.ToolResult.ApprovalReason
 			}
 			out = append(out, request)
 			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusUserApproval {

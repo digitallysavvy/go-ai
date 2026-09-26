@@ -132,7 +132,7 @@ func TestClaudeFable5CapabilitiesAndFallbacksRequest(t *testing.T) {
 	if got := anthropicMaxOutputTokens(ClaudeFable5); got != 128000 {
 		t.Fatalf("max output tokens = %d, want 128000", got)
 	}
-	if !anthropicSupportsAdaptiveThinking(ClaudeFable5) || !anthropicSupportsXHighEffort(ClaudeFable5) {
+	if !anthropicSupportsAdaptiveThinking(ClaudeFable5) || !GetModelCapabilities(ClaudeFable5).SupportsXHighEffort {
 		t.Fatal("claude-fable-5 should support adaptive thinking and xhigh effort")
 	}
 
@@ -1074,7 +1074,7 @@ func TestDisableParallelToolUse(t *testing.T) {
 	// Without any explicit tool_choice: should create tool_choice with just the flag
 	t.Run("creates tool_choice when none set", func(t *testing.T) {
 		model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{
-			DisableParallelToolUse: true,
+			DisableParallelToolUse: boolPtr(true),
 		})
 		opts := &provider.GenerateOptions{
 			Prompt: types.Prompt{Text: "test"},

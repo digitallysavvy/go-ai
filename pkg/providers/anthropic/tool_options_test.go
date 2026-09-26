@@ -302,7 +302,7 @@ func TestToolOptionsNilSafety(t *testing.T) {
 // and web_fetch_20260209 inject the code-execution-web-tools-2026-02-09 beta header,
 // matching the TypeScript SDK behaviour in anthropic-prepare-tools.ts.
 func TestAnthropicWebTools20260209BetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	tests := []struct {
 		name string
 		tool types.Tool
@@ -322,7 +322,7 @@ func TestAnthropicWebTools20260209BetaHeaderInjected(t *testing.T) {
 }
 
 func TestWebToolsBetaHeaderAbsentForOtherTools(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{
 			{Name: "my_fn", Parameters: map[string]interface{}{"type": "object"}},
@@ -403,7 +403,7 @@ func TestAllowedCallersAbsentByDefault(t *testing.T) {
 }
 
 func TestAllowedCallersBetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{
 			Name:            "my_function",
@@ -418,7 +418,7 @@ func TestAllowedCallersBetaHeaderInjected(t *testing.T) {
 }
 
 func TestAllowedCallersBetaAbsentWhenEmpty(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}},
 	}
@@ -464,7 +464,7 @@ func TestInputExamplesAbsentByDefault(t *testing.T) {
 }
 
 func TestInputExamplesBetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{
 			Name:          "my_function",

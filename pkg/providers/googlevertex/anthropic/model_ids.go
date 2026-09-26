@@ -6,7 +6,12 @@ package anthropic
 type GoogleVertexAnthropicModelID string
 
 const (
+	ClaudeSonnet5              GoogleVertexAnthropicModelID = "claude-sonnet-5"
 	ClaudeFable5               GoogleVertexAnthropicModelID = "claude-fable-5"
+	ClaudeFable5_1             GoogleVertexAnthropicModelID = "claude-fable-5-1"
+	ClaudeOpus5                GoogleVertexAnthropicModelID = "claude-opus-5"
+	ClaudeOpus5_5              GoogleVertexAnthropicModelID = "claude-opus-5-5"
+	ClaudeOpus4_8              GoogleVertexAnthropicModelID = "claude-opus-4-8"
 	ClaudeOpus4_7              GoogleVertexAnthropicModelID = "claude-opus-4-7"
 	ClaudeOpus4_6              GoogleVertexAnthropicModelID = "claude-opus-4-6"
 	ClaudeSonnet4_6            GoogleVertexAnthropicModelID = "claude-sonnet-4-6"

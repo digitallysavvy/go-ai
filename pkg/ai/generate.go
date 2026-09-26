@@ -1831,6 +1831,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Input:            call.Arguments,
 				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
 				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
+				ApprovalReason:   approval.Reason,
 				ApprovalID:       approvalID,
 				ProviderExecuted: providerExecuted,
 				ProviderMetadata: providerMetadata,

@@ -1,0 +1,9 @@
+{"type":"bridge-hello","state":"running","lastSeq":4,"capabilities":{"experimental_userMessageResponses":true}}
+{"type":"text-delta","id":"m","delta":"two","seq":4}
+{"type":"text-delta","id":"m","delta":"three","seq":5}
+{"type":"user-message-response","messageId":"msg-1","accepted":true,"seq":6}
+{"type":"text-end","id":"m","seq":7}
+{"type":"finish","finishReason":{"unified":"stop","raw":"stop"},"totalUsage":{"inputTokens":{"total":1},"outputTokens":{"total":2}},"seq":8}
+{"type":"user-message-response","messageId":"msg-2","accepted":false,"error":{"message":"The bridge has no active turn to steer."}}
+{"type":"bridge-stop","data":{"threadId":"thread-1"}}
+{"_close":{"code":1000,"reason":"stop"}}

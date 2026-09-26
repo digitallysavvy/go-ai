@@ -480,6 +480,7 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 	return types.ToolApprovalRequestContent{
 		ApprovalID:       part.ApprovalID,
 		ToolCallID:       toolCallID,
+		Reason:           part.Reason,
 		Signature:        part.Signature,
 		IsAutomatic:      part.IsAutomatic,
 		InputSchemaInput: part.InputSchemaInput,
