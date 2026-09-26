@@ -256,9 +256,12 @@ func TestToOpenAIMessagesAssistantToolCallNilArgumentsDefaultToEmptyObject(t *te
 }
 
 // TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject ports TS's
-// serializeToolCallArguments (2523403): a replayed RawArguments string that
-// doesn't parse to a JSON object -- an array, a scalar, or invalid JSON -- is
-// sent as "{}" rather than forwarded verbatim.
+// OpenAI-only serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts,
+// 2523403): a replayed RawArguments string that doesn't parse to a JSON
+// object -- an array, a scalar, or invalid JSON -- is sent as "{}" rather
+// than forwarded verbatim. This sanitization is OpenAI (and Azure chat,
+// which wraps OpenAIChatLanguageModel in TS) specific, so the test opts in
+// via ToOpenAIMessagesOptions.SanitizeReplayedToolCallArguments.
 func TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -278,7 +281,7 @@ func TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject(t *testing.T) {
 						{ID: "call_1", ToolName: "tool", RawArguments: tt.rawArguments},
 					},
 				},
-			})
+			}, ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true})
 			toolCalls := result[0]["tool_calls"].([]map[string]interface{})
 			function := toolCalls[0]["function"].(map[string]interface{})
 			if function["arguments"] != "{}" {
@@ -289,20 +292,62 @@ func TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject(t *testing.T) {
 }
 
 // TestToOpenAIMessagesObjectRawArgumentsPassThrough ensures a valid
-// object RawArguments string is still forwarded verbatim.
+// object RawArguments string is still forwarded verbatim, with and without
+// the OpenAI-only sanitization opted in.
 func TestToOpenAIMessagesObjectRawArgumentsPassThrough(t *testing.T) {
-	result := ToOpenAIMessages([]types.Message{
-		{
-			Role: types.RoleAssistant,
-			ToolCalls: []types.ToolCall{
-				{ID: "call_1", ToolName: "tool", RawArguments: `{"a":1}`},
+	for _, opt := range []ToOpenAIMessagesOptions{{}, {SanitizeReplayedToolCallArguments: true}} {
+		result := ToOpenAIMessages([]types.Message{
+			{
+				Role: types.RoleAssistant,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "tool", RawArguments: `{"a":1}`},
+				},
 			},
-		},
-	})
-	toolCalls := result[0]["tool_calls"].([]map[string]interface{})
-	function := toolCalls[0]["function"].(map[string]interface{})
-	if function["arguments"] != `{"a":1}` {
-		t.Fatalf("arguments = %q, want {\"a\":1}", function["arguments"])
+		}, opt)
+		toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+		function := toolCalls[0]["function"].(map[string]interface{})
+		if function["arguments"] != `{"a":1}` {
+			t.Fatalf("arguments = %q, want {\"a\":1} (opt=%+v)", function["arguments"], opt)
+		}
+	}
+}
+
+// TestToOpenAIMessagesNonObjectRawArgumentsPassThroughByDefault confirms
+// that the default (no ToOpenAIMessagesOptions), used by every non-OpenAI
+// caller of ToOpenAIMessages (Groq, DeepSeek, the openai-compatible family --
+// Together/Fireworks/Mistral/Ollama/etc. -- and Alibaba), forwards
+// RawArguments verbatim even when it isn't a JSON object. TS's equivalents
+// for those providers (e.g. packages/groq/src/convert-to-groq-chat-messages.ts,
+// packages/deepseek/src/chat/convert-to-deepseek-chat-messages.ts,
+// packages/openai-compatible/src/chat/convert-to-openai-compatible-chat-messages.ts,
+// packages/alibaba/src/convert-to-alibaba-chat-messages.ts) all just do
+// `arguments: JSON.stringify(part.input)` with no OpenAI-style
+// sanitization, so only OpenAI's/Azure's own chat conversion should opt in.
+func TestToOpenAIMessagesNonObjectRawArgumentsPassThroughByDefault(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawArguments string
+	}{
+		{"array", `["a","b"]`},
+		{"string", `"just a string"`},
+		{"number", `42`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToOpenAIMessages([]types.Message{
+				{
+					Role: types.RoleAssistant,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "tool", RawArguments: tt.rawArguments},
+					},
+				},
+			})
+			toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+			function := toolCalls[0]["function"].(map[string]interface{})
+			if function["arguments"] != tt.rawArguments {
+				t.Fatalf("arguments = %q, want %q (unsanitized, non-OpenAI default)", function["arguments"], tt.rawArguments)
+			}
+		})
 	}
 }
 

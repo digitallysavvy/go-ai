@@ -9,6 +9,25 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// ToOpenAIMessagesOptions controls provider-specific variations in
+// ToOpenAIMessages behavior. The zero value matches the behavior of every
+// non-OpenAI TS consumer of this wire format (Groq, DeepSeek,
+// @ai-sdk/openai-compatible's Together/Fireworks/Mistral/Ollama/..., Alibaba):
+// they all just JSON.stringify(part.input) with no sanitization.
+type ToOpenAIMessagesOptions struct {
+	// SanitizeReplayedToolCallArguments matches OpenAI's own
+	// serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts):
+	// a replayed RawArguments string that doesn't parse to a JSON object is
+	// sent as "{}" rather than forwarded verbatim. This sanitization is
+	// unique to OpenAI's chat-completions conversion in the TS SDK -- every
+	// other provider that shares this OpenAI-shaped wire format
+	// (Groq/DeepSeek/openai-compatible/Alibaba) does not do this, so callers
+	// other than OpenAI's and Azure's own chat-completions models (Azure's
+	// `chat()` factory wraps OpenAIChatLanguageModel in TS) must leave this
+	// false.
+	SanitizeReplayedToolCallArguments bool
+}
+
 // ToOpenAIMessages converts unified messages to OpenAI Chat Completions format.
 //
 // Key invariants maintained:
@@ -16,7 +35,14 @@ import (
 //     array, which OpenAI requires to be present before any "tool" role messages.
 //   - Tool role messages emit "tool_call_id" as a top-level field and their
 //     result as a plain string in "content" — the format OpenAI expects.
-func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
+//
+// opts is variadic so existing call sites are unaffected; at most the first
+// element is used.
+func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions) []map[string]interface{} {
+	var opt ToOpenAIMessagesOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	result := make([]map[string]interface{}, 0, len(messages))
 
 	for _, msg := range messages {
@@ -44,7 +70,7 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 		// Assistant messages that made tool calls must carry the tool_calls array
 		// so that the subsequent tool role messages are considered valid by OpenAI.
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
-			toolCalls := openAIToolCalls(msg.ToolCalls)
+			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
 			openAIMsg["tool_calls"] = toolCalls
 			text := assistantTextContent(msg.Content)
 			if text == "" {
@@ -125,19 +151,22 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 	return result
 }
 
-func openAIToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
+func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		arguments := tc.RawArguments
 		if arguments != "" {
-			// 2523403: a replayed RawArguments string that doesn't parse to a
-			// JSON object (e.g. an array, string, number, or invalid JSON) is
-			// sent as "{}" instead of forwarded verbatim.
-			var probe interface{}
-			if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
-				arguments = "{}"
-			} else if _, isObject := probe.(map[string]interface{}); !isObject {
-				arguments = "{}"
+			// 2523403 (OpenAI only -- see ToOpenAIMessagesOptions): a replayed
+			// RawArguments string that doesn't parse to a JSON object (e.g. an
+			// array, string, number, or invalid JSON) is sent as "{}" instead
+			// of forwarded verbatim.
+			if sanitizeReplayedArguments {
+				var probe interface{}
+				if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
+					arguments = "{}"
+				} else if _, isObject := probe.(map[string]interface{}); !isObject {
+					arguments = "{}"
+				}
 			}
 		} else {
 			args := tc.Arguments
