@@ -21,9 +21,12 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 	cfg := gemini.Config{
 		ProviderName: "google-vertex",
 		MetadataKey:  "vertex",
-		// Vertex checks "vertex" first (TS canonical), then "googleVertex" (legacy Go
-		// key), then "google" for options that apply to both providers.
-		ProviderOptionsKeys: []string{"vertex", "googleVertex", "google"},
+		// TS parity: Vertex reads "googleVertex" first, then the legacy "vertex"
+		// key, then "google" (cross-namespace fallback), and writes provider
+		// metadata under both "googleVertex" and "vertex".
+		ProviderOptionsKeys: []string{"googleVertex", "vertex", "google"},
+		MetadataKeys:        []string{"googleVertex", "vertex"},
+		IsVertex:            true,
 		GeneratePath: func(id string) string {
 			return fmt.Sprintf("/models/%s:generateContent", id)
 		},

@@ -605,8 +605,8 @@ func TestToGoogleMessagesExecutionDeniedNoReason(t *testing.T) {
 	fr := parts[0]["functionResponse"].(map[string]interface{})
 	resp := fr["response"].(map[string]interface{})
 	content, _ := resp["content"].(string)
-	if content != "Tool execution denied." {
-		t.Errorf("denial content = %q, want %q", content, "Tool execution denied.")
+	if content != "Tool call execution denied." {
+		t.Errorf("denial content = %q, want %q", content, "Tool call execution denied.")
 	}
 }
 

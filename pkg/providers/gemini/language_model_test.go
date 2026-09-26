@@ -1,12 +1,14 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // --- convertResponse ---------------------------------------------------------
@@ -178,9 +180,9 @@ func TestBuildRequestBody_NoArgToolUsesEmptyObjectSchema(t *testing.T) {
 	if !ok || len(functionDecls) == 0 {
 		t.Fatalf("functionDeclarations missing: %#v", tools[0]["functionDeclarations"])
 	}
-	params, ok := functionDecls[0]["parameters"].(map[string]interface{})
+	params, ok := functionDecls[0]["parametersJsonSchema"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("parameters type = %T", functionDecls[0]["parameters"])
+		t.Fatalf("parameters type = %T", functionDecls[0]["parametersJsonSchema"])
 	}
 	if params["type"] != "object" {
 		t.Errorf("parameters.type = %v, want object", params["type"])
@@ -239,20 +241,6 @@ func TestBuildRequestBody_VertexStreamFunctionCallArgumentsOnlyForStream(t *test
 	fccStream, _ := tcStream["functionCallingConfig"].(map[string]interface{})
 	if got, ok := fccStream["streamFunctionCallArguments"].(bool); !ok || !got {
 		t.Fatalf("streamFunctionCallArguments = %v (%T), want true", fccStream["streamFunctionCallArguments"], fccStream["streamFunctionCallArguments"])
-	}
-}
-
-// --- supportsFunctionResponseParts ------------------------------------------
-
-func TestSupportsFunctionResponseParts_Gemini3(t *testing.T) {
-	if !makeTestModel("gemini-3-pro-preview").supportsFunctionResponseParts() {
-		t.Error("gemini-3-pro-preview should support function response parts")
-	}
-}
-
-func TestSupportsFunctionResponseParts_Gemini2(t *testing.T) {
-	if makeTestModel("gemini-2.0-flash").supportsFunctionResponseParts() {
-		t.Error("gemini-2.0-flash should NOT support function response parts")
 	}
 }
 
@@ -583,7 +571,7 @@ func TestBuildRequest_VertexPayGoHeaders(t *testing.T) {
 			},
 		},
 	}
-	body, headers, warnings := m.buildRequest(opts, false)
+	body, headers, warnings, _ := m.buildRequest(context.Background(), opts, false)
 	if _, ok := body["serviceTier"]; ok {
 		t.Fatal("Vertex request body must not include serviceTier")
 	}
@@ -655,7 +643,7 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 
 func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 	model := makeTestModel("gemini-3-pro-preview")
-	body, _, warnings := model.buildRequest(&provider.GenerateOptions{
+	body, _, warnings, _ := model.buildRequest(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -670,7 +658,7 @@ func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 
 	contents := body["contents"].([]map[string]interface{})
 	parts := contents[0]["parts"].([]map[string]interface{})
-	if parts[0]["thoughtSignature"] != skipThoughtSignatureValidator {
+	if parts[0]["thoughtSignature"] != prompt.GoogleSkipThoughtSignatureValidator {
 		t.Fatalf("thoughtSignature = %#v", parts[0]["thoughtSignature"])
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Details, "skip_thought_signature_validator") {

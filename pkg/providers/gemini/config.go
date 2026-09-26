@@ -1,6 +1,10 @@
 package gemini
 
-import internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+import (
+	"context"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+)
 
 // Config parameterizes the shared Gemini language model implementation
 // for both the google and googlevertex providers.
@@ -40,4 +44,31 @@ type Config struct {
 	// SupportsImageInput returns whether a given model ID accepts image inputs.
 	// When nil, the method returns false.
 	SupportsImageInput func(modelID string) bool
+
+	// IsVertex marks the Vertex AI provider (TS: provider starts with
+	// "google.vertex."). When false, ProviderName == "google-vertex" is also
+	// treated as Vertex for backward compatibility.
+	IsVertex bool
+
+	// MetadataKeys are the keys ProviderMetadata payloads are written under.
+	// Defaults to []string{MetadataKey}. Vertex writes under both
+	// "googleVertex" and "vertex" (TS wrapProviderMetadata).
+	MetadataKeys []string
+
+	// SupportedURLs returns the URL patterns (regular expressions keyed by
+	// media type, "*" for all) the model accepts directly.
+	SupportedURLs func(modelID string) map[string][]string
+
+	// ToolResultDownloadMaxBytes enables downloading http(s) file URLs in tool
+	// results to inline data before conversion (Vertex only accepts inline
+	// data in function responses). Zero disables downloading.
+	ToolResultDownloadMaxBytes int64
+
+	// ToolResultDownload overrides the downloader used for tool-result files
+	// (tests). Returns the bytes and the response content type.
+	ToolResultDownload func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error)
+
+	// GenerateID generates IDs for tool calls and sources. Defaults to a
+	// random ID generator.
+	GenerateID func() string
 }

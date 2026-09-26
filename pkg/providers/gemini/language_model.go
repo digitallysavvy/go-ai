@@ -5,20 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
-const skipThoughtSignatureValidator = "skip_thought_signature_validator"
 
 // LanguageModel implements provider.LanguageModel using the Gemini wire format.
 // It is shared by both the google and googlevertex packages; provider-specific
@@ -58,7 +53,10 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody, headers, warnings := m.buildRequest(opts, false)
+	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, false)
+	if err != nil {
+		return nil, err
+	}
 
 	var response Response
 	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
@@ -78,7 +76,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody, headers, warnings := m.buildRequest(opts, true)
+	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, true)
+	if err != nil {
+		return nil, err
+	}
 
 	httpResp, err := m.cfg.Client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -98,356 +99,6 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // handleError wraps a low-level error into a provider error.
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
-}
-
-// getProviderOpts returns the first matching provider options map from
-// GenerateOptions.ProviderOptions using the configured key precedence order.
-func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[string]interface{} {
-	if opts == nil || opts.ProviderOptions == nil {
-		return nil
-	}
-	for _, key := range m.cfg.ProviderOptionsKeys {
-		if v, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
-			return v
-		}
-	}
-	return nil
-}
-
-func injectGemini3ThoughtSignatureSentinel(contents interface{}) *types.Warning {
-	contentList, ok := contents.([]map[string]interface{})
-	if !ok {
-		return nil
-	}
-	missing := 0
-	names := map[string]struct{}{}
-	for _, content := range contentList {
-		if content["role"] != "model" {
-			continue
-		}
-		parts, ok := content["parts"].([]map[string]interface{})
-		if !ok {
-			continue
-		}
-		for _, part := range parts {
-			fc, ok := part["functionCall"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if sig, ok := part["thoughtSignature"].(string); ok && sig != "" {
-				continue
-			}
-			part["thoughtSignature"] = skipThoughtSignatureValidator
-			missing++
-			if name, ok := fc["name"].(string); ok && name != "" {
-				names[name] = struct{}{}
-			}
-		}
-	}
-	if missing == 0 {
-		return nil
-	}
-	toolNames := make([]string, 0, len(names))
-	for name := range names {
-		toolNames = append(toolNames, "`"+name+"`")
-	}
-	sort.Strings(toolNames)
-	message := fmt.Sprintf("Replayed %d `functionCall` part(s) for a Gemini 3 model without a `thoughtSignature`", missing)
-	if len(toolNames) > 0 {
-		message += fmt.Sprintf(" (tools: %s)", strings.Join(toolNames, ", "))
-	}
-	message += ". Injected the documented `skip_thought_signature_validator` sentinel to keep the request from failing with HTTP 400. The likely cause is application code that drops `providerOptions.google.thoughtSignature` when persisting or serializing assistant tool-call messages. See https://ai.google.dev/gemini-api/docs/thought-signatures."
-	return &types.Warning{Type: "other", Details: message, Message: message}
-}
-
-// buildRequestBody builds the Gemini API request body from GenerateOptions.
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, isStreaming bool) map[string]interface{} {
-	body, _, _ := m.buildRequest(opts, isStreaming)
-	return body
-}
-
-func (m *LanguageModel) buildRequest(opts *provider.GenerateOptions, isStreaming bool) (map[string]interface{}, map[string]string, []types.Warning) {
-	body := map[string]interface{}{}
-	headers := map[string]string{}
-	warnings := []types.Warning{}
-
-	// Messages / simple prompt → contents.
-	if opts.Prompt.IsMessages() {
-		body["contents"] = prompt.ToGoogleMessages(opts.Prompt.Messages, m.supportsFunctionResponseParts())
-	} else if opts.Prompt.IsSimple() {
-		body["contents"] = prompt.ToGoogleMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), false)
-	}
-	if isGemini3Model(m.modelID) {
-		if warning := injectGemini3ThoughtSignatureSentinel(body["contents"]); warning != nil {
-			warnings = append(warnings, *warning)
-		}
-	}
-
-	// System instruction — skipped for Gemma models.
-	if opts.Prompt.System != "" && !isGemmaModel(m.modelID) {
-		body["systemInstruction"] = map[string]interface{}{
-			"parts": []map[string]interface{}{
-				{"text": opts.Prompt.System},
-			},
-		}
-	}
-
-	// Generation config.
-	genConfig := map[string]interface{}{}
-	if opts.Temperature != nil {
-		genConfig["temperature"] = *opts.Temperature
-	}
-	if opts.MaxTokens != nil {
-		genConfig["maxOutputTokens"] = *opts.MaxTokens
-	}
-	if opts.TopP != nil {
-		genConfig["topP"] = *opts.TopP
-	}
-	if opts.TopK != nil {
-		genConfig["topK"] = *opts.TopK
-	}
-	if len(opts.StopSequences) > 0 {
-		genConfig["stopSequences"] = opts.StopSequences
-	}
-	if opts.FrequencyPenalty != nil {
-		genConfig["frequencyPenalty"] = *opts.FrequencyPenalty
-	}
-	if opts.PresencePenalty != nil {
-		genConfig["presencePenalty"] = *opts.PresencePenalty
-	}
-	if opts.Seed != nil {
-		genConfig["seed"] = *opts.Seed
-	}
-
-	// Reasoning → thinkingConfig.
-	// Gemini 3 (non-image) uses thinkingLevel strings; Gemini 2.x uses thinkingBudget.
-	// A call-level Reasoning value takes precedence over provider options.
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		if isGemini3Model(m.modelID) && !isImageModel(m.modelID) {
-			genConfig["thinkingConfig"] = map[string]interface{}{
-				"thinkingLevel": mapReasoningToGemini3Level(*opts.Reasoning),
-			}
-		} else {
-			switch *opts.Reasoning {
-			case types.ReasoningNone:
-				genConfig["thinkingConfig"] = map[string]interface{}{"thinkingBudget": 0}
-			default:
-				maxOut := 0
-				if opts.MaxTokens != nil {
-					maxOut = *opts.MaxTokens
-				}
-				genConfig["thinkingConfig"] = map[string]interface{}{
-					"thinkingBudget": mapReasoningBudget(*opts.Reasoning, maxOut, m.modelID),
-				}
-			}
-		}
-	} else {
-		// Fall back to thinkingConfig from provider options.
-		if provOpts := m.getProviderOpts(opts); provOpts != nil {
-			if tc, ok := provOpts["thinkingConfig"].(map[string]interface{}); ok {
-				genConfig["thinkingConfig"] = tc
-			}
-		}
-	}
-
-	// JSON response format and optional schema.
-	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json_object" {
-		genConfig["responseMimeType"] = "application/json"
-	}
-	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
-		genConfig["responseMimeType"] = "application/json"
-		if opts.ResponseFormat.Schema != nil {
-			structuredOutputs := true
-			if provOpts := m.getProviderOpts(opts); provOpts != nil {
-				if so, ok := provOpts["structuredOutputs"].(bool); ok {
-					structuredOutputs = so
-				}
-			}
-			if structuredOutputs {
-				genConfig["responseSchema"] = opts.ResponseFormat.Schema
-			}
-		}
-	}
-
-	// Forward additional provider options into generationConfig and the top-level body.
-	provOpts := m.getProviderOpts(opts)
-	if provOpts != nil {
-		for _, key := range []string{"responseModalities", "mediaResolution", "audioTimestamp", "imageConfig", "thinkingBudget"} {
-			if v, ok := provOpts[key]; ok {
-				genConfig[key] = v
-			}
-		}
-		if v, ok := provOpts["safetySettings"]; ok {
-			body["safetySettings"] = v
-		}
-		if v, ok := provOpts["cachedContent"]; ok {
-			body["cachedContent"] = v
-		}
-		if v, ok := provOpts["labels"]; ok {
-			body["labels"] = v
-		}
-		if rc, ok := provOpts["retrievalConfig"]; ok {
-			// retrievalConfig is merged into toolConfig when present alongside native tools.
-			// Store it temporarily; the tools section below will pick it up.
-			body["_retrievalConfig"] = rc
-		}
-		isVertex := m.cfg.ProviderName == "google-vertex"
-		if st, ok := provOpts["serviceTier"].(string); ok && st != "" {
-			if isVertex {
-				warnings = append(warnings, types.Warning{
-					Type:    "other",
-					Message: "'serviceTier' is a Gemini API option and is not supported on Vertex AI. Use 'sharedRequestType' and optionally 'requestType' instead.",
-					Details: "'serviceTier' is a Gemini API option and is not supported on Vertex AI. Use 'sharedRequestType' and optionally 'requestType' instead.",
-				})
-			} else {
-				body["serviceTier"] = st
-			}
-		}
-		if shared, _ := provOpts["sharedRequestType"].(string); shared != "" {
-			if isVertex {
-				headers["X-Vertex-AI-LLM-Shared-Request-Type"] = shared
-			} else {
-				warnings = append(warnings, types.Warning{
-					Type:    "other",
-					Message: "'sharedRequestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
-					Details: "'sharedRequestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
-				})
-			}
-		}
-		if requestType, _ := provOpts["requestType"].(string); requestType != "" {
-			if isVertex {
-				headers["X-Vertex-AI-LLM-Request-Type"] = requestType
-			} else {
-				warnings = append(warnings, types.Warning{
-					Type:    "other",
-					Message: "'requestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
-					Details: "'requestType' is a Vertex AI option and is ignored with the Google Generative AI provider.",
-				})
-			}
-		}
-	}
-
-	if len(genConfig) > 0 {
-		body["generationConfig"] = genConfig
-	}
-
-	// Tools.
-	var toolConfig map[string]interface{}
-	if len(opts.Tools) > 0 {
-		var functionTools []types.Tool
-		var nativeEntries []map[string]interface{}
-
-		for _, t := range opts.Tools {
-			if t.Type == "provider" {
-				if entry := buildNativeToolEntry(t); entry != nil {
-					nativeEntries = append(nativeEntries, entry)
-				}
-			} else {
-				functionTools = append(functionTools, t)
-			}
-		}
-
-		if len(nativeEntries) > 0 {
-			toolsOut := make([]map[string]interface{}, 0, len(nativeEntries)+1)
-			toolsOut = append(toolsOut, nativeEntries...)
-			// TS parity: Gemini 3+ may mix native provider tools with function declarations.
-			if len(functionTools) > 0 && isGemini3Model(m.modelID) {
-				toolsOut = append(toolsOut, map[string]interface{}{
-					"functionDeclarations": tool.ToGoogleFormat(functionTools),
-				})
-			}
-			body["tools"] = toolsOut
-		} else if len(functionTools) > 0 {
-			body["tools"] = []map[string]interface{}{
-				{"functionDeclarations": tool.ToGoogleFormat(functionTools)},
-			}
-		}
-		if len(functionTools) > 0 {
-			toolConfig = m.buildFunctionCallingConfig(functionTools, opts)
-		}
-	}
-	if rc, ok := body["_retrievalConfig"]; ok {
-		if toolConfig == nil {
-			toolConfig = map[string]interface{}{}
-		}
-		toolConfig["retrievalConfig"] = rc
-	}
-	// TS parity: streamFunctionCallArguments applies only to Vertex streaming requests.
-	if isStreaming && m.cfg.ProviderName == "google-vertex" {
-		if provOpts := m.getProviderOpts(opts); provOpts != nil {
-			if streamFCArgs, ok := provOpts["streamFunctionCallArguments"].(bool); ok && streamFCArgs {
-				if toolConfig == nil {
-					toolConfig = map[string]interface{}{}
-				}
-				fcc, _ := toolConfig["functionCallingConfig"].(map[string]interface{})
-				if fcc == nil {
-					fcc = map[string]interface{}{}
-				}
-				fcc["streamFunctionCallArguments"] = true
-				toolConfig["functionCallingConfig"] = fcc
-			}
-		}
-	}
-	if toolConfig != nil {
-		body["toolConfig"] = toolConfig
-	}
-	delete(body, "_retrievalConfig")
-
-	if opts != nil {
-		headers = internalhttp.MergeHeaders(opts.Headers, headers)
-	}
-	return body, headers, warnings
-}
-
-// buildFunctionCallingConfig builds the functionCallingConfig map for the toolConfig
-// field. Mirrors TS prepareTools logic exactly.
-func (m *LanguageModel) buildFunctionCallingConfig(functionTools []types.Tool, opts *provider.GenerateOptions) map[string]interface{} {
-	hasStrictTools := false
-	for _, t := range functionTools {
-		if t.Strict {
-			hasStrictTools = true
-			break
-		}
-	}
-
-	var mode string
-	var allowedFunctionNames []string
-	if opts.ToolChoice != (types.ToolChoice{}) {
-		switch opts.ToolChoice.Type {
-		case types.ToolChoiceNone:
-			mode = "NONE"
-		case types.ToolChoiceRequired:
-			if hasStrictTools {
-				mode = "VALIDATED"
-			} else {
-				mode = "ANY"
-			}
-		case types.ToolChoiceTool:
-			if hasStrictTools {
-				mode = "VALIDATED"
-			} else {
-				mode = "ANY"
-			}
-			allowedFunctionNames = []string{opts.ToolChoice.ToolName}
-		default: // auto
-			if hasStrictTools {
-				mode = "VALIDATED"
-			} else {
-				mode = "AUTO"
-			}
-		}
-	} else if hasStrictTools {
-		mode = "VALIDATED"
-	}
-
-	if mode == "" {
-		return nil
-	}
-	fcConfig := map[string]interface{}{"mode": mode}
-	if len(allowedFunctionNames) > 0 {
-		fcConfig["allowedFunctionNames"] = allowedFunctionNames
-	}
-	return map[string]interface{}{"functionCallingConfig": fcConfig}
 }
 
 // convertResponse converts a Gemini API Response to a GenerateResult.
@@ -633,16 +284,4 @@ func (m *LanguageModel) convertResponse(response Response) *types.GenerateResult
 	}
 
 	return result
-}
-
-// supportsFunctionResponseParts reports whether the model supports multimodal
-// content in tool result function responses. Only Gemini 3+ models support this.
-func (m *LanguageModel) supportsFunctionResponseParts() bool {
-	return isGemini3Model(m.modelID)
-}
-
-// isImageModel reports whether the model ID indicates an image-specialized model
-// that does not support extended thinking (e.g. gemini-3-pro-image-*).
-func isImageModel(modelID string) bool {
-	return strings.Contains(modelID, "image")
 }

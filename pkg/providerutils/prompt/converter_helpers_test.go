@@ -125,17 +125,18 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		t.Fatalf("anthropic block data = %v", blockSource["data"])
 	}
 
-	googleURL := googleFileContentPart(types.FileContent{
+	gc := &googleConverter{names: []string{"google"}}
+	googleURL, _ := gc.fileContentPart(types.FileContent{
 		URL:       "https://example.com/a.png",
 		MediaType: "image/png",
-	})
+	}, false)
 	if googleURL["fileData"] == nil {
 		t.Fatalf("google URL fileData missing: %#v", googleURL)
 	}
-	googleRef := googleFileContentBlockPart(types.FileContentBlock{
+	googleRef, _ := gc.fileContentPart(fileBlockToContent(types.FileContentBlock{
 		Reference: "gs://bucket/file",
 		MediaType: "application/json",
-	})
+	}), false)
 	if googleRef["fileData"] == nil {
 		t.Fatalf("google reference fileData missing: %#v", googleRef)
 	}
