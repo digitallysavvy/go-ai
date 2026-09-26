@@ -130,12 +130,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
 	}
-	if opts.Temperature != nil {
-		body["temperature"] = *opts.Temperature
-	}
-	if opts.TopP != nil {
-		body["top_p"] = *opts.TopP
-	}
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
@@ -145,17 +139,79 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		responseFormatType := opts.ResponseFormat.Type
-		if responseFormatType == "json" {
-			responseFormatType = "json_object"
-		}
-		body["response_format"] = map[string]interface{}{
-			"type": responseFormatType,
-		}
-	}
 	deepseekOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.provider.providerOptionsName(), opts.ProviderOptions)
 	warnings = append(warnings, optionWarnings...)
+
+	// frequency_penalty/presence_penalty are deprecated by the upstream
+	// DeepSeek API, but Azure-hosted DeepSeek deployments still accept them
+	// (TS: deepseek-chat-language-model.ts supportsPenaltySampling).
+	supportsPenaltySampling := m.provider.supportsPenaltySampling()
+	if supportsPenaltySampling {
+		if opts.FrequencyPenalty != nil {
+			body["frequency_penalty"] = *opts.FrequencyPenalty
+		}
+		if opts.PresencePenalty != nil {
+			body["presence_penalty"] = *opts.PresencePenalty
+		}
+	} else {
+		if opts.FrequencyPenalty != nil {
+			const msg = "frequencyPenalty is deprecated by DeepSeek and has been omitted. Remove frequencyPenalty from the request."
+			warnings = append(warnings, types.Warning{
+				Type:    "deprecated",
+				Setting: "frequencyPenalty",
+				Details: msg,
+				Message: msg,
+			})
+		}
+		if opts.PresencePenalty != nil {
+			const msg = "presencePenalty is deprecated by DeepSeek and has been omitted. Remove presencePenalty from the request."
+			warnings = append(warnings, types.Warning{
+				Type:    "deprecated",
+				Setting: "presencePenalty",
+				Details: msg,
+				Message: msg,
+			})
+		}
+	}
+
+	// response_format: Azure-hosted DeepSeek deployments support json_schema
+	// structured outputs; the upstream DeepSeek API only supports json_object
+	// (TS: deepseek-chat-language-model.ts supportsStructuredOutputs).
+	if opts.ResponseFormat != nil {
+		switch {
+		case opts.ResponseFormat.Type == "json" && m.provider.supportsStructuredOutputs() && opts.ResponseFormat.Schema != nil:
+			name := opts.ResponseFormat.Name
+			if name == "" {
+				name = "response"
+			}
+			strict := true
+			if v, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "strictJsonSchema"); ok {
+				strict = v == "true"
+			} else if v, ok := deepseekOptions["strictJsonSchema"].(bool); ok {
+				strict = v
+			}
+			jsonSchema := map[string]interface{}{
+				"schema": opts.ResponseFormat.Schema,
+				"strict": strict,
+				"name":   name,
+			}
+			if opts.ResponseFormat.Description != "" {
+				jsonSchema["description"] = opts.ResponseFormat.Description
+			}
+			body["response_format"] = map[string]interface{}{
+				"type":        "json_schema",
+				"json_schema": jsonSchema,
+			}
+		case opts.ResponseFormat.Type != "":
+			responseFormatType := opts.ResponseFormat.Type
+			if responseFormatType == "json" {
+				responseFormatType = "json_object"
+			}
+			body["response_format"] = map[string]interface{}{
+				"type": responseFormatType,
+			}
+		}
+	}
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
 	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
 	if opts.Reasoning != nil {
@@ -178,10 +234,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			}
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
+			// TS deepseek-chat-language-model.ts effortMap: medium -> 'high'
+			// (DeepSeek's reasoning_effort scale is low/high/max; there is no
+			// "medium" wire value).
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
-			body["reasoning_effort"] = "medium"
+			body["reasoning_effort"] = "high"
+			if !hasProviderReasoningEffort {
+				warnings = append(warnings, reasoningCompatibilityWarning("medium", "high"))
+			}
 		case types.ReasoningHigh:
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
@@ -205,11 +267,41 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
 		body["reasoning_effort"] = effort
 	}
+	isThinkingEnabled := false
 	if thinking, ok := body["thinking"].(map[string]interface{}); ok {
 		if thinking["type"] == "disabled" {
 			delete(body, "reasoning_effort")
+		} else if thinking["type"] == "enabled" {
+			isThinkingEnabled = true
 		}
 	}
+
+	// temperature/topP have no effect while DeepSeek thinking is enabled
+	// (TS: deepseek-chat-language-model.ts).
+	if isThinkingEnabled {
+		if opts.Temperature != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "temperature",
+				Details: "temperature has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use temperature.",
+			})
+		}
+		if opts.TopP != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "topP",
+				Details: "topP has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use topP.",
+			})
+		}
+	} else {
+		if opts.Temperature != nil {
+			body["temperature"] = *opts.Temperature
+		}
+		if opts.TopP != nil {
+			body["top_p"] = *opts.TopP
+		}
+	}
+
 	return body, warnings
 }
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -293,6 +292,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
 		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:         providerOptionsName,
+		ExplicitMessageItemType:     m.provider.explicitMessageItemType(),
 	})
 	if err != nil {
 		return nil, store, warnings, err
@@ -676,20 +676,17 @@ func hasNilProviderOption(options map[string]interface{}, key string) bool {
 	return ok && value == nil
 }
 
+// supportsFlexProcessing delegates to GetLanguageModelCapabilities (34c53c0),
+// which ports TypeScript's regex-based GPT/o-series version parsing instead
+// of the previous ad-hoc prefix list.
 func supportsFlexProcessing(modelID string) bool {
-	return strings.HasPrefix(modelID, "o3") ||
-		strings.HasPrefix(modelID, "o4-mini") ||
-		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
+	return GetLanguageModelCapabilities(modelID).SupportsFlexProcessing
 }
 
+// supportsPriorityProcessing delegates to GetLanguageModelCapabilities
+// (34c53c0).
 func supportsPriorityProcessing(modelID string) bool {
-	return strings.HasPrefix(modelID, "gpt-4") ||
-		(strings.HasPrefix(modelID, "gpt-5") &&
-			!strings.HasPrefix(modelID, "gpt-5-nano") &&
-			!strings.HasPrefix(modelID, "gpt-5-chat") &&
-			!strings.HasPrefix(modelID, "gpt-5.4-nano")) ||
-		strings.HasPrefix(modelID, "o3") ||
-		strings.HasPrefix(modelID, "o4-mini")
+	return GetLanguageModelCapabilities(modelID).SupportsPriorityProcessing
 }
 
 // convertResponsesToolChoice maps a types.ToolChoice to the Responses API format.
