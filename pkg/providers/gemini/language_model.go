@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -50,6 +51,16 @@ func (m *LanguageModel) SupportsImageInput() bool {
 	return m.cfg.SupportsImageInput(m.modelID)
 }
 
+// SupportedURLs returns the URL patterns (regular expressions keyed by media
+// type, "*" for all) this model accepts directly without downloading first.
+// Mirrors TS getSupportedUrls (google-provider.ts / google-vertex-provider-base.ts).
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.cfg.SupportedURLs == nil {
+		return nil
+	}
+	return m.cfg.SupportedURLs(m.modelID)
+}
+
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, false)
@@ -95,9 +106,41 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
-// handleError wraps a low-level error into a provider error.
+// googleErrorData mirrors TS googleErrorDataSchema (google-error.ts):
+// {"error":{"code","message","status","details"}}.
+type googleErrorData struct {
+	Error struct {
+		Code    *int          `json:"code"`
+		Message string        `json:"message"`
+		Status  string        `json:"status"`
+		Details []interface{} `json:"details,omitempty"`
+	} `json:"error"`
+}
+
+// handleError wraps a low-level error into a provider error, parsing the
+// Google {error:{code,message,status,details}} JSON body when present
+// (TS googleFailedResponseHandler / createJsonErrorResponseHandler).
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
+	var httpErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
+	}
+
+	message := err.Error()
+	var data googleErrorData
+	if jsonErr := json.Unmarshal(httpErr.Body, &data); jsonErr == nil && data.Error.Message != "" {
+		message = data.Error.Message
+	}
+
+	perr := providererrors.NewProviderError(m.cfg.ProviderName, httpErr.StatusCode, data.Error.Status, message, err)
+	perr.ResponseBody = string(httpErr.Body)
+	if len(httpErr.Headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(httpErr.Headers)
+	}
+	if data.Error.Message != "" {
+		perr.Data = data
+	}
+	return perr
 }
 
 // convertResponse converts a Gemini API Response to a GenerateResult.

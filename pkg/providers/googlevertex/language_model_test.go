@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -491,5 +492,40 @@ func TestVertexLanguageModel_StreamText_Integration(t *testing.T) {
 	}
 	if len(chunks) == 0 {
 		t.Error("Expected at least one text chunk")
+	}
+}
+
+// TestSupportedURLs_Vertex ports TS google-vertex-provider-base.ts
+// getSupportedUrls: Vertex accepts any http(s) or gs:// URL directly.
+func TestSupportedURLs_Vertex(t *testing.T) {
+	prov, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "test-token",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+	m := NewLanguageModel(prov, "gemini-1.5-flash")
+
+	patterns, ok := m.SupportedURLs()["*"]
+	if !ok || len(patterns) == 0 {
+		t.Fatal("expected non-empty '*' patterns")
+	}
+	for _, url := range []string{"https://example.com/foo.pdf", "http://example.com", "gs://bucket/object"} {
+		matched := false
+		for _, p := range patterns {
+			re, err := regexp.Compile(p)
+			if err != nil {
+				t.Fatalf("invalid pattern %q: %v", p, err)
+			}
+			if re.MatchString(url) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("expected %q to be supported", url)
+		}
 	}
 }

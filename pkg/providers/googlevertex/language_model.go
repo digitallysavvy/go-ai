@@ -35,6 +35,11 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		},
 		Client:             p.client,
 		SupportsImageInput: vertexSupportsImageInput,
+		SupportedURLs: func(string) map[string][]string {
+			return map[string][]string{
+				"*": {`^https?:\/\/.*$`, `^gs:\/\/.*$`},
+			}
+		},
 	}
 	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
 }

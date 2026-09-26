@@ -2,6 +2,7 @@ package google
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
@@ -30,6 +31,7 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 		},
 		Client:             p.client,
 		SupportsImageInput: googleSupportsImageInput,
+		SupportedURLs:      func(modelID string) map[string][]string { return googleSupportedURLs(p.config.BaseURL, modelID) },
 	}
 	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
 }
@@ -44,4 +46,64 @@ func googleSupportsImageInput(modelID string) bool {
 	// Gemini 2.x and newer models generally support image input.
 	return strings.HasPrefix(modelID, "gemini-2.") ||
 		strings.HasPrefix(modelID, "gemini-3.")
+}
+
+// supportedExternalURLMediaTypes mirrors TS google-provider.ts
+// supportedExternalUrlMediaTypes: media types accepted as external https
+// URLs directly (without downloading), for models that support it.
+var supportedExternalURLMediaTypes = []string{
+	"text/html",
+	"text/css",
+	"text/plain",
+	"text/xml",
+	"text/csv",
+	"text/rtf",
+	"text/javascript",
+	"application/json",
+	"application/pdf",
+	"image/bmp",
+	"image/jpeg",
+	"image/png",
+	"image/webp",
+	"video/mp4",
+	"video/mpeg",
+	"video/quicktime",
+	"video/avi",
+	"video/x-flv",
+	"video/mpg",
+	"video/webm",
+	"video/wmv",
+	"video/3gpp",
+}
+
+var (
+	googleGemini2_0Pattern = regexp.MustCompile(`(^|/)gemini-2\.0`)
+	googleGeminiPattern    = regexp.MustCompile(`(^|/)gemini-`)
+)
+
+// googleSupportsExternalFileUrls mirrors TS supportsExternalFileUrls: any
+// Gemini model except the 2.0 family accepts external https URLs directly.
+func googleSupportsExternalFileUrls(modelID string) bool {
+	return googleGeminiPattern.MatchString(modelID) && !googleGemini2_0Pattern.MatchString(modelID)
+}
+
+// googleSupportedURLs mirrors TS google-provider.ts getSupportedUrls: the
+// Files API URL pattern and two YouTube patterns are always supported; for
+// non-2.0 Gemini models, every entry in supportedExternalURLMediaTypes also
+// accepts any https URL directly.
+func googleSupportedURLs(baseURL, modelID string) map[string][]string {
+	out := map[string][]string{
+		"*": {
+			`^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/files\/.*$`,
+			"^" + regexp.QuoteMeta(baseURL) + `/files/.*$`,
+			`^https:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+(?:&[\w=&.-]*)?$`,
+			`^https:\/\/youtu\.be\/[\w-]+(?:\?[\w=&.-]*)?$`,
+		},
+	}
+	if googleSupportsExternalFileUrls(modelID) {
+		for _, mediaType := range supportedExternalURLMediaTypes {
+			out[mediaType] = []string{`^https:\/\/.*$`}
+		}
+	}
+	return out
 }
