@@ -418,7 +418,8 @@ type ResponsesAPIUsage struct {
 	InputTokensCost    *float64 `json:"input_tokens_cost,omitempty"`
 	OutputTokensCost   *float64 `json:"output_tokens_cost,omitempty"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+		CachedTokens     int  `json:"cached_tokens,omitempty"`
+		CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`

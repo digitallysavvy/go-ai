@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -14,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -116,8 +119,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	conversation := ""
 	previousResponseID := ""
 	promptCacheRetention := ""
+	var promptCacheOptions interface{}
 	promptCacheKey := ""
 	reasoningEffort := ""
+	reasoningEffortUpdate := ""
 	reasoningSummary := ""
 	reasoningSummarySet := false
 	strictJSONSchema := true
@@ -162,11 +167,17 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["promptCacheRetention"].(string); ok {
 				promptCacheRetention = v
 			}
+			if v, ok := openaiOpts["promptCacheOptions"]; ok {
+				promptCacheOptions = v
+			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
 				promptCacheKey = v
 			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
 				reasoningEffort = v
+			}
+			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
+				reasoningEffortUpdate = v
 			}
 			if v, ok := openaiOpts["reasoningSummary"]; ok {
 				reasoningSummarySet = true
@@ -252,9 +263,23 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		})
 	}
 
+	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
+
 	isReasoning := isReasoningModel(m.modelID)
 	if forceReasoning != nil {
 		isReasoning = *forceReasoning
+	}
+
+	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
+	// on anything else (row 17e489e).
+	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
+		!slices.Contains(modelCapabilities.SupportedReasoningEfforts, reasoningEffort) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningEffort",
+			Details: fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", ")),
+		})
+		reasoningEffort = ""
 	}
 
 	// Determine system message mode based on model type.
@@ -287,6 +312,31 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		return nil, store, warnings, err
 	}
 	warnings = append(warnings, inputWarnings...)
+
+	// reasoningEffortUpdate (GPT-6+): prepend a configuration_update item so
+	// the model's reasoning effort can change mid-conversation without a new
+	// response chain. Requires standard reasoning mode (no auto-compaction,
+	// no auto-truncation).
+	if reasoningEffortUpdate != "" {
+		configurationUpdateSupported := modelCapabilities.SupportsConfigurationUpdate &&
+			!contextManagementExplicit && truncation != "auto"
+		if !configurationUpdateSupported {
+			details := "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
+			if !modelCapabilities.SupportsConfigurationUpdate {
+				details = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffortUpdate",
+				Details: details,
+			})
+		} else {
+			input = append([]interface{}{map[string]interface{}{
+				"type":      "configuration_update",
+				"reasoning": map[string]interface{}{"effort": reasoningEffortUpdate},
+			}}, input...)
+		}
+	}
 
 	// compactionTrigger: append a compaction_trigger item to the end of input.
 	if v, ok := openaiOpts["compactionTrigger"].(bool); ok && v {
@@ -378,6 +428,16 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Details: "topP is not supported for reasoning models",
 			})
 		}
+		// GPT-6+ models (which have a fixed SupportedReasoningEfforts list)
+		// do not support logprobs while reasoning is active.
+		if modelCapabilities.SupportedReasoningEfforts != nil && topLogprobs != nil {
+			topLogprobs = nil
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "logprobs",
+				Details: "logprobs is not supported for reasoning models",
+			})
+		}
 	}
 
 	if opts.MaxTokens != nil {
@@ -391,11 +451,25 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		textObj := map[string]interface{}{}
 		if hasJSONFormat {
 			if opts.ResponseFormat.Schema != nil {
+				// Normalize the response schema for OpenAI structured outputs
+				// (d5e3024, 411b3f2: drop propertyNames / lookaround
+				// patterns), matching the chat model's handling.
+				responseSchema := opts.ResponseFormat.Schema
+				if rawSchema := providerutils.ResponseFormatJSONSchema(responseSchema); rawSchema != nil {
+					if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
+						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
+						if normErr != nil {
+							return nil, false, warnings, normErr
+						}
+						warnings = append(warnings, schemaWarnings...)
+						responseSchema = normalizedSchema
+					}
+				}
 				format := map[string]interface{}{
 					"type":   "json_schema",
 					"strict": strictJSONSchema,
 					"name":   opts.ResponseFormat.Name,
-					"schema": opts.ResponseFormat.Schema,
+					"schema": responseSchema,
 				}
 				if format["name"] == "" {
 					format["name"] = "response"
@@ -420,6 +494,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
+		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		warnings = append(warnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
 		if len(allowedToolNames) > 0 {
 			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
@@ -480,7 +559,15 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
 		body["previous_response_id"] = nil
 	}
-	if promptCacheRetention != "" {
+	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+		// GPT-6+ models do not support promptCacheRetention; use
+		// promptCacheOptions instead.
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "promptCacheRetention",
+			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+		})
+	} else if promptCacheRetention != "" {
 		body["prompt_cache_retention"] = promptCacheRetention
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
 		body["prompt_cache_retention"] = nil
@@ -489,6 +576,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["prompt_cache_key"] = promptCacheKey
 	} else if hasNilProviderOption(openaiOpts, "promptCacheKey") {
 		body["prompt_cache_key"] = nil
+	}
+	if promptCacheOptions != nil {
+		body["prompt_cache_options"] = promptCacheOptions
 	}
 	if serviceTier != "" {
 		switch serviceTier {
@@ -502,7 +592,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 					Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
 				})
 			}
-		case "priority":
+		case "priority", "fast":
+			// "fast" is an alias for priority processing (row 4cd4548) and
+			// is gated the same way.
 			if supportsPriorityProcessing(m.modelID) {
 				body["service_tier"] = serviceTier
 			} else {
@@ -691,6 +783,51 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	default:
 		return "auto"
 	}
+}
+
+// normalizeResponsesToolSchemas normalizes the "parameters" JSON Schema of
+// every function tool (including tools grouped under a namespace) for
+// OpenAI structured outputs (d5e3024, 411b3f2: drop propertyNames /
+// lookaround patterns), mirroring the chat model's
+// normalizeOpenAIChatToolSchemas. It mutates tools in place.
+func normalizeResponsesToolSchemas(tools []interface{}) ([]types.Warning, error) {
+	var warnings []types.Warning
+	for i, t := range tools {
+		switch v := t.(type) {
+		case responses.FunctionToolDef:
+			normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(v)
+			if err != nil {
+				return nil, err
+			}
+			warnings = append(warnings, toolWarnings...)
+			tools[i] = normalized
+		case *responses.NamespaceToolDef:
+			// PrepareToolsWithError always stores namespaces as pointers, so
+			// mutating v.Tools mutates the shared underlying struct.
+			for j, fn := range v.Tools {
+				normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(fn)
+				if err != nil {
+					return nil, err
+				}
+				warnings = append(warnings, toolWarnings...)
+				v.Tools[j] = normalized
+			}
+		}
+	}
+	return warnings, nil
+}
+
+func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef) (responses.FunctionToolDef, []types.Warning, error) {
+	schemaMap, ok := fn.Parameters.(map[string]interface{})
+	if !ok || schemaMap == nil {
+		return fn, nil, nil
+	}
+	normalized, warnings, err := NormalizeOpenAIJSONSchema(schemaMap)
+	if err != nil {
+		return fn, nil, err
+	}
+	fn.Parameters = normalized
+	return fn, warnings, nil
 }
 
 func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
@@ -1089,12 +1226,19 @@ func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 		TotalTokens:  &total,
 	}
 
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
+	if u.InputTokensDetails != nil && (u.InputTokensDetails.CachedTokens > 0 || u.InputTokensDetails.CacheWriteTokens != nil) {
 		cached := int64(u.InputTokensDetails.CachedTokens)
-		noCached := inputTokens - cached
+		var cacheWrite int64
+		var cacheWritePtr *int64
+		if u.InputTokensDetails.CacheWriteTokens != nil {
+			cacheWrite = int64(*u.InputTokensDetails.CacheWriteTokens)
+			cacheWritePtr = &cacheWrite
+		}
+		noCached := inputTokens - cached - cacheWrite
 		result.InputDetails = &types.InputTokenDetails{
-			CacheReadTokens: &cached,
-			NoCacheTokens:   &noCached,
+			CacheReadTokens:  &cached,
+			CacheWriteTokens: cacheWritePtr,
+			NoCacheTokens:    &noCached,
 		}
 	}
 

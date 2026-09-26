@@ -1832,3 +1832,256 @@ func TestResponsesLanguageModel_CompactionTrigger(t *testing.T) {
 		}
 	}
 }
+
+// TestResponsesLanguageModel_ReasoningEffortUpdate covers row 17e489e: a
+// GPT-6+ model prepends a configuration_update item for reasoningEffortUpdate,
+// and rejects it (with a warning) on older models or with auto truncation.
+func TestResponsesLanguageModel_ReasoningEffortUpdate(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err := gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffortUpdate": "high"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	input := body["input"].([]interface{})
+	first := input[0].(map[string]interface{})
+	if first["type"] != "configuration_update" {
+		t.Fatalf("input[0] = %#v, want configuration_update first", first)
+	}
+	reasoning := first["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "high" {
+		t.Fatalf("configuration_update reasoning = %#v, want effort high", reasoning)
+	}
+
+	// Older (non-GPT-6) models reject it with a warning; no item is prepended.
+	older := NewResponsesLanguageModel(p, "gpt-5")
+	body, _, warnings, err = older.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffortUpdate": "high"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffortUpdate" {
+		t.Fatalf("warnings = %#v, want reasoningEffortUpdate warning", warnings)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "configuration_update" {
+			t.Fatalf("unexpected configuration_update on non-GPT-6 model: %#v", body["input"])
+		}
+	}
+}
+
+// TestResponsesLanguageModel_GPT6DropsPromptCacheRetentionAndTopLogprobs
+// covers rows 17e489e/b2b1bb9: GPT-6+ models don't support
+// promptCacheRetention (use promptCacheOptions instead) or logprobs while
+// reasoning, both dropped with a warning.
+func TestResponsesLanguageModel_GPT6DropsPromptCacheRetentionAndTopLogprobs(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT6Astra)
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"promptCacheRetention": "24h",
+				"logprobs":             true,
+				"reasoningEffort":      "high",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["prompt_cache_retention"]; ok {
+		t.Fatalf("prompt_cache_retention should be dropped for GPT-6+: %#v", body)
+	}
+	if _, ok := body["top_logprobs"]; ok {
+		t.Fatalf("top_logprobs should be dropped for GPT-6+ reasoning: %#v", body)
+	}
+	var sawRetentionWarning, sawLogprobsWarning bool
+	for _, w := range warnings {
+		if w.Feature == "promptCacheRetention" {
+			sawRetentionWarning = true
+		}
+		if w.Feature == "logprobs" {
+			sawLogprobsWarning = true
+		}
+	}
+	if !sawRetentionWarning || !sawLogprobsWarning {
+		t.Fatalf("warnings = %#v, want promptCacheRetention and logprobs warnings", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6 covers row
+// 17e489e: an unsupported reasoning effort for a GPT-6+ model is dropped
+// with a warning instead of being sent.
+func TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT6Astra)
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffort": "minimal"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning should be dropped for unsupported effort: %#v", body)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffort" {
+		t.Fatalf("warnings = %#v, want reasoningEffort warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_ServiceTierFastGatedLikePriority covers row
+// 4cd4548: serviceTier "fast" must be gated the same way as "priority"
+// (previously it fell through to the default case and was always sent).
+func TestResponsesLanguageModel_ServiceTierFastGatedLikePriority(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	supported := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, err := supported.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"serviceTier": "fast"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if body["service_tier"] != "fast" {
+		t.Fatalf("service_tier = %v, want fast for a supported model", body["service_tier"])
+	}
+
+	unsupported := NewResponsesLanguageModel(p, "gpt-5-nano")
+	body, _, warnings, err := unsupported.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"serviceTier": "fast"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["service_tier"]; ok {
+		t.Fatalf("service_tier should be dropped for an unsupported model: %#v", body)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "serviceTier" {
+		t.Fatalf("warnings = %#v, want serviceTier warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_PromptCacheOptionsPassthrough covers row
+// b2b1bb9: promptCacheOptions is forwarded verbatim as prompt_cache_options.
+func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"promptCacheOptions": map[string]interface{}{"mode": "manual", "ttl": "24h"},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	opts, ok := body["prompt_cache_options"].(map[string]interface{})
+	if !ok || opts["mode"] != "manual" || opts["ttl"] != "24h" {
+		t.Fatalf("prompt_cache_options = %#v, want passthrough", body["prompt_cache_options"])
+	}
+}
+
+// TestConvertResponsesUsage_CacheWriteTokens covers row b2b1bb9: usage's
+// input_tokens_details.cache_write_tokens surfaces as
+// InputDetails.CacheWriteTokens, and NoCacheTokens accounts for it.
+func TestConvertResponsesUsage_CacheWriteTokens(t *testing.T) {
+	cacheWrite := 5
+	usage := responses.ResponsesAPIUsage{
+		InputTokens:  100,
+		OutputTokens: 20,
+		InputTokensDetails: &struct {
+			CachedTokens     int  `json:"cached_tokens,omitempty"`
+			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+		}{CachedTokens: 30, CacheWriteTokens: &cacheWrite},
+	}
+	got := convertResponsesUsage(usage)
+	if got.InputDetails == nil || got.InputDetails.CacheWriteTokens == nil || *got.InputDetails.CacheWriteTokens != 5 {
+		t.Fatalf("InputDetails = %#v, want CacheWriteTokens=5", got.InputDetails)
+	}
+	if got.InputDetails.NoCacheTokens == nil || *got.InputDetails.NoCacheTokens != 65 {
+		t.Fatalf("NoCacheTokens = %v, want 65 (100-30-5)", got.InputDetails.NoCacheTokens)
+	}
+}
+
+// TestNormalizeResponsesToolSchemas covers d5e3024/411b3f2: function tool
+// parameters (including namespaced tools) and the response_format schema are
+// normalized for OpenAI structured outputs (propertyNames removed).
+func TestNormalizeResponsesToolSchemas(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "lookup",
+			Parameters: map[string]interface{}{
+				"type":          "object",
+				"properties":    map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
+				"propertyNames": map[string]interface{}{"type": "string", "pattern": "^[a-z]+$"},
+			},
+		}},
+		ResponseFormat: &provider.ResponseFormat{
+			Type: "json",
+			Schema: map[string]interface{}{
+				"type":          "object",
+				"propertyNames": map[string]interface{}{"type": "string", "pattern": "^[a-z]+$"},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	tools := body["tools"].([]interface{})
+	fn := tools[0].(responses.FunctionToolDef)
+	fnParams := fn.Parameters.(map[string]interface{})
+	if _, ok := fnParams["propertyNames"]; ok {
+		t.Fatalf("tool parameters propertyNames should be stripped: %#v", fnParams)
+	}
+	textObj := body["text"].(map[string]interface{})
+	format := textObj["format"].(map[string]interface{})
+	schema := format["schema"].(map[string]interface{})
+	if _, ok := schema["propertyNames"]; ok {
+		t.Fatalf("response_format schema propertyNames should be stripped: %#v", schema)
+	}
+}
