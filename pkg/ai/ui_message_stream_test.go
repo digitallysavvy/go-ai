@@ -1241,6 +1241,45 @@ func TestCreateUIMessageStreamWithOptions_MetadataDeepMergeAndInvalidToolOutput(
 	}
 }
 
+// ports "make input optional on input-streaming UIMessagePart variants"
+// (audit row 2852a84): TS sets `input: undefined` on tool-input-start, which
+// JSON.stringify omits entirely. Go must delete the key rather than storing
+// Go nil (which would marshal as JSON null).
+func TestCreateUIMessageStreamWithOptions_InputStreamingOmitsInputKey(t *testing.T) {
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, _ := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "start"})
+			writer.Write(UIMessageChunk{"type": "tool-input-start", "toolCallId": "call-1", "toolName": "search"})
+		},
+		OnFinish: func(event map[string]interface{}) { finishEvent <- event },
+	})
+	for range chunks {
+	}
+	event := <-finishEvent
+	message := event["responseMessage"].(UIMessageChunk)
+	parts := uiParts(message)
+	var toolPart map[string]interface{}
+	for _, raw := range parts {
+		if p := asUIPartChunk(raw); p != nil && p["type"] == "tool-search" {
+			toolPart = p
+		}
+	}
+	if toolPart == nil {
+		t.Fatalf("tool part not found in %#v", parts)
+	}
+	if _, exists := toolPart["input"]; exists {
+		t.Fatalf("input key should be absent during input-streaming, got %#v", toolPart["input"])
+	}
+	b, err := json.Marshal(toolPart)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(b), `"input"`) {
+		t.Fatalf("marshaled tool part should omit \"input\": %s", b)
+	}
+}
+
 func TestCreateUIMessageStreamWithOptions_DataPartsUpdateCallbackState(t *testing.T) {
 	finishEvent := make(chan map[string]interface{}, 1)
 

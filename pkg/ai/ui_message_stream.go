@@ -987,7 +987,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		}
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
 			"state": "input-streaming",
-			"input": nil,
+			"input": uiOmitField,
 		}, chunk)
 	case "tool-input-delta":
 		toolCallID := stringValue(chunk["toolCallId"])
@@ -1022,7 +1022,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		if dynamic {
 			update["input"] = chunk["input"]
 		} else {
-			update["input"] = nil
+			update["input"] = uiOmitField
 			update["rawInput"] = chunk["input"]
 		}
 		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
@@ -1177,6 +1177,16 @@ func (s *uiMessageCallbackState) updateExistingToolPart(part UIMessageChunk, too
 	s.applyToolPartUpdate(part, stringValue(part["toolCallId"]), toolName, dynamic, update, source)
 }
 
+// uiOmitField is a sentinel for applyToolPartUpdate: an update value equal
+// to uiOmitField deletes the key from the part instead of setting it to
+// Go nil (which would marshal as JSON null). This distinguishes TS's
+// `field: undefined` (key entirely absent from the JSON-serialized part,
+// e.g. input-streaming/output-error tool parts' "input") from a
+// genuinely-null field value, which must round-trip as JSON null. Mirrors
+// TS process-ui-message-stream.ts's updateToolPart({input: undefined, ...})
+// calls (audit row #2852a84).
+var uiOmitField = struct{}{}
+
 func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
 	if part == nil {
 		if dynamic {
@@ -1190,6 +1200,10 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 		part["toolName"] = toolName
 	}
 	for key, value := range update {
+		if value == uiOmitField {
+			delete(part, key)
+			continue
+		}
 		part[key] = value
 	}
 	copyIfPresent(part, source, "providerExecuted", "providerExecuted")
