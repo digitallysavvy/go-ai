@@ -25,9 +25,10 @@ const (
 	SpeechModelGemini31FlashTTSPreview     = "gemini-3.1-flash-tts-preview"
 
 	// SpeechModelChirp3HD is Vertex Cloud Text-to-Speech's Chirp 3 HD voice
-	// model, a separate (non-Gemini) backend. Not yet wired to
-	// Provider.SpeechModel(), which still routes every model ID through the
-	// Gemini TTS config; see WG-G5 in the Sep 23 2026 parity handoff (deferred).
+	// model, a separate (non-Gemini) backend served by the dedicated Cloud
+	// Text-to-Speech text:synthesize endpoint (CloudTTSSpeechModel), not
+	// Vertex's generateContent endpoint. Provider.SpeechModel() routes any
+	// model ID with the "chirp" prefix here (TS: modelId.startsWith('chirp')).
 	SpeechModelChirp3HD = "chirp-3-hd"
 )
 

@@ -35,7 +35,19 @@ type Provider struct {
 	// nil when the caller supplied an explicit BaseURL, matching TS: an
 	// explicit baseURL is used verbatim regardless of the endpoint flag.
 	endpointClient *http.Client
+
+	// cloudTTSClient targets the (non-regional) Cloud Text-to-Speech
+	// synthesize endpoint for Chirp 3: HD voices, reusing the same
+	// OAuth-authenticated *stdhttp.Client as client/endpointClient. nil in
+	// Express Mode (API key auth), which Chirp speech models reject outright.
+	cloudTTSClient *http.Client
 }
+
+// defaultCloudTTSSynthesizeURL is the (non-regional) Cloud Text-to-Speech
+// synthesize endpoint used by Chirp 3: HD voices
+// (TS CLOUD_TTS_SYNTHESIZE_URL). Unlike Vertex AI and Speech-to-Text, Cloud
+// Text-to-Speech has a single global host, not a per-region one.
+const defaultCloudTTSSynthesizeURL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
 // isEndpointModelID mirrors TS isEndpointModelId: tuned models are served
 // from a deployed endpoint and addressed by their "endpoints/{id}" resource,
@@ -72,6 +84,11 @@ type Config struct {
 
 	// BaseURL is the base URL for the Vertex AI API (optional, computed from project/location if not provided)
 	BaseURL string
+
+	// CloudTTSBaseURL overrides the Cloud Text-to-Speech synthesize endpoint
+	// used by Chirp 3: HD voices (default: the real, non-regional
+	// texttospeech.googleapis.com host). Primarily for tests.
+	CloudTTSBaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
@@ -243,10 +260,26 @@ func New(cfg Config) (*Provider, error) {
 		})
 	}
 
+	var cloudTTSClient *http.Client
+	// Chirp speech models reject Express Mode outright (checked in
+	// SpeechModel), so the Cloud TTS client is only built for OAuth auth.
+	if cfg.APIKey == "" {
+		cloudTTSBaseURL := cfg.CloudTTSBaseURL
+		if cloudTTSBaseURL == "" {
+			cloudTTSBaseURL = defaultCloudTTSSynthesizeURL
+		}
+		cloudTTSClient = http.NewClient(http.Config{
+			BaseURL:    cloudTTSBaseURL,
+			Headers:    mergedHeaders,
+			HTTPClient: httpClient,
+		})
+	}
+
 	return &Provider{
 		config:         cfg,
 		client:         client,
 		endpointClient: endpointClient,
+		cloudTTSClient: cloudTTSClient,
 	}, nil
 }
 
@@ -411,6 +444,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a Gemini TTS speech synthesis model by ID.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	// Chirp 3: HD voices are served by the dedicated Cloud Text-to-Speech
+	// API, not Vertex's generateContent endpoint (TS:
+	// `modelId.startsWith('chirp')`).
+	if strings.HasPrefix(modelID, "chirp") {
+		if p.config.APIKey != "" {
+			return nil, fmt.Errorf("google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		}
+		return NewCloudTTSSpeechModel(p, modelID), nil
+	}
 	return googleprovider.NewSpeechModelWithConfig(modelID, googleprovider.SpeechModelConfig{
 		ProviderName:        "google.vertex.speech",
 		MetadataKey:         "google",
@@ -422,7 +464,8 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	}), nil
 }
 
-// Speech returns a Gemini TTS speech synthesis model by ID.
+// Speech returns a speech synthesis model by ID (Gemini TTS via
+// generateContent, or Chirp 3: HD via Cloud Text-to-Speech).
 func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
