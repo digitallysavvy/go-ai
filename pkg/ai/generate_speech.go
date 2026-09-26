@@ -154,6 +154,7 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		warnings = []types.Warning{}
 	}
 	mediaType := resolveGeneratedSpeechMediaType(raw.Audio)
+	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{
 			Data:      raw.Audio,

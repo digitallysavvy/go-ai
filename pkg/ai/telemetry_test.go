@@ -97,6 +97,10 @@ func (m *mockEmbeddingModel) ModelID() string {
 	return "test-embedding-model"
 }
 
+func (m *mockEmbeddingModel) MaxEmbeddingsPerCall() int { return 0 }
+
+func (m *mockEmbeddingModel) SupportsParallelCalls() bool { return false }
+
 func (m *mockEmbeddingModel) DoEmbed(ctx context.Context, input string, _ *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
 	return &types.EmbeddingResult{
 		Embedding: []float64{0.1, 0.2, 0.3},

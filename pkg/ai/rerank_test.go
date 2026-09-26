@@ -3,10 +3,12 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -385,6 +387,190 @@ func TestRerank_ProviderMetadata(t *testing.T) {
 	}
 	if result.ProviderMetadata == nil {
 		t.Error("expected provider metadata")
+	}
+}
+
+// TestRerank_InvalidRankingIndexRejected mirrors TS rerank.test.ts
+// "should reject invalid provider ranking index %s" (index 3, -1, 5 for 3
+// documents): the call must fail with an InvalidResponseDataError, must not
+// retry, and must not fire onEnd. It must also not panic when indexing
+// documentsSlice.
+func TestRerank_InvalidRankingIndexRejected(t *testing.T) {
+	t.Parallel()
+
+	for _, idx := range []int{3, -1, 5} {
+		idx := idx
+		t.Run("", func(t *testing.T) {
+			t.Parallel()
+
+			calls := 0
+			onEndCalled := false
+			model := &testutil.MockRerankingModel{
+				DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+					calls++
+					return &types.RerankResult{
+						Ranking: []types.RerankItem{{Index: idx, RelevanceScore: 0.9}},
+					}, nil
+				},
+			}
+
+			_, err := Rerank(context.Background(), RerankOptions{
+				Model:     model,
+				Documents: []string{"a", "b", "c"},
+				Query:     "q",
+				ExperimentalOnEnd: func(RerankOnFinishEvent) {
+					onEndCalled = true
+				},
+			})
+
+			if err == nil {
+				t.Fatal("expected error for invalid ranking index")
+			}
+			if !providererrors.IsInvalidResponseDataError(err) {
+				t.Errorf("expected InvalidResponseDataError, got: %v (%T)", err, err)
+			}
+			wantMsg := "Invalid ranking index"
+			if !strings.Contains(err.Error(), wantMsg) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), wantMsg)
+			}
+			if calls != 1 {
+				t.Errorf("doRerank calls = %d, want 1 (no retry for a validation error)", calls)
+			}
+			if onEndCalled {
+				t.Error("onEnd must not be called when the ranking index is invalid")
+			}
+		})
+	}
+}
+
+// TestRerank_EmptyDocumentsFiresCallbacks mirrors TS rerank.test.ts
+// "should fire callbacks for empty documents".
+func TestRerank_EmptyDocumentsFiresCallbacks(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockRerankingModel{}
+
+	var startEvent *RerankOnStartEvent
+	var endEvent *RerankOnFinishEvent
+
+	_, err := Rerank(context.Background(), RerankOptions{
+		Model:     model,
+		Documents: []string{},
+		Query:     "rainy day",
+		ExperimentalOnStart: func(e RerankOnStartEvent) {
+			startEvent = &e
+		},
+		ExperimentalOnEnd: func(e RerankOnFinishEvent) {
+			endEvent = &e
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if startEvent == nil {
+		t.Fatal("expected onStart to be called for empty documents")
+	}
+	if endEvent == nil {
+		t.Fatal("expected onEnd to be called for empty documents")
+	}
+	if len(endEvent.Ranking) != 0 {
+		t.Errorf("expected empty ranking in onEnd, got %d items", len(endEvent.Ranking))
+	}
+}
+
+// TestRerank_RetriesRetryableError mirrors the embed/embedMany retry policy:
+// a retryable provider error (429) is retried until it succeeds, using the
+// default MaxRetries (nil -> 2, matching TS prepareRetries).
+func TestRerank_RetriesRetryableError(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			attempts++
+			if attempts < 2 {
+				pe := providererrors.NewProviderError("mock", 429, "RESOURCE_EXHAUSTED", "rate limited", nil)
+				pe.ResponseHeaders = map[string]string{"retry-after-ms": "0"}
+				return nil, pe
+			}
+			return &types.RerankResult{
+				Ranking: []types.RerankItem{{Index: 0, RelevanceScore: 0.9}},
+			}, nil
+		},
+	}
+
+	result, err := Rerank(context.Background(), RerankOptions{
+		Model:     model,
+		Documents: []string{"doc1"},
+		Query:     "query",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+	if len(result.Ranking) != 1 {
+		t.Errorf("expected 1 ranked item, got %d", len(result.Ranking))
+	}
+}
+
+// TestRerank_RejectsNegativeMaxRetries mirrors TS prepareRetries: a negative
+// maxRetries is an InvalidArgumentError.
+func TestRerank_RejectsNegativeMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockRerankingModel{}
+	negative := -1
+
+	_, err := Rerank(context.Background(), RerankOptions{
+		Model:      model,
+		Documents:  []string{"doc1"},
+		Query:      "query",
+		MaxRetries: &negative,
+	})
+	if err == nil {
+		t.Fatal("expected error for negative MaxRetries")
+	}
+}
+
+// TestRerank_RuntimeContextThreaded verifies RuntimeContext flows unchanged
+// to both the start and end callbacks.
+func TestRerank_RuntimeContextThreaded(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{ UserID string }
+	rc := ctxKey{UserID: "u-1"}
+
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			return &types.RerankResult{
+				Ranking: []types.RerankItem{{Index: 0, RelevanceScore: 0.9}},
+			}, nil
+		},
+	}
+
+	var startRC, endRC interface{}
+	_, err := Rerank(context.Background(), RerankOptions{
+		Model:          model,
+		Documents:      []string{"doc1"},
+		Query:          "query",
+		RuntimeContext: rc,
+		ExperimentalOnStart: func(e RerankOnStartEvent) {
+			startRC = e.RuntimeContext
+		},
+		ExperimentalOnEnd: func(e RerankOnFinishEvent) {
+			endRC = e.RuntimeContext
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if startRC != rc {
+		t.Errorf("start RuntimeContext = %#v, want %#v", startRC, rc)
+	}
+	if endRC != rc {
+		t.Errorf("end RuntimeContext = %#v, want %#v", endRC, rc)
 	}
 }
 

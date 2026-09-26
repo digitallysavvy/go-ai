@@ -128,7 +128,7 @@ func TestEmbedOnStartHeadersAndMaxRetries(t *testing.T) {
 	_, err := Embed(context.Background(), EmbedOptions{
 		Model:      model,
 		Input:      "hello",
-		MaxRetries: 3,
+		MaxRetries: intPtr(3),
 		Headers:    map[string]string{"X-Custom": "value"},
 		ExperimentalOnStart: func(e EmbedOnStartEvent) {
 			mu.Lock()

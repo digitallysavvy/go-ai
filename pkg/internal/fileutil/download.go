@@ -265,7 +265,10 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 				return err
 			}
 		}
-		if len(via) > 0 && !sameOrigin(req.URL, via[len(via)-1].URL) {
+		// http.Client re-copies the ORIGINAL request's headers onto every hop,
+		// so once any hop in the chain has left the original origin, headers
+		// must stay stripped for the rest of the chain (TS keeps a sticky flag).
+		if len(via) > 0 && redirectChainCrossedOrigin(req, via) {
 			userAgent := req.Header.Get("User-Agent")
 			for k := range req.Header {
 				delete(req.Header, k)
@@ -277,6 +280,21 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 		return nil
 	}
 	return client
+}
+
+// redirectChainCrossedOrigin reports whether req or any earlier hop has a
+// different origin from the first request in the chain.
+func redirectChainCrossedOrigin(req *http.Request, via []*http.Request) bool {
+	origin := via[0].URL
+	if !sameOrigin(req.URL, origin) {
+		return true
+	}
+	for _, hop := range via[1:] {
+		if !sameOrigin(hop.URL, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // blockedRequestHeaders mirrors TS sanitize-request-headers.ts.

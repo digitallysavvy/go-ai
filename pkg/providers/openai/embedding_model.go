@@ -47,6 +47,13 @@ func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
 	return 2048
 }
 
+// MaxInputBytesPerCall returns the conservative UTF-8 input byte budget for a
+// single embeddings request. ai.EmbedMany uses it to split large requests.
+// Mirrors the TS SDK's EXPERIMENTAL_EMBEDDING_MODEL_MAX_INPUT_BYTES_PER_CALL = 300_000.
+func (m *EmbeddingModel) MaxInputBytesPerCall() int {
+	return 300_000
+}
+
 // SupportsParallelCalls returns whether parallel calls are supported
 func (m *EmbeddingModel) SupportsParallelCalls() bool {
 	return true

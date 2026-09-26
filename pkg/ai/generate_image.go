@@ -111,6 +111,8 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 		return nil, fmt.Errorf("no image generated")
 	}
 
+	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
+
 	return &GenerateImageResult{
 		Images:           images,
 		Image:            images[0],

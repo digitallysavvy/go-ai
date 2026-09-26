@@ -304,3 +304,32 @@ func TestDownloadDropsCallerHeadersOnCrossOriginRedirect(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// A → B/first → B/second: Go re-copies the original headers onto every hop, so
+// the second same-origin hop on B must not regain credentials (TS sticky flag).
+func TestDownloadKeepsCredentialsStrippedAfterCrossOriginHop(t *testing.T) {
+	var secondHop http.Header
+	var target *httptest.Server
+	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/first" {
+			http.Redirect(w, r, target.URL+"/second", http.StatusFound)
+			return
+		}
+		secondHop = r.Header.Clone()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/first", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	opts := insecureDownloadOptions()
+	opts.Headers = map[string]string{"X-Api-Key": "secret", "Authorization": "Bearer secret"}
+	if _, err := Download(context.Background(), origin.URL, opts); err != nil {
+		t.Fatalf("Download error: %v", err)
+	}
+	if secondHop.Get("X-Api-Key") != "" || secondHop.Get("Authorization") != "" {
+		t.Fatalf("credentials leaked on second hop after crossing origin: %v", secondHop)
+	}
+}

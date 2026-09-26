@@ -120,21 +120,25 @@ func TestEmbedMany_NilModel(t *testing.T) {
 	}
 }
 
+// TestEmbedMany_EmptyInputs mirrors TS embedMany, which does not special-case
+// an empty values array: it calls through to the model and returns an empty
+// result rather than erroring (see embed-many.ts, splitByEmbeddingLimits
+// returning [] for values.length === 0).
 func TestEmbedMany_EmptyInputs(t *testing.T) {
 	t.Parallel()
 
 	model := &testutil.MockEmbeddingModel{}
 
-	_, err := EmbedMany(context.Background(), EmbedManyOptions{
+	result, err := EmbedMany(context.Background(), EmbedManyOptions{
 		Model:  model,
 		Inputs: []string{},
 	})
 
-	if err == nil {
-		t.Fatal("expected error for empty inputs")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if err.Error() != "at least one input is required" {
-		t.Errorf("unexpected error message: %v", err)
+	if len(result.Embeddings) != 0 {
+		t.Errorf("expected 0 embeddings, got %d", len(result.Embeddings))
 	}
 }
 
@@ -350,10 +354,10 @@ func TestFindMostSimilar_Basic(t *testing.T) {
 
 	query := []float64{1.0, 0.0}
 	candidates := [][]float64{
-		{0.0, 1.0},   // orthogonal
-		{1.0, 0.0},   // identical
-		{-1.0, 0.0},  // opposite
-		{0.5, 0.5},   // partial
+		{0.0, 1.0},  // orthogonal
+		{1.0, 0.0},  // identical
+		{-1.0, 0.0}, // opposite
+		{0.5, 0.5},  // partial
 	}
 
 	index, similarity, err := FindMostSimilar(query, candidates)
@@ -386,9 +390,9 @@ func TestRankBySimilarity_Basic(t *testing.T) {
 
 	query := []float64{1.0, 0.0}
 	candidates := [][]float64{
-		{0.0, 1.0},   // orthogonal - 0.0
-		{1.0, 0.0},   // identical - 1.0
-		{-1.0, 0.0},  // opposite - -1.0
+		{0.0, 1.0},  // orthogonal - 0.0
+		{1.0, 0.0},  // identical - 1.0
+		{-1.0, 0.0}, // opposite - -1.0
 	}
 
 	indices, similarities, err := RankBySimilarity(query, candidates)
