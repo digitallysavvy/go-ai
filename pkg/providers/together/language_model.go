@@ -111,6 +111,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if stream {
 		body["stream"] = true
+		// Without stream_options.include_usage, streaming responses report no
+		// token usage at all.
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
