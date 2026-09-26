@@ -9,6 +9,7 @@ import (
 	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -38,6 +39,9 @@ type EmbedOnStartEvent struct {
 	// Provider and ModelID identify the model.
 	Provider string
 	ModelID  string
+	// RuntimeContext is the user-defined runtime context passed via the
+	// options (unfiltered; telemetry only receives IncludeRuntimeContext keys).
+	RuntimeContext interface{}
 	// Values are the input texts being embedded (single value for Embed,
 	// multiple for EmbedMany).
 	Values []string
@@ -73,6 +77,9 @@ type EmbedOnFinishEvent struct {
 	// Provider and ModelID identify the model.
 	Provider string
 	ModelID  string
+	// RuntimeContext is the user-defined runtime context passed via the
+	// options (unfiltered; telemetry only receives IncludeRuntimeContext keys).
+	RuntimeContext interface{}
 	// Value echoes the input(s) that were embedded (single string for Embed, slice for EmbedMany).
 	Value []string
 	// Embeddings contains the resulting vectors (one per input value).
@@ -106,8 +113,17 @@ type EmbedOptions struct {
 	// Input text to embed
 	Input string
 
-	// MaxRetries is the number of times to retry on transient failure (0 = no retries).
-	MaxRetries int
+	// MaxRetries is the number of times to retry a model call on a retryable
+	// provider failure (HTTP 408/409/429/5xx), with exponential backoff that
+	// respects retry-after headers. nil means unset and defaults to 2 (TS
+	// default); 0 disables retries; negative values are rejected. This
+	// mirrors the *int convention used by GenerateTextOptions.MaxRetries.
+	MaxRetries *int
+
+	// RuntimeContext is user-defined context passed to the start/end callbacks
+	// unchanged and, filtered by Telemetry.IncludeRuntimeContext, to telemetry.
+	// Treat it as immutable.
+	RuntimeContext interface{}
 
 	// Headers are additional HTTP headers forwarded to the model on each request.
 	Headers map[string]string
@@ -147,6 +163,12 @@ type EmbedResult struct {
 
 	// Warnings are any non-fatal warnings emitted by the provider.
 	Warnings []types.Warning
+
+	// ProviderMetadata holds provider-specific metadata returned by the model.
+	ProviderMetadata map[string]interface{}
+
+	// Response holds the HTTP response metadata (headers, body) of the model call.
+	Response types.EmbeddingResponse
 }
 
 // Embed generates an embedding for a single text input
@@ -158,6 +180,10 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Input == "" {
 		return nil, fmt.Errorf("input is required")
 	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
@@ -186,8 +212,6 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
 		}
 
-		// Add custom metadata
-
 		// Record input if enabled
 		if opts.ExperimentalTelemetry.RecordInputs {
 			span.SetAttributes(attribute.String("ai.value", opts.Input))
@@ -213,8 +237,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		OperationID:      "ai.embed",
 		Provider:         opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
+		RuntimeContext:   opts.RuntimeContext,
 		Values:           []string{opts.Input},
-		MaxRetries:       opts.MaxRetries,
+		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
@@ -236,7 +261,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:        opts.Model.ModelID(),
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Input),
-		RuntimeContext: map[string]interface{}{},
+		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
 		ToolsContext:   map[string]interface{}{},
 	})
 
@@ -246,46 +271,70 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		Headers:         opts.Headers,
 	}
 
-	// Call the model
-	embedCallID := newCallID()
-	telemetry.FireOnEmbedStart(ctx, telemetry.EmbeddingModelCallStartEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		EmbedCallID:   embedCallID,
-		OperationID:   "ai.embed.doEmbed",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Values:        []string{opts.Input},
+	// Call the model (with retries). Mirrors TS embed(): the embed-call
+	// telemetry events and the empty-embedding check run inside the retry.
+	var result *types.EmbeddingResult
+	err := withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
+		embedCallID := newCallID()
+		telemetry.FireOnEmbedStart(callCtx, telemetry.EmbeddingModelCallStartEvent{
+			Settings:      opts.ExperimentalTelemetry,
+			CallID:        callID,
+			EmbedCallID:   embedCallID,
+			OperationID:   "ai.embed.doEmbed",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Values:        []string{opts.Input},
+		})
+		res, callErr := opts.Model.DoEmbed(callCtx, opts.Input, embedModelOpts)
+		if callErr != nil {
+			return fmt.Errorf("embedding failed: %w", callErr)
+		}
+		embeddings := [][]float64{}
+		var usage types.EmbeddingUsage
+		if res != nil {
+			usage = res.Usage
+			if len(res.Embedding) > 0 {
+				embeddings = [][]float64{res.Embedding}
+			}
+		}
+		telemetry.FireOnEmbedEnd(callCtx, telemetry.EmbeddingModelCallEndEvent{
+			Settings:      opts.ExperimentalTelemetry,
+			CallID:        callID,
+			EmbedCallID:   embedCallID,
+			OperationID:   "ai.embed.doEmbed",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Values:        []string{opts.Input},
+			Embeddings:    embeddings,
+			Usage:         usage,
+		})
+		if res == nil || len(res.Embedding) == 0 {
+			// TS 27f6d7a: reject embedding responses with no embeddings.
+			return providererrors.NewInvalidResponseDataError(embeddings, "No embedding generated.")
+		}
+		result = res
+		return nil
 	})
-	result, err := opts.Model.DoEmbed(ctx, opts.Input, embedModelOpts)
 	if err != nil {
-		wrappedErr := fmt.Errorf("embedding failed: %w", err)
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
-		return nil, wrappedErr
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		return nil, err
 	}
 
 	embedResult := &EmbedResult{
-		Embedding: result.Embedding,
-		Usage:     result.Usage,
-		Warnings:  warningsOrEmpty(result.Warnings),
+		Embedding:        result.Embedding,
+		Usage:            result.Usage,
+		Warnings:         warningsOrEmpty(result.Warnings),
+		ProviderMetadata: result.ProviderMetadata,
+		Response:         result.Response,
 	}
+
+	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	// Record telemetry output attributes
 	if span != nil {
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
-	telemetry.FireOnEmbedEnd(ctx, telemetry.EmbeddingModelCallEndEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		EmbedCallID:   embedCallID,
-		OperationID:   "ai.embed.doEmbed",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Values:        []string{opts.Input},
-		Embeddings:    [][]float64{embedResult.Embedding},
-		Usage:         embedResult.Usage,
-	})
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
@@ -293,6 +342,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		OperationID:      "ai.embed",
 		Provider:         opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
+		RuntimeContext:   opts.RuntimeContext,
 		Value:            []string{opts.Input},
 		Embeddings:       [][]float64{embedResult.Embedding},
 		Usage:            embedResult.Usage,
@@ -333,8 +383,23 @@ type EmbedManyOptions struct {
 	// Input texts to embed
 	Inputs []string
 
-	// MaxRetries is the number of times to retry on transient failure (0 = no retries).
-	MaxRetries int
+	// MaxParallelCalls is the maximum number of concurrent model calls when the
+	// request is split into several calls (because of MaxEmbeddingsPerCall or
+	// the model's MaxInputBytesPerCall budget) and the model supports parallel
+	// calls. 0 means unlimited (TS default Infinity); negative values are rejected.
+	MaxParallelCalls int
+
+	// MaxRetries is the number of times to retry a model call on a retryable
+	// provider failure (HTTP 408/409/429/5xx), with exponential backoff that
+	// respects retry-after headers. nil means unset and defaults to 2 (TS
+	// default); 0 disables retries; negative values are rejected. This
+	// mirrors the *int convention used by GenerateTextOptions.MaxRetries.
+	MaxRetries *int
+
+	// RuntimeContext is user-defined context passed to the start/end callbacks
+	// unchanged and, filtered by Telemetry.IncludeRuntimeContext, to telemetry.
+	// Treat it as immutable.
+	RuntimeContext interface{}
 
 	// Headers are additional HTTP headers forwarded to the model on each request.
 	Headers map[string]string
@@ -369,22 +434,42 @@ type EmbedManyResult struct {
 	// Embeddings for each input
 	Embeddings [][]float64
 
-	// Usage information
+	// Usage information (summed across all model calls).
 	Usage types.EmbeddingUsage
 
-	// Warnings are any non-fatal warnings emitted by the provider.
+	// Warnings are any non-fatal warnings emitted by the provider
+	// (aggregated across all model calls).
 	Warnings []types.Warning
+
+	// ProviderMetadata holds provider-specific metadata returned by the model,
+	// shallow-merged per provider key across all model calls.
+	ProviderMetadata map[string]interface{}
+
+	// Responses holds the HTTP response metadata, one entry per model call.
+	Responses []types.EmbeddingResponse
 }
 
-// EmbedMany generates embeddings for multiple text inputs in a batch
+// EmbedMany generates embeddings for multiple text inputs.
+//
+// Mirrors TS embedMany: when the model has a limit on the number of
+// embeddings per call (MaxEmbeddingsPerCall > 0) or exposes a UTF-8 input
+// byte budget (provider.EmbeddingModelMaxInputBytesPerCall), the inputs are
+// split into several model calls. When the model supports parallel calls the
+// batches run concurrently, bounded by MaxParallelCalls. Each call is retried
+// independently (MaxRetries), and each response must contain exactly one
+// embedding per value of its batch.
 func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, error) {
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if len(opts.Inputs) == 0 {
-		return nil, fmt.Errorf("at least one input is required")
+	// TS embedMany does not special-case an empty values array: it falls
+	// through to model.doEmbed({values: []}) (or an empty batch split) and
+	// returns an empty result. Match that instead of erroring.
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
 	}
+	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
@@ -413,8 +498,6 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		if opts.ExperimentalTelemetry.FunctionID != "" {
 			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
 		}
-
-		// Add custom metadata
 	}
 
 	// Generate a unique call ID for correlating start/finish events.
@@ -436,8 +519,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		OperationID:      "ai.embedMany",
 		Provider:         opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
+		RuntimeContext:   opts.RuntimeContext,
 		Values:           opts.Inputs,
-		MaxRetries:       opts.MaxRetries,
+		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
@@ -460,56 +544,23 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Inputs),
 		ValueCount:     len(opts.Inputs),
-		RuntimeContext: map[string]interface{}{},
+		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
 		ToolsContext:   map[string]interface{}{},
 	})
 
-	// Build provider-level options.
-	embedModelOpts := &provider.EmbedModelOptions{
-		ProviderOptions: opts.ProviderOptions,
-		Headers:         opts.Headers,
-	}
-
-	// Call the model
-	embedCallID := newCallID()
-	telemetry.FireOnEmbedStart(ctx, telemetry.EmbeddingModelCallStartEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		EmbedCallID:   embedCallID,
-		OperationID:   "ai.embedMany.doEmbed",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Values:        opts.Inputs,
-	})
-	result, err := opts.Model.DoEmbedMany(ctx, opts.Inputs, embedModelOpts)
+	embedResult, err := embedManyCalls(ctx, opts, callID, resolvedMaxRetries)
 	if err != nil {
-		wrappedErr := fmt.Errorf("batch embedding failed: %w", err)
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
-		return nil, wrappedErr
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		return nil, err
 	}
 
-	embedResult := &EmbedManyResult{
-		Embeddings: result.Embeddings,
-		Usage:      result.Usage,
-		Warnings:   warningsOrEmpty(result.Warnings),
-	}
+	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	// Record telemetry output attributes
 	if span != nil {
 		// Record usage information
 		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
 	}
-	telemetry.FireOnEmbedEnd(ctx, telemetry.EmbeddingModelCallEndEvent{
-		Settings:      opts.ExperimentalTelemetry,
-		CallID:        callID,
-		EmbedCallID:   embedCallID,
-		OperationID:   "ai.embedMany.doEmbed",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Values:        opts.Inputs,
-		Embeddings:    embedResult.Embeddings,
-		Usage:         embedResult.Usage,
-	})
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
@@ -517,12 +568,13 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		OperationID:      "ai.embedMany",
 		Provider:         opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
+		RuntimeContext:   opts.RuntimeContext,
 		Value:            opts.Inputs,
 		Embeddings:       embedResult.Embeddings,
 		Usage:            embedResult.Usage,
 		Warnings:         embedResult.Warnings,
-		ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
-		Responses:        result.Responses,
+		ProviderMetadata: providerMetadataRaw(embedResult.ProviderMetadata),
+		Responses:        embedResult.Responses,
 		IsEnabled:        telEnabled,
 		RecordInputs:     telRecordInputs,
 		RecordOutputs:    telRecordOutputs,

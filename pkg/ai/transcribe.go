@@ -169,6 +169,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if providerMetadata == nil {
 		providerMetadata = map[string]interface{}{}
 	}
+	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	return &TranscribeResult{
 		Text:              raw.Text,
 		Segments:          segments,

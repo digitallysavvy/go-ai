@@ -86,13 +86,17 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		tool := findToolForCall(call, opts.Tools)
 
 		if opts.ToolApprovalSecret != nil {
-			if request.Signature == "" {
-				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{
-					ApprovalID: request.ApprovalID,
-					ToolCallID: call.ID,
-					Reason:     "missing signature",
-				}
-			}
+			// TS only special-cases `approvalRequest.signature == null`
+			// (absent), which JS can distinguish from an explicit empty
+			// string. Go's Signature field is a plain string, so an absent
+			// signature and an empty one are the same zero value and cannot
+			// be told apart; treating "" as "missing" would also disagree
+			// with TS's reported reason for an explicit empty string, which
+			// falls through to verification and fails as "invalid
+			// signature". Always verifying (rather than special-casing "")
+			// matches that observable behavior for every input Go can
+			// represent, with no loss of safety: either way the call is
+			// rejected.
 			valid, err := VerifyToolApprovalSignature(opts.ToolApprovalSecret, request.Signature, request.ApprovalID, call.ID, call.ToolName, approvalSignatureInput(call))
 			if err != nil || !valid {
 				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{

@@ -2,11 +2,14 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 func searchSchema() map[string]interface{} {
@@ -117,6 +120,74 @@ func TestFingerprintTools(t *testing.T) {
 	}
 	if mustFingerprint(t, reordered)["search"] != a["search"] {
 		t.Fatal("typed/reordered schema should hash identically")
+	}
+}
+
+// TestFingerprintToolsSchemaSchemaParametersDiffer guards against F4:
+// *schema.SimpleJSONSchema (and any other schema.Schema implementation, the
+// common Go idiom for a tool's Parameters) only exposes its JSON Schema
+// through its Validator, not a top-level JSONSchema method. Before the fix,
+// it fell through to json.Marshal of the struct, which always serialized as
+// "{}" (its only field is unexported) -- so any two schema.Schema-typed
+// tools fingerprinted identically regardless of their actual schema, and
+// DetectToolDrift could never see an MCP tool widen its parameters this way.
+func TestFingerprintToolsSchemaSchemaParametersDiffer(t *testing.T) {
+	toolWith := func(props map[string]interface{}) types.Tool {
+		return types.Tool{Name: "search", Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": props,
+		})}
+	}
+	a := mustFingerprint(t, toolWith(map[string]interface{}{"a": map[string]interface{}{"type": "string"}}))
+	b := mustFingerprint(t, toolWith(map[string]interface{}{"b": map[string]interface{}{"type": "number"}}))
+	if a["search"] == b["search"] {
+		t.Fatal("schema.Schema tools with different parameters must not fingerprint identically")
+	}
+	if !base64URLDigest.MatchString(a["search"]) || !base64URLDigest.MatchString(b["search"]) {
+		t.Fatalf("digests must not be the empty-object placeholder: a=%q b=%q", a["search"], b["search"])
+	}
+
+	c := mustFingerprint(t, toolWith(map[string]interface{}{"a": map[string]interface{}{"type": "string"}}))
+	if a["search"] != c["search"] {
+		t.Fatal("equal schema.Schema parameters must fingerprint identically")
+	}
+}
+
+// TestFingerprintToolsUnsupportedSchemaTypeErrors guards the F4 fix's error
+// path: an input schema type that resolves to neither a raw JSON schema map
+// nor a schema.Schema must be a hard error, not a silent "{}" digest that
+// would defeat drift detection.
+func TestFingerprintToolsUnsupportedSchemaTypeErrors(t *testing.T) {
+	_, err := FingerprintTools([]types.Tool{{Name: "search", Parameters: 42}})
+	if err == nil {
+		t.Fatal("expected an error for an unsupported tool input schema type")
+	}
+}
+
+// TestFingerprintToolsNormalizesJSONNumberLikeJS guards the F4 minor: a
+// schema decoded with json.Decoder.UseNumber() (as tool schemas commonly
+// are) must hash a json.Number the way JS JSON.stringify would -- 1.0 and 1
+// both serialize as "1" -- rather than writing the decoded literal verbatim.
+func TestFingerprintToolsNormalizesJSONNumberLikeJS(t *testing.T) {
+	decodeSchema := func(t *testing.T, literal string) map[string]interface{} {
+		t.Helper()
+		dec := json.NewDecoder(strings.NewReader(`{"type":"object","properties":{"n":{"type":"number","default":` + literal + `}}}`))
+		dec.UseNumber()
+		var decoded map[string]interface{}
+		if err := dec.Decode(&decoded); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return decoded
+	}
+	whole := mustFingerprint(t, types.Tool{Name: "search", Parameters: decodeSchema(t, "1.0")})
+	integer := mustFingerprint(t, types.Tool{Name: "search", Parameters: decodeSchema(t, "1")})
+	if whole["search"] != integer["search"] {
+		t.Fatal("json.Number 1.0 and 1 must fingerprint identically, like JS JSON.stringify")
+	}
+
+	different := mustFingerprint(t, types.Tool{Name: "search", Parameters: decodeSchema(t, "2")})
+	if whole["search"] == different["search"] {
+		t.Fatal("a genuinely different json.Number must still change the digest")
 	}
 }
 

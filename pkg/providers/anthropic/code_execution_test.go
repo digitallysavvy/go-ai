@@ -21,9 +21,11 @@ func TestCombineBetaHeaders_CodeExecutionTool(t *testing.T) {
 		Tools:  []types.Tool{tools.CodeExecution20260120()},
 	}
 
+	// TS anthropic-prepare-tools.test.ts: "should correctly prepare
+	// code_execution_20260120 without beta header".
 	header := model.combineBetaHeaders(opts, false)
-	if header != BetaHeaderCodeExecution {
-		t.Errorf("combineBetaHeaders() = %q, want %q", header, BetaHeaderCodeExecution)
+	if header != "" {
+		t.Errorf("combineBetaHeaders() = %q, want no beta for code_execution_20260120", header)
 	}
 }
 
@@ -42,9 +44,10 @@ func TestCombineBetaHeaders_NoCodeExecutionTool(t *testing.T) {
 		Tools:  []types.Tool{regularTool},
 	}
 
+	// Function tools on structured-output models add the structured-outputs beta.
 	header := model.combineBetaHeaders(opts, false)
-	if header != "" {
-		t.Errorf("combineBetaHeaders() = %q, want empty string for non-code-execution tools", header)
+	if header != BetaHeaderStructuredOutputs {
+		t.Errorf("combineBetaHeaders() = %q, want %q for function tools", header, BetaHeaderStructuredOutputs)
 	}
 }
 
@@ -94,8 +97,8 @@ func TestCombineBetaHeaders_CodeExecutionPlusFastMode(t *testing.T) {
 	if !containsFastMode {
 		t.Errorf("combineBetaHeaders() = %q, missing %q", header, BetaHeaderFastMode)
 	}
-	if !containsCodeExecution {
-		t.Errorf("combineBetaHeaders() = %q, missing %q", header, BetaHeaderCodeExecution)
+	if containsCodeExecution {
+		t.Errorf("combineBetaHeaders() = %q, must not contain %q", header, BetaHeaderCodeExecution)
 	}
 }
 
@@ -133,9 +136,9 @@ func TestToAnthropicFormatWithCache_CodeExecutionTool(t *testing.T) {
 		t.Errorf("Tool type = %q, want %q", apiType, tools.AnthropicCodeExecutionToolType)
 	}
 
-	// Code execution tool should NOT have name or input_schema
-	if _, hasName := toolMap["name"]; hasName {
-		t.Error("Code execution tool should not have 'name' field in API format")
+	// Code execution tool has name "code_execution" (TS prepareTools) and no input_schema
+	if toolMap["name"] != "code_execution" {
+		t.Errorf("Code execution tool name = %v, want code_execution", toolMap["name"])
 	}
 	if _, hasSchema := toolMap["input_schema"]; hasSchema {
 		t.Error("Code execution tool should not have 'input_schema' field in API format")
@@ -185,8 +188,8 @@ func TestToAnthropicFormatWithCache_MixedTools(t *testing.T) {
 	if result[0]["type"] != tools.AnthropicCodeExecutionToolType {
 		t.Errorf("Code execution tool type = %v, want %v", result[0]["type"], tools.AnthropicCodeExecutionToolType)
 	}
-	if _, hasName := result[0]["name"]; hasName {
-		t.Error("Code execution tool must not have name field")
+	if result[0]["name"] != "code_execution" {
+		t.Errorf("Code execution tool name = %v, want code_execution", result[0]["name"])
 	}
 
 	// Second tool is regular - must have name

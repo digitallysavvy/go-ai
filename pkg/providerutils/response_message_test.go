@@ -196,7 +196,6 @@ func TestConvertToResponseMessageSanitizesToolCallContentInput(t *testing.T) {
 			ToolName:     "lookup",
 			Title:        "Lookup",
 			Input:        `{"q":`,
-			Arguments:    map[string]interface{}{"q": "stale"},
 			ToolMetadata: map[string]interface{}{"source": "catalog"},
 			Dynamic:      true,
 			Invalid:      true,
@@ -225,6 +224,42 @@ func TestConvertToResponseMessageSanitizesToolCallContentInput(t *testing.T) {
 	}
 	if got, want := string(goodJSON), `{"type":"tool-call","toolCallId":"good","toolName":"lookup","input":{"q":"docs"}}`; got != want {
 		t.Fatalf("tool-call content json = %s, want %s", got, want)
+	}
+}
+
+// TestConvertToResponseMessageKeepsRefinedArgumentsOverStaleInput guards
+// against F1: ExperimentalRefineToolInput only updates ToolCall.Arguments,
+// not the provider's original RawArguments/Input JSON string. When both are
+// present, the (possibly refined) Arguments must win so the persisted
+// tool-call part -- and message.ToolCalls, which the HMAC approval signature
+// and the resume-time schema revalidation both read -- reflect the refined
+// value, not the stale pre-refinement JSON. Mirrors the TS SDK, which has a
+// single `input` field carrying only the current (refined) value.
+func TestConvertToResponseMessageKeepsRefinedArgumentsOverStaleInput(t *testing.T) {
+	msg := ConvertToResponseMessage(
+		[]types.ToolCall{{
+			ID:           "call-1",
+			ToolName:     "tool1",
+			Arguments:    map[string]interface{}{"value": "trimmed"},
+			RawArguments: `{"value":" trimmed "}`,
+		}},
+		[]types.ContentPart{types.ToolCallContent{
+			ToolCallID: "call-1",
+			ToolName:   "tool1",
+			Input:      `{"value":" trimmed "}`,
+			Arguments:  map[string]interface{}{"value": "trimmed"},
+		}},
+	)
+
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Arguments["value"] != "trimmed" {
+		t.Fatalf("message.ToolCalls = %+v, want refined value", msg.ToolCalls)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("content len = %d, want 1", len(msg.Content))
+	}
+	call := msg.Content[0].(types.ToolCallContent)
+	if call.Arguments["value"] != "trimmed" {
+		t.Fatalf("tool-call content arguments = %#v, want refined value \"trimmed\"", call.Arguments)
 	}
 }
 

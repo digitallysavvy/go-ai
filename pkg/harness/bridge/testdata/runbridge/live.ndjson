@@ -1,0 +1,5 @@
+{"type":"bridge-hello","state":"waiting","lastSeq":0,"capabilities":{"experimental_userMessageResponses":true}}
+{"type":"stream-start","warnings":[],"seq":1}
+{"type":"text-start","id":"m","seq":2}
+{"type":"text-delta","id":"m","delta":"one","seq":3}
+{"type":"text-delta","id":"m","delta":"two","seq":4}

@@ -713,17 +713,33 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 
 // injectMistralJSONInstruction mirrors injectJsonInstructionIntoMessages
 // (provider-utils) for JSON mode without a schema: the generic JSON
-// instruction is appended to the leading system message (or a new one).
+// instruction is merged into the leading system message (or a new one).
+//
+// TS always merges into a single system message because its
+// LanguageModelV4Message system role only ever carries string content. Go's
+// unified Message allows a system message with multiple content parts (e.g.
+// several TextContent parts), which ToOpenAIMessages then serializes as a
+// []map[string]interface{} content array rather than a string. That case
+// must still be merged into the existing leading system message -- by
+// appending a text part -- rather than falling through to prepending a
+// second system message.
 func injectMistralJSONInstruction(body map[string]interface{}) {
 	const instruction = "You MUST answer with JSON."
 	messages, _ := body["messages"].([]map[string]interface{})
 	if len(messages) > 0 && messages[0]["role"] == "system" {
-		if content, ok := messages[0]["content"].(string); ok {
+		switch content := messages[0]["content"].(type) {
+		case string:
 			if content != "" {
 				messages[0]["content"] = content + "\n\n" + instruction
 			} else {
 				messages[0]["content"] = instruction
 			}
+			return
+		case []map[string]interface{}:
+			messages[0]["content"] = append(content, map[string]interface{}{"type": "text", "text": instruction})
+			return
+		case nil:
+			messages[0]["content"] = instruction
 			return
 		}
 	}
