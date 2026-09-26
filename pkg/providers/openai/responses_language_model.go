@@ -275,6 +275,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
 		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:         providerOptionsName,
+		ExplicitMessageItemType:     m.provider.explicitMessageItemType(),
 	})
 	if err != nil {
 		return nil, store, warnings, err

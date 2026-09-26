@@ -78,6 +78,11 @@ type Config struct {
 	// Nil defaults to []string{"file-"} to match the TypeScript OpenAI provider;
 	// set an empty non-nil slice to disable this compatibility path.
 	FileIDPrefixes []string
+
+	// ExplicitMessageItemType adds an explicit `"type":"message"` field to
+	// system/developer/user Responses input items. Azure AI Foundry projects
+	// require this.
+	ExplicitMessageItemType bool
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -137,6 +142,10 @@ func (p *Provider) responsesFileIDPrefixes() []string {
 		return p.config.FileIDPrefixes
 	}
 	return []string{"file-"}
+}
+
+func (p *Provider) explicitMessageItemType() bool {
+	return p.config.ExplicitMessageItemType
 }
 
 func (p *Provider) responsesProviderName() string {

@@ -37,6 +37,11 @@ type ConvertOptions struct {
 	HasApplyPatchTool           bool
 	FileIDPrefixes              []string
 	ProviderOptionsName         string
+
+	// ExplicitMessageItemType adds an explicit `"type":"message"` field to
+	// system/developer/user easy-input message items. Azure AI Foundry
+	// projects require this; the OpenAI API accepts it implicitly.
+	ExplicitMessageItemType bool
 }
 
 // ConvertPromptToInputWithOptions converts a prompt to Responses API input and
@@ -46,10 +51,14 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
-		input = append(input, SystemMessage{
+		sysMsg := SystemMessage{
 			Role:    systemMessageMode,
 			Content: prompt.System,
-		})
+		}
+		if opts.ExplicitMessageItemType {
+			sysMsg.Type = "message"
+		}
+		input = append(input, sysMsg)
 	}
 
 	for _, msg := range prompt.Messages {
@@ -191,7 +200,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 		}
 	}
 
-	return UserMessage{Role: "user", Content: parts}, nil
+	userMsg := UserMessage{Role: "user", Content: parts}
+	if opts.ExplicitMessageItemType {
+		userMsg.Type = "message"
+	}
+	return userMsg, nil
 }
 
 func openAIFileMediaType(part types.FileContent) string {
