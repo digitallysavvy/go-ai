@@ -248,13 +248,19 @@ func toolCallForToolResult(tr types.ToolResult) types.ToolCall {
 }
 
 func toolApprovalRequestFromToolResult(tr types.ToolResult) types.ToolApprovalRequestContent {
-	return types.ToolApprovalRequestContent{
+	request := types.ToolApprovalRequestContent{
 		ApprovalID:  approvalIDForToolResult(tr),
 		ToolCallID:  tr.ToolCallID,
 		ToolCall:    toolCallForToolResult(tr),
 		Signature:   tr.ApprovalSignature,
 		IsAutomatic: tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied,
 	}
+	// user-approval reasons are shown on the request; approved/denied reasons
+	// are emitted on the response.
+	if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval && tr.ApprovalReason != nil {
+		request.Reason = *tr.ApprovalReason
+	}
+	return request
 }
 
 func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalResponseContent {
