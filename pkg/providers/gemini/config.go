@@ -68,3 +68,24 @@ type Config struct {
 	// random ID generator.
 	GenerateID func() string
 }
+
+// metadataKeys returns the keys ProviderMetadata payloads are written under,
+// defaulting to []string{MetadataKey} when MetadataKeys is unset.
+func (c Config) metadataKeys() []string {
+	if len(c.MetadataKeys) > 0 {
+		return c.MetadataKeys
+	}
+	return []string{c.MetadataKey}
+}
+
+// wrapProviderMetadata returns payload under every configured metadata key
+// (TS wrapProviderMetadata: Object.fromEntries(providerOptionsNames.map(name
+// => [name, payload]))). Vertex writes the same payload under both
+// "googleVertex" and "vertex".
+func (c Config) wrapProviderMetadata(payload interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, key := range c.metadataKeys() {
+		out[key] = payload
+	}
+	return out
+}

@@ -26,7 +26,18 @@ func sseStream(payloads ...string) io.ReadCloser {
 func newTestStream(reader io.ReadCloser) *stream {
 	return newStream(reader, Config{
 		MetadataKey: "google",
-	}, nil)
+	}, nil, nil, "")
+}
+
+// stripResponseMetadata asserts the stream's first chunk is the single
+// response-metadata chunk (emitted once, from the first SSE event; see
+// processSSEEvent) and returns the remaining chunks.
+func stripResponseMetadata(t *testing.T, chunks []*provider.StreamChunk) []*provider.StreamChunk {
+	t.Helper()
+	if len(chunks) == 0 || chunks[0].Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("expected a leading response-metadata chunk, got: %v", chunkTypes(chunks))
+	}
+	return chunks[1:]
 }
 
 // chunkTypes returns chunk type strings for diagnostic output.
@@ -84,6 +95,7 @@ func TestStream_ThoughtPartsEmitReasoning(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 7 {
 		t.Fatalf("expected 7 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -142,6 +154,7 @@ func TestStream_MultiplePartsInSingleEvent(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 7 {
 		t.Fatalf("expected 7 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -196,6 +209,7 @@ func TestStream_FinishReasonEmittedAfterText(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 4 {
 		t.Fatalf("expected 4 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -249,6 +263,7 @@ func TestStream_CodeExecution(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	// Expect: tool-call (code exec), tool-result, finish.
 	if len(chunks) != 3 {
@@ -358,6 +373,7 @@ func TestStream_ToolInputDeltaCarriesID(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	// Expected: tool-input-start, tool-input-delta, tool-input-end, tool-call, finish
 	if len(chunks) != 5 {
@@ -541,7 +557,7 @@ func TestStream_MetadataKeyAppearsInFinishChunk(t *testing.T) {
 	})
 
 	// Test with vertex key.
-	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"}, nil)
+	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"}, nil, nil, "")
 	defer sv.Close() //nolint:errcheck
 	var vertexChunks []*provider.StreamChunk
 	for {

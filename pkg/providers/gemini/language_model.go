@@ -91,7 +91,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	stream := providerutils.WithResponseMetadata(newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools)), httpResp.Header, m.ModelID())
+	stream := newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools), httpResp.Header, m.ModelID())
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -173,11 +173,9 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			textParts = append(textParts, part.Text)
 			tc := types.TextContent{Text: part.Text}
 			if part.ThoughtSignature != "" {
-				meta, _ := json.Marshal(map[string]interface{}{
-					m.cfg.MetadataKey: map[string]interface{}{
-						"thoughtSignature": part.ThoughtSignature,
-					},
-				})
+				meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
 				tc.ProviderMetadata = meta
 			}
 			result.Content = append(result.Content, tc)
@@ -190,11 +188,9 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			}
 			var providerMetadata map[string]interface{}
 			if part.ThoughtSignature != "" {
-				providerMetadata = map[string]interface{}{
-					m.cfg.MetadataKey: map[string]interface{}{
-						"thoughtSignature": part.ThoughtSignature,
-					},
-				}
+				providerMetadata = m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				})
 			}
 			toolCallID := part.FunctionCall.ID
 			if toolCallID == "" {
@@ -214,44 +210,58 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 		result.Text = textParts[0]
 	}
 
+	// A confirmed prompt block (promptFeedback.blockReason, excluding the
+	// "unspecified" sentinels) is terminal when no candidate finishReason was
+	// given, and always maps to content-filter (TS isPromptBlocked).
+	confirmedPromptBlockReason := promptFeedbackBlockReason(response.PromptFeedback)
+	if !isConfirmedPromptBlockReason(confirmedPromptBlockReason) {
+		confirmedPromptBlockReason = ""
+	}
+	isPromptBlocked := candidate.FinishReason == "" && confirmedPromptBlockReason != ""
+
 	// Finish reason.
 	hasToolCalls := len(result.ToolCalls) > 0
-	switch candidate.FinishReason {
-	case "STOP":
-		if hasToolCalls {
-			result.FinishReason = types.FinishReasonToolCalls
-		} else {
-			result.FinishReason = types.FinishReasonStop
-		}
-	case "MAX_TOKENS":
-		result.FinishReason = types.FinishReasonLength
-	case "IMAGE_SAFETY", "RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+	switch {
+	case isPromptBlocked:
 		result.FinishReason = types.FinishReasonContentFilter
-	case "MALFORMED_FUNCTION_CALL":
-		result.FinishReason = types.FinishReasonError
 	default:
-		result.FinishReason = types.FinishReasonOther
+		switch candidate.FinishReason {
+		case "STOP":
+			if hasToolCalls {
+				result.FinishReason = types.FinishReasonToolCalls
+			} else {
+				result.FinishReason = types.FinishReasonStop
+			}
+		case "MAX_TOKENS":
+			result.FinishReason = types.FinishReasonLength
+		case "IMAGE_SAFETY", "RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+			result.FinishReason = types.FinishReasonContentFilter
+		case "MALFORMED_FUNCTION_CALL":
+			result.FinishReason = types.FinishReasonError
+		default:
+			result.FinishReason = types.FinishReasonOther
+		}
 	}
 
-	// ProviderMetadata — assembled under the configured metadata key.
+	if response.ResponseID != "" {
+		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ResponseID}
+	}
+
+	// ProviderMetadata is always fully populated (null for absent fields), to
+	// match TS GoogleProviderMetadata, and is written under every configured
+	// metadata key (Vertex writes both "googleVertex" and "vertex").
 	meta := map[string]json.RawMessage{}
-	if response.PromptFeedback != nil {
-		meta["promptFeedback"] = response.PromptFeedback
-	}
-	if candidate.GroundingMetadata != nil {
-		meta["groundingMetadata"] = candidate.GroundingMetadata
-	}
-	if candidate.UrlContextMetadata != nil {
-		meta["urlContextMetadata"] = candidate.UrlContextMetadata
-	}
-	if candidate.SafetyRatings != nil {
-		meta["safetyRatings"] = candidate.SafetyRatings
-	}
+	meta["promptFeedback"] = rawOrNull(response.PromptFeedback)
+	meta["groundingMetadata"] = rawOrNull(candidate.GroundingMetadata)
+	meta["urlContextMetadata"] = rawOrNull(candidate.UrlContextMetadata)
+	meta["safetyRatings"] = rawOrNull(candidate.SafetyRatings)
 	if candidate.FinishMessage != "" {
-		if fm, err := json.Marshal(candidate.FinishMessage); err == nil {
-			meta["finishMessage"] = fm
-		}
+		fm, _ := json.Marshal(candidate.FinishMessage)
+		meta["finishMessage"] = fm
+	} else {
+		meta["finishMessage"] = json.RawMessage("null")
 	}
+	serviceTier := ""
 	if response.UsageMetadata != nil {
 		if um, err := json.Marshal(response.UsageMetadata); err == nil {
 			meta["usageMetadata"] = um
@@ -259,28 +269,29 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 		if mtc, err := json.Marshal(modalityTokenCounts(response.UsageMetadata)); err == nil {
 			meta["modalityTokenCounts"] = mtc
 		}
-	}
-	// serviceTier is always emitted (null when absent) to match TS SDK behavior:
-	// `serviceTier: response.serviceTier ?? null`
-	serviceTier := ""
-	if response.UsageMetadata != nil {
 		serviceTier = response.UsageMetadata.ServiceTier
+	} else {
+		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	if serviceTier == "" {
 		serviceTier = response.ServiceTier
 	}
 	if serviceTier != "" {
-		if st, err := json.Marshal(serviceTier); err == nil {
-			meta["serviceTier"] = st
-		}
+		st, _ := json.Marshal(serviceTier)
+		meta["serviceTier"] = st
 	} else {
 		meta["serviceTier"] = json.RawMessage("null")
 	}
-	if len(meta) > 0 {
-		result.ProviderMetadata = map[string]interface{}{
-			m.cfg.MetadataKey: meta,
-		}
-	}
+	result.ProviderMetadata = m.cfg.wrapProviderMetadata(meta)
 
 	return result
+}
+
+// rawOrNull returns raw, or the JSON null literal when raw is empty. Used to
+// keep provider metadata objects fully populated (TS `field ?? null`).
+func rawOrNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
 }

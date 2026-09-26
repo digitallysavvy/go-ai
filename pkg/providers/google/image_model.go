@@ -248,10 +248,21 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		Usage:        usage,
 		Warnings:     warnings,
 		ProviderMetadata: map[string]interface{}{
-			"google": googleImageProviderMetadata(lmResult.ProviderMetadata),
+			"google": googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse)),
 		},
 		Response: lmResult.ResponseMetadata,
 	}, nil
+}
+
+// rawFinishReason extracts the raw Gemini candidate finishReason string from
+// a GenerateResult's RawResponse, mirroring TS `result.finishReason.raw`.
+// Returns "" when unavailable.
+func rawFinishReason(raw interface{}) string {
+	resp, ok := raw.(gemini.Response)
+	if !ok || len(resp.Candidates) == 0 {
+		return ""
+	}
+	return resp.Candidates[0].FinishReason
 }
 
 func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
@@ -314,24 +325,29 @@ func firstGeneratedImage(content []types.ContentPart) (types.GeneratedFileConten
 	return types.GeneratedFileContent{}, false
 }
 
-func googleImageProviderMetadata(providerMetadata map[string]interface{}) map[string]interface{} {
+func googleImageProviderMetadata(providerMetadata map[string]interface{}, finishReason string) map[string]interface{} {
 	googleMetadata := map[string]interface{}{"images": []map[string]interface{}{{}}}
 	raw, ok := providerMetadata["google"]
-	if !ok {
-		return googleMetadata
-	}
-	switch meta := raw.(type) {
-	case map[string]json.RawMessage:
-		for key, value := range meta {
-			googleMetadata[key] = value
-		}
-	case map[string]interface{}:
-		for key, value := range meta {
-			googleMetadata[key] = value
+	if ok {
+		switch meta := raw.(type) {
+		case map[string]json.RawMessage:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
+		case map[string]interface{}:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
 		}
 	}
 	if _, ok := googleMetadata["images"]; !ok {
 		googleMetadata["images"] = []map[string]interface{}{{}}
+	}
+	// finishReason (raw) mirrors TS: `finishReason: result.finishReason.raw ?? null`.
+	if finishReason != "" {
+		googleMetadata["finishReason"] = finishReason
+	} else {
+		googleMetadata["finishReason"] = nil
 	}
 	return googleMetadata
 }

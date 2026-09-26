@@ -679,18 +679,12 @@ func TestConvertResponse_ModalityTokenCountsInMetadata(t *testing.T) {
 		UsageMetadata: &UsageMetadata{
 			PromptTokenCount:     14,
 			CandidatesTokenCount: 9,
-			PromptTokensDetails: []struct {
-				Modality   string `json:"modality,omitempty"`
-				TokenCount int    `json:"tokenCount,omitempty"`
-			}{
+			PromptTokensDetails: []tokenDetail{
 				{Modality: "TEXT", TokenCount: 5},
 				{Modality: "IMAGE", TokenCount: 7},
 				{Modality: "AUDIO", TokenCount: 2},
 			},
-			CandidatesTokensDetails: []struct {
-				Modality   string `json:"modality,omitempty"`
-				TokenCount int    `json:"tokenCount,omitempty"`
-			}{
+			CandidatesTokensDetails: []tokenDetail{
 				{Modality: "TEXT", TokenCount: 6},
 				{Modality: "VIDEO", TokenCount: 3},
 			},
