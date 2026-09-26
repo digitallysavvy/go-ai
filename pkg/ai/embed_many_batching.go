@@ -13,17 +13,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
-// validateEmbedMaxRetries rejects negative retry counts (TS prepareRetries).
-func validateEmbedMaxRetries(maxRetries int) error {
-	if maxRetries < 0 {
-		return &providererrors.InvalidArgumentError{
-			Field:   "maxRetries",
-			Message: "maxRetries must be >= 0",
-		}
-	}
-	return nil
-}
-
 // withEmbedRetry runs fn with the TS retry policy used by embed/embedMany/
 // rerank: exponential backoff starting at 2s (factor 2), respecting
 // retry-after(-ms) headers, retrying only retryable provider errors
@@ -45,7 +34,7 @@ func withEmbedRetry(ctx context.Context, maxRetries int, fn func(ctx context.Con
 // embedManyCalls performs the model calls of EmbedMany (split, parallelized,
 // retried and validated) and aggregates the results. Mirrors the body of the
 // TS embedMany try-block.
-func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string) (*EmbedManyResult, error) {
+func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, maxRetries int) (*EmbedManyResult, error) {
 	model := opts.Model
 	maxEmbeddingsPerCall := model.MaxEmbeddingsPerCall()
 	maxInputBytesPerCall := 0
@@ -57,7 +46,7 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string) (
 
 	callModel := func(callCtx context.Context, values []string, providerOptions map[string]interface{}) (*types.EmbeddingsResult, error) {
 		var result *types.EmbeddingsResult
-		err := withEmbedRetry(callCtx, opts.MaxRetries, func(attemptCtx context.Context) error {
+		err := withEmbedRetry(callCtx, maxRetries, func(attemptCtx context.Context) error {
 			embedCallID := newCallID()
 			telemetry.FireOnEmbedStart(attemptCtx, telemetry.EmbeddingModelCallStartEvent{
 				Settings:      opts.ExperimentalTelemetry,

@@ -316,7 +316,7 @@ func TestEmbedMany_RetriesFailedBatchOnly(t *testing.T) {
 		}
 		return &types.EmbeddingsResult{Embeddings: out}, nil
 	}
-	res, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: 1})
+	res, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: intPtr(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,11 +334,11 @@ func TestEmbedMany_NonRetryableErrorsAreNotRetried(t *testing.T) {
 	model := &batchEmbeddingModel{doEmbedMany: func(context.Context, []string, *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 		return nil, providererrors.NewProviderError("mock", 400, "bad", "bad request", nil)
 	}}
-	_, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: 2})
+	_, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: intPtr(2)})
 	if err == nil || len(model.recordedCalls()) != 1 {
 		t.Fatalf("expected one call and an error, got %d calls, err=%v", len(model.recordedCalls()), err)
 	}
-	if _, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: -1}); err == nil {
+	if _, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: intPtr(-1)}); err == nil {
 		t.Fatal("negative MaxRetries must be rejected")
 	}
 }

@@ -115,8 +115,10 @@ type EmbedOptions struct {
 
 	// MaxRetries is the number of times to retry a model call on a retryable
 	// provider failure (HTTP 408/409/429/5xx), with exponential backoff that
-	// respects retry-after headers. 0 = no retries; negative values are rejected.
-	MaxRetries int
+	// respects retry-after headers. nil means unset and defaults to 2 (TS
+	// default); 0 disables retries; negative values are rejected. This
+	// mirrors the *int convention used by GenerateTextOptions.MaxRetries.
+	MaxRetries *int
 
 	// RuntimeContext is user-defined context passed to the start/end callbacks
 	// unchanged and, filtered by Telemetry.IncludeRuntimeContext, to telemetry.
@@ -178,9 +180,10 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Input == "" {
 		return nil, fmt.Errorf("input is required")
 	}
-	if err := validateEmbedMaxRetries(opts.MaxRetries); err != nil {
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
@@ -236,7 +239,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           []string{opts.Input},
-		MaxRetries:       opts.MaxRetries,
+		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
@@ -271,7 +274,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	// Call the model (with retries). Mirrors TS embed(): the embed-call
 	// telemetry events and the empty-embedding check run inside the retry.
 	var result *types.EmbeddingResult
-	err := withEmbedRetry(ctx, opts.MaxRetries, func(callCtx context.Context) error {
+	err := withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
 		embedCallID := newCallID()
 		telemetry.FireOnEmbedStart(callCtx, telemetry.EmbeddingModelCallStartEvent{
 			Settings:      opts.ExperimentalTelemetry,
@@ -388,8 +391,10 @@ type EmbedManyOptions struct {
 
 	// MaxRetries is the number of times to retry a model call on a retryable
 	// provider failure (HTTP 408/409/429/5xx), with exponential backoff that
-	// respects retry-after headers. 0 = no retries; negative values are rejected.
-	MaxRetries int
+	// respects retry-after headers. nil means unset and defaults to 2 (TS
+	// default); 0 disables retries; negative values are rejected. This
+	// mirrors the *int convention used by GenerateTextOptions.MaxRetries.
+	MaxRetries *int
 
 	// RuntimeContext is user-defined context passed to the start/end callbacks
 	// unchanged and, filtered by Telemetry.IncludeRuntimeContext, to telemetry.
@@ -458,12 +463,13 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if len(opts.Inputs) == 0 {
-		return nil, fmt.Errorf("at least one input is required")
-	}
-	if err := validateEmbedMaxRetries(opts.MaxRetries); err != nil {
+	// TS embedMany does not special-case an empty values array: it falls
+	// through to model.doEmbed({values: []}) (or an empty batch split) and
+	// returns an empty result. Match that instead of erroring.
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Create telemetry span if enabled
@@ -515,7 +521,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           opts.Inputs,
-		MaxRetries:       opts.MaxRetries,
+		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
@@ -542,7 +548,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ToolsContext:   map[string]interface{}{},
 	})
 
-	embedResult, err := embedManyCalls(ctx, opts, callID)
+	embedResult, err := embedManyCalls(ctx, opts, callID, resolvedMaxRetries)
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
 		return nil, err
