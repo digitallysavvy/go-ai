@@ -72,7 +72,6 @@ func TestAnthropicContentBlocksIntegration(t *testing.T) {
 		t.Fatal("Tool result block not found")
 	}
 
-
 	// Verify tool_use_id
 	if toolResultBlock["tool_use_id"] != "call_123" {
 		t.Errorf("Expected tool_use_id 'call_123', got %v", toolResultBlock["tool_use_id"])

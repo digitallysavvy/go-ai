@@ -457,10 +457,10 @@ func TestGetBetaHeaders(t *testing.T) {
 // TestDoGenerate_WithContextManagement tests non-streaming generation with context management
 func TestDoGenerate_WithContextManagement(t *testing.T) {
 	tests := []struct {
-		name          string
-		edits         []ContextManagementEdit
-		expectedBeta  string
-		responseJSON  string
+		name           string
+		edits          []ContextManagementEdit
+		expectedBeta   string
+		responseJSON   string
 		validateResult func(*testing.T, *types.GenerateResult)
 	}{
 		{

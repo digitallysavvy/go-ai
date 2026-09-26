@@ -13,9 +13,9 @@ import (
 
 // Beta flags added by request preparation (anthropic-language-model.ts).
 const (
-	BetaHeaderDangerousToolUse         = "dangerous-tool-use-2026-09-03"
-	BetaHeaderThinkingDisplayUpdates   = "thinking-display-updates-2026-08-18"
-	BetaHeaderThinkingBindingControls  = "thinking-binding-controls-2026-08-01"
+	BetaHeaderDangerousToolUse          = "dangerous-tool-use-2026-09-03"
+	BetaHeaderThinkingDisplayUpdates    = "thinking-display-updates-2026-08-18"
+	BetaHeaderThinkingBindingControls   = "thinking-binding-controls-2026-08-01"
 	BetaHeaderServerSideFallbackDefault = "server-side-fallback-2026-07-01"
 )
 
