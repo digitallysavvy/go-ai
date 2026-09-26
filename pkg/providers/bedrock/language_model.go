@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	tool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -70,7 +71,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	amazonBedrockOptions := cloneMap(bedrockProviderOptions(opts))
 	anthropicOptions := bedrockProviderOptionMap(opts.ProviderOptions, "anthropic")
 
-	caps := bedrockAnthropicModelCapabilities(m.modelID)
+	caps := anthropic.GetModelCapabilities(m.modelID)
 
 	if opts.FrequencyPenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
@@ -86,7 +87,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	topP := opts.TopP
 	topK := opts.TopK
 
-	if caps.RejectsSamplingParams {
+	if caps.RejectsSamplingParameters {
 		if temperature != nil {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("temperature is not supported by %s and will be ignored", m.modelID)})
 			temperature = nil
@@ -312,6 +313,35 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			}
 			rc["maxReasoningEffort"] = maxReasoningEffort
 			additionalModelRequestFields["reasoningConfig"] = rc
+		}
+	}
+
+	// taskBudget (Anthropic's advisory task-level token budget, output_config.
+	// task_budget) is not wired up in TS's amazon-bedrock-chat-language-
+	// model.ts today (verified against ai@7.0.113: it has no `taskBudget`
+	// handling at all, unlike anthropic-language-model.ts). Forwarding it here
+	// via the same `anthropic` provider-options namespace Bedrock already
+	// reads for disableParallelToolUse/structuredOutputMode gives Bedrock
+	// Anthropic-model callers the same output_config.task_budget capability
+	// the direct Anthropic provider has (pkg/providers/anthropic/request.go),
+	// using the identical wire shape. It only activates when a caller
+	// explicitly sets the option, so it cannot regress existing requests.
+	if isAnthropic {
+		if taskBudgetOpt, ok := anthropicOptions["taskBudget"].(map[string]interface{}); ok {
+			taskBudgetType, _ := taskBudgetOpt["type"].(string)
+			total, hasTotal := intOption(taskBudgetOpt["total"])
+			if taskBudgetType != "" && hasTotal {
+				taskBudget := map[string]interface{}{"type": taskBudgetType, "total": total}
+				if remaining, ok := intOption(taskBudgetOpt["remaining"]); ok {
+					taskBudget["remaining"] = remaining
+				}
+				outputConfig := map[string]interface{}{}
+				if existing, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
+					outputConfig = cloneMap(existing)
+				}
+				outputConfig["task_budget"] = taskBudget
+				additionalModelRequestFields["output_config"] = outputConfig
+			}
 		}
 	}
 

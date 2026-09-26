@@ -608,8 +608,12 @@ func TestAWSSigner_DoubleEncodesOpaquePathForCanonicalRequest(t *testing.T) {
 }
 
 func TestPrepareTools_FiltersUnsupportedWebToolsWithWarning(t *testing.T) {
+	// Anthropic provider tools are identified by a namespaced Name
+	// ("anthropic.<tool>"), matching pkg/providers/anthropic/tools's factories
+	// (e.g. anthropictools.AnthropicTools.WebSearch20250305(...)), not by
+	// Type/ProviderID.
 	tools := []types.Tool{
-		{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_search_20250305", Name: "web_search"},
+		{Name: "anthropic.web_search_20250305", ProviderExecuted: true},
 		{Type: types.ToolTypeFunction, Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}},
 	}
 	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil)
@@ -676,6 +680,63 @@ func TestPrepareTools_ModelsWithoutStrictSupportOmitStrict(t *testing.T) {
 	}
 	if !foundWarning {
 		t.Fatal("expected an unsupported strict warning")
+	}
+}
+
+// TestPrepareTools_ToolSearchWireShape verifies that an Anthropic tool_search
+// tool (identified by its namespaced Name, matching
+// pkg/providers/anthropic/tools's factory convention) is forwarded through
+// the standard Bedrock toolConfig as {toolSpec: {name, inputSchema}} — the
+// same shape as any other Converse tool — using the short Bedrock tool name
+// and the tool's own input schema, not the Anthropic Messages API tool wire
+// shape (which has a "type" field and no separate toolSpec wrapper).
+func TestPrepareTools_ToolSearchWireShape(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+		"required":   []string{"query"},
+	}
+	tools := []types.Tool{
+		{Name: "anthropic.tool_search_bm25_20251119", Parameters: schema, ProviderExecuted: true},
+	}
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	if len(result.ToolConfig.Tools) != 1 {
+		t.Fatalf("ToolConfig.Tools = %#v, want 1 tool", result.ToolConfig.Tools)
+	}
+	toolSpec, ok := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool = %#v, want a toolSpec map", result.ToolConfig.Tools[0])
+	}
+	if _, hasType := toolSpec["type"]; hasType {
+		t.Fatalf("toolSpec must not have a 'type' field (Bedrock toolSpec has no type), got %#v", toolSpec)
+	}
+	if toolSpec["name"] != "tool_search_tool_bm25" {
+		t.Fatalf("toolSpec.name = %v, want tool_search_tool_bm25", toolSpec["name"])
+	}
+	inputSchema, ok := toolSpec["inputSchema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
+	}
+	jsonSchema, ok := inputSchema["json"].(map[string]interface{})
+	if !ok || jsonSchema["type"] != "object" {
+		t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool_search input schema", inputSchema["json"])
+	}
+}
+
+// TestPrepareTools_UnrecognizedAnthropicToolWarns verifies an Anthropic
+// provider tool Bedrock doesn't know how to forward (e.g. a bash/computer
+// tool) produces an "unsupported" warning naming the tool, instead of being
+// silently dropped or sent with a broken wire shape.
+func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
+	tools := []types.Tool{
+		{Name: "anthropic.bash_20250124", ProviderExecuted: true},
+	}
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	if len(result.ToolConfig.Tools) != 0 {
+		t.Fatalf("expected the unrecognized tool to be dropped, got %#v", result.ToolConfig.Tools)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.bash_20250124" {
+		t.Fatalf("warnings = %#v, want a single 'tool anthropic.bash_20250124' warning", result.Warnings)
 	}
 }
 

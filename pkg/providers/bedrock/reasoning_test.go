@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 // newBedrockModelWithID mirrors newTestBedrockModelWithID for reasoning tests
@@ -131,6 +132,66 @@ func TestBedrockAdaptiveThinkingUsesEffort(t *testing.T) {
 	}
 }
 
+// TestBedrockTaskBudgetForwardsToOutputConfig verifies that
+// providerOptions.anthropic.taskBudget is forwarded to
+// additionalModelRequestFields.output_config.task_budget for Anthropic
+// models, using the same wire shape as the direct Anthropic provider
+// (pkg/providers/anthropic/request.go). Not present in TS's amazon-bedrock-
+// chat-language-model.ts today (verified against ai@7.0.113); this is an
+// additive parity feature gated entirely behind an explicit provider option,
+// so it cannot change behavior for existing callers.
+func TestBedrockTaskBudgetForwardsToOutputConfig(t *testing.T) {
+	model := newBedrockModelWithID("anthropic.claude-opus-5")
+	remaining := 500
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"taskBudget": map[string]interface{}{
+					"type":      "conversation",
+					"total":     10000,
+					"remaining": remaining,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+	outputConfig, _ := fields["output_config"].(map[string]interface{})
+	taskBudget, ok := outputConfig["task_budget"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output_config.task_budget = %#v, want a map", outputConfig["task_budget"])
+	}
+	if taskBudget["type"] != "conversation" || taskBudget["total"] != 10000 || taskBudget["remaining"] != 500 {
+		t.Fatalf("task_budget = %#v", taskBudget)
+	}
+}
+
+// TestBedrockTaskBudgetIgnoredForNonAnthropicModels verifies taskBudget is
+// only forwarded for Anthropic models on Bedrock.
+func TestBedrockTaskBudgetIgnoredForNonAnthropicModels(t *testing.T) {
+	model := newBedrockModelWithID("us.amazon.nova-pro-v1:0")
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"taskBudget": map[string]interface{}{"type": "conversation", "total": 10000},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+	if outputConfig, ok := fields["output_config"].(map[string]interface{}); ok {
+		if _, ok := outputConfig["task_budget"]; ok {
+			t.Fatalf("expected no task_budget for a non-Anthropic model, got %#v", outputConfig)
+		}
+	}
+}
+
 // TestBedrockNonAnthropicReasoningEffort verifies that non-Anthropic models
 // (e.g. Nova) map reasoning to additionalModelRequestFields.reasoningConfig.maxReasoningEffort,
 // and that ReasoningNone adds no reasoning fields at all (mirrors TS: the
@@ -177,10 +238,14 @@ func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
 	}
 }
 
-// TestBedrockModelCapabilitiesTable spot-checks bedrockAnthropicModelCapabilities
-// against the TS anthropic-language-model.ts#getModelCapabilities table for a
-// representative sample of model IDs.
-func TestBedrockModelCapabilitiesTable(t *testing.T) {
+// TestBedrockUsesSharedAnthropicModelCapabilities verifies the Bedrock
+// Converse client consumes the shared, exported
+// anthropic.GetModelCapabilities (pkg/providers/anthropic/model_capabilities.go,
+// WG-A1) rather than a bedrock-local duplicate of the capability table. The
+// full table is exercised by anthropic's own tests
+// (pkg/providers/anthropic/model_capabilities_test.go); this only spot-checks
+// that a couple of representative models flow through correctly end-to-end.
+func TestBedrockUsesSharedAnthropicModelCapabilities(t *testing.T) {
 	tests := []struct {
 		modelID                  string
 		maxOutputTokens          int
@@ -191,24 +256,13 @@ func TestBedrockModelCapabilitiesTable(t *testing.T) {
 	}{
 		{"anthropic.claude-opus-5-5", 128000, true, true, true, true},
 		{"anthropic.claude-opus-5", 128000, true, true, true, false},
-		{"anthropic.claude-fable-5-1", 128000, true, true, true, true},
-		{"anthropic.claude-fable-5", 128000, true, true, true, false},
-		{"anthropic.claude-opus-4-7-v1:0", 128000, true, true, true, false},
-		{"anthropic.claude-sonnet-5", 128000, true, true, true, false},
-		{"anthropic.claude-sonnet-4-6-v1:0", 128000, true, true, false, false},
 		{"anthropic.claude-sonnet-4-5-20250929-v1:0", 64000, true, false, false, false},
-		{"anthropic.claude-haiku-4-5-20251001-v1:0", 64000, true, false, false, false},
-		{"anthropic.claude-opus-4-1-20250805-v1:0", 32000, true, false, false, false},
-		{"anthropic.claude-sonnet-4-20250514-v1:0", 64000, false, false, false, false},
-		{"anthropic.claude-opus-4-20250514-v1:0", 32000, false, false, false, false},
-		{"anthropic.claude-3-haiku-20240307-v1:0", 4096, false, false, false, false},
-		{"anthropic.claude-v2:1", 4096, false, false, false, false},
 		{"anthropic.claude-3-5-sonnet-20241022-v2:0", 4096, false, false, false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.modelID, func(t *testing.T) {
-			caps := bedrockAnthropicModelCapabilities(tt.modelID)
+			caps := anthropic.GetModelCapabilities(tt.modelID)
 			if caps.MaxOutputTokens != tt.maxOutputTokens {
 				t.Errorf("MaxOutputTokens = %d, want %d", caps.MaxOutputTokens, tt.maxOutputTokens)
 			}
@@ -218,8 +272,8 @@ func TestBedrockModelCapabilitiesTable(t *testing.T) {
 			if caps.SupportsAdaptiveThinking != tt.supportsAdaptiveThinking {
 				t.Errorf("SupportsAdaptiveThinking = %v, want %v", caps.SupportsAdaptiveThinking, tt.supportsAdaptiveThinking)
 			}
-			if caps.RejectsSamplingParams != tt.rejectsSamplingParams {
-				t.Errorf("RejectsSamplingParams = %v, want %v", caps.RejectsSamplingParams, tt.rejectsSamplingParams)
+			if caps.RejectsSamplingParameters != tt.rejectsSamplingParams {
+				t.Errorf("RejectsSamplingParameters = %v, want %v", caps.RejectsSamplingParameters, tt.rejectsSamplingParams)
 			}
 			if caps.RejectsForcedToolUse != tt.rejectsForcedToolUse {
 				t.Errorf("RejectsForcedToolUse = %v, want %v", caps.RejectsForcedToolUse, tt.rejectsForcedToolUse)

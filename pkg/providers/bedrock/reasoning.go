@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 // reasoningBudgetPercentages mirrors TS provider-utils
@@ -98,7 +99,7 @@ func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *Re
 	level := *reasoning
 
 	if isAnthropic {
-		caps := bedrockAnthropicModelCapabilities(modelID)
+		caps := anthropic.GetModelCapabilities(modelID)
 		switch {
 		case level == types.ReasoningNone:
 			result.Type = "disabled"
