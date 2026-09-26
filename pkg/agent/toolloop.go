@@ -1709,13 +1709,20 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if secret != nil {
 				signature, _ = ai.SignToolApproval(secret, result.ToolCallID, result.ToolCallID, result.ToolName, result.Input)
 			}
-			parts = append(parts, types.ToolApprovalRequestContent{
+			approvalRequest := types.ToolApprovalRequestContent{
 				ApprovalID:  result.ToolCallID,
 				ToolCallID:  result.ToolCallID,
 				ToolCall:    toolCall,
 				Signature:   signature,
 				IsAutomatic: result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied,
-			})
+			}
+			// User-approval reasons are shown on the request (approved/denied
+			// reasons are emitted on the response instead), matching
+			// toolApprovalRequestFromToolResult (pkg/ai/content_parts.go).
+			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval && result.ApprovalReason != nil {
+				approvalRequest.Reason = *result.ApprovalReason
+			}
+			parts = append(parts, approvalRequest)
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}

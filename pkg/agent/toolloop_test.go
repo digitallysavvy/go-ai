@@ -2897,3 +2897,67 @@ func TestToolLoopAgentGenerateForwardsSensitiveRuntimeContext(t *testing.T) {
 		t.Fatalf("runtime context telemetry = %+v, want omitted", capture.starts[0].RuntimeContext)
 	}
 }
+
+// TestAgentToolResultsToContentParts_UserApprovalReason verifies that a
+// user-approval tool result's ApprovalReason is carried onto the emitted
+// ToolApprovalRequestContent.Reason field, matching
+// toolApprovalRequestFromToolResult in pkg/ai/content_parts.go (issue #105:
+// the legacy agent loop's approval request content was missing Reason).
+func TestAgentToolResultsToContentParts_UserApprovalReason(t *testing.T) {
+	reason := "needs human review"
+	results := []types.ToolResult{{
+		ToolCallID:     "call-1",
+		ToolName:       "lookup",
+		Input:          map[string]interface{}{"q": "x"},
+		ApprovalStatus: types.ToolApprovalStatusUserApproval,
+		ApprovalReason: &reason,
+	}}
+
+	parts := agentToolResultsToContentParts(results, nil)
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 content part, got %d: %+v", len(parts), parts)
+	}
+	request, ok := parts[0].(types.ToolApprovalRequestContent)
+	if !ok {
+		t.Fatalf("part = %T, want ToolApprovalRequestContent", parts[0])
+	}
+	if request.Reason != reason {
+		t.Fatalf("request.Reason = %q, want %q", request.Reason, reason)
+	}
+}
+
+// TestAgentToolResultsToContentParts_ApprovedNoReasonOnRequest verifies that
+// an already-resolved (approved) result's reason surfaces on the response
+// part, not the request part — mirroring toolApprovalRequestFromToolResult,
+// which only sets Reason for the UserApproval status.
+func TestAgentToolResultsToContentParts_ApprovedNoReasonOnRequest(t *testing.T) {
+	reason := "auto-approved by policy"
+	results := []types.ToolResult{{
+		ToolCallID:     "call-1",
+		ToolName:       "lookup",
+		Input:          map[string]interface{}{"q": "x"},
+		Result:         "ok",
+		ApprovalStatus: types.ToolApprovalStatusApproved,
+		ApprovalReason: &reason,
+	}}
+
+	parts := agentToolResultsToContentParts(results, nil)
+	var sawRequest, sawResponse bool
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			sawRequest = true
+			if p.Reason != "" {
+				t.Fatalf("approved request.Reason = %q, want empty (reason belongs on the response)", p.Reason)
+			}
+		case types.ToolApprovalResponseContent:
+			sawResponse = true
+			if p.Reason != reason {
+				t.Fatalf("response.Reason = %q, want %q", p.Reason, reason)
+			}
+		}
+	}
+	if !sawRequest || !sawResponse {
+		t.Fatalf("expected both a request and a response part, got %+v", parts)
+	}
+}
