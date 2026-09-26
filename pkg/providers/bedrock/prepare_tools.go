@@ -207,17 +207,34 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 // tool to its Bedrock toolSpec representation: {name, inputSchema}, matching
 // the standard AmazonBedrockTool shape (Bedrock's toolSpec has no separate
 // "type" field — unlike Anthropic's native Messages API tool wire format).
+// Ports TS amazon-bedrock-prepare-tools.ts's generic anthropicTools
+// factory-id lookup: for every ProviderTool (other than web_search/web_fetch,
+// already filtered out as unsupported earlier), TS finds the matching
+// anthropicTools factory by id and forwards {name: tool.name, inputSchema:
+// factory.inputSchema} — i.e. it forwards ANY builtin Anthropic tool it can
+// find a schema for, not just tool_search.
+//
 // The short API name comes from anthropic.BuiltinToolAPIName, the same table
-// pkg/providers/anthropic itself uses (ports TS amazon-bedrock-prepare-
-// tools.ts's generic anthropicTools factory-id lookup, scoped to the simple
-// builtins that make sense as a plain name+schema tool — in practice
-// tool_search_bm25/regex, since web_search/web_fetch are filtered out earlier
-// as unsupported and other builtins like bash/computer need no input schema
-// at all on Anthropic's own API). Returns nil for tools Bedrock does not
-// recognize this way (the caller emits an "unsupported" warning).
+// pkg/providers/anthropic itself uses for the "simple" builtins (bash, text
+// editors 20241022/20250124/20250429, code_execution, memory, advisor,
+// tool_search) — these need no per-instance config and their Go constructors
+// (pkg/providers/anthropic/tools) already populate types.Tool.Parameters with
+// a concrete JSON Schema, exactly like their TS factory counterparts, so no
+// separate schema table is needed here.
+//
+// Self-serializing tools (computer_toolset_20260801, text_editor_20250728,
+// and — despite also having a static Parameters schema — the computer_*
+// variants, which TS still resolves via the *same* generic factory lookup)
+// are intentionally NOT covered here: their Bedrock wire "name" cannot be
+// derived from BuiltinToolAPIName's static table (computer_toolset has no
+// "name" in its own Anthropic API map at all; the others need per-instance
+// config this function does not have access to). Returns nil for tools
+// Bedrock does not recognize this way (the caller emits an "unsupported"
+// warning) — this is a narrower, documented subset of TS's coverage, tracked
+// as a follow-up rather than a silent gap.
 func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
 	shortName, ok := anthropic.BuiltinToolAPIName(t.Name)
-	if !ok || !strings.HasPrefix(shortName, "tool_search_tool_") {
+	if !ok {
 		return nil
 	}
 	inputSchema := t.Parameters

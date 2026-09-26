@@ -723,20 +723,65 @@ func TestPrepareTools_ToolSearchWireShape(t *testing.T) {
 	}
 }
 
+// TestPrepareTools_BuiltinToolsForwarded verifies that Anthropic "simple"
+// builtin provider tools (bash, text editors, code execution, memory,
+// advisor — anything in anthropicBuiltinToolTypes, not just tool_search) are
+// forwarded through the standard Bedrock toolConfig as {toolSpec: {name,
+// inputSchema}}, using their own types.Tool.Parameters as the schema. Ports
+// TS amazon-bedrock-prepare-tools.ts's generic anthropicTools factory-id
+// lookup, which forwards any ProviderTool it finds a factory match for (not
+// just tool_search) — see amazon-bedrock-prepare-tools.ts:120-141.
+func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		"required":   []string{"command"},
+	}
+	tools := []types.Tool{
+		{Name: "anthropic.bash_20250124", Parameters: schema, ProviderExecuted: true},
+	}
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("expected no warnings for a recognized builtin tool, got %#v", result.Warnings)
+	}
+	if len(result.ToolConfig.Tools) != 1 {
+		t.Fatalf("ToolConfig.Tools = %#v, want 1 tool", result.ToolConfig.Tools)
+	}
+	toolSpec, ok := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool = %#v, want a toolSpec map", result.ToolConfig.Tools[0])
+	}
+	if _, hasType := toolSpec["type"]; hasType {
+		t.Fatalf("toolSpec must not have a 'type' field (Bedrock toolSpec has no type), got %#v", toolSpec)
+	}
+	if toolSpec["name"] != "bash" {
+		t.Fatalf("toolSpec.name = %v, want bash", toolSpec["name"])
+	}
+	inputSchema, ok := toolSpec["inputSchema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
+	}
+	if jsonSchema, ok := inputSchema["json"].(map[string]interface{}); !ok || jsonSchema["type"] != "object" {
+		t.Fatalf("toolSpec.inputSchema.json = %#v, want the bash input schema", inputSchema["json"])
+	}
+}
+
 // TestPrepareTools_UnrecognizedAnthropicToolWarns verifies an Anthropic
-// provider tool Bedrock doesn't know how to forward (e.g. a bash/computer
-// tool) produces an "unsupported" warning naming the tool, instead of being
-// silently dropped or sent with a broken wire shape.
+// provider tool Bedrock doesn't know how to forward at all (e.g. a
+// self-serializing computer/computer_toolset tool, which needs per-instance
+// config BuiltinToolAPIName's static table does not carry) produces an
+// "unsupported" warning naming the tool, instead of being silently dropped or
+// sent with a broken wire shape.
 func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	tools := []types.Tool{
-		{Name: "anthropic.bash_20250124", ProviderExecuted: true},
+		{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true},
 	}
 	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
 	if len(result.ToolConfig.Tools) != 0 {
 		t.Fatalf("expected the unrecognized tool to be dropped, got %#v", result.ToolConfig.Tools)
 	}
-	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.bash_20250124" {
-		t.Fatalf("warnings = %#v, want a single 'tool anthropic.bash_20250124' warning", result.Warnings)
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.computer_toolset_20260801" {
+		t.Fatalf("warnings = %#v, want a single 'tool anthropic.computer_toolset_20260801' warning", result.Warnings)
 	}
 }
 
