@@ -79,6 +79,14 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		}
 		return m
 
+	case "xai.image_generation":
+		cfg, _ := t.ProviderOptions.(ImageGenerationConfig)
+		m := map[string]interface{}{"type": "image_generation"}
+		if cfg.Action != "" {
+			m["action"] = cfg.Action
+		}
+		return m
+
 	case "xai.mcp":
 		cfg, _ := t.ProviderOptions.(MCPServerOptions)
 		m := map[string]interface{}{"type": "mcp", "server_url": cfg.ServerURL}

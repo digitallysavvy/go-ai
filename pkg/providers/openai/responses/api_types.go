@@ -424,6 +424,31 @@ type ResponsesAPIUsage struct {
 	OutputTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	} `json:"output_tokens_details,omitempty"`
+
+	// Raw holds the complete usage JSON object as a generic map, capturing
+	// any provider-specific fields not modeled by the typed fields above
+	// (e.g. xAI's total_tokens/num_sources_used/num_server_side_tools_used,
+	// OpenAI's orchestration_* fields). Populated by UnmarshalJSON below.
+	// Row 41e7760 (xAI) / 7243530 (OpenAI): consumers should assign this to
+	// types.Usage.Raw instead of hand-picking individual fields.
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields as usual, then separately decodes
+// the same bytes into Raw so no field present in the response is lost, even
+// ones not modeled above.
+func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
+	type responsesAPIUsageAlias ResponsesAPIUsage
+	var alias responsesAPIUsageAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*u = ResponsesAPIUsage(alias)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 // IncompleteDetails explains why a Responses API response was cut short.

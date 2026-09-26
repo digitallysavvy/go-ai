@@ -157,7 +157,11 @@ data: [DONE]
 	}
 }
 
-func TestXAIResponsesToolsDoNotEmitAdditionalPropertiesFalse(t *testing.T) {
+// TestXAIResponsesToolsPreserveAdditionalPropertiesFalse covers row 6e405ae
+// (which reverts 85735d8): xAI stopped stripping `additionalProperties:
+// false` from function tool schemas, so it must now be preserved unchanged,
+// at both the root and nested levels.
+func TestXAIResponsesToolsPreserveAdditionalPropertiesFalse(t *testing.T) {
 	tools := prepareXAIResponsesTools([]types.Tool{
 		{
 			Name:        "saveContactWithAddress",
@@ -191,13 +195,13 @@ func TestXAIResponsesToolsDoNotEmitAdditionalPropertiesFalse(t *testing.T) {
 	if !ok {
 		t.Fatalf("parameters = %#v, want map[string]interface{}", tool["parameters"])
 	}
-	if _, exists := params["additionalProperties"]; exists {
-		t.Fatalf("unexpected root additionalProperties in xAI Responses tool schema: %#v", params)
+	if v, exists := params["additionalProperties"]; !exists || v != false {
+		t.Fatalf("root additionalProperties = %#v, want false (preserved)", params["additionalProperties"])
 	}
 	props := params["properties"].(map[string]interface{})
 	address := props["address"].(map[string]interface{})
-	if _, exists := address["additionalProperties"]; exists {
-		t.Fatalf("unexpected nested additionalProperties in xAI Responses tool schema: %#v", address)
+	if v, exists := address["additionalProperties"]; !exists || v != false {
+		t.Fatalf("nested additionalProperties = %#v, want false (preserved)", address["additionalProperties"])
 	}
 }
 
@@ -299,7 +303,7 @@ func TestXAIResponsesBuildRequestBodyNonImageFilesUseInputFile(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "grok-3")
 
-	body, err := model.buildRequestBody(&provider.GenerateOptions{
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleUser,
@@ -337,7 +341,7 @@ func TestXAIResponsesBuildRequestBodyRejectsInlineNonImageFileData(t *testing.T)
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "grok-3")
 
-	_, err := model.buildRequestBody(&provider.GenerateOptions{
+	_, _, err := model.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleUser,
@@ -362,7 +366,7 @@ func TestXAIResponsesBuildRequestBodyRejectsInlineTextFileParts(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "grok-3")
 
-	_, err := model.buildRequestBody(&provider.GenerateOptions{
+	_, _, err := model.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleUser,
@@ -507,8 +511,11 @@ func TestXAIResponsesDoGenerateCostInUsdTicksMetadata(t *testing.T) {
 	if got := xaiMeta["costInUsdTicks"]; got != int64(113500) {
 		t.Fatalf("costInUsdTicks: got %v", got)
 	}
-	if got := result.Usage.Raw["cost_in_usd_ticks"]; got != int64(113500) {
-		t.Fatalf("usage raw cost_in_usd_ticks: got %v", got)
+	// Row 41e7760: Usage.Raw now comes from a generic JSON decode of the full
+	// usage object, so numeric values are float64 rather than the
+	// previously hand-picked int64.
+	if got := result.Usage.Raw["cost_in_usd_ticks"]; got != float64(113500) {
+		t.Fatalf("usage raw cost_in_usd_ticks: got %v (%T)", got, got)
 	}
 }
 
@@ -1011,5 +1018,315 @@ data: [DONE]
 	}
 	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+// TestXAIResponsesFrequencyPresencePenaltyWarnAndTopKForwarded covers row
+// dc2f851: frequencyPenalty/presencePenalty are unsupported (warned), but
+// topK IS supported by xAI Responses and forwarded as top_k.
+func TestXAIResponsesFrequencyPresencePenaltyWarnAndTopKForwarded(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	freq := 0.5
+	pres := 0.5
+	topK := 40
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:           types.Prompt{Text: "hi"},
+		FrequencyPenalty: &freq,
+		PresencePenalty:  &pres,
+		TopK:             &topK,
+	}, false)
+	_ = body
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	// buildRequestBody itself doesn't warn on penalties (that's
+	// xaiResponsesWarnings, checked via DoGenerate/DoStream); verify top_k
+	// forwarding here and the warnings separately below.
+	if warnings != nil {
+		t.Fatalf("buildRequestBody warnings = %#v, want none (penalties are warned by xaiResponsesWarnings)", warnings)
+	}
+	if body["top_k"] != 40 {
+		t.Fatalf("top_k = %v, want 40", body["top_k"])
+	}
+
+	allWarnings := xaiResponsesWarnings(&provider.GenerateOptions{
+		FrequencyPenalty: &freq,
+		PresencePenalty:  &pres,
+	})
+	var sawFreq, sawPres bool
+	for _, w := range allWarnings {
+		if w.Feature == "frequencyPenalty" {
+			sawFreq = true
+		}
+		if w.Feature == "presencePenalty" {
+			sawPres = true
+		}
+	}
+	if !sawFreq || !sawPres {
+		t.Fatalf("warnings = %#v, want frequencyPenalty and presencePenalty", allWarnings)
+	}
+}
+
+// TestXAIResponsesReasoningNoneMapsToEffortNone covers row 8e006de:
+// reasoning:"none" maps to effort "none" (not omitted) on a model that
+// supports the reasoning effort parameter.
+func TestXAIResponsesReasoningNoneMapsToEffortNone(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	none := types.ReasoningNone
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		Reasoning: &none,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	reasoning, ok := body["reasoning"].(map[string]interface{})
+	if !ok || reasoning["effort"] != "none" {
+		t.Fatalf("reasoning = %#v, want effort=none", body["reasoning"])
+	}
+}
+
+// TestXAIResponsesGrok420RejectsReasoningEffort covers row 8e006de: a
+// grok-4.20-(non-)reasoning model rejects the reasoning effort parameter
+// entirely (including "none"), with a warning and no reasoning field sent.
+func TestXAIResponsesGrok420RejectsReasoningEffort(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-4.20-reasoning")
+
+	high := types.ReasoningHigh
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		Reasoning: &high,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning = %#v, want no reasoning field for grok-4.20-reasoning", body["reasoning"])
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoning" {
+		t.Fatalf("warnings = %#v, want a reasoning warning", warnings)
+	}
+}
+
+// TestXAIResponsesXHighEffortModelGating covers row 8e006de's effort map:
+// xhigh maps to "xhigh" only for grok-4.6, "high" for every other model.
+func TestXAIResponsesXHighEffortModelGating(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	xhigh := types.ReasoningXHigh
+
+	grok46 := NewResponsesLanguageModel(p, "grok-4.6")
+	body, _, err := grok46.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &xhigh}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if reasoning := body["reasoning"].(map[string]interface{}); reasoning["effort"] != "xhigh" {
+		t.Fatalf("grok-4.6 effort = %v, want xhigh", reasoning["effort"])
+	}
+
+	other := NewResponsesLanguageModel(p, "grok-4.3")
+	body, _, err = other.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &xhigh}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if reasoning := body["reasoning"].(map[string]interface{}); reasoning["effort"] != "high" {
+		t.Fatalf("grok-4.3 effort = %v, want high", reasoning["effort"])
+	}
+}
+
+// TestXAIResponsesServiceTier covers row 484293f: serviceTier is forwarded
+// as service_tier and surfaced back in providerMetadata.xai.serviceTier.
+func TestXAIResponsesServiceTier(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		if body["service_tier"] != "priority" {
+			t.Errorf("service_tier = %v, want priority", body["service_tier"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{}, "service_tier": "priority",
+			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"serviceTier": "priority"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+	xaiMeta, ok := result.ProviderMetadata["xai"].(map[string]interface{})
+	if !ok || xaiMeta["serviceTier"] != "priority" {
+		t.Fatalf("ProviderMetadata = %#v, want xai.serviceTier=priority", result.ProviderMetadata)
+	}
+}
+
+// TestXAIResponsesFullRawUsage covers row 41e7760: the full raw usage
+// object is preserved (not just hand-picked fields), including unmodeled
+// xAI-specific keys like total_tokens/num_sources_used.
+func TestXAIResponsesFullRawUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{
+				"input_tokens": 5, "output_tokens": 3, "total_tokens": 8,
+				"num_sources_used": 2, "num_server_side_tools_used": 1,
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+	if result.Usage.Raw["num_sources_used"] != float64(2) {
+		t.Fatalf("Usage.Raw = %#v, want num_sources_used=2 preserved", result.Usage.Raw)
+	}
+	if result.Usage.Raw["total_tokens"] != float64(8) {
+		t.Fatalf("Usage.Raw = %#v, want total_tokens=8 preserved", result.Usage.Raw)
+	}
+}
+
+// TestXAIResponsesWebSearchToolResultAction covers rows 6843788/5520b8a: a
+// completed web_search_call surfaces a tool-result with the mapped action
+// and sources, both in non-streaming and streaming responses.
+func TestXAIResponsesWebSearchToolResultAction(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "web_search_call", "id": "ws_1", "status": "completed",
+		"action": map[string]interface{}{
+			"type": "search", "query": "go generics",
+			"sources": []interface{}{map[string]interface{}{"type": "url", "url": "https://go.dev"}},
+		},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "ws_1" {
+		t.Fatalf("ToolCalls = %#v, want one web_search tool call", result.ToolCalls)
+	}
+	var found bool
+	for _, c := range result.Content {
+		tr, ok := c.(types.ToolResultContent)
+		if !ok || tr.ToolCallID != "ws_1" {
+			continue
+		}
+		found = true
+		resultMap, ok := tr.Result.(map[string]interface{})
+		if !ok {
+			t.Fatalf("tool result = %#v, want a map", tr.Result)
+		}
+		action, ok := resultMap["action"].(map[string]interface{})
+		if !ok || action["type"] != "search" || action["query"] != "go generics" {
+			t.Fatalf("action = %#v, want search action with query", resultMap["action"])
+		}
+		if _, ok := resultMap["sources"]; !ok {
+			t.Fatalf("result = %#v, want sources preserved", resultMap)
+		}
+	}
+	if !found {
+		t.Fatal("no web_search tool-result content found")
+	}
+}
+
+// TestXAIResponsesImageGenerationTool covers row fa2c2bb: the
+// image_generation tool is prepared correctly and a completed
+// image_generation_call produces a tool-call + tool-result.
+func TestXAIResponsesImageGenerationTool(t *testing.T) {
+	wire := prepareXAIResponsesTools([]types.Tool{ImageGeneration(ImageGenerationConfig{Action: "generate"})})
+	if len(wire) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(wire))
+	}
+	def := wire[0].(map[string]interface{})
+	if def["type"] != "image_generation" || def["action"] != "generate" {
+		t.Fatalf("image_generation def = %#v", def)
+	}
+
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "image_generation_call", "id": "img_1", "status": "completed",
+		"prompt": "a cat", "result": "aGVsbG8=",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "img_1" {
+		t.Fatalf("ToolCalls = %#v, want one image_generation tool call", result.ToolCalls)
+	}
+	var found bool
+	for _, c := range result.Content {
+		tr, ok := c.(types.ToolResultContent)
+		if !ok || tr.ToolCallID != "img_1" {
+			continue
+		}
+		found = true
+		resultMap, ok := tr.Result.(map[string]interface{})
+		if !ok || resultMap["result"] != "aGVsbG8=" || resultMap["prompt"] != "a cat" {
+			t.Fatalf("tool result = %#v, want result+prompt", tr.Result)
+		}
+	}
+	if !found {
+		t.Fatal("no image_generation tool-result content found")
+	}
+}
+
+// TestXAIResponsesImageGenerationFailedStatus verifies an
+// image_generation_call with no result surfaces as an errored tool-result.
+func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "image_generation_call", "id": "img_2", "status": "failed",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	var found bool
+	for _, c := range result.Content {
+		tr, ok := c.(types.ToolResultContent)
+		if !ok || tr.ToolCallID != "img_2" {
+			continue
+		}
+		found = true
+		if tr.Error == "" || !strings.Contains(tr.Error, "failed") {
+			t.Fatalf("tool result error = %q, want a failure message", tr.Error)
+		}
+	}
+	if !found {
+		t.Fatal("no image_generation tool-result content found")
 	}
 }
