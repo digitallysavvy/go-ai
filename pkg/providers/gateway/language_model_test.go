@@ -284,7 +284,6 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 		provider: &Provider{
 			config: Config{
 				DisallowPromptTraining: true,
-				HIPAACompliant:         true,
 				QuotaEntityID:          "quota-123",
 			},
 		},
@@ -307,7 +306,7 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 	if !ok {
 		t.Fatalf("gateway options type = %T", got["gateway"])
 	}
-	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["hipaaCompliant"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
+	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
 		t.Fatalf("missing config-derived gateway options: %#v", gatewayOpts)
 	}
 	if _, ok := gatewayOpts["only"]; !ok {

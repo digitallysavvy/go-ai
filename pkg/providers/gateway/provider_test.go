@@ -799,12 +799,10 @@ func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 
-	hipaa := true
 	disallowTraining := true
 	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hello"},
 		ProviderOptions: GatewayProviderOptions{
-			HIPAACompliant:         &hipaa,
 			QuotaEntityID:          "tenant-123",
 			DisallowPromptTraining: &disallowTraining,
 		}.ToProviderOptions(),
@@ -820,9 +818,6 @@ func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 	gatewayOptions, ok := providerOptions["gateway"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("providerOptions.gateway missing or wrong type: %#v", providerOptions["gateway"])
-	}
-	if gatewayOptions["hipaaCompliant"] != true {
-		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
 	}
 	if gatewayOptions["quotaEntityId"] != "tenant-123" {
 		t.Fatalf("quotaEntityId = %#v, want tenant-123", gatewayOptions["quotaEntityId"])
@@ -847,7 +842,6 @@ func TestLanguageModel_DoGenerate_MergesGatewayConfigProviderOptions(t *testing.
 	p, err := New(Config{
 		APIKey:                 "test-key",
 		BaseURL:                server.URL,
-		HIPAACompliant:         true,
 		DisallowPromptTraining: true,
 		QuotaEntityID:          "config-tenant",
 	})
@@ -872,14 +866,85 @@ func TestLanguageModel_DoGenerate_MergesGatewayConfigProviderOptions(t *testing.
 	}
 
 	gatewayOptions := capturedBody["providerOptions"].(map[string]interface{})["gateway"].(map[string]interface{})
-	if gatewayOptions["hipaaCompliant"] != true {
-		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
-	}
 	if gatewayOptions["disallowPromptTraining"] != true {
 		t.Fatalf("disallowPromptTraining = %#v, want true", gatewayOptions["disallowPromptTraining"])
 	}
 	if gatewayOptions["quotaEntityId"] != "request-tenant" {
 		t.Fatalf("quotaEntityId = %#v, want request override", gatewayOptions["quotaEntityId"])
+	}
+}
+
+// TestGatewayProviderOptionsHasSerializes mirrors the TS gateway-provider.test-d.ts
+// `has` typing coverage: implicit-caching/reasoning/tool-use/vision plus the
+// quantization helpers all serialize verbatim and in order.
+func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
+	opts := GatewayProviderOptions{
+		Has: []string{
+			GatewayHasImplicitCaching,
+			GatewayHasReasoning,
+			GatewayHasToolUse,
+			GatewayHasVision,
+			GatewayHasQuantization("fp8"),
+			GatewayHasNotQuantization("fp8"),
+		},
+	}
+	got := opts.toMap()
+	has, ok := got["has"].([]string)
+	if !ok {
+		t.Fatalf("has type = %T, want []string", got["has"])
+	}
+	want := []string{"implicit-caching", "reasoning", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
+	if len(has) != len(want) {
+		t.Fatalf("has = %#v, want %#v", has, want)
+	}
+	for i := range want {
+		if has[i] != want[i] {
+			t.Fatalf("has[%d] = %q, want %q", i, has[i], want[i])
+		}
+	}
+}
+
+// TestGatewayProviderOptionsHasOmittedWhenEmpty mirrors TS `has` being
+// optional: an unset Has field must not appear in the serialized map.
+func TestGatewayProviderOptionsHasOmittedWhenEmpty(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["has"]; ok {
+		t.Fatalf("has should be omitted when empty, got %#v", got["has"])
+	}
+}
+
+// TestGatewayProviderOptionsIdempotencyKeySerializes covers
+// providerOptions.gateway.idempotencyKey used by experimental_startBatch.
+func TestGatewayProviderOptionsIdempotencyKeySerializes(t *testing.T) {
+	got := GatewayProviderOptions{IdempotencyKey: "idem-abc"}.toMap()
+	if got["idempotencyKey"] != "idem-abc" {
+		t.Fatalf("idempotencyKey = %#v, want idem-abc", got["idempotencyKey"])
+	}
+	empty := GatewayProviderOptions{}.toMap()
+	if _, ok := empty["idempotencyKey"]; ok {
+		t.Fatalf("idempotencyKey should be omitted when empty")
+	}
+}
+
+// TestGatewayProviderOptionsCachingSerializes covers providerOptions.gateway.caching.
+func TestGatewayProviderOptionsCachingSerializes(t *testing.T) {
+	got := GatewayProviderOptions{Caching: GatewayCachingAuto}.toMap()
+	if got["caching"] != "auto" {
+		t.Fatalf("caching = %#v, want auto", got["caching"])
+	}
+	empty := GatewayProviderOptions{}.toMap()
+	if _, ok := empty["caching"]; ok {
+		t.Fatalf("caching should be omitted when empty")
+	}
+}
+
+// TestGatewayProviderOptionsHIPAACompliantRemoved documents that the removed
+// hipaaCompliant option (cefa3b1) no longer round-trips through toMap, even
+// via the raw providerOptions passthrough shape callers might still send.
+func TestGatewayProviderOptionsHIPAACompliantRemoved(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["hipaaCompliant"]; ok {
+		t.Fatalf("hipaaCompliant should no longer be a typed option, got %#v", got["hipaaCompliant"])
 	}
 }
 

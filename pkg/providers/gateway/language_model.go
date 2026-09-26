@@ -632,9 +632,6 @@ func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
 	if p.config.DisallowPromptTraining {
 		out["disallowPromptTraining"] = true
 	}
-	if p.config.HIPAACompliant {
-		out["hipaaCompliant"] = true
-	}
 	if p.config.QuotaEntityID != "" {
 		out["quotaEntityId"] = p.config.QuotaEntityID
 	}

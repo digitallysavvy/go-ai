@@ -145,10 +145,6 @@ type Config struct {
 	// prompt data. It is forwarded as providerOptions.gateway.disallowPromptTraining.
 	DisallowPromptTraining bool
 
-	// HIPAACompliant filters routing to providers that are HIPAA compliant with
-	// Vercel AI Gateway. It is forwarded as providerOptions.gateway.hipaaCompliant.
-	HIPAACompliant bool
-
 	// QuotaEntityID identifies the entity against which quota is tracked. It is
 	// forwarded as providerOptions.gateway.quotaEntityId.
 	QuotaEntityID string
@@ -166,10 +162,47 @@ type GatewayProviderOptions struct {
 	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
 	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
 	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
-	HIPAACompliant         *bool                          `json:"hipaaCompliant,omitempty"`
 	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
 	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
 	ServiceTier            string                         `json:"serviceTier,omitempty"`
+
+	// Has restricts routing to provider models that satisfy every given
+	// entry. Entries are capability tags (GatewayHasImplicitCaching,
+	// GatewayHasReasoning, GatewayHasToolUse, GatewayHasVision) or
+	// weight-format conditions built with GatewayHasQuantization /
+	// GatewayHasNotQuantization.
+	Has []string `json:"has,omitempty"`
+
+	// IdempotencyKey is used by experimental_startBatch: retries with the
+	// same key replay the original batch instead of creating a duplicate.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+
+	// Caching enables automatic caching behavior when supported by the
+	// Gateway. The only valid value is GatewayCachingAuto ("auto").
+	Caching string `json:"caching,omitempty"`
+}
+
+// Gateway `has` capability tags. See GatewayProviderOptions.Has.
+const (
+	GatewayHasImplicitCaching = "implicit-caching"
+	GatewayHasReasoning       = "reasoning"
+	GatewayHasToolUse         = "tool-use"
+	GatewayHasVision          = "vision"
+)
+
+// GatewayCachingAuto is the only valid value for GatewayProviderOptions.Caching.
+const GatewayCachingAuto = "auto"
+
+// GatewayHasQuantization returns a `has` entry that requires the serving
+// provider to report the given weight format (e.g. "fp8").
+func GatewayHasQuantization(format string) string {
+	return "quantization:" + format
+}
+
+// GatewayHasNotQuantization returns a `has` entry that excludes the given
+// weight format. Providers with no recorded format still pass this exclusion.
+func GatewayHasNotQuantization(format string) string {
+	return "!quantization:" + format
 }
 
 // GatewayProviderTimeoutOptions contains Gateway provider timeout settings.
@@ -212,9 +245,6 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	if o.DisallowPromptTraining != nil {
 		out["disallowPromptTraining"] = *o.DisallowPromptTraining
 	}
-	if o.HIPAACompliant != nil {
-		out["hipaaCompliant"] = *o.HIPAACompliant
-	}
 	if o.QuotaEntityID != "" {
 		out["quotaEntityId"] = o.QuotaEntityID
 	}
@@ -223,6 +253,15 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.ServiceTier != "" {
 		out["serviceTier"] = o.ServiceTier
+	}
+	if len(o.Has) > 0 {
+		out["has"] = o.Has
+	}
+	if o.IdempotencyKey != "" {
+		out["idempotencyKey"] = o.IdempotencyKey
+	}
+	if o.Caching != "" {
+		out["caching"] = o.Caching
 	}
 	return out
 }

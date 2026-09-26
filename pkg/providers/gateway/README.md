@@ -81,7 +81,6 @@ Gateway routing options can be configured globally on the provider or per call u
 provider, err := gateway.New(gateway.Config{
     APIKey:                  "your-api-key",
     DisallowPromptTraining:  true,
-    HIPAACompliant:          true,
     QuotaEntityID:           "tenant-123",
 })
 
@@ -93,6 +92,11 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
             "only":  []string{"anthropic", "openai"},
             "order": []string{"anthropic", "openai"},
             "sort":  "cost", // "cost", "ttft", or "tps"
+            // Restrict routing to models with given capabilities/weight formats.
+            "has": []string{
+                gateway.GatewayHasReasoning,
+                gateway.GatewayHasQuantization("fp8"),
+            },
         },
     },
 })
@@ -431,7 +435,6 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `HTTPClient` (*http.Client): Custom HTTP client
 - `ZeroDataRetention` (bool): Enable zero data retention mode
 - `DisallowPromptTraining` (bool): Restrict routing to providers that do not train on prompt data
-- `HIPAACompliant` (bool): Restrict routing to HIPAA-compliant providers
 - `QuotaEntityID` (string): Entity ID for quota tracking and tenant/account attribution
 - `ProjectID` (*string): Project identifier forwarded as `ai-o11y-project-id` for observability (or set `VERCEL_PROJECT_ID` env var)
 
@@ -444,8 +447,18 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `models` ([]string): Fallback model list
 - `zeroDataRetention` (bool): Per-call zero data retention
 - `disallowPromptTraining` (bool): Per-call no-prompt-training restriction
-- `hipaaCompliant` (bool): Per-call HIPAA-capable provider restriction
 - `quotaEntityId` (string): Per-call quota identity
+- `has` ([]string): Restrict routing to models with all given capability tags
+  (`GatewayHasImplicitCaching`, `GatewayHasReasoning`, `GatewayHasToolUse`,
+  `GatewayHasVision`) or weight-format conditions built with
+  `GatewayHasQuantization("fp8")` / `GatewayHasNotQuantization("fp8")`
+- `idempotencyKey` (string): Idempotency key for `experimental_startBatch` retries
+- `caching` (string): Enables automatic caching behavior when supported by the Gateway (only valid value: `"auto"`, see `GatewayCachingAuto`)
+
+> **Breaking change:** the `hipaaCompliant` provider option and `Config.HIPAACompliant`
+> field were removed to match the upstream TypeScript SDK (`hipaaCompliant` was dropped
+> from `@ai-sdk/gateway` in the Sep 23 2026 cycle). Callers relying on it should remove
+> the field; the Gateway service no longer recognizes it.
 
 ### Parallel Search Config
 
