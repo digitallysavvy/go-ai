@@ -238,6 +238,16 @@ func responseMessageHasContent(msg types.Message) bool {
 }
 
 func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
+	// Arguments (which may have been changed by ExperimentalRefineToolInput
+	// after the call was parsed) is authoritative when present. RawArguments
+	// is only a fallback for calls that were never decoded, so it must never
+	// clobber an already-populated Arguments map with the pre-refinement
+	// JSON: the persisted tool-call part and the HMAC approval signature both
+	// need to agree on the same (refined) input. Mirrors the TS SDK, which
+	// has only a single `input` field that carries the refined value.
+	if call.Arguments != nil {
+		return stripResponseToolCallMetadata(call)
+	}
 	if call.RawArguments != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(call.RawArguments), &parsed); err != nil {
@@ -248,10 +258,9 @@ func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
 			parsed = map[string]interface{}{}
 		}
 		call.Arguments = parsed
+		return stripResponseToolCallMetadata(call)
 	}
-	if call.Arguments == nil {
-		call.Arguments = map[string]interface{}{}
-	}
+	call.Arguments = map[string]interface{}{}
 	return stripResponseToolCallMetadata(call)
 }
 
@@ -496,6 +505,12 @@ func responseToolApprovalResponseContent(part types.ToolApprovalResponseContent)
 }
 
 func normalizeResponseToolCallContent(part types.ToolCallContent) types.ToolCallContent {
+	// See normalizeResponseToolCall: Arguments wins over a reparse of the raw
+	// Input string so a refined input is not overwritten by the stale
+	// pre-refinement JSON.
+	if part.Arguments != nil {
+		return part
+	}
 	if part.Input != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(part.Input), &parsed); err != nil {
@@ -506,9 +521,8 @@ func normalizeResponseToolCallContent(part types.ToolCallContent) types.ToolCall
 			parsed = map[string]interface{}{}
 		}
 		part.Arguments = parsed
+		return part
 	}
-	if part.Arguments == nil {
-		part.Arguments = map[string]interface{}{}
-	}
+	part.Arguments = map[string]interface{}{}
 	return part
 }
