@@ -161,9 +161,10 @@ func TestResponsesModelVersionedAzureURLSkipsV1AndAPIVersion(t *testing.T) {
 // must omit api-version and must set explicit "type":"message" on
 // system/user input items.
 func TestResponsesModelFoundryProjectOmitsAPIVersionAndSetsExplicitMessageType(t *testing.T) {
-	var capturedQuery string
+	var capturedPath, capturedQuery string
 	var capturedBody map[string]interface{}
 	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		capturedPath = r.URL.Path
 		capturedQuery = r.URL.RawQuery
 		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
@@ -194,6 +195,9 @@ func TestResponsesModelFoundryProjectOmitsAPIVersionAndSetsExplicitMessageType(t
 		},
 	}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
+	}
+	if capturedPath != "/api/projects/proj1/v1/responses" {
+		t.Fatalf("path = %q, want /api/projects/proj1/v1/responses (Foundry: not versioned, so /v1 is appended)", capturedPath)
 	}
 	if capturedQuery != "" {
 		t.Fatalf("query = %q, want empty for a Foundry project baseURL", capturedQuery)
