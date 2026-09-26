@@ -1930,6 +1930,76 @@ func TestToolApprovalResultExpandsToTSUIChunks(t *testing.T) {
 	}
 }
 
+// ports #105: a user-approval ToolResult with an ApprovalReason must expand
+// to a tool-approval-request UI chunk carrying "reason" (request reason,
+// shown to the approver), distinct from the approval response reason.
+func TestToolApprovalResultUserApprovalReasonExpandsToUIChunkReason(t *testing.T) {
+	reason := "requires operator review"
+	got := toUIMessageChunks(provider.StreamChunk{
+		Type: provider.ChunkTypeToolResult,
+		ToolResult: &types.ToolResult{
+			ToolCallID:     "call-1",
+			ApprovalID:     "approval-1",
+			ToolName:       "lookup",
+			Input:          map[string]interface{}{"q": "docs"},
+			ApprovalStatus: types.ToolApprovalStatusUserApproval,
+			ApprovalReason: &reason,
+		},
+	}, UIMessageStreamResultOptions{})
+	want := []UIMessageChunk{{
+		"type":       "tool-approval-request",
+		"approvalId": "approval-1",
+		"toolCallId": "call-1",
+		"reason":     reason,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("chunks = %#v, want %#v", got, want)
+	}
+}
+
+// End-to-end: StreamText -> ToUIMessageStream carries the request reason
+// through to the tool part's approval.reason in the final response message.
+func TestStreamTextResult_ToUIMessageStream_ApprovalRequestReasonSurvives(t *testing.T) {
+	reason := "requires operator review"
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:     "call-1",
+				ApprovalID:     "approval-1",
+				ToolName:       "needs_human",
+				Input:          map[string]interface{}{},
+				ApprovalStatus: types.ToolApprovalStatusUserApproval,
+				ApprovalReason: &reason,
+			},
+		},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := res.ToUIMessageStream(context.Background())
+
+	var toolPart UIMessageChunk
+	for chunk := range chunks {
+		if chunk["type"] != "tool-approval-request" {
+			continue
+		}
+		if r, ok := chunk["reason"].(string); !ok || r != reason {
+			t.Fatalf("tool-approval-request.reason = %#v, want %q", chunk["reason"], reason)
+		}
+		toolPart = chunk
+	}
+	if toolPart == nil {
+		t.Fatal("expected a tool-approval-request chunk")
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
 func TestCreateUIMessageStreamAcceptsPrototypeNameStateIDs(t *testing.T) {
 	var seenErrors []string
 	var responseMessage UIMessageChunk
