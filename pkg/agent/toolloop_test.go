@@ -1194,8 +1194,11 @@ func TestOnToolError_ToolNotFound(t *testing.T) {
 		t.Fatal("Expected error to be captured")
 	}
 
-	if capturedError.Error() != "tool not found: nonexistent_tool" {
-		t.Errorf("Expected 'tool not found' error, got '%s'", capturedError.Error())
+	// The call is now caught by ai.ParseToolCall (via parseAgentToolCalls)
+	// before reaching the legacy "tool not found: X" branch, so it surfaces
+	// as an Invalid call with a NoSuchToolError message instead.
+	if !strings.Contains(capturedError.Error(), "unavailable tool") {
+		t.Errorf("Expected an 'unavailable tool' error, got '%s'", capturedError.Error())
 	}
 }
 
@@ -2112,7 +2115,11 @@ func TestToolLoopAgent_FilteredToolsUsedForExecution(t *testing.T) {
 	if blockedExecuted {
 		t.Fatal("filtered-out tool executed")
 	}
-	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil || !strings.Contains(result.ToolResults[0].Error.Error(), "tool not found") {
+	// The filtered-out call is now caught by ai.ParseToolCall (via
+	// parseAgentToolCalls) before reaching the separate "tool not found"
+	// branch, so it surfaces as an Invalid call with a NoSuchToolError
+	// message rather than the legacy "tool not found: X" text.
+	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil || !strings.Contains(result.ToolResults[0].Error.Error(), "unavailable tool") {
 		t.Fatalf("expected not-found result for inactive tool, got %+v", result.ToolResults)
 	}
 }

@@ -840,3 +840,59 @@ func TestWorkflowErrorAndAbortCallbacks(t *testing.T) {
 		t.Fatalf("expected abort callback and error, called=%v err=%v", abortCalled, err)
 	}
 }
+
+// TestWorkflowAgentForwardsRepairToolCall verifies WorkflowAgent.RepairToolCall
+// (eb49d29 / HANDOFF.md item 5) reaches the underlying agent's tool-call
+// parsing, and that a per-call override (GenerateWithOptions) takes
+// precedence over the WorkflowAgent-level setting.
+func TestWorkflowAgentForwardsRepairToolCall(t *testing.T) {
+	model := &wfMockModel{}
+	var agentLevelCalled bool
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{Name: "other"}},
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			agentLevelCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if !agentLevelCalled {
+		t.Fatal("expected WorkflowAgent.RepairToolCall to be invoked for the unknown tool call")
+	}
+
+	var callLevelCalled bool
+	agentLevelCalled = false
+	model2 := &wfMockModel{}
+	agent2, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model2,
+		Tools: []types.Tool{{Name: "other"}},
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			agentLevelCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent2.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{
+		Prompt: "hello",
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			callLevelCalled = true
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if agentLevelCalled {
+		t.Fatal("agent-level RepairToolCall must not fire when the per-call option is set")
+	}
+	if !callLevelCalled {
+		t.Fatal("expected the per-call RepairToolCall to fire")
+	}
+}

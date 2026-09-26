@@ -69,14 +69,27 @@ func mergeCallbacks(settings AgentConfig, callOpts agentCallbacks) agentCallback
 	if settingsStepEnd == nil {
 		settingsStepEnd = settings.OnStepFinishEvent
 	}
+	settingsEnd := settings.OnEndEvent
+	if settingsEnd == nil {
+		settingsEnd = settings.OnFinishEvent
+	}
 	return agentCallbacks{
 		onStart:          mergeListener(settings.OnStart, callOpts.onStart),
 		onStepStart:      mergeListener(settings.OnStepStartEvent, callOpts.onStepStart),
 		onToolCallStart:  mergeListener(settingsToolStart, callOpts.onToolCallStart),
 		onToolCallFinish: mergeListener(settingsToolFinish, callOpts.onToolCallFinish),
 		onStepFinish:     mergeListener(settingsStepEnd, callOpts.onStepFinish),
-		onFinish:         mergeListener(settings.OnFinishEvent, callOpts.onFinish),
+		onFinish:         mergeListener(settingsEnd, callOpts.onFinish),
 	}
+}
+
+// resolveAgentOnEnd returns opts.OnEnd if set, else its deprecated alias
+// opts.OnFinish.
+func resolveAgentOnEnd(opts AgentGenerateOptions) func(context.Context, ai.OnFinishEvent) {
+	if opts.OnEnd != nil {
+		return opts.OnEnd
+	}
+	return opts.OnFinish
 }
 
 func resolveAgentOnStepEnd(opts AgentGenerateOptions) func(context.Context, ai.OnStepFinishEvent) {
@@ -238,7 +251,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		onToolCallStart:  resolveAgentToolExecutionStart(opts),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
 		onStepFinish:     resolveAgentOnStepEnd(opts),
-		onFinish:         opts.OnFinish,
+		onFinish:         resolveAgentOnEnd(opts),
 	})
 	return ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:                          callConfig.Model,
@@ -271,6 +284,10 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ExperimentalSandbox:            callConfig.ExperimentalSandbox,
 		ExperimentalRefineToolInput:    callConfig.ExperimentalRefineToolInput,
 		ExperimentalDownload:           callConfig.ExperimentalDownload,
+		InstructionMessages:            callConfig.InstructionMessages,
+		RepairToolCall:                 callConfig.RepairToolCall,
+		OnLanguageModelCallStart:       callConfig.OnLanguageModelCallStart,
+		OnLanguageModelCallEnd:         callConfig.OnLanguageModelCallEnd,
 		RuntimeContext:                 callConfig.RuntimeContext,
 		ToolsContext:                   callConfig.ToolsContext,
 		SensitiveRuntimeContext:        callConfig.SensitiveRuntimeContext,
@@ -311,7 +328,7 @@ func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOpt
 		onToolCallStart:  resolveAgentToolExecutionStart(opts),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts),
 		onStepFinish:     resolveAgentOnStepEnd(opts),
-		onFinish:         opts.OnFinish,
+		onFinish:         resolveAgentOnEnd(opts),
 	}
 	return callAgent.executeWithMessages(ctx, messages, cbs)
 }
@@ -344,7 +361,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		onToolCallStart:  resolveAgentToolExecutionStart(opts.AgentGenerateOptions),
 		onToolCallFinish: resolveAgentToolExecutionEnd(opts.AgentGenerateOptions),
 		onStepFinish:     resolveAgentOnStepEnd(opts.AgentGenerateOptions),
-		onFinish:         opts.OnFinish,
+		onFinish:         resolveAgentOnEnd(opts.AgentGenerateOptions),
 	})
 	streamOpts := ai.StreamTextOptions{
 		Model:                          callConfig.Model,
@@ -377,6 +394,10 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ExperimentalSandbox:            callConfig.ExperimentalSandbox,
 		ExperimentalRefineToolInput:    callConfig.ExperimentalRefineToolInput,
 		ExperimentalDownload:           callConfig.ExperimentalDownload,
+		InstructionMessages:            callConfig.InstructionMessages,
+		RepairToolCall:                 callConfig.RepairToolCall,
+		OnLanguageModelCallStart:       callConfig.OnLanguageModelCallStart,
+		OnLanguageModelCallEnd:         callConfig.OnLanguageModelCallEnd,
 		RuntimeContext:                 callConfig.RuntimeContext,
 		ToolsContext:                   callConfig.ToolsContext,
 		SensitiveRuntimeContext:        callConfig.SensitiveRuntimeContext,
@@ -801,6 +822,10 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ExperimentalSandbox:            a.config.ExperimentalSandbox,
 		ExperimentalRefineToolInput:    a.config.ExperimentalRefineToolInput,
 		ExperimentalDownload:           a.config.ExperimentalDownload,
+		InstructionMessages:            a.config.InstructionMessages,
+		RepairToolCall:                 firstNonNilRepairToolCall(a.config.RepairToolCall, a.config.ExperimentalRepairToolCall),
+		OnLanguageModelCallStart:       firstNonNilLMCallStart(a.config.OnLanguageModelCallStart, a.config.ExperimentalOnLanguageModelCallStart),
+		OnLanguageModelCallEnd:         firstNonNilLMCallEnd(a.config.OnLanguageModelCallEnd, a.config.ExperimentalOnLanguageModelCallEnd),
 		RuntimeContext:                 a.runtimeContext(),
 		ToolsContext:                   a.config.ToolsContext,
 		PreviousSteps:                  previousSteps,
@@ -864,6 +889,30 @@ func orderAgentStepTools(tools []types.Tool, toolOrder []string) []types.Tool {
 		return remaining[i].Name < remaining[j].Name
 	})
 	return append(ordered, remaining...)
+}
+
+// firstNonNilRepairToolCall returns stable if set, else its deprecated alias.
+func firstNonNilRepairToolCall(stable, experimental ai.ToolCallRepairFunction) ai.ToolCallRepairFunction {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
+
+// firstNonNilLMCallStart returns stable if set, else its deprecated alias.
+func firstNonNilLMCallStart(stable, experimental ai.OnLanguageModelCallStartCallback) ai.OnLanguageModelCallStartCallback {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
+
+// firstNonNilLMCallEnd returns stable if set, else its deprecated alias.
+func firstNonNilLMCallEnd(stable, experimental ai.OnLanguageModelCallEndCallback) ai.OnLanguageModelCallEndCallback {
+	if stable != nil {
+		return stable
+	}
+	return experimental
 }
 
 func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig {
@@ -979,6 +1028,27 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.ExperimentalDownload != nil {
 		c.ExperimentalDownload = opts.ExperimentalDownload
 	}
+	if len(opts.InstructionMessages) > 0 {
+		c.InstructionMessages = opts.InstructionMessages
+	}
+	if opts.RepairToolCall != nil {
+		c.RepairToolCall = opts.RepairToolCall
+	}
+	if opts.ExperimentalRepairToolCall != nil {
+		c.ExperimentalRepairToolCall = opts.ExperimentalRepairToolCall
+	}
+	if opts.OnLanguageModelCallStart != nil {
+		c.OnLanguageModelCallStart = opts.OnLanguageModelCallStart
+	}
+	if opts.ExperimentalOnLanguageModelCallStart != nil {
+		c.ExperimentalOnLanguageModelCallStart = opts.ExperimentalOnLanguageModelCallStart
+	}
+	if opts.OnLanguageModelCallEnd != nil {
+		c.OnLanguageModelCallEnd = opts.OnLanguageModelCallEnd
+	}
+	if opts.ExperimentalOnLanguageModelCallEnd != nil {
+		c.ExperimentalOnLanguageModelCallEnd = opts.ExperimentalOnLanguageModelCallEnd
+	}
 	return c
 }
 
@@ -1012,6 +1082,45 @@ func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext
 		}
 	}
 	return resolved
+}
+
+// parseAgentToolCalls validates and (where configured) repairs each tool
+// call from the model response, wiring RepairToolCall into the legacy
+// executeWithMessages/executeStep loop (HANDOFF.md item 5). Previously this
+// loop never called ai.ParseToolCall at all, so RepairToolCall had no effect
+// here and calls to unknown tools or with schema-invalid input were never
+// marked Invalid. Mirrors ai.parseToolCalls (unexported; pkg/agent can only
+// reach the single-call ai.ParseToolCall).
+func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message) ([]types.ToolCall, error) {
+	if len(calls) == 0 {
+		return calls, nil
+	}
+	parsed := make([]types.ToolCall, len(calls))
+	for i, call := range calls {
+		if call.Invalid {
+			// Already flagged invalid upstream (e.g. a provider-specific
+			// quirk surfaced before this point) — trust it rather than
+			// re-deriving validity, which could incorrectly clear the flag
+			// for a call whose arguments happen to satisfy the schema.
+			parsed[i] = call
+			continue
+		}
+		result, err := ai.ParseToolCall(ctx, ai.ParseToolCallOptions{
+			ToolCall:            call,
+			Tools:               callConfig.Tools,
+			RepairToolCall:      callConfig.RepairToolCall,
+			Instructions:        callConfig.System,
+			InstructionMessages: callConfig.InstructionMessages,
+			Messages:            messages,
+		})
+		if err != nil {
+			// Only a context cancellation reaches here; ParseToolCall
+			// otherwise returns an Invalid call rather than an error.
+			return nil, err
+		}
+		parsed[i] = result
+	}
+	return parsed, nil
 }
 
 func enrichAgentToolCallMetadata(calls []types.ToolCall, tools []types.Tool) []types.ToolCall {
@@ -1195,7 +1304,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls := enrichAgentToolCallMetadata(genResult.ToolCalls, callConfig.Tools)
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages)
+	if err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
@@ -1245,6 +1358,13 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		}
 
 		if call.Invalid {
+			// Invalid provider-executed calls get no synthesized client
+			// tool-error result; the provider is responsible for surfacing
+			// its own error on a subsequent response (TS 7bd6bdd, mirrored
+			// in ai.executeTools).
+			if call.ProviderExecuted {
+				continue
+			}
 			invalidErr := call.Error
 			if invalidErr == nil {
 				invalidErr = fmt.Errorf("invalid tool call for %s", call.ToolName)
@@ -1257,6 +1377,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Error:        invalidErr,
 				ToolMetadata: call.ToolMetadata,
 			})
+			if a.config.OnToolError != nil {
+				a.config.OnToolError(call, invalidErr)
+			}
 			continue
 		}
 

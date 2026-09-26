@@ -134,6 +134,8 @@ type WorkflowAgent struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// RepairToolCall attempts to repair tool calls that fail to parse.
+	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret signs issued approval requests and
 	// verifies resumed approvals before approved tools execute.
 	ExperimentalToolApprovalSecret []byte
@@ -155,6 +157,8 @@ type WorkflowGenerateOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// RepairToolCall attempts to repair tool calls that fail to parse.
+	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
 
@@ -188,6 +192,8 @@ type WorkflowStreamOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+	// RepairToolCall attempts to repair tool calls that fail to parse.
+	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
 
@@ -803,6 +809,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ExperimentalRefineToolInput != nil {
 		refineToolInput = ovr.ExperimentalRefineToolInput
 	}
+	repairToolCall := w.RepairToolCall
+	if govr.RepairToolCall != nil {
+		repairToolCall = govr.RepairToolCall
+	}
+	if ovr.RepairToolCall != nil {
+		repairToolCall = ovr.RepairToolCall
+	}
 	approvalSecret := w.effectiveToolApprovalSecret(ovr, govr)
 	telemetry := w.Telemetry
 	if govr.Telemetry != nil {
@@ -832,6 +845,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		Include:                        include,
 		ExperimentalSandbox:            sandbox,
 		ExperimentalRefineToolInput:    refineToolInput,
+		RepairToolCall:                 repairToolCall,
 		ExperimentalToolApprovalSecret: approvalSecret,
 		OnStart:                        mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
 		OnStepStartEvent:               mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),

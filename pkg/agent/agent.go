@@ -115,6 +115,28 @@ type AgentGenerateOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	ExperimentalDownload        ai.DownloadFunction
 
+	// InstructionMessages supplies this call's instructions as system
+	// messages. Takes precedence over Instructions/System/Prompt when
+	// non-empty. See AgentConfig.InstructionMessages.
+	InstructionMessages []types.Message
+
+	// RepairToolCall overrides AgentConfig.RepairToolCall for this call.
+	RepairToolCall ai.ToolCallRepairFunction
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart overrides AgentConfig.OnLanguageModelCallStart
+	// for this call.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd overrides AgentConfig.OnLanguageModelCallEnd for
+	// this call.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
 	OnStart              func(ctx context.Context, e ai.OnStartEvent)
 	OnStepStart          func(ctx context.Context, e ai.OnStepStartEvent)
 	OnToolExecutionStart func(ctx context.Context, e ai.OnToolCallStartEvent)
@@ -126,7 +148,9 @@ type AgentGenerateOptions struct {
 	OnStepEnd        func(ctx context.Context, e ai.OnStepFinishEvent)
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ai.OnStepFinishEvent)
-	OnFinish     func(ctx context.Context, e ai.OnFinishEvent)
+	OnEnd        func(ctx context.Context, e ai.OnFinishEvent)
+	// Deprecated: use OnEnd.
+	OnFinish func(ctx context.Context, e ai.OnFinishEvent)
 }
 
 // AgentStreamOptions contains per-call options for ToolLoopAgent.Stream.
@@ -383,6 +407,42 @@ type AgentConfig struct {
 	// calls. When nil, the core default downloader is used for unsupported URLs.
 	ExperimentalDownload ai.DownloadFunction
 
+	// InstructionMessages supplies the agent's instructions as system messages
+	// (ai.GenerateTextOptions.InstructionMessages / StreamTextOptions
+	// equivalent), preserving per-message ProviderOptions. Takes precedence
+	// over Instructions/System/Prompt when non-empty.
+	InstructionMessages []types.Message
+
+	// RepairToolCall attempts to repair tool calls that fail to parse because
+	// the tool does not exist or its input is invalid. Forwarded to
+	// ai.GenerateText/StreamText for Generate/Stream.
+	RepairToolCall ai.ToolCallRepairFunction
+
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before each provider
+	// model call begins.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// ExperimentalOnLanguageModelCallStart is a deprecated alias for
+	// OnLanguageModelCallStart.
+	//
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after each provider model response is
+	// normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
+	// ExperimentalOnLanguageModelCallEnd is a deprecated alias for
+	// OnLanguageModelCallEnd.
+	//
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
 	// ========================================================================
 	// Callbacks
 	// ========================================================================
@@ -433,7 +493,12 @@ type AgentConfig struct {
 	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e ai.OnStepFinishEvent)
 
-	// OnFinishEvent is called once when agent execution completes.
+	// OnEndEvent is called once when agent execution completes.
+	OnEndEvent func(ctx context.Context, e ai.OnFinishEvent)
+
+	// OnFinishEvent is a deprecated alias for OnEndEvent.
+	//
+	// Deprecated: use OnEndEvent.
 	OnFinishEvent func(ctx context.Context, e ai.OnFinishEvent)
 
 	// LangChain/LangGraph-Style Callbacks (v6.0.60+)
@@ -605,6 +670,22 @@ type PrepareCallConfig struct {
 
 	// ExperimentalDownload customizes prompt URL download handling.
 	ExperimentalDownload ai.DownloadFunction
+
+	// InstructionMessages supplies this step's instructions as system
+	// messages. See AgentConfig.InstructionMessages.
+	InstructionMessages []types.Message
+
+	// RepairToolCall attempts to repair tool calls that fail to parse for
+	// this step.
+	RepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before this step's
+	// provider model call begins.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after this step's provider model
+	// response is normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
 
 	// RuntimeContext is user-defined runtime data for this call.
 	RuntimeContext interface{}
