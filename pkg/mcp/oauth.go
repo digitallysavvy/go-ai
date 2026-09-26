@@ -32,8 +32,10 @@ func ValidateOAuthState(returnedState, sentState string) error {
 }
 
 // OAuthAuthorizationServerInformation pins the authorization server and token
-// endpoint that issued stored OAuth credentials.
+// endpoint (and, when known, issuer) that issued stored OAuth credentials.
+// Matches TS OAuthAuthorizationServerInformation (oauth.ts).
 type OAuthAuthorizationServerInformation struct {
+	Issuer                 string `json:"issuer,omitempty"`
 	AuthorizationServerURL string `json:"authorization_server"`
 	TokenEndpoint          string `json:"token_endpoint"`
 }
@@ -43,21 +45,29 @@ type OAuthAuthorizationServerInformation struct {
 type OAuthProtectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
 	AuthorizationServers []string `json:"authorization_servers,omitempty"`
+	// ScopesSupported lists the OAuth scopes the protected resource supports.
+	// Used for scope selection precedence (TS selectScope, hash 1011e33).
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
 }
 
 // OAuthAuthorizationServerMetadata is OAuth/OIDC authorization server metadata.
 type OAuthAuthorizationServerMetadata struct {
-	Issuer                        string   `json:"issuer"`
-	AuthorizationEndpoint         string   `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint                 string   `json:"token_endpoint"`
-	RegistrationEndpoint          string   `json:"registration_endpoint,omitempty"`
-	ResponseTypesSupported        []string `json:"response_types_supported,omitempty"`
-	GrantTypesSupported           []string `json:"grant_types_supported,omitempty"`
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported,omitempty"`
-	JWKSURI                       string   `json:"jwks_uri,omitempty"`
-	SubjectTypesSupported         []string `json:"subject_types_supported,omitempty"`
-	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported,omitempty"`
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	RegistrationEndpoint  string `json:"registration_endpoint,omitempty"`
+	// AuthorizationResponseIssParameterSupported and ClientIDMetadataDocumentSupported
+	// mirror TS OAuthMetadataSchema additions (hash 1f29230).
+	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported,omitempty"`
+	ClientIDMetadataDocumentSupported          bool     `json:"client_id_metadata_document_supported,omitempty"`
+	ScopesSupported                            []string `json:"scopes_supported,omitempty"`
+	ResponseTypesSupported                     []string `json:"response_types_supported,omitempty"`
+	GrantTypesSupported                        []string `json:"grant_types_supported,omitempty"`
+	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported,omitempty"`
+	TokenEndpointAuthMethods                   []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	JWKSURI                                    string   `json:"jwks_uri,omitempty"`
+	SubjectTypesSupported                      []string `json:"subject_types_supported,omitempty"`
+	IDTokenSigningAlgValues                    []string `json:"id_token_signing_alg_values_supported,omitempty"`
 }
 
 // OAuthDiscoveryURL is one authorization-server metadata endpoint candidate.
@@ -96,7 +106,12 @@ func CreateOAuthAuthorizationServerInformation(authorizationServerURL string, me
 			return OAuthAuthorizationServerInformation{}, err
 		}
 	}
+	issuer := authorizationServerURL
+	if metadata != nil && metadata.Issuer != "" {
+		issuer = metadata.Issuer
+	}
 	return OAuthAuthorizationServerInformation{
+		Issuer:                 issuer,
 		AuthorizationServerURL: oauthURLHref(authURL),
 		TokenEndpoint:          oauthURLHref(tokenURL),
 	}, nil
@@ -104,9 +119,12 @@ func CreateOAuthAuthorizationServerInformation(authorizationServerURL string, me
 
 // AssertOAuthAuthorizationServerInformationMatches prevents rediscovered
 // metadata from being used with credentials issued by a different AS/token
-// endpoint.
+// endpoint. Issuer is compared only when both sides have one (matching TS
+// assertAuthorizationServerInformationMatches, which tolerates older stored
+// pins that predate the issuer field).
 func AssertOAuthAuthorizationServerInformationMatches(stored, current OAuthAuthorizationServerInformation) error {
-	if normalizeOAuthURL(stored.AuthorizationServerURL) != normalizeOAuthURL(current.AuthorizationServerURL) ||
+	if (stored.Issuer != "" && current.Issuer != "" && stored.Issuer != current.Issuer) ||
+		normalizeOAuthURL(stored.AuthorizationServerURL) != normalizeOAuthURL(current.AuthorizationServerURL) ||
 		normalizeOAuthURL(stored.TokenEndpoint) != normalizeOAuthURL(current.TokenEndpoint) {
 		return NewMCPClientError(0, "OAuth authorization server metadata does not match the metadata that issued the stored credentials", nil)
 	}
@@ -170,32 +188,62 @@ func AssertOAuthResourceMetadataURLSameOrigin(serverURL string, resourceMetadata
 // ExtractResourceMetadataURL extracts RFC 9728 resource_metadata from a Bearer
 // WWW-Authenticate header.
 func ExtractResourceMetadataURL(resp *http.Response) (*url.URL, bool) {
+	params := ExtractWWWAuthenticateParams(resp)
+	return params.ResourceMetadataURL, params.ResourceMetadataURL != nil
+}
+
+// WWWAuthenticateParams is the subset of a Bearer WWW-Authenticate challenge
+// this client understands, matching TS extractWWWAuthenticateParams
+// (oauth.ts, hash 1011e33).
+type WWWAuthenticateParams struct {
+	ResourceMetadataURL *url.URL
+	// Scope is the space-separated scope list requested by the challenge, if
+	// present. Used with precedence challenge > PRM > client metadata by
+	// SelectOAuthScope.
+	Scope string
+}
+
+// ExtractWWWAuthenticateParams parses a Bearer WWW-Authenticate header for
+// both the RFC 9728 resource_metadata URL and an RFC 6750 scope parameter,
+// matching TS extractWWWAuthenticateParams (oauth.ts, hash 1011e33).
+func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if resp == nil {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
 	header := resp.Header.Get("WWW-Authenticate")
 	if header == "" {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
 	parts := strings.SplitN(header, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
-	const key = `resource_metadata="`
-	start := strings.Index(header, key)
+
+	var out WWWAuthenticateParams
+	if resourceMetadataURL := extractQuotedChallengeParam(header, "resource_metadata"); resourceMetadataURL != "" {
+		if parsed, err := url.Parse(resourceMetadataURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			out.ResourceMetadataURL = parsed
+		}
+	}
+	out.Scope = extractQuotedChallengeParam(header, "scope")
+	return out
+}
+
+// extractQuotedChallengeParam extracts `key="value"` from an HTTP challenge
+// header (e.g. WWW-Authenticate), matching TS's per-param regex extraction in
+// extractWWWAuthenticateParams.
+func extractQuotedChallengeParam(header, key string) string {
+	needle := key + `="`
+	start := strings.Index(header, needle)
 	if start < 0 {
-		return nil, false
+		return ""
 	}
-	start += len(key)
+	start += len(needle)
 	end := strings.Index(header[start:], `"`)
 	if end < 0 {
-		return nil, false
+		return ""
 	}
-	parsed, err := url.Parse(header[start : start+end])
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, false
-	}
-	return parsed, true
+	return header[start : start+end]
 }
 
 // DiscoverOAuthProtectedResourceMetadata discovers MCP protected resource
