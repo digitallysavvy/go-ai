@@ -645,6 +645,28 @@ func TestCreateUIMessageStreamResponse_WithInit(t *testing.T) {
 	}
 }
 
+// ports the "preserve multiple Set-Cookie headers" requirement (audit row
+// #29): map[string]string can only carry one value per header key, so
+// UIMessageStreamResponseInit.Header (http.Header) exists for headers that
+// need repeated values.
+func TestCreateUIMessageStreamResponse_MultipleSetCookieHeaders(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	httpRes, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, &UIMessageStreamResponseInit{
+		Header: http.Header{"Set-Cookie": []string{"a=1", "b=2"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateUIMessageStreamResponseWithInit() error = %v", err)
+	}
+	got := httpRes.Header.Values("Set-Cookie")
+	if len(got) != 2 || got[0] != "a=1" || got[1] != "b=2" {
+		t.Fatalf("Set-Cookie values = %#v, want [a=1 b=2]", got)
+	}
+}
+
 func TestStreamTextResult_ToUIMessageStreamResponse(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "hello"},

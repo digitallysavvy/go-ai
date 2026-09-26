@@ -133,9 +133,15 @@ type UIMessageStreamResultOptions struct {
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
 // createUIMessageStreamResponse.
 type UIMessageStreamResponseInit struct {
-	Status           int
-	StatusText       string
-	Headers          map[string]string
+	Status     int
+	StatusText string
+	// Headers sets a single value per header key. Use Header instead when a
+	// header (e.g. Set-Cookie) needs multiple values.
+	Headers map[string]string
+	// Header carries repeated header values (e.g. multiple Set-Cookie
+	// entries), which map[string]string cannot represent. Values here are
+	// added in addition to Headers, so both can be set together.
+	Header           http.Header
 	ConsumeSSEStream func(io.Reader) error
 }
 
@@ -1506,6 +1512,11 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 		statusText = init.StatusText
 		for key, value := range init.Headers {
 			headers.Set(key, value)
+		}
+		for key, values := range init.Header {
+			for _, value := range values {
+				headers.Add(key, value)
+			}
 		}
 	}
 
