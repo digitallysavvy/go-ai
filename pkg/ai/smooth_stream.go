@@ -136,35 +136,19 @@ func smoothStreamSleep(ctx context.Context, delayInMs *int) {
 // pattern/detector). Create one instance per StreamText call: the returned
 // function is stateful (it holds a buffer across calls).
 //
-// Mirrors the TypeScript SDK's smoothStream (generate-text/smooth-stream.ts).
+// Mirrors the TypeScript SDK's smoothStream (generate-text/smooth-stream.ts):
+// the TS transform emits each detected chunk to the consumer immediately and
+// then awaits the delay before looking for the next one, so downstream
+// readers see chunks trickle in over time rather than arriving all at once.
 //
-// # Delay hook (does not yet exist)
-//
-// The TS transform emits each detected chunk to the consumer immediately
-// and then awaits the delay before looking for the next one, so downstream
-// readers see chunks trickle in over time. Go's StreamTransformFunc has the
-// shape `func(ctx, chunk) []provider.StreamChunk`: it can only return a
-// batch, which stream.go forwards to the consumer only after the function
-// returns. As implemented here, the delay still happens (paced between
-// each detected match) but it delays the return of the whole batch rather
-// than the delivery of each individual chunk — every chunk produced from a
-// single input delta reaches the consumer at the same instant, once all of
-// that delta's internal delays have elapsed. This preserves total pacing
-// and delay call counts but not per-chunk incremental delivery.
-//
-// True incremental delivery requires stream.go to expose an emitter hook,
-// e.g.:
-//
-//	type StreamTransformEmitter func(provider.StreamChunk)
-//	func WithStreamTransformEmitter(ctx context.Context, emit StreamTransformEmitter) context.Context
-//	func StreamTransformEmitterFromContext(ctx context.Context) (StreamTransformEmitter, bool)
-//
-// wired into the ExperimentalTransform loop (around stream.go:1138-1146) so
-// that when a transform calls the emitter, stream.go forwards that chunk
-// (onChunk + FireOnChunk) immediately instead of waiting for the transform
-// call to return, and treats the transform's returned slice as "any
-// remaining chunks not already emitted". See the implementation PR report
-// for the exact proposed diff.
+// When called by StreamText (which installs an emitter via
+// WithStreamTransformEmitter around every ExperimentalTransform invocation),
+// this function emits each match through that emitter immediately and sleeps
+// between them, matching TS's per-chunk pacing. Called directly without an
+// installed emitter (e.g. in a test, or from any other caller), it falls
+// back to the batch behavior: every chunk produced from a single input delta
+// is still paced internally with the same delay and call counts, but is
+// returned together as a slice once the whole delta has been processed.
 func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 	detect, err := resolveSmoothStreamDetector(opts.Chunking)
 	if err != nil {
@@ -217,13 +201,31 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 	}
 
 	return func(ctx context.Context, chunk provider.StreamChunk) []provider.StreamChunk {
+		// When called from StreamText's transform pipeline, an emitter is
+		// installed in ctx: send forwards each chunk to it immediately
+		// (mirroring TS, which enqueues each match and awaits the delay
+		// before the next one). Without an emitter, send falls back to
+		// accumulating into the returned batch, preserving the previous
+		// behavior for direct callers (e.g. tests).
+		emit, hasEmitter := StreamTransformEmitterFromContext(ctx)
+		var out []provider.StreamChunk
+		send := func(c provider.StreamChunk) {
+			if hasEmitter {
+				emit(c)
+				return
+			}
+			out = append(out, c)
+		}
+
 		if streamEnded {
 			return []provider.StreamChunk{chunk}
 		}
 
 		// Handle non-smoothable chunks: flush the buffer and pass through.
 		if chunk.Type != provider.ChunkTypeText && chunk.Type != provider.ChunkTypeReasoning {
-			out := flush()
+			for _, c := range flush() {
+				send(c)
+			}
 			return append(out, chunk)
 		}
 
@@ -232,12 +234,12 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			text = chunk.Reasoning
 		}
 
-		var out []provider.StreamChunk
-
 		// Flush the buffer when the block type or ID changes; never carry
 		// metadata from one part to another.
 		if (chunk.Type != chunkType || chunk.ID != id) && (buffer.Len() > 0 || metadata != nil) {
-			out = append(out, flush()...)
+			for _, c := range flush() {
+				send(c)
+			}
 		}
 
 		buffer.WriteString(text)
@@ -260,7 +262,7 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			if match == "" {
 				break
 			}
-			out = append(out, makeDeltaChunk(chunkType, id, match))
+			send(makeDeltaChunk(chunkType, id, match))
 			remaining := buffer.String()[len(match):]
 			buffer.Reset()
 			buffer.WriteString(remaining)

@@ -274,7 +274,40 @@ type StreamTextOptions struct {
 // StreamTransformFunc is a transform applied to stream chunks in StreamText.
 // It receives a single chunk and returns zero or more replacement chunks.
 // Return nil or an empty slice to suppress the chunk.
+//
+// A transform that needs to emit chunks incrementally rather than all at
+// once when it returns (e.g. SmoothStream, which paces matches out with a
+// delay between them) can retrieve an emitter via
+// StreamTransformEmitterFromContext and call it as each chunk becomes ready;
+// stream.go forwards every emitted chunk (onChunk + telemetry + stream
+// consumers) the instant it is emitted, rather than waiting for the
+// transform call to return. The function's own return value is still
+// forwarded afterward and should contain only chunks not already emitted —
+// when a transform emits everything itself, it can safely return nil.
 type StreamTransformFunc func(ctx context.Context, chunk provider.StreamChunk) []provider.StreamChunk
+
+// StreamTransformEmitter emits a single stream chunk immediately, ahead of
+// the enclosing StreamTransformFunc call returning. See StreamTransformFunc.
+type StreamTransformEmitter func(provider.StreamChunk)
+
+type streamTransformEmitterContextKey struct{}
+
+// WithStreamTransformEmitter returns a context carrying emit, retrievable by
+// a StreamTransformFunc via StreamTransformEmitterFromContext. processStream
+// installs this around every ExperimentalTransform call.
+func WithStreamTransformEmitter(ctx context.Context, emit StreamTransformEmitter) context.Context {
+	return context.WithValue(ctx, streamTransformEmitterContextKey{}, emit)
+}
+
+// StreamTransformEmitterFromContext retrieves the emitter installed by
+// WithStreamTransformEmitter, if any. ok is false outside of a
+// StreamTransformFunc call (or when the caller invoked the transform
+// directly without installing one), in which case the transform should fall
+// back to returning chunks in a batch.
+func StreamTransformEmitterFromContext(ctx context.Context) (emit StreamTransformEmitter, ok bool) {
+	emit, ok = ctx.Value(streamTransformEmitterContextKey{}).(StreamTransformEmitter)
+	return emit, ok
+}
 
 // StreamStatus represents the lifecycle state of a streaming generation.
 type StreamStatus string
@@ -1338,12 +1371,29 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Apply experimental transforms to produce the consumer-facing chunks.
+			// A transform may call the installed emitter to forward chunks
+			// incrementally (immediately, ahead of returning) instead of only
+			// via its return value — see StreamTransformFunc/SmoothStream.
+			// Emitted chunks go straight to onChunk/telemetry/stream
+			// consumers, the same destination the post-transform forwarding
+			// loop below writes to; only chunks NOT already emitted should be
+			// returned by the transform.
 			chunksToForward := []provider.StreamChunk{*chunk}
 			if forwardChunk && len(opts.ExperimentalTransform) > 0 {
+				emitCtx := WithStreamTransformEmitter(ctx, func(c provider.StreamChunk) {
+					if onChunk != nil {
+						onChunk(c)
+					}
+					telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+						Settings:  r.telemetrySettings,
+						ChunkType: string(c.Type),
+						Text:      c.Text,
+					})
+				})
 				for _, transform := range opts.ExperimentalTransform {
 					var transformed []provider.StreamChunk
 					for _, c := range chunksToForward {
-						transformed = append(transformed, transform(ctx, c)...)
+						transformed = append(transformed, transform(emitCtx, c)...)
 					}
 					chunksToForward = transformed
 				}
