@@ -34,8 +34,10 @@ const (
 
 var knownGatewayModelTypes = map[string]struct{}{
 	"embedding":     {},
+	"evaluation":    {},
 	"image":         {},
 	"language":      {},
+	"realtime":      {},
 	"reranking":     {},
 	"speech":        {},
 	"transcription": {},
@@ -654,10 +656,49 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         "Gateway request failed",
+		Message:         gatewayErrorMessage(resp.Body),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayErrorMessage mirrors TS getErrorMessage (@ai-sdk/provider): a string
+// error body is used as-is, otherwise the parsed JSON value is
+// re-serialized. Used to populate the nested cause's message with the full
+// error body instead of the generic "Gateway request failed" placeholder.
+func gatewayErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return "unknown error"
+	}
+	var str string
+	if json.Unmarshal(body, &str) == nil {
+		return str
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return string(body)
+	}
+	serialized, err := json.Marshal(value)
+	if err != nil {
+		return string(body)
+	}
+	return string(serialized)
+}
+
+// gatewayErrorData best-effort decodes the response body into a generic
+// value for ProviderError.Data, mirroring the parsed error body TS providers
+// attach to their APICallError.data.
+func gatewayErrorData(body []byte) interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil
+	}
+	return value
 }
 
 func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *internalhttp.Response) error {
@@ -674,8 +715,10 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         "Gateway request failed",
+		Message:         gatewayErrorMessage(resp.Body),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
 }
@@ -684,14 +727,48 @@ func (p *Provider) gatewayUnknownError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return gatewayerrors.NewGatewayResponseError(
+	// TS parity: asGatewayError's fallback path (opaque, non-APICallError
+	// errors) marks the resulting error's retryability explicitly rather than
+	// relying purely on the (unknown, defaulted-to-500) status code. A JSON
+	// decode failure is a permanent error (the body will never parse
+	// differently on retry); a transient network/body-read error is
+	// retryable. See 90192f1.
+	retryable := !isGatewayJSONDecodeError(err)
+	return gatewayerrors.NewGatewayResponseErrorWithRetryable(
 		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),
 		http.StatusInternalServerError,
 		map[string]interface{}{},
 		fmt.Errorf("invalid gateway error response"),
 		err,
 		"",
+		&retryable,
 	)
+}
+
+// isGatewayJSONDecodeError reports whether err originates from a JSON
+// decode/parse failure (as opposed to a network or body-read error). Such
+// errors are never retryable: the same malformed body will fail identically
+// on retry.
+//
+// NOTE: recovering the *real* HTTP status code for a body-read failure that
+// occurs after a successful (2xx) response — so it can be preserved instead
+// of defaulted to 500, matching TS's `statusCode < 400` check in
+// asGatewayError — requires internal/http/client.go to surface the status
+// code on read errors from Do(). That is a core dependency outside this
+// package's scope (see state/parity/sep_23_2026/gateway.md row 90192f1).
+func isGatewayJSONDecodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "failed to decode JSON response")
 }
 
 // Client returns the HTTP client for making API requests
