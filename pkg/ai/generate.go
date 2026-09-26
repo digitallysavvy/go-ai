@@ -637,6 +637,20 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		toolsContext = map[string]interface{}{}
 	}
 
+	// Warn (once, up front) when a streaming-only timeout setting is passed
+	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
+	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
+	// Go's TimeoutConfig has no separate "first chunk" timeout field (TS
+	// firstChunkMs/chunkMs are both distinct from stepMs/totalMs there); its
+	// PerChunk corresponds to TS chunkMs, so only that case is checked here.
+	if opts.Timeout != nil && opts.Timeout.PerChunk != nil {
+		logModelWarnings([]types.Warning{{
+			Type:    "unsupported",
+			Feature: "timeout.chunkMs",
+			Details: "The chunkMs timeout is only supported by streaming functions.",
+		}}, opts.Model.Provider(), opts.Model.ModelID())
+	}
+
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
@@ -1320,6 +1334,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				delete(pendingDeferredToolCalls, tr.ToolCallID)
 			}
 		}
+
+		// Log this step's model warnings once per model call (TS
+		// generate-text.ts logWarnings, called per step just before the step
+		// is pushed onto steps).
+		logModelWarnings(stepResult.Warnings, stepModel.Provider(), stepModel.ModelID())
 
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)

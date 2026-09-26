@@ -844,6 +844,11 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
+	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
+
 	reasoning := extractObjectReasoning(genResult)
 
 	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
@@ -977,6 +982,11 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
+	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
+
 	arrayReasoning := extractObjectReasoning(genResult)
 
 	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
@@ -1106,6 +1116,11 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
+	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
+
 	enumReasoning := extractObjectReasoning(genResult)
 
 	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
@@ -1228,6 +1243,11 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
+
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
+	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	noSchemaReasoning := extractObjectReasoning(genResult)
 
@@ -1678,6 +1698,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if finishReason == "" {
 		finishReason = types.FinishReasonOther
 	}
+
+	// Log model warnings once per model call (TS stream-object.ts
+	// logWarnings, called once the stream's terminal chunk has been
+	// processed, regardless of whether it ended in an error).
+	logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	streamReqMeta := GenerateStepRequest{}
 

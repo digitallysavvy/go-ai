@@ -1732,6 +1732,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, r.cbOnStepFinishEvent)
+
+		// Log this step's model warnings once per model call (TS
+		// stream-text.ts logWarnings, called per step just after the
+		// step-finish notify).
+		logModelWarnings(stepWarnings, stepProvider, stepModelID)
 		cancelStep()
 
 		if hasUserApproval {
