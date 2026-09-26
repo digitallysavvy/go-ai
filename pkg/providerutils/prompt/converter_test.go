@@ -255,6 +255,57 @@ func TestToOpenAIMessagesAssistantToolCallNilArgumentsDefaultToEmptyObject(t *te
 	}
 }
 
+// TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject ports TS's
+// serializeToolCallArguments (2523403): a replayed RawArguments string that
+// doesn't parse to a JSON object -- an array, a scalar, or invalid JSON -- is
+// sent as "{}" rather than forwarded verbatim.
+func TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawArguments string
+	}{
+		{"array", `["a","b"]`},
+		{"string", `"just a string"`},
+		{"number", `42`},
+		{"invalid json", `{not valid`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToOpenAIMessages([]types.Message{
+				{
+					Role: types.RoleAssistant,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "tool", RawArguments: tt.rawArguments},
+					},
+				},
+			})
+			toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+			function := toolCalls[0]["function"].(map[string]interface{})
+			if function["arguments"] != "{}" {
+				t.Fatalf("arguments = %q, want {}", function["arguments"])
+			}
+		})
+	}
+}
+
+// TestToOpenAIMessagesObjectRawArgumentsPassThrough ensures a valid
+// object RawArguments string is still forwarded verbatim.
+func TestToOpenAIMessagesObjectRawArgumentsPassThrough(t *testing.T) {
+	result := ToOpenAIMessages([]types.Message{
+		{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{ID: "call_1", ToolName: "tool", RawArguments: `{"a":1}`},
+			},
+		},
+	})
+	toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+	function := toolCalls[0]["function"].(map[string]interface{})
+	if function["arguments"] != `{"a":1}` {
+		t.Fatalf("arguments = %q, want {\"a\":1}", function["arguments"])
+	}
+}
+
 // TestToGoogleMessagesCustomContentWithOptions verifies that CustomContent
 // with Google-keyed ProviderOptions is forwarded to the parts array.
 func TestToGoogleMessagesCustomContentWithOptions(t *testing.T) {

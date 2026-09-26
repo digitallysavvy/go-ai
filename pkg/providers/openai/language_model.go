@@ -77,7 +77,10 @@ func (m *LanguageModel) SupportsImageInput() bool {
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, false)
+	if err != nil {
+		return nil, err
+	}
 
 	// Make API request, capturing response headers.
 	var response openAIResponse
@@ -93,6 +96,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        response.ID,
@@ -106,7 +110,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, true)
+	if err != nil {
+		return nil, err
+	}
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -120,11 +127,28 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
-	return streaming.NewWarningsStream(inner, nil), nil
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
-// buildRequestBody builds the OpenAI API request body
+// buildRequestBody builds the OpenAI API request body.
+//
+// Deprecated: prefer buildRequestBodyWithWarnings, which also surfaces
+// capability warnings (serviceTier, reasoningEffort, promptCacheRetention).
+// Kept for existing callers/tests that only need the body.
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+// buildRequestBodyWithWarnings builds the OpenAI Chat Completions API request
+// body plus any capability warnings (unsupported serviceTier, reasoningEffort,
+// promptCacheRetention on GPT-6+, etc.), mirroring TS's getArgs(). It returns
+// an error only for schema normalization failures that TS surfaces as a
+// thrown UnsupportedFunctionalityError (d5e3024: a non-string propertyNames
+// sub-schema).
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	var warnings []types.Warning
+	capabilities := GetLanguageModelCapabilities(m.modelID)
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -171,14 +195,12 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Add system message if present.
-	// Reasoning models (o1, o3, o4-mini, gpt-5.x non-chat) require the
-	// "developer" role instead of "system" per OpenAI's API specification.
+	// Reasoning models (o1, o3, o4-mini, gpt-5.x non-chat, GPT-6+) require the
+	// "developer" role instead of "system" per OpenAI's API specification
+	// (34c53c0: GetLanguageModelCapabilities.SystemMessageMode).
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
-		role := "system"
-		if isReasoningModel(m.modelID) {
-			role = "developer"
-		}
+		role := capabilities.SystemMessageMode
 		systemMsg := map[string]interface{}{
 			"role":    role,
 			"content": opts.Prompt.System,
@@ -209,9 +231,19 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["seed"] = *opts.Seed
 	}
 
-	// Add tools if present
+	// Add tools if present. Function tool parameter schemas are normalized
+	// for OpenAI structured outputs (d5e3024, 411b3f2), mirroring TS
+	// prepareChatTools -- kept local to the OpenAI chat model rather than the
+	// shared tool.ToOpenAIFormat helper, which other OpenAI-compatible
+	// providers also use.
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		openaiTools := tool.ToOpenAIFormat(opts.Tools)
+		normalizedTools, toolSchemaWarnings, normErr := normalizeOpenAIChatToolSchemas(openaiTools)
+		if normErr != nil {
+			return nil, nil, normErr
+		}
+		warnings = append(warnings, toolSchemaWarnings...)
+		body["tools"] = normalizedTools
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -220,28 +252,70 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// Add response format if present
 	// Response format (TS openai-chat-language-model.ts): json_schema when a
 	// schema is present (strictJsonSchema defaults to true), else json_object.
-	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+	// The schema is normalized for OpenAI structured outputs first (d5e3024,
+	// 411b3f2: drop propertyNames / lookaround patterns).
+	responseFormat := opts.ResponseFormat
+	if responseFormat != nil && responseFormat.Type == "json" {
+		if rawSchema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema); rawSchema != nil {
+			if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
+				normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
+				if normErr != nil {
+					return nil, nil, normErr
+				}
+				warnings = append(warnings, schemaWarnings...)
+				rfCopy := *responseFormat
+				rfCopy.Schema = normalizedSchema
+				responseFormat = &rfCopy
+			}
+		}
+	}
+	if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs: true,
 		StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
 	}); format != nil {
 		body["response_format"] = format
+		warnings = append(warnings, fmtWarnings...)
 	}
 
-	// Map top-level Reasoning to OpenAI reasoning_effort.
-	// none → "disabled", minimal/low → "low", medium → "medium", high/xhigh → "high".
-	// provider-default → omit (let OpenAI use its own default).
-	if opts.Reasoning != nil {
+	// Resolve reasoning_effort: an explicit providerOptions.openai.reasoningEffort
+	// string wins (TS: openaiOptions.reasoningEffort ?? reasoning); otherwise map
+	// top-level Reasoning. none → "disabled", minimal/low → "low",
+	// medium → "medium", high/xhigh → "high". provider-default → omit.
+	resolvedReasoningEffort := ""
+	if opts.ProviderOptions != nil {
+		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+			if v, ok := openaiOpts["reasoningEffort"].(string); ok && v != "" {
+				resolvedReasoningEffort = v
+			}
+		}
+	}
+	if resolvedReasoningEffort == "" && opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
-			body["reasoning_effort"] = "disabled"
+			resolvedReasoningEffort = "disabled"
 		case types.ReasoningMinimal, types.ReasoningLow:
-			body["reasoning_effort"] = "low"
+			resolvedReasoningEffort = "low"
 		case types.ReasoningMedium:
-			body["reasoning_effort"] = "medium"
+			resolvedReasoningEffort = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
-			body["reasoning_effort"] = "high"
+			resolvedReasoningEffort = "high"
 			// ReasoningDefault: omit
 		}
+	}
+
+	// GPT-6+ models restrict reasoning effort to a fixed set (34c53c0); drop
+	// and warn on anything outside it (matches TS getArgs()).
+	if resolvedReasoningEffort != "" && capabilities.SupportedReasoningEfforts != nil &&
+		!chatStringSliceContains(capabilities.SupportedReasoningEfforts, resolvedReasoningEffort) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningEffort",
+			Details: m.modelID + " only supports the following reasoning efforts: " + strings.Join(capabilities.SupportedReasoningEfforts, ", "),
+		})
+		resolvedReasoningEffort = ""
+	}
+	if resolvedReasoningEffort != "" {
+		body["reasoning_effort"] = resolvedReasoningEffort
 	}
 
 	// Apply OpenAI-specific provider options
@@ -249,8 +323,43 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
 			// Add prompt cache retention if present.
 			// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
-			if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok {
-				body["prompt_cache_retention"] = promptCacheRetention
+			// GPT-6+ models don't support it; use promptCacheOptions instead
+			// (b2b1bb9).
+			if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
+				if capabilities.SupportedReasoningEfforts != nil {
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "promptCacheRetention",
+						Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+					})
+				} else {
+					body["prompt_cache_retention"] = promptCacheRetention
+				}
+			}
+			// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
+			// prompt_cache_options.
+			if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
+				body["prompt_cache_options"] = promptCacheOptions
+			}
+			// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
+			// priority/fast require supportsPriorityProcessing.
+			if serviceTier, ok := openaiOpts["serviceTier"].(string); ok && serviceTier != "" {
+				switch {
+				case serviceTier == "flex" && !capabilities.SupportsFlexProcessing:
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "serviceTier",
+						Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
+					})
+				case (serviceTier == "priority" || serviceTier == "fast") && !capabilities.SupportsPriorityProcessing:
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "serviceTier",
+						Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
+					})
+				default:
+					body["service_tier"] = serviceTier
+				}
 			}
 			// Forward store only when explicitly set (already extracted above).
 			if storeExplicit {
@@ -264,7 +373,16 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return body
+	return body, warnings, nil
+}
+
+func chatStringSliceContains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // convertResponse converts an OpenAI response to GenerateResult
@@ -279,9 +397,12 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 	if len(response.Choices) > 0 {
 		choice := response.Choices[0]
 
-		// Extract text
+		// Extract text: prefer message content, falling back to the audio
+		// transcript for audio-output models (6d1f881).
 		if choice.Message.Content != "" {
 			result.Text = choice.Message.Content
+		} else if choice.Message.Audio != nil && choice.Message.Audio.Transcript != "" {
+			result.Text = choice.Message.Audio.Transcript
 		}
 
 		// Extract tool calls
@@ -325,6 +446,13 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
 
+	// Cache write tokens (b2b1bb9, GPT-5.6+ prompt caching).
+	var cacheWriteTokens *int64
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CacheWriteTokens != nil {
+		v := int64(*usage.PromptTokensDetails.CacheWriteTokens)
+		cacheWriteTokens = &v
+	}
+
 	// Extract text and image tokens
 	var textTokens *int64
 	var imageTokens *int64
@@ -346,13 +474,15 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	if cachedTokens > 0 || cacheWriteTokens != nil || textTokens != nil || imageTokens != nil {
 		noCacheTokens := promptTokens - cachedTokens
+		if cacheWriteTokens != nil {
+			noCacheTokens -= *cacheWriteTokens
+		}
 		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:   &noCacheTokens,
-			CacheReadTokens: &cachedTokens,
-			// OpenAI doesn't report cache write tokens separately
-			CacheWriteTokens: nil,
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: cacheWriteTokens,
 			TextTokens:       textTokens,
 			ImageTokens:      imageTokens,
 		}
@@ -413,10 +543,11 @@ type openAIUsage struct {
 
 	// Detailed token breakdown (v6.0)
 	PromptTokensDetails *struct {
-		CachedTokens *int `json:"cached_tokens,omitempty"`
-		AudioTokens  *int `json:"audio_tokens,omitempty"`
-		TextTokens   *int `json:"text_tokens,omitempty"`
-		ImageTokens  *int `json:"image_tokens,omitempty"`
+		CachedTokens     *int `json:"cached_tokens,omitempty"`
+		CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+		AudioTokens      *int `json:"audio_tokens,omitempty"`
+		TextTokens       *int `json:"text_tokens,omitempty"`
+		ImageTokens      *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 
 	CompletionTokensDetails *struct {
@@ -431,6 +562,12 @@ type openAIMessage struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
 	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	// Audio carries the transcript for audio-output chat completions
+	// (gpt-4o-audio-preview etc.); used as fallback text when Content is
+	// empty (6d1f881).
+	Audio *struct {
+		Transcript string `json:"transcript"`
+	} `json:"audio,omitempty"`
 }
 
 // openAIToolCall represents an OpenAI tool call
@@ -469,26 +606,19 @@ func filterUnencryptedReasoningParts(content []types.ContentPart, store bool) []
 // isReasoningModel reports whether modelID is a reasoning model that requires
 // the "developer" role for system messages instead of "system".
 //
-// Uses an allowlist approach — only known reasoning model prefixes are matched.
-// This avoids inadvertently changing the role for fine-tuned or custom models.
-//
-// Matches: o1*, o3*, o4-mini*, gpt-5* (except gpt-5-chat*)
-// Non-matches: gpt-4*, gpt-3.5*, gpt-5-chat-latest, etc.
+// Delegates to GetLanguageModelCapabilities (34c53c0), which ports
+// TypeScript's regex-based GPT/o-series version parsing (correctly handling
+// GPT-6+ and GPT-5.6 models) instead of the previous ad-hoc prefix list.
 func isReasoningModel(modelID string) bool {
-	return strings.HasPrefix(modelID, "o1") ||
-		strings.HasPrefix(modelID, "o3") ||
-		strings.HasPrefix(modelID, "o4-mini") ||
-		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
+	return GetLanguageModelCapabilities(modelID).IsReasoningModel
 }
 
 // supportsNonReasoningParameters reports whether a reasoning model accepts
 // standard sampling parameters when reasoning effort is disabled.
+//
+// Delegates to GetLanguageModelCapabilities (34c53c0).
 func supportsNonReasoningParameters(modelID string) bool {
-	return strings.HasPrefix(modelID, "gpt-5.1") ||
-		strings.HasPrefix(modelID, "gpt-5.2") ||
-		strings.HasPrefix(modelID, "gpt-5.3") ||
-		strings.HasPrefix(modelID, "gpt-5.4") ||
-		strings.HasPrefix(modelID, "gpt-5.5")
+	return GetLanguageModelCapabilities(modelID).SupportsNonReasoningParameters
 }
 
 // openAIStream implements provider.TextStream for OpenAI streaming
