@@ -293,7 +293,10 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	if resume {
 		c.rawSend(mustMarshalInbound(ResumeCommand{LastSeenEventID: seed}))
 	}
-	c.flushPending()
+	// Matches TS `open()`: pendingSends is only flushed by reconnectLoop, never
+	// here. A Send() issued before Open() completes stays queued until the
+	// first reconnect (a quirk inherited from TS, not fixed here per the 1:1
+	// parity rule).
 	return nil
 }
 
@@ -687,6 +690,14 @@ func (c *Channel) debug(ev ChannelDebugEvent) {
 	}
 }
 
+// rawSend mirrors TS `rawSend`/`ws.send()`: while disconnected the frame is
+// queued; once connected it is written and a write failure is silently
+// dropped rather than requeued. TS's `ws` library swallows a send on a
+// closing/closed socket when no callback is given (no throw, no retry); the
+// independent 'close'/'error' event still fires and drives the reconnect
+// loop, so a dropped frame does not go unnoticed for long. Go mirrors this:
+// a failed Send is not requeued and does not force-close the socket — the
+// reader goroutine's Receive() error is what detects the drop.
 func (c *Channel) rawSend(data []byte) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
@@ -698,16 +709,11 @@ func (c *Channel) rawSend(data []byte) {
 	}
 	conn := c.ws
 	c.mu.Unlock()
-	if err := conn.Send(data); err != nil {
-		// The frame most likely never reached the bridge: keep it for the
-		// reconnect flush and force the drop to be noticed.
-		c.mu.Lock()
-		c.pendingSends = append(c.pendingSends, data)
-		c.mu.Unlock()
-		_ = conn.Close()
-	}
+	_ = conn.Send(data)
 }
 
+// flushPending mirrors TS `flushPending`: it sends every queued frame without
+// checking for errors or requeueing on failure (see rawSend).
 func (c *Channel) flushPending() {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
@@ -720,14 +726,8 @@ func (c *Channel) flushPending() {
 	c.pendingSends = nil
 	conn := c.ws
 	c.mu.Unlock()
-	for i, data := range queued {
-		if err := conn.Send(data); err != nil {
-			c.mu.Lock()
-			c.pendingSends = append(append([][]byte(nil), queued[i:]...), c.pendingSends...)
-			c.mu.Unlock()
-			_ = conn.Close()
-			return
-		}
+	for _, data := range queued {
+		_ = conn.Send(data)
 	}
 }
 
