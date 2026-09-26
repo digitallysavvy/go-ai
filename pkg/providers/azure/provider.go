@@ -55,7 +55,10 @@ func getAzureOpenAIBaseURLInfo(baseURL string) azureBaseURLInfo {
 		return azureBaseURLInfo{isAzureOpenAI: true}
 	}
 
-	hostname := u.Hostname()
+	// WHATWG URL parsing (JS `new URL(...)`) lowercases the host during
+	// parsing, so TS's suffix checks are implicitly case-insensitive. Go's
+	// net/url does not lowercase the host, so do it explicitly to match.
+	hostname := strings.ToLower(u.Hostname())
 	isAzureOpenAI := strings.HasSuffix(hostname, ".openai.azure.com") ||
 		strings.HasSuffix(hostname, ".services.ai.azure.com") ||
 		strings.HasSuffix(hostname, ".cognitiveservices.azure.com")

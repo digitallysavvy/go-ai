@@ -84,6 +84,23 @@ func TestGetAzureOpenAIBaseURLInfo(t *testing.T) {
 			name:    "custom non-Azure gateway",
 			baseURL: "https://our-gateway.example.com/azure",
 		},
+		{
+			name:            "mixed-case Azure host is still recognized (WHATWG URL lowercases hostname)",
+			baseURL:         "https://Test-Resource.OpenAI.Azure.COM/openai",
+			wantAzureOpenAI: true,
+		},
+		{
+			name:            "mixed-case versioned Azure host is still recognized as versioned",
+			baseURL:         "https://Test-Resource.OpenAI.Azure.COM/OpenAI/V1",
+			wantAzureOpenAI: true,
+			wantVersioned:   true,
+		},
+		{
+			name:            "mixed-case Foundry host is still recognized as Foundry",
+			baseURL:         "https://Test-Resource.Services.AI.Azure.COM/api/projects/proj1",
+			wantAzureOpenAI: true,
+			wantFoundry:     true,
+		},
 	}
 
 	for _, tt := range tests {
