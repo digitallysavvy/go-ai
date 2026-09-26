@@ -157,6 +157,66 @@ func TestPipeUIMessageStreamToResponse_AppendsDoneSentinel(t *testing.T) {
 	}
 }
 
+// alwaysFailingWriter always fails its Write call. Before the fix for audit
+// row #56, PipeUIMessageStreamToResponseWithInit buffered every chunk write
+// in a bufio.Writer and only touched the underlying writer via a *deferred*
+// bw.Flush() whose error was discarded, so a writer that fails every real
+// Write() call would still make the function return nil. This type proves
+// the fix: the underlying writer's error now propagates.
+type alwaysFailingWriter struct{}
+
+func (alwaysFailingWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestPipeUIMessageStreamToResponseWithInit_PropagatesFlushError(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, alwaysFailingWriter{}, nil)
+	if err == nil {
+		t.Fatal("expected the writer's error to propagate instead of being silently discarded (audit row #56)")
+	}
+}
+
+// recordingFlushWriter implements http.Flusher and records a snapshot of the
+// bytes written so far every time Flush is called, so the test can tell
+// whether output is flushed incrementally (audit row #76) rather than only
+// once, in one big batch, at the end.
+type recordingFlushWriter struct {
+	bytes.Buffer
+	flushLens []int
+}
+
+func (w *recordingFlushWriter) Flush() {
+	w.flushLens = append(w.flushLens, w.Buffer.Len())
+}
+
+func TestPipeUIMessageStreamToResponseWithInit_FlushesPerChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	w := &recordingFlushWriter{}
+	if err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, w, nil); err != nil {
+		t.Fatalf("PipeUIMessageStreamToResponseWithInit() error = %v", err)
+	}
+	if len(w.flushLens) < 2 {
+		t.Fatalf("expected multiple incremental Flush calls, got %d: %v", len(w.flushLens), w.flushLens)
+	}
+	for i := 1; i < len(w.flushLens); i++ {
+		if w.flushLens[i] <= w.flushLens[i-1] {
+			t.Fatalf("flush lengths did not grow incrementally: %v", w.flushLens)
+		}
+	}
+	if last := w.flushLens[len(w.flushLens)-1]; last != w.Buffer.Len() {
+		t.Fatalf("final flush length %d != total written %d", last, w.Buffer.Len())
+	}
+}
+
 func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 	meta := json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)
 	reasoning, ok := ToUIMessageChunk(provider.StreamChunk{

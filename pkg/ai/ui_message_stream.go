@@ -1566,7 +1566,22 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 
 	chunks, errCh := CreateUIMessageStream(ctx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
-	defer bw.Flush()
+	// flush surfaces the bufio flush error instead of discarding it (TS
+	// write-to-server-response.ts's pipe helpers return a promise that
+	// rejects on a write/flush failure), and additionally calls the
+	// underlying writer's Flush when it implements http.Flusher so an SSE
+	// consumer receives each event immediately instead of in ~4KiB batches
+	// (audit rows #56/#76).
+	flusher, _ := w.(http.Flusher)
+	flush := func() error {
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
 	for chunk := range chunks {
 		b, err := json.Marshal(chunk)
 		if err != nil {
@@ -1581,12 +1596,17 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		if _, err := bw.WriteString("\n\n"); err != nil {
 			return err
 		}
+		if err := flush(); err != nil {
+			return err
+		}
 	}
 	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
 		return err
 	}
+	if err := flush(); err != nil {
+		return err
+	}
 	if sideWriter != nil {
-		_ = bw.Flush()
 		sideWriter.Close()
 		consumeErr = <-closeSide
 	}
