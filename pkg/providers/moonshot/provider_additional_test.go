@@ -11,8 +11,8 @@ func TestMoonshotProviderUnsupportedModelsAndDefaults(t *testing.T) {
 	if modelAny.ModelID() != "moonshot-v1-32k" {
 		t.Fatalf("default model id = %q", modelAny.ModelID())
 	}
-	if modelAny.SupportsImageInput() {
-		t.Fatal("SupportsImageInput() should be false for current Moonshot models")
+	if !modelAny.SupportsImageInput() {
+		t.Fatal("SupportsImageInput() should be true: Moonshot accepts image_url/video_url content on any model")
 	}
 
 	if _, err := p.EmbeddingModel("x"); err == nil {
