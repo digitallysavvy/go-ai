@@ -3,6 +3,7 @@ package deepseek
 import (
 	"fmt"
 	stdhttp "net/http"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -10,8 +11,9 @@ import (
 
 // Provider implements the provider.Provider interface for Deepseek
 type Provider struct {
-	config Config
-	client *http.Client
+	config  Config
+	client  *http.Client
+	baseURL string
 }
 
 // Config contains configuration for the Deepseek provider
@@ -61,8 +63,9 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:  cfg,
+		client:  client,
+		baseURL: baseURL,
 	}
 }
 
@@ -103,6 +106,13 @@ func (p *Provider) supportsThinking() bool {
 	return *p.config.SupportsThinking
 }
 
+// supportsBeta reports whether the configured base URL points at DeepSeek's
+// beta endpoint (a base URL ending in "/beta"). Several DeepSeek features
+// (assistant prefix completion, strict tool calls) are only available there.
+func (p *Provider) supportsBeta() bool {
+	return strings.HasSuffix(p.baseURL, "/beta")
+}
+
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
@@ -140,4 +150,10 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// Files returns the DeepSeek Files API for uploading images referenced by
+// file_id in chat messages.
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
 }

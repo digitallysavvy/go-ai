@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"regexp"
+	"sort"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -16,8 +17,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
+
+// deepseekUserIDPattern validates providerOptions.deepseek.userId.
+var deepseekUserIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // LanguageModel implements the provider.LanguageModel interface for Deepseek
 type LanguageModel struct {
@@ -58,14 +61,20 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 	return true
 }
 
-// SupportsImageInput returns whether the model accepts image inputs
+// SupportsImageInput returns whether the model accepts image inputs.
+// DeepSeek chat models declare image/* support unconditionally (matches the
+// TypeScript SDK's supportedUrls); whether a given deployment actually
+// accepts images is a model-serving concern, not something the SDK gates.
 func (m *LanguageModel) SupportsImageInput() bool {
-	return false
+	return true
 }
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, false)
+	if err != nil {
+		return nil, err
+	}
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -75,15 +84,30 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	responseMetadata := &types.ResponseMetadata{
+		ID:      response.ID,
+		ModelID: response.Model,
+		Headers: result.ResponseHeaders,
+	}
+	if response.Created != 0 {
+		responseMetadata.Timestamp = time.Unix(response.Created, 0)
+	}
+	result.ResponseMetadata = responseMetadata
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, true)
+	if err != nil {
+		return nil, err
+	}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   m.provider.chatCompletionsPath(),
@@ -97,15 +121,16 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	inner := newDeepseekStream(httpResp.Body, opts.IncludeRawChunks)
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.providerOptionsName = m.provider.providerOptionsName()
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
-	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	body, _, _ := m.buildRequestBodyWithWarnings(opts, stream)
 	return body
 }
 
-func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
@@ -114,19 +139,24 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["stream"] = true
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
+
+	var messages []types.Message
 	if opts.Prompt.IsMessages() {
-		body["messages"] = m.toDeepSeekMessages(opts.Prompt.Messages)
+		messages = opts.Prompt.Messages
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		messages = prompt.SimpleTextToMessages(opts.Prompt.Text)
 	}
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
-		systemMsg := map[string]interface{}{
-			"role":    "system",
-			"content": opts.Prompt.System,
-		}
-		body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		systemMsg := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}}}
+		messages = append([]types.Message{systemMsg}, messages...)
 	}
+	convertedMessages, msgWarnings, err := m.convertMessages(messages)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, msgWarnings...)
+	body["messages"] = convertedMessages
+
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
 	}
@@ -139,12 +169,19 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
-	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
-		}
+
+	deepseekTools, toolChoiceValue, toolWarnings, err := m.prepareDeepSeekTools(opts.Tools, opts.ToolChoice)
+	if err != nil {
+		return nil, nil, err
 	}
+	warnings = append(warnings, toolWarnings...)
+	if deepseekTools != nil {
+		body["tools"] = deepseekTools
+	}
+	if toolChoiceValue != nil {
+		body["tool_choice"] = toolChoiceValue
+	}
+
 	if opts.ResponseFormat != nil {
 		responseFormatType := opts.ResponseFormat.Type
 		if responseFormatType == "json" {
@@ -157,60 +194,120 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	deepseekOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.provider.providerOptionsName(), opts.ProviderOptions)
 	warnings = append(warnings, optionWarnings...)
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
+
 	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
+	// TS effort map: minimal/low -> low, medium/high -> high, xhigh -> max.
 	if opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
+		if *opts.Reasoning == types.ReasoningNone {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "disabled"}
 			}
-		case types.ReasoningMinimal:
+		} else if effort, ok := deepseekTopLevelReasoningEffort(*opts.Reasoning); ok {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
-			body["reasoning_effort"] = "low"
-			if !hasProviderReasoningEffort {
-				warnings = append(warnings, reasoningCompatibilityWarning("minimal", "low"))
-			}
-		case types.ReasoningLow:
-			if m.provider.supportsThinking() {
-				body["thinking"] = map[string]interface{}{"type": "enabled"}
-			}
-			body["reasoning_effort"] = "low"
-		case types.ReasoningMedium:
-			if m.provider.supportsThinking() {
-				body["thinking"] = map[string]interface{}{"type": "enabled"}
-			}
-			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh:
-			if m.provider.supportsThinking() {
-				body["thinking"] = map[string]interface{}{"type": "enabled"}
-			}
-			body["reasoning_effort"] = "high"
-		case types.ReasoningXHigh:
-			if m.provider.supportsThinking() {
-				body["thinking"] = map[string]interface{}{"type": "enabled"}
-			}
-			body["reasoning_effort"] = "max"
-			if !hasProviderReasoningEffort {
-				warnings = append(warnings, reasoningCompatibilityWarning("xhigh", "max"))
+			body["reasoning_effort"] = effort
+			if effort != string(*opts.Reasoning) && !hasProviderReasoningEffort {
+				warnings = append(warnings, reasoningCompatibilityWarning(string(*opts.Reasoning), effort))
 			}
 		}
 	}
+
 	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok && m.provider.supportsThinking() {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
-			body["thinking"] = map[string]interface{}{"type": thinkingType}
+			mappedType := thinkingType
+			if thinkingType == "adaptive" {
+				mappedType = "enabled"
+				warnings = append(warnings, types.Warning{
+					Type:    "compatibility",
+					Feature: "thinking.type",
+					Details: `thinking.type "adaptive" is not a canonical DeepSeek value. mapped to "enabled".`,
+					Message: `thinking.type "adaptive" is not a canonical DeepSeek value. mapped to "enabled".`,
+				})
+			}
+			body["thinking"] = map[string]interface{}{"type": mappedType}
 		}
 	}
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
-		body["reasoning_effort"] = effort
+		mapped, remapped := deepseekProviderReasoningEffort(effort)
+		if remapped {
+			details := fmt.Sprintf("reasoningEffort %q is not a canonical DeepSeek value. mapped to %q.", effort, mapped)
+			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
+		}
+		body["reasoning_effort"] = mapped
 	}
 	if thinking, ok := body["thinking"].(map[string]interface{}); ok {
 		if thinking["type"] == "disabled" {
 			delete(body, "reasoning_effort")
 		}
 	}
-	return body, warnings
+
+	// userId (providerOptions.deepseek.userId): opaque end-user identifier.
+	if userID, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "userId"); ok {
+		if !deepseekUserIDPattern.MatchString(userID) {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.deepseek.userId",
+				Message: "userId must match /^[a-zA-Z0-9_-]+$/",
+			}
+		}
+		if len(userID) > 512 {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.deepseek.userId",
+				Message: "userId must be at most 512 characters long",
+			}
+		}
+		body["user_id"] = userID
+	}
+
+	// logprobs / topLogprobs.
+	logprobsFlag, hasLogprobsFlag := providerutils.OpenAICompatibleBoolOption(deepseekOptions, "logprobs")
+	if _, hasTopLogprobs := deepseekOptions["topLogprobs"]; hasTopLogprobs {
+		topLogprobs, ok := providerutils.OpenAICompatibleIntOption(deepseekOptions, "topLogprobs")
+		if !ok || topLogprobs < 0 || topLogprobs > 20 {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.deepseek.topLogprobs",
+				Message: "topLogprobs must be an integer between 0 and 20.",
+			}
+		}
+		body["logprobs"] = true
+		body["top_logprobs"] = topLogprobs
+	} else if hasLogprobsFlag && logprobsFlag {
+		body["logprobs"] = true
+	}
+
+	return body, warnings, nil
+}
+
+// deepseekTopLevelReasoningEffort maps a top-level ReasoningLevel to
+// DeepSeek's reasoning_effort values, mirroring the TypeScript SDK's
+// mapReasoningToProviderEffort({minimal:'low', low:'low', medium:'high',
+// high:'high', xhigh:'max'}). ReasoningDefault (and any other unmapped level)
+// returns ok=false.
+func deepseekTopLevelReasoningEffort(level types.ReasoningLevel) (effort string, ok bool) {
+	switch level {
+	case types.ReasoningMinimal, types.ReasoningLow:
+		return "low", true
+	case types.ReasoningMedium, types.ReasoningHigh:
+		return "high", true
+	case types.ReasoningXHigh:
+		return "max", true
+	}
+	return "", false
+}
+
+// deepseekProviderReasoningEffort remaps legacy providerOptions.deepseek.reasoningEffort
+// values to DeepSeek's canonical set ({low, high, max}), mirroring the
+// TypeScript SDK's mapDeepSeekProviderReasoningEffort. remapped is true when
+// the input was not already canonical (used to decide whether to warn).
+func deepseekProviderReasoningEffort(effort string) (mapped string, remapped bool) {
+	switch effort {
+	case "medium":
+		return "high", true
+	case "xhigh":
+		return "max", true
+	default:
+		return effort, false
+	}
 }
 
 func reasoningCompatibilityWarning(reasoning, effort string) types.Warning {
@@ -223,44 +320,9 @@ func reasoningCompatibilityWarning(reasoning, effort string) types.Warning {
 	}
 }
 
-func (m *LanguageModel) toDeepSeekMessages(messages []types.Message) []map[string]interface{} {
-	converted := prompt.ToOpenAIMessages(messages)
-	if !strings.Contains(m.modelID, "deepseek-v4") {
-		return converted
-	}
-
-	nextConverted := 0
-	for _, msg := range messages {
-		if msg.Role != types.RoleAssistant {
-			continue
-		}
-
-		for nextConverted < len(converted) && converted[nextConverted]["role"] != string(types.RoleAssistant) {
-			nextConverted++
-		}
-		if nextConverted >= len(converted) {
-			break
-		}
-
-		var reasoning strings.Builder
-		for _, part := range msg.Content {
-			if reasoningPart, ok := part.(types.ReasoningContent); ok {
-				reasoning.WriteString(reasoningPart.Text)
-			}
-		}
-		converted[nextConverted]["reasoning_content"] = reasoning.String()
-		nextConverted++
-	}
-
-	return converted
-}
-
-func (m *LanguageModel) convertResponse(response deepseekResponse) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.GenerateResult, error) {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
@@ -286,14 +348,62 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) *types.Genera
 			}
 		}
 	}
-	return result
+
+	meta := map[string]interface{}{}
+	if response.Object != "" {
+		meta["responseObject"] = response.Object
+	}
+	meta["choiceIndex"] = choice.Index
+	if choice.Message.Role != "" {
+		meta["messageRole"] = choice.Message.Role
+	}
+	if len(choice.Message.ToolCalls) > 0 {
+		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
+		for _, tc := range choice.Message.ToolCalls {
+			if tc.Type != "" {
+				toolCallTypes = append(toolCallTypes, tc.Type)
+			}
+		}
+		if len(toolCallTypes) > 0 {
+			meta["toolCallTypes"] = toolCallTypes
+		}
+	}
+	if choice.Logprobs != nil {
+		lp := map[string]interface{}{}
+		if len(choice.Logprobs.Content) > 0 {
+			lp["content"] = choice.Logprobs.Content
+		}
+		if len(choice.Logprobs.ReasoningContent) > 0 {
+			lp["reasoning_content"] = choice.Logprobs.ReasoningContent
+		}
+		if len(lp) > 0 {
+			meta["logprobs"] = lp
+		}
+	}
+	if response.SystemFingerprint != "" {
+		meta["systemFingerprint"] = response.SystemFingerprint
+	}
+	result.ProviderMetadata = map[string]interface{}{m.provider.providerOptionsName(): meta}
+
+	return result, nil
 }
 
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
 }
 
-func convertDeepseekUsage(usage deepseekUsage) types.Usage {
+// convertDeepseekUsage decodes the DeepSeek usage object twice: once into a
+// typed struct for computing normalized token metrics, and once into a
+// map[string]interface{} so Usage.Raw preserves every field the API
+// returned (not just the ones the typed struct declares).
+func convertDeepseekUsage(raw json.RawMessage) types.Usage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}
+	}
+
+	var usage deepseekUsage
+	_ = json.Unmarshal(raw, &usage)
+
 	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
 	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
 	var cached int64
@@ -321,25 +431,29 @@ func convertDeepseekUsage(usage deepseekUsage) types.Usage {
 		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
 	}
 	if reasoning > 0 {
+		// Clamp at 0: a provider-reported reasoning token count that exceeds
+		// completion_tokens must not produce a negative text token count.
 		text := c - reasoning
+		if text < 0 {
+			text = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 	}
-	result.Raw = map[string]interface{}{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens}
-	if usage.PromptTokensDetails != nil {
-		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
-	}
-	if usage.CompletionTokensDetails != nil {
-		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
-	}
+
+	var rawMap map[string]interface{}
+	_ = json.Unmarshal(raw, &rawMap)
+	result.Raw = rawMap
+
 	return result
 }
 
 type deepseekResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
+	ID                string `json:"id"`
+	Object            string `json:"object"`
+	Created           int64  `json:"created"`
+	Model             string `json:"model"`
+	SystemFingerprint string `json:"system_fingerprint"`
+	Choices           []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
@@ -355,8 +469,28 @@ type deepseekResponse struct {
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"message"`
+		Logprobs *deepseekLogprobs `json:"logprobs,omitempty"`
 	} `json:"choices"`
-	Usage deepseekUsage `json:"usage"`
+	Usage json.RawMessage `json:"usage"`
+}
+
+// deepseekLogprobEntry mirrors a single DeepSeek chat completion logprob
+// entry (present on both non-streaming responses and stream chunks).
+type deepseekLogprobEntry struct {
+	Token       string  `json:"token"`
+	Logprob     float64 `json:"logprob"`
+	Bytes       []int   `json:"bytes"`
+	TopLogprobs []struct {
+		Token   string  `json:"token"`
+		Logprob float64 `json:"logprob"`
+		Bytes   []int   `json:"bytes"`
+	} `json:"top_logprobs"`
+}
+
+// deepseekLogprobs mirrors DeepSeek's per-choice logprobs object.
+type deepseekLogprobs struct {
+	Content          []deepseekLogprobEntry `json:"content,omitempty"`
+	ReasoningContent []deepseekLogprobEntry `json:"reasoning_content,omitempty"`
 }
 
 type deepseekUsage struct {
@@ -377,12 +511,13 @@ type deepseekUsage struct {
 }
 
 type deepseekStreamChunk struct {
-	ID      string          `json:"id"`
-	Object  string          `json:"object"`
-	Created int64           `json:"created"`
-	Model   string          `json:"model"`
-	Error   json.RawMessage `json:"error,omitempty"`
-	Choices []struct {
+	ID                string          `json:"id"`
+	Object            string          `json:"object"`
+	Created           int64           `json:"created"`
+	Model             string          `json:"model"`
+	SystemFingerprint string          `json:"system_fingerprint"`
+	Error             json.RawMessage `json:"error,omitempty"`
+	Choices           []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Delta        struct {
@@ -399,28 +534,50 @@ type deepseekStreamChunk struct {
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
+		Logprobs *deepseekLogprobs `json:"logprobs,omitempty"`
 	} `json:"choices"`
+	Usage json.RawMessage `json:"usage,omitempty"`
 }
 
 type deepseekStream struct {
-	reader            io.ReadCloser
-	parser            *streaming.SSEParser
-	err               error
-	toolCallTracker   *streaming.StreamingToolCallTracker
-	flushQueue        []*provider.StreamChunk
-	isActiveReasoning bool
-	includeRawChunks  bool
-	responseHeaders   map[string]string
-	metadataEmitted   bool
+	reader              io.ReadCloser
+	parser              *streaming.SSEParser
+	err                 error
+	toolCallTracker     *streaming.StreamingToolCallTracker
+	flushQueue          []*provider.StreamChunk
+	isActiveReasoning   bool
+	includeRawChunks    bool
+	responseHeaders     map[string]string
+	metadataEmitted     bool
+	providerOptionsName string
+
+	// pendingFinish holds the Finish chunk built when finish_reason arrives.
+	// Emission is deferred until the stream actually ends (the [DONE]
+	// marker) so a trailing usage-only chunk (stream_options.include_usage)
+	// can still be attached to it.
+	pendingFinish *provider.StreamChunk
+
+	// State accumulated across the stream for the Finish chunk's
+	// providerMetadata and usage.
+	usageRaw          json.RawMessage
+	responseObject    string
+	systemFingerprint string
+	choiceIndex       *int
+	messageRole       string
+	toolCallTypes     map[int]string
+	contentLogprobs   []deepseekLogprobEntry
+	reasoningLogprobs []deepseekLogprobEntry
 }
 
 func newDeepseekStream(reader io.ReadCloser, includeRawChunks ...bool) *deepseekStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &deepseekStream{
-		reader:           reader,
-		parser:           streaming.NewSSEParser(reader),
-		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
-		includeRawChunks: emitRaw,
+		reader:              reader,
+		parser:              streaming.NewSSEParser(reader),
+		toolCallTracker:     streaming.NewStreamingToolCallTracker(),
+		includeRawChunks:    emitRaw,
+		providerOptionsName: "deepseek",
+		toolCallTypes:       map[int]string{},
 	}
 }
 
@@ -449,6 +606,13 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		return nil, err
 	}
 	if streaming.IsStreamDone(event) {
+		if s.pendingFinish != nil {
+			finish := s.pendingFinish
+			s.pendingFinish = nil
+			s.attachFinishMetadata(finish)
+			s.err = io.EOF
+			return finish, nil
+		}
 		s.err = io.EOF
 		return nil, io.EOF
 	}
@@ -482,6 +646,15 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			Text: deepseekStreamErrorText(chunkData.Error),
 		})
 	}
+	if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
+		s.usageRaw = chunkData.Usage
+	}
+	if chunkData.Object != "" {
+		s.responseObject = chunkData.Object
+	}
+	if chunkData.SystemFingerprint != "" {
+		s.systemFingerprint = chunkData.SystemFingerprint
+	}
 	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
 		metadata := &provider.ResponseMetadata{
 			ID:      chunkData.ID,
@@ -499,6 +672,21 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 	}
 	if len(chunkData.Choices) > 0 {
 		choice := chunkData.Choices[0]
+
+		idx := choice.Index
+		s.choiceIndex = &idx
+		if choice.Delta.Role != "" {
+			s.messageRole = choice.Delta.Role
+		}
+		if choice.Logprobs != nil {
+			s.contentLogprobs = append(s.contentLogprobs, choice.Logprobs.Content...)
+			s.reasoningLogprobs = append(s.reasoningLogprobs, choice.Logprobs.ReasoningContent...)
+		}
+		for _, tc := range choice.Delta.ToolCalls {
+			if tc.Type != "" && tc.Index != nil {
+				s.toolCallTypes[*tc.Index] = tc.Type
+			}
+		}
 
 		// Handle reasoning content (emitted before text in DeepSeek thinking mode).
 		if choice.Delta.ReasoningContent != "" {
@@ -577,10 +765,69 @@ func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+	// Defer the Finish chunk itself: a stream_options.include_usage request
+	// delivers usage in a trailing chunk after finish_reason, so the chunk is
+	// only actually emitted once the stream ends (see the IsStreamDone
+	// handling in Next()).
+	s.pendingFinish = &provider.StreamChunk{
 		Type:         provider.ChunkTypeFinish,
 		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
-	})
+	}
+}
+
+// attachFinishMetadata populates usage and providerMetadata on the deferred
+// Finish chunk from state accumulated across the stream.
+func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
+	if len(s.usageRaw) > 0 {
+		usage := convertDeepseekUsage(s.usageRaw)
+		chunk.Usage = &usage
+	}
+
+	meta := map[string]interface{}{}
+	if s.responseObject != "" {
+		meta["responseObject"] = s.responseObject
+	}
+	if s.choiceIndex != nil {
+		meta["choiceIndex"] = *s.choiceIndex
+	}
+	if s.messageRole != "" {
+		meta["messageRole"] = s.messageRole
+	}
+	if len(s.toolCallTypes) > 0 {
+		indices := make([]int, 0, len(s.toolCallTypes))
+		for idx := range s.toolCallTypes {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		toolCallTypes := make([]string, 0, len(indices))
+		for _, idx := range indices {
+			toolCallTypes = append(toolCallTypes, s.toolCallTypes[idx])
+		}
+		meta["toolCallTypes"] = toolCallTypes
+	}
+	if len(s.contentLogprobs) > 0 || len(s.reasoningLogprobs) > 0 {
+		lp := map[string]interface{}{}
+		if len(s.contentLogprobs) > 0 {
+			lp["content"] = s.contentLogprobs
+		}
+		if len(s.reasoningLogprobs) > 0 {
+			lp["reasoning_content"] = s.reasoningLogprobs
+		}
+		meta["logprobs"] = lp
+	}
+	if s.systemFingerprint != "" {
+		meta["systemFingerprint"] = s.systemFingerprint
+	}
+	if len(meta) == 0 {
+		return
+	}
+	providerOptionsName := s.providerOptionsName
+	if providerOptionsName == "" {
+		providerOptionsName = "deepseek"
+	}
+	if raw, err := json.Marshal(map[string]interface{}{providerOptionsName: meta}); err == nil {
+		chunk.ProviderMetadata = raw
+	}
 }
 
 func (s *deepseekStream) Err() error {
