@@ -439,21 +439,24 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
 		return data, nil, err
 	}
+	baseURL := m.provider.baseURL()
+	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 	opts := fileutil.DefaultDownloadOptions()
 	opts.Timeout = 30 * time.Second
-	if opts.URLValidator != nil {
-		if err := opts.URLValidator(url); err != nil {
-			return nil, nil, err
-		}
+	// The developer-configured origin (which may be self-hosted, e.g.
+	// http://localhost) and any *.bfl.ai host are trusted and use the plain
+	// transport with no SSRF check; every other hop -- including a redirect
+	// away from a trusted origin -- is validated and DNS-pinned. Choosing the
+	// transport per hop (rather than once for the whole request, as before)
+	// matches TS fetchWithValidatedRedirects, and validating trusted hops
+	// through isTrusted rather than unconditionally also fixes the previous
+	// rejection of a self-hosted trusted base URL.
+	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
+	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
+	if err := opts.URLValidator(url); err != nil {
+		return nil, nil, err
 	}
-	trusted := bflTrustedURL(url, m.provider.baseURL())
-	if !trusted {
-		opts.Transport = downloadTransport()
-	} else {
-		// The developer-configured origin is trusted and may be self-hosted;
-		// response-supplied foreign URLs are DNS-pinned (TS trustedOrigin).
-		opts.Transport = nil
-	}
+	trusted := isTrusted(url)
 	// Validates each redirect hop and drops credentials on cross-origin hops.
 	client := fileutil.NewDownloadClient(url, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

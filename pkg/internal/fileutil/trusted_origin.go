@@ -52,3 +52,46 @@ func (t originRoutingTransport) RoundTrip(req *http.Request) (*http.Response, er
 	}
 	return t.safe.RoundTrip(req)
 }
+
+// TrustRoutingTransport is the generalization of the per-hop routing behind
+// TrustedOriginDownloadOptions for providers whose trust boundary is broader
+// than a single fixed origin (e.g. a provider that trusts both its
+// developer-configured base URL and a wildcard SaaS domain such as
+// "*.example.com"). Every request is routed to trusted when isTrusted(url)
+// reports true, otherwise to safe (normally SafeTransport(), which pins DNS
+// results at connect time). A nil trusted defaults to http.DefaultTransport,
+// matching plain-fetch semantics for a developer-trusted origin (TS
+// fetchWithValidatedRedirects, which chooses the fetch per hop).
+func TrustRoutingTransport(isTrusted func(rawURL string) bool, trusted, safe http.RoundTripper) http.RoundTripper {
+	if trusted == nil {
+		trusted = http.DefaultTransport
+	}
+	return trustRoutingTransport{isTrusted: isTrusted, trusted: trusted, safe: safe}
+}
+
+// TrustedURLValidator returns a DownloadOptions.URLValidator that skips
+// ValidateDownloadURL for hops isTrusted reports as trusted (a
+// developer-configured, possibly self-hosted, origin should not be rejected
+// by the generic SSRF blocklist) and otherwise applies it, mirroring the
+// per-hop validation behind TrustedOriginDownloadOptions.
+func TrustedURLValidator(isTrusted func(rawURL string) bool) func(string) error {
+	return func(raw string) error {
+		if isTrusted(raw) {
+			return nil
+		}
+		return ValidateDownloadURL(raw)
+	}
+}
+
+type trustRoutingTransport struct {
+	isTrusted func(rawURL string) bool
+	trusted   http.RoundTripper
+	safe      http.RoundTripper
+}
+
+func (t trustRoutingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.isTrusted(req.URL.String()) {
+		return t.trusted.RoundTrip(req)
+	}
+	return t.safe.RoundTrip(req)
+}
