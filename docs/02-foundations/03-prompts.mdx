@@ -5,7 +5,7 @@ description: Learn about the Prompt structure used in the Go AI SDK.
 
 # Prompts
 
-Prompts are instructions that you give a [large language model (LLM)](./01-overview.md#large-language-models) to tell it what to do. It's like when you ask someone for directions; the clearer your question, the better the directions you'll get.
+Prompts are instructions that you give a [large language model (LLM)](./01-overview.mdx#large-language-models) to tell it what to do. It's like when you ask someone for directions; the clearer your question, the better the directions you'll get.
 
 Many LLM providers offer complex interfaces for specifying prompts. They involve different roles and message types. While these interfaces are powerful, they can be hard to use and understand.
 
@@ -78,7 +78,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 Instead of sending text in the `Content` field, you can send a slice of parts that includes a mix of text and other content parts.
 
-> **Warning:** Not all language models support all message and content types. For example, some models might not be capable of handling multi-modal inputs or tool messages. [Learn more about the capabilities of select models](./02-providers-and-models.md#model-capabilities).
+> **Warning:** Not all language models support all message and content types. For example, some models might not be capable of handling multi-modal inputs or tool messages. [Learn more about the capabilities of select models](./02-providers-and-models.mdx#model-capabilities).
 
 ### User Messages
 
@@ -301,9 +301,9 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Tool Messages
 
-> **Note:** [Tools](./04-tools.md) (also known as function calling) are programs that you can provide an LLM to extend its built-in functionality. This can be anything from calling an external API to calling functions within your application. Learn more about Tools in [the next section](./04-tools.md).
+> **Note:** [Tools](./04-tools.mdx) (also known as function calling) are programs that you can provide an LLM to extend its built-in functionality. This can be anything from calling an external API to calling functions within your application. Learn more about Tools in [the next section](./04-tools.mdx).
 
-For models that support [tool](./04-tools.md) calls, assistant messages can contain tool call parts, and tool messages can contain tool output parts. A single assistant message can call multiple tools, and a single tool message can contain multiple tool results.
+For models that support [tool](./04-tools.mdx) calls, assistant messages can contain tool call parts, and tool messages can contain tool output parts. A single assistant message can call multiple tools, and a single tool message can contain multiple tool results.
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -473,12 +473,12 @@ if err != nil {
 
 ## Next Steps
 
-- Learn about [Tools](./04-tools.md)
-- Understand [Streaming](./05-streaming.md)
-- Explore [Generating Text](../03-ai-sdk-core/02-generating-text.md)
+- Learn about [Tools](./04-tools.mdx)
+- Understand [Streaming](./05-streaming.mdx)
+- Explore [Generating Text](../03-ai-sdk-core/05-generating-text.mdx)
 
 ## See Also
 
-- [Generating Structured Data](../03-ai-sdk-core/03-generating-structured-data.md)
-- [Tools and Tool Calling](../03-ai-sdk-core/04-tools-and-tool-calling.md)
-- [Message Types Reference](../07-reference/types/messages.md)
+- [Generating Structured Data](../03-ai-sdk-core/10-generating-structured-data.mdx)
+- [Tools and Tool Calling](../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
+- [Message Types Reference](../07-reference/types/messages.mdx)

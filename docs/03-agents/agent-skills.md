@@ -362,9 +362,9 @@ agentInstance.AddSkill(withLogging(mySkill))
 ## See Also
 
 - [Agent Subagents](./agent-subagents.md) - Hierarchical agent delegation
-- [Tool Loop Agent](./tool-loop-agent.md) - Core agent implementation
-- [Agent Configuration](./agent-configuration.md) - Configuring agents
+- [Tool Loop Agent](../07-reference/ai/tool-loop-agent.mdx) - Core agent implementation
+- [Agent Configuration](./05-configuring-call-options.mdx) - Configuring agents
 
 ## Examples
 
-See the [agent-skills example](../../examples/agent-skills/) for a complete working example.
+See the [agent-skills example](https://github.com/digitallysavvy/go-ai/tree/main/examples/agent-skills) for a complete working example.

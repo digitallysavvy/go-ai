@@ -366,6 +366,6 @@ if len(result.Warnings) > 0 {
 
 ## See Also
 
-- [Fireworks AI Provider](./providers/fireworks.md)
-- [Provider Options](./provider-options.md)
-- [Cost Optimization](./cost-optimization.md)
+- [Fireworks AI Provider](./05-providers/14-fireworks.mdx)
+- [Provider Options](./02-foundations/06-provider-options.mdx)
+- Cost Optimization
