@@ -104,9 +104,14 @@ func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *ToolLoopAgent
 	streamOptions := opts.AgentOptions
 	streamOptions.Prompt = ""
 	streamOptions.Messages = modelMessages
-	// UI conversations can include a system-role message (from a UI system
-	// message); the agent's own system/instructions are combined separately.
-	streamOptions.AllowSystemInMessages = true
+	// Do NOT force AllowSystemInMessages here: TS createAgentUIStream passes
+	// `prompt: modelMessages` straight through to agent.stream, and whether a
+	// system-role message in that array is accepted is governed solely by the
+	// agent's own configured allowSystemInMessages setting (TS
+	// tool-loop-agent-settings.ts, tool-loop-agent.ts:152; default false). A
+	// caller may still opt in per-call via opts.AgentOptions.AllowSystemInMessages,
+	// which ORs into the agent's own setting the same way any other
+	// AgentStreamOptions call does - we must not silently override it to true.
 
 	result, err := agent.Stream(ctx, streamOptions)
 	if err != nil {

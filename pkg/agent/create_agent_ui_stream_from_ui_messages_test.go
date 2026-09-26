@@ -214,3 +214,53 @@ func TestCreateAgentUIStreamFromUIMessages_RequiresAgent(t *testing.T) {
 		t.Fatal("expected error for nil agent")
 	}
 }
+
+// UI history containing a system-role message must NOT be silently accepted
+// unless the agent itself was configured with AllowSystemInMessages: TS
+// createAgentUIStream passes `prompt: modelMessages` straight through to
+// agent.stream, and whether a system message in that array is accepted is
+// governed solely by the agent's own allowSystemInMessages setting
+// (tool-loop-agent-settings.ts, tool-loop-agent.ts:152; default false).
+const systemMessageUIHistory = `[
+	{
+		"id": "system-1",
+		"role": "system",
+		"parts": [{"type": "text", "text": "be concise"}]
+	},
+	{
+		"id": "user-1",
+		"role": "user",
+		"parts": [{"type": "text", "text": "hi"}]
+	}
+]`
+
+func TestCreateAgentUIStreamFromUIMessages_RejectsSystemMessageByDefault(t *testing.T) {
+	toolLoopAgent := NewToolLoopAgent(AgentConfig{
+		Model: simpleStreamModel(),
+	})
+
+	_, _, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: json.RawMessage(systemMessageUIHistory),
+	})
+	if err == nil {
+		t.Fatal("expected an error rejecting the system-role message, got nil")
+	}
+}
+
+func TestCreateAgentUIStreamFromUIMessages_AcceptsSystemMessageWhenAgentAllows(t *testing.T) {
+	toolLoopAgent := NewToolLoopAgent(AgentConfig{
+		Model:                 simpleStreamModel(),
+		AllowSystemInMessages: true,
+	})
+
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: json.RawMessage(systemMessageUIHistory),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := drainUIChunks(t, chunks, errs)
+	if len(got) == 0 {
+		t.Fatal("expected UI chunks to be produced")
+	}
+}
