@@ -7,9 +7,30 @@ import (
 	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
+
+// bedrockStreamErrorMetadata maps a modeled Converse-stream exception type to
+// its HTTP status code and retryability, mirroring TS
+// amazon-bedrock-stream-error.ts#getAmazonBedrockStreamErrorMetadata.
+func bedrockStreamErrorMetadata(exceptionType string) (statusCode int, isRetryable bool) {
+	switch exceptionType {
+	case "internalServerException", "InternalServerException":
+		return 500, true
+	case "modelStreamErrorException", "ModelStreamErrorException":
+		return 424, true
+	case "serviceUnavailableException", "ServiceUnavailableException":
+		return 503, true
+	case "throttlingException", "ThrottlingException":
+		return 429, true
+	case "validationException", "ValidationException":
+		return 400, false
+	default:
+		return 0, false
+	}
+}
 
 // bedrockStreamContentBlock tracks in-flight state for one Converse content
 // block index during streaming, mirroring the TS SDK's `contentBlocks` map in
@@ -126,6 +147,20 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
 		if m, ok := payload["message"].(string); ok && m != "" {
 			message = m
+		}
+		statusCode, _ := bedrockStreamErrorMetadata(payloadType)
+		// Surface the modeled exception's status code (and, via ErrorCode, its
+		// type) on a structured error so callers inspecting stream.Err() after
+		// the stream ends get more than a bare message. modelStreamErrorException
+		// maps to HTTP 424 but is still retryable per TS
+		// getAmazonBedrockStreamErrorMetadata; ProviderError.IsRetryable()'s
+		// generic 429/5xx heuristic doesn't know that special case, so treat the
+		// chunk text/finish-reason as the source of truth for that one type.
+		s.err = &providererrors.ProviderError{
+			Provider:   "amazon-bedrock",
+			StatusCode: statusCode,
+			ErrorCode:  payloadType,
+			Message:    message,
 		}
 		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message}, nil
 

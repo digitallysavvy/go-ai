@@ -217,7 +217,7 @@ func (p *Provider) runtimeBaseURL() (string, error) {
 	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
 		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
-	return resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
 		Region:                               p.config.Region,
 		Service:                              "bedrock-runtime",
@@ -229,7 +229,7 @@ func (p *Provider) agentRuntimeBaseURL() (string, error) {
 	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
 		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
-	return resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
 		Region:                               p.config.Region,
 		Service:                              "bedrock-agent-runtime",

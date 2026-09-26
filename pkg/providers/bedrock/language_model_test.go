@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -509,6 +511,47 @@ func TestDoStream_SurfacesModeledException(t *testing.T) {
 	if !sawError {
 		t.Fatal("expected an error chunk for the modeled exception")
 	}
+
+	// stream.Err() should now expose structured detail (status code + the
+	// exception type as ErrorCode), not just the bare chunk text — mirrors TS
+	// getAmazonBedrockStreamErrorMetadata.
+	streamErr := stream.Err()
+	var providerErr *providererrors.ProviderError
+	if !errors.As(streamErr, &providerErr) {
+		t.Fatalf("Err() = %v (%T), want a *providererrors.ProviderError", streamErr, streamErr)
+	}
+	if providerErr.StatusCode != 503 {
+		t.Fatalf("StatusCode = %d, want 503 for serviceUnavailableException", providerErr.StatusCode)
+	}
+	if providerErr.ErrorCode != "serviceUnavailableException" {
+		t.Fatalf("ErrorCode = %q, want serviceUnavailableException", providerErr.ErrorCode)
+	}
+	if !providerErr.IsRetryable() {
+		t.Fatal("expected serviceUnavailableException (503) to be retryable")
+	}
+}
+
+func TestBedrockStreamErrorMetadata_MatchesTS(t *testing.T) {
+	tests := []struct {
+		exceptionType   string
+		wantStatusCode  int
+		wantIsRetryable bool
+	}{
+		{"internalServerException", 500, true},
+		{"modelStreamErrorException", 424, true},
+		{"serviceUnavailableException", 503, true},
+		{"throttlingException", 429, true},
+		{"validationException", 400, false},
+		{"somethingUnknown", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.exceptionType, func(t *testing.T) {
+			statusCode, isRetryable := bedrockStreamErrorMetadata(tt.exceptionType)
+			if statusCode != tt.wantStatusCode || isRetryable != tt.wantIsRetryable {
+				t.Fatalf("bedrockStreamErrorMetadata(%q) = (%d, %v), want (%d, %v)", tt.exceptionType, statusCode, isRetryable, tt.wantStatusCode, tt.wantIsRetryable)
+			}
+		})
+	}
 }
 
 func TestConverseURL_EncodesApplicationInferenceProfileARN(t *testing.T) {
@@ -723,13 +766,13 @@ func TestResolveAmazonBedrockBaseURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+			got, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 				Region:                               tt.region,
 				Service:                              "bedrock-runtime",
 				ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 			})
 			if err != nil {
-				t.Fatalf("resolveAmazonBedrockBaseURL error = %v", err)
+				t.Fatalf("ResolveAmazonBedrockBaseURL error = %v", err)
 			}
 			if got != tt.want {
 				t.Fatalf("got %q, want %q", got, tt.want)
@@ -742,7 +785,7 @@ func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
 	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://custom-runtime.example.com/")
 	t.Setenv("AWS_ENDPOINT_URL", "https://generic.example.com/")
 
-	got, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+	got, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		Region:                               "us-east-1",
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
@@ -755,7 +798,7 @@ func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
 	}
 
 	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "")
-	got2, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+	got2, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		Region:                               "us-east-1",
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
@@ -767,7 +810,7 @@ func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
 		t.Fatalf("got %q, want AWS_ENDPOINT_URL fallback", got2)
 	}
 
-	explicit, err := resolveAmazonBedrockBaseURL(resolveBedrockBaseURLOptions{
+	explicit, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              "https://explicit.example.com",
 		Region:                               "us-east-1",
 		Service:                              "bedrock-runtime",

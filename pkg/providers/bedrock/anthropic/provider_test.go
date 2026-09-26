@@ -45,6 +45,38 @@ func TestLanguageModel_CustomBaseURLWithoutRegion(t *testing.T) {
 // TestBuildRequestURL_NonStreaming ports "should build correct URL for
 // non-streaming requests" — encodeURIComponent must escape ':' (unlike Go's
 // url.PathEscape, which leaves ':' unescaped in a path segment).
+// TestRuntimeBaseURL_UsesSharedPartitionAwareResolver verifies
+// Bedrock-Anthropic now shares pkg/providers/bedrock's
+// ResolveAmazonBedrockBaseURL (TS resolve-amazon-bedrock-base-url.ts): it
+// picks the correct DNS suffix for non-standard AWS partitions instead of
+// always assuming amazonaws.com.
+func TestRuntimeBaseURL_UsesSharedPartitionAwareResolver(t *testing.T) {
+	p := New(Config{Region: "cn-north-1", BearerToken: "token"})
+	got, err := p.runtimeBaseURL()
+	if err != nil {
+		t.Fatalf("runtimeBaseURL error = %v", err)
+	}
+	want := "https://bedrock-runtime.cn-north-1.amazonaws.com.cn"
+	if got != want {
+		t.Fatalf("runtimeBaseURL = %q, want %q", got, want)
+	}
+}
+
+// TestRuntimeBaseURL_RespectsEndpointEnvVar verifies the shared resolver's
+// AWS_ENDPOINT_URL_BEDROCK_RUNTIME / AWS_ENDPOINT_URL support now applies to
+// Bedrock-Anthropic too.
+func TestRuntimeBaseURL_RespectsEndpointEnvVar(t *testing.T) {
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://custom-runtime.example.com/")
+	p := New(Config{Region: "us-east-1", BearerToken: "token"})
+	got, err := p.runtimeBaseURL()
+	if err != nil {
+		t.Fatalf("runtimeBaseURL error = %v", err)
+	}
+	if got != "https://custom-runtime.example.com" {
+		t.Fatalf("runtimeBaseURL = %q, want the env var override (trailing slash stripped)", got)
+	}
+}
+
 func TestBuildRequestURL_NonStreaming(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

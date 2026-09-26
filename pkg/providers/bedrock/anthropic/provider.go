@@ -31,14 +31,6 @@ import (
 )
 
 const (
-	// BaseURLFormat is the default Bedrock runtime endpoint template.
-	//
-	// This does not yet apply the partition-aware resolution (China/ISO
-	// regions) or the AWS_ENDPOINT_URL[_BEDROCK_RUNTIME] override — that is
-	// WG-B1 scope (a resolveBedrockBaseURL helper shared with the Converse
-	// client and embeddings/image/rerank models; see HANDOFF.md row 5191b61).
-	BaseURLFormat = "https://bedrock-runtime.%s.amazonaws.com"
-
 	// AnthropicVersion is the Bedrock Anthropic API version, sent as
 	// anthropic_version in the request body (Bedrock does not use the
 	// anthropic-version HTTP header).
@@ -90,19 +82,14 @@ type Config struct {
 // BedrockAnthropicProvider implements native Anthropic Messages API access
 // via AWS Bedrock.
 type BedrockAnthropicProvider struct {
-	config  Config
-	region  string
-	baseURL string
+	config Config
+	region string
 }
 
 // New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
 	region := firstNonEmpty(config.Region, os.Getenv("AWS_REGION"))
-	baseURL := strings.TrimRight(config.BaseURL, "/")
-	if baseURL == "" && region != "" {
-		baseURL = fmt.Sprintf(BaseURLFormat, region)
-	}
-	return &BedrockAnthropicProvider{config: config, region: region, baseURL: baseURL}
+	return &BedrockAnthropicProvider{config: config, region: region}
 }
 
 // CreateAmazonBedrockAnthropic mirrors the TypeScript SDK's
@@ -117,11 +104,18 @@ var Tools = anthropictools.AnthropicTools
 // Name returns the provider name.
 func (p *BedrockAnthropicProvider) Name() string { return providerName }
 
+// runtimeBaseURL resolves the Bedrock runtime endpoint using the shared
+// partition-aware resolver (pkg/providers/bedrock.ResolveAmazonBedrockBaseURL),
+// so Bedrock-Anthropic gets the same precedence (explicit BaseURL, then
+// AWS_ENDPOINT_URL_BEDROCK_RUNTIME, then AWS_ENDPOINT_URL, then a generated
+// URL with the correct partition DNS suffix) as the Converse client.
 func (p *BedrockAnthropicProvider) runtimeBaseURL() (string, error) {
-	if p.baseURL != "" {
-		return p.baseURL, nil
-	}
-	return "", fmt.Errorf("AWS region is required: set Config.Region or AWS_REGION")
+	return bedrock.ResolveAmazonBedrockBaseURL(bedrock.ResolveBaseURLOptions{
+		BaseURL:                              p.config.BaseURL,
+		Region:                               p.region,
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
 }
 
 // LanguageModel returns a language model by ID.

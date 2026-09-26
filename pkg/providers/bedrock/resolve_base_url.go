@@ -22,7 +22,13 @@ var awsPartitionDNSSuffixes = []awsPartitionDNSSuffix{
 	{"eusc-", "amazonaws.eu"},
 }
 
-type resolveBedrockBaseURLOptions struct {
+// ResolveBaseURLOptions configures ResolveAmazonBedrockBaseURL. Exported so
+// it can be shared across Bedrock sub-packages — the Converse client
+// (pkg/providers/bedrock) and Bedrock-Anthropic
+// (pkg/providers/bedrock/anthropic) both call ResolveAmazonBedrockBaseURL
+// with their own service name and endpoint env var, rather than each
+// hard-coding "https://{service}.{region}.amazonaws.com".
+type ResolveBaseURLOptions struct {
 	// BaseURL is the explicit override, if any. Always wins.
 	BaseURL string
 	// Region is the AWS region used to build the default endpoint and to
@@ -36,13 +42,13 @@ type resolveBedrockBaseURLOptions struct {
 	ServiceEndpointURLEnvironmentVarName string
 }
 
-// resolveAmazonBedrockBaseURL ports TS
+// ResolveAmazonBedrockBaseURL ports TS
 // resolve-amazon-bedrock-base-url.ts#resolveAmazonBedrockBaseURL. Precedence:
 // explicit BaseURL, then the service-specific endpoint env var, then the
 // generic AWS_ENDPOINT_URL, then a generated
 // https://{service}.{region}.{suffix} URL (suffix depends on the region's
 // partition). The result never has a trailing slash.
-func resolveAmazonBedrockBaseURL(opts resolveBedrockBaseURLOptions) (string, error) {
+func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 	resolved := opts.BaseURL
 	if resolved == "" {
 		resolved = os.Getenv(opts.ServiceEndpointURLEnvironmentVarName)
