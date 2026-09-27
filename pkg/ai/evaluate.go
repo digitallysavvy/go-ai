@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -145,8 +146,9 @@ func ExperimentalEvaluate(ctx context.Context, opts EvaluateOptions) (*EvaluateR
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	var span trace.Span
+	var tracer trace.Tracer
 	if telemetrySettings != nil && telemetry.Enabled(telemetrySettings) {
-		tracer := telemetry.GetTracer(telemetrySettings)
+		tracer = telemetry.GetTracer(telemetrySettings)
 		spanName := "ai.evaluate"
 		if telemetrySettings.FunctionID != "" {
 			spanName = spanName + "." + telemetrySettings.FunctionID
@@ -160,6 +162,12 @@ func ExperimentalEvaluate(ctx context.Context, opts EvaluateOptions) (*EvaluateR
 		)
 		if telemetrySettings.FunctionID != "" {
 			span.SetAttributes(attribute.String("ai.telemetry.functionId", telemetrySettings.FunctionID))
+		}
+		// Mirrors TypeScript's onEvaluateOperationStart (packages/otel/src/legacy-open-telemetry.ts):
+		// ai.evaluation.state/questions are "input" attributes, gated by RecordInputs.
+		if telemetrySettings.RecordInputs {
+			setEvaluationJSONAttribute(span, "ai.evaluation.state", opts.State)
+			setEvaluationJSONAttribute(span, "ai.evaluation.questions", opts.Questions)
 		}
 	}
 
@@ -189,8 +197,27 @@ func ExperimentalEvaluate(ctx context.Context, opts EvaluateOptions) (*EvaluateR
 
 	headers := version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
+	// Mirrors TypeScript's nested "ai.evaluate.doEvaluate" span
+	// (experimental_onEvaluationModelCallStart/End in evaluate.ts), wrapping
+	// the whole retry loop for the underlying model call, same as the
+	// modelCallEvent notify pair in evaluate.ts.
+	evalCtx := ctx
+	var doEvaluateSpan trace.Span
+	if tracer != nil {
+		evalCtx, doEvaluateSpan = tracer.Start(ctx, "ai.evaluate.doEvaluate")
+		doEvaluateSpan.SetAttributes(
+			attribute.String("ai.operationId", "ai.evaluate.doEvaluate"),
+			attribute.String("gen_ai.system", model.Provider()),
+			attribute.String("gen_ai.request.model", model.ModelID()),
+		)
+		if telemetrySettings.RecordInputs {
+			setEvaluationJSONAttribute(doEvaluateSpan, "ai.evaluation.state", opts.State)
+			setEvaluationJSONAttribute(doEvaluateSpan, "ai.evaluation.questions", opts.Questions)
+		}
+	}
+
 	var result *provider.EvaluationResult
-	err = withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
+	err = withEmbedRetry(evalCtx, resolvedMaxRetries, func(callCtx context.Context) error {
 		res, callErr := model.DoEvaluate(callCtx, provider.EvaluationCallOptions{
 			State:           opts.State,
 			Questions:       opts.Questions,
@@ -204,13 +231,45 @@ func ExperimentalEvaluate(ctx context.Context, opts EvaluateOptions) (*EvaluateR
 		return nil
 	})
 	if err != nil {
+		if doEvaluateSpan != nil {
+			// Go always closes the span it opened, even on the error paths
+			// where TypeScript's dispatcher never calls
+			// experimental_onEvaluationModelCallEnd (a span leak in the
+			// reference implementation we do not replicate).
+			telemetry.RecordErrorOnSpan(doEvaluateSpan, err)
+			doEvaluateSpan.End()
+		}
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
 
 	if err := validateEvaluationAnswers(opts.Questions, result.Answers, result.Rounding); err != nil {
+		if doEvaluateSpan != nil {
+			telemetry.RecordErrorOnSpan(doEvaluateSpan, err)
+			doEvaluateSpan.End()
+		}
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
+	}
+
+	if doEvaluateSpan != nil {
+		// Mirrors experimental_onEvaluationModelCallEnd: ai.evaluation.answers
+		// is output-gated; usage and providerMetadata are unconditional.
+		if telemetrySettings.RecordOutputs {
+			setEvaluationJSONAttribute(doEvaluateSpan, "ai.evaluation.answers", result.Answers)
+		}
+		if result.Usage != nil {
+			if result.Usage.InputTokens != nil {
+				doEvaluateSpan.SetAttributes(attribute.Int64("ai.usage.inputTokens", int64(*result.Usage.InputTokens)))
+			}
+			if result.Usage.OutputTokens != nil {
+				doEvaluateSpan.SetAttributes(attribute.Int64("ai.usage.outputTokens", int64(*result.Usage.OutputTokens)))
+			}
+		}
+		if result.ProviderMetadata != nil {
+			setEvaluationJSONAttribute(doEvaluateSpan, "ai.response.providerMetadata", result.ProviderMetadata)
+		}
+		doEvaluateSpan.End()
 	}
 
 	logModelWarnings(result.Warnings, model.Provider(), model.ModelID())
@@ -249,6 +308,12 @@ func ExperimentalEvaluate(ctx context.Context, opts EvaluateOptions) (*EvaluateR
 		Response:         response,
 	}
 
+	// Mirrors onEvaluateOperationEnd: ai.evaluation.answers is also recorded
+	// on the root span, output-gated.
+	if span != nil && telemetrySettings.RecordOutputs {
+		setEvaluationJSONAttribute(span, "ai.evaluation.answers", evalResult.Answers)
+	}
+
 	if opts.OnEnd != nil {
 		opts.OnEnd(EvaluateOnEndEvent{
 			EvaluateOnStartEvent: startEvent,
@@ -284,6 +349,23 @@ func telemetryUsageFromEvaluateUsage(u EvaluateUsage) telemetry.TelemetryUsage {
 		OutputTokens: toInt64(u.OutputTokens),
 		TotalTokens:  toInt64(u.TotalTokens),
 	}
+}
+
+// setEvaluationJSONAttribute JSON-encodes v and sets it as a string attribute
+// on span, matching TypeScript's `JSON.stringify(...)` content attributes
+// (ai.evaluation.state/questions/answers, ai.response.providerMetadata) in
+// packages/otel/src/legacy-open-telemetry.ts. Silently omits the attribute if
+// v cannot be marshaled, mirroring selectAttributes() dropping null/undefined
+// resolved values.
+func setEvaluationJSONAttribute(span trace.Span, key string, v interface{}) {
+	if span == nil || v == nil {
+		return
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	span.SetAttributes(attribute.String(key, string(b)))
 }
 
 // resolveEvaluationModel resolves model (a provider.EvaluationModel instance
