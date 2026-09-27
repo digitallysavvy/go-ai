@@ -43,13 +43,13 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-deepagents/dist/bridge (tsup bundle of packages/harness-deepagents/src/bridge)",
       "files": {
-        "bridge.mjs": "c0be1f17752a64d9dd4519a8f2f3069bd49a7c31d157bf6aa369215569c13114",
+        "bridge.mjs": "0aef4e8cb4e0a02752b54f1009d255cf200c632b81c5560dcde82883e7fa41de",
         "package.json": "d2ffb6177f57f2f7c201127dcad65480657232fb1ce9a07d64d3bc861888e6f8",
         "pnpm-lock.yaml": "4af7bff8f7849a326571faffb71c75584271b1be6c658b0e0374abc48ebd91de"
       },
       "sourceDir": "packages/harness-deepagents/src/bridge",
       "sourcePackage": "@ai-sdk/harness-deepagents",
-      "sourceVersion": "1.0.123"
+      "sourceVersion": "1.0.128"
     },
     "githubcopilot": {
       "bridgeEntry": "",

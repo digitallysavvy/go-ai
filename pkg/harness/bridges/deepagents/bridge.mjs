@@ -2245,7 +2245,14 @@ function buildHostTools(toolSchemas) {
           input: JSON.stringify(input),
           providerExecuted: false
         });
-        const { output } = await turn.requestToolResult(toolCallId);
+        const { output, isError } = await turn.requestToolResult(toolCallId);
+        turn.emit({
+          type: "tool-result",
+          toolCallId,
+          toolName: schema.name,
+          result: output ?? null,
+          ...isError !== void 0 ? { isError } : {}
+        });
         return typeof output === "string" ? output : JSON.stringify(output);
       },
       {
