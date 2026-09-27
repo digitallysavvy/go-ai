@@ -329,6 +329,10 @@ func (s *openAIRealtimeTranscriptionStream) emit(part provider.TranscriptionStre
 
 func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionStreamConfig) {
 	defer close(s.parts)
+	// Release s.ctx's resources as soon as run() returns for any reason
+	// instead of only on an explicit Close() call, which a consumer that
+	// only drains Next() to io.EOF may never make.
+	defer s.cancel()
 
 	conn, err := s.dial(cfg.url, cfg.headers)
 	if err != nil {

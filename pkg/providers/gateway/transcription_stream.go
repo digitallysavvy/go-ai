@@ -181,6 +181,11 @@ func (s *gatewayTranscriptionStream) emit(part provider.TranscriptionStreamPart)
 
 func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer close(s.parts)
+	// Release s.ctx's resources as soon as run() returns for any reason
+	// (finish, error, or cancellation) instead of only on an explicit
+	// Close() call, which a consumer that only drains Next() to io.EOF may
+	// never make.
+	defer s.cancel()
 
 	fail := func(err error) {
 		s.setErr(err)
