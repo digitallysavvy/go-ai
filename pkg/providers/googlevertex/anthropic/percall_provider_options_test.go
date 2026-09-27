@@ -12,14 +12,15 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// TestPerCallProviderOptions_BedrockCustomKey verifies Bedrock-Anthropic gets
-// per-call provider options for free from the shared
+// TestPerCallProviderOptions_VertexCustomKey verifies Google Vertex-Anthropic
+// gets per-call provider options for free from the shared
 // pkg/providers/anthropic.LanguageModel it wraps: TS derives
-// providerOptionsName "bedrock" from config.provider =
-// "bedrock.anthropic.messages" (getProviderOptionsName splits on the first
-// '.'), so providerOptions.bedrock.effort must flow through on every call,
-// not just via construction-time ModelOptions.
-func TestPerCallProviderOptions_BedrockCustomKey(t *testing.T) {
+// providerOptionsName "googleVertex" from config.provider =
+// "googleVertex.anthropic.messages" (getProviderOptionsName splits on the
+// first '.'; see google-vertex-anthropic-provider.ts), so
+// providerOptions.googleVertex.effort must flow through on every call, not
+// just via construction-time ModelOptions.
+func TestPerCallProviderOptions_VertexCustomKey(t *testing.T) {
 	var capturedBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -29,8 +30,12 @@ func TestPerCallProviderOptions_BedrockCustomKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, BearerToken: "token", HTTPClient: srv.Client()})
-	model, err := p.LanguageModel("anthropic.claude-opus-4-5-v1:0")
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL:    srv.URL,
+		AuthToken:  func(context.Context) (string, error) { return "test-token", nil },
+		HTTPClient: srv.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
 	if err != nil {
 		t.Fatalf("LanguageModel: %v", err)
 	}
@@ -38,7 +43,7 @@ func TestPerCallProviderOptions_BedrockCustomKey(t *testing.T) {
 	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hello"},
 		ProviderOptions: map[string]interface{}{
-			"bedrock": map[string]interface{}{
+			"googleVertex": map[string]interface{}{
 				"effort": "high",
 			},
 		},
@@ -53,11 +58,11 @@ func TestPerCallProviderOptions_BedrockCustomKey(t *testing.T) {
 	}
 }
 
-// TestPerCallProviderOptions_BedrockCanonicalAnthropicKey verifies the
-// canonical "anthropic" providerOptions key still works for Bedrock-Anthropic
-// alongside the custom "bedrock" key (TS parseProviderOptions always checks
-// the canonical key too).
-func TestPerCallProviderOptions_BedrockCanonicalAnthropicKey(t *testing.T) {
+// TestPerCallProviderOptions_VertexCanonicalAnthropicKey verifies the
+// canonical "anthropic" providerOptions key still works for
+// Google Vertex-Anthropic alongside the custom "googleVertex" key (TS
+// parseProviderOptions always checks the canonical key too).
+func TestPerCallProviderOptions_VertexCanonicalAnthropicKey(t *testing.T) {
 	var capturedBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -67,8 +72,12 @@ func TestPerCallProviderOptions_BedrockCanonicalAnthropicKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, BearerToken: "token", HTTPClient: srv.Client()})
-	model, err := p.LanguageModel("anthropic.claude-opus-4-5-v1:0")
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL:    srv.URL,
+		AuthToken:  func(context.Context) (string, error) { return "test-token", nil },
+		HTTPClient: srv.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
 	if err != nil {
 		t.Fatalf("LanguageModel: %v", err)
 	}
@@ -90,11 +99,11 @@ func TestPerCallProviderOptions_BedrockCanonicalAnthropicKey(t *testing.T) {
 	}
 }
 
-// TestPerCallProviderOptions_BedrockCustomKeyWinsOverCanonical verifies the
-// custom "bedrock" key takes precedence over the canonical "anthropic" key
-// when both set the same field, matching TS's
+// TestPerCallProviderOptions_VertexCustomKeyWinsOverCanonical verifies the
+// custom "googleVertex" key takes precedence over the canonical "anthropic"
+// key when both set the same field, matching TS's
 // Object.assign({}, canonicalOptions, customProviderOptions) merge order.
-func TestPerCallProviderOptions_BedrockCustomKeyWinsOverCanonical(t *testing.T) {
+func TestPerCallProviderOptions_VertexCustomKeyWinsOverCanonical(t *testing.T) {
 	var capturedBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -104,8 +113,12 @@ func TestPerCallProviderOptions_BedrockCustomKeyWinsOverCanonical(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, BearerToken: "token", HTTPClient: srv.Client()})
-	model, err := p.LanguageModel("anthropic.claude-opus-4-5-v1:0")
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL:    srv.URL,
+		AuthToken:  func(context.Context) (string, error) { return "test-token", nil },
+		HTTPClient: srv.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
 	if err != nil {
 		t.Fatalf("LanguageModel: %v", err)
 	}
@@ -113,8 +126,8 @@ func TestPerCallProviderOptions_BedrockCustomKeyWinsOverCanonical(t *testing.T) 
 	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hello"},
 		ProviderOptions: map[string]interface{}{
-			"anthropic": map[string]interface{}{"effort": "low"},
-			"bedrock":   map[string]interface{}{"effort": "high"},
+			"anthropic":    map[string]interface{}{"effort": "low"},
+			"googleVertex": map[string]interface{}{"effort": "high"},
 		},
 	})
 	if err != nil {
@@ -127,21 +140,25 @@ func TestPerCallProviderOptions_BedrockCustomKeyWinsOverCanonical(t *testing.T) 
 	}
 }
 
-// TestPerCallProviderOptions_BedrockCustomKeyMetadataDuplicated verifies the
+// TestPerCallProviderOptions_VertexCustomKeyMetadataDuplicated verifies the
 // response side of the custom-provider-key feature: when the caller supplies
-// providerOptions.bedrock (not just providerOptions.anthropic), doGenerate's
-// providerMetadata carries both "anthropic" and "bedrock"
+// providerOptions.googleVertex (not just providerOptions.anthropic),
+// doGenerate's providerMetadata carries both "anthropic" and "googleVertex"
 // (anthropic-language-model.ts: usedCustomProviderKey && providerOptionsName
 // !== 'anthropic').
-func TestPerCallProviderOptions_BedrockCustomKeyMetadataDuplicated(t *testing.T) {
+func TestPerCallProviderOptions_VertexCustomKeyMetadataDuplicated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, BearerToken: "token", HTTPClient: srv.Client()})
-	model, err := p.LanguageModel("anthropic.claude-opus-4-5-v1:0")
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL:    srv.URL,
+		AuthToken:  func(context.Context) (string, error) { return "test-token", nil },
+		HTTPClient: srv.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
 	if err != nil {
 		t.Fatalf("LanguageModel: %v", err)
 	}
@@ -149,7 +166,7 @@ func TestPerCallProviderOptions_BedrockCustomKeyMetadataDuplicated(t *testing.T)
 	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hello"},
 		ProviderOptions: map[string]interface{}{
-			"bedrock": map[string]interface{}{"sendReasoning": true},
+			"googleVertex": map[string]interface{}{"sendReasoning": true},
 		},
 	})
 	if err != nil {
@@ -158,7 +175,7 @@ func TestPerCallProviderOptions_BedrockCustomKeyMetadataDuplicated(t *testing.T)
 	if _, ok := result.ProviderMetadata["anthropic"]; !ok {
 		t.Fatalf("providerMetadata missing 'anthropic' key: %#v", result.ProviderMetadata)
 	}
-	if _, ok := result.ProviderMetadata["bedrock"]; !ok {
-		t.Fatalf("providerMetadata missing 'bedrock' key: %#v", result.ProviderMetadata)
+	if _, ok := result.ProviderMetadata["googleVertex"]; !ok {
+		t.Fatalf("providerMetadata missing 'googleVertex' key: %#v", result.ProviderMetadata)
 	}
 }

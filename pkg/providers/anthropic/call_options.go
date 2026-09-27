@@ -58,41 +58,50 @@ func (m *LanguageModel) providerOptionsName() string {
 // rejection of `thinking: { type: "enabled" }`. Matching that, Go accepts
 // whatever the shared anthropicLanguageModelOptions-equivalent schema allows
 // for every wrapper.
-func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*ModelOptions, error) {
+//
+// The second return value mirrors TS's usedCustomProviderKey: true when
+// providerOptions[providerOptionsName] was present (non-nil) for a
+// providerOptionsName other than "anthropic" — i.e. the caller explicitly
+// used the wrapper's own key (e.g. providerOptions.minimax), not just the
+// canonical "anthropic" key. doGenerate/doStream use it to decide whether to
+// duplicate the response providerMetadata under providerOptionsName.
+func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*ModelOptions, bool, error) {
 	base := ModelOptions{}
 	if m.options != nil {
 		base = *m.options
 	}
 
 	if opts == nil || len(opts.ProviderOptions) == 0 {
-		return &base, nil
+		return &base, false, nil
 	}
 
 	providerOptionsName := m.providerOptionsName()
 
 	canonicalOverlay, err := decodeAnthropicCallOptionsAt(opts.ProviderOptions, "anthropic")
 	if err != nil {
-		return nil, &providererrors.InvalidArgumentError{
+		return nil, false, &providererrors.InvalidArgumentError{
 			Field:   "providerOptions",
 			Message: fmt.Sprintf("invalid anthropic provider options: %s", err.Error()),
 		}
 	}
 
 	var customOverlay *ModelOptions
+	usedCustomProviderKey := false
 	if providerOptionsName != "anthropic" {
 		customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, providerOptionsName)
 		if err != nil {
-			return nil, &providererrors.InvalidArgumentError{
+			return nil, false, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions",
 				Message: fmt.Sprintf("invalid %s provider options: %s", providerOptionsName, err.Error()),
 			}
 		}
+		usedCustomProviderKey = customOverlay != nil
 	}
 
 	applyModelOptionsOverlay(&base, canonicalOverlay)
 	applyModelOptionsOverlay(&base, customOverlay)
 
-	return &base, nil
+	return &base, usedCustomProviderKey, nil
 }
 
 // decodeAnthropicCallOptionsAt reads providerOptions[key] and decodes it into

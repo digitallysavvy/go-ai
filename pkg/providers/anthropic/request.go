@@ -32,6 +32,16 @@ type preparedRequest struct {
 	// marked dynamic (see HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
 	toolsetNames             map[string]string
+	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
+	// return fields of the same name: providerOptionsName is the wrapper's
+	// own providerOptions key (e.g. "minimax", "bedrock"), and
+	// usedCustomProviderKey is true when the caller supplied
+	// providerOptions[providerOptionsName] for a non-"anthropic" name. The
+	// response builders use these to duplicate providerMetadata under
+	// providerOptionsName (TS: usedCustomProviderKey && providerOptionsName
+	// !== 'anthropic').
+	providerOptionsName   string
+	usedCustomProviderKey bool
 }
 
 type betaSet struct {
@@ -96,7 +106,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		opts = &provider.GenerateOptions{}
 	}
 	var warnings []types.Warning
-	o, err := m.resolveCallOptions(opts)
+	o, usedCustomProviderKey, err := m.resolveCallOptions(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -519,6 +529,8 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		usesJSONResponseTool:     usesJSONResponseTool,
 		markCodeExecutionDynamic: HasDynamicFilteringWebToolWithoutCodeExecution(prepared.tools),
 		toolsetNames:             toolsetNames,
+		providerOptionsName:      m.providerOptionsName(),
+		usedCustomProviderKey:    usedCustomProviderKey,
 	}, nil
 }
 

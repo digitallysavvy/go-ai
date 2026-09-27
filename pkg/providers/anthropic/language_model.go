@@ -138,6 +138,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		usesJSONResponseTool:     req.usesJSONResponseTool,
 		tools:                    opts.Tools,
 		markCodeExecutionDynamic: req.markCodeExecutionDynamic,
+		providerOptionsName:      req.providerOptionsName,
+		usedCustomProviderKey:    req.usedCustomProviderKey,
 	})
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.RawRequest = req.body
@@ -169,6 +171,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
+	stream.providerOptionsName = req.providerOptionsName
+	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
@@ -259,6 +263,13 @@ type convertOptions struct {
 	usesJSONResponseTool     bool
 	tools                    []types.Tool
 	markCodeExecutionDynamic bool
+	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
+	// fields of the same name (see request.go); when set, the response
+	// providerMetadata is duplicated under providerOptionsName, matching TS
+	// doGenerate's `if (usedCustomProviderKey && providerOptionsName !==
+	// 'anthropic') providerMetadata[providerOptionsName] = anthropicMetadata`.
+	providerOptionsName   string
+	usedCustomProviderKey bool
 }
 
 func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, co convertOptions) *types.GenerateResult {
@@ -489,10 +500,10 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		// Fallback to legacy location in usage block
 		result.ContextManagement = response.Usage.ContextManagement
 	}
-	result.ProviderMetadata = anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
+	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
 		inputTransformations: rawJSONValue(response.InputTransformations),
 		safeguardResults:     rawJSONValue(response.SafeguardResults),
-	})
+	}), co.providerOptionsName, co.usedCustomProviderKey)
 
 	return result
 }
@@ -696,8 +707,23 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDe
 	return map[string]interface{}{"anthropic": anthropic}
 }
 
-func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extras ...metadataExtras) json.RawMessage {
-	raw, err := json.Marshal(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement, extras...))
+// withCustomProviderKeyMetadata duplicates meta["anthropic"] under
+// providerOptionsName when usedCustomProviderKey is set and
+// providerOptionsName isn't "anthropic" itself, matching TS's
+// `if (usedCustomProviderKey && providerOptionsName !== 'anthropic')
+// providerMetadata[providerOptionsName] = anthropicMetadata`.
+func withCustomProviderKeyMetadata(meta map[string]interface{}, providerOptionsName string, usedCustomProviderKey bool) map[string]interface{} {
+	if usedCustomProviderKey && providerOptionsName != "" && providerOptionsName != "anthropic" {
+		if anthropicMeta, ok := meta["anthropic"]; ok {
+			meta[providerOptionsName] = anthropicMeta
+		}
+	}
+	return meta
+}
+
+func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, providerOptionsName string, usedCustomProviderKey bool, extras ...metadataExtras) json.RawMessage {
+	meta := withCustomProviderKeyMetadata(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement, extras...), providerOptionsName, usedCustomProviderKey)
+	raw, err := json.Marshal(meta)
 	if err != nil {
 		return nil
 	}
@@ -842,7 +868,7 @@ const (
 // configuration supplied only via providerOptions (not construction-time
 // ModelOptions) is still detected.
 func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *types.Warning {
-	o, err := m.resolveCallOptions(opts)
+	o, _, err := m.resolveCallOptions(opts)
 	if err != nil || o.Container == nil || len(o.Container.Skills) == 0 {
 		return nil
 	}
@@ -1102,6 +1128,12 @@ type anthropicStream struct {
 	// markCodeExecutionDynamic marks code_execution calls dynamic (see
 	// HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
+	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
+	// fields of the same name; finalizeFinish uses them to duplicate the
+	// finish chunk's providerMetadata under providerOptionsName (TS
+	// doStream's message_stop handler).
+	providerOptionsName   string
+	usedCustomProviderKey bool
 	// isMessageOpen / activeMessageID detect spliced streams (a second
 	// message_start while a message is still open).
 	isMessageOpen   bool
@@ -1935,7 +1967,7 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 	chunk := s.finish
 	usage := convertAnthropicUsage(s.usage)
 	chunk.Usage = &usage
-	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement, metadataExtras{
+	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
 		inputTransformations: s.inputTransformations,
 		safeguardResults:     s.safeguardResults,
 	})
