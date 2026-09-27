@@ -442,7 +442,7 @@ func TestTelemetryModelAttributesFlattened(t *testing.T) {
 		}
 	}
 	for _, span := range spans {
-		if span.Name() == "ai.generateText step 0" {
+		if span.Name() == "ai.generateText.doGenerate" {
 			stepSpan = span
 		}
 	}
@@ -474,7 +474,7 @@ func TestTelemetryModelAttributesFlattened(t *testing.T) {
 	}
 
 	if stepSpan == nil {
-		t.Fatal("expected an 'ai.generateText step 0' nested step span")
+		t.Fatal("expected an 'ai.generateText.doGenerate' nested step span")
 	}
 	var stepHasGenAISystem, stepHasGenAIModel bool
 	for _, a := range stepSpan.Attributes() {

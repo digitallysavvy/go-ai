@@ -74,11 +74,11 @@ func TestGenerateObject_Telemetry(t *testing.T) {
 		t.Error("ai.generateObject root span should not carry ai.response.text (that's the generateText shape)")
 	}
 
-	// Step span: the real span name is "ai.generateObject step 0" (Go keeps
-	// its own descriptive name); legacyStepOperationID's
-	// "ai.generateObject.doGenerate" surfaces only via the operation.name
-	// attribute, mirroring the root span's naming rule.
-	stepSpan := spanByOperationName(spans, "ai.generateObject step 0", "ai.generateObject.doGenerate obj-test")
+	// Step span: the real span name is the bare step operation id
+	// "ai.generateObject.doGenerate" (TS: `tracer.startSpan(stepOperationId,
+	// ...)`), matching the root span's naming rule (functionID only
+	// surfaces via the operation.name attribute).
+	stepSpan := spanByOperationName(spans, "ai.generateObject.doGenerate", "ai.generateObject.doGenerate obj-test")
 	if stepSpan == nil {
 		t.Fatal("expected an ai.generateObject.doGenerate step span — GenerateObject previously fired no step span at all (H3 item 1)")
 	}
@@ -152,7 +152,7 @@ func TestStreamObject_Telemetry(t *testing.T) {
 		t.Errorf("ai.response.object = %v (ok=%v), want the generated object JSON", v, ok)
 	}
 
-	stepSpan := spanByOperationName(spans, "ai.streamObject step 0", "ai.streamObject.doStream stream-obj-test")
+	stepSpan := spanByOperationName(spans, "ai.streamObject.doStream", "ai.streamObject.doStream stream-obj-test")
 	if stepSpan == nil {
 		t.Fatal("expected an ai.streamObject.doStream step span")
 	}

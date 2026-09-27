@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -1130,7 +1129,14 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	if opType == "" {
 		opType = "ai.step"
 	}
-	spanName := fmt.Sprintf("%s step %d", opType, e.StepNumber)
+	// The span's real Name is the bare step operation id (e.g.
+	// "ai.generateText.doGenerate", "ai.streamText.doStream"), matching TS's
+	// `this.tracer.startSpan(stepOperationId, ...)` (legacy-open-telemetry.ts
+	// onStepStart/onObjectStepStart) and the snapshot span names (e.g.
+	// "ai.streamText.doStream"). This mirrors the root span convention (bare
+	// operationId as Name, functionID-suffixed only in the operation.name
+	// attribute below).
+	spanName := legacyStepOperationID(opType)
 	ctx, stepSpan := tracer.Start(ctx, spanName)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeStep,
