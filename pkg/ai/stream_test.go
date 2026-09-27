@@ -2612,6 +2612,49 @@ func TestStreamTextAbortDoesNotCallFinish(t *testing.T) {
 	}
 }
 
+// TestStreamTextAbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape (audit row a8e8ad0 / WG5): the stable OnAbortEvent must carry the
+// call ID and abort reason, and take precedence over the deprecated OnAbort.
+func TestStreamTextAbortEventCarriesCallIDAndReason(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStreamWithError(context.Canceled), nil
+		},
+	}
+
+	eventCh := make(chan GenerateTextAbortEvent, 1)
+	deprecatedCalled := false
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			eventCh <- e
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	select {
+	case e := <-eventCh:
+		if e.CallID == "" {
+			t.Error("GenerateTextAbortEvent.CallID is empty")
+		}
+		if e.Reason == nil {
+			t.Error("GenerateTextAbortEvent.Reason is nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
+	}
+	_ = result
+}
+
 func TestStreamTextRejectsIncompleteMetadataOnlyStream(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {

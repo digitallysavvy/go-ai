@@ -23,6 +23,18 @@ func now() int64 {
 	return time.Now().UnixMilli()
 }
 
+// abortReason resolves the reason an aborted call should report:
+// context.Cause(ctx) when the context carries a specific cancellation cause,
+// else fallback (typically the error that surfaced the abort). Mirrors TS
+// generate-text.ts/stream-text.ts's onAbort reason resolution (audit row
+// a8e8ad0 / WG5).
+func abortReason(ctx context.Context, fallback error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return fallback
+}
+
 func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	if model == nil || model.Provider() != "gateway" {
 		return 0
@@ -450,7 +462,16 @@ type GenerateTextOptions struct {
 
 	// OnAbort is called when generation is aborted by context cancellation or
 	// deadline before normal completion.
+	//
+	// Deprecated: use OnAbortEvent, which also carries the call ID and abort
+	// reason.
 	OnAbort func(ctx context.Context, steps []types.StepResult)
+
+	// OnAbortEvent is called when generation is aborted by context
+	// cancellation or deadline before normal completion, with a
+	// GenerateTextAbortEvent carrying the call ID, completed steps, and
+	// abort reason. Takes precedence over the deprecated OnAbort.
+	OnAbortEvent OnAbortCallback
 }
 
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
@@ -711,10 +732,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if result != nil {
 					abortSteps = append([]types.StepResult(nil), result.Steps...)
 				}
-				if opts.OnAbort != nil {
-					opts.OnAbort(ctx, abortSteps)
+				reason := abortReason(ctx, err)
+				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+					onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason})
 				}
-				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err, Steps: abortSteps})
+				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
 				return
 			}
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})

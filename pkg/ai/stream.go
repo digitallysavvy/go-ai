@@ -281,7 +281,16 @@ type StreamTextOptions struct {
 
 	// OnAbort is called when streaming is aborted by context cancellation or
 	// deadline before normal completion.
+	//
+	// Deprecated: use OnAbortEvent, which also carries the call ID and abort
+	// reason.
 	OnAbort func(ctx context.Context, steps []types.StepResult)
+
+	// OnAbortEvent is called when streaming is aborted by context
+	// cancellation or deadline before normal completion, with a
+	// GenerateTextAbortEvent carrying the call ID, completed steps, and
+	// abort reason. Takes precedence over the deprecated OnAbort.
+	OnAbortEvent OnAbortCallback
 
 	// ExperimentalTransform is an ordered list of transform functions applied to
 	// each stream chunk after provider emission but before forwarding to OnChunk.
@@ -979,10 +988,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
 		if isAbortErr(stepCtx, err) {
-			if opts.OnAbort != nil {
-				opts.OnAbort(stepCtx, nil)
+			reason := abortReason(stepCtx, err)
+			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+				onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason})
 			}
-			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err})
+			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
@@ -1153,8 +1163,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			return
 		}
 		abortFired = true
-		if opts.OnAbort != nil {
-			opts.OnAbort(ctx, allSteps)
+		reason = abortReason(ctx, reason)
+		if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+			onAbort(ctx, GenerateTextAbortEvent{
+				CallID: r.cbCallID,
+				Steps:  append([]types.StepResult(nil), allSteps...),
+				Reason: reason,
+			})
 		}
 		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 			Settings: r.telemetrySettings,
@@ -2852,7 +2867,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 				telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 					Settings: r.telemetrySettings,
 					CallID:   r.cbCallID,
-					Reason:   err,
+					Reason:   abortReason(ctx, err),
 					Steps:    append([]types.StepResult(nil), r.cbSteps...),
 				})
 			}

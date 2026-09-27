@@ -2004,3 +2004,45 @@ func TestGenerateTextReasoningNilNotPropagated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestGenerateText_AbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape to generateText (audit row a8e8ad0 / WG5): the stable OnAbortEvent
+// must carry the call ID and abort reason, and take precedence over the
+// deprecated OnAbort.
+func TestGenerateText_AbortEventCarriesCallIDAndReason(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, context.Canceled
+		},
+	}
+
+	var event *GenerateTextAbortEvent
+	deprecatedCalled := false
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			event = &e
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if event == nil {
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if event.CallID == "" {
+		t.Error("GenerateTextAbortEvent.CallID is empty")
+	}
+	if event.Reason == nil {
+		t.Error("GenerateTextAbortEvent.Reason is nil")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
+	}
+}
