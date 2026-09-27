@@ -317,6 +317,18 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
 
+	// getUpdateEffortUnsupportedReason mirrors TS: the reasoningEffortUpdate
+	// schema accepts any effort supported by any supported model, so check
+	// whether this specific model supports the requested effort (GPT-6+
+	// models restrict the set, and 'none' is only valid for gpt-6-sol/luna).
+	getUpdateEffortUnsupportedReason := func(effort string) string {
+		if effort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
+			!slices.Contains(modelCapabilities.SupportedReasoningEfforts, effort) {
+			return fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", "))
+		}
+		return ""
+	}
+
 	isReasoning := isReasoningModel(m.modelID)
 	if forceReasoning != nil {
 		isReasoning = *forceReasoning
@@ -386,14 +398,17 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// reasoningEffortUpdate (GPT-6+): prepend a configuration_update item so
 	// the model's reasoning effort can change mid-conversation without a new
 	// response chain. Requires standard reasoning mode (no auto-compaction,
-	// no auto-truncation).
+	// no auto-truncation) and a model that supports the requested effort.
 	if reasoningEffortUpdate != "" {
 		configurationUpdateSupported := modelCapabilities.SupportsConfigurationUpdate &&
 			reasoningMode != "pro" && !contextManagementExplicit && truncation != "auto"
-		if !configurationUpdateSupported {
+		unsupportedEffortReason := getUpdateEffortUnsupportedReason(reasoningEffortUpdate)
+		if !configurationUpdateSupported || unsupportedEffortReason != "" {
 			details := "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
 			if !modelCapabilities.SupportsConfigurationUpdate {
 				details = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+			} else if unsupportedEffortReason != "" {
+				details = unsupportedEffortReason
 			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
