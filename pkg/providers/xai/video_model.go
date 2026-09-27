@@ -412,14 +412,11 @@ func (m *VideoModel) buildRequestBody(
 		}
 
 		if len(provOpts.ReferenceVoiceIDs) > 0 {
-			voiceIDs := provOpts.ReferenceVoiceIDs
-			if len(voiceIDs) > 3 {
-				warnings = append(warnings, unsupportedVideoWarning("referenceVoiceIds",
-					"xAI reference-to-video accepts at most 3 referenceVoiceIds. Extra voice ids were ignored."))
-				voiceIDs = voiceIDs[:3]
-			}
-			audios := make([]map[string]interface{}, 0, len(voiceIDs))
-			for _, voiceID := range voiceIDs {
+			// validateVideoProviderOptions already rejects more than 3
+			// voice ids with InvalidArgumentError, so every id here is
+			// used as-is.
+			audios := make([]map[string]interface{}, 0, len(provOpts.ReferenceVoiceIDs))
+			for _, voiceID := range provOpts.ReferenceVoiceIDs {
 				audios = append(audios, map[string]interface{}{"voice_id": voiceID})
 			}
 			body["reference_audios"] = audios
@@ -659,6 +656,15 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	}
 
 	if len(provOpts.ReferenceVoiceIDs) > 0 {
+		// TS: z.array(nonEmptyStringSchema).max(3) -- more than 3 voice ids
+		// is a hard validation error (InvalidArgumentError), not a warning
+		// with silent truncation.
+		if len(provOpts.ReferenceVoiceIDs) > 3 {
+			return &providererrors.InvalidArgumentError{
+				Field:   "referenceVoiceIds",
+				Message: "xai provider option referenceVoiceIds accepts at most 3 voice ids",
+			}
+		}
 		for _, voiceID := range provOpts.ReferenceVoiceIDs {
 			if voiceID == "" {
 				return fmt.Errorf("xai provider option referenceVoiceIds must not contain empty ids")

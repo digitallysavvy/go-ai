@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1364,27 +1365,14 @@ func TestVideoModel_ReferenceToVideo(t *testing.T) {
 }
 
 // TestVideoModel_ReferenceVoiceIds_TooMany verifies that more than 3
-// referenceVoiceIds are truncated with a warning.
+// referenceVoiceIds is a hard validation error, not a warning with silent
+// truncation: TS's schema is z.array(nonEmptyStringSchema).max(3), and its
+// test ("should reject more than 3 preset reference voices") asserts
+// doStart rejects with InvalidArgumentError rather than sending a truncated
+// request.
 func TestVideoModel_ReferenceVoiceIds_TooMany(t *testing.T) {
-	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		if requestCount == 1 {
-			var body map[string]interface{}
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			refAudios, ok := body["reference_audios"].([]interface{})
-			require.True(t, ok)
-			assert.Len(t, refAudios, 3)
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": "done",
-				"video":  map[string]interface{}{"url": "https://example.com/r2v.mp4"},
-			})
-		}
+		t.Fatal("no request should be sent when referenceVoiceIds exceeds 3")
 	}))
 	defer server.Close()
 
@@ -1401,17 +1389,11 @@ func TestVideoModel_ReferenceVoiceIds_TooMany(t *testing.T) {
 		},
 	}
 
-	resp, err := model.DoGenerate(context.Background(), opts)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	found := false
-	for _, w := range resp.Warnings {
-		if strings.Contains(w.Message, "at most 3 referenceVoiceIds") {
-			found = true
-		}
-	}
-	assert.True(t, found, "expected a too-many-voice-ids warning, got: %+v", resp.Warnings)
+	_, err := model.DoGenerate(context.Background(), opts)
+	require.Error(t, err)
+	var invalidArg *providererrors.InvalidArgumentError
+	require.ErrorAs(t, err, &invalidArg)
+	assert.Equal(t, "referenceVoiceIds", invalidArg.Field)
 }
 
 // TestVideoModel_ReferenceVoiceIds_OutsideR2V_Warns verifies referenceVoiceIds
