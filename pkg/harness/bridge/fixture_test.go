@@ -152,14 +152,23 @@ func TestRunBridgeFixtureReplay(t *testing.T) {
 	for _, raw := range resumeFrames {
 		conn2.deliverRaw(raw)
 	}
-	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 8 })
-
-	mu.Lock()
-	defer mu.Unlock()
 	wantOrder := []string{
 		"stream-start", "text-start", "text-delta", "text-delta", // live.ndjson
 		"text-delta", "text-delta", "user-message-response", "text-end", "finish", "user-message-response", "bridge-stop", // resume.ndjson
 	}
+	// The trailing "user-message-response" (rejected) and "bridge-stop"
+	// frames carry no seq, so LastSeenEventID stops advancing at 8 (the
+	// "finish" frame) before they are delivered. Wait on the actual
+	// delivered length instead of the cursor, which only proves the seq-8
+	// frame landed, not the two seq-less frames after it.
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == len(wantOrder)
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
 	if !equalStrings(order, wantOrder) {
 		t.Fatalf("final order = %v, want %v", order, wantOrder)
 	}
