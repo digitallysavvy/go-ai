@@ -207,36 +207,22 @@ func TestXAIResponsesToolsPreserveAdditionalPropertiesFalse(t *testing.T) {
 
 // TestXAIResponsesReasoningSummary verifies that the reasoningSummary provider option
 // is serialized as reasoning.summary in the Responses API request body.
+// TestXAIResponsesReasoningSummary ports TS "accepts deprecated
+// reasoningSummary without sending it"
+// (xai-responses-language-model.test.ts:655): row 0a5dd0f9c3 removed the
+// reasoning.summary wire field entirely -- xAI ignores the requested
+// summary level and always returns a detailed summary -- so
+// providerOptions.xai.reasoningSummary must never produce a "reasoning"
+// body field on its own (no reasoningEffort/opts.Reasoning set).
 func TestXAIResponsesReasoningSummary(t *testing.T) {
 	tests := []struct {
 		name             string
 		reasoningSummary string
-		wantSummary      string
-		wantReasoning    bool
 	}{
-		{
-			name:             "auto summary",
-			reasoningSummary: "auto",
-			wantSummary:      "auto",
-			wantReasoning:    true,
-		},
-		{
-			name:             "concise summary",
-			reasoningSummary: "concise",
-			wantSummary:      "concise",
-			wantReasoning:    true,
-		},
-		{
-			name:             "detailed summary",
-			reasoningSummary: "detailed",
-			wantSummary:      "detailed",
-			wantReasoning:    true,
-		},
-		{
-			name:             "no summary",
-			reasoningSummary: "",
-			wantReasoning:    false,
-		},
+		{name: "auto summary", reasoningSummary: "auto"},
+		{name: "concise summary", reasoningSummary: "concise"},
+		{name: "detailed summary", reasoningSummary: "detailed"},
+		{name: "no summary", reasoningSummary: ""},
 	}
 
 	for _, tt := range tests {
@@ -274,26 +260,8 @@ func TestXAIResponsesReasoningSummary(t *testing.T) {
 				t.Skip("server not reached")
 			}
 
-			reasoning, hasReasoning := capturedBody["reasoning"]
-			if tt.wantReasoning && !hasReasoning {
-				t.Errorf("expected 'reasoning' field in request body")
-				return
-			}
-			if !tt.wantReasoning && hasReasoning {
-				t.Errorf("expected no 'reasoning' field in request body")
-				return
-			}
-			if !tt.wantReasoning {
-				return
-			}
-
-			reasoningMap, ok := reasoning.(map[string]interface{})
-			if !ok {
-				t.Fatalf("reasoning field is %T, want map", reasoning)
-			}
-			gotSummary, _ := reasoningMap["summary"].(string)
-			if gotSummary != tt.wantSummary {
-				t.Errorf("reasoning.summary = %q, want %q", gotSummary, tt.wantSummary)
+			if _, hasReasoning := capturedBody["reasoning"]; hasReasoning {
+				t.Errorf("expected no 'reasoning' field in request body, got: %#v", capturedBody["reasoning"])
 			}
 		})
 	}
@@ -1244,6 +1212,140 @@ func TestXAIResponsesServiceTierStreaming(t *testing.T) {
 	xaiMeta, ok := meta["xai"].(map[string]interface{})
 	if !ok || xaiMeta["serviceTier"] != "priority" {
 		t.Fatalf("finish.ProviderMetadata = %#v, want xai.serviceTier=priority", meta)
+	}
+}
+
+// TestXAIResponsesAdditionalRequestOptions ports TS "additional request
+// options" (xai-responses-language-model.test.ts:800): minP, maxTurns,
+// parallelToolCalls, promptCacheKey, safetyIdentifier, serviceTier, and
+// user all forward to their snake_case wire fields (row 0a5dd0f9c3).
+func TestXAIResponsesAdditionalRequestOptions(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-4.7")
+
+	topK := 40
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		TopK:   &topK,
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"minP":              0.1,
+				"maxTurns":          5,
+				"parallelToolCalls": false,
+				"promptCacheKey":    "conversation-123",
+				"safetyIdentifier":  "hashed-user-123",
+				"serviceTier":       "priority",
+				"user":              "user-123",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+
+	want := map[string]interface{}{
+		"top_k":               float64(40),
+		"min_p":               0.1,
+		"max_turns":           float64(5),
+		"parallel_tool_calls": false,
+		"prompt_cache_key":    "conversation-123",
+		"safety_identifier":   "hashed-user-123",
+		"service_tier":        "priority",
+		"user":                "user-123",
+	}
+	for k, v := range want {
+		if capturedBody[k] != v {
+			t.Errorf("body[%q] = %#v, want %#v", k, capturedBody[k], v)
+		}
+	}
+}
+
+// TestXAIResponsesEchoedRequestIdentifiers ports TS "should expose echoed
+// request identifiers in providerMetadata"
+// (xai-responses-language-model.test.ts:199).
+func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_123", "status": "completed", "output": []interface{}{},
+			"usage":             map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+			"prompt_cache_key":  "conversation-123",
+			"safety_identifier": "hashed-user-123",
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-4-fast-non-reasoning")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+	xaiMeta, ok := result.ProviderMetadata["xai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ProviderMetadata = %#v, want xai map", result.ProviderMetadata)
+	}
+	if xaiMeta["promptCacheKey"] != "conversation-123" || xaiMeta["safetyIdentifier"] != "hashed-user-123" {
+		t.Fatalf("xaiMeta = %#v, want promptCacheKey/safetyIdentifier echoed", xaiMeta)
+	}
+}
+
+// TestXAIResponsesEchoedRequestIdentifiersStreaming ports TS "should
+// expose echoed request identifiers in finish providerMetadata"
+// (xai-responses-language-model.test.ts:4674).
+func TestXAIResponsesEchoedRequestIdentifiersStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var finish *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			finish = chunk
+			break
+		}
+	}
+	if finish == nil {
+		t.Fatal("did not observe a finish chunk")
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(finish.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal ProviderMetadata failed: %v", err)
+	}
+	xaiMeta, ok := meta["xai"].(map[string]interface{})
+	if !ok || xaiMeta["promptCacheKey"] != "conversation-123" || xaiMeta["safetyIdentifier"] != "hashed-user-123" {
+		t.Fatalf("finish.ProviderMetadata = %#v, want xai.promptCacheKey/safetyIdentifier echoed", meta)
 	}
 }
 
