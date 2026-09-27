@@ -41,5 +41,5 @@ func main() {
 	}
 
 	fmt.Println(result.Text)
-	fmt.Printf("tokens/sec: %.2f\n", result.FinalStep.Performance.TokensPerSecond)
+	fmt.Printf("tokens/sec: %.2f\n", result.FinalStep.Performance.EffectiveOutputTokensPerSecond)
 }
