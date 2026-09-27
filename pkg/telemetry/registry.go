@@ -342,7 +342,7 @@ type TelemetryIntegration interface {
 type Telemetry = TelemetryIntegration
 
 type languageModelCallStartHandler interface {
-	OnLanguageModelCallStart(context.Context, LanguageModelCallStartEvent)
+	OnLanguageModelCallStart(context.Context, LanguageModelCallStartEvent) context.Context
 }
 
 type languageModelCallEndHandler interface {
@@ -674,17 +674,21 @@ func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStep
 }
 
 // OnLanguageModelCallStart creates a child span for provider model inference.
-func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+// OnLanguageModelCallStart starts the "chat"/model-call span and returns it
+// embedded in the returned ctx, so the provider call this wraps (and any
+// HTTP client spans the provider itself creates) runs inside it as a child
+// span (594029e) instead of the span being immediately orphaned.
+func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
-		return
+		return ctx
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
 	spanName := "chat"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, spanName)
 	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeLanguageModel,
 		OperationType: "ai.generateText",
@@ -700,6 +704,7 @@ func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e 
 	if e.CallID != "" {
 		otelModelCallSpans.Store(otelSpanKey("languageModel", e.CallID), otelSpanEntry{span: span})
 	}
+	return ctx
 }
 
 // OnLanguageModelCallEnd records model-call attributes and ends the inference span.
@@ -1247,16 +1252,22 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 }
 
 // FireOnLanguageModelCallStart publishes and fans out a model-call start event.
-func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+// FireOnLanguageModelCallStart calls OnLanguageModelCallStart on every
+// registered integration that implements it, threading ctx through each call
+// so an integration (e.g. the OTel one) can embed a model-call span in the
+// returned ctx. The caller should use the returned ctx for the actual
+// provider call (594029e), so provider HTTP spans become children of it.
+func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
-		return
+		return ctx
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallStartHandler); ok {
-			handler.OnLanguageModelCallStart(ctx, e)
+			ctx = handler.OnLanguageModelCallStart(ctx, e)
 		}
 	}
+	return ctx
 }
 
 // FireOnLanguageModelCallEnd publishes and fans out a model-call end event.

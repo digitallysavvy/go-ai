@@ -13,8 +13,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // newCallID generates a short random hex string for correlating start/finish events.
@@ -207,38 +205,6 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	// TS embed(): headersWithUserAgent = withUserAgentSuffix(headers ?? {}, `ai/${VERSION}`).
 	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
-	// Create telemetry span if enabled
-	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
-		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
-
-		// Create top-level ai.embed span
-		spanName := "ai.embed"
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
-		}
-
-		ctx, span = tracer.Start(ctx, spanName)
-		defer span.End()
-
-		// Add base telemetry attributes
-		span.SetAttributes(
-			attribute.String("ai.operationId", "ai.embed"),
-			attribute.String("gen_ai.system", opts.Model.Provider()),
-			attribute.String("gen_ai.request.model", opts.Model.ModelID()),
-		)
-
-		// Add function ID if present
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
-		}
-
-		// Record input if enabled
-		if opts.ExperimentalTelemetry.RecordInputs {
-			span.SetAttributes(attribute.String("ai.value", opts.Input))
-		}
-	}
-
 	// Generate a unique call ID for correlating start/finish events.
 	callID := newCallID()
 
@@ -352,12 +318,6 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 
 	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
-
-	// Record telemetry output attributes
-	if span != nil {
-		// Record usage information
-		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
-	}
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{
@@ -511,34 +471,6 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	// TS embedMany(): headersWithUserAgent = withUserAgentSuffix(headers ?? {}, `ai/${VERSION}`).
 	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
-	// Create telemetry span if enabled
-	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
-		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
-
-		// Create top-level ai.embedMany span
-		spanName := "ai.embedMany"
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
-		}
-
-		ctx, span = tracer.Start(ctx, spanName)
-		defer span.End()
-
-		// Add base telemetry attributes
-		span.SetAttributes(
-			attribute.String("ai.operationId", "ai.embedMany"),
-			attribute.String("gen_ai.system", opts.Model.Provider()),
-			attribute.String("gen_ai.request.model", opts.Model.ModelID()),
-			attribute.Int("ai.values.count", len(opts.Inputs)),
-		)
-
-		// Add function ID if present
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
-		}
-	}
-
 	// Generate a unique call ID for correlating start/finish events.
 	callID := newCallID()
 
@@ -596,12 +528,6 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	}
 
 	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
-
-	// Record telemetry output attributes
-	if span != nil {
-		// Record usage information
-		span.SetAttributes(attribute.Int("ai.usage.tokens", embedResult.Usage.TotalTokens))
-	}
 
 	// Fire ExperimentalOnFinish callback
 	finishEvent := EmbedOnFinishEvent{

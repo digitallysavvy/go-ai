@@ -16,8 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const defaultObjectMaxRetries = 2
@@ -655,41 +653,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
-	// Create telemetry span if enabled
-	var span trace.Span
-	if opts.ExperimentalTelemetry != nil && telemetry.Enabled(opts.ExperimentalTelemetry) {
-		tracer := telemetry.GetTracer(opts.ExperimentalTelemetry)
-
-		// Create top-level ai.generateObject span
-		spanName := "ai.generateObject"
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			spanName = spanName + "." + opts.ExperimentalTelemetry.FunctionID
-		}
-
-		ctx, span = tracer.Start(ctx, spanName)
-		defer span.End()
-
-		// Add base telemetry attributes
-		span.SetAttributes(
-			attribute.String("ai.operationId", "ai.generateObject"),
-			attribute.String("ai.model.provider", opts.Model.Provider()),
-			attribute.String("ai.model.id", opts.Model.ModelID()),
-			attribute.String("ai.settings.output", string(opts.OutputMode)),
-		)
-
-		// Add function ID if present
-		if opts.ExperimentalTelemetry.FunctionID != "" {
-			span.SetAttributes(attribute.String("ai.telemetry.functionId", opts.ExperimentalTelemetry.FunctionID))
-		}
-
-		// Add custom metadata
-
-		// Record prompt if enabled
-		if opts.ExperimentalTelemetry.RecordInputs && opts.Prompt != "" {
-			span.SetAttributes(attribute.String("ai.prompt", opts.Prompt))
-		}
-	}
-
 	// Set default output mode
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
@@ -797,6 +760,18 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		Metadata:          cbMeta,
 	}, resolveObjectOnStart(opts.OnStart, opts.ExperimentalOnStart))
 
+	// Route telemetry through the shared Fire* dispatch instead of creating
+	// an OTel span directly in core (G4/5d0f18e): with no integration
+	// registered this is a no-op, and with one registered it creates exactly
+	// one "ai.generateObject" span instead of a duplicate.
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		OperationType: "ai.generateObject",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Settings:      opts.ExperimentalTelemetry,
+		Prompt:        telemetryInputValue(opts.ExperimentalTelemetry, opts.Prompt),
+	})
+
 	callCtx := objectCallCtx{
 		callID:   callID,
 		funcID:   cbFuncID,
@@ -819,26 +794,23 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, fmt.Errorf("unsupported output mode: %s", opts.OutputMode)
 	}
 
-	// Record telemetry output attributes
-	if span != nil && result != nil {
-		// Record output if enabled
-		if opts.ExperimentalTelemetry.RecordOutputs {
-			span.SetAttributes(attribute.String("ai.response.text", result.Text))
-		}
-
-		// Record finish reason
-		span.SetAttributes(attribute.String("ai.response.finishReason", string(result.FinishReason)))
-
-		// Record usage information
-		if result.Usage.InputTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.promptTokens", *result.Usage.InputTokens))
-		}
-		if result.Usage.OutputTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.completionTokens", *result.Usage.OutputTokens))
-		}
-		if result.Usage.TotalTokens != nil {
-			span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *result.Usage.TotalTokens))
-		}
+	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		return result, err
+	}
+	if result != nil {
+		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+			Settings:      opts.ExperimentalTelemetry,
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			FinishReason:  string(result.FinishReason),
+			Text:          result.Text,
+			Usage: telemetry.TelemetryUsage{
+				InputTokens:  result.Usage.InputTokens,
+				OutputTokens: result.Usage.OutputTokens,
+				TotalTokens:  result.Usage.TotalTokens,
+			},
+		})
 	}
 
 	return result, err

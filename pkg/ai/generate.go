@@ -1022,7 +1022,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Seed:                genOpts.Seed,
 			Reasoning:           genOpts.Reasoning,
 		}, onLanguageModelCallStart)
-		telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
+		// The model call runs inside the returned ctx, which embeds the
+		// telemetry integration's inference ("chat") span when one is
+		// registered, so the provider's own HTTP-call spans become its
+		// children (594029e) instead of siblings of nothing. Scoped to just
+		// this call — stepCtx itself is unchanged for tool execution, which
+		// should be parented under the step span, not the (by-then-ended)
+		// model-call span.
+		modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 			Settings:      telemetrySettings,
 			CallID:        callID,
 			ModelProvider: stepModel.Provider(),
@@ -1033,7 +1040,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call the model with step context
 		modelCallStart := time.Now()
-		genResult, err := doGenerateWithGatewayRetry(stepCtx, stepModel, genOpts, opts.MaxRetries)
+		genResult, err := doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 		if err != nil {
 			if opts.Timeout != nil {
 				if opts.Timeout.HasPerStep() && stepCtx.Err() != nil {

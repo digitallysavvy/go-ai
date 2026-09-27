@@ -957,7 +957,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Seed:                genOpts.Seed,
 		Reasoning:           genOpts.Reasoning,
 	}, onLanguageModelCallStart)
-	telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
+	// Scoped to just this call (594029e): the model call runs inside the
+	// returned ctx, which embeds the telemetry integration's "chat" span when
+	// one is registered, so the provider's own DoStream/HTTP spans become its
+	// children. stepCtx itself is unchanged for subsequent chunk processing
+	// and tool execution, which are parented under the step span instead.
+	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:      telemetrySettings,
 		CallID:        callID,
 		ModelProvider: stepModel.Provider(),
@@ -967,7 +972,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	})
 
 	// Start streaming
-	stream, err := doStreamWithGatewayRetry(stepCtx, stepModel, genOpts, opts.MaxRetries)
+	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -2081,7 +2086,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Seed:                nextGenOpts.Seed,
 			Reasoning:           nextGenOpts.Reasoning,
 		}, onLanguageModelCallStart)
-		telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
+		// Scoped to just this call (594029e): see the analogous comment where
+		// the first step's stream is started, above.
+		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
 			Settings:      r.telemetrySettings,
 			CallID:        r.cbCallID,
 			ModelProvider: nextModel.Provider(),
@@ -2089,7 +2096,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Prompt:        nextGenOpts.Prompt,
 			Tools:         nextGenOpts.Tools,
 		})
-		newStream, err := nextModel.DoStream(nextStepCtx, nextGenOpts)
+		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
 		if err != nil {
 			nextStepCancel()
 			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {

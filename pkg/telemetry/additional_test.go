@@ -97,10 +97,11 @@ func (s *eventSpy) ExecuteTool(
 	return execute(ctx, args)
 }
 
-func (s *eventSpy) OnLanguageModelCallStart(_ context.Context, _ LanguageModelCallStartEvent) {
+func (s *eventSpy) OnLanguageModelCallStart(ctx context.Context, _ LanguageModelCallStartEvent) context.Context {
 	s.mu.Lock()
 	s.lmCallStarts++
 	s.mu.Unlock()
+	return ctx
 }
 func (s *eventSpy) OnLanguageModelCallEnd(_ context.Context, _ LanguageModelCallEndEvent) {
 	s.mu.Lock()
