@@ -912,6 +912,97 @@ func TestWriteWorkflowChunk_ReplaysCarriedOverPartOnce(t *testing.T) {
 	}
 }
 
+// TestWriteWorkflowChunk_ReplaysCarriedOverToolInputOnce ports TS "continued
+// slice reconstructs a partial tool input without creating a duplicate UI
+// part" (run-harness-agent-slice.test.ts): a tool input left mid-stream when
+// one execution suspends (tool-input-start plus a partial
+// tool-input-delta) must be carried into StreamContext.ActiveToolInputs, and
+// the next execution must replay the buffered start/delta exactly once —
+// before its own first tool-input-delta for that call — never a second time,
+// and the carried entry must be cleared once tool-input-available arrives
+// (so a resumed UI reader ends up with exactly one part for the call, not a
+// duplicate opened by the replay).
+//
+// This exercises writeWorkflowChunk/recordWorkflowChunk/
+// newMutableStreamContext/serializeStreamContext directly — the same level
+// TestWriteWorkflowChunk_ReplaysCarriedOverPartOnce already tests for text
+// parts — rather than driving a full RunHarnessAgentTimeSlice turn end to
+// end: TS's tool call is provider-executed and never validated against a
+// registered tool spec (its mocked toUIMessageStream() bypasses
+// pkg/harness's real ToolCallPart validation entirely), but Go's real
+// *ai.StreamTextResult.ToUIMessageStream() pipeline only emits
+// "tool-input-available" (vs. "tool-input-error") for a ToolCallPart whose
+// ToolName resolves against the turn's registered tool set (run_prompt.go's
+// validateToolCall) — reconstructing that here would test tool-call
+// validation, not the tool-input carry-over this TS test is actually about.
+func TestWriteWorkflowChunk_ReplaysCarriedOverToolInputOnce(t *testing.T) {
+	// First execution: tool-input-start then a partial delta, mirroring what
+	// a suspended slice leaves mid-stream.
+	sc1 := newMutableStreamContext(nil)
+	ps1 := newExecutionPartState()
+	firstWriter := &collectingWriter{}
+	startChunk := ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": "call_1", "toolName": "write", "providerExecuted": true}
+	if err := writeWorkflowChunk(firstWriter, startChunk, sc1, ps1); err != nil {
+		t.Fatalf("writeWorkflowChunk (start): %v", err)
+	}
+	if err := writeWorkflowChunk(firstWriter, ai.UIMessageChunk{"type": "tool-input-delta", "toolCallId": "call_1", "inputTextDelta": `{"path":`}, sc1, ps1); err != nil {
+		t.Fatalf("writeWorkflowChunk (first delta): %v", err)
+	}
+
+	carried := serializeStreamContext(sc1)
+	if carried == nil || len(carried.ActiveToolInputs) != 1 {
+		t.Fatalf("serializeStreamContext = %+v, want one carried active tool input", carried)
+	}
+	got := carried.ActiveToolInputs["call_1"]
+	if got.Text != `{"path":` {
+		t.Fatalf("carried activeToolInputs[call_1].Text = %q, want %q", got.Text, `{"path":`)
+	}
+	if typ, _ := got.Start["type"].(string); typ != "tool-input-start" {
+		t.Fatalf("carried activeToolInputs[call_1].Start = %+v", got.Start)
+	}
+
+	// Second execution: seeded from the carried context. Its own first
+	// tool-input-delta for call_1 must trigger exactly one replay of the
+	// buffered start + partial delta text, ahead of the new delta.
+	sc2 := newMutableStreamContext(carried)
+	ps2 := newExecutionPartState()
+	secondWriter := &collectingWriter{}
+	if err := writeWorkflowChunk(secondWriter, ai.UIMessageChunk{"type": "tool-input-delta", "toolCallId": "call_1", "inputTextDelta": `"app/page.tsx"}`}, sc2, ps2); err != nil {
+		t.Fatalf("writeWorkflowChunk (second delta): %v", err)
+	}
+	// A further chunk for the same call must NOT replay the prelude again.
+	availableChunk := ai.UIMessageChunk{
+		"type": "tool-input-available", "toolCallId": "call_1", "toolName": "write",
+		"input": map[string]any{"path": "app/page.tsx"}, "providerExecuted": true,
+	}
+	if err := writeWorkflowChunk(secondWriter, availableChunk, sc2, ps2); err != nil {
+		t.Fatalf("writeWorkflowChunk (available): %v", err)
+	}
+
+	gotTypes := secondWriter.types()
+	wantTypes := []string{"tool-input-start", "tool-input-delta", "tool-input-delta", "tool-input-available"}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("second execution chunk types = %v, want %v", gotTypes, wantTypes)
+	}
+	secondWriter.mu.Lock()
+	replayedDelta := secondWriter.chunks[1]
+	newDelta := secondWriter.chunks[2]
+	secondWriter.mu.Unlock()
+	if replayedDelta["inputTextDelta"] != `{"path":` {
+		t.Fatalf("replayed delta = %+v, want the buffered partial input", replayedDelta)
+	}
+	if newDelta["inputTextDelta"] != `"app/page.tsx"}` {
+		t.Fatalf("new delta = %+v, want the second execution's own delta", newDelta)
+	}
+
+	if _, stillActive := sc2.activeToolInputs["call_1"]; stillActive {
+		t.Fatal("tool-input-available should have cleared the carried active tool input")
+	}
+	if final := serializeStreamContext(sc2); final != nil && len(final.ActiveToolInputs) != 0 {
+		t.Fatalf("serializeStreamContext after tool-input-available = %+v, want no active tool inputs left (no duplicate UI part on replay)", final)
+	}
+}
+
 // TestCloseOpenExecutionParts closes every part this execution opened but
 // never closed (a suspended slice's still-streaming text/reasoning), and
 // leaves already-closed or never-carried parts alone.
@@ -934,5 +1025,205 @@ func TestCloseOpenExecutionParts(t *testing.T) {
 	}
 	if len(ps.openedTextParts) != 0 || len(ps.openedReasoningParts) != 0 {
 		t.Fatalf("executionPartState should be cleared, got %+v", ps)
+	}
+}
+
+// TestRunHarnessAgentTimeSlice_MidTurnContinuationWithoutNewPrompt ports TS
+// "mid-turn slice continues (no new prompt) and can finish"
+// (run-harness-agent-slice.test.ts): a state that starts life already
+// ready_for_next_step (ContinueFrom set, no Messages/fresh Prompt) — the
+// shape a durable-workflow runtime hands back in on the *next* execution of
+// an already-suspended turn — must resume via ContinueStream, not Stream,
+// with CreateSession resolving the persisted continuation coordinates, and
+// finish once the underlying turn does.
+func TestRunHarnessAgentTimeSlice_MidTurnContinuationWithoutNewPrompt(t *testing.T) {
+	a := newFakeHarnessAgent(t, fakeHarnessOptions{
+		continueScript: func() []harness.StreamPart {
+			return []harness.StreamPart{
+				&harness.StreamStartPart{}, // dropped: state.ContinueFrom != nil
+				&harness.TextDeltaPart{ID: "t", Delta: "more"},
+				&harness.FinishStepPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, Usage: usageParts(1, 1)},
+				&harness.FinishPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, TotalUsage: usageParts(1, 1)},
+			}
+		},
+	})
+	writer := &collectingWriter{}
+
+	cursor, err := harness.NewContinueTurnState("fake", map[string]any{"tag": "cursor"})
+	if err != nil {
+		t.Fatalf("NewContinueTurnState: %v", err)
+	}
+	state := HarnessWorkflowState{
+		SessionID: "ses_1", Prompt: harness.TextPrompt("hi"),
+		Status: HarnessWorkflowStatusReadyForNextStep, ContinueFrom: cursor,
+	}
+	next, err := RunHarnessAgentTimeSlice(context.Background(), RunHarnessAgentTimeSliceOptions{
+		Agent: a, State: state, Writable: writer,
+	})
+	if err != nil {
+		t.Fatalf("RunHarnessAgentTimeSlice: %v", err)
+	}
+	if next.Status != HarnessWorkflowStatusFinished {
+		t.Fatalf("Status = %v, want finished", next.Status)
+	}
+	if !writer.isClosed() {
+		t.Fatal("writable should be closed on a finished turn")
+	}
+	got := writer.types()
+	// Unlike the TS test (whose mock toUIMessageStream() replays a canned
+	// chunk list starting right at "text-delta"), the real
+	// *ai.StreamTextResult.ToUIMessageStream() pipeline this Go engine drives
+	// synthesizes its own "text-start"/"text-end" boundary chunks around a
+	// bare delta (see TestRunHarnessAgentTimeSlice_SuspendsAtBudgetAndContinues'
+	// doc comment for the same, already-established deviation) — what TS
+	// asserts as the dropped-`start`-plus-one-delta shape survives here as
+	// the dropped `start` (state.ContinueFrom != nil) with the delta's own
+	// synthesized start/end pair around it.
+	want := []string{"text-start", "text-delta", "text-end", "finish-step", "finish-step", "finish"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("chunk types = %v, want %v", got, want)
+	}
+}
+
+// TestRunHarnessAgentTimeSlice_ApprovalResponseMessagesResume ports TS
+// "approval response messages resume through stream messages"
+// (run-harness-agent-slice.test.ts): when a state carries Messages (e.g. a
+// tool-approval-response resuming a suspended approval turn), the engine
+// must route the turn through Stream (with those Messages), never
+// ContinueStream — Messages takes priority over ContinueFrom even when both
+// are present on the state — and the returned state must not carry Messages
+// forward (it's a one-shot input for the execution that sends it).
+//
+// Uses stubHarnessWorkflowAgent rather than newFakeHarnessAgent's real
+// *harness.Agent (see that helper's own doc comment): this test is about the
+// *workflow engine's* routing decision (Messages set → call Stream, not
+// ContinueStream, regardless of ContinueFrom also being set), not about
+// *harness.Agent's own approval-submission semantics for Messages content —
+// exactly the TS test's intent, whose mocked `agent.stream` likewise just
+// records the call and returns a canned result. The stub's Stream still
+// delegates to a real *harness.Agent.Stream over a fresh session so the run
+// completes through genuine session/turn bookkeeping (detach, finish, etc.).
+func TestRunHarnessAgentTimeSlice_ApprovalResponseMessagesResume(t *testing.T) {
+	fake := &fakeSession{opts: fakeHarnessOptions{
+		script: func() []harness.StreamPart {
+			return []harness.StreamPart{
+				&harness.StreamStartPart{},
+				&harness.FinishStepPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, Usage: usageParts(1, 1)},
+				&harness.FinishPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, TotalUsage: usageParts(1, 1)},
+			}
+		},
+	}}
+	real, err := harness.NewAgent(harness.AgentSettings{
+		Harness: &fakeHarnessAdapter{session: fake}, Sandbox: fakeSandboxProvider{},
+	})
+	if err != nil {
+		t.Fatalf("harness.NewAgent: %v", err)
+	}
+	session, err := real.CreateSession(context.Background(), harness.CreateSessionOptions{SessionID: "ses_1"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	var streamMessages [][]types.Message
+	var continueCalls int
+	stub := stubHarnessWorkflowAgent{
+		createSession: func(context.Context, harness.CreateSessionOptions) (*harness.AgentSession, error) {
+			return session, nil
+		},
+		stream: func(ctx context.Context, opts agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
+			streamMessages = append(streamMessages, opts.Messages)
+			return real.Stream(ctx, opts)
+		},
+		continueStream: func(context.Context, agent.AgentStreamOptions, []types.ToolApprovalResponseContent, []types.ToolResultContent) (*ai.StreamTextResult, error) {
+			continueCalls++
+			return nil, errors.New("continue should not be called for approval messages")
+		},
+	}
+
+	approvalMessages := []types.Message{
+		{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true}}},
+	}
+	cursor, err := harness.NewContinueTurnState("fake", map[string]any{"tag": "approval"})
+	if err != nil {
+		t.Fatalf("NewContinueTurnState: %v", err)
+	}
+	state := CreateHarnessWorkflowState(HarnessWorkflowInput{
+		Messages: approvalMessages, SessionID: "ses_1", ContinueFrom: cursor,
+	})
+	next, err := RunHarnessAgentTimeSlice(context.Background(), RunHarnessAgentTimeSliceOptions{
+		Agent: stub, State: state, Writable: &collectingWriter{},
+	})
+	if err != nil {
+		t.Fatalf("RunHarnessAgentTimeSlice: %v", err)
+	}
+	if len(streamMessages) != 1 {
+		t.Fatalf("Stream calls = %d, want 1", len(streamMessages))
+	}
+	if len(streamMessages[0]) != 1 || streamMessages[0][0].Role != types.RoleTool {
+		t.Fatalf("Stream called with Messages = %+v, want the approval-response tool message", streamMessages[0])
+	}
+	if continueCalls != 0 {
+		t.Fatalf("ContinueStream calls = %d, want 0", continueCalls)
+	}
+	if next.Status != HarnessWorkflowStatusFinished {
+		t.Fatalf("Status = %v, want finished", next.Status)
+	}
+	if next.Messages != nil {
+		t.Fatalf("returned state.Messages = %v, want nil (Messages is a one-shot input, not carried forward)", next.Messages)
+	}
+}
+
+// TestRunHarnessAgentStep_ContinuesSemanticStepAndFinishesCompletedTurn ports
+// TS "continues a semantic step and finishes the completed turn"
+// (run-harness-agent-slice.test.ts, runHarnessAgentStep describe block): a
+// state already ready_for_next_step at a prior semantic-step boundary must
+// resume via ContinueStream (never Stream) when RunHarnessAgentStep runs it
+// again, and — since the underlying turn actually completes this time —
+// finish normally: terminal status, a populated ResumeFrom (the session is
+// detached, not left dangling), and the writer closed.
+func TestRunHarnessAgentStep_ContinuesSemanticStepAndFinishesCompletedTurn(t *testing.T) {
+	a := newFakeHarnessAgent(t, fakeHarnessOptions{
+		continueScript: func() []harness.StreamPart {
+			return []harness.StreamPart{
+				&harness.StreamStartPart{}, // dropped: state.ContinueFrom != nil
+				&harness.TextDeltaPart{ID: "t1", Delta: "done"},
+				&harness.FinishStepPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, Usage: usageParts(1, 1)},
+				&harness.FinishPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, TotalUsage: usageParts(1, 1)},
+			}
+		},
+	})
+	writer := &collectingWriter{}
+
+	cursor, err := harness.NewContinueTurnState("fake", map[string]any{"tag": "cursor"})
+	if err != nil {
+		t.Fatalf("NewContinueTurnState: %v", err)
+	}
+	state := HarnessWorkflowState{
+		SessionID: "ses_1", Prompt: harness.TextPrompt("hi"),
+		Status: HarnessWorkflowStatusReadyForNextStep, ContinueFrom: cursor,
+	}
+	next, err := RunHarnessAgentStep(context.Background(), RunHarnessAgentStepOptions{
+		Agent: a, State: state, Writable: writer,
+	})
+	if err != nil {
+		t.Fatalf("RunHarnessAgentStep: %v", err)
+	}
+	if next.Status != HarnessWorkflowStatusFinished {
+		t.Fatalf("Status = %v, want finished", next.Status)
+	}
+	if next.ResumeFrom == nil {
+		t.Fatal("ResumeFrom should be populated (session detached, not destroyed)")
+	}
+	if !writer.isClosed() {
+		t.Fatal("writable should be closed once the turn finishes")
+	}
+	got := writer.types()
+	// See TestRunHarnessAgentTimeSlice_MidTurnContinuationWithoutNewPrompt's
+	// doc comment for why this differs from TS's literal
+	// ['text-delta','finish']: the real ToUIMessageStream pipeline
+	// synthesizes text-start/text-end around the bare delta.
+	want := []string{"text-start", "text-delta", "text-end", "finish-step", "finish-step", "finish"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("chunk types = %v, want %v", got, want)
 	}
 }

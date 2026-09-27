@@ -410,10 +410,17 @@ func TestDoStartPassesMCPServers(t *testing.T) {
 	const token = "mcp-token"
 	var captured map[string]any
 	var mu sync.Mutex
+	// A buffered channel signals once the bridge has actually received and
+	// recorded the "start" frame, so the test waits on that condition
+	// directly instead of a fixed sleep (a prior time.Sleep(20ms) was flaky:
+	// OnStart runs on its own goroutine, so there was no guarantee the sleep
+	// outlasted the send).
+	startedCh := make(chan struct{}, 1)
 	srv := newServer(t, token, func(_ *bridgetest.Turn, start map[string]any) {
 		mu.Lock()
 		captured = start
 		mu.Unlock()
+		startedCh <- struct{}{}
 	})
 	sandbox := newFakeSandbox(srv)
 	mcpServers := map[string]any{"memory": map[string]any{"command": "memory-mcp", "args": []any{}}}
@@ -429,7 +436,11 @@ func TestDoStartPassesMCPServers(t *testing.T) {
 	if _, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("use memory.")}); err != nil {
 		t.Fatalf("DoPromptTurn: %v", err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the bridge to receive the start frame")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

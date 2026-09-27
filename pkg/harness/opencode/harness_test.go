@@ -595,3 +595,261 @@ func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
 		t.Fatalf("SubmitUserMessage: %v", err)
 	}
 }
+
+// Port of TS "passes connection settings to spawned and attached bridge
+// channels" (opencode-harness.test.ts:292): DoDetach returns bridge
+// coordinates carrying the caller-minted token, and reattaching (a second
+// DoStart with that ResumeSessionState) must reuse the same token — no
+// second MintBridgeToken call — and the identical `reconnect` config, and a
+// custom PortEndpoint's headers must travel to both the initial and the
+// reattach WebSocket handshake.
+func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
+	const token = "opencode-detach-reattach-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+
+	var mintMu sync.Mutex
+	var mintCalls []string
+	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
+	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
+	h, err := CreateOpenCode(Settings{
+		MintBridgeToken: func(sandboxID string) string {
+			mintMu.Lock()
+			mintCalls = append(mintCalls, sandboxID)
+			mintMu.Unlock()
+			return token
+		},
+		Reconnect:    reconnect,
+		PortEndpoint: &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SessionWorkDir: "/workspace/project", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (initial): %v", err)
+	}
+
+	mintMu.Lock()
+	if len(mintCalls) != 1 || mintCalls[0] != "test-sandbox" {
+		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
+	}
+	mintMu.Unlock()
+
+	initialChannel := sess.(*session).p.channel
+	if got := initialChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("initial channel reconnect options = %+v, want %+v", got, reconnect)
+	}
+
+	resumeFrom, err := sess.DoDetach(context.Background())
+	if err != nil {
+		t.Fatalf("DoDetach: %v", err)
+	}
+	var resumeData resumeStateData
+	if err := json.Unmarshal(resumeFrom.Data, &resumeData); err != nil {
+		t.Fatalf("unmarshal resumeFrom.Data: %v", err)
+	}
+	if resumeData.Bridge == nil || resumeData.Bridge.Token != token {
+		t.Fatalf("resumeFrom bridge coords = %+v, want token %q", resumeData.Bridge, token)
+	}
+
+	attachedSess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SessionWorkDir: "/workspace/project", SandboxSession: sandbox, ResumeFrom: resumeFrom,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (reattach): %v", err)
+	}
+	t.Cleanup(func() { _ = attachedSess.DoDestroy(context.Background()) })
+
+	mintMu.Lock()
+	defer mintMu.Unlock()
+	if len(mintCalls) != 1 {
+		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
+	}
+
+	attachedChannel := attachedSess.(*session).p.channel
+	if got := attachedChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("reattached channel reconnect options = %+v, want %+v (identical config reused across spawn and attach)", got, reconnect)
+	}
+
+	handshakes := srv.HandshakeHeaders()
+	if len(handshakes) != 2 {
+		t.Fatalf("bridgetest server saw %d handshakes, want exactly 2 (initial connect + reattach connect)", len(handshakes))
+	}
+	for i, hdr := range handshakes {
+		if got := hdr.Get("E2B-Traffic-Access-Token"); got != "traffic-token" {
+			t.Fatalf("handshake[%d] E2B-Traffic-Access-Token header = %q, want %q", i, got, "traffic-token")
+		}
+	}
+}
+
+// Port of TS "passes native config through prompts, compaction, and resumed
+// sessions" (opencode-harness.test.ts:834-976): openCodeConfig, mcpServers
+// and per-start headers must reach the bridge's "start" frame for a
+// compaction, for a prompt turn, and for a prompt turn on a resumed session
+// — and resumeSessionId (from a `bridge-thread` frame) must be carried into
+// every one of those frames once known. This closes the two legs
+// TestDoPromptTurn_SendsMCPServersInStartFrame and TestDoCompact_SendsCompactOperation
+// explicitly left uncovered.
+//
+// One deliberate ordering difference from the TS test: TS's mock channel can
+// `emit('bridge-thread', ...)` before any frame has been sent on it, so it
+// does so right after doStart, before the first doCompact — meaning even the
+// *first* start frame (compact) already carries resumeSessionId. bridgetest
+// is a real WebSocket server and only has a connection to emit on once a
+// client frame (here, the compact operation's "start") has been received, so
+// this test instead emits bridge-thread from inside the handler for that
+// first start frame, right before acking it with "finish". The compact
+// frame itself is therefore asserted with an empty resumeSessionId, and
+// every frame after it (the first prompt turn, and the resumed session's
+// prompt turn) is asserted with resumeSessionId "opencode-session" — the
+// same three-frame propagation TS asserts, just shifted by one frame to fit
+// a real transport.
+func TestDoStart_PropagatesNativeConfigThroughPromptsCompactionAndResumedSessions(t *testing.T) {
+	const token = "native-config-token"
+	var mu sync.Mutex
+	var starts []map[string]any
+	startCh := make(chan struct{}, 8)
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		starts = append(starts, start)
+		idx := len(starts)
+		mu.Unlock()
+		if idx == 1 {
+			turn.Emit(map[string]any{"type": "bridge-thread", "threadId": "opencode-session"})
+		}
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+		})
+		startCh <- struct{}{}
+	})
+	sandbox := newFakeSandbox(srv)
+
+	mcpServers := map[string]any{"context7": map[string]any{"type": "remote", "url": "https://mcp.context7.com/mcp"}}
+	openCodeConfig := map[string]any{"agent": map[string]any{"general": map[string]any{"model": "openai/gpt-5.4-mini"}}}
+	headers := map[string]string{"x-tenant": "acme"}
+	h, err := CreateOpenCode(Settings{
+		MintBridgeToken:  func(string) string { return token },
+		OpenCodeConfig:   openCodeConfig,
+		ReasoningVariant: "high",
+		MCPServers:       mcpServers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertNativeConfig := func(t *testing.T, label string, start map[string]any, operation, resumeSessionID string) {
+		t.Helper()
+		if start["operation"] != operation {
+			t.Fatalf("%s: start.operation = %v, want %q", label, start["operation"], operation)
+		}
+		if got, _ := start["resumeSessionId"].(string); got != resumeSessionID {
+			t.Fatalf("%s: start.resumeSessionId = %q, want %q", label, got, resumeSessionID)
+		}
+		gotConfig, ok := start["openCodeConfig"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: start.openCodeConfig = %v, want a map", label, start["openCodeConfig"])
+		}
+		if b, _ := json.Marshal(gotConfig); string(b) != `{"agent":{"general":{"model":"openai/gpt-5.4-mini"}}}` {
+			t.Fatalf("%s: start.openCodeConfig = %s", label, b)
+		}
+		gotServers, ok := start["mcpServers"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: start.mcpServers = %v, want a map", label, start["mcpServers"])
+		}
+		if b, _ := json.Marshal(gotServers); string(b) != `{"context7":{"type":"remote","url":"https://mcp.context7.com/mcp"}}` {
+			t.Fatalf("%s: start.mcpServers = %s", label, b)
+		}
+		gotHeaders, ok := start["headers"].(map[string]any)
+		if !ok || gotHeaders["x-tenant"] != "acme" {
+			t.Fatalf("%s: start.headers = %v, want {x-tenant: acme}", label, start["headers"])
+		}
+	}
+
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", Headers: headers, SandboxSession: sandbox, SessionWorkDir: "/vercel/sandbox/native-config-session",
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+
+	if err := sess.DoCompact(context.Background(), ""); err != nil {
+		t.Fatalf("DoCompact: %v", err)
+	}
+	select {
+	case <-startCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the compact start frame")
+	}
+	mu.Lock()
+	compactStart := starts[0]
+	mu.Unlock()
+	assertNativeConfig(t, "compact", compactStart, OperationCompact, "")
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		TurnSettings: harness.TurnSettings{Model: "anthropic/agent-model", Instructions: "be concise"},
+		Prompt:       harness.TextPrompt("think"),
+		Emit:         func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn (first): %v", err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first turn did not finish")
+	}
+	mu.Lock()
+	firstPromptStart := starts[1]
+	mu.Unlock()
+	assertNativeConfig(t, "first prompt", firstPromptStart, OperationPrompt, "opencode-session")
+	if firstPromptStart["prompt"] != "think" || firstPromptStart["instructions"] != "be concise" || firstPromptStart["model"] != "anthropic/agent-model" {
+		t.Fatalf("first prompt start = %v", firstPromptStart)
+	}
+	if firstPromptStart["variant"] != "high" {
+		t.Fatalf("first prompt start.variant = %v, want high", firstPromptStart["variant"])
+	}
+
+	resumeFrom, err := sess.DoDetach(context.Background())
+	if err != nil {
+		t.Fatalf("DoDetach: %v", err)
+	}
+
+	resumedSession, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", Headers: headers, SandboxSession: sandbox,
+		SessionWorkDir: "/vercel/sandbox/native-config-session", ResumeFrom: resumeFrom,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (resumed): %v", err)
+	}
+	t.Cleanup(func() { _ = resumedSession.DoDestroy(context.Background()) })
+
+	resumedControl, err := resumedSession.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		TurnSettings: harness.TurnSettings{Instructions: "be concise"},
+		Prompt:       harness.TextPrompt("resume thinking"),
+		Emit:         func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn (resumed): %v", err)
+	}
+	select {
+	case <-resumedControl.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed turn did not finish")
+	}
+
+	mu.Lock()
+	if len(starts) != 3 {
+		t.Fatalf("bridge saw %d start frames, want exactly 3 (compact + first prompt + resumed prompt)", len(starts))
+	}
+	resumedPromptStart := starts[2]
+	mu.Unlock()
+	assertNativeConfig(t, "resumed prompt", resumedPromptStart, OperationPrompt, "opencode-session")
+	if resumedPromptStart["prompt"] != "resume thinking" || resumedPromptStart["instructions"] != "be concise" {
+		t.Fatalf("resumed prompt start = %v", resumedPromptStart)
+	}
+}

@@ -16,20 +16,18 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// Partial port of TS "reuses a caller-minted token and passes endpoint
-// headers when attaching" (deepagents-harness.test.ts:526): DoDetach returns
-// bridge coordinates carrying the caller-minted token, and reattaching (a
-// second DoStart with that ResumeSessionState) must reuse the same token —
-// no second MintBridgeToken call — and must not respawn a fresh bridge
-// process, since live coordinates route it through the attach rung instead.
-//
-// Not covered here (needs bridgetest infra this package doesn't have):
-// the TS test's other two assertions — that a custom PortEndpoint's headers
-// travel to both the initial and the reattach WebSocket connect call
-// (bridgetest has no handshake-header capture), and that the identical
-// `reconnect` config object is reused on both channels (no Go hook exposes
-// a Channel's reconnect option for inspection outside the bridge package).
-// See review hand-off notes.
+// Full port of TS "reuses a caller-minted token and passes endpoint headers
+// when attaching" (deepagents-harness.test.ts:526): DoDetach returns bridge
+// coordinates carrying the caller-minted token, and reattaching (a second
+// DoStart with that ResumeSessionState) must reuse the same token — no
+// second MintBridgeToken call — and must not respawn a fresh bridge process,
+// since live coordinates route it through the attach rung instead. It also
+// asserts the TS test's other two legs: a custom PortEndpoint's headers
+// travel to both the initial and the reattach WebSocket handshake (via
+// bridgetest.Server.HandshakeHeaders, which captures the inbound HTTP
+// request headers of every accepted connection), and the identical
+// `reconnect` config is reused, unchanged, on both channels (via
+// bridge.Channel.ReconnectOptions, a test-only accessor).
 func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	const token = "detach-reattach-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
@@ -38,6 +36,7 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	var mintMu sync.Mutex
 	var mintCalls []string
 	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
+	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
 	h := CreateDeepAgents(Settings{
 		MintBridgeToken: func(sandboxID string) string {
 			mintMu.Lock()
@@ -46,6 +45,12 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 			return token
 		},
 		Reconnect: reconnect,
+		// A custom PortEndpoint (in place of the sandbox's own
+		// GetPortEndpoint) carrying extra query params and headers, mirroring
+		// the TS test's `portEndpoint: { url: 'wss://sandbox.example/bridge?
+		// existing=value', headers: {...} }`. WithBridgeToken appends the
+		// real bridge token as a further query param, same as TS.
+		PortEndpoint: &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders},
 	})
 
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
@@ -60,6 +65,11 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
 	}
 	mintMu.Unlock()
+
+	initialChannel := sess.(*session).p.channel
+	if got := initialChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("initial channel reconnect options = %+v, want %+v", got, reconnect)
+	}
 
 	resumeFrom, err := sess.DoDetach(context.Background())
 	if err != nil {
@@ -88,13 +98,31 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
 	}
 
+	attachedChannel := attachedSess.(*session).p.channel
+	if got := attachedChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("reattached channel reconnect options = %+v, want %+v (identical config reused across spawn and attach)", got, reconnect)
+	}
+
 	// The reattach must go through attachToRunningBridge (rung 1), not a
 	// fresh spawn — so the sandbox must still show exactly the one spawn
 	// from the initial DoStart.
 	sandbox.mu.Lock()
-	defer sandbox.mu.Unlock()
-	if len(sandbox.spawnCommands) != 1 {
-		t.Fatalf("spawnCommands = %v, want exactly 1 (reattach must not respawn a fresh bridge process)", sandbox.spawnCommands)
+	spawnCount := len(sandbox.spawnCommands)
+	sandbox.mu.Unlock()
+	if spawnCount != 1 {
+		t.Fatalf("spawnCommands count = %d, want exactly 1 (reattach must not respawn a fresh bridge process)", spawnCount)
+	}
+
+	// Both the initial spawn's connect and the reattach's connect must carry
+	// the custom PortEndpoint's headers (TS `webSocketMocks.calls`).
+	handshakes := srv.HandshakeHeaders()
+	if len(handshakes) != 2 {
+		t.Fatalf("bridgetest server saw %d handshakes, want exactly 2 (initial connect + reattach connect)", len(handshakes))
+	}
+	for i, h := range handshakes {
+		if got := h.Get("E2B-Traffic-Access-Token"); got != "traffic-token" {
+			t.Fatalf("handshake[%d] E2B-Traffic-Access-Token header = %q, want %q", i, got, "traffic-token")
+		}
 	}
 }
 

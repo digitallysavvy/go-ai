@@ -14,6 +14,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 )
 
+// handshake records one accepted connection's inbound HTTP request headers,
+// in the order connections were accepted (including reconnects/reattaches).
+type handshake struct{ headers http.Header }
+
 // Options configures a Server.
 type Options struct {
 	// Token is the required `agent_bridge_token` query parameter value.
@@ -55,11 +59,12 @@ type Server struct {
 	opts Options
 	ts   *httptest.Server
 
-	mu     sync.Mutex
-	seq    float64
-	log    []entry
-	active *serverConn
-	state  string // "waiting" | "running"
+	mu         sync.Mutex
+	seq        float64
+	log        []entry
+	active     *serverConn
+	state      string // "waiting" | "running"
+	handshakes []handshake
 }
 
 type serverConn struct {
@@ -91,6 +96,23 @@ func (s *Server) Endpoint() harness.PortEndpoint { return harness.PortEndpoint{U
 // Close shuts the fake bridge down.
 func (s *Server) Close() { s.ts.Close() }
 
+// HandshakeHeaders returns the inbound HTTP request headers observed on each
+// accepted WebSocket connection, in acceptance order (one entry per spawn,
+// attach, or reconnect). Unauthorized connections (rejected on token
+// mismatch) are not recorded, mirroring the TS test doubles' `webSocketMocks`
+// which only capture calls that construct a WebSocket, not server-side
+// rejections. Test-only: exists to assert TS's "passes endpoint headers when
+// attaching" (deepagents/acp/opencode-harness.test.ts).
+func (s *Server) HandshakeHeaders() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]http.Header, len(s.handshakes))
+	for i, h := range s.handshakes {
+		out[i] = h.headers
+	}
+	return out
+}
+
 // DropActive abruptly closes the current active connection (the one that
 // last sent `start` or `resume`), simulating a transient network drop. It is
 // a no-op if no connection is active.
@@ -120,6 +142,7 @@ func (s *Server) handle(ws *websocket.Conn) {
 	s.mu.Lock()
 	lastSeq := s.seq
 	state := s.state
+	s.handshakes = append(s.handshakes, handshake{headers: ws.Request().Header})
 	s.mu.Unlock()
 
 	if !s.opts.SkipHello {
