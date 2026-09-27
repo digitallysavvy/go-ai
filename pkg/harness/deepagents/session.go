@@ -329,7 +329,7 @@ func teardown(channel *bridge.Channel, proc providerutils.SandboxProcess, operat
 // block: it attaches to a still-running bridge at coords and, on success,
 // returns the resulting session. On any failure it returns ok=false so the
 // caller falls through to a fresh spawn.
-func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, onBridgeErr func(*harness.ErrorPart), p sessionParams) (*session, bool) {
+func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
 	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
 	if err != nil {
 		return nil, false
@@ -342,6 +342,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
 		InitialLastSeenEventID: coords.LastSeenEventID,
 		OnBridgeError:          onBridgeErr,
+		OnDiagnostic:           onDiagnostic,
 		Reconnect:              settings.Reconnect,
 	})
 	if err := channel.Open(ctx, isContinue); err != nil {

@@ -329,6 +329,10 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	builtinToolCatalog := serializeBuiltinTools(settings.BuiltinTools)
 	onBridgeErr := func(*harness.ErrorPart) {}
+	var onDiagnostic func(bridge.OutboundMessage)
+	if opts.Observability != nil {
+		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
+	}
 
 	sessionArgs := sessionParams{
 		sessionID: opts.SessionID, harnessID: settings.HarnessID,
@@ -358,7 +362,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				"ACP continuation state does not contain bridge coordinates required for replay or process-loss rerun.")
 		}
 		if coords != nil {
-			sess, attachErr := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeData, onBridgeErr, sessionArgs)
+			sess, attachErr := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeData, onBridgeErr, onDiagnostic, sessionArgs)
 			if attachErr == nil {
 				return sess, nil
 			}
@@ -510,6 +514,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
+		OnDiagnostic:  onDiagnostic,
 	}
 	resumeChannel := false
 	if respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay {

@@ -948,7 +948,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 	}
 }
 
-func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeData resumeStateData, onBridgeErr func(*harness.ErrorPart), p sessionParams) (*session, error) {
+func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeData resumeStateData, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, error) {
 	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
 	if err != nil {
 		return nil, err
@@ -960,7 +960,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
 		Decode:                 decodeOutbound,
-		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, Reconnect: settings.Reconnect,
+		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})
 	if err := channel.Open(ctx, isContinue); err != nil {
 		return nil, err

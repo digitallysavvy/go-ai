@@ -212,6 +212,10 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	}
 
 	onBridgeErr := func(*harness.ErrorPart) {}
+	var onDiagnostic func(bridge.OutboundMessage)
+	if opts.Observability != nil {
+		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
+	}
 
 	sessionArgs := sessionParams{
 		sessionID: opts.SessionID, thinking: settings.Thinking, effort: settings.Effort,
@@ -225,7 +229,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	// Attach to the still-running bridge (continueFrom replays past the
 	// cursor); on failure fall through to a fresh spawn.
 	if coords != nil {
-		if sess, ok := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, onBridgeErr, sessionArgs); ok {
+		if sess, ok := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, onBridgeErr, onDiagnostic, sessionArgs); ok {
 			return sess, nil
 		}
 	}
@@ -286,6 +290,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
+		OnDiagnostic:  onDiagnostic,
 	})
 	if err := channel.Open(ctx, false); err != nil {
 		return nil, err

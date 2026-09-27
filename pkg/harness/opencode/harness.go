@@ -217,6 +217,10 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		helloTimeout = 5 * time.Second
 	}
 	onBridgeErr := func(*harness.ErrorPart) {}
+	var onDiagnostic func(bridge.OutboundMessage)
+	if opts.Observability != nil {
+		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
+	}
 
 	sessionArgs := sessionParams{
 		sessionID: opts.SessionID, provider: settings.Provider, reasoningVariant: settings.ReasoningVariant,
@@ -228,7 +232,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	}
 
 	if coords != nil {
-		if sess, ok := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeSessionID, helloTimeout, onBridgeErr, sessionArgs); ok {
+		if sess, ok := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeSessionID, helloTimeout, onBridgeErr, onDiagnostic, sessionArgs); ok {
 			return sess, nil
 		}
 	}
@@ -317,7 +321,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 				}
 			},
 		}),
-		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr,
+		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
 	}
 	if respawnStrategy == "replay" && coords != nil {
 		channelOpts.InitialLastSeenEventID = coords.LastSeenEventID

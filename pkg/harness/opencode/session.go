@@ -542,7 +542,7 @@ func teardownProc(proc providerutils.SandboxProcess) {
 	_ = proc.Kill()
 }
 
-func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeSessionID string, helloTimeout time.Duration, onBridgeErr func(*harness.ErrorPart), p sessionParams) (*session, bool) {
+func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeSessionID string, helloTimeout time.Duration, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
 	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
 	if err != nil {
 		return nil, false
@@ -561,7 +561,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 				}
 			},
 		}),
-		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, Reconnect: settings.Reconnect,
+		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})
 	if err := channel.Open(ctx, isContinue); err != nil {
 		return nil, false
