@@ -2,6 +2,7 @@ package deepgram
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -15,7 +16,7 @@ type Provider struct {
 
 // Config contains configuration for the Deepgram provider
 type Config struct {
-	// APIKey is the Deepgram API key
+	// APIKey is the Deepgram API key. Falls back to DEEPGRAM_API_KEY.
 	APIKey string
 
 	// BaseURL is the base URL for the Deepgram API (optional)
@@ -27,6 +28,9 @@ func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.deepgram.com"
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("DEEPGRAM_API_KEY")
 	}
 
 	client := http.NewClient(http.Config{

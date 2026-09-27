@@ -6,6 +6,23 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
+// TestProviderFallsBackToEnvAPIKey mirrors the TypeScript SDK's loadApiKey
+// fallback to the ELEVENLABS_API_KEY environment variable when no explicit
+// apiKey is configured.
+func TestProviderFallsBackToEnvAPIKey(t *testing.T) {
+	t.Setenv("ELEVENLABS_API_KEY", "env-api-key")
+
+	p := New(Config{})
+	if p.config.APIKey != "env-api-key" {
+		t.Fatalf("config.APIKey = %q, want env-api-key", p.config.APIKey)
+	}
+
+	p = New(Config{APIKey: "explicit-key"})
+	if p.config.APIKey != "explicit-key" {
+		t.Fatalf("config.APIKey = %q, want explicit-key", p.config.APIKey)
+	}
+}
+
 func TestProviderFactoriesAndUnsupported(t *testing.T) {
 	p := New(Config{APIKey: "key"})
 	if p.Name() != "elevenlabs" {

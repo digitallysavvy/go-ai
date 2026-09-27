@@ -12,6 +12,23 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
+// TestProviderFallsBackToEnvAPIKey mirrors the TypeScript SDK's loadApiKey
+// fallback to the DEEPGRAM_API_KEY environment variable when no explicit
+// apiKey is configured.
+func TestProviderFallsBackToEnvAPIKey(t *testing.T) {
+	t.Setenv("DEEPGRAM_API_KEY", "env-api-key")
+
+	p := New(Config{})
+	if p.config.APIKey != "env-api-key" {
+		t.Fatalf("config.APIKey = %q, want env-api-key", p.config.APIKey)
+	}
+
+	p = New(Config{APIKey: "explicit-key"})
+	if p.config.APIKey != "explicit-key" {
+		t.Fatalf("config.APIKey = %q, want explicit-key", p.config.APIKey)
+	}
+}
+
 func TestProviderUnsupportedModels(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 
