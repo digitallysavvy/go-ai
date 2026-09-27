@@ -65,6 +65,30 @@ func TestNewExtensionRegistry_ValidationRules(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// Row 9a68261: a non-nil but empty ItemTypes (provided but
+			// empty) must get its own "must register at least one item
+			// type" error, distinct from the "must provide ItemTypes and
+			// DecodeItem together" mismatch error above.
+			name: "empty ItemTypes with DecodeItem",
+			ext: Extension{
+				ID:         "ns.ext",
+				ItemTypes:  []string{},
+				DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty EventTypes with DecodeEvent",
+			ext: Extension{
+				ID:         "ns.ext",
+				EventTypes: []string{},
+				DecodeEvent: func(ExtensionEvent, map[string]interface{}) ([]*provider.StreamChunk, error) {
+					return nil, nil
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "valid full extension",
 			ext: Extension{
 				ID:         "ns.ext",
