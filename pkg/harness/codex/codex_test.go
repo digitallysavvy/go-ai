@@ -2,7 +2,9 @@ package codex_test
 
 import (
 	"context"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,5 +273,179 @@ func TestDoCompact_Unsupported(t *testing.T) {
 	err := sess.DoCompact(context.Background(), "")
 	if _, ok := err.(*harness.CapabilityUnsupportedError); !ok {
 		t.Fatalf("error = %v, want *harness.CapabilityUnsupportedError", err)
+	}
+}
+
+// TS codex-instructions.test.ts "attaches a parked session without
+// replaying old turn events" (rung 1 — ATTACH: a DoDetach's persisted bridge
+// coordinates let a later DoStart reopen a socket to the same still-running
+// bridge instead of respawning it).
+func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
+	var mintCalls int32
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+
+	h := codex.New(codex.Settings{
+		StartupTimeout: 2 * time.Second,
+		MintBridgeToken: func(string) string {
+			atomic.AddInt32(&mintCalls, 1)
+			return "tok"
+		},
+	})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	if sandbox.SpawnCount() != 1 {
+		t.Fatalf("SpawnCount after initial DoStart = %d, want 1", sandbox.SpawnCount())
+	}
+
+	resumeState, err := sess.DoDetach(context.Background())
+	if err != nil {
+		t.Fatalf("DoDetach: %v", err)
+	}
+
+	attached, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (attach): %v", err)
+	}
+	t.Cleanup(func() { _ = attached.DoDestroy(context.Background()) })
+
+	if sandbox.SpawnCount() != 1 {
+		t.Fatalf("SpawnCount after attach = %d, want 1 (attach must not respawn)", sandbox.SpawnCount())
+	}
+	if atomic.LoadInt32(&mintCalls) != 1 {
+		t.Fatalf("mintBridgeToken called %d times, want 1 (attach reuses the persisted token)", mintCalls)
+	}
+	if !attached.IsResume() {
+		t.Error("attached session.IsResume() = false, want true")
+	}
+}
+
+// TS: attach rung 2 — an unreachable persisted bridge (the process is gone;
+// its port no longer accepts connections) falls through to a normal respawn
+// using the resumeThreadId rerun fallback.
+func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
+	var starts int32
+	var lastStart map[string]any
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+		atomic.AddInt32(&starts, 1)
+		lastStart = start
+		turn.Emit(finishFrame())
+	}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+
+	h := codex.New(codex.Settings{
+		StartupTimeout:  2 * time.Second,
+		MintBridgeToken: func(string) string { return "tok" },
+	})
+
+	// Port 9999 does not match sandbox.Ports()[0] (4319), so
+	// testSandbox.GetPortEndpoint resolves it to a closed local port: the
+	// attach connect is refused immediately, exactly like a bridge process
+	// that no longer exists.
+	resumeState, err := harness.NewResumeSessionState(codex.HarnessID, map[string]any{
+		"bridge":   map[string]any{"port": 9999, "token": "tok", "lastSeenEventId": 0},
+		"threadId": "thread-1",
+	})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	if sandbox.SpawnCount() != 1 {
+		t.Fatalf("SpawnCount = %d, want 1 (attach failed, so DoStart must fall back to a single respawn)", sandbox.SpawnCount())
+	}
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+	if atomic.LoadInt32(&starts) != 1 {
+		t.Fatalf("bridge received %d start frames, want 1", starts)
+	}
+	if lastStart["resumeThreadId"] != "thread-1" {
+		t.Errorf("start.resumeThreadId = %v, want thread-1 (rerun fallback resumes the Codex thread)", lastStart["resumeThreadId"])
+	}
+}
+
+// TS commit 0d1cb8e ("avoid placing relay shim file in session workdir") +
+// codex-instructions.test.ts "prepends host tool usage guidance on the first
+// user message only": the CLI shim path lives under the harness state
+// directory ($HOME/.ai-sdk-harness/.agent-runs/<session>/codex), never under
+// the session's own working directory.
+func TestDoPromptTurn_HostToolGuidanceUsesStateDirShimPath(t *testing.T) {
+	var captured map[string]any
+	captureDone := make(chan struct{})
+	_, sess := startedHarness(t, codex.Settings{}, func(turn *bridgetest.Turn, start map[string]any) {
+		captured = start
+		close(captureDone)
+		turn.Emit(finishFrame())
+	})
+
+	tool := harness.ToolSpec{Name: "weather", Description: "Get the weather", InputSchema: map[string]any{"type": "object"}}
+	_, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("what's the weather"), Emit: func(harness.StreamPart) {},
+		TurnSettings: harness.TurnSettings{Tools: []harness.ToolSpec{tool}},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-captureDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received a start frame")
+	}
+
+	prompt, _ := captured["prompt"].(string)
+	const shimPath = "/home/agent/.ai-sdk-harness/.agent-runs/s1/codex/harness-tool.mjs"
+	if !strings.Contains(prompt, shimPath) {
+		t.Errorf("prompt does not contain the state-dir shim path %q:\n%s", shimPath, prompt)
+	}
+	if strings.Contains(prompt, "/workdir/") {
+		t.Errorf("prompt places the shim under the session workdir:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "weather") {
+		t.Errorf("prompt does not mention the declared host tool:\n%s", prompt)
+	}
+
+	// TS commit b2f553b ("route Codex host tools through the CLI relay only
+	// instead of registering them as MCP tools"): the host's only
+	// responsibility for host tools is declaring them in the ordinary
+	// `tools` start-frame field (same as every other adapter) and handling
+	// tool-call/tool-result frames; there is no separate MCP-server
+	// registration path on the host side.
+	tools, _ := captured["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("start.tools = %v, want exactly the one declared host tool", captured["tools"])
+	}
+	toolEntry, _ := tools[0].(map[string]any)
+	if toolEntry["name"] != "weather" {
+		t.Errorf("start.tools[0].name = %v, want weather", toolEntry["name"])
+	}
+	if _, hasMCPServers := captured["mcpServers"]; hasMCPServers {
+		t.Errorf("start frame declares mcpServers = %v; host tools must not be registered as MCP tools", captured["mcpServers"])
 	}
 }
