@@ -374,9 +374,16 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 					t.Errorf("attribute %q = %d, want %d", key, got, want)
 				}
 			}
-			// Gen AI semantic convention attributes
-			check("gen_ai.usage.input_tokens", input)
-			check("gen_ai.usage.output_tokens", output)
+			// gen_ai.usage.* is intentionally NOT on the root span (H3 follow-up
+			// 3, 2026-09-27): TS's onGenerateEnd never dual-emits gen_ai.usage.*
+			// here (only the nested doGenerate/doStream step span does — see
+			// OnStepEnd). Only the legacy ai.usage.* namespace lives on root.
+			if _, ok := attrMap["gen_ai.usage.input_tokens"]; ok {
+				t.Errorf("gen_ai.usage.input_tokens should not be set on the root span")
+			}
+			if _, ok := attrMap["gen_ai.usage.output_tokens"]; ok {
+				t.Errorf("gen_ai.usage.output_tokens should not be set on the root span")
+			}
 			// Legacy ai.usage.* attributes (TS SDK emits both namespaces)
 			check("ai.usage.inputTokens", input)
 			check("ai.usage.outputTokens", output)

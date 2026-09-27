@@ -106,6 +106,20 @@ type TelemetryStepStartEvent struct {
 	ToolChoice     types.ToolChoice
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+	// PromptMessages carries the exact prompt sent to the provider for this
+	// step, emitted as ai.prompt.messages (input-gated, JSON-encoded) by
+	// LegacyOpenTelemetry.OnStepStart, mirroring TS's onStepStart
+	// (legacy-open-telemetry.ts: `'ai.prompt.messages': {input: () =>
+	// stringifyForTelemetry(event.promptMessages)}`). Go's types.Message list
+	// stands in for TS's LanguageModelV4Prompt (which folds the system
+	// message into the message array); this is an accepted Go-runtime
+	// divergence, same as legacyPromptJSON elsewhere in this file.
+	PromptMessages []types.Message
+	// StepTools carries the tool definitions available for this step,
+	// emitted as ai.prompt.tools (input-gated, one JSON string per tool)
+	// mirroring TS's `'ai.prompt.tools': {input: () =>
+	// event.stepTools?.map(tool => JSON.stringify(tool))}`.
+	StepTools []types.Tool
 }
 
 // LanguageModelCallStartEvent is emitted immediately before a provider model call.
@@ -243,9 +257,17 @@ type TelemetryChunkEvent struct {
 //
 // Deprecated: use TelemetryStepEndEvent.
 type TelemetryStepFinishEvent struct {
-	StepNumber   int
-	FinishReason string
-	Usage        TelemetryUsage
+	// OperationType is the canonical AI operation name for the call this step
+	// belongs to (e.g. "ai.generateText", "ai.generateObject"). Legacy
+	// integrations use it to pick the TS-equivalent per-operation step-end
+	// attribute shape: generateText/streamText's onStepEnd (text/reasoning/
+	// toolCalls/files + detailed usage) vs generateObject/streamObject's
+	// deprecated-but-still-dispatched onObjectStepEnd (ai.response.object +
+	// a smaller usage set, legacy-open-telemetry.ts).
+	OperationType string
+	StepNumber    int
+	FinishReason  string
+	Usage         TelemetryUsage
 
 	// Text is the generated text for this step.
 	// Integrations should check Settings.RecordOutputs before recording.
@@ -290,6 +312,13 @@ type deprecatedStepFinishHandler interface {
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
 type TelemetryFinishEvent struct {
+	// OperationType is the canonical AI operation name (e.g. "ai.generateText",
+	// "ai.generateObject", "ai.embed", "ai.embedMany", "ai.rerank"). Legacy
+	// integrations dispatch on it to reproduce TS's per-operation OnEnd shape
+	// (onGenerateEnd / onObjectOperationEnd / onEmbedOperationEnd /
+	// onRerankOperationEnd in legacy-open-telemetry.ts), which differ in
+	// which attributes they emit on the root span.
+	OperationType string
 	FinishReason  string
 	Usage         TelemetryUsage
 	ModelProvider string
@@ -297,9 +326,27 @@ type TelemetryFinishEvent struct {
 	// Text is the full generated text. Integrations should check
 	// Settings.RecordOutputs before recording this value.
 	Text string
+	// Reasoning is the joined reasoning/thinking text for the final step,
+	// emitted as ai.response.reasoning (output-gated) for ai.generateText/
+	// ai.streamText, mirroring TS onGenerateEnd's
+	// `event.finalStep.reasoning`.
+	Reasoning string
+	// ToolCalls made in the final step, emitted as ai.response.toolCalls
+	// (output-gated) for ai.generateText/ai.streamText only.
+	ToolCalls []types.ToolCall
 	// Files holds any model-generated output files (e.g. images, audio).
 	// Integrations should check Settings.RecordOutputs before recording file data.
-	Files          []types.GeneratedFileContent
+	Files []types.GeneratedFileContent
+	// Object holds the parsed result for ai.generateObject/ai.streamObject,
+	// emitted as ai.response.object (output-gated, JSON-encoded) instead of
+	// ai.response.text/reasoning/toolCalls/files, mirroring TS's
+	// onObjectOperationEnd.
+	Object interface{}
+	// Embedding holds the embed/embedMany result: a single []float64 for
+	// ai.embed, or a [][]float64 for ai.embedMany, emitted as ai.embedding /
+	// ai.embeddings respectively (output-gated, JSON-encoded per value),
+	// mirroring TS's onEmbedOperationEnd. Not used by other operations.
+	Embedding      interface{}
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
@@ -667,6 +714,14 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 		}
 	}
 	return out
+}
+
+// settingsFunctionID returns settings.FunctionID, or "" when settings is nil.
+func settingsFunctionID(settings *Settings) string {
+	if settings == nil {
+		return ""
+	}
+	return settings.FunctionID
 }
 
 // legacyOperationNameAttrs mirrors TS's assembleOperationName
@@ -1107,6 +1162,36 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		attribute.String("ai.model.provider", e.ModelProvider),
 		attribute.String("ai.model.id", e.ModelID),
 	)
+
+	// ai.prompt.messages / ai.prompt.tools / ai.prompt.toolChoice, input-gated
+	// (H3 follow-up 4): mirrors TS's onStepStart (generateText/streamText) and
+	// onObjectStepStart (generateObject/streamObject, ai.prompt.messages
+	// only — object calls never populate StepTools/ToolChoice, so those two
+	// attributes are naturally absent there).
+	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	if recordInputs {
+		if len(e.PromptMessages) > 0 {
+			if b, err := json.Marshal(e.PromptMessages); err == nil {
+				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", string(b)))
+			}
+		}
+		if len(e.StepTools) > 0 {
+			tools := make([]string, 0, len(e.StepTools))
+			for _, t := range e.StepTools {
+				if b, err := json.Marshal(t); err == nil {
+					tools = append(tools, string(b))
+				}
+			}
+			if len(tools) > 0 {
+				stepSpan.SetAttributes(attribute.StringSlice("ai.prompt.tools", tools))
+			}
+		}
+		if e.ToolChoice.Type != "" {
+			if b, err := json.Marshal(e.ToolChoice); err == nil {
+				stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
+			}
+		}
+	}
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
 }
 
@@ -1194,7 +1279,13 @@ func (i LegacyOpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e Languag
 	entry.span.End()
 }
 
-// OnEmbedStart creates a child span for embedding model inference.
+// OnEmbedStart creates a child span for the nested doEmbed model call.
+// Mirrors TS's onEmbedStart (legacy-open-telemetry.ts): the span is named
+// after event.operationId ("ai.embed.doEmbed" / "ai.embedMany.doEmbed", set
+// by pkg/ai), reuses the root span's base attributes (ai.model.provider/id +
+// ai.settings.* + ai.request.headers.*, stashed by OnStart), and carries no
+// gen_ai.* attributes at all — those are a Go-only addition that doesn't
+// exist on this span in TS (H3 follow-up 2).
 func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
@@ -1202,9 +1293,9 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	tracer := parent.TracerProvider().Tracer("go-ai")
-	spanName := "embeddings"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
+	spanName := e.OperationID
+	if spanName == "" {
+		spanName = "ai.embed.doEmbed"
 	}
 	_, span := tracer.Start(ctx, spanName)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
@@ -1214,17 +1305,22 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
-	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", "embeddings"),
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
+	functionID := settingsFunctionID(e.Settings)
+	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
+	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
+		span.SetAttributes(baseAttrs...)
+	}
+	if (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
+		span.SetAttributes(attribute.StringSlice("ai.values", legacyJSONEachElement(e.Values)))
+	}
 	if callID != "" {
 		otelModelCallSpans.Store(otelSpanKey("embedding", callID), otelSpanEntry{span: span})
 	}
 }
 
-// OnEmbedEnd records embedding attributes and ends the embedding span.
+// OnEmbedEnd records embedding attributes and ends the doEmbed span.
+// Mirrors TS's onEmbedEnd: only ai.embeddings (output-gated) and
+// ai.usage.tokens — no gen_ai.* here either.
 func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
@@ -1235,14 +1331,17 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	entry.span.SetAttributes(attribute.Int("ai.embeddings.count", len(e.Embeddings)))
-	if e.Usage.InputTokens > 0 {
-		entry.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", e.Usage.InputTokens))
+	if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
+		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
+	entry.span.SetAttributes(attribute.Float64("ai.usage.tokens", e.Usage.Tokens))
 	entry.span.End()
 }
 
-// OnRerankStart creates a child span for reranking model inference.
+// OnRerankStart creates a child span for the nested doRerank model call.
+// Mirrors TS's onRerankStart: span named after event.operationId
+// ("ai.rerank.doRerank"), reuses the root span's base attributes, and
+// carries no gen_ai.* (H3 follow-up 2).
 func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
@@ -1250,9 +1349,9 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
 	tracer := parent.TracerProvider().Tracer("go-ai")
-	spanName := "reranking"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
+	spanName := e.OperationID
+	if spanName == "" {
+		spanName = "ai.rerank.doRerank"
 	}
 	_, span := tracer.Start(ctx, spanName)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
@@ -1262,17 +1361,24 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	}); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
-	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", "reranking"),
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
+	functionID := settingsFunctionID(e.Settings)
+	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
+	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
+		span.SetAttributes(baseAttrs...)
+	}
+	if (e.Settings == nil || e.Settings.RecordInputs) && e.Documents != nil {
+		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
+		}
+	}
 	if callID != "" {
 		otelModelCallSpans.Store(otelSpanKey("reranking", callID), otelSpanEntry{span: span})
 	}
 }
 
-// OnRerankEnd records reranking attributes and ends the reranking span.
+// OnRerankEnd records reranking attributes and ends the doRerank span.
+// Mirrors TS's onRerankEnd: ai.ranking.type (plain) and ai.ranking
+// (output-gated) — no result count, no gen_ai.*.
 func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", callID))
@@ -1283,7 +1389,12 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))
+	entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
+	if e.Settings == nil || e.Settings.RecordOutputs {
+		if len(e.Ranking) > 0 {
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+		}
+	}
 	entry.span.End()
 }
 
@@ -1371,59 +1482,170 @@ func (i LegacyOpenTelemetry) OnToolCallFinish(ctx context.Context, e TelemetryTo
 
 func (i LegacyOpenTelemetry) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
 
+// legacyToolCallsJSON JSON-encodes tool calls as TS's onStepEnd/onGenerateEnd
+// `event.toolCalls.map(tc => ({toolCallId, toolName, input}))`.
+func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
+	if len(toolCalls) == 0 {
+		return "", false
+	}
+	type toolCallEntry struct {
+		ToolCallID string      `json:"toolCallId"`
+		ToolName   string      `json:"toolName"`
+		Input      interface{} `json:"input"`
+	}
+	entries := make([]toolCallEntry, len(toolCalls))
+	for i, tc := range toolCalls {
+		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.Arguments}
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// legacyFilesJSON JSON-encodes generated files as TS's
+// `event.files.map(f => ({type: 'file', mediaType, data: f.base64}))`.
+func legacyFilesJSON(files []types.GeneratedFileContent) (string, bool) {
+	if len(files) == 0 {
+		return "", false
+	}
+	type fileEntry struct {
+		Type      string `json:"type"`
+		MediaType string `json:"mediaType"`
+		Data      string `json:"data"`
+	}
+	entries := make([]fileEntry, len(files))
+	for i, f := range files {
+		entries[i] = fileEntry{Type: "file", MediaType: f.MediaType, Data: base64.StdEncoding.EncodeToString(f.Data)}
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// legacyFullUsageAttrs builds the ai.usage.* attribute set TS's onStepEnd/
+// onGenerateEnd (legacy-open-telemetry.ts) emit for generateText/streamText:
+// inputTokens/outputTokens/totalTokens/reasoningTokens/cachedInputTokens plus
+// the detailed inputTokenDetails.*/outputTokenDetails.* breakdown. No
+// gen_ai.* attributes are included — callers add those separately where TS
+// does (OnStepEnd only; the root OnEnd never dual-emits gen_ai.usage.*, H3
+// follow-up 3).
+func legacyFullUsageAttrs(u TelemetryUsage) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if u.InputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.inputTokens", *u.InputTokens))
+	}
+	if u.OutputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.outputTokens", *u.OutputTokens))
+	}
+	if u.TotalTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.totalTokens", *u.TotalTokens))
+	}
+	if u.ReasoningTokens != nil {
+		attrs = append(attrs,
+			attribute.Int64("ai.usage.reasoningTokens", *u.ReasoningTokens),
+			attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *u.ReasoningTokens),
+		)
+	}
+	if u.CacheReadInputTokens != nil {
+		attrs = append(attrs,
+			attribute.Int64("ai.usage.cachedInputTokens", *u.CacheReadInputTokens),
+			attribute.Int64("ai.usage.inputTokenDetails.cacheReadTokens", *u.CacheReadInputTokens),
+		)
+	}
+	if u.CacheCreationInputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.inputTokenDetails.cacheWriteTokens", *u.CacheCreationInputTokens))
+	}
+	if u.NoCacheInputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.inputTokenDetails.noCacheTokens", *u.NoCacheInputTokens))
+	}
+	if u.OutputTextTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.outputTokenDetails.textTokens", *u.OutputTextTokens))
+	}
+	return attrs
+}
+
+// legacyObjectUsageAttrs builds the smaller ai.usage.* set TS's
+// onObjectStepEnd/onObjectOperationEnd emit for generateObject/streamObject:
+// inputTokens/outputTokens/totalTokens/reasoningTokens/cachedInputTokens
+// only — no inputTokenDetails.*/outputTokenDetails.* breakdown.
+func legacyObjectUsageAttrs(u TelemetryUsage) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if u.InputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.inputTokens", *u.InputTokens))
+	}
+	if u.OutputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.outputTokens", *u.OutputTokens))
+	}
+	if u.TotalTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.totalTokens", *u.TotalTokens))
+	}
+	if u.ReasoningTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.reasoningTokens", *u.ReasoningTokens))
+	}
+	if u.CacheReadInputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.cachedInputTokens", *u.CacheReadInputTokens))
+	}
+	return attrs
+}
+
+// isLegacyObjectOperation reports whether operationType is generateObject or
+// streamObject, the operations that use the deprecated-but-still-dispatched
+// onObjectStepStart/onObjectStepEnd/onObjectOperationEnd attribute shapes.
+func isLegacyObjectOperation(operationType string) bool {
+	return operationType == "ai.generateObject" || operationType == "ai.streamObject"
+}
+
 // OnStepEnd records step-level OTel attributes on the child step span created
-// by OnStepStart and ends the span. Mirrors the TS SDK's onStepEnd behavior.
+// by OnStepStart and ends the span. Mirrors the TS SDK's onStepEnd
+// (generateText/streamText) and, for generateObject/streamObject, the
+// deprecated-but-still-dispatched onObjectStepEnd — a materially different
+// shape (ai.response.object instead of text/reasoning/toolCalls/files, and
+// the smaller legacyObjectUsageAttrs usage set), matching TS's dispatch on
+// state.operationId (H3 follow-up 3).
 func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
-	recordOutputs := e.Settings != nil && e.Settings.RecordOutputs
+	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 
 	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 
-	if recordOutputs && e.Text != "" {
-		stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
-	}
-	if recordOutputs && e.Reasoning != "" {
-		stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
-	}
-	if recordOutputs && len(e.ToolCalls) > 0 {
-		type toolCallEntry struct {
-			ToolCallID string      `json:"toolCallId"`
-			ToolName   string      `json:"toolName"`
-			Input      interface{} `json:"input"`
+	if isLegacyObjectOperation(e.OperationType) {
+		// onObjectStepEnd: ai.response.object (re-parsed/re-stringified JSON
+		// text, falling back to the raw text on parse failure, mirroring TS's
+		// try/catch), no reasoning/toolCalls/files.
+		if recordOutputs && e.Text != "" {
+			objectAttr := e.Text
+			var parsed interface{}
+			if json.Unmarshal([]byte(e.Text), &parsed) == nil {
+				if b, err := json.Marshal(parsed); err == nil {
+					objectAttr = string(b)
+				}
+			}
+			stepSpan.SetAttributes(attribute.String("ai.response.object", objectAttr))
 		}
-		entries := make([]toolCallEntry, len(e.ToolCalls))
-		for i, tc := range e.ToolCalls {
-			entries[i] = toolCallEntry{
-				ToolCallID: tc.ID,
-				ToolName:   tc.ToolName,
-				Input:      tc.Arguments,
+	} else {
+		if recordOutputs && e.Text != "" {
+			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
+		}
+		if recordOutputs && e.Reasoning != "" {
+			stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
+		}
+		if recordOutputs {
+			if s, ok := legacyToolCallsJSON(e.ToolCalls); ok {
+				stepSpan.SetAttributes(attribute.String("ai.response.toolCalls", s))
+			}
+			if s, ok := legacyFilesJSON(e.Files); ok {
+				stepSpan.SetAttributes(attribute.String("ai.response.files", s))
 			}
 		}
-		if b, err := json.Marshal(entries); err == nil {
-			stepSpan.SetAttributes(attribute.String("ai.response.toolCalls", string(b)))
-		}
 	}
-	if recordOutputs && len(e.Files) > 0 {
-		type fileEntry struct {
-			Type      string `json:"type"`
-			MediaType string `json:"mediaType"`
-			Data      string `json:"data"`
-		}
-		entries := make([]fileEntry, len(e.Files))
-		for i, f := range e.Files {
-			entries[i] = fileEntry{
-				Type:      "file",
-				MediaType: f.MediaType,
-				Data:      base64.StdEncoding.EncodeToString(f.Data),
-			}
-		}
-		if b, err := json.Marshal(entries); err == nil {
-			stepSpan.SetAttributes(attribute.String("ai.response.files", string(b)))
-		}
-	}
+
 	if e.ResponseID != "" {
 		stepSpan.SetAttributes(
 			attribute.String("ai.response.id", e.ResponseID),
@@ -1443,126 +1665,113 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	}
 
 	stepSpan.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}))
-
 	if e.Usage.InputTokens != nil {
-		stepSpan.SetAttributes(
-			attribute.Int64("ai.usage.inputTokens", *e.Usage.InputTokens),
-			attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens),
-		)
+		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
 	}
 	if e.Usage.OutputTokens != nil {
-		stepSpan.SetAttributes(
-			attribute.Int64("ai.usage.outputTokens", *e.Usage.OutputTokens),
-			attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens),
-		)
+		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
 	}
-	if e.Usage.TotalTokens != nil {
-		stepSpan.SetAttributes(attribute.Int64("ai.usage.totalTokens", *e.Usage.TotalTokens))
-	}
-	if e.Usage.ReasoningTokens != nil {
-		stepSpan.SetAttributes(
-			attribute.Int64("ai.usage.reasoningTokens", *e.Usage.ReasoningTokens),
-			attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *e.Usage.ReasoningTokens),
-		)
-	}
-	if e.Usage.CacheReadInputTokens != nil {
-		stepSpan.SetAttributes(
-			attribute.Int64("ai.usage.cachedInputTokens", *e.Usage.CacheReadInputTokens),
-			attribute.Int64("ai.usage.inputTokenDetails.cacheReadTokens", *e.Usage.CacheReadInputTokens),
-		)
-	}
-	if e.Usage.CacheCreationInputTokens != nil {
-		stepSpan.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.cacheWriteTokens", *e.Usage.CacheCreationInputTokens))
-	}
-	if e.Usage.NoCacheInputTokens != nil {
-		stepSpan.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.noCacheTokens", *e.Usage.NoCacheInputTokens))
-	}
-	if e.Usage.OutputTextTokens != nil {
-		stepSpan.SetAttributes(attribute.Int64("ai.usage.outputTokenDetails.textTokens", *e.Usage.OutputTextTokens))
+
+	if isLegacyObjectOperation(e.OperationType) {
+		stepSpan.SetAttributes(legacyObjectUsageAttrs(e.Usage)...)
+	} else {
+		stepSpan.SetAttributes(legacyFullUsageAttrs(e.Usage)...)
 	}
 
 	stepSpan.End()
 }
 
-// OnEnd sets output attributes on the root span and ends it.
+// OnEnd sets output attributes on the root span and ends it. Dispatches on
+// e.OperationType to reproduce TS's per-operation onEnd shape
+// (onGenerateEnd / onObjectOperationEnd / onEmbedOperationEnd /
+// onRerankOperationEnd in legacy-open-telemetry.ts), which differ
+// materially: only generateText/streamText gets ai.response.text/reasoning/
+// toolCalls/files and the full usage breakdown; generateObject/streamObject
+// gets ai.response.object and a reduced usage set; embed/embedMany gets only
+// ai.embedding(s); rerank gets nothing beyond finishReason (H3 follow-up 3).
+// gen_ai.usage.* is never dual-emitted here (H1 already dropped
+// gen_ai.system/gen_ai.request.model from the root span for the same
+// reason: TS's onXEnd methods never set gen_ai.* on the root span at all).
 func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
 	}
-	if e.Settings != nil && e.Settings.RecordOutputs && e.Text != "" {
-		span.SetAttributes(attribute.String("ai.response.text", e.Text))
-	}
-	if e.Settings != nil && e.Settings.RecordOutputs && len(e.Files) > 0 {
-		type fileEntry struct {
-			Type      string `json:"type"`
-			MediaType string `json:"mediaType"`
-			Data      string `json:"data"`
-		}
-		entries := make([]fileEntry, len(e.Files))
-		for i, f := range e.Files {
-			entries[i] = fileEntry{
-				Type:      "file",
-				MediaType: f.MediaType,
-				Data:      base64.StdEncoding.EncodeToString(f.Data),
-			}
-		}
-		if b, err := json.Marshal(entries); err == nil {
-			span.SetAttributes(attribute.String("ai.response.files", string(b)))
-		}
-	}
-	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
-	// gen_ai.system/gen_ai.request.model are intentionally NOT set here
-	// (follow-up H1, 2026-09-27): TS's onGenerateEnd/onObjectOperationEnd
-	// never put them on the root span (only the nested doGenerate/doStream
-	// step span carries gen_ai.system/gen_ai.request.model — see
-	// OnStepStart); ai.model.provider/ai.model.id, set once at OnStart,
-	// already identify the model on the root span.
-	//
-	// Gen AI semantic convention attributes (OpenTelemetry Gen AI spec).
-	if e.Usage.InputTokens != nil {
-		span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
-	}
-	if e.Usage.OutputTokens != nil {
-		span.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
-	}
+	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 
-	// Legacy ai.usage.* attributes — TS SDK emits both namespaces for backward compat.
-	if e.Usage.InputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.inputTokens", *e.Usage.InputTokens))
-	}
-	if e.Usage.OutputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.outputTokens", *e.Usage.OutputTokens))
-	}
-	if e.Usage.TotalTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.totalTokens", *e.Usage.TotalTokens))
-		if e.Usage.InputTokens == nil && e.Usage.OutputTokens == nil {
-			span.SetAttributes(attribute.Int64("ai.usage.tokens", *e.Usage.TotalTokens))
-		}
-	}
-	if e.Usage.ReasoningTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.reasoningTokens", *e.Usage.ReasoningTokens))
-	}
-	// ai.usage.cachedInputTokens is a legacy flat alias for cacheReadTokens.
-	if e.Usage.CacheReadInputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.cachedInputTokens", *e.Usage.CacheReadInputTokens))
-	}
-	if e.Usage.NoCacheInputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.noCacheTokens", *e.Usage.NoCacheInputTokens))
-	}
-	if e.Usage.CacheReadInputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.cacheReadTokens", *e.Usage.CacheReadInputTokens))
-	}
-	if e.Usage.CacheCreationInputTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.inputTokenDetails.cacheWriteTokens", *e.Usage.CacheCreationInputTokens))
-	}
-	if e.Usage.OutputTextTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.outputTokenDetails.textTokens", *e.Usage.OutputTextTokens))
-	}
-	if e.Usage.ReasoningTokens != nil {
-		span.SetAttributes(attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *e.Usage.ReasoningTokens))
+	switch e.OperationType {
+	case "ai.embed", "ai.embedMany":
+		i.legacyOnEmbedOperationEnd(span, e, recordOutputs)
+	case "ai.rerank":
+		// TS onRerankOperationEnd sets nothing beyond ending the span.
+	case "ai.generateObject", "ai.streamObject":
+		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
+	default:
+		i.legacyOnGenerateEnd(span, e, recordOutputs)
 	}
 	span.End()
+}
+
+// legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).
+func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if recordOutputs {
+		if e.Text != "" {
+			span.SetAttributes(attribute.String("ai.response.text", e.Text))
+		}
+		if e.Reasoning != "" {
+			span.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
+		}
+		if s, ok := legacyToolCallsJSON(e.ToolCalls); ok {
+			span.SetAttributes(attribute.String("ai.response.toolCalls", s))
+		}
+		if s, ok := legacyFilesJSON(e.Files); ok {
+			span.SetAttributes(attribute.String("ai.response.files", s))
+		}
+	}
+	if e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
+	span.SetAttributes(legacyFullUsageAttrs(e.Usage)...)
+}
+
+// legacyOnObjectOperationEnd mirrors TS's onObjectOperationEnd
+// (generateObject/streamObject): ai.response.object instead of text, and the
+// smaller legacyObjectUsageAttrs usage set.
+func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if recordOutputs && e.Object != nil {
+		if b, err := json.Marshal(e.Object); err == nil {
+			span.SetAttributes(attribute.String("ai.response.object", string(b)))
+		}
+	}
+	if e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
+	span.SetAttributes(legacyObjectUsageAttrs(e.Usage)...)
+}
+
+// legacyOnEmbedOperationEnd mirrors TS's onEmbedOperationEnd: only
+// ai.embedding (ai.embed) or ai.embeddings (ai.embedMany), output-gated. No
+// finishReason, no usage — those live on the nested doEmbed span only.
+func (i LegacyOpenTelemetry) legacyOnEmbedOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	if !recordOutputs || e.Embedding == nil {
+		return
+	}
+	switch v := e.Embedding.(type) {
+	case [][]float64:
+		if len(v) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(v)))
+		}
+	case []float64:
+		if b, err := json.Marshal(v); err == nil {
+			span.SetAttributes(attribute.String("ai.embedding", string(b)))
+		}
+	}
 }
 
 // OnFinish is a deprecated compatibility alias for OnEnd.

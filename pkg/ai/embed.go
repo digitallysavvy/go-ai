@@ -353,12 +353,14 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		OperationType: "ai.embed",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),
 		ModelProvider: opts.Model.Provider(),
 		ModelID:       opts.Model.ModelID(),
 		Text:          "",
 		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+		Embedding:     embedResult.Embedding,
 	})
 
 	return embedResult, nil
@@ -566,12 +568,14 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		OperationType: "ai.embedMany",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),
 		ModelProvider: opts.Model.Provider(),
 		ModelID:       opts.Model.ModelID(),
 		Text:          "",
 		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+		Embedding:     embedResult.Embeddings,
 	})
 
 	return embedResult, nil

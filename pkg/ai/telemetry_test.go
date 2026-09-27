@@ -240,16 +240,16 @@ func TestGenerateText_Telemetry(t *testing.T) {
 	})
 	attrs := generateTextSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
-		"ai.operationId":             "ai.generateText",
-		"ai.model.provider":          "test-provider",
-		"ai.model.id":                "test-model",
-		"resource.name":              "test-function",
-		"ai.telemetry.functionId":    "test-function",
-		"ai.prompt":                  wantPromptJSON,
-		"ai.response.text":           "Test response",
-		"ai.response.finishReason":   "stop",
-		"gen_ai.usage.input_tokens":  int64(10),
-		"gen_ai.usage.output_tokens": int64(20),
+		"ai.operationId":           "ai.generateText",
+		"ai.model.provider":        "test-provider",
+		"ai.model.id":              "test-model",
+		"resource.name":            "test-function",
+		"ai.telemetry.functionId":  "test-function",
+		"ai.prompt":                wantPromptJSON,
+		"ai.response.text":         "Test response",
+		"ai.response.finishReason": "stop",
+		"ai.usage.inputTokens":     int64(10),
+		"ai.usage.outputTokens":    int64(20),
 	}
 
 	for key, expectedValue := range expectedAttrs {
@@ -266,6 +266,15 @@ func TestGenerateText_Telemetry(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("Expected attribute %s not found", key)
+		}
+	}
+
+	// gen_ai.usage.* is intentionally NOT dual-emitted on the root span (H3
+	// follow-up 3): TS's onGenerateEnd never sets gen_ai.usage.* here — only
+	// the nested doGenerate/doStream step span does.
+	for _, attr := range attrs {
+		if string(attr.Key) == "gen_ai.usage.input_tokens" || string(attr.Key) == "gen_ai.usage.output_tokens" {
+			t.Errorf("root span should not carry %s", attr.Key)
 		}
 	}
 }
@@ -376,6 +385,9 @@ func TestEmbed_Telemetry(t *testing.T) {
 
 	// Verify attributes. ai.value is JSON-encoded (TS: JSON.stringify(value)),
 	// so the quoted-string form is expected rather than the raw value.
+	// ai.embedding is the root span's output (TS onEmbedOperationEnd);
+	// ai.usage.tokens lives only on the nested "ai.embed.doEmbed" span (H3
+	// follow-up 3), never on this root span.
 	attrs := embedSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embed",
@@ -384,7 +396,7 @@ func TestEmbed_Telemetry(t *testing.T) {
 		"resource.name":           "embed-test",
 		"ai.telemetry.functionId": "embed-test",
 		"ai.value":                `"Test embedding input"`,
-		"ai.usage.tokens":         5,
+		"ai.embedding":            `[0.1,0.2,0.3]`,
 	}
 
 	for key, expectedValue := range expectedAttrs {
@@ -401,6 +413,11 @@ func TestEmbed_Telemetry(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("Expected attribute %s not found", key)
+		}
+	}
+	for _, attr := range attrs {
+		if string(attr.Key) == "ai.usage.tokens" {
+			t.Errorf("ai.usage.tokens should not be set on the root ai.embed span")
 		}
 	}
 }
@@ -430,9 +447,10 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	model := &mockEmbeddingModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:    telemetry.Bool(true),
-		RecordInputs: true,
-		FunctionID:   "embed-many-test",
+		IsEnabled:     telemetry.Bool(true),
+		RecordInputs:  true,
+		RecordOutputs: true,
+		FunctionID:    "embed-many-test",
 	}
 
 	inputs := []string{"input1", "input2", "input3"}
@@ -466,6 +484,9 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 
 	// Verify attributes. ai.values is an array of individually JSON-encoded
 	// strings (TS: event.values.map(v => JSON.stringify(v))), not a count.
+	// ai.embeddings is the root span's output (TS onEmbedOperationEnd, one
+	// JSON string per embedding); ai.usage.tokens lives only on the nested
+	// "ai.embedMany.doEmbed" span(s), never on this root span (H3 follow-up 3).
 	attrs := embedManySpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embedMany",
@@ -473,7 +494,6 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 		"ai.model.id":             "test-embedding-model",
 		"resource.name":           "embed-many-test",
 		"ai.telemetry.functionId": "embed-many-test",
-		"ai.usage.tokens":         15, // 3 inputs * 5 tokens each
 	}
 
 	for key, expectedValue := range expectedAttrs {
@@ -512,6 +532,32 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	}
 	if !found {
 		t.Error("Expected attribute ai.values not found")
+	}
+
+	wantEmbeddings := []string{`[0.1,0.2,0.3]`, `[0.1,0.2,0.3]`, `[0.1,0.2,0.3]`}
+	foundEmbeddings := false
+	for _, attr := range attrs {
+		if string(attr.Key) != "ai.embeddings" {
+			continue
+		}
+		foundEmbeddings = true
+		got := attr.Value.AsStringSlice()
+		if len(got) != len(wantEmbeddings) {
+			t.Fatalf("ai.embeddings = %v, want %v", got, wantEmbeddings)
+		}
+		for i, w := range wantEmbeddings {
+			if got[i] != w {
+				t.Errorf("ai.embeddings[%d] = %q, want %q", i, got[i], w)
+			}
+		}
+	}
+	if !foundEmbeddings {
+		t.Error("Expected attribute ai.embeddings not found")
+	}
+	for _, attr := range attrs {
+		if string(attr.Key) == "ai.usage.tokens" {
+			t.Errorf("ai.usage.tokens should not be set on the root ai.embedMany span")
+		}
 	}
 }
 
