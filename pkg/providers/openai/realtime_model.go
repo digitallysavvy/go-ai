@@ -9,6 +9,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 type OpenAIRealtimeModel struct {
@@ -16,13 +17,52 @@ type OpenAIRealtimeModel struct {
 	modelID  string
 }
 
-type OpenAIRealtimeModelOptions struct{}
+// OpenAIRealtimeModelOptions selects between the GA Realtime API and the
+// experimental Live API. Mirrors the TypeScript SDK's
+// OpenAIRealtimeOptions.
+type OpenAIRealtimeModelOptions struct {
+	// API overrides model ID routing: "live" or "realtime". Empty routes
+	// known Live model IDs (e.g. "gpt-live-1") to Live and everything else
+	// to the GA Realtime API, matching TS resolveRealtimeApi.
+	API string
+}
 
 func NewRealtimeModel(p *Provider, modelID string) *OpenAIRealtimeModel {
 	return &OpenAIRealtimeModel{provider: p, modelID: modelID}
 }
 
-func (p *Provider) ExperimentalRealtimeModel(modelID string, _ ...OpenAIRealtimeModelOptions) (provider.Experimental_RealtimeModelV4, error) {
+// resolveRealtimeAPI mirrors TS openai-realtime-factory.ts
+// resolveRealtimeApi.
+func resolveRealtimeAPI(modelID string, opts OpenAIRealtimeModelOptions) (string, error) {
+	switch opts.API {
+	case "":
+		if knownLiveModelIDs[modelID] {
+			return "live", nil
+		}
+		return "realtime", nil
+	case "live", "realtime":
+		return opts.API, nil
+	default:
+		return "", &providererrors.InvalidArgumentError{Field: "api", Message: `OpenAI realtime api must be "live" or "realtime".`}
+	}
+}
+
+// ExperimentalRealtimeModel creates an OpenAI realtime model, routing known
+// Live model IDs (or an explicit api: "live" option) to
+// OpenAIRealtimeModelLive and everything else to the GA
+// OpenAIRealtimeModel. Mirrors TS createOpenAIRealtimeFactory.
+func (p *Provider) ExperimentalRealtimeModel(modelID string, opts ...OpenAIRealtimeModelOptions) (provider.Experimental_RealtimeModelV4, error) {
+	var o OpenAIRealtimeModelOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	api, err := resolveRealtimeAPI(modelID, o)
+	if err != nil {
+		return nil, err
+	}
+	if api == "live" {
+		return NewRealtimeModelLive(p, modelID), nil
+	}
 	return NewRealtimeModel(p, modelID), nil
 }
 
@@ -30,8 +70,13 @@ func (p *Provider) RealtimeModel(modelID string, opts ...OpenAIRealtimeModelOpti
 	return p.ExperimentalRealtimeModel(modelID, opts...)
 }
 
+// GetRealtimeToken mints a short-lived client secret for the GA Realtime
+// API. It fails with OpenAIRealtimeModelLive.DoCreateClientSecret's error
+// when the resolved model routes to Live, matching TS
+// createOpenAIRealtimeFactory().getToken() rejecting Live models before
+// minting a token.
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	model, err := p.ExperimentalRealtimeModel(opts.Model)
+	model, err := p.ExperimentalRealtimeModel(opts.Model, OpenAIRealtimeModelOptions{API: opts.API})
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}

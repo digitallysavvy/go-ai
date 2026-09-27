@@ -181,6 +181,12 @@ func (e *InvalidArgumentError) Error() string {
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
 
+// IsInvalidArgumentError checks if an error is an InvalidArgumentError.
+func IsInvalidArgumentError(err error) bool {
+	var target *InvalidArgumentError
+	return errors.As(err, &target)
+}
+
 // TooManyEmbeddingValuesForCallError signals that a provider embedding model
 // received more values than it supports in one request.
 type TooManyEmbeddingValuesForCallError struct {
