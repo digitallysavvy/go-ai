@@ -1103,3 +1103,101 @@ func TestDoStart_AuthResolvedAtStartNotConstruction(t *testing.T) {
 		t.Fatalf("providerAuthentication.env = %v", cfg.ProviderAuthentication.Env)
 	}
 }
+
+// Port of TS "reuses a caller-minted token and passes endpoint headers when
+// attaching" (acp-harness.test.ts:2022): DoDetach returns bridge coordinates
+// carrying the caller-minted token, and reattaching (a second DoStart with
+// that ResumeSessionState) must reuse the same token — no second
+// MintBridgeToken call — and the identical `reconnect` config, and a custom
+// PortEndpoint's headers must travel to both the initial and the reattach
+// WebSocket handshake.
+func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
+	const token = "acp-detach-reattach-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+
+	var mintMu sync.Mutex
+	var mintCalls []string
+	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
+	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(sandboxID string) string {
+			mintMu.Lock()
+			mintCalls = append(mintCalls, sandboxID)
+			mintMu.Unlock()
+			return token
+		}
+		s.Reconnect = reconnect
+		s.PortEndpoint = &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "session-1", SessionWorkDir: "/workspace/user-project", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (initial): %v", err)
+	}
+
+	mintMu.Lock()
+	if len(mintCalls) != 1 || mintCalls[0] != "test-sandbox" {
+		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
+	}
+	mintMu.Unlock()
+
+	initialChannel := sess.(*session).p.channel
+	if got := initialChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("initial channel reconnect options = %+v, want %+v", got, reconnect)
+	}
+
+	resumeFrom, err := sess.DoDetach(context.Background())
+	if err != nil {
+		t.Fatalf("DoDetach: %v", err)
+	}
+	var resumeData resumeStateData
+	if err := json.Unmarshal(resumeFrom.Data, &resumeData); err != nil {
+		t.Fatalf("unmarshal resumeFrom.Data: %v", err)
+	}
+	if resumeData.Bridge == nil || resumeData.Bridge.Token != token {
+		t.Fatalf("resumeFrom bridge coords = %+v, want token %q", resumeData.Bridge, token)
+	}
+
+	attachedSess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "session-1", SessionWorkDir: "/workspace/user-project",
+		SandboxSession: sandbox, ResumeFrom: resumeFrom,
+	})
+	if err != nil {
+		t.Fatalf("DoStart (reattach): %v", err)
+	}
+	t.Cleanup(func() { _ = attachedSess.DoDestroy(context.Background()) })
+
+	mintMu.Lock()
+	defer mintMu.Unlock()
+	if len(mintCalls) != 1 {
+		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
+	}
+
+	attachedChannel := attachedSess.(*session).p.channel
+	if got := attachedChannel.ReconnectOptions(); got != reconnect {
+		t.Fatalf("reattached channel reconnect options = %+v, want %+v (identical config reused across spawn and attach)", got, reconnect)
+	}
+
+	sandbox.mu.Lock()
+	spawnCount := len(sandbox.spawnCommands)
+	sandbox.mu.Unlock()
+	if spawnCount != 1 {
+		t.Fatalf("spawnCommands count = %d, want exactly 1 (reattach must not respawn a fresh bridge process)", spawnCount)
+	}
+
+	handshakes := srv.HandshakeHeaders()
+	if len(handshakes) != 2 {
+		t.Fatalf("bridgetest server saw %d handshakes, want exactly 2 (initial connect + reattach connect)", len(handshakes))
+	}
+	for i, hdr := range handshakes {
+		if got := hdr.Get("E2B-Traffic-Access-Token"); got != "traffic-token" {
+			t.Fatalf("handshake[%d] E2B-Traffic-Access-Token header = %q, want %q", i, got, "traffic-token")
+		}
+	}
+}

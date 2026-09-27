@@ -340,6 +340,17 @@ func (c *Channel) LastSeenEventID() float64 {
 	return c.lastSeen
 }
 
+// ReconnectOptions returns the channel's resolved reconnect budget/backoff
+// (defaults filled in by NewChannel). Test-only: exists so adapter tests can
+// assert that the identical `reconnect` configuration a caller passed is
+// reused, unchanged, across a spawn and a later attach/reattach — the Go
+// equivalent of the TS test doubles' `channelMocks.reconnects` /
+// `harnessUtilsMocks.channels[...].options.reconnect` capture, which Go's
+// real (non-mock) Channel does not otherwise expose.
+func (c *Channel) ReconnectOptions() ReconnectOptions {
+	return ReconnectOptions{MaxElapsed: c.maxElapsed, InitialDelay: c.initialDelay, MaxDelay: c.maxDelay}
+}
+
 // Open establishes the initial connection with a single attempt; startup
 // failures are returned so the caller can fail cleanly. Reconnect retries
 // apply only to drops after a successful Open. With resume, the channel sends
