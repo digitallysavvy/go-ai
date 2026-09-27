@@ -91,8 +91,11 @@ type RealtimeFactoryGetTokenOptions struct {
 
 	// API optionally overrides model ID routing for factories with
 	// multiple realtime APIs sharing one namespace (e.g. OpenAI's "live" vs
-	// "realtime"). Ignored by factories with a single realtime API.
-	API string `json:"api,omitempty"`
+	// "realtime"). Ignored by factories with a single realtime API. Nil
+	// means unset (routing defaults apply); a non-nil value that the
+	// factory doesn't recognize is an error, distinguishing "not passed"
+	// from "passed and invalid" the way TS's optional `api?: string` does.
+	API *string `json:"api,omitempty"`
 }
 
 type ClientSecretResult struct {

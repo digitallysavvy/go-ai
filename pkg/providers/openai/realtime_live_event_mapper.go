@@ -173,7 +173,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 		return nil, liveUnsupported("OpenAI Live client permissions outside WebRTC startup")
 	}
 	if options.Voice != nil && config.Voice != nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "voice", Message: "choose either voice or providerOptions.openai.voice"}
+		return nil, &providererrors.InvalidArgumentError{Field: "voice", Message: "Choose either voice or providerOptions.openai.voice."}
 	}
 
 	inputFormat, err := liveAudioFormat(config.InputAudioFormat)
@@ -186,7 +186,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 	}
 	if inputFormat != nil && outputFormat != nil &&
 		(inputFormat["type"] != outputFormat["type"] || inputFormat["rate"] != outputFormat["rate"]) {
-		return nil, &providererrors.InvalidArgumentError{Field: "outputAudioFormat", Message: "OpenAI Live requires the same input and output audio format"}
+		return nil, &providererrors.InvalidArgumentError{Field: "outputAudioFormat", Message: "OpenAI Live requires the same input and output audio format."}
 	}
 
 	session := map[string]interface{}{"model": modelID}
@@ -322,8 +322,16 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		e.SessionID = id
 		e.DelegationMode = "client"
 		if session, ok := envelope["session"].(map[string]interface{}); ok {
-			if delegation, ok := session["delegation"].(map[string]interface{}); ok {
-				if t, _ := delegation["type"].(string); t == "responses" {
+			if delegationRaw, present := session["delegation"]; present && delegationRaw != nil {
+				delegation, ok := delegationRaw.(map[string]interface{})
+				if !ok {
+					return invalidLiveServerEvent(raw)
+				}
+				t, ok := delegation["type"].(string)
+				if !ok || (t != "client" && t != "responses") {
+					return invalidLiveServerEvent(raw)
+				}
+				if t == "responses" {
 					e.DelegationMode = "provider"
 				}
 			}
@@ -377,13 +385,12 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		if !ok {
 			return invalidLiveServerEvent(raw)
 		}
-		startMs, ok := reqLiveFloat(envelope, "start_ms")
+		startMs, endMs, ok, intervalOK := reqLiveInterval(envelope)
 		if !ok {
 			return invalidLiveServerEvent(raw)
 		}
-		endMs, ok := reqLiveFloat(envelope, "end_ms")
-		if !ok || endMs < startMs {
-			return invalidLiveServerEvent(raw)
+		if !intervalOK {
+			return invalidLiveEventTimeInterval(raw)
 		}
 		e.Type = "transcript-fragment"
 		if rawType == "session.input_transcript.delta" {
@@ -407,7 +414,7 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		e.DelegationID = id
 		if targetRaw, present := delegation["target"]; present && targetRaw != nil {
 			target, ok := targetRaw.(string)
-			if !ok {
+			if !ok || (target != "client" && target != "responses") {
 				return invalidLiveServerEvent(raw)
 			}
 			if target == "responses" {
@@ -472,15 +479,16 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		e.Command = rawType[:len(rawType)-1]
 		e.ClientEventID = clientEventID
 	case "session.instructions.appended", "session.thinking.appended", "session.commentary.appended":
-		if _, ok := reqLiveFloat(envelope, "start_ms"); !ok {
-			return invalidLiveServerEvent(raw)
-		}
-		if _, ok := reqLiveFloat(envelope, "end_ms"); !ok {
+		_, _, ok, intervalOK := reqLiveInterval(envelope)
+		if !ok {
 			return invalidLiveServerEvent(raw)
 		}
 		clientEventID, ok := reqLiveTopOptionalString(envelope, "client_event_id")
 		if !ok {
 			return invalidLiveServerEvent(raw)
+		}
+		if !intervalOK {
+			return invalidLiveEventTimeInterval(raw)
 		}
 		e.Type = "command-acknowledged"
 		e.Command = rawType[:len(rawType)-2]
@@ -491,6 +499,31 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 
 func invalidLiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	return []provider.RealtimeServerEvent{{Type: "error", Code: "invalid_server_event", Message: "Invalid OpenAI Live server event.", Raw: raw}}
+}
+
+// invalidLiveEventTimeInterval mirrors the TypeScript SDK's generic
+// `'start_ms' in event && event.end_ms < event.start_ms` check in
+// parseServerEvent, which runs after per-type schema validation succeeds and
+// applies to every event carrying start_ms/end_ms (transcript deltas and the
+// three "*.appended" command acknowledgments).
+func invalidLiveEventTimeInterval(raw json.RawMessage) []provider.RealtimeServerEvent {
+	return []provider.RealtimeServerEvent{{Type: "error", Code: "invalid_server_event", Message: "Invalid OpenAI Live event time interval.", Raw: raw}}
+}
+
+// reqLiveInterval requires start_ms and end_ms as top-level nonnegative
+// numbers. ok is false when either field is missing/malformed (schema
+// failure -> invalidLiveServerEvent); when ok is true, intervalOK reports
+// whether end_ms >= start_ms (false -> invalidLiveEventTimeInterval).
+func reqLiveInterval(envelope map[string]interface{}) (startMs, endMs float64, ok, intervalOK bool) {
+	startMs, ok = reqLiveFloat(envelope, "start_ms")
+	if !ok {
+		return 0, 0, false, false
+	}
+	endMs, ok = reqLiveFloat(envelope, "end_ms")
+	if !ok {
+		return 0, 0, false, false
+	}
+	return startMs, endMs, true, endMs >= startMs
 }
 
 func reqLiveUsage(envelope map[string]interface{}) (*provider.RealtimeUsage, bool) {

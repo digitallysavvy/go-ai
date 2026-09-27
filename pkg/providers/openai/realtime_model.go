@@ -21,10 +21,13 @@ type OpenAIRealtimeModel struct {
 // experimental Live API. Mirrors the TypeScript SDK's
 // OpenAIRealtimeOptions.
 type OpenAIRealtimeModelOptions struct {
-	// API overrides model ID routing: "live" or "realtime". Empty routes
-	// known Live model IDs (e.g. "gpt-live-1") to Live and everything else
-	// to the GA Realtime API, matching TS resolveRealtimeApi.
-	API string
+	// API overrides model ID routing: "live" or "realtime". Nil (unset)
+	// routes known Live model IDs (e.g. "gpt-live-1") to Live and everything
+	// else to the GA Realtime API, matching TS resolveRealtimeApi, where an
+	// omitted (undefined) api is distinct from an explicit invalid value. A
+	// non-nil value that is neither "live" nor "realtime" (including "") is
+	// rejected, matching TS.
+	API *string
 }
 
 func NewRealtimeModel(p *Provider, modelID string) *OpenAIRealtimeModel {
@@ -34,14 +37,15 @@ func NewRealtimeModel(p *Provider, modelID string) *OpenAIRealtimeModel {
 // resolveRealtimeAPI mirrors TS openai-realtime-factory.ts
 // resolveRealtimeApi.
 func resolveRealtimeAPI(modelID string, opts OpenAIRealtimeModelOptions) (string, error) {
-	switch opts.API {
-	case "":
+	if opts.API == nil {
 		if knownLiveModelIDs[modelID] {
 			return "live", nil
 		}
 		return "realtime", nil
+	}
+	switch *opts.API {
 	case "live", "realtime":
-		return opts.API, nil
+		return *opts.API, nil
 	default:
 		return "", &providererrors.InvalidArgumentError{Field: "api", Message: `OpenAI realtime api must be "live" or "realtime".`}
 	}

@@ -31,12 +31,16 @@ func TestOpenAIRealtimeFactory_RoutesLiveAndRealtime(t *testing.T) {
 		{"gpt-live-1-preview", OpenAIRealtimeModelOptions{}, false},
 		{"prefix-gpt-live-1", OpenAIRealtimeModelOptions{}, false},
 		{"GPT-LIVE-1", OpenAIRealtimeModelOptions{}, false},
-		{"not-yet-released", OpenAIRealtimeModelOptions{API: "live"}, true},
-		{"gpt-realtime", OpenAIRealtimeModelOptions{API: "live"}, true},
-		{"gpt-live-1", OpenAIRealtimeModelOptions{API: "realtime"}, false},
+		{"not-yet-released", OpenAIRealtimeModelOptions{API: strPtr("live")}, true},
+		{"gpt-realtime", OpenAIRealtimeModelOptions{API: strPtr("live")}, true},
+		{"gpt-live-1", OpenAIRealtimeModelOptions{API: strPtr("realtime")}, false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.modelID+"/"+tc.opts.API, func(t *testing.T) {
+		apiLabel := ""
+		if tc.opts.API != nil {
+			apiLabel = *tc.opts.API
+		}
+		t.Run(tc.modelID+"/"+apiLabel, func(t *testing.T) {
 			model, err := p.ExperimentalRealtimeModel(tc.modelID, tc.opts)
 			if err != nil {
 				t.Fatalf("ExperimentalRealtimeModel() error = %v", err)
@@ -57,7 +61,7 @@ func TestOpenAIRealtimeFactory_RoutesLiveAndRealtime(t *testing.T) {
 
 func TestOpenAIRealtimeFactory_RejectsInvalidAPISelector(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
-	_, err := p.ExperimentalRealtimeModel("gpt-live-1", OpenAIRealtimeModelOptions{API: "invalid"})
+	_, err := p.ExperimentalRealtimeModel("gpt-live-1", OpenAIRealtimeModelOptions{API: strPtr("invalid")})
 	if err == nil || !strings.Contains(err.Error(), `OpenAI realtime api must be "live" or "realtime".`) {
 		t.Fatalf("error = %v", err)
 	}
@@ -65,9 +69,33 @@ func TestOpenAIRealtimeFactory_RejectsInvalidAPISelector(t *testing.T) {
 		t.Fatalf("error = %v, want InvalidArgumentError", err)
 	}
 
-	_, err = p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "gpt-live-1", API: "invalid"})
+	_, err = p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "gpt-live-1", API: strPtr("invalid")})
 	if !providererrors.IsInvalidArgumentError(err) {
 		t.Fatalf("GetRealtimeToken() error = %v, want InvalidArgumentError", err)
+	}
+}
+
+// TestOpenAIRealtimeFactory_DistinguishesUnsetFromExplicitEmptyAPI covers a
+// review finding: API is *string precisely so an omitted option (nil) can
+// fall through to model-ID routing while an explicit empty string is
+// rejected like any other unrecognized value, mirroring TS's
+// resolveRealtimeApi (which only special-cases `api === undefined`, so an
+// explicit ” throws). A string-typed API field with "" as its zero value
+// could not distinguish the two.
+func TestOpenAIRealtimeFactory_DistinguishesUnsetFromExplicitEmptyAPI(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	model, err := p.ExperimentalRealtimeModel("gpt-live-1", OpenAIRealtimeModelOptions{API: nil})
+	if err != nil {
+		t.Fatalf("nil API: unexpected error = %v", err)
+	}
+	if _, isLive := model.(*OpenAIRealtimeModelLive); !isLive {
+		t.Fatalf("nil API: expected model-ID routing to select Live for gpt-live-1")
+	}
+
+	_, err = p.ExperimentalRealtimeModel("gpt-live-1", OpenAIRealtimeModelOptions{API: strPtr("")})
+	if !providererrors.IsInvalidArgumentError(err) {
+		t.Fatalf(`explicit "" API: error = %v, want InvalidArgumentError`, err)
 	}
 }
 
@@ -488,6 +516,16 @@ func TestParseOpenAILiveServerEvent_InvalidKnownEvents(t *testing.T) {
 		{"type": "session.input_audio.muted", "client_event_id": float64(123)},
 		{"type": "session.instructions.appended", "client_event_id": "append-1"},
 		{"type": "error", "error": map[string]interface{}{"message": "bad", "code": float64(42)}},
+		// The three ".appended" command acknowledgments carry start_ms/end_ms
+		// like transcript deltas and must also reject end_ms < start_ms.
+		{"type": "session.instructions.appended", "start_ms": float64(20), "end_ms": float64(10)},
+		{"type": "session.thinking.appended", "start_ms": float64(20), "end_ms": float64(10)},
+		{"type": "session.commentary.appended", "start_ms": float64(20), "end_ms": float64(10)},
+		// delegation.target must be "client" or "responses" (an enum in TS),
+		// not an arbitrary string.
+		{"type": "session.delegation.created", "delegation": map[string]interface{}{"id": "d-1", "target": "bogus"}},
+		// session.started's delegation.type is the same enum.
+		{"type": "session.started", "session": map[string]interface{}{"id": "s-1", "delegation": map[string]interface{}{"type": "bogus"}}},
 	}
 	for i, c := range cases {
 		raw, _ := json.Marshal(c)
@@ -495,6 +533,28 @@ func TestParseOpenAILiveServerEvent_InvalidKnownEvents(t *testing.T) {
 		if len(got) != 1 || got[0].Type != "error" || got[0].Code != "invalid_server_event" {
 			t.Fatalf("case %d (%v): got %+v, want invalid_server_event", i, c, got)
 		}
+	}
+}
+
+// TestParseOpenAILiveServerEvent_TimeIntervalMessageDistinctFromSchemaFailure
+// mirrors the TypeScript SDK's two distinct invalid-event messages in
+// parseServerEvent: a schema failure ('Invalid OpenAI Live server event.')
+// vs a well-formed event whose end_ms < start_ms ('Invalid OpenAI Live event
+// time interval.').
+func TestParseOpenAILiveServerEvent_TimeIntervalMessageDistinctFromSchemaFailure(t *testing.T) {
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type": "session.output_transcript.delta", "delta": "hi",
+		"start_ms": float64(20), "end_ms": float64(10),
+	})
+	got := parseOpenAILiveServerEvent(raw)
+	if len(got) != 1 || got[0].Message != "Invalid OpenAI Live event time interval." {
+		t.Fatalf("got %+v, want message 'Invalid OpenAI Live event time interval.'", got)
+	}
+
+	raw, _ = json.Marshal(map[string]interface{}{"type": "session.started"})
+	got = parseOpenAILiveServerEvent(raw)
+	if len(got) != 1 || got[0].Message != "Invalid OpenAI Live server event." {
+		t.Fatalf("got %+v, want message 'Invalid OpenAI Live server event.'", got)
 	}
 }
 
