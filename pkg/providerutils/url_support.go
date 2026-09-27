@@ -38,9 +38,13 @@ func CompileSupportedURLPatterns(patternsByMediaType map[string][]string) map[st
 
 // MatchesSupportedURL reports whether url is supported for mediaType per the
 // compiled pattern table (see CompileSupportedURLPatterns), matching
-// TypeScript's isUrlSupported: a pattern registered under the exact media
-// type, its `type/*` prefix, or the wildcard "*"/"*/*" must match the
-// (lowercased) URL.
+// TypeScript's isUrlSupported (ai@7.0.118 commit bc49f786f0, which tightened
+// the non-wildcard case): a pattern registered under the exact media type
+// (equality, not a prefix match, when the key carries no `*`), its `type/*`
+// prefix, or the wildcard "*"/"*/*" must match the (lowercased) URL. Before
+// that commit, TS (and this port) used a plain prefix match even for
+// non-wildcard keys, so e.g. supportedUrls["image/png"] would incorrectly
+// also match a URL declared with mediaType "image/png-not-supported".
 func MatchesSupportedURL(compiled map[string][]*regexp.Regexp, mediaType, url string) bool {
 	if len(compiled) == 0 {
 		return false
@@ -54,12 +58,21 @@ func MatchesSupportedURL(compiled map[string][]*regexp.Regexp, mediaType, url st
 			prefix = ""
 		}
 		if prefix != "" {
-			if topLevelOnly {
+			switch {
+			case topLevelOnly:
 				if mediaType+"/" != prefix {
 					continue
 				}
-			} else if !strings.HasPrefix(mediaType, prefix) {
-				continue
+			case strings.HasSuffix(prefix, "/"):
+				// Wildcard key (e.g. "image/*"): prefix match.
+				if !strings.HasPrefix(mediaType, prefix) {
+					continue
+				}
+			default:
+				// Exact key (e.g. "image/png"): equality, not a prefix match.
+				if mediaType != prefix {
+					continue
+				}
 			}
 		}
 		for _, re := range regexes {
