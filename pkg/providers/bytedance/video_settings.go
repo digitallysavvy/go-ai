@@ -58,10 +58,14 @@ type ProviderOptions struct {
 	// ReferenceAudio are URLs for reference audio inputs
 	ReferenceAudio []string `json:"referenceAudio,omitempty"`
 
-	// PollIntervalMs is the polling interval in milliseconds (default: 3000)
+	// PollIntervalMs is the polling interval in milliseconds (default: 5000).
+	// Deprecated: ignored when the caller uses generateVideo's poll/webhook
+	// options; ByteDance's DoGenerate uses it only for its own default
+	// (poll/webhook-free) polling loop. See TS ByteDanceVideoModelOptions.
 	PollIntervalMs *int `json:"pollIntervalMs,omitempty"`
 
-	// PollTimeoutMs is the maximum polling time in milliseconds (default: 300000 = 5 minutes)
+	// PollTimeoutMs is the maximum polling time in milliseconds
+	// (default: 600000 = 10 minutes). Deprecated: see PollIntervalMs.
 	PollTimeoutMs *int `json:"pollTimeoutMs,omitempty"`
 
 	// Additional passthrough options not explicitly handled
