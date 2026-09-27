@@ -835,9 +835,10 @@ func TestTranscriptionModel_DoStream_ErrorsWhenClosedBeforeFinalCommit(t *testin
 	server := newRealtimeTestServer(t)
 	defer server.close()
 
+	audio := newBlockingAudioStream()
 	model := newRealtimeTestModel(server.ts.URL)
 	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
-		Audio:            newBlockingAudioStream(),
+		Audio:            audio,
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
 	})
 	if err != nil {
@@ -854,6 +855,9 @@ func TestTranscriptionModel_DoStream_ErrorsWhenClosedBeforeFinalCommit(t *testin
 	_, err = drainUntilFinishOrError(t, result.Stream)
 	if err == nil || !strings.Contains(err.Error(), "closed before completion") {
 		t.Fatalf("err = %v", err)
+	}
+	if !audio.wasCancelled() {
+		t.Fatal("expected the AudioStream to be cancelled when the socket closes before the final commit")
 	}
 }
 
