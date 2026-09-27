@@ -6,15 +6,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const mcpHTTPAcceptHeader = "application/json, text/event-stream"
+
+// Inbound SSE reconnection backoff, matching TS HttpMCPTransport's
+// `reconnectionOptions` (mcp-http-transport.ts): 1s initial delay, 1.5x
+// growth, capped at 30s, giving up after 2 attempts.
+const (
+	inboundSSEInitialReconnectionDelay    = 1 * time.Second
+	inboundSSEMaxReconnectionDelay        = 30 * time.Second
+	inboundSSEReconnectionDelayGrowFactor = 1.5
+	inboundSSEMaxRetries                  = 2
+)
 
 // HTTPTransport implements the Transport interface for HTTP-based communication
 // This transport communicates with MCP servers over HTTP
@@ -50,6 +62,28 @@ type HTTPTransport struct {
 	onSessionIDChange       func(sessionID string)
 	onSessionExpired        func(sessionID string)
 	terminateSessionOnClose bool
+
+	// onError receives non-fatal diagnostics from the background inbound SSE
+	// listener, matching TS HttpMCPTransport's `onerror` callback.
+	onError func(error)
+
+	// Inbound SSE (legacy protocol era only): a standing background GET
+	// (Accept: text/event-stream) that receives server-initiated messages,
+	// matching TS HttpMCPTransport openInboundSse/startInboundSse.
+	// isModernProtocol() short-circuits it entirely for the 2026-07-28
+	// protocol. sseLifecycleCtx/sseLifecycleCancel span the transport's whole
+	// life (created in Connect, canceled in Close); sseConnCancel cancels
+	// just the current GET/read, used when the negotiated protocol switches
+	// to modern mid-flight.
+	sseMu                sync.Mutex
+	sseLifecycleCtx      context.Context
+	sseLifecycleCancel   context.CancelFunc
+	sseClosing           bool
+	sseConnCancel        context.CancelFunc
+	sseReconnectAttempts int
+	sseReconnectTimer    *time.Timer
+	lastInboundEventID   string
+	sseWG                sync.WaitGroup
 }
 
 // HTTPTransportConfig contains configuration for HTTP transport
@@ -91,6 +125,11 @@ type HTTPTransportConfig struct {
 	// TerminateSessionOnClose sends a best-effort DELETE with the session id
 	// when Close is called. Default true.
 	TerminateSessionOnClose *bool
+
+	// OnError, when set, receives non-fatal diagnostics from the background
+	// inbound SSE listener (GET reconnect failures, malformed messages,
+	// etc.), matching TS HttpMCPTransport's `onerror` callback. Optional.
+	OnError func(error) `json:"-"`
 }
 
 // SSEClient is the minimal interface needed by custom SSE-capable transports.
@@ -164,6 +203,7 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		onSessionIDChange:       config.OnSessionIDChange,
 		onSessionExpired:        config.OnSessionExpired,
 		terminateSessionOnClose: terminateSessionOnClose,
+		onError:                 config.OnError,
 	}
 }
 
@@ -214,6 +254,7 @@ func (t *HTTPTransport) applyStandardHeaders(req *http.Request) (sentSessionID s
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("User-Agent", version.UserAgent())
 	sessionID := t.SessionID()
 	if sessionID != "" {
 		req.Header.Set("mcp-session-id", sessionID)
@@ -242,11 +283,21 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	// Test connection with a ping
 	// For now, just mark as connected
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.connected {
+		t.mu.Unlock()
 		return fmt.Errorf("already connected")
 	}
 	t.connected = true
+	t.mu.Unlock()
+
+	// Open the standing inbound SSE listener for the legacy protocol era,
+	// matching TS HttpMCPTransport.start(): the transport-wide lifecycle is
+	// created once here, and the initial GET is attempted unless the
+	// negotiated protocol is already the modern (2026-07-28) one.
+	t.startInboundSSELifecycle()
+	if !t.isModernProtocol() {
+		t.startInboundSSE(false, "")
+	}
 	return nil
 }
 
@@ -256,6 +307,13 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 // 241a8c5); a failure to terminate is ignored, matching TS's fire-and-forget
 // session termination.
 func (t *HTTPTransport) Close() error {
+	// Cancel the inbound SSE lifecycle (in-flight GET and any scheduled
+	// reconnect) and wait for its goroutine(s) to exit before proceeding,
+	// matching TS's `this.inboundSseConnection?.close();
+	// this.abortController?.abort();` and guaranteeing Close() never leaks a
+	// goroutine.
+	t.stopInboundSSE()
+
 	t.mu.Lock()
 	sessionID := t.sessionID
 	terminate := t.terminateSessionOnClose
@@ -273,6 +331,7 @@ func (t *HTTPTransport) Close() error {
 			if protocolVersion != "" {
 				req.Header.Set("mcp-protocol-version", protocolVersion)
 			}
+			req.Header.Set("User-Agent", version.UserAgent())
 			client := SSEClient(httpClient)
 			if sseClient != nil {
 				client = sseClient
@@ -393,12 +452,35 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
 		message := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
+		// Matches TS send()'s two distinct 404 suffixes: a request that
+		// carried a (now stale) session id gets the session-expired message,
+		// while a 404 with no session id in play means the server likely
+		// doesn't support this transport at all.
 		if resp.StatusCode == http.StatusNotFound {
-			message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+			if sentSessionID != "" {
+				message += ". The MCP session expired. Create a new client without `initialSessionId` to start a fresh session"
+			} else {
+				message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+			}
 		}
 		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body)))
 	}
-	if resp.StatusCode == http.StatusAccepted || IsNotification(message) {
+	if resp.StatusCode == http.StatusAccepted {
+		// If the server accepted the message (e.g. the initialized
+		// notification), optionally (re)start inbound SSE when it was not
+		// available earlier (e.g. a 405 before init), matching TS's send()
+		// 202 handling. Fire-and-forget: do not block Send() on it.
+		if !t.isModernProtocol() {
+			t.sseMu.Lock()
+			hasConn := t.sseConnCancel != nil
+			t.sseMu.Unlock()
+			if !hasConn {
+				t.startInboundSSE(false, "")
+			}
+		}
+		return nil
+	}
+	if IsNotification(message) {
 		return nil
 	}
 
@@ -506,6 +588,331 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(body io.ReadCloser) {
 	}
 }
 
+// ---- Inbound SSE (legacy protocol era) ----
+//
+// Ports TS HttpMCPTransport's openInboundSse/startInboundSse/
+// scheduleInboundSseReconnection (packages/mcp/src/tool/mcp-http-transport.ts):
+// a standing background GET (Accept: text/event-stream) that receives
+// server-initiated messages outside of a POST response. Only the legacy
+// protocol era opens it; isModernProtocol() (2026-07-28) short-circuits it
+// entirely, matching TS.
+
+// isModernProtocol reports whether the negotiated protocol version is the
+// modern (2026-07-28) one, matching TS's `isModernProtocol()`.
+func (t *HTTPTransport) isModernProtocol() bool {
+	return t.ProtocolVersion() == LatestProtocolVersion
+}
+
+// reportError forwards a non-fatal inbound-SSE diagnostic to OnError, if
+// configured, matching TS's `this.onerror?.(error)`.
+func (t *HTTPTransport) reportError(err error) {
+	if t.onError != nil {
+		t.onError(err)
+	}
+}
+
+// startInboundSSELifecycle creates the long-lived context shared by every
+// inbound SSE GET attempt (and its reconnects) for the life of the
+// transport, matching TS's `this.abortController` (created once in
+// start()). It is a no-op if already started.
+func (t *HTTPTransport) startInboundSSELifecycle() {
+	t.sseMu.Lock()
+	defer t.sseMu.Unlock()
+	if t.sseLifecycleCtx != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.sseLifecycleCtx = ctx
+	t.sseLifecycleCancel = cancel
+}
+
+// stopInboundSSE tears down the inbound SSE lifecycle: it marks the
+// transport as closing (so no new GET or reconnect can start), cancels any
+// in-flight GET, stops a pending reconnect timer, and waits for every
+// background goroutine to exit before returning. This guarantees Close()
+// never leaks a goroutine, matching TS's
+// `this.inboundSseConnection?.close(); this.abortController?.abort();`.
+func (t *HTTPTransport) stopInboundSSE() {
+	t.sseMu.Lock()
+	t.sseClosing = true
+	if t.sseLifecycleCancel != nil {
+		t.sseLifecycleCancel()
+	}
+	timer := t.sseReconnectTimer
+	t.sseReconnectTimer = nil
+	t.sseMu.Unlock()
+
+	if timer != nil && timer.Stop() {
+		// The timer's callback (which would have called sseWG.Done() itself)
+		// will now never run, so account for its earlier sseWG.Add(1) here.
+		t.sseWG.Done()
+	}
+
+	t.sseWG.Wait()
+}
+
+// closeInboundSSEConnection cancels only the current inbound SSE connection,
+// not the whole transport lifecycle, matching TS setProtocolVersion's
+// `this.inboundSseConnection?.close(); this.inboundSseConnection = undefined;`
+// used when the negotiated protocol switches to modern mid-flight.
+func (t *HTTPTransport) closeInboundSSEConnection() {
+	t.sseMu.Lock()
+	cancel := t.sseConnCancel
+	t.sseConnCancel = nil
+	t.sseMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// startInboundSSE fires off a best-effort, resumable background GET for
+// server-initiated messages, matching TS's `startInboundSse` (a
+// fire-and-forget wrapper around `openInboundSse`). It is a no-op for the
+// modern protocol, once the transport is closing, or before Connect has run.
+func (t *HTTPTransport) startInboundSSE(triedAuth bool, resumeToken string) {
+	if t.isModernProtocol() {
+		return
+	}
+	t.sseMu.Lock()
+	if t.sseClosing || t.sseLifecycleCtx == nil {
+		t.sseMu.Unlock()
+		return
+	}
+	lifecycleCtx := t.sseLifecycleCtx
+	t.sseWG.Add(1)
+	t.sseMu.Unlock()
+
+	go func() {
+		defer t.sseWG.Done()
+		t.openInboundSSE(lifecycleCtx, triedAuth, resumeToken)
+	}()
+}
+
+// nextInboundReconnectDelay computes the exponential backoff delay for the
+// given (zero-based) reconnect attempt, matching TS's
+// `getNextReconnectionDelay`.
+func nextInboundReconnectDelay(attempt int) time.Duration {
+	delay := float64(inboundSSEInitialReconnectionDelay) * math.Pow(inboundSSEReconnectionDelayGrowFactor, float64(attempt))
+	if delay > float64(inboundSSEMaxReconnectionDelay) {
+		return inboundSSEMaxReconnectionDelay
+	}
+	return time.Duration(delay)
+}
+
+// scheduleInboundSSEReconnection schedules a reconnect attempt after an
+// exponential backoff delay, resuming from the last received event id via
+// Last-Event-Id, matching TS's `scheduleInboundSseReconnection`. It gives up
+// (reporting an error, matching TS) after inboundSSEMaxRetries attempts.
+func (t *HTTPTransport) scheduleInboundSSEReconnection() {
+	t.sseMu.Lock()
+	if t.sseClosing {
+		t.sseMu.Unlock()
+		return
+	}
+	attempts := t.sseReconnectAttempts
+	if inboundSSEMaxRetries > 0 && attempts >= inboundSSEMaxRetries {
+		t.sseMu.Unlock()
+		t.reportError(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Maximum reconnection attempts (%d) exceeded.", inboundSSEMaxRetries), nil))
+		return
+	}
+	delay := nextInboundReconnectDelay(attempts)
+	t.sseReconnectAttempts = attempts + 1
+	resumeToken := t.lastInboundEventID
+	lifecycleCtx := t.sseLifecycleCtx
+	t.sseWG.Add(1)
+	t.sseReconnectTimer = time.AfterFunc(delay, func() {
+		defer t.sseWG.Done()
+		t.sseMu.Lock()
+		closing := t.sseClosing
+		t.sseMu.Unlock()
+		if closing || lifecycleCtx == nil || lifecycleCtx.Err() != nil {
+			return
+		}
+		t.openInboundSSE(lifecycleCtx, false, resumeToken)
+	})
+	t.sseMu.Unlock()
+}
+
+// maybeScheduleInboundSSEReconnect schedules a reconnect unless the
+// lifecycle context is already canceled (Close), matching TS's
+// `if (!this.abortController?.signal.aborted) { this.scheduleInboundSseReconnection(); }`.
+func (t *HTTPTransport) maybeScheduleInboundSSEReconnect(lifecycleCtx context.Context) {
+	if lifecycleCtx.Err() != nil {
+		return
+	}
+	t.scheduleInboundSSEReconnection()
+}
+
+// openInboundSSE performs a single inbound SSE GET attempt: it builds the
+// request (Accept: text/event-stream, mcp-session-id when legacy, and
+// Last-Event-Id when resuming), retries once on a 401 by refreshing the
+// OAuth token (reusing the same refreshOAuthToken single-flight path as
+// send()), returns silently on a 405 (server does not support GET, matching
+// TS), expires the session id on a 404 (matching TS), and on success hands
+// the response body to readInboundSSEStream. lifecycleCtx is the
+// transport-wide inbound SSE context (canceled by Close); a per-connection
+// child context is derived from it so a protocol-version switch to modern
+// can close just this connection without aborting the whole transport.
+func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth bool, resumeToken string) {
+	if t.isModernProtocol() || lifecycleCtx.Err() != nil {
+		return
+	}
+
+	sessionIDForRequest := t.SessionID()
+	connCtx, connCancel := context.WithCancel(lifecycleCtx)
+
+	req, err := http.NewRequestWithContext(connCtx, http.MethodGet, t.url, nil)
+	if err != nil {
+		connCancel()
+		t.reportError(NewTransportError("failed to create inbound SSE request", err))
+		// Matches TS: a thrown error while building the request/headers falls
+		// into openInboundSse's outer catch, which schedules a reconnect.
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
+	for k, v := range t.config.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
+	req.Header.Set("User-Agent", version.UserAgent())
+	if sessionIDForRequest != "" {
+		req.Header.Set("mcp-session-id", sessionIDForRequest)
+	}
+	if resumeToken != "" {
+		req.Header.Set("Last-Event-Id", resumeToken)
+	}
+	if token, expired, ok := t.oauthTokenSnapshot(); ok {
+		if expired {
+			if err := t.refreshOAuthToken(connCtx); err != nil {
+				connCancel()
+				t.reportError(NewTransportError("failed to refresh OAuth token", err))
+				return
+			}
+			token, _, ok = t.oauthTokenSnapshot()
+		}
+		if ok && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	client := SSEClient(t.client)
+	if t.sseClient != nil {
+		client = t.sseClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		aborted := connCtx.Err() != nil
+		connCancel()
+		if aborted {
+			return
+		}
+		t.reportError(NewTransportError("failed to establish inbound SSE connection", err))
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
+	if resp == nil {
+		connCancel()
+		t.reportError(NewTransportError("failed to establish inbound SSE connection", fmt.Errorf("nil HTTP response")))
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
+	if resp.Body == nil {
+		resp.Body = io.NopCloser(bytes.NewReader(nil))
+	}
+
+	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+		t.setSessionID(sessionID)
+	}
+
+	// 401: run the OAuth refresh once (reusing the single-flight path used by
+	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
+	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		if err := t.refreshOAuthToken(connCtx); err != nil {
+			connCancel()
+			t.reportError(NewTransportError("failed to refresh OAuth token", err))
+			return
+		}
+		connCancel()
+		t.openInboundSSE(lifecycleCtx, true, resumeToken)
+		return
+	}
+
+	// 405: the server does not support GET on this endpoint. Matching TS,
+	// this is silent (no error reported, no reconnection scheduled).
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		connCancel()
+		return
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
+			t.expireSessionID(sessionIDForRequest)
+		}
+		statusText := http.StatusText(resp.StatusCode)
+		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, statusText)
+		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
+		connCancel()
+		return
+	}
+
+	t.sseMu.Lock()
+	t.sseConnCancel = connCancel
+	t.sseReconnectAttempts = 0
+	t.sseMu.Unlock()
+
+	t.readInboundSSEStream(connCtx, connCancel, resp.Body)
+}
+
+// readInboundSSEStream parses the inbound SSE stream, tracking the last
+// event id for resumption (Last-Event-Id) and queueing JSON-RPC messages for
+// Receive, matching TS's processEvents(). A clean end-of-stream (EOF)
+// returns without scheduling a reconnect (matching TS: only a read error
+// does); a read error schedules a reconnect unless the connection was
+// intentionally canceled (Close, or a switch to the modern protocol).
+func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel context.CancelFunc, body io.ReadCloser) {
+	defer connCancel()
+	defer body.Close() //nolint:errcheck
+	parser := streaming.NewSSEParser(body)
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			if connCtx.Err() != nil {
+				return
+			}
+			t.reportError(NewTransportError("failed to read inbound SSE event", err))
+			t.scheduleInboundSSEReconnection()
+			return
+		}
+
+		if event.ID != "" {
+			t.sseMu.Lock()
+			t.lastInboundEventID = event.ID
+			t.sseMu.Unlock()
+		}
+
+		if event.Event != "" && event.Event != "message" {
+			continue
+		}
+		var msg MCPMessage
+		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
+			continue
+		}
+		t.queueReceivedMessages([]*MCPMessage{&msg})
+	}
+}
+
 // Receive receives a message from the MCP server
 // In HTTP transport, messages are queued from Send operations
 func (t *HTTPTransport) Receive(ctx context.Context) (*MCPMessage, error) {
@@ -539,11 +946,34 @@ func (t *HTTPTransport) IsConnected() bool {
 }
 
 // SetProtocolVersion stores the negotiated MCP protocol version for outbound
-// transport request headers.
+// transport request headers. It also mirrors TS HttpMCPTransport's
+// setProtocolVersion: once the inbound SSE lifecycle has started (Connect
+// has run), switching to the modern protocol closes any standing inbound SSE
+// connection, and switching (back) to a legacy protocol (re)opens one if
+// none is active.
 func (t *HTTPTransport) SetProtocolVersion(version string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.protocolVersion = version
+	t.mu.Unlock()
+
+	t.sseMu.Lock()
+	lifecycleStarted := t.sseLifecycleCtx != nil
+	t.sseMu.Unlock()
+	if !lifecycleStarted {
+		return
+	}
+
+	if t.isModernProtocol() {
+		t.closeInboundSSEConnection()
+		return
+	}
+
+	t.sseMu.Lock()
+	hasConn := t.sseConnCancel != nil
+	t.sseMu.Unlock()
+	if !hasConn {
+		t.startInboundSSE(false, "")
+	}
 }
 
 // SupportsProtocolVersionDiscovery reports that HTTPTransport (streamable

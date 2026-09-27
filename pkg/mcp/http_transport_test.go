@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 func TestNewHTTPTransportUsesCustomHTTPClient(t *testing.T) {
@@ -296,6 +298,119 @@ func TestHTTPTransportNon2xxReturnsStructuredMCPClientError(t *testing.T) {
 	if sse.protocolHeader != "2025-06-18" {
 		t.Fatalf("mcp-protocol-version = %q, want negotiated version", sse.protocolHeader)
 	}
+}
+
+// TestHTTPTransportPOST404MessageWithoutSessionID mirrors TS send()'s "does
+// not support HTTP transport" 404 suffix, which fires when the failed
+// request carried no session id (e.g. the `initialize` request, or any
+// request before a session was ever established).
+func TestHTTPTransportPOST404MessageWithoutSessionID(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "initialize", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	err = transport.Send(t.Context(), msg)
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("Send error = %T %v, want *MCPClientError", err, err)
+	}
+	if !strings.Contains(clientErr.Message, "does not support HTTP transport") {
+		t.Fatalf("message = %q, want it to mention does not support HTTP transport", clientErr.Message)
+	}
+	if strings.Contains(clientErr.Message, "session expired") {
+		t.Fatalf("message = %q, should not mention session expired without a session id", clientErr.Message)
+	}
+}
+
+// TestHTTPTransportPOST404MessageWithSessionID mirrors TS send()'s
+// session-expired 404 suffix, which fires when the failed request carried a
+// (now stale) session id.
+func TestHTTPTransportPOST404MessageWithSessionID(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "tools/list", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	err = transport.Send(t.Context(), msg)
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("Send error = %T %v, want *MCPClientError", err, err)
+	}
+	if !strings.Contains(clientErr.Message, "The MCP session expired") {
+		t.Fatalf("message = %q, want it to mention the session expired", clientErr.Message)
+	}
+	if strings.Contains(clientErr.Message, "does not support HTTP transport") {
+		t.Fatalf("message = %q, should not mention does-not-support-transport when a session id was sent", clientErr.Message)
+	}
+}
+
+// TestHTTPTransportSetsUserAgentOnAllRequestKinds mirrors TS commonHeaders'
+// User-Agent application (withUserAgentSuffix/getRuntimeEnvironmentUserAgent),
+// which covers every request the transport makes: POST send, GET inbound
+// SSE, and DELETE close.
+func TestHTTPTransportSetsUserAgentOnAllRequestKinds(t *testing.T) {
+	sse := &userAgentRecordingSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	sse.mu.Lock()
+	defer sse.mu.Unlock()
+	for _, req := range sse.requests {
+		if got := req.Header.Get("User-Agent"); got != version.UserAgent() {
+			t.Fatalf("%s User-Agent = %q, want %q", req.Method, got, version.UserAgent())
+		}
+	}
+	if len(sse.requests) < 2 {
+		t.Fatalf("expected at least a POST and a DELETE request, got %d", len(sse.requests))
+	}
+}
+
+type userAgentRecordingSSEClient struct {
+	mu       sync.Mutex
+	requests []*http.Request
+}
+
+func (c *userAgentRecordingSSEClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req.Clone(req.Context()))
+	c.mu.Unlock()
+	if req.Method == http.MethodDelete {
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
+	}, nil
 }
 
 type networkErrorSSEClient struct {
