@@ -767,3 +767,241 @@ func TestHTTPTransportRefreshWaitsAndDoesNotSendAfterAuthFailure(t *testing.T) {
 		t.Fatalf("HTTP request count = %d, want 0", got)
 	}
 }
+
+// TestHTTPTransportSuppressesOnErrorWhenCallerContextAlreadyCanceled mirrors
+// TS send()'s outer catch guard, `if (options?.signal?.aborted) { throw
+// error; }`: when the caller's own context/signal is already canceled, the
+// resulting error is still returned but must not be reported via OnError.
+func TestHTTPTransportSuppressesOnErrorWhenCallerContextAlreadyCanceled(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusInternalServerError, body: "Internal Server Error"}
+	var captured error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError:   func(err error) { captured = err },
+	})
+	transport.connected = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msg, err := CreateRequest(1, "test", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(ctx, msg); err == nil {
+		t.Fatal("expected an error for the 500 response")
+	}
+	if captured != nil {
+		t.Fatalf("OnError should not fire once the caller's context is canceled, got: %v", captured)
+	}
+}
+
+// TestHTTPTransportReportsOAuthRetryRefreshFailureOnce guards against
+// double-reporting when a 401 response triggers the retry-refresh path (the
+// scenario TS's authorizeOnce catch + outer catch double-reports for its own
+// authProvider flow): the refresh failure must be reported via OnError
+// exactly once.
+func TestHTTPTransportReportsOAuthRetryRefreshFailureOnce(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
+	var mu sync.Mutex
+	var captured []error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError: func(err error) {
+			mu.Lock()
+			captured = append(captured, err)
+			mu.Unlock()
+		},
+		OAuth: &OAuthConfig{
+			AccessToken: "still-valid-until-server-said-no",
+			ExpiresAt:   time.Now().Add(time.Hour),
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				return "", 0, errors.New("refresh rejected")
+			},
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	sendErr := transport.Send(t.Context(), msg)
+	if sendErr == nil || !strings.Contains(sendErr.Error(), "refresh rejected") {
+		t.Fatalf("Send error = %v, want it to mention refresh rejected", sendErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting): %v", len(captured), captured)
+	}
+}
+
+// TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce guards
+// against double-reporting when the retry-refresh succeeds but the retried
+// request still comes back 401 (refresh produced a token the server still
+// rejects): the final non-2xx error must be reported via OnError exactly
+// once, not once per attempt.
+func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
+	var mu sync.Mutex
+	var captured []error
+	var refreshes int32
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError: func(err error) {
+			mu.Lock()
+			captured = append(captured, err)
+			mu.Unlock()
+		},
+		OAuth: &OAuthConfig{
+			AccessToken: "stale",
+			ExpiresAt:   time.Now().Add(time.Hour),
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				atomic.AddInt32(&refreshes, 1)
+				return "still-rejected", time.Hour, nil
+			},
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	sendErr := transport.Send(t.Context(), msg)
+	if sendErr == nil {
+		t.Fatal("expected an error: server keeps returning 401")
+	}
+	var clientErr *MCPClientError
+	if !errors.As(sendErr, &clientErr) || clientErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Send error = %T %v, want *MCPClientError with StatusCode 401", sendErr, sendErr)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d, want exactly 1 (retried once, per TS's single-retry attempt(true))", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting across the retry): %v", len(captured), captured)
+	}
+}
+
+// closeSignalingReadCloser wraps a reader and signals (closes a channel) the
+// moment its Close() is called, letting a test detect that a reader
+// goroutine actually ran its deferred body.Close() and exited, rather than
+// leaking.
+type closeSignalingReadCloser struct {
+	io.Reader
+	closed chan struct{}
+}
+
+func (c *closeSignalingReadCloser) Close() error {
+	close(c.closed)
+	return nil
+}
+
+// TestHTTPTransportEventStreamReaderExitsSilentlyWhenContextCanceled mirrors
+// TS send()'s processEvents() outer catch guard
+// (`options?.signal?.aborted... return;`): once the caller's context is
+// canceled, a subsequent read failure on the POST-response event-stream must
+// not be reported via OnError, and the reader goroutine must still exit
+// (closing the response body) rather than leak.
+func TestHTTPTransportEventStreamReaderExitsSilentlyWhenContextCanceled(t *testing.T) {
+	reader, writer := io.Pipe()
+	wrapped := &closeSignalingReadCloser{Reader: reader, closed: make(chan struct{})}
+	var mu sync.Mutex
+	var captured []error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: streamingResponseClient{body: wrapped},
+		OnError: func(err error) {
+			mu.Lock()
+			captured = append(captured, err)
+			mu.Unlock()
+		},
+	})
+	transport.connected = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(ctx, msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	// Cancel the caller's context, then force the read to fail (a real HTTP
+	// round-tripper would abort the read itself on context cancellation; the
+	// mock SSEClient does not, so the failure is injected directly).
+	cancel()
+	if err := writer.CloseWithError(errors.New("connection reset")); err != nil {
+		t.Fatalf("CloseWithError: %v", err)
+	}
+
+	select {
+	case <-wrapped.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the SSE reader goroutine to exit (body.Close never called)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 0 {
+		t.Fatalf("OnError should not fire once the caller's context is canceled, got: %v", captured)
+	}
+}
+
+// TestHTTPTransportEventStreamReaderReportsReadFailureWhenContextLive is the
+// counterpart to the canceled-context test above: a read failure while the
+// caller's context is still live must be reported via OnError, matching TS's
+// processEvents() outer catch (`this.onerror?.(error)`).
+func TestHTTPTransportEventStreamReaderReportsReadFailureWhenContextLive(t *testing.T) {
+	reader, writer := io.Pipe()
+	wrapped := &closeSignalingReadCloser{Reader: reader, closed: make(chan struct{})}
+	var mu sync.Mutex
+	var captured []error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: streamingResponseClient{body: wrapped},
+		OnError: func(err error) {
+			mu.Lock()
+			captured = append(captured, err)
+			mu.Unlock()
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	if err := writer.CloseWithError(errors.New("connection reset")); err != nil {
+		t.Fatalf("CloseWithError: %v", err)
+	}
+
+	select {
+	case <-wrapped.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the SSE reader goroutine to exit (body.Close never called)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("OnError calls = %d, want exactly 1 for a live-context read failure: %v", len(captured), captured)
+	}
+	if !strings.Contains(captured[0].Error(), "failed to read event-stream response") {
+		t.Fatalf("error = %v, want it to mention failed to read event-stream response", captured[0])
+	}
+}
