@@ -3,22 +3,13 @@ package grokbuild
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
-
-// QuestionsSettings is TS `ACPAskUserQuestionsSettings`, ported for Grok
-// Build's native `ask_user_question` request/response shape.
-type QuestionsSettings struct {
-	RequestMethod        string
-	FromNativeRequest    func(nativeRequest json.RawMessage) (*harness.ToolCallPart, error)
-	ToNativeResponse     func(nativeRequest json.RawMessage, toolResult types.ToolResultContent) (any, error)
-	MatchesNativeRequest func(previousNativeRequest, nativeRequest json.RawMessage) bool
-}
 
 type grokBuildQuestionOption struct {
 	Label       string  `json:"label"`
@@ -39,34 +30,43 @@ type grokBuildQuestionRequest struct {
 	Mode       string              `json:"mode"`
 }
 
-// AskUserQuestions is TS `grokBuildAskUserQuestions`.
-var AskUserQuestions = QuestionsSettings{
+// AskUserQuestions is TS `grokBuildAskUserQuestions`, in the shape
+// acp.CreateACP's Settings.AskUserQuestions field requires.
+var AskUserQuestions = acp.AskUserQuestionsSettings{
 	RequestMethod:        "_x.ai/ask_user_question",
 	FromNativeRequest:    fromNativeRequest,
 	ToNativeResponse:     toNativeResponse,
 	MatchesNativeRequest: matchesNativeRequest,
 }
 
-func parseGrokBuildQuestionRequest(raw json.RawMessage) (*grokBuildQuestionRequest, error) {
+// parseGrokBuildQuestionRequest mirrors TS
+// `grokBuildQuestionRequestSchema.safeParse`: nativeRequest arrives already
+// JSON-decoded (Go `any`, TS `unknown`), so parsing is a round trip through
+// JSON to apply the schema's shape/required-field checks.
+func parseGrokBuildQuestionRequest(nativeRequest any) (*grokBuildQuestionRequest, bool) {
+	data, err := json.Marshal(nativeRequest)
+	if err != nil {
+		return nil, false
+	}
 	var req grokBuildQuestionRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, false
 	}
 	if req.Mode != "default" && req.Mode != "plan" {
-		return nil, fmt.Errorf("grokbuild: invalid mode %q", req.Mode)
+		return nil, false
 	}
-	return &req, nil
+	return &req, true
 }
 
-func fromNativeRequest(nativeRequest json.RawMessage) (*harness.ToolCallPart, error) {
-	req, err := parseGrokBuildQuestionRequest(nativeRequest)
-	if err != nil {
-		return nil, nil //nolint:nilnil // mirrors TS returning null on a parse failure
+func fromNativeRequest(nativeRequest any, _ *acp.ToolCall) *harness.ToolCallPart {
+	req, ok := parseGrokBuildQuestionRequest(nativeRequest)
+	if !ok {
+		return nil
 	}
 	input := toHarnessQuestionsInput(req)
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	return &harness.ToolCallPart{
 		ToolCallID:       req.ToolCallID,
@@ -74,7 +74,7 @@ func fromNativeRequest(nativeRequest json.RawMessage) (*harness.ToolCallPart, er
 		NativeName:       "ask_user_question",
 		Input:            string(inputJSON),
 		ProviderExecuted: false,
-	}, nil
+	}
 }
 
 func toHarnessQuestionsInput(req *grokBuildQuestionRequest) harness.QuestionsToolInput {
@@ -105,17 +105,22 @@ func toHarnessQuestionsInput(req *grokBuildQuestionRequest) harness.QuestionsToo
 	return harness.QuestionsToolInput{AllowPartialAnswers: true, Questions: questions}
 }
 
-func toNativeResponse(nativeRequest json.RawMessage, toolResult types.ToolResultContent) (any, error) {
-	req, err := parseGrokBuildQuestionRequest(nativeRequest)
-	if err != nil {
-		return nil, err
+// toNativeResponse mirrors TS `toNativeResponse`: TS parses nativeRequest
+// with the throwing `.parse()` (the request was already validated once by
+// fromNativeRequest, so this is not expected to fail in practice) and
+// panics, like the TS throw, if it somehow does; acp.AskUserQuestionsSettings
+// has no error return for this callback.
+func toNativeResponse(nativeRequest any, toolResult types.ToolResultContent) any {
+	req, ok := parseGrokBuildQuestionRequest(nativeRequest)
+	if !ok {
+		panic("grokbuild: invalid native ask_user_question request")
 	}
 	output, err := parseQuestionsOutput(toolResult)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	if output.Action == harness.QuestionsActionCancelled {
-		return map[string]any{"outcome": "cancelled"}, nil
+		return map[string]any{"outcome": "cancelled"}
 	}
 
 	var answers map[string][]string
@@ -137,16 +142,16 @@ func toNativeResponse(nativeRequest json.RawMessage, toolResult types.ToolResult
 		for question, values := range answers {
 			partial[question] = strings.Join(values, ", ")
 		}
-		return map[string]any{"outcome": requestedOutcome, "partial_answers": partial}, nil
+		return map[string]any{"outcome": requestedOutcome, "partial_answers": partial}
 	}
 	if output.Action == harness.QuestionsActionDeclined {
-		return map[string]any{"outcome": "skip_interview", "partial_answers": map[string]string{}}, nil
+		return map[string]any{"outcome": "skip_interview", "partial_answers": map[string]string{}}
 	}
 	result := map[string]any{"outcome": "accepted", "answers": answers}
 	if len(annotations) > 0 {
 		result["annotations"] = annotations
 	}
-	return result, nil
+	return result
 }
 
 func toNativeAnswers(req *grokBuildQuestionRequest, output *harness.QuestionsToolOutput) (map[string][]string, map[string]map[string]string) {
@@ -176,7 +181,7 @@ func toNativeAnswers(req *grokBuildQuestionRequest, output *harness.QuestionsToo
 
 func parseQuestionsOutput(toolResult types.ToolResultContent) (*harness.QuestionsToolOutput, error) {
 	if toolResult.Output == nil || (toolResult.Output.Type != types.ToolResultOutputJSON && toolResult.Output.Type != types.ToolResultOutputErrorJSON) {
-		return nil, errors.New("Grok Build askUserQuestions requires a JSON tool result.")
+		return nil, errInvalidToolResult
 	}
 	data, err := json.Marshal(toolResult.Output.Value)
 	if err != nil {
@@ -185,10 +190,12 @@ func parseQuestionsOutput(toolResult types.ToolResultContent) (*harness.Question
 	return harness.ParseQuestionsToolOutput(data)
 }
 
-func matchesNativeRequest(previousNativeRequest, nativeRequest json.RawMessage) bool {
-	previous, err1 := parseGrokBuildQuestionRequest(previousNativeRequest)
-	current, err2 := parseGrokBuildQuestionRequest(nativeRequest)
-	if err1 != nil || err2 != nil {
+var errInvalidToolResult = errors.New("Grok Build askUserQuestions requires a JSON tool result.")
+
+func matchesNativeRequest(previousNativeRequest, nativeRequest any) bool {
+	previous, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)
+	current, ok2 := parseGrokBuildQuestionRequest(nativeRequest)
+	if !ok1 || !ok2 {
 		return false
 	}
 	return questionFingerprint(previous) == questionFingerprint(current)

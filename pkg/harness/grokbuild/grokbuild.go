@@ -4,12 +4,9 @@
 //
 // Like pkg/harness/cursor, Grok Build is an "ACP-derived" adapter: TS
 // `createGrokBuild()` is a thin configuration layer over `createACP()`
-// (`@ai-sdk/harness-acp`). See the pkg/harness/cursor package doc for the
-// rationale behind stopping at the configuration boundary (BuildConfig)
-// instead of wiring a live harness.Harness: the ACP meta-adapter host
-// (pkg/harness/acp, WG11) had not landed yet when this package was written.
-//
-//	h, err := acp.CreateACP(grokbuild.BuildConfig(settings))
+// (`@ai-sdk/harness-acp`). BuildConfig assembles the exact acp.Settings TS's
+// `createGrokBuild()` passes to `createACP()`, and CreateGrokBuild wires it
+// into a live harness.Harness.
 //
 // Grok Build's ACP implementation (`@xai-official/grok`) is installed via a
 // locked npm recipe: BuildConfig embeds the exact
@@ -21,8 +18,10 @@ package grokbuild
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridges"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
@@ -64,83 +63,27 @@ type Settings struct {
 	MintBridgeToken      harness.MintBridgeTokenCallback
 }
 
-// ToolCall is the subset of TS `ACPToolCall` the classifier closures need.
-type ToolCall struct {
-	Meta map[string]any // `_meta`
+// CreateGrokBuild returns the Grok Build harness-v1 adapter, wiring
+// BuildConfig's acp.Settings into a live harness.Harness via acp.CreateACP.
+// Mirrors TS `createGrokBuild()`.
+func CreateGrokBuild(settings ...Settings) (harness.Harness, error) {
+	s := Settings{}
+	if len(settings) > 0 {
+		s = settings[0]
+	}
+	cfg, err := BuildConfig(s)
+	if err != nil {
+		return nil, err
+	}
+	return acp.CreateACP(cfg)
 }
 
-type Source struct {
-	Type              string
-	PackageJSON       string
-	PnpmLockYAML      string
-	PnpmWorkspaceYAML string
-}
-
-type ModelMapping struct {
-	Type string
-	Path string
-}
-
-type InstructionMapping struct {
-	Type string
-	Path string
-}
-
-type OutputSchemaMapping struct {
-	Type string
-	Path []string
-}
-
-// ProviderAuthenticationValue is TS `ACPProfileValue`.
-type ProviderAuthenticationValue struct {
-	Literal      any
-	Source       string
-	EnsureSuffix string
-}
-
-// Authentication is TS `ACPAuthentication`.
-type Authentication struct {
-	MethodID string
-}
-
-// Config is the ACP meta-adapter configuration `createGrokBuild()` builds.
-// See the package doc for how to wire it once pkg/harness/acp exists.
-type Config struct {
-	Version                string
-	HarnessID              string
-	ClientAppName          string
-	ClientAppVersion       string
-	Source                 Source
-	Executable             string
-	Args                   []string
-	Auth                   AuthenticationMode
-	Authentication         Authentication
-	ResolveAuthEnv         func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error)
-	ForwardEnv             []string
-	CredentialEnv          []string
-	CredentialBrokering    func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
-	CredentialForwarding   harness.CredentialForwarding
-	ProviderAuthentication map[string]ProviderAuthenticationValue
-	ModelMapping           ModelMapping
-	InstructionMapping     InstructionMapping
-	OutputSchemaMapping    OutputSchemaMapping
-	BuiltinTools           map[string]harness.BuiltinTool
-	AskUserQuestions       QuestionsSettings
-	MCPServers             map[string]any
-	IsMCPToolCall          func(ToolCall) bool
-	Port                   *int
-	PortEndpoint           *harness.PortEndpoint
-	StartupTimeoutMS       *int
-	Reconnect              *bridge.ReconnectOptions
-	MintBridgeToken        harness.MintBridgeTokenCallback
-}
-
-// BuildConfig assembles Config from Settings, mirroring TS
-// `createGrokBuild()` (grok-build-harness.ts).
-func BuildConfig(settings Settings) (Config, error) {
+// BuildConfig assembles the acp.Settings `createGrokBuild()` builds (TS
+// `ACPHarnessSettings` as passed to `createACP()`).
+func BuildConfig(settings Settings) (acp.Settings, error) {
 	files, err := bridges.Files(bridges.GrokBuild)
 	if err != nil {
-		return Config{}, err
+		return acp.Settings{}, err
 	}
 
 	args := []string{"agent"}
@@ -149,13 +92,11 @@ func BuildConfig(settings Settings) (Config, error) {
 	}
 	args = append(args, "stdio")
 
-	return Config{
-		Version:          "v1",
-		HarnessID:        HarnessID,
-		ClientAppName:    ClientAppName,
-		ClientAppVersion: ClientAppVersion,
-		Source: Source{
-			Type:              "npm-locked",
+	cfg := acp.Settings{
+		HarnessID: HarnessID,
+		ClientApp: acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		Source: acp.Source{
+			Type:              acp.SourceNPMLocked,
 			PackageJSON:       string(files["package.json"]),
 			PnpmLockYAML:      string(files["pnpm-lock.yaml"]),
 			PnpmWorkspaceYAML: string(files["pnpm-workspace.yaml"]),
@@ -163,33 +104,33 @@ func BuildConfig(settings Settings) (Config, error) {
 		Executable:     "grok",
 		Args:           args,
 		Auth:           settings.Auth,
-		Authentication: Authentication{MethodID: "xai.api_key"},
-		ResolveAuthEnv: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
+		Authentication: &acp.Authentication{MethodID: "xai.api_key"},
+		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		ForwardEnv:    []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
-		CredentialEnv: []string{"XAI_API_KEY"},
-		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
-			return CredentialBrokering(env, sandboxEnv, headers)
-		},
+		ForwardEnv:           []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
+		CredentialEnv:        []string{"XAI_API_KEY"},
+		CredentialBrokering:  CredentialBrokering,
 		CredentialForwarding: settings.CredentialForwarding,
-		ProviderAuthentication: map[string]ProviderAuthenticationValue{
-			"GROK_CLIENT_NAME":      {Source: "client-app-name"},
-			"GROK_CLIENT_VERSION":   {Source: "client-app-version"},
-			"XAI_API_KEY":           {Source: "gateway-api-key"},
-			"GROK_XAI_API_BASE_URL": {Source: "gateway-base-url", EnsureSuffix: "/v1"},
-			"GROK_MODELS_BASE_URL":  {Source: "gateway-base-url", EnsureSuffix: "/v1"},
+		ProviderAuthentication: &acp.ProviderAuthentication{
+			GatewayEnv: map[string]any{
+				"GROK_CLIENT_NAME":      map[string]any{"$source": "client-app-name"},
+				"GROK_CLIENT_VERSION":   map[string]any{"$source": "client-app-version"},
+				"XAI_API_KEY":           map[string]any{"$source": "gateway-api-key"},
+				"GROK_XAI_API_BASE_URL": map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},
+				"GROK_MODELS_BASE_URL":  map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},
+			},
 		},
-		ModelMapping: ModelMapping{Type: "session-model", Path: "modelId"},
-		InstructionMapping: InstructionMapping{
-			Type: "filesystem",
-			Path: ".grok/AGENTS.md",
+		ModelMapping: acp.ModelMapping{Type: acp.ModelMappingSessionModel, Path: "modelId"},
+		InstructionMapping: &acp.InstructionMapping{
+			Type:     acp.InstructionMappingFilesystem,
+			FilePath: ".grok/AGENTS.md",
 		},
-		OutputSchemaMapping: OutputSchemaMapping{Type: "session-prompt-meta", Path: []string{"outputSchema"}},
+		OutputSchemaMapping: &acp.OutputSchemaMapping{Path: []string{"outputSchema"}},
 		BuiltinTools:        BuiltinTools,
-		AskUserQuestions:    AskUserQuestions,
+		AskUserQuestions:    &AskUserQuestions,
 		MCPServers:          settings.MCPServers,
-		IsMCPToolCall: func(call ToolCall) bool {
+		IsMcpToolCall: func(call acp.ToolCall) bool {
 			meta, ok := call.Meta["x.ai/tool"].(map[string]any)
 			if !ok {
 				return false
@@ -197,20 +138,27 @@ func BuildConfig(settings Settings) (Config, error) {
 			namespace, _ := meta["namespace"].(string)
 			return namespace == "mcp"
 		},
-		Port:             settings.Port,
-		PortEndpoint:     settings.PortEndpoint,
-		StartupTimeoutMS: settings.StartupTimeoutMS,
-		Reconnect:        settings.Reconnect,
-		MintBridgeToken:  settings.MintBridgeToken,
-	}, nil
+		PortEndpoint:    settings.PortEndpoint,
+		MintBridgeToken: settings.MintBridgeToken,
+	}
+	if settings.Port != nil {
+		cfg.Port = *settings.Port
+	}
+	if settings.StartupTimeoutMS != nil {
+		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.Reconnect != nil {
+		cfg.Reconnect = *settings.Reconnect
+	}
+	return cfg, nil
 }
 
 // CredentialBrokering builds the request transformation mapping Grok
 // Build's sandbox XAI_API_KEY back to the host credential. Mirrors the
 // `credentialBrokering` closure in `createGrokBuild()`.
-func CredentialBrokering(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
-		return nil, nil
+		return nil
 	}
 	matchURL := env["GROK_XAI_API_BASE_URL"]
 	if matchURL == "" {
@@ -230,7 +178,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) ([]harness.
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	return []harness.RequestTransformation{tr}, nil
+	return []harness.RequestTransformation{tr}
 }

@@ -1,6 +1,7 @@
 package grokbuild
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,11 +91,11 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (map[st
 	if err != nil {
 		return nil, nil
 	}
-	var authRecords map[string]any
-	if err := json.Unmarshal(text, &authRecords); err != nil {
+	scopeOrder, authRecords, err := decodeOrderedObject(text)
+	if err != nil {
 		return nil, nil
 	}
-	selected := selectOAuthRecord(authRecords)
+	selected := selectOAuthRecord(scopeOrder, authRecords)
 	if selected == nil {
 		return nil, nil
 	}
@@ -159,8 +160,48 @@ type selectedOAuthRecord struct {
 	record oauthRecord
 }
 
-func selectOAuthRecord(value map[string]any) *selectedOAuthRecord {
-	for scope, candidate := range value {
+// decodeOrderedObject parses a flat JSON object, returning its top-level
+// keys in their original (file) order alongside the decoded value map. Go's
+// map iteration order is randomized, unlike TS's insertion-ordered
+// `Object.entries`, so selectOAuthRecord needs this to deterministically
+// pick the same "first matching scope" TS does when auth.json holds more
+// than one xAI OAuth record.
+func decodeOrderedObject(data []byte) ([]string, map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, nil, err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, nil, fmt.Errorf("grokbuild: auth.json is not a JSON object")
+	}
+	var order []string
+	m := map[string]any{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, nil, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, nil, fmt.Errorf("grokbuild: auth.json has a non-string key")
+		}
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return nil, nil, err
+		}
+		order = append(order, key)
+		m[key] = v
+	}
+	return order, m, nil
+}
+
+// selectOAuthRecord mirrors TS `selectOAuthRecord`: the first scope (in
+// auth.json's own key order) whose `issuer::clientId` suffix matches the
+// pinned xAI OAuth client and carries a complete record.
+func selectOAuthRecord(scopeOrder []string, value map[string]any) *selectedOAuthRecord {
+	for _, scope := range scopeOrder {
+		candidate := value[scope]
 		record, ok := candidate.(map[string]any)
 		if !ok {
 			continue

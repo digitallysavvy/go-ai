@@ -1,6 +1,7 @@
 package grokbuild
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -23,12 +24,18 @@ var nativeRequestJSON = []byte(`{
 	]
 }`)
 
-// Mirrors "translates the native request".
-func TestFromNativeRequest(t *testing.T) {
-	part, err := AskUserQuestions.FromNativeRequest(nativeRequestJSON)
-	if err != nil {
+func toAny(t *testing.T, data []byte) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
 		t.Fatal(err)
 	}
+	return v
+}
+
+// Mirrors "translates the native request".
+func TestFromNativeRequest(t *testing.T) {
+	part := AskUserQuestions.FromNativeRequest(toAny(t, nativeRequestJSON), nil)
 	if part == nil {
 		t.Fatal("expected a tool-call part")
 	}
@@ -58,10 +65,7 @@ func TestToNativeResponse(t *testing.T) {
 		Output:     &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: outputValue},
 	}
 
-	got, err := AskUserQuestions.ToNativeResponse(nativeRequestJSON, toolResult)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := AskUserQuestions.ToNativeResponse(toAny(t, nativeRequestJSON), toolResult)
 	want := map[string]any{
 		"outcome": "accepted",
 		"answers": map[string][]string{"Which framework?": {"React", "Other"}},
@@ -88,10 +92,7 @@ func TestToNativeResponse_Cancelled(t *testing.T) {
 	toolResult := types.ToolResultContent{
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{"action": "cancelled"}},
 	}
-	got, err := AskUserQuestions.ToNativeResponse(nativeRequestJSON, toolResult)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := AskUserQuestions.ToNativeResponse(toAny(t, nativeRequestJSON), toolResult)
 	if !reflect.DeepEqual(got, map[string]any{"outcome": "cancelled"}) {
 		t.Errorf("got %v", got)
 	}
@@ -99,20 +100,17 @@ func TestToNativeResponse_Cancelled(t *testing.T) {
 
 func TestMatchesNativeRequest(t *testing.T) {
 	other := []byte(`{"sessionId":"session-2","toolCallId":"call-2","mode":"default","questions":[{"question":"Which framework?","options":[{"label":"React","description":"React framework"},{"label":"Vue","description":"Vue framework"}],"multi_select":false}]}`)
-	if !AskUserQuestions.MatchesNativeRequest(nativeRequestJSON, other) {
+	if !AskUserQuestions.MatchesNativeRequest(toAny(t, nativeRequestJSON), toAny(t, other)) {
 		t.Error("expected requests with identical questions/mode to match")
 	}
 	different := []byte(`{"sessionId":"session-3","toolCallId":"call-3","mode":"plan","questions":[]}`)
-	if AskUserQuestions.MatchesNativeRequest(nativeRequestJSON, different) {
+	if AskUserQuestions.MatchesNativeRequest(toAny(t, nativeRequestJSON), toAny(t, different)) {
 		t.Error("expected requests with a different mode not to match")
 	}
 }
 
 func TestFromNativeRequest_InvalidRequest(t *testing.T) {
-	part, err := AskUserQuestions.FromNativeRequest([]byte(`{"not":"valid"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	part := AskUserQuestions.FromNativeRequest(toAny(t, []byte(`{"not":"valid"}`)), nil)
 	if part != nil {
 		t.Errorf("expected nil for an invalid native request, got %+v", part)
 	}
