@@ -1124,7 +1124,16 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
-	// First real chunk: text
+	// First chunk: text-start boundary.
+	textStart, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() text-start chunk error: %v", err)
+	}
+	if textStart.Type != provider.ChunkTypeTextStart {
+		t.Errorf("unexpected textStart: type=%v", textStart.Type)
+	}
+
+	// Next real chunk: text
 	chunk1, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() text chunk error: %v", err)
@@ -1132,6 +1141,9 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 	if chunk1.Type != provider.ChunkTypeText || chunk1.Text != "Hello" {
 		t.Errorf("unexpected chunk1: type=%v text=%q", chunk1.Type, chunk1.Text)
 	}
+
+	// Note: this fixture has no content_block_stop event, so no text-end
+	// chunk is emitted before the finish chunk.
 
 	// Finish chunk: should have full usage
 	finishChunk, err := stream.Next()

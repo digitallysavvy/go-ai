@@ -417,6 +417,26 @@ func TestStream_CompleteSignedOnDemandCompaction(t *testing.T) {
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
+	// text-start carries providerMetadata.anthropic = {type: 'compaction',
+	// signature} (TS content_block_start "compaction" case).
+	textStart, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() text-start chunk error: %v", err)
+	}
+	if textStart.Type != provider.ChunkTypeTextStart {
+		t.Fatalf("chunk type = %v, want text-start", textStart.Type)
+	}
+	var startMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textStart.ProviderMetadata, &startMeta); err != nil {
+		t.Fatalf("decode text-start provider metadata: %v", err)
+	}
+	if startMeta["anthropic"]["type"] != "compaction" {
+		t.Errorf("text-start providerMetadata.anthropic.type = %v, want compaction", startMeta["anthropic"]["type"])
+	}
+	if startMeta["anthropic"]["signature"] != "compaction-signature" {
+		t.Errorf("text-start providerMetadata.anthropic.signature = %v, want compaction-signature", startMeta["anthropic"]["signature"])
+	}
+
 	textChunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() text chunk error: %v", err)
@@ -426,6 +446,14 @@ func TestStream_CompleteSignedOnDemandCompaction(t *testing.T) {
 	}
 	if textChunk.Text != "Summary of the conversation." {
 		t.Errorf("text = %q, want %q", textChunk.Text, "Summary of the conversation.")
+	}
+
+	textEnd, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() text-end chunk error: %v", err)
+	}
+	if textEnd.Type != provider.ChunkTypeTextEnd {
+		t.Fatalf("chunk type = %v, want text-end", textEnd.Type)
 	}
 
 	finishChunk, err := stream.Next()
@@ -449,11 +477,12 @@ func TestStream_CompleteSignedOnDemandCompaction(t *testing.T) {
 }
 
 // TestStream_CompactionDeltaAfterStart ports "should stream compaction
-// content blocks with provider metadata" (adapted for this SDK's flat text
-// chunk model, which has no text-start/text-end boundary chunks): a
-// compaction block opened via content_block_start with no inline content
-// streams its text purely through compaction_delta events, followed by a
-// plain text block.
+// content blocks with provider metadata": a compaction block opened via
+// content_block_start with no inline content streams its text purely
+// through compaction_delta events, followed by a plain text block. It only
+// asserts on the accumulated text (ChunkTypeText chunks), so it's
+// unaffected by the text-start/text-end boundary chunks interleaved
+// around each block.
 func TestStream_CompactionDeltaAfterStart(t *testing.T) {
 	sseData := "" +
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-4-6\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n" +

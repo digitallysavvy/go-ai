@@ -657,6 +657,11 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			// against, and implicitly provisioned code execution must stay
 			// self-describing (dynamic), matching TS convertAnthropicBatchResponse.
 			markCodeExecutionDynamic: true,
+			// Batch results have no original prompt to derive citationDocuments
+			// from, and preserve the full raw citations array (see
+			// rawBatchCitations doc comment), matching TS
+			// convertAnthropicBatchResponse.
+			rawBatchCitations: true,
 		})
 		return &provider.BatchV4ItemResult{
 			Type:       provider.BatchRequestTypeText,

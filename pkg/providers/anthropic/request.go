@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
@@ -355,8 +356,12 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if len(o.MCPServers) > 0 {
 		body["mcp_servers"] = mcpServersWire(o.MCPServers)
 	}
-	if c := containerWire(o); c != nil {
-		body["container"] = c
+	containerBody, err := containerWire(o)
+	if err != nil {
+		return nil, err
+	}
+	if containerBody != nil {
+		body["container"] = containerBody
 	}
 
 	body["messages"] = promptInfo.Messages
@@ -621,13 +626,17 @@ func mcpServersWire(servers []MCPServerConfig) []map[string]interface{} {
 }
 
 // containerWire returns the container request field: a plain ID string, or an
-// object {id, skills} when skills are configured.
-func containerWire(o *ModelOptions) interface{} {
+// object {id, skills} when skills are configured. For a Type "custom" skill,
+// the wire skill_id is resolved from ProviderReference against this
+// provider's name ("anthropic"), matching TS's `resolveProviderReference`
+// call in anthropic-language-model.ts; a missing "anthropic" entry returns
+// the same NoSuchProviderReferenceError TS throws.
+func containerWire(o *ModelOptions) (interface{}, error) {
 	if o.ContainerID != "" {
-		return o.ContainerID
+		return o.ContainerID, nil
 	}
 	if o.Container == nil {
-		return nil
+		return nil, nil
 	}
 	if len(o.Container.Skills) > 0 {
 		containerBody := map[string]interface{}{}
@@ -636,9 +645,17 @@ func containerWire(o *ModelOptions) interface{} {
 		}
 		skills := make([]map[string]interface{}, len(o.Container.Skills))
 		for i, s := range o.Container.Skills {
+			skillID := s.SkillID
+			if s.Type == "custom" {
+				resolved, err := providerutils.ResolveProviderReference(s.ProviderReference, "anthropic")
+				if err != nil {
+					return nil, err
+				}
+				skillID = resolved
+			}
 			skill := map[string]interface{}{
 				"type":     s.Type,
-				"skill_id": s.SkillID,
+				"skill_id": skillID,
 			}
 			if s.Version != "" {
 				skill["version"] = s.Version
@@ -646,10 +663,10 @@ func containerWire(o *ModelOptions) interface{} {
 			skills[i] = skill
 		}
 		containerBody["skills"] = skills
-		return containerBody
+		return containerBody, nil
 	}
 	if o.Container.ID != "" {
-		return o.Container.ID
+		return o.Container.ID, nil
 	}
-	return nil
+	return nil, nil
 }

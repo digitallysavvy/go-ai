@@ -1,5 +1,7 @@
 package anthropic
 
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
 // StructuredOutputMode controls how JSON structured output is generated.
 // Different Anthropic models support different strategies for producing
 // structured JSON output, and this option lets you explicitly choose
@@ -407,11 +409,22 @@ type MCPToolConfiguration struct {
 }
 
 // ContainerSkill configures a skill within an agent container.
+//
+// For Type "anthropic" (built-in skills), SkillID identifies the skill
+// directly. For Type "custom", ProviderReference is used instead: a map of
+// provider name -> provider-specific skill ID (TS
+// AnthropicLanguageModelOptions.container.skills[].providerReference,
+// SharedV4ProviderReference), resolved via ResolveProviderReference against
+// this model's provider name ("anthropic") when building the request body
+// (TS resolveProviderReference in anthropic-language-model.ts).
 type ContainerSkill struct {
 	// Type is "anthropic" for built-in skills or "custom" for custom skills
 	Type string `json:"type"`
-	// SkillID is the identifier of the skill
-	SkillID string `json:"skillId"`
+	// SkillID is the identifier of the skill. Used when Type is "anthropic".
+	SkillID string `json:"skillId,omitempty"`
+	// ProviderReference maps provider name -> provider-specific skill ID.
+	// Used when Type is "custom".
+	ProviderReference types.ProviderReference `json:"providerReference,omitempty"`
 	// Version is the optional skill version
 	Version string `json:"version,omitempty"`
 }

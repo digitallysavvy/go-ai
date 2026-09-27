@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -140,6 +141,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		markCodeExecutionDynamic: req.markCodeExecutionDynamic,
 		providerOptionsName:      req.providerOptionsName,
 		usedCustomProviderKey:    req.usedCustomProviderKey,
+		citationDocuments:        extractCitationDocuments(opts.Prompt.Messages),
 	})
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.RawRequest = req.body
@@ -174,6 +176,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	stream.requestBody = body
+	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
@@ -271,6 +274,19 @@ type convertOptions struct {
 	// 'anthropic') providerMetadata[providerOptionsName] = anthropicMetadata`.
 	providerOptionsName   string
 	usedCustomProviderKey bool
+	// citationDocuments maps citation document_index -> title/filename/mediaType,
+	// extracted from citation-enabled file parts in the request prompt (TS
+	// extractCitationDocuments). Used to resolve page_location/char_location
+	// citations into document source parts.
+	citationDocuments []citationDocument
+	// rawBatchCitations is true for batch result conversion (TS
+	// convertAnthropicBatchResponse), which preserves the *entire* raw
+	// citations array on the text part's providerMetadata instead of just the
+	// web-search subset doGenerate/doStream keep — batch results are
+	// retrieved independently of the original request, so there is no
+	// document ordering to normalize page_location/char_location citations
+	// against (citationDocuments is left empty in that case).
+	rawBatchCitations bool
 }
 
 func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, co convertOptions) *types.GenerateResult {
@@ -297,18 +313,57 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	if !usesJsonResponseTool {
 		var textParts []string
 		var textBlocks []types.ContentPart
-		hasCompaction := false
+		hasExtraContent := false
+		// citationDocs starts from the prompt-derived documents and grows in
+		// response-content order as web_fetch_tool_result blocks are
+		// encountered below, mirroring TS's single ordered `for (const part of
+		// response.content)` loop where `citationDocuments.push(...)` runs
+		// inline with citation resolution (anthropic-language-model.ts:1216).
+		// A citation can only resolve against a web-fetched document that
+		// appears earlier in the content array, same as TS.
+		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
 		for _, content := range response.Content {
 			switch content.Type {
 			case "text":
 				textParts = append(textParts, content.Text)
-				textBlocks = append(textBlocks, types.TextContent{Text: content.Text})
+				metadataCitations := filterWebSearchCitations(content.Citations)
+				if co.rawBatchCitations {
+					metadataCitations = content.Citations
+				}
+				textBlocks = append(textBlocks, types.TextContent{
+					Text:             content.Text,
+					ProviderMetadata: citationsProviderMetadata(metadataCitations),
+				})
+				if len(metadataCitations) > 0 {
+					hasExtraContent = true
+				}
+				for _, citation := range content.Citations {
+					src, ok := createCitationSource(citation, citationDocs, anthropicGenerateID)
+					if !ok {
+						continue
+					}
+					textBlocks = append(textBlocks, src)
+					hasExtraContent = true
+				}
+			case "web_fetch_tool_result":
+				// Batch result retrieval has no original prompt to derive
+				// document ordering from at all, so indexed document citations
+				// can never be normalized safely there -- not even against a
+				// document fetched within the same batch response. TS's batch
+				// converter always resolves citations against a hardcoded `[]`
+				// (anthropic-batch.ts:762 `createCitationSource(citation, [],
+				// generateId)`), never growing it for web_fetch_tool_result.
+				if !co.rawBatchCitations {
+					if doc, ok := extractWebFetchCitationDocument(content.Content); ok {
+						citationDocs = append(citationDocs, doc)
+					}
+				}
 			case "compaction":
 				text, ok := anthropicCompactionText(content.Content)
 				if !ok {
 					continue
 				}
-				hasCompaction = true
+				hasExtraContent = true
 				textParts = append(textParts, text)
 				textBlocks = append(textBlocks, types.TextContent{
 					Text:             text,
@@ -320,10 +375,11 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			result.Text = strings.Join(textParts, "")
 		}
 		// Only surface text blocks as explicit content parts when a compaction
-		// block is present. In the common single-text-block case, result.Text
-		// alone carries the content (generateResultContentParts synthesizes the
-		// content part from it), matching existing behavior.
-		if hasCompaction {
+		// block or citations are present. In the common single-text-block,
+		// no-citations case, result.Text alone carries the content
+		// (generateResultContentParts synthesizes the content part from it),
+		// matching existing behavior.
+		if hasExtraContent {
 			result.Content = append(result.Content, textBlocks...)
 		}
 	}
@@ -371,6 +427,11 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// specially: its input is marshalled to JSON and set as the text result rather
 	// than surfaced as a ToolCall. The usesJsonResponseTool gate prevents a real
 	// user tool named "json" from being misidentified.
+	//
+	// mcpToolCalls tracks each mcp_tool_use call's toolName/providerMetadata by
+	// id so the paired mcp_tool_result (TS mcpToolCalls[part.tool_use_id]) can
+	// resolve the same toolName and reuse the same providerMetadata.
+	mcpToolCalls := map[string]mcpToolCallInfo{}
 	for _, content := range response.Content {
 		switch content.Type {
 		case "tool_use":
@@ -408,16 +469,15 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		case "mcp_tool_use":
 			// MCP tool calls are executed server-side; surface them as
 			// provider-executed dynamic tool calls (TS mcp_tool_use handling).
+			meta := anthropicMCPToolUseMetadata(content.ServerName)
+			mcpToolCalls[content.ID] = mcpToolCallInfo{toolName: content.Name, providerMetadata: meta}
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 				ID:               content.ID,
 				ToolName:         content.Name,
 				Arguments:        content.Input,
 				ProviderExecuted: true,
 				Dynamic:          true,
-				ProviderMetadata: map[string]interface{}{"anthropic": map[string]interface{}{
-					"type":       "mcp-tool-use",
-					"serverName": content.ServerName,
-				}},
+				ProviderMetadata: meta,
 			})
 		case "advisor_tool_result":
 			trc := types.ToolResultContent{
@@ -466,9 +526,33 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				trc.Result = convertWebFetchToolResult(content.Content)
 			}
 			result.Content = append(result.Content, trc)
+		case "mcp_tool_result":
+			// Resolve toolName and providerMetadata from the paired mcp_tool_use
+			// call (TS: `mcpToolCalls[part.tool_use_id].toolName` /
+			// `.providerMetadata`), and mark the result dynamic like TS.
+			call := mcpToolCalls[content.ToolUseID]
+			trc := types.ToolResultContent{
+				ToolCallID: content.ToolUseID,
+				ToolName:   call.toolName,
+				Dynamic:    true,
+			}
+			if call.providerMetadata != nil {
+				if meta, err := json.Marshal(call.providerMetadata); err == nil {
+					trc.ProviderMetadata = meta
+				}
+			}
+			var parsed interface{}
+			if len(content.Content) > 0 {
+				json.Unmarshal(content.Content, &parsed) //nolint:errcheck
+			}
+			if content.IsError {
+				trc.Error = fmt.Sprintf("%v", parsed)
+			} else {
+				trc.Result = parsed
+			}
+			result.Content = append(result.Content, trc)
 		case "code_execution_tool_result", "bash_code_execution_tool_result",
-			"text_editor_code_execution_tool_result", "tool_search_tool_result",
-			"mcp_tool_result":
+			"text_editor_code_execution_tool_result", "tool_search_tool_result":
 			// Deferred provider tool results: the provider executed the tool in a
 			// previous step and delivers the result inline here. Surface as
 			// ToolResultContent so the SDK's pendingDeferredToolCalls map is cleared.
@@ -1056,6 +1140,26 @@ type UsageIteration struct {
 	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`     // Cache read tokens for this iteration
 }
 
+// mcpToolCallInfo records an mcp_tool_use call's toolName and providerMetadata
+// so a later mcp_tool_result block for the same tool_use_id can resolve the
+// same values (TS mcpToolCalls[part.id]).
+type mcpToolCallInfo struct {
+	toolName         string
+	providerMetadata map[string]interface{}
+}
+
+// anthropicMCPToolUseMetadata builds the {"anthropic":{"type":"mcp-tool-use",
+// "serverName":...}} providerMetadata shared by an mcp_tool_use call and its
+// paired mcp_tool_result.
+func anthropicMCPToolUseMetadata(serverName string) map[string]interface{} {
+	return map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"type":       "mcp-tool-use",
+			"serverName": serverName,
+		},
+	}
+}
+
 // anthropicContent represents content in an Anthropic response
 type anthropicContent struct {
 	Type      string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking", "*_tool_result"
@@ -1068,6 +1172,13 @@ type anthropicContent struct {
 	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
 	Signature string                 `json:"signature,omitempty"` // For "thinking" type
 	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
+	// Citations holds the raw citation objects attached to a "text" content
+	// block (page_location, char_location, content_block_location,
+	// search_result_location, web_search_result_location, ...). Kept as raw
+	// maps so unknown/newer citation shapes round-trip untouched into
+	// providerMetadata.anthropic.citations (TS keeps the validated-but-typed
+	// object as-is).
+	Citations []map[string]interface{} `json:"citations,omitempty"`
 	// ToolsetName is set on tool_use blocks of toolset members.
 	ToolsetName string `json:"toolset_name,omitempty"`
 	// Caller identifies the caller of a tool_use / server_tool_use block.
@@ -1106,6 +1217,21 @@ type streamContentBlock struct {
 	toolsetName string
 	memberName  string
 	caller      map[string]interface{}
+	// citations accumulates web_search_result_location citations observed via
+	// citations_delta events for "text" (and json-response-tool/compaction,
+	// which are also surfaced as text) blocks, emitted on text-end
+	// providerMetadata.anthropic.citations (TS contentBlock.citations).
+	citations []map[string]interface{}
+}
+
+// isTextLikeBlock reports whether a streamContentBlock's blockType is one of
+// the three block kinds that stream as ChunkTypeText content and therefore
+// get text-start/text-end boundary chunks: plain text, on-demand compaction,
+// and the synthetic json-response-tool block (jsonTool structured output
+// mode). Matches TS's `contentBlocks[value.index] = {type: 'text', ...}`
+// assignment for all three content_block_start cases.
+func isTextLikeBlock(blockType string) bool {
+	return blockType == "text" || blockType == "compaction" || blockType == "json-response-tool"
 }
 
 // anthropicStream implements provider.TextStream for Anthropic streaming
@@ -1144,6 +1270,10 @@ type anthropicStream struct {
 	// the corresponding *_tool_result block arrives (potentially in a later step).
 	serverToolCallNames map[string]string
 	toolNameMap         map[string]string
+	// mcpToolCalls maps mcp_tool_use tool_use_id -> its toolName/providerMetadata
+	// (TS mcpToolCalls[part.id]), so the paired mcp_tool_result can resolve the
+	// same toolName, set dynamic:true, and reuse the same providerMetadata.
+	mcpToolCalls map[string]mcpToolCallInfo
 
 	// markCodeExecutionDynamic marks code_execution calls dynamic (see
 	// HasDynamicFilteringWebToolWithoutCodeExecution).
@@ -1176,6 +1306,11 @@ type anthropicStream struct {
 	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
 	// request body field").
 	requestBody interface{}
+
+	// citationDocuments maps citation document_index -> title/filename/mediaType,
+	// extracted from citation-enabled file parts in the request prompt (TS
+	// extractCitationDocuments). Set by DoStream before the first Next() call.
+	citationDocuments []citationDocument
 }
 
 // newAnthropicStream creates a new Anthropic stream.
@@ -1202,6 +1337,7 @@ func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool b
 		contentBlocks:        make(map[int]*streamContentBlock),
 		pending:              pending,
 		serverToolCallNames:  make(map[string]string),
+		mcpToolCalls:         make(map[string]mcpToolCallInfo),
 		usesJsonResponseTool: usesJsonResponseTool,
 		toolNameMap:          anthropicProviderToolNameMap(tools),
 	}
@@ -1307,7 +1443,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.contentBlocks[start.Index] = &streamContentBlock{
 					blockType: "json-response-tool",
 				}
-				break
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeTextStart,
+					ID:   strconv.Itoa(start.Index),
+				}, nil
 			}
 
 			// Some deferred (programmatic) tool calls carry their full input
@@ -1422,8 +1561,15 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if input == nil {
 				input = map[string]interface{}{}
 			}
-			// Track tool call ID → tool name for mcp_tool_result lookup.
+			// Track tool call ID → tool name for mcp_tool_result lookup, and the
+			// full toolName/providerMetadata pair so the paired mcp_tool_result
+			// can resolve the same values (TS mcpToolCalls[part.id]).
 			s.serverToolCallNames[start.ContentBlock.ID] = start.ContentBlock.Name
+			mcpMeta := anthropicMCPToolUseMetadata(start.ContentBlock.ServerName)
+			s.mcpToolCalls[start.ContentBlock.ID] = mcpToolCallInfo{
+				toolName:         start.ContentBlock.Name,
+				providerMetadata: mcpMeta,
+			}
 			// Track as a non-buffering block so content_block_stop is a clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
 				blockType: "mcp-tool-use",
@@ -1431,19 +1577,27 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
-					ID:        start.ContentBlock.ID,
-					ToolName:  start.ContentBlock.Name,
-					Arguments: input,
+					ID:               start.ContentBlock.ID,
+					ToolName:         start.ContentBlock.Name,
+					Arguments:        input,
+					ProviderExecuted: true,
+					Dynamic:          true,
+					ProviderMetadata: mcpMeta,
 				},
 			}, nil
 
 		case "mcp_tool_result":
 			// MCP tool results arrive in content_block_start. Emit as ChunkTypeToolResult
-			// so the SDK's pendingDeferredToolCalls map is cleared.
-			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			// so the SDK's pendingDeferredToolCalls map is cleared. Resolve
+			// toolName/providerMetadata from the paired mcp_tool_use call (TS:
+			// `mcpToolCalls[part.tool_use_id].toolName` / `.providerMetadata`) and
+			// mark the result dynamic like TS.
+			call := s.mcpToolCalls[start.ContentBlock.ToolUseID]
 			tr := &types.ToolResult{
-				ToolCallID: start.ContentBlock.ToolUseID,
-				ToolName:   toolName,
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         call.toolName,
+				Dynamic:          true,
+				ProviderMetadata: call.providerMetadata,
 			}
 			if start.ContentBlock.IsError {
 				tr.Error = fmt.Errorf("mcp tool error: %v", start.ContentBlock.Content)
@@ -1459,27 +1613,51 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				ToolResult: tr,
 			}, nil
 
-		case "compaction":
-			// Compaction blocks are surfaced as text chunks (TS marks the
-			// content_block's providerMetadata as {type: 'compaction'}; this
-			// streaming implementation doesn't attach block-level metadata to
-			// text chunks, so it emits plain text like other blocks).
+		case "text":
+			// When a json response tool is used, the tool call is returned as
+			// text, so real "text" content blocks are ignored entirely (TS: `if
+			// (usesJsonResponseTool) { return; }`).
+			if s.usesJsonResponseTool {
+				return s.Next()
+			}
 			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "text"}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeTextStart,
+				ID:   strconv.Itoa(start.Index),
+			}, nil
+
+		case "compaction":
+			// Compaction blocks are surfaced as text chunks whose text-start
+			// carries providerMetadata.anthropic = {type: 'compaction', signature?}
+			// (TS content_block_start "compaction" case).
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "compaction"}
+			meta := map[string]interface{}{"type": "compaction"}
+			if start.ContentBlock.Signature != "" {
+				meta["signature"] = start.ContentBlock.Signature
+			}
+			metaJSON, _ := json.Marshal(map[string]interface{}{"anthropic": meta})
+			textStart := &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextStart,
+				ID:               strconv.Itoa(start.Index),
+				ProviderMetadata: metaJSON,
+			}
 			// On-demand compaction blocks may arrive fully formed in
 			// content_block_start — without any following compaction_delta
 			// events — when both signature and content are present.
 			if start.ContentBlock.Signature != "" {
 				if text, ok := start.ContentBlock.Content.(string); ok && text != "" {
-					return &provider.StreamChunk{
+					s.pending = append(s.pending, &provider.StreamChunk{
 						Type: provider.ChunkTypeText,
+						ID:   strconv.Itoa(start.Index),
 						Text: text,
-					}, nil
+					})
 				}
 			}
+			return textStart, nil
 
 		default:
-			// "text" and any unknown types: record so content_block_stop is
-			// always a clean no-op.
+			// Any unknown types: record so content_block_stop is always a
+			// clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
 				blockType: start.ContentBlock.Type,
 			}
@@ -1637,6 +1815,47 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					} else if len(part.Content) > 0 {
 						tr.Result = convertWebFetchToolResult(part.Content)
+						// Grow the citation document list in stream order so a later
+						// page_location/char_location citation (in a subsequent text
+						// block) can resolve against this fetched document, mirroring
+						// TS's inline `citationDocuments.push(...)` in the same
+						// content_block_start switch (anthropic-language-model.ts:2228).
+						if doc, ok := extractWebFetchCitationDocument(part.Content); ok {
+							s.citationDocuments = append(s.citationDocuments, doc)
+						}
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:       provider.ChunkTypeToolResult,
+						ToolResult: tr,
+					})
+				case "mcp_tool_result":
+					// Resolve toolName/providerMetadata from the paired mcp_tool_use
+					// call (populated when it was streamed, potentially in an
+					// earlier compaction iteration of this same connection), and
+					// mark the result dynamic like TS.
+					call := s.mcpToolCalls[part.ToolUseID]
+					toolName := call.toolName
+					if toolName == "" {
+						toolName = s.serverToolCallNames[part.ToolUseID]
+					}
+					tr := &types.ToolResult{
+						ToolCallID:       part.ToolUseID,
+						ToolName:         toolName,
+						Dynamic:          true,
+						ProviderMetadata: call.providerMetadata,
+					}
+					if part.IsError {
+						var errContent interface{}
+						if len(part.Content) > 0 {
+							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
+						}
+						tr.Error = fmt.Errorf("%v", errContent)
+					} else {
+						if len(part.Content) > 0 {
+							var result interface{}
+							json.Unmarshal(part.Content, &result) //nolint:errcheck
+							tr.Result = result
+						}
 					}
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type:       provider.ChunkTypeToolResult,
@@ -1644,8 +1863,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					})
 				case "code_execution_tool_result", "bash_code_execution_tool_result",
 					"text_editor_code_execution_tool_result", "tool_search_tool_result",
-					"advisor_tool_result",
-					"mcp_tool_result":
+					"advisor_tool_result":
 					// Deferred provider tool results pre-populated in message_start.
 					// Emit as ChunkTypeToolResult so the SDK can clear pendingDeferredToolCalls.
 					toolName := s.serverToolCallNames[part.ToolUseID]
@@ -1686,11 +1904,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			Type  string `json:"type"`
 			Index int    `json:"index"`
 			Delta struct {
-				Type        string  `json:"type"`
-				Text        string  `json:"text"`
-				Content     *string `json:"content"`      // nullable in compaction_delta
-				PartialJSON string  `json:"partial_json"` // in input_json_delta
-				Thinking    string  `json:"thinking"`     // in thinking_delta
+				Type        string                 `json:"type"`
+				Text        string                 `json:"text"`
+				Content     *string                `json:"content"`      // nullable in compaction_delta
+				PartialJSON string                 `json:"partial_json"` // in input_json_delta
+				Thinking    string                 `json:"thinking"`     // in thinking_delta
+				Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
@@ -1707,6 +1926,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
+				ID:   strconv.Itoa(delta.Index),
 				Text: delta.Delta.Text,
 			}, nil
 
@@ -1725,6 +1945,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if block.blockType == "json-response-tool" {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
+					ID:   strconv.Itoa(delta.Index),
 					Text: delta.Delta.PartialJSON,
 				}, nil
 			}
@@ -1770,7 +1991,28 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if delta.Delta.Content != nil {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
+					ID:   strconv.Itoa(delta.Index),
 					Text: *delta.Delta.Content,
+				}, nil
+			}
+			return s.Next()
+
+		case "citations_delta":
+			// Accumulate web_search_result_location citations onto the owning
+			// text-like block (surfaced on its text-end providerMetadata), and
+			// emit a source chunk for every citation that resolves to one (TS
+			// createCitationSource): web_search_result_location always resolves;
+			// page_location/char_location resolve against citationDocuments
+			// extracted from the request prompt.
+			if block := s.contentBlocks[delta.Index]; block != nil && isTextLikeBlock(block.blockType) {
+				if citationType(delta.Delta.Citation) == "web_search_result_location" {
+					block.citations = append(block.citations, delta.Delta.Citation)
+				}
+			}
+			if src, ok := createCitationSource(delta.Delta.Citation, s.citationDocuments, anthropicGenerateID); ok {
+				return &provider.StreamChunk{
+					Type:          provider.ChunkTypeSource,
+					SourceContent: &src,
 				}, nil
 			}
 			return s.Next()
@@ -1863,7 +2105,21 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			return toolCallChunk, nil
 		}
-		// json-response-tool, text, reasoning, or unknown — no chunk to emit.
+		if block != nil && isTextLikeBlock(block.blockType) {
+			// text, compaction, and json-response-tool blocks all close with a
+			// text-end carrying the accumulated web-search citations, if any
+			// (TS content_block_stop "text" case).
+			var meta json.RawMessage
+			if len(block.citations) > 0 {
+				meta = citationsProviderMetadata(block.citations)
+			}
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextEnd,
+				ID:               strconv.Itoa(stop.Index),
+				ProviderMetadata: meta,
+			}, nil
+		}
+		// reasoning or unknown — no chunk to emit.
 		return s.Next()
 
 	case "message_delta":
