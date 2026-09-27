@@ -38,7 +38,7 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 				Text: "Let me help",
 				ToolCalls: []types.ToolCall{
 					{
-						ID:   "call1",
+						ID:       "call1",
 						ToolName: "get_weather",
 						Arguments: map[string]interface{}{
 							"city": "NYC",
@@ -196,6 +196,64 @@ func TestSimulateStreamingMiddleware_ChunkOrder(t *testing.T) {
 	_, err = stream.Next()
 	if err != io.EOF {
 		t.Errorf("expected EOF, got %v", err)
+	}
+}
+
+// TestSimulateStreamingMiddleware_ProviderExecutedToolResultContent verifies
+// that a provider-executed tool result carried in GenerateResult.Content
+// (e.g. Anthropic tool-search, xAI web search) is forwarded as a
+// ChunkTypeToolResult rather than silently dropped: unlike tool calls,
+// types.GenerateResult has no flat ToolResults field to fall back to.
+func TestSimulateStreamingMiddleware_ProviderExecutedToolResultContent(t *testing.T) {
+	mockModel := &mockLanguageModel{
+		generateResult: &types.GenerateResult{
+			Text: "",
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID:       "call1",
+					ToolName:         "web_search",
+					Result:           "some search result",
+					ProviderExecuted: true,
+				},
+			},
+			FinishReason: types.FinishReasonStop,
+			Usage:        types.Usage{TotalTokens: int64Ptr(10)},
+		},
+	}
+
+	middleware := SimulateStreamingMiddleware()
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var found *types.ToolResult
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeToolResult {
+			found = chunk.ToolResult
+		}
+	}
+
+	if found == nil {
+		t.Fatal("provider-executed tool result was dropped, want a ChunkTypeToolResult chunk")
+	}
+	if found.ToolCallID != "call1" || found.ToolName != "web_search" {
+		t.Errorf("unexpected tool result: %+v", found)
+	}
+	if found.Result != "some search result" {
+		t.Errorf("Result = %v, want %q", found.Result, "some search result")
+	}
+	if !found.ProviderExecuted {
+		t.Error("ProviderExecuted = false, want true")
 	}
 }
 

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strconv"
 
@@ -63,6 +64,34 @@ func SimulateStreamingMiddleware() *LanguageModelMiddleware {
 				current: 0,
 			}, nil
 		},
+	}
+}
+
+// toolResultFromResultContent converts a types.ToolResultContent (the
+// ordered-content representation used in GenerateResult.Content) into the
+// types.ToolResult shape provider.StreamChunk.ToolResult expects.
+func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
+	var errVal error
+	if rc.Error != "" {
+		errVal = errors.New(rc.Error)
+	}
+	var providerMetadata map[string]interface{}
+	if len(rc.ProviderMetadata) > 0 {
+		_ = json.Unmarshal(rc.ProviderMetadata, &providerMetadata)
+	}
+	return types.ToolResult{
+		ToolCallID:       rc.ToolCallID,
+		ToolName:         rc.ToolName,
+		Title:            rc.Title,
+		Input:            rc.Input,
+		Result:           rc.Result,
+		ModelOutput:      rc.Output,
+		Error:            errVal,
+		Dynamic:          rc.Dynamic,
+		Preliminary:      rc.Preliminary,
+		ProviderExecuted: rc.ProviderExecuted,
+		ProviderMetadata: providerMetadata,
+		ToolMetadata:     rc.ToolMetadata,
 	}
 }
 
@@ -145,6 +174,20 @@ func (s *simulatedStream) buildChunks() {
 		case types.CustomContent:
 			part := p
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &part})
+		case types.ToolResultContent:
+			// Provider-executed tool results (e.g. Anthropic tool-search,
+			// xAI file/web search) live only in Content: unlike tool calls,
+			// types.GenerateResult has no flat ToolResults field to fall
+			// back on, so dropping this case would silently lose them.
+			result := toolResultFromResultContent(p)
+			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &result})
+		case types.ToolApprovalRequestContent:
+			part := p
+			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &part})
+		case types.ToolCallContent:
+			// Deliberately not emitted here: GenerateResult.ToolCalls (used
+			// below) is the flat mirror of every ToolCallContent entry, so
+			// handling it in this switch too would duplicate the chunk.
 		}
 	}
 
