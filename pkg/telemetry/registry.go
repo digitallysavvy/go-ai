@@ -715,10 +715,10 @@ func modelCallID(parts ...string) string {
 // step/tool/etc span is correctly nested under this integration's own
 // root/step span regardless of what the other integration did to ctx.
 type legacyCallState struct {
-	mu              sync.Mutex
-	rootSpan        trace.Span
-	stepSpan        trace.Span
-	toolSpans       map[string]trace.Span
+	mu        sync.Mutex
+	rootSpan  trace.Span
+	stepSpan  trace.Span
+	toolSpans map[string]trace.Span
 	// embedSpans holds the nested "doEmbed" span(s) for this call, keyed by
 	// EmbedCallID (a single ai.embed call has one entry; ai.embedMany's
 	// batch splitting can have several concurrently) — mirrors TS's
