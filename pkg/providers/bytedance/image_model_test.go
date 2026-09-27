@@ -202,6 +202,47 @@ func TestImageModel_WarnsForUnsupportedSettings(t *testing.T) {
 	}
 }
 
+// TestImageModel_PassesHeaders mirrors "doGenerate > should pass headers":
+// provider-level and per-request headers must both reach the API call, with
+// the per-request header able to add to (not just override) the
+// provider-configured ones.
+func TestImageModel_PassesHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"test1234"}]}`))
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL + "/api/v3",
+		Headers: map[string]string{"Custom-Provider-Header": "provider-header-value"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	model := newImageModel(prov, string(ModelSeedream50))
+
+	_, err = model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:  "prompt",
+		Headers: map[string]string{"Custom-Request-Header": "request-header-value"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	if got := gotHeaders.Get("Custom-Provider-Header"); got != "provider-header-value" {
+		t.Errorf("Custom-Provider-Header = %q, want %q", got, "provider-header-value")
+	}
+	if got := gotHeaders.Get("Custom-Request-Header"); got != "request-header-value" {
+		t.Errorf("Custom-Request-Header = %q, want %q", got, "request-header-value")
+	}
+	if got := gotHeaders.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
 // TestImageModel_APIError mirrors "doGenerate > should handle API errors".
 func TestImageModel_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
