@@ -3,6 +3,7 @@ package groq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -192,6 +193,12 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "serviceTier", "service_tier", "service-tier"); ok {
 		body["service_tier"] = serviceTier
 	}
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(compatibleOptions, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
+	}
+	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
+		body["reasoning_format"] = reasoningFormat
+	}
 	return body, warnings
 }
 
@@ -307,7 +314,15 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
+	if parsed := parseGroqProviderError(err); parsed != nil {
+		return parsed
+	}
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("groq", statusCode, "", err.Error(), err)
 }
 
 type groqResponse struct {

@@ -92,3 +92,30 @@ func TestGroq_ServiceTierForwarded(t *testing.T) {
 		t.Fatalf("service_tier = %#v, want flex", body["service_tier"])
 	}
 }
+
+// TestGroq_ParallelToolCallsAndReasoningFormatForwarded guards two Groq chat
+// options TS always sets when present (groq-chat-language-model.ts:212,240)
+// that the Go port previously never read under any key:
+// providerOptions.groq.parallelToolCalls -> parallel_tool_calls and
+// providerOptions.groq.reasoningFormat -> reasoning_format.
+func TestGroq_ParallelToolCallsAndReasoningFormatForwarded(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	model := NewLanguageModel(p, "llama-3.3-70b-versatile")
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"groq": map[string]interface{}{
+				"parallelToolCalls": false,
+				"reasoningFormat":   "hidden",
+			},
+		},
+	}, false)
+
+	if body["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v, want false", body["parallel_tool_calls"])
+	}
+	if body["reasoning_format"] != "hidden" {
+		t.Fatalf("reasoning_format = %#v, want hidden", body["reasoning_format"])
+	}
+}
