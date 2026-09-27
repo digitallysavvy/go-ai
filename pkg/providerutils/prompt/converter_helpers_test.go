@@ -49,13 +49,17 @@ func TestValidateMessages(t *testing.T) {
 }
 
 func TestToolResultAndFilePartHelpers(t *testing.T) {
+	// TS's contentValue switch JSON.stringifies output.value (the whole
+	// block array) for the "content" case, identically to "json"/"error-json"
+	// -- not a first-text-block extraction (convert-to-openai-chat-messages.ts
+	// and convert-to-openai-compatible-chat-messages.ts).
 	if got := openAIToolResultText(types.ToolResultContent{
 		ToolName: "x",
 		Output: &types.ToolResultOutput{
 			Type:    types.ToolResultOutputContent,
 			Content: []types.ToolResultContentBlock{types.TextContentBlock{Text: "content-text"}},
 		},
-	}); got != "content-text" {
+	}); got != `[{"type":"text","text":"content-text"}]` {
 		t.Fatalf("openAIToolResultText(text output) = %q", got)
 	}
 	if got := openAIToolResultText(types.ToolResultContent{
