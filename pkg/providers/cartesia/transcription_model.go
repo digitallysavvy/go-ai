@@ -18,13 +18,14 @@ import (
 )
 
 // TranscriptionModel implements provider.TranscriptionModel for Cartesia's
-// batch transcription flow (POST /stt).
+// batch transcription flow (POST /stt), and provider.TranscriptionStreamer
+// (see transcription_stream.go) for Ink 2's realtime WebSocket flow.
 //
 // ink-2 (and any "ink-2-*" variant) is a STREAMING-only realtime
 // transcription model (WebSocket-based, over /stt/websocket and
-// /stt/turns/websocket); that path is out of scope here, and DoTranscribe
-// rejects it, matching the TypeScript SDK's UnsupportedFunctionalityError
-// for non-streaming use of that model.
+// /stt/turns/websocket); DoTranscribe rejects it, matching the TypeScript
+// SDK's UnsupportedFunctionalityError for non-streaming use of that model.
+// Use DoStream for ink-2 instead.
 type TranscriptionModel struct {
 	provider *Provider
 	modelID  string

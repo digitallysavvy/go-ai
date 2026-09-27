@@ -15,10 +15,24 @@ type TranscriptionModelOptions struct {
 	TimestampGranularities []string `json:"timestampGranularities,omitempty"`
 
 	// Streaming holds options for realtime Ink 2 transcription over
-	// WebSocket. It is out of scope for this batch-only TranscriptionModel;
-	// its presence only triggers the "unsupported" warning below, matching
-	// the TypeScript SDK's doGenerate behavior.
-	Streaming map[string]interface{} `json:"streaming,omitempty"`
+	// WebSocket, consumed by TranscriptionModel.DoStream. For the
+	// batch-only DoTranscribe path its mere presence triggers the
+	// "unsupported" warning below, matching the TypeScript SDK's doGenerate
+	// behavior.
+	Streaming *StreamingOptions `json:"streaming,omitempty"`
+}
+
+// StreamingOptions contains realtime Ink 2 (WebSocket) transcription
+// options, mirroring cartesiaTranscriptionModelOptionsSchema.streaming.
+type StreamingOptions struct {
+	// Encoding is the raw audio encoding sent to Ink 2. Defaults to the
+	// encoding inferred from inputAudioFormat.type.
+	Encoding string `json:"encoding,omitempty"`
+
+	// TurnDetection uses Cartesia's native turn detection endpoint.
+	// Defaults to true. Set to false to finalize the transcript only when
+	// the audio stream ends.
+	TurnDetection *bool `json:"turnDetection,omitempty"`
 }
 
 // extractTranscriptionModelOptions decodes providerOptions["cartesia"] into
