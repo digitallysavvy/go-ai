@@ -1189,6 +1189,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
 	var accumulatedTextParts []string
+	// usedTextIDs/usedReasoningIDs track every text/reasoning block ID used
+	// across ALL steps of this call, so a later step reusing an ID a prior
+	// step already used (many providers restart block IDs like "0" every
+	// step) gets remapped to a fresh ID instead of colliding in the merged
+	// full stream and in the UI message reducer's per-ID part map (audit row
+	// c6d57f3 / WG5 #113). stepTextIDRemap/stepReasoningIDRemap hold the
+	// current step's original-ID -> remapped-ID mapping and are reset at the
+	// start of every step (a fresh model call may reuse "0" safely from that
+	// step's own perspective; only cross-step reuse needs remapping).
+	usedTextIDs := make(map[string]bool)
+	usedReasoningIDs := make(map[string]bool)
 	pendingStepCtx := r.initialStepCtx
 	pendingStepCancel := r.initialStepCancel
 	abortFired := false
@@ -1332,6 +1343,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepSawOutput bool
 		// streamedToolResults tracks provider-inline tool results by tool call ID.
 		streamedToolResults := make(map[string]types.ToolResult)
+		// stepTextIDRemap/stepReasoningIDRemap: see usedTextIDs/usedReasoningIDs above.
+		stepTextIDRemap := make(map[string]string)
+		stepReasoningIDRemap := make(map[string]string)
 
 		for {
 			chunk, err := r.nextChunk(stepCtx)
@@ -1361,6 +1375,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				})
 				continue
 			}
+			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd)
+			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd)
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
@@ -3328,6 +3344,45 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+// remapDuplicateBlockID rewrites chunk.ID in place to avoid duplicate
+// text/reasoning block IDs across the steps of a single streamText call
+// (audit row c6d57f3 / WG5 #113): many providers restart block IDs (e.g.
+// "0") on every model call, which is fine within one step but would collide
+// in the merged full stream and in the UI message reducer's per-ID part map
+// once a second step reuses an ID the first step already used.
+//
+// used tracks every ID seen so far across all steps (mutated here). remap
+// holds the CURRENT step's original-ID -> remapped-ID mapping (the caller
+// resets it at the start of each step): on the block's start chunk, a
+// colliding ID gets a freshly generated replacement recorded in remap; on
+// the block's delta/end chunks, an existing remap entry (if any) is applied
+// so every chunk for that block carries the same (possibly remapped) ID
+// throughout the step.
+func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, remap map[string]string, startType, deltaType, endType provider.ChunkType) {
+	if chunk == nil || chunk.ID == "" {
+		return
+	}
+	switch chunk.Type {
+	case startType:
+		id := chunk.ID
+		if used[id] {
+			newID := id
+			for n := 2; used[newID]; n++ {
+				newID = fmt.Sprintf("%s-%d", id, n)
+			}
+			remap[id] = newID
+			chunk.ID = newID
+			used[newID] = true
+			return
+		}
+		used[id] = true
+	case deltaType, endType:
+		if newID, ok := remap[chunk.ID]; ok {
+			chunk.ID = newID
+		}
+	}
 }
 
 // streamRequestBody returns the raw request body for s if it implements the
