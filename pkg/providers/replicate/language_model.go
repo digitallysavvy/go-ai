@@ -174,7 +174,10 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		}
 
 		if prediction.Status == "failed" || prediction.Status == "canceled" {
-			return replicatePrediction{}, fmt.Errorf("prediction %s: %s", prediction.Status, prediction.Error)
+			return replicatePrediction{}, providererrors.NewInvalidResponseDataError(
+				prediction,
+				fmt.Sprintf("Replicate generation %s: %s", prediction.Status, replicateErrorOrUnknown(prediction.Error)),
+			)
 		}
 
 		time.Sleep(pollInterval)

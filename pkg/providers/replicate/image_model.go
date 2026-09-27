@@ -196,7 +196,10 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, predictionID strin
 		}
 
 		if prediction.Status == "failed" || prediction.Status == "canceled" {
-			return replicateImagePrediction{}, fmt.Errorf("prediction %s: %s", prediction.Status, prediction.Error)
+			return replicateImagePrediction{}, providererrors.NewInvalidResponseDataError(
+				prediction,
+				fmt.Sprintf("Replicate image generation %s: %s", prediction.Status, replicateErrorOrUnknown(prediction.Error)),
+			)
 		}
 
 		if i < maxAttempts-1 {
@@ -251,4 +254,12 @@ type replicateImagePrediction struct {
 	Status string      `json:"status"`
 	Output interface{} `json:"output"`
 	Error  string      `json:"error"`
+}
+
+// replicateErrorOrUnknown mirrors TS's `prediction.error ?? 'Unknown error'`.
+func replicateErrorOrUnknown(errMsg string) string {
+	if errMsg == "" {
+		return "Unknown error"
+	}
+	return errMsg
 }

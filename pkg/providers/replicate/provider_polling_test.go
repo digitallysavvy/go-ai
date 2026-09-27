@@ -123,8 +123,14 @@ func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 		}
 		return nil, errors.New("unexpected request")
 	})
-	if _, err := NewLanguageModel(pFail, "ver").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}}); err == nil || !strings.Contains(err.Error(), "prediction failed") {
-		t.Fatalf("expected prediction failed error, got %v", err)
+	// TS getCompletedPrediction throws InvalidResponseDataError with message
+	// "Replicate image generation <status>: <error>" for failed/canceled
+	// predictions (replicate-image-model.ts:302-309); mirrored here for the
+	// generic (non-image) prediction poll too.
+	_, err := NewLanguageModel(pFail, "ver").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+	var respErr *providererrors.InvalidResponseDataError
+	if err == nil || !errors.As(err, &respErr) || !strings.Contains(err.Error(), "generation failed: bad") {
+		t.Fatalf("expected InvalidResponseDataError with 'generation failed: bad', got %v", err)
 	}
 
 	pCancel := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -136,8 +142,9 @@ func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 		}
 		return nil, errors.New("unexpected request")
 	})
-	if _, err := NewImageModel(pCancel, "img").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"}); err == nil || !strings.Contains(err.Error(), "prediction canceled") {
-		t.Fatalf("expected prediction canceled error, got %v", err)
+	_, err = NewImageModel(pCancel, "img").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	if err == nil || !errors.As(err, &respErr) || !strings.Contains(err.Error(), "Replicate image generation canceled: canceled") {
+		t.Fatalf("expected InvalidResponseDataError with 'Replicate image generation canceled: canceled', got %v", err)
 	}
 
 	s := &replicateStream{result: &types.GenerateResult{Text: "abc", FinishReason: types.FinishReasonStop}}
