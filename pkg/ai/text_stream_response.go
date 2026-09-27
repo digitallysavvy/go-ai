@@ -84,27 +84,37 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 		return fmt.Errorf("writer is required")
 	}
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		chunk, err := stream.Next()
-		if err != nil {
-			if err == io.EOF {
-				return nil
+	loopErr := func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
-			return err
-		}
-		if chunk.Type == provider.ChunkTypeText {
-			if _, err := bw.WriteString(chunk.Text); err != nil {
+			chunk, err := stream.Next()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
 				return err
 			}
+			if chunk.Type == provider.ChunkTypeText {
+				if _, err := bw.WriteString(chunk.Text); err != nil {
+					return err
+				}
+			}
 		}
+	}()
+
+	// A failing writer must surface an error even on a short stream: the
+	// deferred bw.Flush() this replaced discarded its return value entirely
+	// (hand-off/WG-MISC item 7f6650b: "response piping returns [an error] so
+	// write errors are catchable").
+	if flushErr := bw.Flush(); flushErr != nil && loopErr == nil {
+		return flushErr
 	}
+	return loopErr
 }
 
 // ToTextStream converts a provider text stream into text delta and error

@@ -50,6 +50,26 @@ func TestPipeTextStreamToWriter_Standalone(t *testing.T) {
 	}
 }
 
+// failingWriter always fails on Write, so tests can verify a write error
+// surfaces as a real error rather than being swallowed by a deferred flush
+// (hand-off/WG-MISC item 7f6650b).
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestPipeTextStreamToWriter_SurfacesWriteError(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "a"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	err := PipeTextStreamToWriter(context.Background(), stream, failingWriter{})
+	if err == nil {
+		t.Fatal("expected a write error, got nil")
+	}
+}
+
 func TestCreateTextStreamResponseFromStream_Standalone(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "ok"},
