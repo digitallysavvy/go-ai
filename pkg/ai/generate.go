@@ -596,9 +596,13 @@ type GenerateTextResult struct {
 	Text string `json:"text"`
 
 	// Reasoning holds the reasoning/thinking content from the final step.
+	//
+	// Deprecated: use FinalStep.Reasoning instead.
 	Reasoning []types.ReasoningContent `json:"reasoning"`
 
 	// ReasoningText is the concatenated reasoning text from the final step.
+	//
+	// Deprecated: use FinalStep.ReasoningText instead.
 	ReasoningText string `json:"reasoningText,omitempty"`
 
 	// Output contains the parsed output when a WithOutput option was provided.
@@ -650,6 +654,8 @@ type GenerateTextResult struct {
 	Warnings []types.Warning `json:"warnings,omitempty"`
 
 	// ProviderMetadata holds provider-specific metadata from the last generation step.
+	//
+	// Deprecated: use FinalStep.ProviderMetadata instead.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
 	// Sources contains citation or grounding references from all steps.
@@ -660,15 +666,22 @@ type GenerateTextResult struct {
 
 	// TotalUsage is the sum of token usage across all steps.
 	// For single-step generation, TotalUsage == Usage.
+	//
+	// Deprecated: use Usage instead (Usage is already the total across all
+	// steps; TS keeps totalUsage only as an alias of usage).
 	TotalUsage types.Usage `json:"totalUsage"`
 
 	// ResponseMessages contains response messages generated across all steps.
 	ResponseMessages []types.Message `json:"responseMessages"`
 
 	// Request contains metadata about the last request sent to the provider.
+	//
+	// Deprecated: use FinalStep.Request instead.
 	Request types.StepRequest `json:"request"`
 
 	// Response contains metadata about the last response from the provider.
+	//
+	// Deprecated: use FinalStep.Response instead.
 	Response types.StepResponse `json:"response"`
 
 	// Raw request/response (for debugging). Deprecated: use Request.Body and Response.Body.

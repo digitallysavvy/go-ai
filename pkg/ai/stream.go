@@ -3017,6 +3017,9 @@ func (r *StreamTextResult) Usage() types.Usage {
 }
 
 // TotalUsage returns aggregate token usage across all steps.
+//
+// Deprecated: use Usage instead (Usage is already the total across all
+// steps; TS keeps totalUsage only as an alias of usage).
 func (r *StreamTextResult) TotalUsage() types.Usage {
 	return r.Usage()
 }
@@ -3154,6 +3157,8 @@ func (r *StreamTextResult) ResponseHeadersMap() map[string]string {
 }
 
 // Request returns metadata about the last request sent to the provider.
+//
+// Deprecated: use FinalStep().Request instead.
 func (r *StreamTextResult) Request() types.StepRequest {
 	_ = r.ensureConsumed()
 	r.mu.Lock()
@@ -3162,6 +3167,8 @@ func (r *StreamTextResult) Request() types.StepRequest {
 }
 
 // Response returns metadata about the last response from the provider.
+//
+// Deprecated: use FinalStep().Response instead.
 func (r *StreamTextResult) Response() types.StepResponse {
 	_ = r.ensureConsumed()
 	r.mu.Lock()
@@ -3928,6 +3935,8 @@ func isModelOutputChunkType(chunkType provider.ChunkType) bool {
 // ProviderMetadata returns the most recently received provider-specific metadata
 // from stream chunks. Only populated when the provider emits metadata in chunks.
 // Safe to call concurrently with streaming.
+//
+// Deprecated: use FinalStep().ProviderMetadata instead.
 func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
