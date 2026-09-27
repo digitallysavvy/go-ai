@@ -1220,6 +1220,43 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 	}
 
+	// forwardThroughTransformChain feeds chunks through
+	// opts.ExperimentalTransform[startIdx:] in order and sinks whatever comes
+	// out the end to onChunk/telemetry. A transform's emitter re-enters the
+	// chain at startIdx+1 instead of sinking directly, so a chunk emitted
+	// early by transform N (e.g. SmoothStream flushing a delayed chunk)
+	// still passes through transforms N+1..len-1, matching TS pipeThrough
+	// chaining every TransformStream's output into the next stage (hand-off:
+	// "transform chaining", core-ai-part00/01 WG12/P1-1 follow-up).
+	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
+	transformEmitterAt := func(startIdx int) StreamTransformEmitter {
+		return func(c provider.StreamChunk) {
+			forwardThroughTransformChain(startIdx, []provider.StreamChunk{c})
+		}
+	}
+	forwardThroughTransformChain = func(startIdx int, chunks []provider.StreamChunk) {
+		if startIdx >= len(opts.ExperimentalTransform) {
+			for _, c := range chunks {
+				if onChunk != nil {
+					onChunk(c)
+				}
+				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
+					Settings:  r.telemetrySettings,
+					ChunkType: string(c.Type),
+					Text:      c.Text,
+				})
+			}
+			return
+		}
+		transform := opts.ExperimentalTransform[startIdx]
+		emitCtx := WithStreamTransformEmitter(ctx, transformEmitterAt(startIdx+1))
+		var out []provider.StreamChunk
+		for _, c := range chunks {
+			out = append(out, transform(emitCtx, c)...)
+		}
+		forwardThroughTransformChain(startIdx+1, out)
+	}
+
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
 		stepStart := time.Now()
@@ -1578,47 +1615,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Apply experimental transforms to produce the consumer-facing chunks.
-			// A transform may call the installed emitter to forward chunks
-			// incrementally (immediately, ahead of returning) instead of only
-			// via its return value — see StreamTransformFunc/SmoothStream.
-			// Emitted chunks go straight to onChunk/telemetry/stream
-			// consumers, the same destination the post-transform forwarding
-			// loop below writes to; only chunks NOT already emitted should be
-			// returned by the transform.
-			chunksToForward := []provider.StreamChunk{*chunk}
-			if forwardChunk && len(opts.ExperimentalTransform) > 0 {
-				emitCtx := WithStreamTransformEmitter(ctx, func(c provider.StreamChunk) {
-					if onChunk != nil {
-						onChunk(c)
-					}
-					telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-						Settings:  r.telemetrySettings,
-						ChunkType: string(c.Type),
-						Text:      c.Text,
-					})
-				})
-				for _, transform := range opts.ExperimentalTransform {
-					var transformed []provider.StreamChunk
-					for _, c := range chunksToForward {
-						transformed = append(transformed, transform(emitCtx, c)...)
-					}
-					chunksToForward = transformed
-				}
-			}
-
+			// Apply experimental transforms to produce the consumer-facing
+			// chunks, chaining every transform's output (including chunks it
+			// emits early via the installed emitter) into the next
+			// transform, then sink whatever survives to onChunk/telemetry.
 			// Forward chunk(s) to consumer before any tool Execute fires.
 			if forwardChunk {
-				for _, c := range chunksToForward {
-					if onChunk != nil {
-						onChunk(c)
-					}
-					telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-						Settings:  r.telemetrySettings,
-						ChunkType: string(c.Type),
-						Text:      c.Text,
-					})
-				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 			}
 
 			// Notify tool input lifecycle callbacks (OnInputStart/OnInputDelta/

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -121,5 +122,80 @@ func TestStreamText_SmoothStreamDeliversChunksIncrementally(t *testing.T) {
 		if gap < minGap {
 			t.Errorf("gap between chunk %d and %d = %v, want >= %v (chunks arrived in a batch, not incrementally)", i-1, i, gap, minGap)
 		}
+	}
+}
+
+// TestStreamText_TransformChainAppliesEarlyEmittedChunksToLaterTransforms
+// verifies that a chunk an earlier transform emits via the installed emitter
+// (rather than returning it) still passes through every later transform in
+// opts.ExperimentalTransform, matching TS pipeThrough chaining every
+// TransformStream's output into the next stage (hand-off: "transform
+// chaining"). Without chaining, an early-emitted chunk from transform 1
+// would skip transform 2 and reach OnChunk unmodified.
+func TestStreamText_TransformChainAppliesEarlyEmittedChunksToLaterTransforms(t *testing.T) {
+	t.Parallel()
+
+	// transform1 emits every text chunk immediately via the emitter (like
+	// SmoothStream) instead of returning it.
+	transform1 := func(ctx context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type != provider.ChunkTypeText {
+			return []provider.StreamChunk{c}
+		}
+		if emit, ok := StreamTransformEmitterFromContext(ctx); ok {
+			emit(c)
+			return nil
+		}
+		return []provider.StreamChunk{c}
+	}
+	// transform2 uppercases text chunks. It must see transform1's
+	// emitter-delivered chunks, not just chunks that reach it via return
+	// values.
+	transform2 := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type == provider.ChunkTypeText {
+			c.Text = strings.ToUpper(c.Text)
+		}
+		return []provider.StreamChunk{c}
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var mu sync.Mutex
+	var texts []string
+	done := make(chan struct{})
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:                 model,
+		Prompt:                "hi",
+		ExperimentalTransform: []StreamTransformFunc{transform1, transform2},
+		OnChunk: func(c provider.StreamChunk) {
+			if c.Type != provider.ChunkTypeText {
+				return
+			}
+			mu.Lock()
+			texts = append(texts, c.Text)
+			mu.Unlock()
+		},
+		OnEnd: func(*StreamTextResult) { close(done) },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OnEnd")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(texts) != 1 || texts[0] != "HI" {
+		t.Fatalf("texts = %v, want [\"HI\"] (transform1's emitted chunk must reach transform2)", texts)
 	}
 }
