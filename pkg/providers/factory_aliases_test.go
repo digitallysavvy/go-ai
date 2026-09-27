@@ -19,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
+	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 )
 
@@ -70,6 +71,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if quiverai.CreateQuiverAI(quiverai.Config{}) == nil {
 		t.Fatal("CreateQuiverAI returned nil")
+	}
+	if typesafeai.CreateTypeSafeAI(typesafeai.Config{}) == nil {
+		t.Fatal("CreateTypeSafeAI returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{
