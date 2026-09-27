@@ -199,7 +199,7 @@ for _, toolCall := range result.ToolCalls {
 ```go
 cfg := moonshot.Config{
 	APIKey:  "your-api-key",              // Required
-	BaseURL: "https://api.moonshot.cn/v1", // Optional, default shown
+	BaseURL: "https://api.moonshot.ai/v1", // Optional, default shown
 }
 ```
 
