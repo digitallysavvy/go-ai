@@ -86,6 +86,26 @@ func stripDeep(value interface{}, workDir string) interface{} {
 	}
 }
 
+// stripParsedToolInputWorkDir strips the session working-directory prefix
+// from every string nested in an already-parsed tool-call input value
+// (map[string]interface{}/[]interface{}/string, as produced by
+// encoding/json.Unmarshal), returning a value for consumer display. Mirrors
+// TS `stripParsedToolInputWorkDir`. Distinct call site from StripWorkDir
+// (which projects a whole stream part, including a still-serialized
+// tool-call's Input string) but identical recursive string-stripping
+// semantics; TS keeps two separate implementations because its version walks
+// arbitrary JS object graphs and needs cycle/shared-reference safety (a tool
+// input can come from a user's own repair function or an object a tool
+// mutates in place). Go's tool-call Arguments always originate from
+// encoding/json.Unmarshal, which never produces cycles or shared references,
+// so this is a thin alias over the existing recursive stripDeep.
+func stripParsedToolInputWorkDir(value interface{}, sessionWorkDir string) interface{} {
+	if sessionWorkDir == "" {
+		return value
+	}
+	return stripDeep(value, sessionWorkDir)
+}
+
 // toolInputWorkDirStripper strips the working directory from a streaming
 // sequence of tool-input-start/delta/end parts, buffering a delta's trailing
 // bytes when they might be a partial match of workDir until either more
