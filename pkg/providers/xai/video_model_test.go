@@ -70,7 +70,8 @@ func TestVideoModel_TextToVideo(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A cat playing piano",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A cat playing piano",
 	}
 
 	ctx := context.Background()
@@ -130,7 +131,8 @@ func TestVideoModel_ImageToVideo(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "Animate this scene",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "Animate this scene",
 		Image: &provider.VideoModelV3File{
 			Type: "url",
 			URL:  "https://example.com/image.png",
@@ -184,7 +186,8 @@ func TestVideoModel_ImageToVideo_Base64(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "Animate this scene",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "Animate this scene",
 		Image: &provider.VideoModelV3File{
 			Type:      "file",
 			Data:      []byte("fake-image-data"),
@@ -243,7 +246,8 @@ func TestVideoModel_VideoEditing(t *testing.T) {
 		Prompt: "Add dramatic lighting",
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
-				"videoUrl": videoURL,
+				"pollIntervalMs": 1,
+				"videoUrl":       videoURL,
 			},
 		},
 	}
@@ -288,8 +292,9 @@ func TestVideoModel_VideoExtensionMode(t *testing.T) {
 		Duration: &duration,
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
-				"mode":     "extend-video",
-				"videoUrl": "https://example.com/source.mp4",
+				"pollIntervalMs": 1,
+				"mode":           "extend-video",
+				"videoUrl":       "https://example.com/source.mp4",
 			},
 		},
 	})
@@ -357,6 +362,7 @@ func TestVideoModel_ReferenceImagesMode(t *testing.T) {
 		Prompt: "Use refs",
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
+				"pollIntervalMs":     1,
 				"mode":               "reference-to-video",
 				"referenceImageUrls": []string{"https://example.com/ref1.png", "https://example.com/ref2.png"},
 			},
@@ -426,7 +432,7 @@ func TestVideoModel_ExtendWarningsSurfaced(t *testing.T) {
 	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
 		Prompt: "Continue",
 		ProviderOptions: map[string]interface{}{
-			"xai": map[string]interface{}{"mode": "extend-video", "videoUrl": "https://example.com/source.mp4"},
+			"xai": map[string]interface{}{"mode": "extend-video", "videoUrl": "https://example.com/source.mp4", "pollIntervalMs": 1},
 		},
 	})
 	require.NoError(t, err)
@@ -471,8 +477,9 @@ func TestVideoModel_WithDuration(t *testing.T) {
 
 	duration := 10.0
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt:   "A sunset",
-		Duration: &duration,
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
+		Duration:        &duration,
 	}
 
 	ctx := context.Background()
@@ -517,8 +524,9 @@ func TestVideoModel_WithAspectRatio(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt:      "A sunset",
-		AspectRatio: "16:9",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
+		AspectRatio:     "16:9",
 	}
 
 	ctx := context.Background()
@@ -551,8 +559,9 @@ func TestVideoModel_UnknownResolutionWarning(t *testing.T) {
 	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	model := NewVideoModel(prov, "grok-imagine-video")
 	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
-		Prompt:     "A sunset",
-		Resolution: "3840x2160",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
+		Resolution:      "3840x2160",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.Warnings)
@@ -619,8 +628,9 @@ func TestVideoModel_WithResolution(t *testing.T) {
 			model := NewVideoModel(prov, "grok-imagine-video")
 
 			opts := &provider.VideoModelV3CallOptions{
-				Prompt:     "A sunset",
-				Resolution: tt.resolution,
+				ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+				Prompt:          "A sunset",
+				Resolution:      tt.resolution,
 			}
 
 			ctx := context.Background()
@@ -670,7 +680,8 @@ func TestVideoModel_WithProviderResolution(t *testing.T) {
 		Prompt: "A sunset",
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
-				"resolution": "720p",
+				"pollIntervalMs": 1,
+				"resolution":     "720p",
 			},
 		},
 	}
@@ -713,10 +724,11 @@ func TestVideoModel_UnsupportedOptions_Warnings(t *testing.T) {
 	fps := 30
 	seed := 12345
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A sunset",
-		FPS:    &fps,
-		Seed:   &seed,
-		N:      3,
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
+		FPS:             &fps,
+		Seed:            &seed,
+		N:               3,
 	}
 
 	ctx := context.Background()
@@ -781,7 +793,8 @@ func TestVideoModel_VideoEditing_UnsupportedOptions_Warnings(t *testing.T) {
 		Resolution:  "1280x720",
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
-				"videoUrl": videoURL,
+				"pollIntervalMs": 1,
+				"videoUrl":       videoURL,
 			},
 		},
 	}
@@ -882,7 +895,8 @@ func TestVideoModel_StatusExpired(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
 	}
 
 	ctx := context.Background()
@@ -908,7 +922,8 @@ func TestVideoModel_StatusFailed(t *testing.T) {
 	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	model := NewVideoModel(prov, "grok-imagine-video")
 
-	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "A sunset"})
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}}, Prompt: "A sunset"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed")
 }
@@ -933,7 +948,8 @@ func TestVideoModel_ProviderMetadataProgress(t *testing.T) {
 	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	model := NewVideoModel(prov, "grok-imagine-video")
 
-	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "A sunset"})
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}}, Prompt: "A sunset"})
 	require.NoError(t, err)
 	xaiMeta := resp.ProviderMetadata["xai"].(map[string]interface{})
 	assert.Equal(t, 100, xaiMeta["progress"])
@@ -955,7 +971,8 @@ func TestVideoModel_NoRequestID(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
 	}
 
 	ctx := context.Background()
@@ -992,7 +1009,8 @@ func TestVideoModel_NoVideoURL(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A sunset",
 	}
 
 	ctx := context.Background()
@@ -1033,7 +1051,8 @@ func TestXAIVideoModerationError(t *testing.T) {
 	model := NewVideoModel(prov, "grok-imagine-video")
 
 	opts := &provider.VideoModelV3CallOptions{
-		Prompt: "A violent scene",
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 1}},
+		Prompt:          "A violent scene",
 	}
 
 	ctx := context.Background()
@@ -1081,6 +1100,7 @@ func TestXAIVideoPassthroughOptions(t *testing.T) {
 		Prompt: "A cinematic sunset",
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
+				"pollIntervalMs": 1,
 				"style":          "cinematic",
 				"guidance_scale": guidance,
 			},
