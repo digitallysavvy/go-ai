@@ -55,6 +55,35 @@ func TestRunCodeMode_StripsInterfaceAndSatisfies(t *testing.T) {
 	assertDeepEqual(t, got, map[string]interface{}{"value": float64(12)})
 }
 
+// Ports TypeScript's code-mode/src/run-compatibility.test.ts, "supports
+// tool names that are not host-function identifiers". (Its other cases are
+// interrupt-system compatibility tests, out of scope -- see the package
+// doc.) The bridge Proxy's `get(_t, name)` trap in wrapCodeModeSource
+// intercepts any property key, including one reached only through bracket
+// notation, so a tool name need not be a valid JS identifier.
+func TestRunCodeMode_SupportsToolNamesThatAreNotHostFunctionIdentifiers(t *testing.T) {
+	tools := ToolSet{"lookup-user": {
+		Name: "lookup-user",
+		Parameters: map[string]interface{}{
+			"type":                 "object",
+			"required":             []interface{}{"id"},
+			"properties":           map[string]interface{}{"id": map[string]interface{}{"type": "string"}},
+			"additionalProperties": false,
+		},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"id": input["id"]}, nil
+		},
+	}}
+	got, err := RunCodeMode(context.Background(), RunInput{
+		JS:    "return await tools['lookup-user']({ id: 'user-1' });",
+		Tools: tools,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertDeepEqual(t, got, map[string]interface{}{"id": "user-1"})
+}
+
 func TestRunCodeMode_JSONParseStringify(t *testing.T) {
 	js := `
           const parsed = JSON.parse('{"count":2,"items":["a","b"]}');
@@ -104,6 +133,243 @@ func TestRunCodeMode_ManyRapidIndependentInvocations(t *testing.T) {
 		if results[i] != float64(i*i) {
 			t.Fatalf("index %d: got %#v, want %d", i, results[i], i*i)
 		}
+	}
+}
+
+// Regression coverage for a real, previously-observed failure mode: qjs
+// v0.0.6 (github.com/fastschema/qjs, see engine.go's doc comment) is
+// pre-1.0, and this package creates a fresh Runtime per invocation, so a
+// bug that only manifests after many create/destroy cycles would not show
+// up in a handful of calls. This asserts correctness -- not just "no
+// crash" -- across 250 sequential invocations with results large enough
+// (5-digit numbers) that a truncated/corrupted read would be caught, plus
+// a nested tool call and a couple of timeouts interleaved to exercise
+// runInSandbox's timeout/grace path repeatedly too. Keep this if a new
+// package-level dependency is ever added to the strip/eval path (see
+// stripTypeScriptAnnotations's package doc for what NOT to reach for
+// without re-running a loop like this one first): a data-corruption
+// interaction between it and the sandbox would otherwise be silent.
+func TestRunCodeMode_ManyInvocationsRemainCorrect(t *testing.T) {
+	tools := ToolSet{"echo": {
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return input, nil
+		},
+	}}
+
+	for i := 0; i < 250; i++ {
+		var js string
+		var want interface{}
+		switch {
+		case i%37 == 0:
+			js = "return await tools.echo({ n: " + fmt.Sprintf("%d", i) + " });"
+			want = map[string]interface{}{"n": float64(i)}
+		default:
+			js = fmt.Sprintf("return %d * %d;", 100+i, 100+i)
+			want = float64((100 + i) * (100 + i))
+		}
+		got, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools})
+		if err != nil {
+			t.Fatalf("iter %d: unexpected error: %v", i, err)
+		}
+		assertDeepEqual(t, got, want)
+	}
+
+	for i := 0; i < 3; i++ {
+		_, err := RunCodeMode(context.Background(), RunInput{
+			JS:      "while(true){}",
+			Tools:   ToolSet{},
+			Options: &Options{ExecutionPolicy: &ExecutionPolicy{TimeoutMs: 100}},
+		})
+		if err == nil {
+			t.Fatalf("timeout iter %d: expected an error", i)
+		}
+	}
+
+	// One more ordinary invocation after the timeouts, to confirm the
+	// engine is still usable (not wedged by the abandoned timed-out
+	// goroutines; see runInSandbox's doc comment).
+	got, err := RunCodeMode(context.Background(), RunInput{JS: "return 999 * 999;", Tools: ToolSet{}})
+	if err != nil {
+		t.Fatalf("post-timeout invocation: unexpected error: %v", err)
+	}
+	assertDeepEqual(t, got, float64(999*999))
+}
+
+// Ports TypeScript's code-mode/src/tool-invocation.test.ts ("AI SDK tool
+// bridge"). "exports a serializable direct tool call marker" is pkg/ai's
+// DirectToolCall constant, not pkg/codemode's, and is covered there.
+// "uses the final output from async iterable tools" has no Go port: Go's
+// types.Tool.Execute returns a single (interface{}, error), not a stream,
+// so a host tool cannot be an async generator in the first place.
+// "returns an AI SDK tool that executes code mode" is ported in
+// code_mode_tool_test.go. "late-binds host tools through generateText" and
+// "announces changed tools in conversation while keeping the model tool
+// stable" exercise the generic experimental_toolCallers/PrepareModelMessage
+// plumbing end-to-end through generateText; that plumbing itself (not
+// specific to code mode) is already covered end-to-end by
+// pkg/ai's TestGenerateText_ToolCallers_LateBindsLocalCaller and
+// TestGenerateText_ToolCallers_AnnouncesLocalCallerInMessage, and this
+// package's contribution to that wiring -- CodeModeTool's Bind and
+// PrepareModelMessage callbacks -- is covered by
+// TestCodeModeTool_BindReturnsWorkingTool and
+// TestCodeModeTool_ConversationDiscoveryDescription (tool_prompt_test.go).
+
+func TestRunCodeMode_ChainsMultipleToolCalls(t *testing.T) {
+	tools := ToolSet{
+		"add": {
+			Name:       "add",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				a, _ := input["a"].(float64)
+				b, _ := input["b"].(float64)
+				return map[string]interface{}{"value": a + b}, nil
+			},
+		},
+		"double": {
+			Name:       "double",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				v, _ := input["value"].(float64)
+				return map[string]interface{}{"value": v * 2}, nil
+			},
+		},
+	}
+	got, err := RunCodeMode(context.Background(), RunInput{
+		JS:    "const first = await tools.add({ a: 2, b: 3 }); return await tools.double(first);",
+		Tools: tools,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertDeepEqual(t, got, map[string]interface{}{"value": float64(10)})
+}
+
+func TestRunCodeMode_RoundTripsUndefinedToolOutputs(t *testing.T) {
+	tools := ToolSet{"nothing": {
+		Name:       "nothing",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return nil, nil
+		},
+	}}
+	got, err := RunCodeMode(context.Background(), RunInput{
+		JS:    "const value = await tools.nothing({}); return { type: typeof value };",
+		Tools: tools,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertDeepEqual(t, got, map[string]interface{}{"type": "undefined"})
+}
+
+// The sandboxed engine's clock must not go stale across a blocking host
+// tool call (a category of bug some embedded JS engines have): the qjs
+// runtime blocks synchronously on the Go host function while the host tool
+// runs, so it should observe real wall-clock time before and after,
+// matching (within a generous tolerance) the host's own clock read inside
+// the tool.
+func TestRunCodeMode_ResetsClockToHostTimeAfterAsyncToolCalls(t *testing.T) {
+	tools := ToolSet{"wait": {
+		Name:       "wait",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			time.Sleep(80 * time.Millisecond)
+			return map[string]interface{}{"hostNow": float64(time.Now().UnixMilli())}, nil
+		},
+	}}
+	js := `
+          const before = Date.now();
+          const toolResult = await tools.wait({});
+          const after = Date.now();
+          return { before, hostNow: toolResult.hostNow, after };
+        `
+	got, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result, ok := got.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map result, got %#v", got)
+	}
+	before, _ := result["before"].(float64)
+	after, _ := result["after"].(float64)
+	hostNow, _ := result["hostNow"].(float64)
+	if after-before < 30 {
+		t.Fatalf("expected at least 30ms to elapse across the tool call, got %v -> %v", before, after)
+	}
+	if diff := after - hostNow; diff < -1000 || diff > 1000 {
+		t.Fatalf("expected sandbox clock and host clock to agree within 1000ms, got after=%v hostNow=%v", after, hostNow)
+	}
+}
+
+func TestRunCodeMode_ForwardsContextToNestedTools(t *testing.T) {
+	var seenContext interface{}
+	tools := ToolSet{"context": {
+		Name:       "context",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			seenContext = opts.ToolContext
+			return opts.ToolContext, nil
+		},
+	}}
+	got, err := RunCodeMode(context.Background(), RunInput{
+		JS:    "return await tools.context({});",
+		Tools: tools,
+		ToolExecutionOptions: &types.ToolExecutionOptions{
+			ToolCallID:  "outer",
+			ToolContext: map[string]interface{}{"requestId": "req-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertDeepEqual(t, got, map[string]interface{}{"requestId": "req-1"})
+	assertDeepEqual(t, seenContext, map[string]interface{}{"requestId": "req-1"})
+}
+
+// Mirrors TypeScript's "passes abort signals to nested tools": canceling
+// the outer context while a nested tool call is in flight aborts the
+// invocation promptly instead of waiting for the tool to notice on its
+// own. See raceAgainstAbort in tool_invocation.go.
+func TestRunCodeMode_ContextCancellationAbortsInFlightNestedToolCall(t *testing.T) {
+	started := make(chan struct{})
+	tools := ToolSet{"wait": {
+		Name:       "wait",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		v   interface{}
+		err error
+	}, 1)
+	go func() {
+		v, err := RunCodeMode(ctx, RunInput{JS: "return await tools.wait({});", Tools: tools})
+		done <- struct {
+			v   interface{}
+			err error
+		}{v, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+	cancel()
+
+	select {
+	case out := <-done:
+		assertErrMatches(t, out.err, `(?i)abort`)
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunCodeMode did not return promptly after cancellation")
 	}
 }
 
@@ -462,8 +728,14 @@ func TestRunCodeMode_UsesSchemaSchemaInterface(t *testing.T) {
 }
 
 func TestSetMaxWorkers_RejectsOverCap(t *testing.T) {
-	SetMaxWorkers(1)
-	defer SetMaxWorkers(0)
+	if err := SetMaxWorkers(1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		if err := SetMaxWorkers(0); err != nil {
+			t.Fatalf("unexpected error resetting maxWorkers: %v", err)
+		}
+	}()
 
 	release, err := acquireWorkerSlot()
 	if err != nil {
