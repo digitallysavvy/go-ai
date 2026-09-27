@@ -2966,6 +2966,22 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
 		}
 
+		// Output already started (encounteredStreamError branch, TS
+		// openai-responses-language-model.ts ~line 2737): a response.failed
+		// with a response.error surfaces as a ChunkTypeError chunk (built via
+		// createOpenAIProviderStreamError from the same synthetic
+		// {type:'response.failed', response:{error,...}} frame TS
+		// constructs), enqueued before the terminal finish chunk. Previously
+		// Go only emitted the finish chunk here and silently dropped the
+		// error entirely (P1-1c part 2).
+		if e.Response.Error != nil {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: e.Response.Error.Message,
+				Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+			})
+		}
+
 		s.err = io.EOF
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
@@ -2990,6 +3006,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: e.Message,
+			// P1-1c part 2: attach the structured StreamProviderError (TS
+			// createOpenAIProviderStreamError(value)) instead of only Text.
+			Err: newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
 		})
 
 	default:

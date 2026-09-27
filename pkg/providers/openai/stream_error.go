@@ -144,6 +144,50 @@ func openAIStreamErrorStatusCode(frame *openAIStreamErrorFrame) int {
 	return 500
 }
 
+// openAIStreamErrorIsRetryable mirrors TS openai-stream-error.ts's
+// isRetryableStreamError: insufficient_quota is never retryable regardless
+// of its (429) status code; otherwise it's the generic 408/409/429/5xx
+// retryable-status-code check.
+func openAIStreamErrorIsRetryable(frame *openAIStreamErrorFrame, statusCode int) bool {
+	if frame != nil {
+		codeStr := openAIStreamErrorCodeString(frame.Code)
+		if codeStr == "insufficient_quota" || frame.Type == "insufficient_quota" {
+			return false
+		}
+	}
+	return statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500
+}
+
+// newOpenAIStreamProviderErrorChunk builds a *providererrors.StreamProviderError
+// from a mid-stream OpenAI error frame, for attaching to StreamChunk.Err (P1-1c
+// part 2). Unlike newOpenAIStreamProviderError (which returns a terminal
+// *providererrors.ProviderError used before any output has started), this is
+// for a ChunkTypeError chunk emitted mid-stream (output already started), so
+// generation continues; the caller decides whether to retry based on the
+// resulting IsRetryable.
+func newOpenAIStreamProviderErrorChunk(providerName string, raw json.RawMessage) *providererrors.StreamProviderError {
+	frame := parseOpenAIStreamError(raw)
+	message := openAIStreamErrorText(raw)
+	var code interface{}
+	var errType string
+	statusCode := 500
+	var data interface{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &data)
+	}
+	if frame != nil {
+		if frame.Message != "" {
+			message = frame.Message
+		}
+		code = frame.Code
+		errType = frame.Type
+		statusCode = openAIStreamErrorStatusCode(frame)
+	}
+	isRetryable := openAIStreamErrorIsRetryable(frame, statusCode)
+	sc := statusCode
+	return providererrors.NewStreamProviderError(message, providerName, errType, code, &sc, &isRetryable, data)
+}
+
 func openAIStreamErrorCodeString(code interface{}) string {
 	switch v := code.(type) {
 	case string:

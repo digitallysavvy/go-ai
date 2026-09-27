@@ -951,6 +951,112 @@ data: [DONE]
 	}
 }
 
+// TestOpenAIStreamMidStreamErrorAttachesStructuredPayload is a P1-1c part 2
+// regression test: once output has started, a mid-stream `error` frame must
+// carry a structured *providererrors.StreamProviderError on the chunk's Err
+// field (TS createOpenAIProviderStreamError), not just a bare Text message.
+// rate_limit_exceeded infers statusCode 429 (discriminator match) and is
+// retryable per isRetryableStatusCode.
+func TestOpenAIStreamMidStreamErrorAttachesStructuredPayload(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	// First chunk: raw passthrough (includeRawChunks=true).
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	// Second chunk: the text delta that sets outputStarted.
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("second chunk type = %v, want text", chunk.Type)
+	}
+
+	// Drain until the error chunk (raw passthrough may interleave).
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 5; i++ {
+		chunk, err = stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+			break
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream error frame")
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Type != "rate_limit_exceeded" {
+		t.Errorf("Type = %q, want rate_limit_exceeded", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for a 429")
+	}
+}
+
+// TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable ports TS
+// isRetryableStreamError's special case: insufficient_quota is never
+// retryable even though its inferred statusCode (429) normally would be.
+func TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"You exceeded your quota","type":"insufficient_quota","code":"insufficient_quota"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("first chunk type = %v, want text", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for insufficient_quota (TS special-case)")
+	}
+}
+
 // TestProviderOptionsInvalidType tests handling of invalid provider option types
 func TestProviderOptionsInvalidType(t *testing.T) {
 	p := New(Config{
