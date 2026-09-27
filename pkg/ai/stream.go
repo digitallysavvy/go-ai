@@ -1636,6 +1636,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 		if r.err != nil {
+			// Close the provider stream (and its underlying HTTP response
+			// body) as soon as processStream itself gives up on it, instead
+			// of leaving that to a consumer that may never call
+			// StreamTextResult.Close() explicitly (hand-off: "processStream
+			// closing the TextStream on error"). TextStream.Close() is safe
+			// to call more than once, so this doesn't conflict with a later
+			// explicit Close() from the caller.
+			if s := r.currentStream(); s != nil {
+				_ = s.Close()
+			}
 			cancelStep()
 			break
 		}
