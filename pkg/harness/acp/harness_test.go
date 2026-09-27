@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -841,5 +842,96 @@ func TestDoStartACPProcessLossColdRestore(t *testing.T) {
 	promptBlocks, _ := coldStart["prompt"].([]any)
 	if len(promptBlocks) != 0 {
 		t.Fatalf("cold-restore prompt = %v, want empty", coldStart["prompt"])
+	}
+}
+
+// TestDoStartForwardsHostToolMCPTransportMCPServersAndBuiltinToolMetadata
+// ports TS scenarios "forwards MCP servers and lets the implementation
+// classify unknown ACP tools" and "serializes built-in matching fields and
+// input schemas across the bridge" (acp-harness.test.ts), plus commit
+// 1291df7 (hostToolMcpTransport forwarded into the bridge environment).
+func TestDoStartForwardsHostToolMCPTransportMCPServersAndBuiltinToolMetadata(t *testing.T) {
+	const token = "mcp-token"
+	var mu sync.Mutex
+	var capturedStart map[string]any
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		capturedStart = start
+		mu.Unlock()
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{}, "outputTokens": map[string]any{}},
+		})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return token }
+		s.HostToolMCPTransport = HostToolMCPHTTP
+		s.MCPServers = map[string]any{"my-server": map[string]any{"url": "https://example.com/mcp"}}
+		s.BuiltinTools = map[string]harness.BuiltinTool{
+			"bash": {
+				Tool:        types.Tool{Title: "Run a shell command"},
+				NativeName:  "run_command",
+				ToolUseKind: harness.BuiltinToolUseKindBash,
+			},
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "mcp-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	defer func() { _ = sess.DoDestroy(context.Background()) }()
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi")})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not finish")
+	}
+
+	// hostToolMcpTransport travels in the spawn env's bridge-configuration
+	// JSON blob, not the start frame.
+	sandbox.mu.Lock()
+	spawnEnv := sandbox.spawnEnvs[len(sandbox.spawnEnvs)-1]
+	sandbox.mu.Unlock()
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(spawnEnv[BridgeConfigurationEnv]), &cfg); err != nil {
+		t.Fatalf("bridge configuration env: %v", err)
+	}
+	if cfg["hostToolMcpTransport"] != "http" {
+		t.Fatalf("hostToolMcpTransport = %v, want http", cfg["hostToolMcpTransport"])
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	mcpServers, ok := capturedStart["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("start.mcpServers = %v", capturedStart["mcpServers"])
+	}
+	server, ok := mcpServers["my-server"].(map[string]any)
+	if !ok || server["url"] != "https://example.com/mcp" {
+		t.Fatalf("start.mcpServers[my-server] = %v", mcpServers["my-server"])
+	}
+	builtinTools, ok := capturedStart["builtinTools"].([]any)
+	if !ok {
+		t.Fatalf("start.builtinTools = %v", capturedStart["builtinTools"])
+	}
+	var bash map[string]any
+	for _, v := range builtinTools {
+		m, _ := v.(map[string]any)
+		if m["toolName"] == "bash" {
+			bash = m
+		}
+	}
+	if bash == nil || bash["nativeName"] != "run_command" || bash["title"] != "Run a shell command" || bash["toolUseKind"] != "bash" {
+		t.Fatalf("builtinTools[bash] = %v", bash)
 	}
 }
