@@ -198,6 +198,52 @@ func TestHTTPTransportInboundSSESkippedForModernProtocol(t *testing.T) {
 	}
 }
 
+// TestHTTPTransportInboundSSESetProtocolVersionSwitchesLifecycle mirrors TS's
+// `setProtocolVersion`: switching to the modern protocol mid-connection
+// closes the standing inbound SSE GET and starts no more while modern;
+// switching back to a legacy protocol (re)opens a fresh one.
+func TestHTTPTransportInboundSSESetProtocolVersionSwitchesLifecycle(t *testing.T) {
+	sse := &scriptedSSEClient{}
+	sse.respond = func(callNumber int, req *http.Request) (*http.Response, error) {
+		resp, _ := newSSEStreamResponse(req)
+		return resp, nil
+	}
+
+	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	if err := transport.Connect(t.Context()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	waitForCallCount(t, sse, 1, time.Second) // initial legacy GET
+
+	// Switch to modern: the standing GET must be closed immediately, and no
+	// further GET attempted while modern.
+	transport.SetProtocolVersion(LatestProtocolVersion)
+	transport.sseMu.Lock()
+	hasConn := transport.sseConnCancel != nil
+	transport.sseMu.Unlock()
+	if hasConn {
+		t.Fatal("sseConnCancel still set right after switching to modern protocol")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if got := sse.callCount(); got != 1 {
+		t.Fatalf("callCount = %d, want 1 (no GET while modern)", got)
+	}
+
+	// Switch back to legacy: a fresh standing GET must (re)open.
+	transport.SetProtocolVersion(LatestLegacyProtocolVersion)
+	waitForCallCount(t, sse, 2, time.Second)
+	req := sse.callAt(1)
+	if req.Method != http.MethodGet {
+		t.Fatalf("call 1 method = %s, want GET", req.Method)
+	}
+	if got := req.Header.Get("mcp-protocol-version"); got != LatestLegacyProtocolVersion {
+		t.Fatalf("call 1 mcp-protocol-version = %q, want %q", got, LatestLegacyProtocolVersion)
+	}
+}
+
 // TestHTTPTransportInboundSSEQueuesMessagesAndTracksLastEventID mirrors TS's
 // "should handle inbound SSE messages without explicit event field" and
 // additionally verifies the event id is tracked for a subsequent
