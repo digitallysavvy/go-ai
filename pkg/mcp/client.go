@@ -88,8 +88,10 @@ type MCPClientConfig struct {
 
 	// MaxRetries is the maximum number of times a failed "tools/call" request
 	// is retried with exponential backoff, matching TypeScript's
-	// MCPClient maxRetries option. Default: 0 (no retries). Negative values
-	// are clamped to 0.
+	// MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no
+	// retries). A negative value makes Connect return an error (TS throws
+	// MCPClientError "maxRetries must be >= 0" from the constructor; Go has
+	// no fallible constructor, so the check runs at Connect instead).
 	//
 	// Only transient failures are retried: HTTP status 408/409/429/>=500 and
 	// transport-level connection errors (refused/reset/timeout/broken pipe/
@@ -132,9 +134,10 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	if config.RequestTimeoutMS == 0 {
 		config.RequestTimeoutMS = 30000 // 30 seconds
 	}
-	if config.MaxRetries < 0 {
-		config.MaxRetries = 0
-	}
+	// config.MaxRetries is intentionally left as given (even if negative):
+	// Connect validates and rejects a negative value, matching TS's
+	// constructor-time prepareMaxRetries throw as closely as Go's
+	// non-fallible constructor allows.
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -164,6 +167,13 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 // hard modern-protocol error it falls back to the legacy `initialize`
 // handshake.
 func (c *MCPClient) Connect(ctx context.Context) error {
+	// TS prepareMaxRetries throws synchronously from the constructor when
+	// maxRetries is negative; Go's constructor can't fail, so this is the
+	// first fallible call instead.
+	if c.config.MaxRetries < 0 {
+		return NewMCPClientError(0, "maxRetries must be >= 0", nil)
+	}
+
 	// Connect transport
 	if err := c.transport.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect transport: %w", err)
