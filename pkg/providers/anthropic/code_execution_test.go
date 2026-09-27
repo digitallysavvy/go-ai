@@ -117,9 +117,9 @@ func TestCombineBetaHeaders_NilOpts(t *testing.T) {
 // Tool format in request body tests (ACODE-T09)
 // ============================================================================
 
-func TestToAnthropicFormatWithCache_CodeExecutionTool(t *testing.T) {
+func TestPrepareTools_CodeExecutionTool(t *testing.T) {
 	tool := tools.CodeExecution20260120()
-	result := ToAnthropicFormatWithCache([]types.Tool{tool})
+	result := testPrepareToolsWire(t, []types.Tool{tool})
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 tool in result, got %d", len(result))
@@ -145,13 +145,13 @@ func TestToAnthropicFormatWithCache_CodeExecutionTool(t *testing.T) {
 	}
 }
 
-func TestToAnthropicFormatWithCache_RegularTool(t *testing.T) {
+func TestPrepareTools_RegularTool(t *testing.T) {
 	regularTool := types.Tool{
 		Name:        "get_weather",
 		Description: "Get weather",
 		Parameters:  map[string]interface{}{"type": "object"},
 	}
-	result := ToAnthropicFormatWithCache([]types.Tool{regularTool})
+	result := testPrepareToolsWire(t, []types.Tool{regularTool})
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 tool in result, got %d", len(result))
@@ -171,14 +171,14 @@ func TestToAnthropicFormatWithCache_RegularTool(t *testing.T) {
 	}
 }
 
-func TestToAnthropicFormatWithCache_MixedTools(t *testing.T) {
+func TestPrepareTools_MixedTools(t *testing.T) {
 	codeExecTool := tools.CodeExecution20260120()
 	regularTool := types.Tool{
 		Name:        "my_tool",
 		Description: "A regular tool",
 	}
 
-	result := ToAnthropicFormatWithCache([]types.Tool{codeExecTool, regularTool})
+	result := testPrepareToolsWire(t, []types.Tool{codeExecTool, regularTool})
 
 	if len(result) != 2 {
 		t.Fatalf("Expected 2 tools in result, got %d", len(result))

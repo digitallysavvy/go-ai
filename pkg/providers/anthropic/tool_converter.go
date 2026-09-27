@@ -1,10 +1,5 @@
 package anthropic
 
-import (
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
-)
-
 // builtinToolDef holds the API type and canonical name for a simple Anthropic builtin tool.
 // Simple builtins are those that require no per-instance config fields beyond name and type.
 type builtinToolDef struct {
@@ -69,83 +64,4 @@ func BuiltinToolAPIName(name string) (string, bool) {
 // computer tools (display dims), text_editor_20250728 (max_characters), web tools (filters).
 type anthropicAPIMapper interface {
 	ToAnthropicAPIMap() map[string]interface{}
-}
-
-// ToAnthropicFormatWithCache converts tools to Anthropic's tool format with full
-// provider option support:
-//
-//   - Simple built-in tools (bash, text_editor w/o params, code_execution, memory):
-//     formatted as {"type": "<api-type>", "name": "<api-name>"} with optional cache_control.
-//
-//   - Self-serializing provider tools (computer tools, text_editor_20250728, web_search,
-//     web_fetch): formatted via ToAnthropicAPIMap() on their ProviderOptions, which includes
-//     all required per-instance fields (display dims, max_characters, domain filters, etc.).
-//
-//   - Custom function tools: formatted with name, description, input_schema, and
-//     optional cache_control / eager_input_streaming / defer_loading / allowed_callers.
-func ToAnthropicFormatWithCache(tools []types.Tool) []map[string]interface{} {
-	result := make([]map[string]interface{}, len(tools))
-
-	for i, t := range tools {
-		// 1. Simple builtin tools — {"type": ..., "name": ..., cache_control?}
-		if def, isBuiltin := anthropicBuiltinToolTypes[t.Name]; isBuiltin {
-			toolMap := map[string]interface{}{
-				"type": def.apiType,
-			}
-			if def.name != "" {
-				toolMap["name"] = def.name
-			}
-			if t.ProviderOptions != nil {
-				if toolOpts, ok := t.ProviderOptions.(*ToolOptions); ok && toolOpts.CacheControl != nil {
-					toolMap["cache_control"] = toolOpts.CacheControl
-				}
-			}
-			result[i] = toolMap
-			continue
-		}
-
-		// 2. Self-serializing provider tools (computer, text_editor_20250728, web_search, web_fetch).
-		// These implement ToAnthropicAPIMap() on their ProviderOptions to produce a complete map
-		// including all required per-instance fields.
-		if t.ProviderOptions != nil {
-			if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok {
-				result[i] = mapper.ToAnthropicAPIMap()
-				continue
-			}
-		}
-
-		// 3. Regular custom function tool.
-		toolMap := tool.ToAnthropicFormat([]types.Tool{t})[0]
-
-		// Apply ToolOptions: cache_control, eager_input_streaming, defer_loading, allowed_callers.
-		if t.ProviderOptions != nil {
-			if toolOpts, ok := t.ProviderOptions.(*ToolOptions); ok {
-				if toolOpts.CacheControl != nil {
-					toolMap["cache_control"] = toolOpts.CacheControl
-				}
-				if toolOpts.EagerInputStreaming != nil && *toolOpts.EagerInputStreaming {
-					toolMap["eager_input_streaming"] = true
-				}
-				if toolOpts.DeferLoading != nil {
-					toolMap["defer_loading"] = *toolOpts.DeferLoading
-				}
-				if len(toolOpts.AllowedCallers) > 0 {
-					toolMap["allowed_callers"] = toolOpts.AllowedCallers
-				}
-			}
-		}
-
-		// Serialize InputExamples if present (requires advanced-tool-use beta, injected separately).
-		if len(t.InputExamples) > 0 {
-			examples := make([]interface{}, len(t.InputExamples))
-			for j, ex := range t.InputExamples {
-				examples[j] = ex.Input
-			}
-			toolMap["input_examples"] = examples
-		}
-
-		result[i] = toolMap
-	}
-
-	return result
 }
