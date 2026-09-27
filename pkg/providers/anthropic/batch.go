@@ -490,14 +490,20 @@ type anthropicBatchResponseWire struct {
 
 // validate rejects a batch-object response missing fields the TS zod schema
 // (anthropicBatchResponseZodSchema) requires: id, type === "message_batch",
-// created_at, and expires_at. Mirrors TS's createJsonResponseHandler throwing
-// when safeParseJSON/schema validation fails on the decoded envelope.
+// processing_status, created_at, and expires_at (request_counts is a nested
+// object whose own zero value -- all-zero counts -- is a legitimate state
+// for a just-created batch, so it cannot be distinguished from "missing" the
+// way the scalar string fields can and is left unchecked). Mirrors TS's
+// createJsonResponseHandler throwing when safeParseJSON/schema validation
+// fails on the decoded envelope.
 func (r anthropicBatchResponseWire) validate() error {
 	switch {
 	case r.ID == "":
 		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"id\".")
 	case r.Type != "message_batch":
 		return providererrors.NewInvalidResponseDataError(r, fmt.Sprintf("Anthropic batch response has unexpected \"type\" %q, want \"message_batch\".", r.Type))
+	case r.ProcessingStatus == "":
+		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"processing_status\".")
 	case r.CreatedAt == "":
 		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"created_at\".")
 	case r.ExpiresAt == "":

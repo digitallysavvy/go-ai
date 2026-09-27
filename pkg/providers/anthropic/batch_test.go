@@ -322,6 +322,37 @@ func TestBatch_OmitsNextCursorWhenNoMore(t *testing.T) {
 	}
 }
 
+// TestBatch_ListRejectsMalformedItemFailsWholeCall mirrors TS
+// anthropicBatchListResponseSchema, which validates every entry of "data"
+// against the same required-field envelope zod schema as a single batch
+// response (z.array(anthropicBatchResponseZodSchema())): one malformed
+// element fails safeParseJSON for the whole array, so DoListBatches must
+// fail the whole call rather than skip the bad entry or return the well-formed
+// ones before it.
+func TestBatch_ListRejectsMalformedItemFailsWholeCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":5,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"},
+				{"type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}
+			],
+			"has_more": false
+		}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch().(provider.BatchV4Lister)
+	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{})
+	if err == nil || !providererrors.IsInvalidResponseDataError(err) {
+		t.Fatalf("err = %v, want InvalidResponseDataError", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %+v, want nil on validation failure", result)
+	}
+}
+
 func TestBatch_RejectsResultRetrievalWhilePending(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -473,6 +504,7 @@ func TestBatch_BatchEnvelopeMissingRequiredFieldFails(t *testing.T) {
 	}{
 		{"missing id", `{"type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`},
 		{"wrong type", `{"id":"b1","type":"not_message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`},
+		{"missing processing_status", `{"id":"b1","type":"message_batch","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`},
 		{"missing created_at", `{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"expires_at":"2024-01-02T00:00:00Z"}`},
 		{"missing expires_at", `{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z"}`},
 	}
@@ -697,6 +729,13 @@ func TestBatch_PreservesSignedCompactionBlock(t *testing.T) {
 // batch, through the shared convertResponseWithOptions path with
 // markCodeExecutionDynamic forced on (batch results have no original tool
 // list to consult).
+//
+// The TS fixture also includes an mcp_tool_use/mcp_tool_result pair; that
+// part is intentionally not ported here because the shared non-batch
+// converter (language_model.go's providerToolResultName) does not yet
+// resolve mcp_tool_result's tool name to its paired mcp_tool_use name or set
+// dynamic/providerMetadata on it -- a pre-existing gap tracked separately
+// (FOLLOWUP_TRACKER.md "AR"), not specific to batch conversion.
 func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	content := `[` +
 		`{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"city":"Paris"}},` +
