@@ -37,11 +37,20 @@ type ComputerCall struct {
 	// ID is the unique identifier for this output item.
 	ID *string `json:"id,omitempty"`
 
-	// CallID links this call to its output.
-	CallID string `json:"call_id"`
+	// CallID links this call to its output. A nil CallID (the API sends
+	// call_id: null) means this call is fully server-executed with no
+	// client round-trip; it decodes as a provider-executed "computer_use"
+	// tool-call/tool-result pair instead of a client-executable "computer"
+	// tool call (row 0063c2d).
+	CallID *string `json:"call_id,omitempty"`
 
 	// Status is "in_progress", "completed", or "incomplete".
 	Status string `json:"status"`
+
+	// Action is a single UI action, used instead of Actions on some
+	// responses; mapComputerCallInput falls back to [Action] when Actions
+	// is empty. See Actions for the map shape.
+	Action map[string]interface{} `json:"action,omitempty"`
 
 	// Actions are the ordered UI actions to execute. Each action is a
 	// generic map since the shape varies by "type" (click/double_click/
@@ -49,7 +58,7 @@ type ComputerCall struct {
 	// MapComputerActionToSDK / MapComputerActionToWire for the field-name
 	// translation between wire (scroll_x/scroll_y) and SDK (scrollX/scrollY)
 	// forms.
-	Actions []map[string]interface{} `json:"actions"`
+	Actions []map[string]interface{} `json:"actions,omitempty"`
 
 	// PendingSafetyChecks are safety checks that must be acknowledged before
 	// continuing.

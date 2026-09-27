@@ -1131,13 +1131,42 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			args, rawArgs := computerCallArguments(item)
 			computerItemID := ""
 			if item.ID != nil {
 				computerItemID = *item.ID
 			}
+			if item.CallID == nil {
+				// A null call_id means this call is fully server-executed
+				// with no client round-trip: emit the immediate
+				// "computer_use" tool-call/tool-result pair TS produces,
+				// instead of a client-executable "computer" tool call.
+				tc := types.ToolCall{
+					ID:               computerItemID,
+					ToolName:         "openai.computer_use",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				}
+				toolCalls = append(toolCalls, tc)
+				result.Content = append(result.Content,
+					types.ToolCallContent{
+						ToolCallID:       computerItemID,
+						ToolName:         "openai.computer_use",
+						Input:            "",
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+					types.ToolResultContent{
+						ToolCallID:       computerItemID,
+						ToolName:         "openai.computer_use",
+						Result:           map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
+						ProviderExecuted: true,
+					},
+				)
+				continue
+			}
+			args, rawArgs := computerCallArguments(item)
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:               item.CallID,
+				ID:               *item.CallID,
 				ToolName:         "openai.computer",
 				Arguments:        args,
 				RawArguments:     rawArgs,
@@ -1304,8 +1333,14 @@ func programCallArguments(item responses.ProgramItem) (map[string]interface{}, s
 // mapComputerCallInput (row 0063c2d): actions are translated from wire
 // (scroll_x/scroll_y) to SDK (scrollX/scrollY) field names.
 func computerCallArguments(item responses.ComputerCall) (map[string]interface{}, string) {
-	actions := make([]map[string]interface{}, 0, len(item.Actions))
-	for _, action := range item.Actions {
+	// TS: `actions ?? (action != null ? [action] : [])` -- fall back to the
+	// singular `action` field when `actions` is empty/absent.
+	rawActions := item.Actions
+	if len(rawActions) == 0 && item.Action != nil {
+		rawActions = []map[string]interface{}{item.Action}
+	}
+	actions := make([]map[string]interface{}, 0, len(rawActions))
+	for _, action := range rawActions {
 		actions = append(actions, responses.MapComputerActionToSDK(action))
 	}
 	checks := make([]map[string]interface{}, 0, len(item.PendingSafetyChecks))
@@ -2132,15 +2167,48 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.emitDecodeError("computer_call", err)
 		}
-		computerArgs, computerRawArgs := computerCallArguments(item)
 		computerItemID := ""
 		if item.ID != nil {
 			computerItemID = *item.ID
 		}
+		if item.CallID == nil {
+			// A null call_id means this call is fully server-executed with
+			// no client round-trip: emit the immediate "computer_use"
+			// tool-input-end/tool-call/tool-result sequence TS produces,
+			// instead of a client-executable "computer" tool call.
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputEnd,
+					ToolCall: &types.ToolCall{
+						ID:               computerItemID,
+						ToolName:         "openai.computer_use",
+						ProviderExecuted: true,
+					},
+				},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:               computerItemID,
+						ToolName:         "openai.computer_use",
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+				},
+			)
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+					ToolCallID: computerItemID,
+					ToolName:   "openai.computer_use",
+					Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
+				},
+			})
+		}
+		computerArgs, computerRawArgs := computerCallArguments(item)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:               item.CallID,
+				ID:               *item.CallID,
 				ToolName:         "openai.computer",
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,

@@ -2639,6 +2639,87 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 	}
 }
 
+// TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted covers
+// row 0063c2d: a computer_call with call_id: null is fully server-executed,
+// with no client round trip. It decodes as an immediate "computer_use"
+// tool-call/tool-result pair (providerExecuted) instead of a client
+// "openai.computer" tool call, in both doGenerate and doStream.
+func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "computer_1", "status": "completed",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("Content = %#v, want a tool-call/tool-result pair", result.Content)
+	}
+	tc, ok := result.Content[0].(types.ToolCallContent)
+	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "openai.computer_use" || !tc.ProviderExecuted || tc.Input != "" {
+		t.Fatalf("Content[0] = %#v, want a providerExecuted computer_use tool-call with empty input", result.Content[0])
+	}
+	tr, ok := result.Content[1].(types.ToolResultContent)
+	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "openai.computer_use" {
+		t.Fatalf("Content[1] = %#v, want a computer_use tool-result", result.Content[1])
+	}
+	resultMap, ok := tr.Result.(map[string]interface{})
+	if !ok || resultMap["type"] != "computer_use_tool_result" || resultMap["status"] != "completed" {
+		t.Fatalf("tool-result.Result = %#v, want {type:computer_use_tool_result, status:completed}", tr.Result)
+	}
+
+	// Streaming path emits tool-input-end, tool-call, then tool-result.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"completed"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk1, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "openai.computer_use" {
+		t.Fatalf("chunk1 = %#v, want tool-input-end for computer_use", chunk1)
+	}
+	chunk2, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "openai.computer_use" || !chunk2.ToolCall.ProviderExecuted {
+		t.Fatalf("chunk2 = %#v, want a providerExecuted computer_use tool-call", chunk2)
+	}
+	chunk3, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "openai.computer_use" {
+		t.Fatalf("chunk3 = %#v, want a computer_use tool-result", chunk3)
+	}
+}
+
+// TestComputerCallArguments_FallsBackToSingularAction covers row 0063c2d:
+// TS's mapComputerCallInput uses `actions ?? (action != null ? [action] :
+// [])` -- a singular `action` field is used when `actions` is empty/absent.
+func TestComputerCallArguments_FallsBackToSingularAction(t *testing.T) {
+	item := responses.ComputerCall{
+		Status: "completed",
+		Action: map[string]interface{}{"type": "screenshot"},
+	}
+	args, _ := computerCallArguments(item)
+	actions, ok := args["actions"].([]map[string]interface{})
+	if !ok || len(actions) != 1 || actions[0]["type"] != "screenshot" {
+		t.Fatalf("actions = %#v, want one screenshot action from the singular action field", args["actions"])
+	}
+}
+
 // TestResponsesLanguageModel_ComputerToolInputReplay covers row 0063c2d: a
 // computer tool call and its result round-trip through input conversion as
 // computer_call/computer_call_output items.
@@ -2661,7 +2742,7 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 		t.Fatalf("input = %#v, want one computer_call item", input)
 	}
 	cc, ok := input[0].(responses.ComputerCall)
-	if !ok || cc.CallID != "call_1" || len(cc.Actions) != 1 {
+	if !ok || cc.CallID == nil || *cc.CallID != "call_1" || len(cc.Actions) != 1 {
 		t.Fatalf("input[0] = %#v, want computer_call with one action", input[0])
 	}
 

@@ -686,10 +686,11 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}, true
 	}
 	if opts.HasComputerTool && toolName == "computer" {
+		callID := tc.ID
 		return ComputerCall{
 			Type:                "computer_call",
 			ID:                  stringPtr(itemID),
-			CallID:              tc.ID,
+			CallID:              &callID,
 			Status:              stringArgDefault(tc.Arguments, "status", "completed"),
 			Actions:             computerActionsFromArgs(tc.Arguments),
 			PendingSafetyChecks: computerSafetyChecksFromArgs(tc.Arguments, "pendingSafetyChecks"),
