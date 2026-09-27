@@ -2,8 +2,12 @@ package cartesia
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // required by the WebSocket handshake spec, not for security
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -605,6 +609,67 @@ func TestTranscriptionModel_DoStream_CancelMidStream(t *testing.T) {
 	}
 }
 
+// failingAudioStream is a provider.AudioStream test double whose Next
+// returns a fixed non-EOF error after yielding any configured chunks,
+// simulating a real audio-source failure (as opposed to natural completion).
+type failingAudioStream struct {
+	chunks [][]byte
+	err    error
+
+	mu        sync.Mutex
+	cancelled bool
+}
+
+func (s *failingAudioStream) Next(ctx context.Context) ([]byte, error) {
+	if len(s.chunks) > 0 {
+		c := s.chunks[0]
+		s.chunks = s.chunks[1:]
+		return c, nil
+	}
+	return nil, s.err
+}
+
+func (s *failingAudioStream) Cancel(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelled = true
+}
+
+func (s *failingAudioStream) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
+}
+
+// TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError mirrors TS
+// `void sendAudio(socket).catch(finishWithError)`: a genuine AudioStream
+// read failure (distinct from its natural io.EOF completion) must terminate
+// the stream with an error, not be silently swallowed.
+func TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError(t *testing.T) {
+	server := newCartesiaRealtimeTestServer(t)
+	defer server.close()
+
+	audio := &failingAudioStream{err: errors.New("audio source failed")}
+	model := newCartesiaRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if err == nil || !strings.Contains(err.Error(), "audio source failed") {
+		t.Fatalf("err = %v, want an error containing 'audio source failed'", err)
+	}
+}
+
 // TestTranscriptionModel_DoStream_ErrorMessage verifies the "error" event
 // type surfaces its message on the stream.
 func TestTranscriptionModel_DoStream_ErrorMessage(t *testing.T) {
@@ -631,4 +696,141 @@ func TestTranscriptionModel_DoStream_ErrorMessage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want an error containing 'boom'", err)
 	}
+}
+
+// TestTranscriptionModel_DoStream_GracefulCloseWithoutDoneFinishes mirrors TS
+// connectToWebSocket's onClose semantics ("if (!finished) finish()"): a
+// graceful WebSocket close received without a preceding "done" event ends
+// the stream with an implicit finish, not an error.
+func TestTranscriptionModel_DoStream_GracefulCloseWithoutDoneFinishes(t *testing.T) {
+	server := newCartesiaRealtimeTestServer(t)
+	defer server.close()
+
+	model := newCartesiaRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	server.toSend <- map[string]interface{}{"type": "turn.end", "request_id": "turn-1", "transcript": "partial only"}
+
+	// Wait for the client to actually receive the transcript-final event
+	// before closing, so the close doesn't race ahead of delivery.
+	part, err := result.Stream.Next()
+	if err != nil {
+		t.Fatalf("Stream.Next() (transcript-final) error = %v", err)
+	}
+	if part.Type != provider.TranscriptionStreamPartTypeFinal || part.Text != "partial only" {
+		t.Fatalf("part = %+v", part)
+	}
+
+	close(server.closeConn)
+
+	rest, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v, want a silent finish", err)
+	}
+	finish := rest[len(rest)-1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "partial only" {
+		t.Fatalf("finish = %+v", finish)
+	}
+}
+
+// TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError mirrors TS
+// connectToWebSocket's onSocketError semantics: an abnormal disconnection
+// (here, a connection dropped mid-frame, distinct from a clean WebSocket
+// close frame) must surface as an error rather than a silent finish.
+func TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError(t *testing.T) {
+	ts := newAbnormalDisconnectTestServer(t)
+	defer ts.Close()
+
+	model := newCartesiaRealtimeTestModel(ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if err == nil {
+		t.Fatal("expected an error for an abnormal disconnection, got a silent finish")
+	}
+}
+
+// newAbnormalDisconnectTestServer performs the WebSocket handshake itself
+// (rather than golang.org/x/net/websocket's server helper) so it can force a
+// TCP RST (via SO_LINGER=0) instead of a clean FIN. golang.org/x/net/websocket
+// parses frame headers one byte at a time via bufio.Reader.ReadByte, which
+// returns a plain io.EOF for any ordinary closed/half-closed connection —
+// indistinguishable, at that layer, from a properly received close frame.
+// Only a genuine socket-level error (here, "connection reset by peer") is
+// distinct from io.EOF, so this is the reliable way to exercise the
+// onSocketError path instead of onClose.
+func newAbnormalDisconnectTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/access-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "test-access-token"})
+	})
+	wsHandler := func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("ResponseWriter does not support hijacking")
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+
+		key := r.Header.Get("Sec-WebSocket-Key")
+		accept := computeWebSocketAccept(key)
+		resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+			"Upgrade: websocket\r\n" +
+			"Connection: Upgrade\r\n" +
+			"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		if _, err := buf.WriteString(resp); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+		if err := buf.Flush(); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			// SetLinger(0) makes the following Close() send a RST instead of
+			// the normal FIN/close handshake, forcing a real socket error on
+			// the client's next read instead of a graceful io.EOF.
+			_ = tcpConn.SetLinger(0)
+		}
+		conn.Close() //nolint:errcheck
+	}
+	mux.HandleFunc("/stt/websocket", wsHandler)
+	mux.HandleFunc("/stt/turns/websocket", wsHandler)
+	return httptest.NewServer(mux)
+}
+
+// computeWebSocketAccept computes the Sec-WebSocket-Accept header value for
+// a given Sec-WebSocket-Key, per RFC 6455 section 1.3.
+func computeWebSocketAccept(key string) string {
+	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
+	h.Write([]byte(key + magicGUID))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }

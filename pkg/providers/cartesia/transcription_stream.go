@@ -354,30 +354,56 @@ func (s *cartesiaTranscriptionStream) send(conn *websocket.Conn, v interface{}) 
 }
 
 // pumpAudio forwards audio chunks as binary frames until the AudioStream is
-// exhausted, then sends the close/finalize control message (unless the
-// stream has already reached a terminal state), mirroring TS sendAudio.
-func (s *cartesiaTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg cartesiaTranscriptionStreamConfig) {
+// exhausted (io.EOF, per the AudioStream contract), then sends the
+// close/finalize control message (unless the stream has already reached a
+// terminal state), mirroring TS sendAudio. Any other failure — reading from
+// the AudioStream, or writing to the WebSocket — is reported on errCh,
+// mirroring `void sendAudio(socket).catch(finishWithError)`. A failure that
+// stems from s.ctx already being cancelled is not reported here: run()'s own
+// select on s.ctx.Done() already handles that case.
+func (s *cartesiaTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg cartesiaTranscriptionStreamConfig, errCh chan<- error) {
 	for {
 		chunk, err := cfg.audio.Next(s.ctx)
 		if err != nil {
+			if err != io.EOF && s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
+			}
 			break
 		}
 		if sendErr := s.send(conn, chunk); sendErr != nil {
+			if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, sendErr)
+			}
 			return
 		}
 	}
 
-	if s.finished.Load() {
+	if s.finished.Load() || s.ctx.Err() != nil {
 		return
 	}
 	if cfg.useTurnDetection {
 		payload, marshalErr := json.Marshal(map[string]string{"type": "close"})
 		if marshalErr != nil {
+			s.reportAudioError(errCh, marshalErr)
 			return
 		}
-		_ = s.send(conn, string(payload))
+		if sendErr := s.send(conn, string(payload)); sendErr != nil && s.ctx.Err() == nil {
+			s.reportAudioError(errCh, sendErr)
+		}
 	} else {
-		_ = s.send(conn, "finalize")
+		if sendErr := s.send(conn, "finalize"); sendErr != nil && s.ctx.Err() == nil {
+			s.reportAudioError(errCh, sendErr)
+		}
+	}
+}
+
+// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
+// send that no longer has a reader (run() already returned via a different
+// path) cannot block pumpAudio forever.
+func (s *cartesiaTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	case <-s.ctx.Done():
 	}
 }
 
@@ -425,8 +451,9 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 	}
 
 	msgCh := make(chan cartesiaWSResult)
+	audioErrCh := make(chan error, 1)
 	go s.receiveLoop(conn, msgCh)
-	go s.pumpAudio(conn, cfg)
+	go s.pumpAudio(conn, cfg, audioErrCh)
 
 	var (
 		finalTexts      []string
@@ -463,12 +490,33 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			fail(s.ctx.Err())
 			return
 
+		case audioErr := <-audioErrCh:
+			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
+			// failure pumping audio (reading the caller's AudioStream, or
+			// writing to the WebSocket) terminates the stream with an error.
+			if finished {
+				return
+			}
+			fail(audioErr)
+			return
+
 		case res := <-msgCh:
 			if res.err != nil {
+				// A received WebSocket close frame (io.EOF from
+				// golang.org/x/net/websocket's frame reader) mirrors TS
+				// connectToWebSocket's onClose: an implicit, silent finish if
+				// the stream hasn't already reached a terminal state. Any
+				// other read error (connection reset, protocol violation,
+				// etc.) mirrors onSocketError: an abnormal disconnection
+				// that must surface as an error, not a quiet success.
 				if finished {
 					return
 				}
-				finish()
+				if errors.Is(res.err, io.EOF) {
+					finish()
+				} else {
+					fail(errors.New("Cartesia streaming transcription error"))
+				}
 				return
 			}
 			if finished {
