@@ -704,7 +704,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if id == reasoningID {
 					reasoningID = ""
 				}
-			case provider.ChunkTypeFinish:
+			case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
 				closeOpenParts()
 			}
 			converted := toUIMessageChunks(chunkForConversion, options)
@@ -776,7 +776,7 @@ func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOpti
 	switch part.Type {
 	case provider.ChunkTypeStreamStart:
 		return []UIMessageChunk{{"type": "start-step"}}
-	case provider.ChunkTypeFinish:
+	case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
 		return []UIMessageChunk{{"type": "finish-step"}}
 	case provider.ChunkTypeAbort:
 		chunk := UIMessageChunk{"type": "abort"}

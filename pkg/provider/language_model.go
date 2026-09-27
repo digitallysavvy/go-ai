@@ -310,6 +310,17 @@ const (
 	// ChunkTypeFinish indicates the final chunk with finish reason
 	ChunkTypeFinish ChunkType = "finish"
 
+	// ChunkTypeFinishStep marks the end of one step in a multi-step stream
+	// produced outside the normal provider.LanguageModel.DoStream loop (e.g.
+	// a harness bridge session that already ran its own model calls), when
+	// more steps follow. Unlike ChunkTypeFinish it never means the stream is
+	// over; consumers should expect another ChunkTypeStreamStart afterward.
+	// Carries the same Usage/FinishReason fields as ChunkTypeFinish, scoped
+	// to that one step. Mirrors TS harness-v1-stream-part.ts's "finish-step"
+	// (distinct from "finish"). See state/parity/sep_23_2026/harness.md §3
+	// ("P0 prerequisite").
+	ChunkTypeFinishStep ChunkType = "finish-step"
+
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"
 
