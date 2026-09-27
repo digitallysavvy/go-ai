@@ -84,6 +84,13 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 		return fmt.Errorf("writer is required")
 	}
 	bw := bufio.NewWriter(w)
+	// flusher is the Go equivalent of TS write-to-server-response.ts's
+	// `(response as FlushableServerResponse).flush` (e.g. a compressing
+	// ServerResponse middleware exposing a manual flush): an
+	// http.ResponseWriter wrapped by gzip/compression middleware commonly
+	// implements http.Flusher so a chunked/compressed write actually reaches
+	// the client instead of sitting in the compressor's internal buffer.
+	flusher, _ := w.(http.Flusher)
 
 	loopErr := func() error {
 		for {
@@ -99,9 +106,20 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 				}
 				return err
 			}
-			if chunk.Type == provider.ChunkTypeText {
+			if chunk.Type == provider.ChunkTypeText && chunk.Text != "" {
 				if _, err := bw.WriteString(chunk.Text); err != nil {
 					return err
+				}
+				// Flush after every chunk (audit row b9ac19f, WG-MISC): TS
+				// calls response.write()+flush() per chunk instead of
+				// buffering, so a consumer streaming this response sees
+				// output incrementally instead of in bufio's default 4 KiB
+				// blocks.
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+				if flusher != nil {
+					flusher.Flush()
 				}
 			}
 		}

@@ -70,6 +70,49 @@ func TestPipeTextStreamToWriter_SurfacesWriteError(t *testing.T) {
 	}
 }
 
+// flushRecorder wraps a bytes.Buffer and implements http.Flusher, recording
+// the buffer's content at each Flush() call, so tests can verify writes
+// reach the consumer incrementally (per SSE chunk / text delta) rather than
+// only once the whole stream has been read (audit row b9ac19f, WG-MISC).
+type flushRecorder struct {
+	buf          bytes.Buffer
+	flushSnaps   []string
+	flushedCount int
+}
+
+func (f *flushRecorder) Write(p []byte) (int, error) { return f.buf.Write(p) }
+func (f *flushRecorder) Flush() {
+	f.flushedCount++
+	f.flushSnaps = append(f.flushSnaps, f.buf.String())
+}
+
+// TestPipeTextStreamToWriter_FlushesIncrementally verifies that each text
+// chunk is flushed to the underlying writer (and, when it implements
+// http.Flusher, that Flush is called) as soon as it's written, instead of
+// batching output in bufio's default 4 KiB block and only flushing once at
+// the very end.
+func TestPipeTextStreamToWriter_FlushesIncrementally(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "a"},
+		{Type: provider.ChunkTypeText, Text: "b"},
+		{Type: provider.ChunkTypeText, Text: "c"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	rec := &flushRecorder{}
+	if err := PipeTextStreamToWriter(context.Background(), stream, rec); err != nil {
+		t.Fatalf("PipeTextStreamToWriter() error = %v", err)
+	}
+	if rec.flushedCount != 3 {
+		t.Fatalf("flushedCount = %d, want 3 (one per text chunk)", rec.flushedCount)
+	}
+	want := []string{"a", "ab", "abc"}
+	for i, snap := range rec.flushSnaps {
+		if snap != want[i] {
+			t.Errorf("flush[%d] snapshot = %q, want %q (writes must reach the consumer incrementally)", i, snap, want[i])
+		}
+	}
+}
+
 func TestCreateTextStreamResponseFromStream_Standalone(t *testing.T) {
 	stream := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "ok"},
