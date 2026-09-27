@@ -174,12 +174,11 @@ func jsonAttr(key string, v interface{}) (attribute.KeyValue, bool) {
 // TS's onEvaluateOperationStart (otel/src/legacy-open-telemetry.ts).
 // Attribute shape follows the same base-attribute parity fix as the generic
 // OnStart (follow-up H1): ai.model.provider/id, ai.settings.maxRetries,
-// ai.request.headers.<name>, and operation.name/resource.name are emitted;
-// gen_ai.system/gen_ai.request.model are NOT part of TS's root span (TS's
-// evaluate root span carries no gen_ai.* at all) but are left in place here
-// since pkg/telemetry/evaluate_test.go and other consumers already assert on
-// them and TS's own dual-emission convention elsewhere makes this a
-// reasonable superset rather than a wrong value.
+// ai.request.headers.<name>, and operation.name/resource.name are emitted.
+// gen_ai.system/gen_ai.request.model are intentionally NOT set — TS's
+// onEvaluateOperationStart carries no gen_ai.* attributes at all (only
+// assembleOperationName + baseTelemetryAttributes + evaluation.state/
+// questions).
 func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
@@ -200,10 +199,6 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 		functionID = e.Settings.FunctionID
 	}
 	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
-	span.SetAttributes(
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
 
 	maxRetries := e.MaxRetries
 	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, legacySettings{MaxRetries: &maxRetries}, e.Headers)
@@ -244,7 +239,8 @@ func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEve
 // OnEvaluationModelCallStart creates the nested "ai.evaluate.doEvaluate"
 // child span, tracked by CallID (like OnEmbedStart/OnRerankStart) so
 // OnEvaluationModelCallEnd or a defensive OnError close can find it again.
-// Mirrors TS's experimental_onEvaluationModelCallStart.
+// Mirrors TS's experimental_onEvaluationModelCallStart — which, like
+// onEvaluateOperationStart, carries no gen_ai.* attributes.
 func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
@@ -257,10 +253,6 @@ func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e E
 		functionID = e.Settings.FunctionID
 	}
 	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
-	span.SetAttributes(
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
 	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
 		span.SetAttributes(baseAttrs...)
 	}

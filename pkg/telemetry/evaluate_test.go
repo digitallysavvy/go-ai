@@ -129,8 +129,14 @@ func TestLegacyOpenTelemetryEvaluateSpans(t *testing.T) {
 	if _, ok := attrValue(rootSpan, "ai.evaluation.answers"); !ok {
 		t.Error("root span missing ai.evaluation.answers")
 	}
-	if v, ok := attrValue(rootSpan, "gen_ai.system"); !ok || v.(string) != "test-provider" {
-		t.Errorf("root gen_ai.system = %v, ok=%v", v, ok)
+	// TS's onEvaluateOperationStart carries no gen_ai.* attributes at all
+	// (legacy-open-telemetry.ts); follow-up H1 removed the Go-only
+	// gen_ai.system/gen_ai.request.model that used to be set here.
+	if _, ok := attrValue(rootSpan, "gen_ai.system"); ok {
+		t.Error("root span should not carry gen_ai.system (TS parity)")
+	}
+	if _, ok := attrValue(rootSpan, "gen_ai.request.model"); ok {
+		t.Error("root span should not carry gen_ai.request.model (TS parity)")
 	}
 
 	if v, ok := attrValue(doEvaluateSpan, "ai.operationId"); !ok || v.(string) != "ai.evaluate.doEvaluate" {
