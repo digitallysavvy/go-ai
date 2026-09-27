@@ -93,10 +93,4 @@ jobs:
           cache: true
 
       - name: Build examples
-        run: |
-          for dir in examples/*/; do
-            if [ -f "${dir}main.go" ]; then
-              echo "Building ${dir}..."
-              (cd "$dir" && go build -v .)
-            fi
-          done
+        run: ./.github/scripts/build-examples.sh
