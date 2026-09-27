@@ -1340,7 +1340,11 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
-	entry.span.SetAttributes(attribute.Float64("ai.usage.tokens", e.Usage.Tokens))
+	// ai.usage.tokens is a plain value in TS (not {output: ...}), so it is
+	// never gated by recordOutputs; sanitizeAttributeValue drops it when
+	// usage.tokens is NaN (provider returned no usage), which
+	// setFiniteFloat64 mirrors.
+	entry.span.SetAttributes(setFiniteFloat64(nil, "ai.usage.tokens", e.Usage.Tokens)...)
 	entry.span.End()
 }
 
@@ -1761,10 +1765,15 @@ func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e Telem
 	span.SetAttributes(legacyObjectUsageAttrs(e.Usage)...)
 }
 
-// legacyOnEmbedOperationEnd mirrors TS's onEmbedOperationEnd: only
-// ai.embedding (ai.embed) or ai.embeddings (ai.embedMany), output-gated. No
-// finishReason, no usage — those live on the nested doEmbed span only.
+// legacyOnEmbedOperationEnd mirrors TS's onEmbedOperationEnd: ai.embedding
+// (ai.embed) or ai.embeddings (ai.embedMany) output-gated, plus
+// ai.usage.tokens which — like the nested doEmbed span's copy — is a plain
+// value in TS (not {output: ...}), so it is set unconditionally (subject
+// only to telemetry being enabled, not recordOutputs). No finishReason.
 func (i LegacyOpenTelemetry) legacyOnEmbedOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	if e.Usage.TotalTokens != nil {
+		span.SetAttributes(attribute.Int64("ai.usage.tokens", *e.Usage.TotalTokens))
+	}
 	if !recordOutputs || e.Embedding == nil {
 		return
 	}

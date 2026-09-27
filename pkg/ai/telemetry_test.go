@@ -386,8 +386,8 @@ func TestEmbed_Telemetry(t *testing.T) {
 	// Verify attributes. ai.value is JSON-encoded (TS: JSON.stringify(value)),
 	// so the quoted-string form is expected rather than the raw value.
 	// ai.embedding is the root span's output (TS onEmbedOperationEnd);
-	// ai.usage.tokens lives only on the nested "ai.embed.doEmbed" span (H3
-	// follow-up 3), never on this root span.
+	// ai.usage.tokens is a plain (non-output-gated) value in TS, so it is set
+	// on both the root ai.embed span and the nested "ai.embed.doEmbed" span.
 	attrs := embedSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embed",
@@ -415,10 +415,14 @@ func TestEmbed_Telemetry(t *testing.T) {
 			t.Errorf("Expected attribute %s not found", key)
 		}
 	}
+	found := false
 	for _, attr := range attrs {
 		if string(attr.Key) == "ai.usage.tokens" {
-			t.Errorf("ai.usage.tokens should not be set on the root ai.embed span")
+			found = true
 		}
+	}
+	if !found {
+		t.Error("Expected ai.usage.tokens to be set on the root ai.embed span")
 	}
 }
 
@@ -485,8 +489,9 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	// Verify attributes. ai.values is an array of individually JSON-encoded
 	// strings (TS: event.values.map(v => JSON.stringify(v))), not a count.
 	// ai.embeddings is the root span's output (TS onEmbedOperationEnd, one
-	// JSON string per embedding); ai.usage.tokens lives only on the nested
-	// "ai.embedMany.doEmbed" span(s), never on this root span (H3 follow-up 3).
+	// JSON string per embedding); ai.usage.tokens is a plain
+	// (non-output-gated) value in TS, so it is set on both this root
+	// ai.embedMany span and the nested "ai.embedMany.doEmbed" span(s).
 	attrs := embedManySpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embedMany",
@@ -554,10 +559,14 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	if !foundEmbeddings {
 		t.Error("Expected attribute ai.embeddings not found")
 	}
+	foundTokens := false
 	for _, attr := range attrs {
 		if string(attr.Key) == "ai.usage.tokens" {
-			t.Errorf("ai.usage.tokens should not be set on the root ai.embedMany span")
+			foundTokens = true
 		}
+	}
+	if !foundTokens {
+		t.Error("Expected ai.usage.tokens to be set on the root ai.embedMany span")
 	}
 }
 
