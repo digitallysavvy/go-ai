@@ -507,4 +507,3 @@ func extractUserText(prompt harness.Prompt) (string, error) {
 	}
 	return strings.Join(parts, "\n\n"), nil
 }
-
