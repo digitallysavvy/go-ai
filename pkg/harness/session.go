@@ -56,6 +56,29 @@ type AgentSession struct {
 	turnState    TurnState
 
 	resumedToolsContext map[string]interface{}
+
+	// turnSeq/activeTurnID/activeHandoff support ExperimentalSteerTurn.
+	// turnSeq/activeTurnID mirror TS `turnSequence`/`activeTurnSequence`:
+	// every startTrackedTurn call mints a new turn id, and every later
+	// callback (setActivePromptControl/finishTrackedTurn) is a no-op once a
+	// newer turn has started or the tracked turn has already ended. Mirrors
+	// TS AgentSession's private `turnSequence`/`activeTurnSequence` fields.
+	turnSeq       int
+	activeTurnID  int
+	activeHandoff *steerHandoff
+}
+
+// steerHandoff carries the in-flight turn's PromptControl to a caller
+// blocked in ExperimentalSteerTurn, once runPrompt's DoPromptTurn/
+// DoContinueTurn call returns it (or reports that the turn ended, or moved
+// out of "running", before ever producing one — ready closes with control
+// left nil). Mirrors TS AgentSession's `activePromptControl` promise
+// (startTrackedTurn/setPromptControl/waitForPromptControl/
+// settleActivePromptControl/clearActivePromptControl).
+type steerHandoff struct {
+	turnID  int
+	ready   chan struct{}
+	control PromptControl // valid only after ready is closed
 }
 
 // AgentSessionOptions is the input of newAgentSession.
@@ -154,25 +177,77 @@ func (s *AgentSession) requireContinuableTurn() error {
 }
 
 // startTrackedTurn transitions the session to "running" for the duration of
-// one runPrompt call.
-func (s *AgentSession) startTrackedTurn() {
+// one runPrompt call and returns a turn id: every later
+// setActivePromptControl/finishTrackedTurn call for this turn must pass it
+// back, so a call that arrives after a newer turn has already started (or
+// after this one already ended) is a safe no-op. Mirrors TS
+// `startTrackedTurn`.
+func (s *AgentSession) startTrackedTurn() int {
 	s.mu.Lock()
 	s.turnState = TurnStateRunning
+	s.turnSeq++
+	turnID := s.turnSeq
+	s.activeTurnID = turnID
+	s.clearActiveHandoffLocked()
+	s.activeHandoff = &steerHandoff{turnID: turnID, ready: make(chan struct{})}
 	s.mu.Unlock()
+	return turnID
 }
 
-// finishTrackedTurn unconditionally returns the session to idle. Called from
-// runPrompt's OnTurnFinished/OnTurnFailed callbacks — synchronously, from
-// the turn driver's own goroutine, before it signals Done — for both a
-// natural finish and a failure. Mirrors TS `HarnessAgentSession`'s private
-// `finishTrackedTurn`, which likewise always sets `turnState = 'idle'`
-// regardless of what markAwaitingApprovalIfActive/markAwaitingToolResultIfActive
-// set earlier: those calls only fire when a turn *pauses* for host input,
-// a case in which runPrompt never calls OnTurnFinished/OnTurnFailed (see
-// pauseForHostInput), so there is no ordering conflict between the two.
-func (s *AgentSession) finishTrackedTurn() {
+// setActivePromptControl hands the running turn's PromptControl to any
+// caller blocked in ExperimentalSteerTurn. Wired as runPrompt's
+// OnPromptControlAvailable callback via a turnID-scoped closure (see
+// Agent.startTurn). A no-op once the turn is no longer the active
+// "running" one. Mirrors TS `setPromptControl`.
+func (s *AgentSession) setActivePromptControl(turnID int, control PromptControl) {
 	s.mu.Lock()
-	s.turnState = TurnStateIdle
+	defer s.mu.Unlock()
+	if s.turnState != TurnStateRunning || s.activeTurnID != turnID || s.activeHandoff == nil || s.activeHandoff.turnID != turnID {
+		return
+	}
+	select {
+	case <-s.activeHandoff.ready:
+	default:
+		s.activeHandoff.control = control
+		close(s.activeHandoff.ready)
+	}
+}
+
+// clearActiveHandoffLocked settles any pending handoff (unblocking a caller
+// waiting in ExperimentalSteerTurn with a nil control, which resolves to the
+// "no longer targeted" error) and clears it. Callers must hold s.mu. Mirrors
+// TS `clearActivePromptControl`.
+func (s *AgentSession) clearActiveHandoffLocked() {
+	if s.activeHandoff == nil {
+		return
+	}
+	select {
+	case <-s.activeHandoff.ready:
+	default:
+		close(s.activeHandoff.ready)
+	}
+	s.activeHandoff = nil
+}
+
+// finishTrackedTurn returns the session to idle, but only if turnID is still
+// the active turn (a stale call — from a turn that a newer startTrackedTurn
+// has since superseded — is a no-op, mirroring TS's `activeTurnSequence !==
+// options.turnId` guard). Called from runPrompt's OnTurnFinished/OnTurnFailed
+// callbacks (via a turnID-scoped closure — see Agent.startTurn) —
+// synchronously, from the turn driver's own goroutine, before it signals
+// Done — for both a natural finish and a failure. Mirrors TS
+// `HarnessAgentSession`'s private `finishTrackedTurn`, which likewise always
+// sets `turnState = 'idle'` (when the turnId still matches) regardless of
+// what markAwaitingApprovalIfActive/markAwaitingToolResultIfActive set
+// earlier: those calls only fire when a turn *pauses* for host input, a case
+// in which runPrompt never calls OnTurnFinished/OnTurnFailed (see
+// pauseForHostInput), so there is no ordering conflict between the two.
+func (s *AgentSession) finishTrackedTurn(turnID int) {
+	s.mu.Lock()
+	if s.activeTurnID == turnID {
+		s.clearActiveHandoffLocked()
+		s.turnState = TurnStateIdle
+	}
 	s.mu.Unlock()
 }
 
@@ -202,6 +277,7 @@ func (s *AgentSession) recordPendingApproval(a PendingToolApproval) {
 	s.mu.Lock()
 	s.pendingApprovals[a.ApprovalID] = a
 	if s.turnState == TurnStateRunning {
+		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingApproval
 	}
 	s.mu.Unlock()
@@ -220,6 +296,7 @@ func (s *AgentSession) recordPendingResult(r PendingToolResult) {
 	s.mu.Lock()
 	s.pendingResults[r.ToolCallID] = r
 	if s.turnState == TurnStateRunning {
+		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingResult
 	}
 	s.mu.Unlock()
@@ -243,6 +320,49 @@ func (s *AgentSession) Compact(ctx context.Context, customInstructions string) e
 	return s.underlying.DoCompact(ctx, customInstructions)
 }
 
+// ExperimentalSteerTurn submits an additional user message to the active
+// (running) turn. The underlying runtime accepts the message at its next
+// safe input boundary; any output it causes remains part of the active
+// turn's result stream, i.e. the caller does not receive a separate result
+// for it — it surfaces through the *ai.StreamTextResult already returned by
+// the Stream/Generate call that started this turn. Returns
+// CapabilityUnsupportedError if the harness's PromptControl does not
+// implement UserMessageSubmitter. Mirrors TS
+// `HarnessAgentSession.experimental_steerTurn`.
+func (s *AgentSession) ExperimentalSteerTurn(ctx context.Context, text string) error {
+	s.mu.Lock()
+	if s.turnState != TurnStateRunning || s.activeHandoff == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("harness session '%s' has no running turn to steer", s.sessionID)
+	}
+	handoff := s.activeHandoff
+	s.mu.Unlock()
+
+	var control PromptControl
+	select {
+	case <-handoff.ready:
+		control = handoff.control
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	s.mu.Lock()
+	stillTargeted := s.sessionState == SessionStateActive && s.turnState == TurnStateRunning && s.activeHandoff == handoff
+	s.mu.Unlock()
+	if !stillTargeted || control == nil {
+		return fmt.Errorf("harness session '%s' no longer has the running turn targeted for steering", s.sessionID)
+	}
+
+	submitter, ok := control.(UserMessageSubmitter)
+	if !ok {
+		return NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness '%s' does not support steering active turns.", s.harness.HarnessID()),
+			s.harness.HarnessID(), nil,
+		)
+	}
+	return submitter.SubmitUserMessage(ctx, text)
+}
+
 // SuspendTurn freezes the active turn at a precise cursor while keeping the
 // runtime alive, and returns the continuation payload the caller must
 // persist to resume it later (directly, or embedded in the ResumeSessionState
@@ -253,6 +373,7 @@ func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, err
 		s.mu.Unlock()
 		return nil, fmt.Errorf("harness session '%s': no unfinished turn to suspend", s.sessionID)
 	}
+	s.clearActiveHandoffLocked()
 	s.mu.Unlock()
 
 	state, err := s.underlying.DoSuspendTurn(ctx)
@@ -281,6 +402,7 @@ func (s *AgentSession) Detach(ctx context.Context) (*ResumeSessionState, error) 
 		return nil, err
 	}
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateDetached
 	s.mu.Unlock()
 	return state, nil
@@ -301,6 +423,7 @@ func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateStopped
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()
@@ -315,6 +438,7 @@ func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 func (s *AgentSession) Destroy(ctx context.Context) error {
 	err := s.underlying.DoDestroy(ctx)
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateDestroyed
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()

@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -58,12 +60,37 @@ func (c *mockPromptControl) SubmitToolApproval(_ context.Context, a ToolApproval
 func (c *mockPromptControl) Done() <-chan struct{} { return c.done }
 func (c *mockPromptControl) Err() error            { return c.err }
 
+// mockSteerablePromptControl wraps mockPromptControl and additionally
+// implements UserMessageSubmitter, mirroring TS mockHarness's
+// `supportsSteering` option: since Go interface satisfaction is static
+// (unlike TS's runtime-conditional `submitUserMessage` property), "a
+// harness that does/doesn't support steering" is expressed as two distinct
+// PromptControl types instead of one control with a nullable method.
+type mockSteerablePromptControl struct {
+	*mockPromptControl
+	userMessages *[]string
+}
+
+func (c *mockSteerablePromptControl) SubmitUserMessage(_ context.Context, text string) error {
+	c.mu.Lock()
+	*c.userMessages = append(*c.userMessages, text)
+	c.mu.Unlock()
+	return nil
+}
+
 type mockHarnessOptions struct {
 	script           func(submit func(toolCallID string, output interface{})) []StreamPart
 	continueScript   func(submit func(toolCallID string, output interface{})) []StreamPart
 	builtinTools     map[string]BuiltinTool
 	onSubmitResult   func(ToolResultSubmission)
 	supportsApproval bool
+	supportsSteering bool
+	// promptDone, when set, is called once per DoPromptTurn/DoContinueTurn
+	// invocation; the mock keeps that turn "running" (PromptControl.Done()
+	// stays open) until the returned channel closes, mirroring TS
+	// mockHarness's `promptDone` hook — a window for the test to call
+	// ExperimentalSteer while the turn is provably still active.
+	promptDone func() <-chan struct{}
 }
 
 type mockHarnessResult struct {
@@ -74,6 +101,7 @@ type mockHarnessResult struct {
 	prompts         []Prompt
 	turnSettings    []TurnSettings
 	responseFormats []*ResponseFormat
+	userMessages    []string
 }
 
 // newMockHarness builds a mock Harness whose Session emits opts.script on a
@@ -82,40 +110,63 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	res := &mockHarnessResult{}
 	submit := func(toolCallID string, output interface{}) { _ = toolCallID; _ = output }
 
+	// newControl builds this turn's PromptControl (steerable when
+	// opts.supportsSteering) and returns the underlying mockPromptControl
+	// too, so the emitting goroutine below can always reach `done`/`mu`
+	// regardless of which wrapper type was returned to the caller.
+	newControl := func() (PromptControl, *mockPromptControl) {
+		base := &mockPromptControl{
+			toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
+			onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
+		}
+		if !opts.supportsSteering {
+			return base, base
+		}
+		return &mockSteerablePromptControl{mockPromptControl: base, userMessages: &res.userMessages}, base
+	}
+
 	sess := &mockSession{
 		id: "mock-session-1",
 		doPromptTurn: func(ctx context.Context, o PromptTurnOptions) (PromptControl, error) {
 			res.prompts = append(res.prompts, o.Prompt)
 			res.turnSettings = append(res.turnSettings, o.TurnSettings)
 			res.responseFormats = append(res.responseFormats, o.ResponseFormat)
-			control := &mockPromptControl{
-				toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
-				onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
-			}
+			control, base := newControl()
 			parts := opts.script(submit)
+			var done <-chan struct{}
+			if opts.promptDone != nil {
+				done = opts.promptDone()
+			}
 			go func() {
 				for _, p := range parts {
 					o.Emit(p)
 				}
-				close(control.done)
+				if done != nil {
+					<-done
+				}
+				close(base.done)
 			}()
 			return control, nil
 		},
 		doContinueTurn: func(ctx context.Context, o ContinueTurnOptions) (PromptControl, error) {
 			res.responseFormats = append(res.responseFormats, o.ResponseFormat)
-			control := &mockPromptControl{
-				toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
-				onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
-			}
+			control, base := newControl()
 			var parts []StreamPart
 			if opts.continueScript != nil {
 				parts = opts.continueScript(submit)
+			}
+			var done <-chan struct{}
+			if opts.promptDone != nil {
+				done = opts.promptDone()
 			}
 			go func() {
 				for _, p := range parts {
 					o.Emit(p)
 				}
-				close(control.done)
+				if done != nil {
+					<-done
+				}
+				close(base.done)
 			}()
 			return control, nil
 		},
@@ -974,5 +1025,231 @@ func TestAgent_NoOutputSendsNilResponseFormat(t *testing.T) {
 	}
 	if len(mock.responseFormats) != 1 || mock.responseFormats[0] != nil {
 		t.Fatalf("responseFormats = %+v, want one nil entry", mock.responseFormats)
+	}
+}
+
+// steerTestScript is a minimal successful single-step turn used by the
+// ExperimentalSteer tests below: TS's mock harness emits its script's parts
+// immediately (a microtask, independent of when control.Done()/`done`
+// resolves), so a turn only actually settles once both have happened. These
+// tests gate control.Done() behind their own promptDone channel to hold the
+// turn "running" for a steering window, and rely on this script to give the
+// eventual close of that channel a well-formed turn to complete instead of
+// the "adapter ended the turn without emitting `finish`" protocol error.
+func steerTestScript(func(string, interface{})) []StreamPart {
+	return []StreamPart{
+		&StreamStartPart{},
+		&TextDeltaPart{ID: "t1", Delta: "ok"},
+		&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+		&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+	}
+}
+
+// TestAgent_ExperimentalSteer_SubmitsToRunningTurn ports TS
+// harness-agent.test.ts "experimental_steer() submits a message to the
+// running turn".
+func TestAgent_ExperimentalSteer_SubmitsToRunningTurn(t *testing.T) {
+	finishPrompt := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		script:           steerTestScript,
+		supportsSteering: true,
+		promptDone:       func() <-chan struct{} { return finishPrompt },
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if err := a.ExperimentalSteer(context.Background(), session, "Change course."); err != nil {
+		t.Fatalf("ExperimentalSteer: %v", err)
+	}
+
+	close(finishPrompt)
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if len(mock.userMessages) != 1 || mock.userMessages[0] != "Change course." {
+		t.Fatalf("userMessages = %v, want [%q]", mock.userMessages, "Change course.")
+	}
+}
+
+// TestAgentSession_ExperimentalSteerTurn ports TS harness-agent.test.ts
+// "experimental_steerTurn() exposes the session-level steering API".
+func TestAgentSession_ExperimentalSteerTurn(t *testing.T) {
+	finishPrompt := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		script:           steerTestScript,
+		supportsSteering: true,
+		promptDone:       func() <-chan struct{} { return finishPrompt },
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if err := session.ExperimentalSteerTurn(context.Background(), "Change course."); err != nil {
+		t.Fatalf("ExperimentalSteerTurn: %v", err)
+	}
+
+	close(finishPrompt)
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if len(mock.userMessages) != 1 || mock.userMessages[0] != "Change course." {
+		t.Fatalf("userMessages = %v, want [%q]", mock.userMessages, "Change course.")
+	}
+}
+
+// TestAgent_ExperimentalSteer_UnsupportedCapability ports TS
+// "experimental_steer() reports an unsupported harness capability": a
+// PromptControl that does not implement UserMessageSubmitter surfaces
+// CapabilityUnsupportedError.
+func TestAgent_ExperimentalSteer_UnsupportedCapability(t *testing.T) {
+	finishPrompt := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		script:     steerTestScript,
+		promptDone: func() <-chan struct{} { return finishPrompt },
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	err = a.ExperimentalSteer(context.Background(), session, "Change course.")
+	var capErr *CapabilityUnsupportedError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("ExperimentalSteer err = %v (%T), want *CapabilityUnsupportedError", err, err)
+	}
+
+	close(finishPrompt)
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+}
+
+// TestAgent_ExperimentalSteer_NoRunningTurn ports TS "experimental_steer()
+// rejects when the session has no running turn".
+func TestAgent_ExperimentalSteer_NoRunningTurn(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	err := a.ExperimentalSteer(context.Background(), session, "Change course.")
+	if err == nil || !strings.Contains(err.Error(), "has no running turn to steer") {
+		t.Fatalf("ExperimentalSteer err = %v, want \"has no running turn to steer\"", err)
+	}
+}
+
+// TestAgent_ExperimentalSteer_RejectsDuringApprovalPause ports TS
+// "experimental_steer() rejects while the turn awaits tool approval": once a
+// turn has paused (no longer "running"), steering is rejected even though
+// HasUnfinishedTurn() is still true.
+func TestAgent_ExperimentalSteer_RejectsDuringApprovalPause(t *testing.T) {
+	weather := types.Tool{
+		Name: "weather", Description: "gets the weather", Parameters: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"city": "Paris"}, nil
+		},
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "call-1", ToolName: "weather", Input: `{"city":"Paris"}`},
+			}
+		},
+		supportsSteering: true,
+	})
+	toolApproval := ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusUserApproval}
+	a, session := newTestAgent(t, mock, map[string]types.Tool{"weather": weather}, Callbacks{}, toolApproval)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if !session.HasUnfinishedTurn() {
+		t.Fatal("session should have an unfinished (awaiting-approval) turn")
+	}
+
+	err = a.ExperimentalSteer(context.Background(), session, "Change course.")
+	if err == nil || !strings.Contains(err.Error(), "has no running turn to steer") {
+		t.Fatalf("ExperimentalSteer err = %v, want \"has no running turn to steer\"", err)
+	}
+	if len(mock.userMessages) != 0 {
+		t.Fatalf("userMessages = %v, want none", mock.userMessages)
+	}
+}
+
+// TestAgent_ExperimentalSteer_TargetsCurrentTurnAcrossSequentialTurns ports
+// TS "experimental_steer() targets the current turn when a session is
+// reused": a session's second turn must not be steerable through a stale
+// reference to the first turn's PromptControl (guarded by the turnID
+// tracked in session.go's steerHandoff).
+func TestAgent_ExperimentalSteer_TargetsCurrentTurnAcrossSequentialTurns(t *testing.T) {
+	var mu sync.Mutex
+	var finishPrompts []chan struct{}
+	mock := newMockHarness(mockHarnessOptions{
+		script:           steerTestScript,
+		supportsSteering: true,
+		promptDone: func() <-chan struct{} {
+			ch := make(chan struct{})
+			mu.Lock()
+			finishPrompts = append(finishPrompts, ch)
+			mu.Unlock()
+			return ch
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	first, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "First.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream (first): %v", err)
+	}
+	if err := a.ExperimentalSteer(context.Background(), session, "Steer first."); err != nil {
+		t.Fatalf("ExperimentalSteer (first): %v", err)
+	}
+	mu.Lock()
+	close(finishPrompts[0])
+	mu.Unlock()
+	if err := first.Err(); err != nil {
+		t.Fatalf("first.Err() = %v", err)
+	}
+
+	second, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Second.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream (second): %v", err)
+	}
+	if err := a.ExperimentalSteer(context.Background(), session, "Steer second."); err != nil {
+		t.Fatalf("ExperimentalSteer (second): %v", err)
+	}
+	mu.Lock()
+	close(finishPrompts[1])
+	mu.Unlock()
+	if err := second.Err(); err != nil {
+		t.Fatalf("second.Err() = %v", err)
+	}
+
+	if len(mock.userMessages) != 2 || mock.userMessages[0] != "Steer first." || mock.userMessages[1] != "Steer second." {
+		t.Fatalf("userMessages = %v, want [%q %q]", mock.userMessages, "Steer first.", "Steer second.")
 	}
 }
