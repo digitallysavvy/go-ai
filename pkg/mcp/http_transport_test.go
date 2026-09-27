@@ -37,7 +37,7 @@ func (c *recordingSSEClient) Do(req *http.Request) (*http.Response, error) {
 	c.acceptHeader = req.Header.Get("Accept")
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
 	}, nil
 }
@@ -602,7 +602,7 @@ func (c *userAgentRecordingSSEClient) Do(req *http.Request) (*http.Response, err
 	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
 	}, nil
 }
@@ -646,7 +646,7 @@ type okSSEClient struct{}
 func (c okSSEClient) Do(req *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
 	}, nil
 }
@@ -696,7 +696,7 @@ func (c *countingSSEClient) Do(req *http.Request) (*http.Response, error) {
 	atomic.AddInt32(&c.calls, 1)
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`)),
 	}, nil
 }
