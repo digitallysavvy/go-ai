@@ -1551,6 +1551,67 @@ func TestStreamText_Output_LengthFinishSurfacesOutputErr(t *testing.T) {
 	}
 }
 
+// TestStreamText_Output_ToolCallsFinishStillParses ports TS stream-text.ts's
+// getOutputPromise(), which — unlike generate-text.ts's gated final-output
+// parse — has no finishReason condition: it unconditionally calls
+// output.parseCompleteOutput on the final step's text. So a step that
+// finishes on 'tool-calls' with no text still attempts the parse, and for a
+// schema-based Output that means NoObjectGeneratedError surfaces from the
+// parse itself (empty text fails JSON parsing) rather than Output() being
+// silently left nil.
+func TestStreamText_Output_ToolCallsFinishStillParses(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Val int `json:"val"`
+	}
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+			ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+		}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "search something",
+		Tools:    tools,
+		MaxSteps: &maxSteps,
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	if result.Output() != nil {
+		t.Errorf("expected nil Output() when the final step has no text, got %v", result.Output())
+	}
+	var noObj *NoObjectGeneratedError
+	if !errors.As(result.OutputErr(), &noObj) {
+		t.Fatalf("OutputErr() = %v, want *NoObjectGeneratedError (TS parses unconditionally, unlike GenerateText)", result.OutputErr())
+	}
+}
+
 // TestStreamText_Output_ViaOnFinish verifies that the final Output() value is
 // also accessible inside the OnFinish callback (processStream path).
 func TestStreamText_Output_ViaOnFinish(t *testing.T) {

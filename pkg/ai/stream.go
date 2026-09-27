@@ -2200,14 +2200,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		return
 	}
 
-	// Resolve final typed output if spec was provided and stream completed
-	// cleanly, from the last step's own text (audit row 2a5ed55 / WG4).
-	// Parse whenever finishReason is stop, or whenever it's anything other
-	// than tool-calls and the step actually produced text — e.g. a provider
-	// that omits/misreports finishReason but still returned the object
-	// (audit rows eed7950/9de0baf / WG4), matching TS generate-text.ts:
-	// `finishReason === 'stop' || (finishReason !== 'tool-calls' && text.length > 0)`.
-	if r.outputSpec != nil && shouldParseFinalOutput(r.finishReason, lastStepText) {
+	// Resolve final typed output if spec was provided, from the last step's
+	// own text (audit row 2a5ed55 / WG4). Unlike GenerateText, StreamText's
+	// TS getOutputPromise() (stream-text.ts) parses the final step's text
+	// unconditionally — it has no finishReason gate — so a schema-based
+	// Output spec throws NoObjectGeneratedError from output.parseCompleteOutput
+	// itself (e.g. on empty text) rather than being silently skipped here.
+	if r.outputSpec != nil {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         lastStepText,
 			FinishReason: r.finishReason,
@@ -3149,9 +3148,10 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	r.stepResponse = step.Response
 	r.mu.Unlock()
 
-	// Resolve final typed output if spec was provided and stream completed
-	// cleanly (audit rows eed7950/9de0baf / WG4).
-	if r.outputSpec != nil && shouldParseFinalOutput(r.finishReason, r.text) {
+	// Resolve final typed output if spec was provided (audit rows
+	// eed7950/9de0baf / WG4). Unconditional, matching TS StreamText's
+	// getOutputPromise() — see the comment at the other call site above.
+	if r.outputSpec != nil {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         r.text,
 			FinishReason: r.finishReason,
@@ -3416,11 +3416,13 @@ func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	return r.responseHeaders
 }
 
-// shouldParseFinalOutput mirrors TS generate-text.ts's final-output parse
-// condition: parse on a clean stop, or on any other finish reason besides
-// tool-calls as long as the step actually produced text (a provider that
-// omits/misreports finishReason but still returned the object). Mirrors
-// audit rows eed7950/9de0baf, WG4.
+// shouldParseFinalOutput mirrors TS generate-text.ts's (non-streaming)
+// final-output parse condition: parse on a clean stop, or on any other
+// finish reason besides tool-calls as long as the step actually produced
+// text (a provider that omits/misreports finishReason but still returned
+// the object). Used by GenerateText only — StreamText's TS counterpart
+// (stream-text.ts getOutputPromise) has no such gate and always parses the
+// final step's text. Mirrors audit rows eed7950/9de0baf, WG4.
 func shouldParseFinalOutput(finishReason types.FinishReason, stepText string) bool {
 	if finishReason == types.FinishReasonStop {
 		return true
