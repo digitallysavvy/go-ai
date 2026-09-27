@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -437,5 +438,50 @@ func TestBFLImageModel_PollResultContextCancelled(t *testing.T) {
 	_, err := m.pollResult(ctx, bflCreateResponse{ID: "req"}, bflPollConfig{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBFLImageModel_PollResultWallClockDeadline verifies that pollResult
+// enforces a wall-clock deadline (TS e4e761e) rather than a fixed attempt
+// count: each poll response is slow enough that a count-based budget
+// (ceil(timeout/interval) attempts) would let the loop run several times
+// longer than the configured timeout before giving up.
+func TestBFLImageModel_PollResultWallClockDeadline(t *testing.T) {
+	t.Parallel()
+
+	const pollLatency = 30 * time.Millisecond
+	const pollTimeout = 50 * time.Millisecond
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/get_result":
+			// Always slow and never terminal: a count-based budget of
+			// ceil(50ms/1ms) = 50 attempts at 30ms each would take ~1.5s.
+			time.Sleep(pollLatency)
+			_, _ = w.Write([]byte(`{"status":"Pending"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	m := NewImageModel(p, "flux-pro")
+
+	start := time.Now()
+	_, err := m.pollResult(context.Background(), bflCreateResponse{ID: "req", PollingURL: server.URL + "/get_result"}, bflPollConfig{
+		Interval: time.Millisecond,
+		Timeout:  pollTimeout,
+	}, nil)
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+	// A count-based budget would need ~1.5s (50 attempts x 30ms); the
+	// wall-clock deadline must abort well before that, close to the
+	// configured timeout plus one in-flight poll.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected wall-clock deadline to abort quickly, took %v", elapsed)
 	}
 }

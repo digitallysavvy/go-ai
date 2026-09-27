@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -266,11 +267,6 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	if pollTimeout <= 0 {
 		pollTimeout = 60 * time.Second
 	}
-	maxAttempts := int((pollTimeout + pollInterval - 1) / pollInterval)
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
 	pollURL := createResp.PollingURL
 	if pollURL == "" {
 		pollURL = fmt.Sprintf("/get_result?id=%s", createResp.ID)
@@ -285,15 +281,27 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		}
 	}
 
-	for i := 0; i < maxAttempts; i++ {
-		select {
-		case <-ctx.Done():
-			return bflResult{}, ctx.Err()
-		default:
-		}
+	// A wall-clock deadline (TS pollForImageUrl's AbortController + setTimeout),
+	// not a fixed attempt count: a slow poll request (or a slow provider) could
+	// otherwise let the loop run well past pollTimeout before it notices, since
+	// counting attempts only bounds wall time when every request completes
+	// instantly. Deriving pollCtx from the caller's ctx and canceling it both
+	// on timeout and on return also aborts any poll request in flight.
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(pollTimeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
-		body, err := m.getPollBody(ctx, pollURL, headers)
+	for {
+		body, err := m.getPollBody(pollCtx, pollURL, headers)
 		if err != nil {
+			if timedOut.Load() {
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+			}
 			return bflResult{}, err
 		}
 
@@ -317,13 +325,14 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		}
 
 		select {
-		case <-ctx.Done():
-			return bflResult{}, ctx.Err()
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+			}
+			return bflResult{}, pollCtx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
-
-	return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
 }
 
 // getPollBody fetches the poll status body. pollURL is provider-response

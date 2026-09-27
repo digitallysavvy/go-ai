@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -157,33 +158,42 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 	intervalMs := m.asyncPollIntervalMs()
 	timeoutMs := m.asyncPollTimeoutMs()
 
-	divisor := intervalMs
-	if divisor < 1 {
-		divisor = 1
-	}
-	maxAttempts := (timeoutMs + divisor - 1) / divisor
+	// A wall-clock deadline (TS pollForImageUrl's AbortController + setTimeout),
+	// not a fixed attempt count: a slow poll request (or a slow provider) could
+	// otherwise let the loop run well past timeoutMs before it notices, since
+	// counting attempts only bounds wall time when every request completes
+	// instantly. Deriving pollCtx from the caller's ctx and canceling it both
+	// on timeout and on return also aborts any poll/download request in flight.
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		imageURL, done, err := m.checkAsyncStatus(ctx, requestID)
+	for {
+		imageURL, done, err := m.checkAsyncStatus(pollCtx, requestID)
 		if err != nil {
+			if timedOut.Load() {
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+			}
 			return nil, err
 		}
 		if done {
-			return m.downloadImage(ctx, imageURL)
+			return m.downloadImage(pollCtx, imageURL)
 		}
 
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+			}
+			return nil, pollCtx.Err()
 		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
 		}
 	}
-
-	return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
 }
 
 // downloadImage fetches the image binary from the given URL and returns an ImageResult
