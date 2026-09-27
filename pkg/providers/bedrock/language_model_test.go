@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
 
 func newTestBedrockModel() *LanguageModel {
@@ -904,11 +905,15 @@ func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
 }
 
 // TestPrepareTools_UnrecognizedAnthropicToolWarns verifies an Anthropic
-// provider tool Bedrock doesn't know how to forward at all (e.g. a
-// self-serializing computer/computer_toolset tool, which needs per-instance
-// config BuiltinToolAPIName's static table does not carry) produces an
-// "unsupported" warning naming the tool, instead of being silently dropped or
-// sent with a broken wire shape.
+// provider tool built as a raw types.Tool literal (no ProviderOptions, e.g. a
+// caller-constructed value rather than one of the
+// pkg/providers/anthropic/tools constructors) produces an "unsupported"
+// warning naming the tool, instead of being silently dropped or sent with a
+// broken wire shape. Real self-serializing tools (see
+// TestPrepareTools_SelfSerializingAnthropicToolsForwarded) carry ProviderOptions
+// that implement anthropicAPIMapper and ARE forwarded — this test's tool
+// intentionally omits ProviderOptions to exercise the "can't derive a wire
+// name at all" fallback.
 func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	tools := []types.Tool{
 		{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true},
@@ -919,6 +924,68 @@ func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.computer_toolset_20260801" {
 		t.Fatalf("warnings = %#v, want a single 'tool anthropic.computer_toolset_20260801' warning", result.Warnings)
+	}
+}
+
+// TestPrepareTools_SelfSerializingAnthropicToolsForwarded ports TS
+// amazon-bedrock-prepare-tools.ts's generic anthropicTools factory-id lookup
+// for the self-serializing Anthropic provider tools (computer_*,
+// computer_toolset_20260801, text_editor_20250728), which need per-instance
+// config and so implement ToAnthropicAPIMap on their ProviderOptions instead
+// of appearing in anthropic.BuiltinToolAPIName's static table. Was previously
+// a documented gap (bedrockAnthropicProviderTool returned nil for all of
+// these, producing an "unsupported" warning instead of a toolSpec).
+func TestPrepareTools_SelfSerializingAnthropicToolsForwarded(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     types.Tool
+		wantName string
+	}{
+		{
+			name:     "computer_20251124",
+			tool:     anthropictools.Computer20251124(anthropictools.Computer20251124Args{DisplayWidthPx: 1024, DisplayHeightPx: 768}),
+			wantName: "computer",
+		},
+		{
+			name:     "computer_toolset_20260801",
+			tool:     anthropictools.ComputerToolset20260801(anthropictools.ComputerToolset20260801Config{}),
+			wantName: "computer",
+		},
+		{
+			name:     "text_editor_20250728",
+			tool:     anthropictools.TextEditor20250728(anthropictools.TextEditor20250728Args{}),
+			wantName: "str_replace_based_edit_tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := prepareBedrockTools([]types.Tool{tt.tool}, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+			if len(result.Warnings) != 0 {
+				t.Fatalf("expected no warnings, got %#v", result.Warnings)
+			}
+			if len(result.ToolConfig.Tools) != 1 {
+				t.Fatalf("ToolConfig.Tools = %#v, want 1 tool", result.ToolConfig.Tools)
+			}
+			toolSpec, ok := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("tool = %#v, want a toolSpec map", result.ToolConfig.Tools[0])
+			}
+			if _, hasType := toolSpec["type"]; hasType {
+				t.Fatalf("toolSpec must not have a 'type' field (Bedrock toolSpec has no type), got %#v", toolSpec)
+			}
+			if toolSpec["name"] != tt.wantName {
+				t.Fatalf("toolSpec.name = %v, want %v", toolSpec["name"], tt.wantName)
+			}
+			inputSchema, ok := toolSpec["inputSchema"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
+			}
+			jsonSchema, ok := inputSchema["json"].(map[string]interface{})
+			if !ok || jsonSchema["type"] != "object" {
+				t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool's own JSON schema", inputSchema["json"])
+			}
+		})
 	}
 }
 
