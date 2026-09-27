@@ -254,12 +254,14 @@ func TestBedrockTaskBudgetIgnoredForNonAnthropicModels(t *testing.T) {
 }
 
 // TestBedrockNonAnthropicReasoningEffort verifies that non-Anthropic models
-// (e.g. Nova) map reasoning to additionalModelRequestFields.reasoningConfig.maxReasoningEffort,
-// and that ReasoningNone adds no reasoning fields at all (mirrors TS: the
-// non-Anthropic branch of resolveAmazonBedrockReasoningConfig only runs when
-// reasoning !== 'none').
+// with known portable-reasoning support (Nova 2 Lite) map reasoning to
+// additionalModelRequestFields.reasoningConfig.maxReasoningEffort (plus
+// type:"enabled"), and that ReasoningNone adds no reasoning fields at all
+// (mirrors TS: the non-Anthropic branch of resolveAmazonBedrockReasoningConfig
+// only runs when reasoning !== 'none'). Ports TS "should map portable
+// reasoning for Nova 2".
 func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
-	model := newBedrockModelWithID("us.amazon.nova-pro-v1:0")
+	model := newBedrockModelWithID(ModelAmazonNova2LiteV1)
 
 	tests := []struct {
 		level  types.ReasoningLevel
@@ -292,10 +294,71 @@ func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
 			if !hasRC {
 				t.Fatalf("expected reasoningConfig, got none")
 			}
+			if rc["type"] != "enabled" {
+				t.Fatalf("reasoningConfig.type = %v, want enabled", rc["type"])
+			}
 			if rc["maxReasoningEffort"] != tt.want {
 				t.Fatalf("maxReasoningEffort = %v, want %v", rc["maxReasoningEffort"], tt.want)
 			}
 		})
+	}
+}
+
+// TestBedrockReasoningIgnoredForModelsWithoutKnownSupport ports TS "should
+// ignore portable reasoning for models without known reasoning support":
+// non-Anthropic models that are neither OpenAI models nor Nova 2 Lite get an
+// "unsupported" warning and no reasoningConfig is derived.
+func TestBedrockReasoningIgnoredForModelsWithoutKnownSupport(t *testing.T) {
+	model := newBedrockModelWithID(ModelAmazonNovaMicroV1)
+	level := types.ReasoningHigh
+	args, err := model.getArgs(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &level})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+	if rc, ok := fields["reasoningConfig"]; ok {
+		t.Fatalf("expected no reasoningConfig, got %v", rc)
+	}
+	found := false
+	for _, w := range args.Warnings {
+		if w.Type == "unsupported" && w.Feature == "reasoning" &&
+			w.Details == "Portable reasoning is not supported for this model and will be ignored. If the model supports a provider-specific reasoning configuration, use providerOptions.amazonBedrock.reasoningConfig." {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported reasoning warning, got %#v", args.Warnings)
+	}
+}
+
+// TestBedrockReasoningExplicitConfigForModelsWithoutKnownSupport ports TS
+// "should forward explicit reasoningConfig for models without known
+// reasoning support": an explicit providerOptions.amazonBedrock.reasoningConfig
+// is still forwarded even when the model has no known portable-reasoning
+// support.
+func TestBedrockReasoningExplicitConfigForModelsWithoutKnownSupport(t *testing.T) {
+	model := newBedrockModelWithID(ModelAmazonNovaMicroV1)
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"reasoningConfig": map[string]interface{}{
+					"type":               "enabled",
+					"maxReasoningEffort": "high",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+	rc, ok := fields["reasoningConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoningConfig, got none")
+	}
+	if rc["type"] != "enabled" || rc["maxReasoningEffort"] != "high" {
+		t.Fatalf("reasoningConfig = %#v", rc)
 	}
 }
 

@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
@@ -81,12 +82,23 @@ func isCustomReasoning(reasoning *types.ReasoningLevel) bool {
 	return reasoning != nil && *reasoning != types.ReasoningDefault
 }
 
+// isNovaReasoningModel reports whether modelID identifies an Amazon Nova
+// model with known portable-reasoning support, mirroring TS
+// isNovaReasoningModel (modelId.includes('amazon.nova-2-lite-v1:0')).
+func isNovaReasoningModel(modelID string) bool {
+	return strings.Contains(modelID, "amazon.nova-2-lite-v1:0")
+}
+
 // resolveBedrockReasoningConfig ports TS
 // resolveAmazonBedrockReasoningConfig: it derives a reasoningConfig from the
 // top-level Reasoning call option and merges any explicit
 // amazonBedrock.reasoningConfig provider option over the derived defaults
-// (explicit provider options win, matching TS spread order).
-func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *ReasoningConfig, isAnthropic bool, modelID string, warnings *[]types.Warning) *ReasoningConfig {
+// (explicit provider options win, matching TS spread order). Portable
+// reasoning is only mapped to reasoningConfig for non-Anthropic models with
+// known reasoning support (OpenAI models, Nova 2 Lite); other models emit an
+// "unsupported" warning instead, unless the caller already supplied an
+// explicit amazonBedrock.reasoningConfig provider option.
+func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *ReasoningConfig, isAnthropic bool, isOpenAIModel bool, modelID string, warnings *[]types.Warning) *ReasoningConfig {
 	if !isCustomReasoning(reasoning) {
 		return existing
 	}
@@ -97,6 +109,10 @@ func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *Re
 	}
 
 	level := *reasoning
+	hasPortableReasoning := level != types.ReasoningNone
+	hasExplicitReasoningConfig := existing != nil
+	isNovaReasoning := isNovaReasoningModel(modelID)
+	supportsPortableReasoning := isOpenAIModel || isNovaReasoning
 
 	if isAnthropic {
 		caps := anthropic.GetModelCapabilities(modelID)
@@ -122,13 +138,24 @@ func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *Re
 				}
 			}
 		}
-	} else if level != types.ReasoningNone {
-		effort, ok := mapReasoningToProviderEffort(level, warnings)
-		if ok {
-			result.MaxReasoningEffort = effort
-		}
-		if existing != nil {
-			overlayReasoningConfigStruct(result, existing)
+	} else if hasPortableReasoning {
+		if supportsPortableReasoning || hasExplicitReasoningConfig {
+			effort, ok := mapReasoningToProviderEffort(level, warnings)
+			if isNovaReasoning {
+				result.Type = "enabled"
+			}
+			if ok {
+				result.MaxReasoningEffort = effort
+			}
+			if existing != nil {
+				overlayReasoningConfigStruct(result, existing)
+			}
+		} else {
+			*warnings = append(*warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoning",
+				Details: "Portable reasoning is not supported for this model and will be ignored. If the model supports a provider-specific reasoning configuration, use providerOptions.amazonBedrock.reasoningConfig.",
+			})
 		}
 	}
 

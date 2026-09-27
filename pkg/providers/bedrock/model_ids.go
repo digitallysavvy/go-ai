@@ -16,6 +16,7 @@ const (
 	ModelAmazonNovaProV1     = "us.amazon.nova-pro-v1:0"
 	ModelAmazonNovaMicroV1   = "us.amazon.nova-micro-v1:0"
 	ModelAmazonNovaLiteV1    = "us.amazon.nova-lite-v1:0"
+	ModelAmazonNova2LiteV1   = "us.amazon.nova-2-lite-v1:0"
 
 	// ─── Anthropic Claude (non-cross-region) ─────────────────────────────────
 
