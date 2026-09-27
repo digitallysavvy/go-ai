@@ -52,6 +52,14 @@ type ConvertOptions struct {
 	// function_call_output.output as JSON, so text-like results must be
 	// JSON-encoded (JSON.stringify'd) before being sent.
 	OutputSchemaToolNames map[string]bool
+
+	// programmaticCallerIDs holds tool-call-ids whose caller was a
+	// programmatic-tool-calling "program", collected from the prompt's
+	// assistant messages by ConvertPromptToInputWithOptions before
+	// conversion. Used to reject execution-denied results for those calls
+	// when the result itself doesn't carry its own caller metadata (row
+	// e105b2b). Do not set directly.
+	programmaticCallerIDs map[string]bool
 }
 
 // toolSearchName returns the configured tool_search tool name, defaulting to
@@ -73,6 +81,7 @@ func (o ConvertOptions) toolSearchName() string {
 func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
+	opts.programmaticCallerIDs = collectProgrammaticCallerIDs(prompt, openAIProviderOptionsName(opts))
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -99,7 +108,11 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 			input = append(input, items...)
 			warnings = append(warnings, itemWarnings...)
 		case types.RoleTool:
-			input = append(input, convertToolItems(msg, opts)...)
+			items, err := convertToolItems(msg, opts)
+			if err != nil {
+				return nil, warnings, err
+			}
+			input = append(input, items...)
 		}
 	}
 
@@ -399,6 +412,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			Name:      tc.ToolName,
 			Namespace: namespace,
 			Async:     async,
+			Caller:    toolCallCallerFromMetadata(tc.ProviderMetadata, providerName),
 			Arguments: string(argsJSON),
 		})
 	}
@@ -443,8 +457,61 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		Name:      tc.ToolName,
 		Namespace: namespace,
 		Async:     async,
+		Caller:    toolCallCallerFromMetadata(tc.ProviderMetadata, providerName),
 		Arguments: genericArguments,
 	}
+}
+
+// toolCallCallerFromMetadata extracts the caller (direct vs. a
+// programmatic-tool-calling "program") from a decoded tool-call's
+// ProviderMetadata, for forwarding onto a reconstructed plain function_call
+// input item (row 1f6dd3a). Mirrors TS's caller.type === 'program' ?
+// {type:'program', caller_id} : caller, applied in reverse (SDK -> wire).
+func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName string) *ToolCaller {
+	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	caller, ok := openaiMeta["caller"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	callerType, _ := caller["type"].(string)
+	if callerType == "" {
+		return nil
+	}
+	if callerType == "program" {
+		callerID, _ := caller["callerId"].(string)
+		return &ToolCaller{Type: "program", CallerID: callerID}
+	}
+	return &ToolCaller{Type: callerType}
+}
+
+// toolResultCaller extracts the caller from a decoded tool-result's
+// ProviderOptions (checked first, matching TS's part.providerOptions
+// lookup) or ProviderMetadata (checked second), for the
+// execution-denied-for-programmatic-calls rejection below (row e105b2b).
+func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCaller {
+	if openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{}); ok {
+		if caller, ok := openaiOptions["caller"].(map[string]interface{}); ok {
+			callerType, _ := caller["type"].(string)
+			if callerType == "program" {
+				callerID, _ := caller["callerId"].(string)
+				return &ToolCaller{Type: "program", CallerID: callerID}
+			}
+			if callerType != "" {
+				return &ToolCaller{Type: callerType}
+			}
+		}
+	}
+	if len(part.ProviderMetadata) == 0 {
+		return nil
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+		return nil
+	}
+	return toolCallCallerFromMetadata(metadata, providerName)
 }
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
@@ -492,6 +559,27 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Execution: execution,
 			CallID:    callID,
 			Arguments: rawArguments,
+		}, true
+	}
+	if tc.ToolName == "openai.programmatic_tool_calling" {
+		// Row 1f6dd3a: checked before the generic ProviderExecuted branch
+		// below, mirroring TS placing its 'programmatic_tool_calling' check
+		// ahead of the generic providerExecuted branch.
+		if opts.Store && itemID != "" {
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+		}
+		id := itemID
+		if id == "" {
+			id = tc.ID
+		}
+		code, _ := tc.Arguments["code"].(string)
+		fingerprint, _ := tc.Arguments["fingerprint"].(string)
+		return ProgramItem{
+			Type:        "program",
+			ID:          id,
+			CallID:      tc.ID,
+			Code:        code,
+			Fingerprint: fingerprint,
 		}, true
 	}
 	if tc.ProviderExecuted {
@@ -726,6 +814,33 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		}
 		return nil
 	}
+	if part.ToolName == "openai.programmatic_tool_calling" {
+		// Row 1f6dd3a: the result of a hosted program's execution, mirroring
+		// tool_search's item_reference-first handling above.
+		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
+		if opts.Store {
+			return map[string]interface{}{
+				"type": "item_reference",
+				"id":   itemID,
+			}
+		}
+		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
+			var parsed struct {
+				Result string `json:"result"`
+				Status string `json:"status"`
+			}
+			if decodeToolOutputJSON(part.Output.Value, &parsed) {
+				return ProgramOutputItem{
+					Type:   "program_output",
+					ID:     itemID,
+					CallID: part.ToolCallID,
+					Result: parsed.Result,
+					Status: parsed.Status,
+				}
+			}
+		}
+		return nil
+	}
 	if opts.HasShellTool && toolName == "shell" {
 		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
 			return convertShellOutput(part)
@@ -905,7 +1020,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // convertToolItems maps tool-role message content to function_call_output items.
-func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{} {
+func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface{}, error) {
 	var opts ConvertOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -962,6 +1077,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				})
 				continue
 			}
+			if err := rejectDeniedProgrammaticToolResult(p, opts); err != nil {
+				return nil, err
+			}
 			items = append(items, FunctionCallOutputItem{
 				Type:   "function_call_output",
 				CallID: p.ToolCallID,
@@ -984,6 +1102,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 					})
 					continue
 				}
+				if err := rejectDeniedProgrammaticToolResult(*p, opts); err != nil {
+					return nil, err
+				}
 				items = append(items, FunctionCallOutputItem{
 					Type:   "function_call_output",
 					CallID: p.ToolCallID,
@@ -992,7 +1113,61 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 			}
 		}
 	}
-	return items
+	return items, nil
+}
+
+// collectProgrammaticCallerIDs scans the prompt's assistant messages for
+// tool calls whose caller was a programmatic-tool-calling "program",
+// returning their tool-call-ids. Used as a fallback by
+// rejectDeniedProgrammaticToolResult when a tool-result doesn't carry its
+// own caller metadata (row e105b2b, mirrors TS's programmaticToolCallIds).
+func collectProgrammaticCallerIDs(prompt types.Prompt, providerName string) map[string]bool {
+	ids := map[string]bool{}
+	addIfProgrammatic := func(toolCallID string, metadata map[string]interface{}) {
+		if toolCallID == "" {
+			return
+		}
+		if caller := toolCallCallerFromMetadata(metadata, providerName); caller != nil && caller.Type == "program" {
+			ids[toolCallID] = true
+		}
+	}
+	for _, msg := range prompt.Messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			addIfProgrammatic(tc.ID, tc.ProviderMetadata)
+		}
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolCallContent:
+				addIfProgrammatic(p.ToolCallID, toolCallContentProviderMetadata(p))
+			case *types.ToolCallContent:
+				if p != nil {
+					addIfProgrammatic(p.ToolCallID, toolCallContentProviderMetadata(*p))
+				}
+			}
+		}
+	}
+	return ids
+}
+
+// rejectDeniedProgrammaticToolResult mirrors TS's check in the 'tool' role
+// case: a client function tool invoked by a programmatic-tool-calling
+// "program" caller cannot receive an execution-denied result, since there is
+// no interactive approval loop inside the hosted JavaScript sandbox (row
+// e105b2b).
+func rejectDeniedProgrammaticToolResult(part types.ToolResultContent, opts ConvertOptions) error {
+	if !isExecutionDeniedOutput(part.Output) {
+		return nil
+	}
+	providerName := openAIProviderOptionsName(opts)
+	caller := toolResultCaller(part, providerName)
+	isProgrammatic := (caller != nil && caller.Type == "program") || opts.programmaticCallerIDs[part.ToolCallID]
+	if !isProgrammatic {
+		return nil
+	}
+	return fmt.Errorf("openai.responses: execution-denied results for programmatic tool calls are not supported")
 }
 
 func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions) interface{} {

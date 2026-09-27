@@ -96,6 +96,8 @@ func convertTool(t types.Tool) interface{} {
 		return convertMCPTool(t)
 	case "openai.tool_search":
 		return convertToolSearchTool(t)
+	case "openai.programmatic_tool_calling":
+		return map[string]interface{}{"type": "programmatic_tool_calling"}
 	default:
 		if t.Type == types.ToolTypeProviderDefined {
 			return nil

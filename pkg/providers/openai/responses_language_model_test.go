@@ -2531,3 +2531,228 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 		t.Fatalf("toolResultInput[0] = %#v, want computer_call_output with the screenshot URL", toolResultInput[0])
 	}
 }
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode covers
+// row 1f6dd3a: the programmatic tool calling tool prepares as
+// {type:"programmatic_tool_calling"}, and "program"/"program_output" output
+// items decode into a single provider-executed tool call + result pair, in
+// both generate and stream.
+func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  []types.Tool{responses.NewProgrammaticToolCallingTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	def, ok := body["tools"].([]interface{})[0].(map[string]interface{})
+	if !ok || def["type"] != "programmatic_tool_calling" {
+		t.Fatalf("tool def = %#v, want {type:programmatic_tool_calling}", body["tools"])
+	}
+
+	programItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program", "id": "pg_1", "call_id": "call_1",
+		"code": "callTool('lookup', {})", "fingerprint": "fp_1",
+	})
+	outputItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program_output", "id": "pgo_1", "call_id": "call_1",
+		"result": "42", "status": "completed",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{programItem, outputItem},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one programmatic tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.programmatic_tool_calling" || !tc.ProviderExecuted {
+		t.Fatalf("tool call = %#v, want provider-executed openai.programmatic_tool_calling", tc)
+	}
+	if tc.Arguments["code"] != "callTool('lookup', {})" || tc.Arguments["fingerprint"] != "fp_1" {
+		t.Fatalf("arguments = %#v, want code/fingerprint", tc.Arguments)
+	}
+	var foundResult bool
+	for _, c := range result.Content {
+		trc, ok := c.(types.ToolResultContent)
+		if !ok || trc.ToolCallID != "call_1" {
+			continue
+		}
+		foundResult = true
+		resMap, ok := trc.Result.(map[string]interface{})
+		if !ok || resMap["result"] != "42" || resMap["status"] != "completed" {
+			t.Fatalf("tool result = %#v, want {result:42, status:completed}", trc.Result)
+		}
+	}
+	if !foundResult {
+		t.Fatalf("result.Content = %#v, want a ToolResultContent for call_1", result.Content)
+	}
+
+	// Streaming path: "program" and "program_output" are separate output
+	// items, each decoded on its own output_item.done event.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"callTool('lookup', {})","fingerprint":"fp_1"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
+		t.Fatalf("chunk = %#v, want a provider-executed openai.programmatic_tool_calling tool call", chunk)
+	}
+
+	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1"}}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"42","status":"completed"}}
+
+`)), false)
+	defer outputStream.Close() //nolint:errcheck
+
+	resultChunk, err := outputStream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if resultChunk.Type != provider.ChunkTypeToolResult || resultChunk.ToolResult.ToolCallID != "call_1" {
+		t.Fatalf("chunk = %#v, want a tool-result for call_1", resultChunk)
+	}
+}
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingInputReplay covers row
+// 1f6dd3a: a programmatic tool call and its result round-trip through input
+// conversion as program/program_output items, and a plain function call made
+// by a "program" caller replays with its caller preserved.
+func TestResponsesLanguageModel_ProgrammaticToolCallingInputReplay(t *testing.T) {
+	tc := types.ToolCall{
+		ID:               "call_1",
+		ToolName:         "openai.programmatic_tool_calling",
+		ProviderExecuted: true,
+		Arguments:        map[string]interface{}{"code": "callTool('lookup', {})", "fingerprint": "fp_1"},
+	}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one program item", input)
+	}
+	program, ok := input[0].(responses.ProgramItem)
+	if !ok || program.CallID != "call_1" || program.Code != "callTool('lookup', {})" || program.Fingerprint != "fp_1" {
+		t.Fatalf("input[0] = %#v, want a program item", input[0])
+	}
+
+	toolResultInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call_1",
+				ToolName:   "openai.programmatic_tool_calling",
+				Output: &types.ToolResultOutput{
+					Type:  types.ToolResultOutputJSON,
+					Value: map[string]interface{}{"result": "42", "status": "completed"},
+				},
+			}},
+		}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (tool result) failed: %v", err)
+	}
+	if len(toolResultInput) != 1 {
+		t.Fatalf("toolResultInput = %#v, want one program_output item", toolResultInput)
+	}
+	programOutput, ok := toolResultInput[0].(responses.ProgramOutputItem)
+	if !ok || programOutput.CallID != "call_1" || programOutput.Result != "42" || programOutput.Status != "completed" {
+		t.Fatalf("toolResultInput[0] = %#v, want a program_output item", toolResultInput[0])
+	}
+
+	// A plain client function call invoked by a "program" caller replays
+	// with its caller preserved.
+	fnCall := types.ToolCall{
+		ID:       "call_2",
+		ToolName: "lookup",
+		Arguments: map[string]interface{}{
+			"query": "foo",
+		},
+		ProviderMetadata: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"caller": map[string]interface{}{"type": "program", "callerId": "call_1"},
+			},
+		},
+	}
+	fnInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (function call) failed: %v", err)
+	}
+	if len(fnInput) != 1 {
+		t.Fatalf("fnInput = %#v, want one function_call item", fnInput)
+	}
+	fc, ok := fnInput[0].(responses.FunctionCallItem)
+	if !ok || fc.Caller == nil || fc.Caller.Type != "program" || fc.Caller.CallerID != "call_1" {
+		t.Fatalf("fnInput[0] = %#v, want function_call with caller {program, call_1}", fnInput[0])
+	}
+}
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingRejectsDeniedResult
+// covers row e105b2b: an execution-denied result for a function tool call
+// whose caller was a programmatic-tool-calling "program" is rejected rather
+// than silently sent back as a "denied" text result, since there is no
+// interactive approval loop inside the hosted JavaScript sandbox.
+func TestResponsesLanguageModel_ProgrammaticToolCallingRejectsDeniedResult(t *testing.T) {
+	// Case 1: the caller is tracked from the corresponding assistant tool
+	// call in the same prompt (no caller metadata on the result itself).
+	deniedResult := types.ToolResultContent{
+		ToolCallID: "call_2",
+		ToolName:   "lookup",
+		Output: &types.ToolResultOutput{
+			Type:   types.ToolResultOutputExecutionDenied,
+			Reason: "denied by user",
+		},
+	}
+	fnCall := types.ToolCall{
+		ID:       "call_2",
+		ToolName: "lookup",
+		ProviderMetadata: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"caller": map[string]interface{}{"type": "program", "callerId": "call_1"},
+			},
+		},
+	}
+	_, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}},
+			{Role: types.RoleTool, Content: []types.ContentPart{deniedResult}},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err == nil {
+		t.Fatal("expected an error rejecting the execution-denied programmatic tool result")
+	}
+
+	// Case 2: a "direct" caller's execution-denied result is unaffected.
+	fnCall.ProviderMetadata = map[string]interface{}{
+		"openai": map[string]interface{}{
+			"caller": map[string]interface{}{"type": "direct"},
+		},
+	}
+	_, _, err = responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}},
+			{Role: types.RoleTool, Content: []types.ContentPart{deniedResult}},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("direct caller's execution-denied result should not be rejected: %v", err)
+	}
+}

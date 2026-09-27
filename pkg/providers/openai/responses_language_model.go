@@ -1057,7 +1057,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
 			toolCalls = append(toolCalls, tc)
 
@@ -1083,7 +1083,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         "openai.apply_patch",
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, ""),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
 			})
 
 		case "computer_call":
@@ -1102,7 +1102,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         "openai.computer",
 				Arguments:        args,
 				RawArguments:     rawArgs,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, ""),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
 			})
 
 		case "reasoning":
@@ -1139,7 +1139,46 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, item.Caller),
+			})
+
+		case "program":
+			// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox
+			// generated and is executing this JavaScript program; the result
+			// arrives as a separate "program_output" item below.
+			var item responses.ProgramItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			args, rawArgs := programCallArguments(item)
+			tc := types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderExecuted: true,
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+			}
+			toolCalls = append(toolCalls, tc)
+			result.Content = append(result.Content, types.ToolCallContent{
+				ToolCallID:       item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Input:            rawArgs,
+				Arguments:        args,
+				ProviderExecuted: true,
+			})
+
+		case "program_output":
+			// Row 1f6dd3a: the result of a "program" item's hosted execution.
+			var item responses.ProgramOutputItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			result.Content = append(result.Content, types.ToolResultContent{
+				ToolCallID:       item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Result:           map[string]interface{}{"result": item.Result, "status": item.Status},
+				ProviderExecuted: true,
 			})
 
 		case "web_search_call":
@@ -1196,6 +1235,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	return result, nil
 }
 
+// programCallArguments builds the SDK-facing {code, fingerprint} arguments
+// for a decoded "program" item, mirroring TS's
+// programmaticToolCallingInputSchema (row 1f6dd3a).
+func programCallArguments(item responses.ProgramItem) (map[string]interface{}, string) {
+	args := map[string]interface{}{
+		"code":        item.Code,
+		"fingerprint": item.Fingerprint,
+	}
+	raw, _ := json.Marshal(args)
+	return args, string(raw)
+}
+
 // computerCallArguments builds the SDK-facing {actions, pendingSafetyChecks,
 // status} arguments for a decoded computer_call item, mirroring TS
 // mapComputerCallInput (row 0063c2d): actions are translated from wire
@@ -1229,7 +1280,7 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 	return args, string(raw)
 }
 
-func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async ...*bool) map[string]interface{} {
+func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async *bool, caller *responses.ToolCaller) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
@@ -1238,8 +1289,18 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 		openai["namespace"] = namespace
 	}
 	// Row 4a09793: forward async on tool-call replay/decode metadata.
-	if len(async) > 0 && async[0] != nil {
-		openai["async"] = *async[0]
+	if async != nil {
+		openai["async"] = *async
+	}
+	// Row 1f6dd3a: forward the caller (direct vs. a programmatic-tool-calling
+	// "program") on tool-call replay/decode metadata, mirroring TS's
+	// caller.type === 'program' ? {type:'program', callerId} : caller.
+	if caller != nil {
+		if caller.Type == "program" {
+			openai["caller"] = map[string]interface{}{"type": "program", "callerId": caller.CallerID}
+		} else {
+			openai["caller"] = map[string]interface{}{"type": caller.Type}
+		}
 	}
 	if len(openai) == 0 {
 		return nil
@@ -1911,7 +1972,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               accum.id,
 				ToolName:         accum.name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async, item.Caller),
 			},
 		})
 
@@ -1983,7 +2044,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolName:         "openai.apply_patch",
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, ""),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
 			},
 		})
 
@@ -2006,7 +2067,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolName:         "openai.computer",
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, ""),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
 			},
 		})
 
@@ -2022,7 +2083,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, item.Caller),
 			},
 		})
 
@@ -2038,6 +2099,44 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID: item.ID,
 				ToolName:   s.webSearchToolName,
 				Result:     mapWebSearchOutput(item.Action),
+			},
+		})
+
+	case "program":
+		// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox generated
+		// and is executing this JavaScript program; the result arrives as a
+		// separate "program_output" item's own output_item.done event.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ProgramItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		args, rawArgs := programCallArguments(item)
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderExecuted: true,
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+			},
+		})
+
+	case "program_output":
+		// Row 1f6dd3a: the result of a "program" item's hosted execution.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ProgramOutputItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.CallID,
+				ToolName:   "openai.programmatic_tool_calling",
+				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 			},
 		})
 

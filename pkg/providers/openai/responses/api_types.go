@@ -58,8 +58,67 @@ type FunctionCallItem struct {
 	// this call's result (row 4a09793).
 	Async *bool `json:"async,omitempty"`
 
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
+
 	// Arguments is the JSON-encoded argument string.
 	Arguments string `json:"arguments"`
+}
+
+// ToolCaller identifies who invoked a function/custom tool call: either the
+// model directly ("direct"), or generated code running inside a hosted
+// programmatic-tool-calling "program" ("program", carrying the generating
+// program call's id). Mirrors TS OpenAIResponsesToolCaller (row 1f6dd3a).
+type ToolCaller struct {
+	// Type is "direct" or "program".
+	Type string `json:"type"`
+
+	// CallerID is the call_id of the generating "program" item. Only set
+	// when Type is "program".
+	CallerID string `json:"caller_id,omitempty"`
+}
+
+// ProgramItem represents a "program" output item: JavaScript code OpenAI's
+// hosted programmatic tool calling generated and is executing, which may in
+// turn invoke declared function tools with generated arguments (row
+// 1f6dd3a).
+type ProgramItem struct {
+	// Type is always "program".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID links this program to its ProgramOutputItem.
+	CallID string `json:"call_id"`
+
+	// Code is the JavaScript source generated and executed by OpenAI.
+	Code string `json:"code"`
+
+	// Fingerprint is an opaque replay fingerprint that must be preserved
+	// across requests.
+	Fingerprint string `json:"fingerprint"`
+}
+
+// ProgramOutputItem represents the result of a ProgramItem's hosted
+// execution (row 1f6dd3a).
+type ProgramOutputItem struct {
+	// Type is always "program_output".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID matches the originating ProgramItem.CallID.
+	CallID string `json:"call_id"`
+
+	// Result is the result emitted by the hosted JavaScript program.
+	Result string `json:"result"`
+
+	// Status is "completed" or "incomplete".
+	Status string `json:"status"`
 }
 
 // CustomToolCallItem represents a custom tool call output item.
@@ -79,6 +138,11 @@ type CustomToolCallItem struct {
 	// Async indicates the model continued generating without waiting for
 	// this call's result (row 4a09793).
 	Async *bool `json:"async,omitempty"`
+
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
 
 	// Input is the raw input string for the custom tool.
 	Input string `json:"input"`
