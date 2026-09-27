@@ -1,7 +1,12 @@
 package klingai
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -85,40 +90,40 @@ func TestDetectMode(t *testing.T) {
 
 func TestGetAPIModelName(t *testing.T) {
 	tests := []struct {
-		name         string
-		modelID      string
-		mode         VideoMode
-		wantAPIName  string
+		name        string
+		modelID     string
+		mode        VideoMode
+		wantAPIName string
 	}{
 		{
-			name:         "simple t2v model",
-			modelID:      "kling-v1-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v1",
+			name:        "simple t2v model",
+			modelID:     "kling-v1-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v1",
 		},
 		{
-			name:         "versioned t2v model with dots",
-			modelID:      "kling-v2.6-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v2-6",
+			name:        "versioned t2v model with dots",
+			modelID:     "kling-v2.6-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v2-6",
 		},
 		{
-			name:         "master variant with dots",
-			modelID:      "kling-v2.1-master-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v2-1-master",
+			name:        "master variant with dots",
+			modelID:     "kling-v2.1-master-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v2-1-master",
 		},
 		{
-			name:         "i2v model",
-			modelID:      "kling-v2.6-i2v",
-			mode:         VideoModeI2V,
-			wantAPIName:  "kling-v2-6",
+			name:        "i2v model",
+			modelID:     "kling-v2.6-i2v",
+			mode:        VideoModeI2V,
+			wantAPIName: "kling-v2-6",
 		},
 		{
-			name:         "motion control model",
-			modelID:      "kling-v2.6-motion-control",
-			mode:         VideoModeMotionControl,
-			wantAPIName:  "kling-v2-6",
+			name:        "motion control model",
+			modelID:     "kling-v2.6-motion-control",
+			mode:        VideoModeMotionControl,
+			wantAPIName: "kling-v2-6",
 		},
 		{
 			name:        "v3.0 t2v model strips .0 suffix",
@@ -211,9 +216,9 @@ func TestVideoModelInterface(t *testing.T) {
 		mode:    VideoModeT2V,
 	}
 
-	t.Run("SpecificationVersion returns v3", func(t *testing.T) {
-		if model.SpecificationVersion() != "v3" {
-			t.Errorf("expected v3, got %s", model.SpecificationVersion())
+	t.Run("SpecificationVersion returns v4", func(t *testing.T) {
+		if model.SpecificationVersion() != "v4" {
+			t.Errorf("expected v4, got %s", model.SpecificationVersion())
 		}
 	})
 
@@ -229,11 +234,11 @@ func TestVideoModelInterface(t *testing.T) {
 		}
 	})
 
-	t.Run("MaxVideosPerCall returns nil", func(t *testing.T) {
-		// MaxVideosPerCall returns nil to signal "use global default of 1",
-		// matching the Go VideoModelV3 interface contract (nil == default 1).
-		if model.MaxVideosPerCall() != nil {
-			t.Error("expected nil for MaxVideosPerCall")
+	t.Run("MaxVideosPerCall returns 1", func(t *testing.T) {
+		// TS KlingAIVideoModel declares `readonly maxVideosPerCall = 1`.
+		max := model.MaxVideosPerCall()
+		if max == nil || *max != 1 {
+			t.Errorf("expected 1 for MaxVideosPerCall, got %v", max)
 		}
 	})
 }
@@ -543,6 +548,36 @@ func TestCheckUnsupportedOptions(t *testing.T) {
 
 	if len(warnings) != 4 {
 		t.Errorf("expected 4 warnings, got %d", len(warnings))
+	}
+}
+
+// TestCheckUnsupportedOptions_ZeroValuesNoWarning mirrors TS's truthy checks
+// (`if (options.seed)`, `if (options.fps)`): an explicit zero must not warn,
+// matching the falsy behavior of a JS number 0.
+func TestCheckUnsupportedOptions_ZeroValuesNoWarning(t *testing.T) {
+	cfg := Config{
+		AccessKey: "test-ak",
+		SecretKey: "test-sk",
+	}
+	prov, _ := New(cfg)
+	model := &VideoModel{
+		prov:    prov,
+		modelID: "kling-v2.6-t2v",
+		mode:    VideoModeT2V,
+	}
+
+	zeroSeed := 0
+	zeroFPS := 0
+	opts := &provider.VideoModelV3CallOptions{
+		Seed: &zeroSeed,
+		FPS:  &zeroFPS,
+		N:    1,
+	}
+
+	warnings := model.checkUnsupportedOptions(opts)
+
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for zero seed/fps, got %d: %+v", len(warnings), warnings)
 	}
 }
 
@@ -1614,5 +1649,339 @@ func TestKlingPassthroughOptions(t *testing.T) {
 	// Known keys must NOT appear in Additional
 	if _, exists := provOpts.Additional["mode"]; exists {
 		t.Error("known key 'mode' must not appear in Additional")
+	}
+}
+
+// ─── frameImages / inputReferences (mi2v) / async doStart-doStatus / SSRF ──────
+
+func newKlingAITestModel(t *testing.T, modelID string, handler http.HandlerFunc) (*VideoModel, *httptest.Server) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	prov, err := New(Config{AccessKey: "ak", SecretKey: "sk", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	model, err := newVideoModel(prov, modelID)
+	if err != nil {
+		t.Fatalf("newVideoModel() error: %v", err)
+	}
+	return model, server
+}
+
+// TestBuildRequestBody_FrameImages verifies the v4 frameImages call option
+// (first_frame/last_frame) resolves the same way as the legacy image/
+// imageTail fields for image-to-video (TS resolveStartImage/resolveImageTail).
+func TestBuildRequestBody_FrameImages(t *testing.T) {
+	model := &VideoModel{prov: &Provider{}, modelID: "kling-v2.6-i2v", mode: VideoModeI2V}
+
+	body, warnings, endpointPath, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{
+		Prompt: "test",
+		FrameImages: []provider.VideoFrameImage{
+			{FrameType: provider.VideoFrameTypeFirstFrame, Image: provider.VideoModelV3File{Type: "url", URL: "https://example.com/first.jpg"}},
+			{FrameType: provider.VideoFrameTypeLastFrame, Image: provider.VideoModelV3File{Type: "url", URL: "https://example.com/last.jpg"}},
+		},
+	}, &ProviderOptions{})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error: %v", err)
+	}
+	if endpointPath != "/v1/videos/image2video" {
+		t.Errorf("endpointPath = %q", endpointPath)
+	}
+	if body["image"] != "https://example.com/first.jpg" {
+		t.Errorf("image = %v", body["image"])
+	}
+	if body["image_tail"] != "https://example.com/last.jpg" {
+		t.Errorf("image_tail = %v", body["image_tail"])
+	}
+	for _, w := range warnings {
+		if w.Feature == "frameImages" {
+			t.Errorf("unexpected frameImages warning: %+v", w)
+		}
+	}
+}
+
+// TestBuildRequestBody_FrameImagesRejectsVideo mirrors TS "KlingAI does not
+// accept video as a frame image".
+func TestBuildRequestBody_FrameImagesRejectsVideo(t *testing.T) {
+	model := &VideoModel{prov: &Provider{}, modelID: "kling-v2.6-i2v", mode: VideoModeI2V}
+
+	body, warnings, _, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{
+		FrameImages: []provider.VideoFrameImage{
+			{FrameType: provider.VideoFrameTypeFirstFrame, Image: provider.VideoModelV3File{Type: "url", URL: "https://example.com/first.mp4", MediaType: "video/mp4"}},
+		},
+	}, &ProviderOptions{})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error: %v", err)
+	}
+	if _, exists := body["image"]; exists {
+		t.Errorf("expected no image field, got %v", body["image"])
+	}
+	found := false
+	for _, w := range warnings {
+		if w.Feature == "frameImages" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a frameImages warning rejecting the video file")
+	}
+}
+
+// TestBuildRequestBody_InputReferences_ElevatesToMi2V mirrors TS "wan3
+// (all-in-one)"-style effective-mode elevation: an i2v model given
+// inputReferences (and no frameImages) is routed to multi-image2video.
+func TestBuildRequestBody_InputReferences_ElevatesToMi2V(t *testing.T) {
+	model := &VideoModel{prov: &Provider{}, modelID: "kling-v2.6-i2v", mode: VideoModeI2V}
+
+	body, warnings, endpointPath, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{
+		Prompt: "test",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/ref1.jpg"},
+			{Type: "url", URL: "https://example.com/ref2.jpg"},
+		},
+	}, &ProviderOptions{})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error: %v", err)
+	}
+	if endpointPath != "/v1/videos/multi-image2video" {
+		t.Errorf("endpointPath = %q, want multi-image2video", endpointPath)
+	}
+	imageList, ok := body["image_list"].([]map[string]interface{})
+	if !ok || len(imageList) != 2 {
+		t.Fatalf("image_list = %#v", body["image_list"])
+	}
+	if imageList[0]["image"] != "https://example.com/ref1.jpg" {
+		t.Errorf("image_list[0] = %v", imageList[0])
+	}
+	for _, w := range warnings {
+		if w.Feature == "inputReferences" {
+			t.Errorf("unexpected inputReferences warning: %+v", w)
+		}
+	}
+}
+
+// TestBuildRequestBody_InputReferences_UnsupportedOnT2V mirrors TS's warning
+// when inputReferences are supplied to a non-image-to-video model.
+func TestBuildRequestBody_InputReferences_UnsupportedOnT2V(t *testing.T) {
+	model := &VideoModel{prov: &Provider{}, modelID: "kling-v2.6-t2v", mode: VideoModeT2V}
+
+	_, warnings, endpointPath, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{
+		Prompt:          "test",
+		InputReferences: []provider.VideoModelV3File{{Type: "url", URL: "https://example.com/ref.jpg"}},
+	}, &ProviderOptions{})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error: %v", err)
+	}
+	if endpointPath != "/v1/videos/text2video" {
+		t.Errorf("endpointPath = %q, want text2video", endpointPath)
+	}
+	found := false
+	for _, w := range warnings {
+		if w.Feature == "inputReferences" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an inputReferences unsupported warning for t2v")
+	}
+}
+
+// TestBuildRequestBody_GenerateAudioOverridesSound verifies the top-level
+// generateAudio call option maps to sound "on"/"off" and takes precedence
+// over providerOptions.klingai.sound.
+func TestBuildRequestBody_GenerateAudioOverridesSound(t *testing.T) {
+	model := &VideoModel{prov: &Provider{}, modelID: "kling-v2.6-t2v", mode: VideoModeT2V}
+	generateAudio := true
+	sound := "off"
+
+	body, _, err := model.buildT2VBody(&provider.VideoModelV3CallOptions{GenerateAudio: &generateAudio}, &ProviderOptions{Sound: &sound})
+	if err != nil {
+		t.Fatalf("buildT2VBody() error: %v", err)
+	}
+	if body["sound"] != "on" {
+		t.Errorf("sound = %v, want on", body["sound"])
+	}
+}
+
+// TestDoStart_DoStatus_RoundTrip exercises the provider.VideoModelStarter and
+// provider.VideoModelStatusChecker interfaces directly, independent of
+// DoGenerate's synthesized polling loop.
+func TestDoStart_DoStatus_RoundTrip(t *testing.T) {
+	model, server := newKlingAITestModel(t, "kling-v2.6-t2v", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos/text2video":
+			if r.Header.Get("Authorization") == "" {
+				t.Errorf("expected Authorization header on doStart")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{"task_id": "task-async", "task_status": "submitted"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/text2video/task-async":
+			if r.Header.Get("Authorization") == "" {
+				t.Errorf("expected Authorization header on doStatus")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{
+					"task_id": "task-async", "task_status": "succeed",
+					"task_result": map[string]interface{}{
+						"videos": []map[string]interface{}{{"id": "v1", "url": "https://cdn.example.com/video.mp4"}},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+	defer server.Close()
+
+	var starter provider.VideoModelStarter = model
+	var checker provider.VideoModelStatusChecker = model
+
+	startResult, err := starter.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "test", N: 1},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+	var op klingaiOperation
+	if err := json.Unmarshal(startResult.Operation, &op); err != nil || op.TaskID != "task-async" || op.EndpointPath != "/v1/videos/text2video" {
+		t.Fatalf("operation = %s", startResult.Operation)
+	}
+
+	status, err := checker.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: startResult.Operation})
+	if err != nil {
+		t.Fatalf("DoStatus() error: %v", err)
+	}
+	if status.Status != provider.VideoOperationStatusCompleted {
+		t.Fatalf("status = %v", status.Status)
+	}
+	if len(status.Videos) != 1 || status.Videos[0].URL != "https://cdn.example.com/video.mp4" {
+		t.Errorf("videos = %+v", status.Videos)
+	}
+}
+
+// TestDoGenerate_ComposesStartAndStatus verifies DoGenerate is built
+// entirely on top of DoStart+DoStatus, polling until the task succeeds.
+func TestDoGenerate_ComposesStartAndStatus(t *testing.T) {
+	pollCount := 0
+	model, server := newKlingAITestModel(t, "kling-v2.6-t2v", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/videos/text2video":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{"task_id": "task-1", "task_status": "submitted"},
+			})
+		case r.URL.Path == "/v1/videos/text2video/task-1":
+			pollCount++
+			if pollCount < 2 {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"code": 0, "message": "ok",
+					"data": map[string]interface{}{"task_id": "task-1", "task_status": "processing"},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{
+					"task_id": "task-1", "task_status": "succeed",
+					"task_result": map[string]interface{}{
+						"videos": []map[string]interface{}{{"id": "v1", "url": "https://cdn.example.com/video.mp4"}},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+
+	result, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test", N: 1,
+		ProviderOptions: map[string]interface{}{"klingai": map[string]interface{}{"pollIntervalMs": 5}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	if len(result.Videos) != 1 || result.Videos[0].URL != "https://cdn.example.com/video.mp4" {
+		t.Fatalf("videos = %+v", result.Videos)
+	}
+	if pollCount < 2 {
+		t.Errorf("expected at least 2 status polls, got %d", pollCount)
+	}
+}
+
+// TestDoGenerate_TaskFailed mirrors TS's task_status "failed" handling,
+// propagated through DoStatus's error status into a KLINGAI_VIDEO_GENERATION_FAILED error.
+func TestDoGenerate_TaskFailed(t *testing.T) {
+	model, server := newKlingAITestModel(t, "kling-v2.6-t2v", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/videos/text2video":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{"task_id": "task-fail", "task_status": "submitted"},
+			})
+		case r.URL.Path == "/v1/videos/text2video/task-fail":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": 0, "message": "ok",
+				"data": map[string]interface{}{"task_id": "task-fail", "task_status": "failed", "task_status_msg": "content moderation"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+
+	_, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "test", N: 1,
+		ProviderOptions: map[string]interface{}{"klingai": map[string]interface{}{"pollIntervalMs": 5}},
+	})
+	if err == nil {
+		t.Fatal("expected an error when the task fails")
+	}
+	apiErr, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
+	}
+	if apiErr.ErrorCode != "KLINGAI_VIDEO_GENERATION_FAILED" {
+		t.Errorf("ErrorCode = %q", apiErr.ErrorCode)
+	}
+	if !strings.Contains(err.Error(), "content moderation") {
+		t.Errorf("expected failure detail in error, got: %v", err)
+	}
+}
+
+// TestDoStatus_RejectsPrivateIPRedirect verifies the SSRF fix (a580ec8):
+// DoStatus polls through fileutil's validated-redirect client, so a
+// redirect from the (trusted) provider origin to a private/link-local
+// address is rejected instead of followed.
+func TestDoStatus_RejectsPrivateIPRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/videos/text2video/redirect-task", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prov, err := New(Config{AccessKey: "ak", SecretKey: "sk", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	model, err := newVideoModel(prov, "kling-v2.6-t2v")
+	if err != nil {
+		t.Fatalf("newVideoModel() error: %v", err)
+	}
+
+	op, _ := json.Marshal(klingaiOperation{TaskID: "redirect-task", EndpointPath: "/v1/videos/text2video"})
+	_, err = model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err == nil {
+		t.Fatal("expected an error rejecting the private-IP redirect target")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("expected an SSRF validation error, got: %v", err)
 	}
 }

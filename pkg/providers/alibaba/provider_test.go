@@ -51,13 +51,19 @@ func TestVideoModelValidation(t *testing.T) {
 	cfg := Config{APIKey: "test-key"}
 	prov := New(cfg)
 
+	// Alibaba's TypeScript SDK video model ID type allows current known IDs
+	// and custom strings (wan3 ships new ids on demand), so Provider.VideoModel
+	// accepts any non-empty model ID, matching Provider.LanguageModel.
 	validModels := []string{
-		"wan2.5-t2v",
+		"wan2.5-t2v-preview",
 		"wan2.6-t2v",
 		"wan2.6-i2v",
 		"wan2.6-i2v-flash",
 		"wan2.6-r2v",
 		"wan2.6-r2v-flash",
+		"wan2.7-t2v",
+		"wan3.0-video",
+		"custom-video-model-id",
 	}
 
 	for _, modelID := range validModels {
@@ -68,15 +74,9 @@ func TestVideoModelValidation(t *testing.T) {
 		if model == nil {
 			t.Errorf("Expected video model '%s' to be created", modelID)
 		}
-		if model.SpecificationVersion() != "v3" {
-			t.Errorf("Expected spec version 'v3', got '%s'", model.SpecificationVersion())
+		if model.SpecificationVersion() != "v4" {
+			t.Errorf("Expected spec version 'v4', got '%s'", model.SpecificationVersion())
 		}
-	}
-
-	// Test invalid model
-	_, err := prov.VideoModel("invalid-video-model")
-	if err == nil {
-		t.Error("Expected error for invalid video model")
 	}
 }
 

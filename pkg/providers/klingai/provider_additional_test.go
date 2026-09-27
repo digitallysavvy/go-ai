@@ -48,7 +48,7 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		mode:    mode,
 	}
 
-	if _, _, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{Prompt: "hello"}, &ProviderOptions{}); err != nil {
+	if _, _, _, err := model.buildRequestBody(&provider.VideoModelV3CallOptions{Prompt: "hello"}, &ProviderOptions{}); err != nil {
 		t.Fatalf("buildRequestBody(t2v) error = %v", err)
 	}
 
@@ -91,11 +91,19 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		t.Fatalf("unmarshal status error = %v", err)
 	}
 
-	resp := model.convertResponse(&status, "task-1", nil, time.Unix(10, 0), map[string]string{"X-Req": "abc"})
+	responseInfo := provider.VideoModelV3ResponseInfo{
+		Timestamp: time.Unix(10, 0),
+		ModelID:   model.modelID,
+		Headers:   map[string]string{"X-Req": "abc"},
+	}
+	resp, err := model.buildCompletedStatusResult(&status, "task-1", responseInfo)
+	if err != nil {
+		t.Fatalf("buildCompletedStatusResult() error = %v", err)
+	}
 	if len(resp.Videos) != 1 || resp.Videos[0].URL == "" {
-		t.Fatalf("convertResponse() videos = %#v", resp.Videos)
+		t.Fatalf("buildCompletedStatusResult() videos = %#v", resp.Videos)
 	}
 	if resp.Response.Headers["X-Req"] != "abc" {
-		t.Fatalf("convertResponse headers = %#v", resp.Response.Headers)
+		t.Fatalf("buildCompletedStatusResult headers = %#v", resp.Response.Headers)
 	}
 }

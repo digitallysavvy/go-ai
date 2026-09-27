@@ -92,25 +92,13 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
-// VideoModel returns a video generation model by ID
-// Supported models: wan2.5-t2v, wan2.6-t2v, wan2.6-i2v, wan2.6-i2v-flash, wan2.6-r2v, wan2.6-r2v-flash
+// VideoModel returns a video generation model by ID.
+// Alibaba's TypeScript SDK model ID type allows current known IDs and custom
+// strings; mirror that here by accepting any non-empty model ID (see
+// AlibabaVideoModelId in video_model_ids.go for the documented set).
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 	if modelID == "" {
 		modelID = "wan2.6-t2v" // Default video model
-	}
-
-	// Validate model ID
-	validModels := map[string]bool{
-		"wan2.5-t2v":       true,
-		"wan2.6-t2v":       true,
-		"wan2.6-i2v":       true,
-		"wan2.6-i2v-flash": true,
-		"wan2.6-r2v":       true,
-		"wan2.6-r2v-flash": true,
-	}
-
-	if !validModels[modelID] {
-		return nil, fmt.Errorf("unsupported Alibaba video model: %s (supported: wan2.5-t2v, wan2.6-t2v, wan2.6-i2v, wan2.6-i2v-flash, wan2.6-r2v, wan2.6-r2v-flash)", modelID)
 	}
 
 	return NewVideoModel(p, modelID), nil
