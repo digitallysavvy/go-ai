@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 )
 
@@ -30,20 +31,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// A "provider" tool with ProviderID "quiverai.custom" is encoded as a
-	// custom tool (type: "custom") in the QuiverAI Responses request instead
-	// of a JSON-schema function tool. args.description and args.format
-	// (either {type:"text"} or {type:"grammar", syntax, definition}) are
-	// forwarded to the API.
-	svgTool := types.Tool{
-		Type:       "provider",
-		ProviderID: "quiverai.custom",
-		Name:       "write_svg",
-		ProviderArgs: map[string]interface{}{
-			"description": "Return raw SVG markup for the requested icon.",
-			"format":      map[string]interface{}{"type": "text"},
-		},
-	}
+	// provider.Tools().CustomTool builds a "provider" tool with ProviderID
+	// "quiverai.custom", encoded as a custom tool (type: "custom") in the
+	// QuiverAI Responses request instead of a JSON-schema function tool.
+	// Description and Format (either {Type:"text"} or {Type:"grammar",
+	// Syntax, Definition}) are forwarded to the API. Mirrors the TS SDK's
+	// `quiverai.tools.customTool({...})`.
+	svgTool := provider.Tools().CustomTool("write_svg", openresponses.CustomToolOptions{
+		Description: "Return raw SVG markup for the requested icon.",
+		Format:      &openresponses.CustomToolFormat{Type: "text"},
+	})
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:      model,

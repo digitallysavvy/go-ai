@@ -9,6 +9,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
+// defaultCustomToolID is Config.CustomToolID's default, mirroring the TS
+// SDK's `'open-responses.custom'` default in open-responses-provider.ts.
+const defaultCustomToolID = "open-responses.custom"
+
 // Provider implements the provider.Provider interface for Open Responses API
 // This provider enables compatibility with local LLMs (LMStudio, Ollama) and
 // other services that implement the OpenAI Responses API format.
@@ -72,7 +76,11 @@ type Config struct {
 	// provider-tool ID (types.Tool.ProviderID). A "provider" tool whose ID
 	// matches is encoded as {"type":"custom",...} instead of going through
 	// the Extensions registry, mirroring the TS SDK's `customToolId`
-	// provider setting.
+	// provider setting. Defaults to "open-responses.custom" when unset (New
+	// applies the default), matching the TS SDK's `customToolId ??
+	// 'open-responses.custom'` -- unlike the other Config fields, this is
+	// never actually "off": every Open Responses provider recognizes some
+	// custom-tool id, even one that never configured this field.
 	CustomToolID string
 
 	// StructuredOutputs controls whether JSON response formats are sent to
@@ -100,6 +108,13 @@ func New(cfg Config) *Provider {
 	// Set default provider name
 	if cfg.Name == "" {
 		cfg.Name = "open-responses"
+	}
+
+	// Default CustomToolID, mirroring TS's `options.customToolId ??
+	// 'open-responses.custom'` -- always set, not merely "enabled when
+	// configured".
+	if cfg.CustomToolID == "" {
+		cfg.CustomToolID = defaultCustomToolID
 	}
 
 	// Build headers
@@ -181,4 +196,13 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// Tools returns a factory for this provider's caller-executed Open
+// Responses tools (currently just CustomTool), scoped to
+// Config.CustomToolID (which New defaults to "open-responses.custom" when
+// unset, so this is always available), mirroring TS's `provider.tools =
+// createOpenResponsesTools({customToolId})`.
+func (p *Provider) Tools() *Tools {
+	return NewTools(p.config.CustomToolID)
 }

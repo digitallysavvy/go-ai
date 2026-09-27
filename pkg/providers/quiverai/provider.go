@@ -12,6 +12,10 @@ import (
 
 const defaultBaseURL = "https://api.quiver.ai/v1"
 
+// customToolID identifies QuiverAI's caller-executed custom tool, mirroring
+// TS's `customToolId: 'quiverai.custom'` provider setting.
+const customToolID = "quiverai.custom"
+
 // Config contains configuration for the QuiverAI provider.
 type Config struct {
 	APIKey  string            `json:"apiKey,omitempty"`
@@ -85,7 +89,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		Headers:                  p.config.Headers,
 		Name:                     "quiverai",
 		StrictResponseInput:      true,
-		CustomToolID:             "quiverai.custom",
+		CustomToolID:             customToolID,
 		StructuredOutputs:        &structuredOutputsDisabled,
 		FailedResponseHandler:    quiverAIFailedResponseHandler,
 		GetResponseErrorMetadata: quiverAIResponseErrorMetadata,
@@ -122,3 +126,10 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 }
 
 func (p *Provider) Client() *internalhttp.Client { return p.client }
+
+// Tools returns a factory for QuiverAI's caller-executed tools (currently
+// just CustomTool), mirroring the TS SDK's `quiverai.tools` (aliased from
+// the underlying Open Responses provider's `tools`).
+func (p *Provider) Tools() *openresponses.Tools {
+	return openresponses.NewTools(customToolID)
+}
