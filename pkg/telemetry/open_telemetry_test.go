@@ -68,9 +68,12 @@ func TestOpenTelemetryOnStartAttributes(t *testing.T) {
 	})
 	trace.SpanFromContext(ctx).End()
 
-	span := findSpan(rec, "ai.generateText my-fn")
+	// Root span name is "${mapOperationName(operationId)} ${modelId}" (TS
+	// onGenerateStart et al.) — functionId never appears in the span name,
+	// only in the gen_ai.agent.name attribute checked below (H3 follow-up 5).
+	span := findSpan(rec, "invoke_agent gpt-5")
 	if span == nil {
-		t.Fatal("expected a span named 'ai.generateText my-fn'")
+		t.Fatal("expected a span named 'invoke_agent gpt-5'")
 	}
 	if v, ok := attrValue(span, "gen_ai.operation.name"); !ok || v.(string) != "invoke_agent" {
 		t.Fatalf("expected gen_ai.operation.name=invoke_agent, got %v ok=%v", v, ok)
@@ -174,9 +177,11 @@ func TestOpenTelemetryProviderMetadataGatedByOptionOnly(t *testing.T) {
 		t.Error("expected ai.response.providerMetadata on the chat span even with RecordOutputs=false, since it is gated only by the ProviderMetadata option")
 	}
 
-	stepSpan := findSpan(rec, "step 0")
+	// Step span name is "step ${steps.length + 1}" (TS onStepStart); Go's
+	// StepNumber:0 is the first step, so the span is "step 1" (H3 follow-up 5).
+	stepSpan := findSpan(rec, "step 1")
 	if stepSpan == nil {
-		t.Fatal("expected a 'step 0' span")
+		t.Fatal("expected a 'step 1' span")
 	}
 	if _, ok := attrValue(stepSpan, "ai.response.providerMetadata"); !ok {
 		t.Error("expected ai.response.providerMetadata on the step span even with RecordOutputs=false, since it is gated only by the ProviderMetadata option")
@@ -208,7 +213,10 @@ func TestOpenTelemetryEmbeddingUsageNotDoubleCounted(t *testing.T) {
 		Usage:    TelemetryUsage{TotalTokens: &total},
 	})
 
-	rootSpan := findSpan(rec, "ai.embed")
+	// Root span name is "${mapOperationName(operationId)} ${modelId}"; no
+	// ModelID is set on the start event here, so it's just "embeddings"
+	// (H3 follow-up 5).
+	rootSpan := findSpan(rec, "embeddings")
 	embedSpan := findSpan(rec, "embeddings text-embedding-3")
 	if rootSpan == nil || embedSpan == nil {
 		t.Fatalf("expected both spans, root=%v embed=%v", rootSpan, embedSpan)
@@ -279,9 +287,11 @@ func TestOpenTelemetryStepSpanNaming(t *testing.T) {
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 2})
 	integration.OnStepEnd(ctx, TelemetryStepEndEvent{Settings: settings, StepNumber: 2, FinishReason: "stop"})
 
-	span := findSpan(rec, "step 2")
+	// StepNumber is 0-indexed; TS names the span "step ${steps.length + 1}",
+	// so StepNumber:2 (the third step) is "step 3" (H3 follow-up 5).
+	span := findSpan(rec, "step 3")
 	if span == nil {
-		t.Fatal("expected a span named 'step 2'")
+		t.Fatal("expected a span named 'step 3'")
 	}
 	if v, ok := attrValue(span, "gen_ai.operation.name"); !ok || v.(string) != "agent_step" {
 		t.Fatalf("expected gen_ai.operation.name=agent_step, got %v ok=%v", v, ok)
@@ -308,7 +318,8 @@ func TestOpenTelemetryOnStartUsesSystemNotPrompt(t *testing.T) {
 	})
 	trace.SpanFromContext(ctx).End()
 
-	span := findSpan(rec, "ai.generateText")
+	// No ModelID is set, so the span name is just the mapped operation name.
+	span := findSpan(rec, "invoke_agent")
 	v, ok := attrValue(span, "gen_ai.system_instructions")
 	if !ok {
 		t.Fatal("expected gen_ai.system_instructions to be set")
@@ -337,7 +348,8 @@ func TestOpenTelemetryOnStartInputMessages(t *testing.T) {
 	})
 	trace.SpanFromContext(ctx).End()
 
-	span := findSpan(rec, "ai.generateText")
+	// No ModelID is set, so the span name is just the mapped operation name.
+	span := findSpan(rec, "invoke_agent")
 	v, ok := attrValue(span, "gen_ai.input.messages")
 	if !ok {
 		t.Fatal("expected gen_ai.input.messages to be set")
@@ -398,7 +410,7 @@ func TestOpenTelemetryStepToolChoiceOptIn(t *testing.T) {
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
 	})
 
-	span := findSpan(rec, "step 1")
+	span := findSpan(rec, "step 2")
 	v, ok := attrValue(span, "ai.prompt.toolChoice")
 	if !ok {
 		t.Fatal("expected ai.prompt.toolChoice to be set when OpenTelemetryOptions.ToolChoice is true")
@@ -426,7 +438,10 @@ func TestOpenTelemetryStepToolChoiceOptedOut(t *testing.T) {
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
 	})
 
-	span := findSpan(rec, "step 1")
+	span := findSpan(rec, "step 2")
+	if span == nil {
+		t.Fatal("expected a span named 'step 2'")
+	}
 	if _, ok := attrValue(span, "ai.prompt.toolChoice"); ok {
 		t.Fatal("expected ai.prompt.toolChoice to be omitted when OpenTelemetryOptions.ToolChoice is unset")
 	}

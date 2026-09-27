@@ -115,9 +115,15 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		return ctx
 	}
 	tracer := i.tracerFor(e.Settings)
-	spanName := e.OperationType
-	if e.Settings != nil && e.Settings.FunctionID != "" {
-		spanName += " " + e.Settings.FunctionID
+	// Root span name is "${operationName} ${modelId}" (TS's onGenerateStart/
+	// onObjectOperationStart/onEmbedOperationStart/onRerankOperationStart,
+	// open-telemetry.ts): the GenAI-mapped operation name (mapOperationName),
+	// never the raw operationId, and the model id — not functionId, which
+	// only ever surfaces via the gen_ai.agent.name attribute below (H3
+	// follow-up 5).
+	spanName := mapOperationName(e.OperationType)
+	if e.ModelID != "" {
+		spanName += " " + e.ModelID
 	}
 	ctx, span := tracer.Start(ctx, spanName)
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
@@ -145,9 +151,6 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		if b, err := json.Marshal(formatInputMessages(e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
-	}
-	if i.opts.Embedding && e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
-		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
 	}
 	if i.opts.Headers {
 		for _, attr := range headerAttributes(e.Headers) {
@@ -198,7 +201,10 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 		return ctx
 	}
 	tracer := rootSpan.TracerProvider().Tracer("go-ai")
-	spanName := "step " + itoa(e.StepNumber)
+	// TS names the span "step ${steps.length + 1}" — steps.length is the
+	// count of steps completed BEFORE this one, so the first step is "step
+	// 1". Go's StepNumber is 0-indexed (stepIndex), so add 1 (H3 follow-up 5).
+	spanName := "step " + itoa(e.StepNumber+1)
 	ctx, stepSpan := tracer.Start(ctx, spanName)
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeStep,
