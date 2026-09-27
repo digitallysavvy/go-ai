@@ -13,7 +13,13 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
+
+// nowMs returns the current wall-clock time in Unix milliseconds, used for
+// telemetry.go's model-call response-time measurement (mirrors TS
+// turn-telemetry.ts's `Date.now()`-based `modelCallStartedAt`).
+func nowMs() int64 { return time.Now().UnixMilli() }
 
 // unclosedStepErrorMessage is the protocol-error message a HarnessAgent turn
 // fails with when the adapter's terminal `finish` part arrives without a
@@ -92,10 +98,17 @@ func (d *turnDriver) settleFailure(err error) {
 	if d.in.OnTurnFailed != nil {
 		d.in.OnTurnFailed()
 	}
+	// telAbort/telError mirror pkg/ai/generate.go's own abort-vs-error
+	// telemetry split (telemetry.FireOnAbort vs FireOnError): a caller
+	// cancellation ends the turn's telemetry span cleanly, the same way the
+	// stream itself settles through an `abort` chunk rather than an `error`
+	// one just below.
 	if d.ctx.Err() != nil {
+		d.telAbort(err)
 		d.abort(err)
 		return
 	}
+	d.telError(err)
 	d.fail(err)
 }
 
@@ -142,6 +155,21 @@ type runPromptInput struct {
 	SandboxSession       providerutils.SandboxSession
 	SessionWorkDir       string
 	ResponseFormat       *ResponseFormat
+	// Output is AgentSettings.Output, forwarded to
+	// ai.ExternalStreamOptions.Output so the returned *ai.StreamTextResult's
+	// Output()/OutputErr()/PartialOutput() accessors work for a HarnessAgent
+	// turn exactly like they do for a StreamText call. See settings.go's
+	// outputResponseFormatter doc for why ResponseFormat is derived
+	// separately instead of through this value.
+	Output interface{}
+
+	// Telemetry configures OpenTelemetry span/attribute reporting for this
+	// turn via pkg/telemetry's dispatch pattern (telemetry.go). Nil disables
+	// it (telemetry.FireOn* are no-ops without registered integrations
+	// anyway, but a nil Settings also skips the per-call RecordInputs/
+	// RecordOutputs/IncludeRuntimeContext/IncludeToolsContext filtering).
+	// Mirrors TS `HarnessAgentSettings.telemetry`.
+	Telemetry *telemetry.Settings
 
 	Callbacks      Callbacks
 	StopConditions []ai.StopCondition
@@ -159,6 +187,19 @@ type runPromptInput struct {
 	OnTurnFinished           func()
 	OnTurnFailed             func()
 	OnPromptControlAvailable func(PromptControl)
+
+	// OnStopConditionMet is called from suspendOrFinishNow when a
+	// StopCondition matches after a completed step: it should suspend the
+	// underlying harness session's turn in place (wired to
+	// AgentSession.captureStopConditionBoundary) so a caller can resume it
+	// later via ContinueGenerate/ContinueStream, and return the resulting
+	// ContinueTurnState. A nil error means the turn is now suspended and
+	// resumable; suspendOrFinishNow falls back to a hard finish (the
+	// original WG4 behavior) on a nil func or a non-nil error (e.g. the
+	// adapter returned CapabilityUnsupportedError). Nil when no
+	// AgentSession is driving this turn (e.g. a bare runPrompt call in a
+	// test). Mirrors TS `runPrompt`'s `input.onStopConditionMet`.
+	OnStopConditionMet func(ctx context.Context) (*ContinueTurnState, error)
 
 	// RuntimeContext flows through to callback events.
 	RuntimeContext interface{}
@@ -191,6 +232,11 @@ type runPromptOutput struct {
 // (mostly bridge/workflow-slice-specific machinery out of WG4's scope).
 func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	stream := newChunkChannelStream()
+	// Shared between the result (correlating callback/telemetry events with
+	// this turn's stream) and turnDriver's own telemetry.go calls, mirroring
+	// TS `runPrompt`'s single `callId` reused by both the result and
+	// createTurnLifecycle.
+	callID := newID()
 	// The result consumes the driver's channel with a context that is not
 	// cancelled with the caller's: cancellation is handled by the driver,
 	// which settles the turn through settleFailure (OnTurnFailed first, then
@@ -199,12 +245,14 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	// the channel is always drained, so the driver never blocks on push after
 	// the caller cancels.
 	result := ai.NewStreamTextResultFromParts(context.WithoutCancel(ctx), stream, ai.ExternalStreamOptions{
+		CallID:   callID,
 		Provider: "harness:" + in.Harness.HarnessID(),
 		ModelID:  in.Model,
+		Output:   in.Output,
 	})
 
 	done := make(chan struct{})
-	d := &turnDriver{ctx: ctx, in: in, stream: stream}
+	d := &turnDriver{ctx: ctx, in: in, stream: stream, telCallID: callID}
 	go func() {
 		defer close(done)
 		d.run()
@@ -285,6 +333,21 @@ type turnDriver struct {
 	execErr error
 
 	closingResumedStep bool
+
+	// Telemetry span/context state — see telemetry.go. telCallID is
+	// generated once per turn (runPrompt) and shared across every step's
+	// language-model-call span, mirroring how pkg/ai/generate.go reuses one
+	// CallID across steps of a single generateText call. telCtx/telStepCtx
+	// are the root/current-step contexts returned by telStart/telStepStart,
+	// used to parent every later telemetry event so integrations (e.g.
+	// telemetry.OpenTelemetry) nest turn -> step -> model-call/tool-execution
+	// spans correctly. telEnded guards telEnd/telError against firing twice
+	// for the same turn (TS turn-telemetry.ts's `ended` flag).
+	telCallID             string
+	telCtx                context.Context
+	telStepCtx            context.Context
+	telModelCallStartedAt int64
+	telEnded              bool
 }
 
 func (d *turnDriver) run() {
@@ -446,7 +509,7 @@ func (d *turnDriver) processStartupContinuations() (turnOutcome, error) {
 //
 // finished is true only when the harness's own terminal `finish` part was
 // observed and forwarded. alreadySettled is true when some other path
-// (pauseForHostInput, finishNow) already pushed the closing chunk(s) and
+// (pauseForHostInput, suspendOrFinishNow) already pushed the closing chunk(s) and
 // closed d.stream itself — the caller (run) must not touch d.stream again in
 // that case, and must not fire OnTurnFinished/OnTurnFailed (whichever
 // settled it already did, if appropriate: a pause fires neither, matching
@@ -595,7 +658,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			}
 			d.completeStep(fs.FinishReason, fs.Usage)
 			if reason := d.evaluateStopConditions(); reason != "" {
-				d.finishNow(fs.FinishReason)
+				d.suspendOrFinishNow(fs.FinishReason, fs.Usage)
 				return false, true, nil
 			}
 		}
@@ -615,6 +678,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				return false, false, errors.New(unclosedStepErrorMessage)
 			}
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
+			// TS's terminal `finish` handler ends the root telemetry span
+			// with the bridge's own totalUsage, the real end-of-turn total
+			// (as opposed to pauseForHostInput's zero usage or
+			// suspendOrFinishNow's last-step usage).
+			d.telEnd(d.completedSteps, *usage)
 			d.stream.push(provider.StreamChunk{
 				Type:            provider.ChunkTypeFinish,
 				FinishReason:    unifiedFinishReason(fp.FinishReason),
@@ -727,6 +795,7 @@ func (d *turnDriver) ensureStarted() {
 		return
 	}
 	d.startCalled = true
+	d.telStart()
 	if d.in.Callbacks.OnStart != nil {
 		d.in.Callbacks.OnStart(d.ctx, ai.OnStartEvent{
 			OperationID:    "ai.harnessAgent",
@@ -744,6 +813,7 @@ func (d *turnDriver) ensureStepOpen() {
 		return
 	}
 	d.stepOpen = true
+	d.telStepStart()
 	if d.in.Callbacks.OnStepStart != nil {
 		d.in.Callbacks.OnStepStart(d.ctx, ai.OnStepStartEvent{
 			StepNumber:     d.stepNumber,
@@ -821,6 +891,7 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
+	d.telToolExecution(call, toolResult, d.toolExecMs[tr.ToolCallID])
 }
 
 // completeStep flushes buffered tool-result chunks, fires the model-call-end
@@ -834,16 +905,18 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
 			Usage:        harnessUsageToTypesUsageValue(usage),
 		})
 	}
+	d.telLanguageModelCallEnd(finishReason, usage)
 	d.flushBufferedResultChunks()
 
 	step := types.StepResult{
-		StepNumber:   d.stepNumber,
-		Model:        types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model},
-		Text:         d.stepText,
-		ToolCalls:    append([]types.ToolCall(nil), d.stepToolCalls...),
-		ToolResults:  append([]types.ToolResult(nil), d.stepToolResults...),
-		FinishReason: unifiedFinishReason(finishReason),
-		Usage:        harnessUsageToTypesUsageValue(usage),
+		StepNumber:    d.stepNumber,
+		Model:         types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model},
+		Text:          d.stepText,
+		ReasoningText: d.stepReasoning,
+		ToolCalls:     append([]types.ToolCall(nil), d.stepToolCalls...),
+		ToolResults:   append([]types.ToolResult(nil), d.stepToolResults...),
+		FinishReason:  unifiedFinishReason(finishReason),
+		Usage:         harnessUsageToTypesUsageValue(usage),
 	}
 	if d.in.Callbacks.OnStepEnd != nil {
 		d.in.Callbacks.OnStepEnd(d.ctx, ai.OnStepFinishEvent{
@@ -853,6 +926,7 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
+	d.telStepEnd(step.StepNumber, step)
 
 	d.stream.push(provider.StreamChunk{
 		Type:            provider.ChunkTypeFinishStep,
@@ -908,26 +982,70 @@ func (d *turnDriver) pauseForHostInput() error {
 	} else {
 		d.flushBufferedResultChunks()
 	}
+	// TS `finishForHostInputPause` ends the turn's root telemetry span here
+	// too (with zero usage), even though the underlying harness session turn
+	// is only paused, not really finished — each runPrompt invocation is its
+	// own traced operation; ContinueGenerate/ContinueStream starts a fresh
+	// one with its own telStart.
+	d.telEnd(d.completedSteps, types.Usage{})
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish})
 	d.stream.closeOK()
 	return nil
 }
 
-// finishNow settles the turn as fully complete right now, ahead of any later
-// `finish` the adapter might still emit — used only by the StopConditions
-// early-stop path. It fires OnTurnFinished (unlike pauseForHostInput, this
-// really is "done" from the session's point of view: WG4 does not yet keep
-// the underlying harness Session turn reachable afterward for a later
-// resume, so — pending WG13's workflow-harness suspend/continue slicing —
-// treating it as finished is more useful than leaving the session
-// permanently stuck as "running"). finishReason is the last completed
-// step's; usage is deliberately left unset so the locally-summed total
-// stands, since this is not a real bridge-reported total the way a genuine
-// terminal `finish` carries one (contrast pauseForHostInput/the FinishPart
-// branch in consumeLoop).
-func (d *turnDriver) finishNow(finishReason FinishReason) {
+// suspendOrFinishNow settles the local *ai.StreamTextResult right now, ahead
+// of any later `finish` the adapter might still emit — used only by the
+// StopConditions early-stop path. finishReason is the last completed step's;
+// usage is deliberately left off the pushed chunk so the locally-summed
+// total stands, since this is not a real bridge-reported total the way a
+// genuine terminal `finish` carries one (contrast pauseForHostInput/the
+// FinishPart branch in consumeLoop) — but it is still the right usage for
+// the telemetry span's totals (see telEnd's call below), mirroring TS's
+// `pendingStopBoundary.usage`.
+//
+// Whether the *underlying harness session's turn* survives this for a later
+// resume depends on d.in.OnStopConditionMet (wired to
+// AgentSession.captureStopConditionBoundary, which calls the adapter's
+// DoSuspendTurn): when it succeeds, the turn is genuinely suspended — OnTurn-
+// Finished is NOT called, so the session stays in its "suspended" state
+// (HasUnfinishedTurn() true) instead of returning to idle, and a caller can
+// continue it with ContinueGenerate/ContinueStream. When it's unavailable or
+// fails (nil OnStopConditionMet — e.g. a bare runPrompt call outside an
+// Agent/AgentSession — or the adapter can't honor DoSuspendTurn), this falls
+// back to WG4's original behavior: a hard finish, OnTurnFinished fires, and
+// the session returns to idle. Mirrors TS `runPrompt`'s early-stop branch
+// (`input.onStopConditionMet?.()` then `lifecycle.end`/`result.finish()`,
+// with no `onTurnFinished` call in that branch either).
+//
+// Deferred to WG13 (workflow-harness slicing) and to WG7+ bridge adapters,
+// respectively: (1) TS's "one event of lookahead" refinement, which skips
+// suspending entirely when the adapter's very next event turns out to be
+// its own natural `finish` arriving right after this step anyway (avoiding
+// a redundant suspend immediately before a turn that was ending on its
+// own) — this needs to peek at (and safely re-inject) the following part,
+// which interacts closely enough with WG13's own time-slice boundary
+// handling that building it twice isn't worthwhile; and (2) the bridge-
+// level replay-checkpoint pinning (TS `pinSandboxChannelEventCheckpoint`)
+// that keeps a *live* bridge connection's event buffer from being
+// garbage-collected while a stop decision is pending — see spec.go's
+// CheckpointPinner, an optional extension point a bridge-backed adapter can
+// implement for that optimization; correctness here does not depend on it,
+// since DoSuspendTurn (not this driver) is what actually freezes the
+// adapter's cursor.
+func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) {
+	suspended := false
+	if d.in.OnStopConditionMet != nil {
+		if _, err := d.in.OnStopConditionMet(d.ctx); err == nil {
+			suspended = true
+		}
+	}
+	// TS's StopConditions early-stop path ends the root telemetry span with
+	// the matched step boundary's own usage (`pendingStopBoundary.usage`),
+	// not a fresh/zero one — mirrors that exactly, regardless of whether the
+	// underlying session turn was suspended or hard-finished.
+	d.telEnd(d.completedSteps, harnessUsageToTypesUsageValue(usage))
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
-	if d.in.OnTurnFinished != nil {
+	if !suspended && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
 	d.stream.closeOK()
@@ -1174,6 +1292,17 @@ func (d *turnDriver) recordPendingResult(raw *ToolCallPart) {
 // row 8d717b3) and submits the result back to the harness when it completes.
 // Joined at the next step boundary via joinOutstandingExecutions.
 func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, call types.ToolCall) {
+	// Snapshotted here, synchronously in the caller's (turnDriver.run's)
+	// goroutine, rather than read as d.telStepCtx from inside the spawned
+	// goroutine below: d.telStepCtx is mutated by the main goroutine at
+	// later step boundaries (telStepStart/telStepEnd), and a host tool
+	// execution can outlive the step it started in until
+	// joinOutstandingExecutions catches up, so reading the live field from
+	// the exec goroutine would be a data race.
+	execTelCtx := d.telStepCtx
+	if execTelCtx == nil {
+		execTelCtx = d.ctx
+	}
 	d.execWG.Add(1)
 	go func() {
 		defer d.execWG.Done()
@@ -1189,10 +1318,17 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 				return
 			}
 		}
-		output, err := tool.Execute(d.ctx, call.Arguments, types.ToolExecutionOptions{
-			ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
-			ExperimentalSandbox: d.in.SandboxSession,
-		})
+		// Wrapped by telemetry.FireExecuteToolWithSettings so integrations
+		// can create nested spans for tool -> generateText chains (TS
+		// 59a2306's `wrappedExecuteTool`, matching pkg/ai/generate.go's own
+		// tool-loop wrapping of the same call).
+		output, err := telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, call.Arguments,
+			func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+				return tool.Execute(execCtx, args, types.ToolExecutionOptions{
+					ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
+					ExperimentalSandbox: d.in.SandboxSession,
+				})
+			})
 		d.execMu.Lock()
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()

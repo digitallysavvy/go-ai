@@ -36,6 +36,17 @@ type ExternalStreamOptions struct {
 	// callbacks of the same name. OnEnd takes precedence when both are set.
 	OnFinish func(result *StreamTextResult)
 	OnEnd    func(result *StreamTextResult)
+
+	// Output, when it satisfies the internal outputProcessor interface (any
+	// value returned by TextOutput/ObjectOutput/ArrayOutput/ChoiceOutput/
+	// JSONOutput), enables structured-output parsing on the returned result:
+	// Output()/OutputErr() resolve once src is fully consumed by parsing the
+	// final step's accumulated text, and PartialOutput() updates after every
+	// text chunk of that step, deduplicated exactly like StreamTextOptions.
+	// Output. A value that does not satisfy outputProcessor is ignored (mirrors
+	// StreamTextOptions.Output's `interface{}` + type-assertion contract; see
+	// stream.go's own opts.Output handling for the pattern this mirrors).
+	Output interface{}
 }
 
 // NewStreamTextResultFromParts builds a *StreamTextResult by consuming src, a
@@ -93,6 +104,9 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 		cbCallID:        callID,
 		cbModelProvider: opts.Provider,
 		cbModelID:       opts.ModelID,
+	}
+	if op, ok := opts.Output.(outputProcessor); ok {
+		result.outputSpec = op
 	}
 	result.chunkBuf = newChunkBuffer()
 	result.processingDone = make(chan struct{})
@@ -155,6 +169,17 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 	stepNumber := 0
 	step := &externalStepAccum{}
 
+	// lastStepText/hasPublishedPartial/lastPartialJSON support r.outputSpec
+	// (see ExternalStreamOptions.Output doc): lastStepText is the most
+	// recently completed step's own text, used for the terminal parse below
+	// (mirrors StreamText's outputSpec.parseCompleteOutput call, scoped to
+	// the final step only — audit row 2a5ed55 / WG4). hasPublishedPartial/
+	// lastPartialJSON dedupe PartialOutput() updates within the current step,
+	// reset at every step boundary, mirroring stepLastPartialJSON in stream.go.
+	var lastStepText string
+	var hasPublishedPartial bool
+	var lastPartialJSON string
+
 	finishStep := func(terminal bool) {
 		content := append([]types.ContentPart(nil), step.content...)
 		result := types.StepResult{
@@ -178,6 +203,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		}
 
 		accumulatedText = append(accumulatedText, step.text)
+		lastStepText = step.text
+		hasPublishedPartial = false
+		lastPartialJSON = ""
 
 		r.mu.Lock()
 		r.cbSteps = append(r.cbSteps, result)
@@ -243,6 +271,29 @@ consumeLoop:
 			if chunk.Text != "" {
 				step.text += chunk.Text
 				step.content = append(step.content, types.TextContent{Text: chunk.Text})
+
+				// Update partial output after each text chunk (deduplicated),
+				// scoped to the in-progress step's own text only. Mirrors the
+				// identical block in stream.go's processStream.
+				if r.outputSpec != nil {
+					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+						Text: step.text,
+					})
+					if partialErr != nil {
+						r.err = partialErr
+						break consumeLoop
+					}
+					if hasPartial {
+						newJSONStr, ok := partialOutputDedupKey(partial)
+						if ok && (!hasPublishedPartial || newJSONStr != lastPartialJSON) {
+							hasPublishedPartial = true
+							lastPartialJSON = newJSONStr
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
+				}
 			}
 
 		case provider.ChunkTypeReasoning:
@@ -422,6 +473,25 @@ consumeLoop:
 			finishStep(true)
 			break consumeLoop
 		}
+	}
+
+	// Resolve the final typed output, if a spec was provided, from the last
+	// step's own text — same scope and unconditional-on-finishReason contract
+	// as StreamText's own terminal output resolution (audit row 2a5ed55 /
+	// WG4); skipped when the turn itself failed, matching stream.go's r.err
+	// != nil early return before that point.
+	if r.err == nil && r.outputSpec != nil {
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         lastStepText,
+			FinishReason: r.finishReason,
+			Usage:        &r.usage,
+		})
+		r.mu.Lock()
+		if parseErr == nil {
+			r.outputResult = parsed
+		}
+		r.outputErr = parseErr
+		r.mu.Unlock()
 	}
 
 	r.mu.Lock()

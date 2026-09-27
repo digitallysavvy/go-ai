@@ -56,6 +56,39 @@ type AgentSession struct {
 	turnState    TurnState
 
 	resumedToolsContext map[string]interface{}
+
+	// turnSeq/activeTurnID/activeHandoff support ExperimentalSteerTurn.
+	// turnSeq/activeTurnID mirror TS `turnSequence`/`activeTurnSequence`:
+	// every startTrackedTurn call mints a new turn id, and every later
+	// callback (setActivePromptControl/finishTrackedTurn) is a no-op once a
+	// newer turn has started or the tracked turn has already ended. Mirrors
+	// TS AgentSession's private `turnSequence`/`activeTurnSequence` fields.
+	turnSeq       int
+	activeTurnID  int
+	activeHandoff *steerHandoff
+
+	// suspendedState memoizes DoSuspendTurn's result for the currently
+	// running/suspended turn, mirroring TS AgentSession's private
+	// `suspendedTurnState` promise cache: captureStopConditionBoundary (a
+	// StopWhen early-stop, run_prompt.go's suspendOrFinishNow) and a later
+	// explicit SuspendTurn call for the *same* turn must not call the
+	// underlying adapter's DoSuspendTurn twice — the second caller simply
+	// receives the first call's already-resolved state. Cleared whenever a
+	// fresh turn starts (startTrackedTurn).
+	suspendedState *ContinueTurnState
+}
+
+// steerHandoff carries the in-flight turn's PromptControl to a caller
+// blocked in ExperimentalSteerTurn, once runPrompt's DoPromptTurn/
+// DoContinueTurn call returns it (or reports that the turn ended, or moved
+// out of "running", before ever producing one — ready closes with control
+// left nil). Mirrors TS AgentSession's `activePromptControl` promise
+// (startTrackedTurn/setPromptControl/waitForPromptControl/
+// settleActivePromptControl/clearActivePromptControl).
+type steerHandoff struct {
+	turnID  int
+	ready   chan struct{}
+	control PromptControl // valid only after ready is closed
 }
 
 // AgentSessionOptions is the input of newAgentSession.
@@ -154,25 +187,87 @@ func (s *AgentSession) requireContinuableTurn() error {
 }
 
 // startTrackedTurn transitions the session to "running" for the duration of
-// one runPrompt call.
-func (s *AgentSession) startTrackedTurn() {
+// one runPrompt call and returns a turn id: every later
+// setActivePromptControl/finishTrackedTurn call for this turn must pass it
+// back, so a call that arrives after a newer turn has already started (or
+// after this one already ended) is a safe no-op. Mirrors TS
+// `startTrackedTurn`.
+func (s *AgentSession) startTrackedTurn() int {
 	s.mu.Lock()
 	s.turnState = TurnStateRunning
+	s.turnSeq++
+	turnID := s.turnSeq
+	s.activeTurnID = turnID
+	s.clearActiveHandoffLocked()
+	s.activeHandoff = &steerHandoff{turnID: turnID, ready: make(chan struct{})}
+	s.suspendedState = nil
 	s.mu.Unlock()
+	return turnID
 }
 
-// finishTrackedTurn unconditionally returns the session to idle. Called from
-// runPrompt's OnTurnFinished/OnTurnFailed callbacks — synchronously, from
+// setActivePromptControl hands the running turn's PromptControl to any
+// caller blocked in ExperimentalSteerTurn. Wired as runPrompt's
+// OnPromptControlAvailable callback via a turnID-scoped closure (see
+// Agent.startTurn). A no-op once the turn is no longer the active
+// "running" one. Mirrors TS `setPromptControl`.
+func (s *AgentSession) setActivePromptControl(turnID int, control PromptControl) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnState != TurnStateRunning || s.activeTurnID != turnID || s.activeHandoff == nil || s.activeHandoff.turnID != turnID {
+		return
+	}
+	select {
+	case <-s.activeHandoff.ready:
+	default:
+		s.activeHandoff.control = control
+		close(s.activeHandoff.ready)
+	}
+}
+
+// clearActiveHandoffLocked settles any pending handoff (unblocking a caller
+// waiting in ExperimentalSteerTurn with a nil control, which resolves to the
+// "no longer targeted" error) and clears it. Callers must hold s.mu. Mirrors
+// TS `clearActivePromptControl`.
+func (s *AgentSession) clearActiveHandoffLocked() {
+	if s.activeHandoff == nil {
+		return
+	}
+	select {
+	case <-s.activeHandoff.ready:
+	default:
+		close(s.activeHandoff.ready)
+	}
+	s.activeHandoff = nil
+}
+
+// finishTrackedTurn returns the session to idle, but only if the session is
+// still active and turnID is still the active turn (a stale call — from a
+// turn that a newer startTrackedTurn has since superseded, or one that
+// arrives after Detach/Stop/Destroy — is a no-op, mirroring TS's
+// `sessionState !== 'active'` and `activeTurnSequence !== options.turnId`
+// guards). Called from runPrompt's OnTurnFinished/OnTurnFailed callbacks
+// (via a turnID-scoped closure — see Agent.startTurn) — synchronously, from
 // the turn driver's own goroutine, before it signals Done — for both a
 // natural finish and a failure. Mirrors TS `HarnessAgentSession`'s private
-// `finishTrackedTurn`, which likewise always sets `turnState = 'idle'`
-// regardless of what markAwaitingApprovalIfActive/markAwaitingToolResultIfActive
-// set earlier: those calls only fire when a turn *pauses* for host input,
-// a case in which runPrompt never calls OnTurnFinished/OnTurnFailed (see
+// `finishTrackedTurn`, which likewise always sets `turnState = 'idle'` (when
+// still active and the turnId still matches) regardless of what
+// markAwaitingApprovalIfActive/markAwaitingToolResultIfActive set earlier:
+// those calls only fire when a turn *pauses* for host input, a case in
+// which runPrompt never calls OnTurnFinished/OnTurnFailed (see
 // pauseForHostInput), so there is no ordering conflict between the two.
-func (s *AgentSession) finishTrackedTurn() {
+// Also drops any leftover pending approvals/results and the memoized
+// suspend state, exactly like TS clearing `pendingToolApprovals`/
+// `pendingToolResults`/`suspendedTurnState` — a completed turn must not
+// leave orphaned entries a later turn's snapshotPendingState could pick up.
+func (s *AgentSession) finishTrackedTurn(turnID int) {
 	s.mu.Lock()
-	s.turnState = TurnStateIdle
+	if s.sessionState == SessionStateActive && s.activeTurnID == turnID {
+		s.clearActiveHandoffLocked()
+		s.pendingApprovals = map[string]PendingToolApproval{}
+		s.pendingResults = map[string]PendingToolResult{}
+		s.suspendedState = nil
+		s.turnState = TurnStateIdle
+	}
 	s.mu.Unlock()
 }
 
@@ -202,6 +297,7 @@ func (s *AgentSession) recordPendingApproval(a PendingToolApproval) {
 	s.mu.Lock()
 	s.pendingApprovals[a.ApprovalID] = a
 	if s.turnState == TurnStateRunning {
+		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingApproval
 	}
 	s.mu.Unlock()
@@ -220,6 +316,7 @@ func (s *AgentSession) recordPendingResult(r PendingToolResult) {
 	s.mu.Lock()
 	s.pendingResults[r.ToolCallID] = r
 	if s.turnState == TurnStateRunning {
+		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingResult
 	}
 	s.mu.Unlock()
@@ -243,16 +340,87 @@ func (s *AgentSession) Compact(ctx context.Context, customInstructions string) e
 	return s.underlying.DoCompact(ctx, customInstructions)
 }
 
-// SuspendTurn freezes the active turn at a precise cursor while keeping the
-// runtime alive, and returns the continuation payload the caller must
-// persist to resume it later (directly, or embedded in the ResumeSessionState
-// returned by Detach/Stop). Mirrors TS `HarnessAgentSession.suspendTurn`.
+// ExperimentalSteerTurn submits an additional user message to the active
+// (running) turn. The underlying runtime accepts the message at its next
+// safe input boundary; any output it causes remains part of the active
+// turn's result stream, i.e. the caller does not receive a separate result
+// for it — it surfaces through the *ai.StreamTextResult already returned by
+// the Stream/Generate call that started this turn. Returns
+// CapabilityUnsupportedError if the harness's PromptControl does not
+// implement UserMessageSubmitter. Mirrors TS
+// `HarnessAgentSession.experimental_steerTurn`.
+func (s *AgentSession) ExperimentalSteerTurn(ctx context.Context, text string) error {
+	s.mu.Lock()
+	if s.sessionState != SessionStateActive || s.turnState != TurnStateRunning || s.activeHandoff == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("harness session '%s' has no running turn to steer", s.sessionID)
+	}
+	handoff := s.activeHandoff
+	s.mu.Unlock()
+
+	var control PromptControl
+	select {
+	case <-handoff.ready:
+		control = handoff.control
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	s.mu.Lock()
+	stillTargeted := s.sessionState == SessionStateActive && s.turnState == TurnStateRunning && s.activeHandoff == handoff
+	s.mu.Unlock()
+	if !stillTargeted || control == nil {
+		return fmt.Errorf("harness session '%s' no longer has the running turn targeted for steering", s.sessionID)
+	}
+
+	submitter, ok := control.(UserMessageSubmitter)
+	if !ok {
+		return NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness '%s' does not support steering active turns.", s.harness.HarnessID()),
+			s.harness.HarnessID(), nil,
+		)
+	}
+	return submitter.SubmitUserMessage(ctx, text)
+}
+
+// SuspendTurn freezes the active turn at a precise cursor and returns the
+// continuation payload the caller must persist to resume it later (directly,
+// or embedded in the ResumeSessionState returned by Detach/Stop). The
+// sandbox/runtime keep running, but this call always leaves the local
+// session handle detached afterward (like Detach, but without a separate
+// DoDetach call — the adapter's cursor is already frozen by DoSuspendTurn):
+// this in-process handle no longer drives turns, and a caller must create a
+// fresh session from the returned state to continue. Mirrors TS
+// `HarnessAgentSession.suspendTurn`'s `finally { endLocalHandle(...) }`,
+// which unconditionally detaches even when the memoized suspend state below
+// is reused rather than freshly captured — unlike the StopWhen early-stop
+// path (captureStopConditionBoundary), which suspends the turn in place
+// without detaching so ContinueGenerate/ContinueStream can resume it on this
+// same session.
 func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, error) {
 	s.mu.Lock()
+	if s.sessionState != SessionStateActive {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("harness session '%s' is not active and cannot be suspended", s.sessionID)
+	}
 	if s.turnState == TurnStateIdle {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("harness session '%s': no unfinished turn to suspend", s.sessionID)
 	}
+	// A StopWhen early-stop (suspendOrFinishNow -> captureStopConditionBoundary)
+	// may have already suspended this exact turn and cached the result —
+	// reuse it instead of calling the underlying adapter's DoSuspendTurn a
+	// second time, mirroring TS `suspendCurrentTurn`'s
+	// `this.suspendedTurnState ??= ...` memoization.
+	if s.suspendedState != nil {
+		state := s.suspendedState
+		s.turnState = TurnStateSuspended
+		s.clearActiveHandoffLocked()
+		s.sessionState = SessionStateDetached
+		s.mu.Unlock()
+		return state, nil
+	}
+	s.clearActiveHandoffLocked()
 	s.mu.Unlock()
 
 	state, err := s.underlying.DoSuspendTurn(ctx)
@@ -260,7 +428,55 @@ func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, err
 		return nil, err
 	}
 	s.mu.Lock()
+	s.suspendedState = state
 	s.turnState = TurnStateSuspended
+	s.sessionState = SessionStateDetached
+	s.mu.Unlock()
+	return state, nil
+}
+
+// captureStopConditionBoundary suspends the underlying harness session's
+// turn in place when a StopWhen condition matches after a completed step,
+// keeping it resumable via ContinueGenerate/ContinueStream instead of
+// discarding it. Wired as runPrompt's OnStopConditionMet callback
+// (turnID-scoped, like OnTurnFinished/OnPromptControlAvailable — see
+// Agent.startTurn). A no-op (returns nil, nil) once turnID is no longer the
+// active "running" turn, mirroring TS's identical guard in
+// `AgentSession.captureStopConditionBoundary`: by the time this runs, a
+// concurrent Detach/Stop/Destroy (or, in principle, a fresher turn) may
+// already have superseded it. See run_prompt.go's suspendOrFinishNow doc
+// for what TS behavior around this is deferred to WG13/bridge adapters.
+func (s *AgentSession) captureStopConditionBoundary(ctx context.Context, turnID int) (*ContinueTurnState, error) {
+	s.mu.Lock()
+	if s.sessionState != SessionStateActive || s.activeTurnID != turnID {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	if s.suspendedState != nil {
+		state := s.suspendedState
+		s.mu.Unlock()
+		return state, nil
+	}
+	s.mu.Unlock()
+
+	state, err := s.underlying.DoSuspendTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	// Re-check after the (possibly slow) adapter call: a concurrent
+	// Detach/Stop/Destroy or a newer turn may have superseded this one while
+	// DoSuspendTurn was in flight. The adapter has already frozen its side
+	// regardless, so the state is still returned to the caller (matching TS,
+	// which awaits and returns `state` from `suspendCurrentTurn` even when
+	// its own later steps no-op) — only this session's own bookkeeping is
+	// skipped.
+	if s.sessionState == SessionStateActive && s.activeTurnID == turnID {
+		s.suspendedState = state
+		s.clearActiveHandoffLocked()
+		s.turnState = TurnStateSuspended
+	}
 	s.mu.Unlock()
 	return state, nil
 }
@@ -281,6 +497,7 @@ func (s *AgentSession) Detach(ctx context.Context) (*ResumeSessionState, error) 
 		return nil, err
 	}
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateDetached
 	s.mu.Unlock()
 	return state, nil
@@ -301,6 +518,7 @@ func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateStopped
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()
@@ -315,6 +533,7 @@ func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 func (s *AgentSession) Destroy(ctx context.Context) error {
 	err := s.underlying.DoDestroy(ctx)
 	s.mu.Lock()
+	s.clearActiveHandoffLocked()
 	s.sessionState = SessionStateDestroyed
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()

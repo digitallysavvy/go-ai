@@ -285,6 +285,27 @@ type UserMessageSubmitter interface {
 	SubmitUserMessage(ctx context.Context, text string) error
 }
 
+// CheckpointPinner is an optional capability of a PromptControl (or a
+// Session, for a bridge-backed adapter whose control is stateless): pin the
+// adapter's current replay checkpoint, deferring garbage-collection of
+// already-delivered bridge events until the returned release func runs.
+//
+// Used opportunistically by run_prompt.go's StopWhen early-stop path
+// (suspendOrFinishNow), which must decide — based on stream parts it hasn't
+// received yet — whether a completed step boundary that satisfies a
+// StopCondition should suspend the turn. A bridge-backed adapter that
+// implements this can safely let its connection keep advancing while that
+// decision is made without risking the frozen cursor falling out of the
+// replay buffer; an adapter that does not implement it (every adapter as of
+// this WG4 pass, including every test double) simply skips the optimization
+// with no change in correctness. Mirrors TS `pinSandboxChannelEventCheckpoint`
+// (harness/utils/sandbox-channel.ts) — deferred here to a later work group
+// (WG7+ bridge adapters) rather than implemented against a concrete bridge,
+// since pkg/harness/bridge's SandboxChannel is out of this package's scope.
+type CheckpointPinner interface {
+	PinCheckpoint() (release func())
+}
+
 // PermissionMode is the baseline permission mode for adapter-native built-in
 // tools. Mirrors TS `HarnessV1PermissionMode`.
 type PermissionMode string

@@ -130,11 +130,8 @@ func (a *Agent) ID() string { return a.settings.ID }
 func (a *Agent) HarnessID() string { return a.settings.Harness.HarnessID() }
 
 // HasOutput reports whether this agent parses completed turns with a
-// configured output specification.
-//
-// Deferred (see package doc): structured output (TS `output` -> harness
-// ResponseFormat) is not wired in this pass; HasOutput always reports false.
-func (a *Agent) HasOutput() bool { return false }
+// configured output specification. Mirrors TS `HarnessAgent.hasOutput`.
+func (a *Agent) HasOutput() bool { return hasOutputSpec(a.settings.Output) }
 
 // Tools returns the merged harness-builtin + user tool set.
 func (a *Agent) Tools() []types.Tool {
@@ -445,6 +442,13 @@ func (a *Agent) ContinueStream(ctx context.Context, opts agent.AgentStreamOption
 	return a.startTurn(ctx, session, opts.AgentGenerateOptions, "continue", toolApprovalContinuations, toolResultContinuations)
 }
 
+// ExperimentalSteer submits an additional user message to session's active
+// (running) turn, if the harness adapter supports it. Mirrors TS
+// `HarnessAgent.experimental_steer`. See AgentSession.ExperimentalSteerTurn.
+func (a *Agent) ExperimentalSteer(ctx context.Context, session *AgentSession, text string) error {
+	return session.ExperimentalSteerTurn(ctx, text)
+}
+
 func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent.AgentGenerateOptions, mode string, toolApprovalContinuations []types.ToolApprovalResponseContent, toolResultContinuations []types.ToolResultContent) (*ai.StreamTextResult, error) {
 	if mode == "continue" {
 		if err := session.requireContinuableTurn(); err != nil {
@@ -574,7 +578,16 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		}
 	}
 
-	session.startTrackedTurn()
+	// Resolved fresh for every turn (TS `_resolveResponseFormat`, called from
+	// both the fresh-prompt and continue paths) rather than cached at
+	// NewAgent time, matching how instructions/tools/etc are re-derived per
+	// turn above.
+	responseFormat, err := resolveOutputResponseFormat(ctx, a.settings.Output)
+	if err != nil {
+		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
+	}
+
+	turnID := session.startTrackedTurn()
 
 	out := runPrompt(ctx, runPromptInput{
 		Harness: a.settings.Harness, Session: session.underlying,
@@ -583,6 +596,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		Tools: tools, ToolsContext: toolsContext, ActiveTools: activeTools, ToolSpecs: toolSpecs,
 		BuiltinToolFiltering: a.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
+		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
 		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
@@ -590,6 +604,12 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		OnToolApprovalSettled: session.settleApproval,
 		OnPendingToolResult:   session.recordPendingResult,
 		OnToolResultSettled:   session.settleResult,
+		// OnPromptControlAvailable hands the turn's PromptControl to the
+		// session (turnID-scoped) as soon as DoPromptTurn/DoContinueTurn
+		// returns it, so ExperimentalSteer can reach it while the turn is
+		// still running. Mirrors TS AgentSession's `setPromptControl` call
+		// site in its own doPromptTurn/doContinueTurn wrappers.
+		OnPromptControlAvailable: func(control PromptControl) { session.setActivePromptControl(turnID, control) },
 		// OnTurnFinished/OnTurnFailed are called synchronously by the turn
 		// driver's own goroutine before it signals Done (see run_prompt.go),
 		// so the session's turn state is always settled by the time a
@@ -600,8 +620,16 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		// calls neither: session.recordPendingApproval/recordPendingResult
 		// already transitioned the turn to awaiting-approval/
 		// awaiting-tool-result at the moment the pause was discovered.
-		OnTurnFinished: session.finishTrackedTurn,
-		OnTurnFailed:   session.finishTrackedTurn,
+		OnTurnFinished: func() { session.finishTrackedTurn(turnID) },
+		OnTurnFailed:   func() { session.finishTrackedTurn(turnID) },
+		// OnStopConditionMet suspends the underlying harness session's turn
+		// in place when StopWhen stops the result early, so it stays
+		// resumable via ContinueGenerate/ContinueStream instead of being
+		// discarded. See run_prompt.go's suspendOrFinishNow and
+		// session.go's captureStopConditionBoundary.
+		OnStopConditionMet: func(ctx context.Context) (*ContinueTurnState, error) {
+			return session.captureStopConditionBoundary(ctx, turnID)
+		},
 		RuntimeContext: opts.RuntimeContext,
 	})
 
@@ -655,6 +683,7 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 	return &ai.GenerateTextResult{
 		Content:            r.Content(),
 		Text:               r.Text(),
+		Output:             r.Output(),
 		Reasoning:          finalStep.Reasoning,
 		ReasoningText:      finalStep.ReasoningText,
 		ToolCalls:          r.ToolCalls(),
