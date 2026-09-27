@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -37,6 +38,38 @@ func newXAIChanAudioStream(chunks ...[]byte) *xaiChanAudioStream {
 
 func newXAIBlockingAudioStream() *xaiChanAudioStream {
 	return &xaiChanAudioStream{chunks: make(chan []byte)}
+}
+
+// xaiFailingAudioStream is a provider.AudioStream test double whose Next
+// always fails with a fixed, non-EOF error, mirroring a rejected
+// `audioReader.read()` in TS.
+type xaiFailingAudioStream struct {
+	err error
+
+	mu        sync.Mutex
+	cancelled bool
+	cancelErr error
+}
+
+func newXAIFailingAudioStream(err error) *xaiFailingAudioStream {
+	return &xaiFailingAudioStream{err: err}
+}
+
+func (s *xaiFailingAudioStream) Next(ctx context.Context) ([]byte, error) {
+	return nil, s.err
+}
+
+func (s *xaiFailingAudioStream) Cancel(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelled = true
+	s.cancelErr = reason
+}
+
+func (s *xaiFailingAudioStream) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
 }
 
 func (s *xaiChanAudioStream) Next(ctx context.Context) ([]byte, error) {
@@ -486,6 +519,190 @@ func TestTranscriptionModel_DoStream_WarnsOnUnrecognizedAudioFormat(t *testing.T
 	server.mu.Unlock()
 	if got := reqURL.Query().Get("encoding"); got != "pcm" {
 		t.Errorf("encoding = %q, want pcm (fallback)", got)
+	}
+}
+
+// A non-EOF audio read failure must fail the stream and cancel the audio
+// source, mirroring TS's `sendAudio(socket).catch(finishWithError)` (a
+// rejected `audioReader.read()` fails the stream exactly like a failed
+// `socket.send`). Regression test for a bug where pumpAudio silently
+// returned on a non-EOF read error instead of reporting it.
+func TestTranscriptionModel_DoStream_AudioReadFailureFailsStream(t *testing.T) {
+	server := newXAISTTTestServer(t)
+	defer server.close()
+
+	readErr := errors.New("boom: audio source failed")
+	audio := newXAIFailingAudioStream(readErr)
+	model := newTestXAITranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := drainXAIStream(result.Stream)
+		errCh <- err
+	}()
+
+	server.send(map[string]interface{}{"type": "transcript.created"})
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), readErr.Error()) {
+			t.Fatalf("stream error = %v, want containing %q", err, readErr.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the stream to fail after a read error")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !audio.wasCancelled() {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !audio.wasCancelled() {
+		t.Error("audio stream was not cancelled after a read failure")
+	}
+}
+
+// TS: "should cancel the audio stream when the WebSocket constructor throws"
+// (adapted: Go has no pluggable WebSocket constructor, so a dial failure is
+// exercised instead by pointing at a host that refuses the connection).
+func TestTranscriptionModel_DoStream_DialFailureCancelsAudio(t *testing.T) {
+	// A closed listener's address is guaranteed to refuse the connection.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() //nolint:errcheck
+
+	model := newTestXAITranscriptionModel("http://" + addr)
+	audio := newXAIChanAudioStream([]byte{1, 2, 3})
+	result, doStreamErr := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if doStreamErr != nil {
+		t.Fatalf("DoStream() error = %v", doStreamErr)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	_, err = drainXAIStream(result.Stream)
+	if err == nil {
+		t.Fatal("expected an error from a refused dial")
+	}
+	if !audio.wasCancelled() {
+		t.Error("audio stream was not cancelled after a dial failure")
+	}
+}
+
+// TS: "should treat is_final fragments as partials and use the speech_final
+// text for finish"
+func TestTranscriptionModel_DoStream_IsFinalFragmentsStayPartial(t *testing.T) {
+	server := newXAISTTTestServer(t)
+	defer server.close()
+
+	model := newTestXAITranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newXAIChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	partsCh := make(chan []provider.TranscriptionStreamPart, 1)
+	go func() {
+		parts, _ := drainXAIStream(result.Stream)
+		partsCh <- parts
+	}()
+
+	server.send(map[string]interface{}{"type": "transcript.created"})
+	server.waitForFrame(t, "audio.done", time.Second)
+
+	server.send(map[string]interface{}{
+		"type": "transcript.partial", "text": "No", "is_final": true, "speech_final": false,
+		"start": 0, "duration": 0.5,
+	})
+	server.send(map[string]interface{}{
+		"type": "transcript.partial", "text": ", I'm not", "is_final": true, "speech_final": false,
+		"start": 0.5, "duration": 0.7,
+	})
+	server.send(map[string]interface{}{
+		"type": "transcript.partial", "text": "No, I'm not.", "is_final": true, "speech_final": true,
+		"start": 0, "duration": 1.2,
+	})
+	server.send(map[string]interface{}{"type": "transcript.done", "text": "", "duration": 1.2})
+
+	parts := <-partsCh
+	var gotTypes []string
+	for _, p := range parts {
+		gotTypes = append(gotTypes, p.Type)
+	}
+	wantTypes := []string{
+		provider.TranscriptionStreamPartTypeStreamStart,
+		provider.TranscriptionStreamPartTypePartial,
+		provider.TranscriptionStreamPartTypePartial,
+		provider.TranscriptionStreamPartTypeFinal,
+		provider.TranscriptionStreamPartTypeFinish,
+	}
+	if len(gotTypes) != len(wantTypes) {
+		t.Fatalf("part types = %v, want %v", gotTypes, wantTypes)
+	}
+	for i, want := range wantTypes {
+		if gotTypes[i] != want {
+			t.Errorf("parts[%d].Type = %q, want %q", i, gotTypes[i], want)
+		}
+	}
+	last := parts[len(parts)-1]
+	if last.FinishText != "No, I'm not." {
+		t.Errorf("FinishText = %q, want %q", last.FinishText, "No, I'm not.")
+	}
+}
+
+// TS: "should fall back to the latest pending text when no speech_final
+// arrived before transcript.done"
+func TestTranscriptionModel_DoStream_FallsBackToPendingTextOnDone(t *testing.T) {
+	server := newXAISTTTestServer(t)
+	defer server.close()
+
+	model := newTestXAITranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newXAIChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	partsCh := make(chan []provider.TranscriptionStreamPart, 1)
+	go func() {
+		parts, _ := drainXAIStream(result.Stream)
+		partsCh <- parts
+	}()
+
+	server.send(map[string]interface{}{"type": "transcript.created"})
+	server.waitForFrame(t, "audio.done", time.Second)
+
+	server.send(map[string]interface{}{
+		"type": "transcript.partial", "text": "Hello wor", "is_final": false, "speech_final": false,
+	})
+	server.send(map[string]interface{}{
+		"type": "transcript.partial", "text": "Hello world", "is_final": true, "speech_final": false,
+	})
+	server.send(map[string]interface{}{"type": "transcript.done", "text": "", "duration": 1})
+
+	parts := <-partsCh
+	last := parts[len(parts)-1]
+	if last.Type != provider.TranscriptionStreamPartTypeFinish || last.FinishText != "Hello world" {
+		t.Errorf("last part = %+v, want finish with text %q", last, "Hello world")
 	}
 }
 

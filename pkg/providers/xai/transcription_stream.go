@@ -313,8 +313,11 @@ type xaiStreamingTranscriptionEvent struct {
 // pumpAudio forwards raw audio chunks as binary WebSocket frames (xAI reads
 // the socket payload directly, unlike Google's base64-in-JSON envelope), then
 // sends an `audio.done` control message and signals audioEnded at EOF. A
-// failed send is reported on sendErrCh so run()'s select loop can fail the
-// stream, mirroring TS's `void sendAudio(socket).catch(finishWithError)`.
+// failed read or send is reported on sendErrCh so run()'s select loop can
+// fail the stream, mirroring TS's `void sendAudio(socket).catch(finishWithError)`
+// (TS's `await audioReader.read()` propagates a rejection out of `sendAudio`
+// exactly like a failed `socket.send`, so both must fail the stream here too
+// instead of ending it silently).
 func (s *xaiTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, audioEnded chan<- struct{}, sendErrCh chan<- error) {
 	for {
 		chunk, err := audio.Next(s.ctx)
@@ -325,6 +328,11 @@ func (s *xaiTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.
 				case audioEnded <- struct{}{}:
 				case <-s.ctx.Done():
 				}
+				return
+			}
+			select {
+			case sendErrCh <- err:
+			case <-s.ctx.Done():
 			}
 			return
 		}
