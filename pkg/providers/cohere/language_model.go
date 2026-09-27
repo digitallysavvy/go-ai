@@ -278,25 +278,47 @@ func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[stri
 	}
 }
 
+// convertCohereUsage decodes a raw Cohere v2 usage object into SDK usage
+// format, matching TS convertCohereUsage (cohere/src/convert-cohere-usage.ts):
+// Raw preserves the complete usage object -- tokens, billed_units and
+// cached_tokens -- rather than a hand-built subset (0599400).
+func convertCohereUsage(raw json.RawMessage) types.Usage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}
+	}
+
+	var usage struct {
+		Tokens struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return types.Usage{}
+	}
+
+	var rawMap map[string]interface{}
+	_ = json.Unmarshal(raw, &rawMap)
+
+	inputTokens := int64(usage.Tokens.InputTokens)
+	outputTokens := int64(usage.Tokens.OutputTokens)
+	totalTokens := inputTokens + outputTokens
+	return types.Usage{
+		InputTokens:   &inputTokens,
+		OutputTokens:  &outputTokens,
+		TotalTokens:   &totalTokens,
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: &inputTokens},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: &outputTokens},
+		Raw:           rawMap,
+	}
+}
+
 func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.GenerateResult, error) {
 	result := &types.GenerateResult{
 		FinishReason: mapCohereV2FinishReason(resp.FinishReason),
 		RawResponse:  resp,
 	}
-	inputTokens := int64(resp.Usage.Tokens.InputTokens)
-	outputTokens := int64(resp.Usage.Tokens.OutputTokens)
-	totalTokens := inputTokens + outputTokens
-	result.Usage = types.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
-		TotalTokens:  &totalTokens,
-	}
-	result.Usage.InputDetails = &types.InputTokenDetails{NoCacheTokens: &inputTokens}
-	result.Usage.OutputDetails = &types.OutputTokenDetails{TextTokens: &outputTokens}
-	result.Usage.Raw = map[string]interface{}{
-		"input_tokens":  resp.Usage.Tokens.InputTokens,
-		"output_tokens": resp.Usage.Tokens.OutputTokens,
-	}
+	result.Usage = convertCohereUsage(resp.Usage)
 	for _, item := range resp.Message.Content {
 		switch item.Type {
 		case "text":
@@ -358,13 +380,8 @@ type cohereV2Response struct {
 			} `json:"function"`
 		} `json:"tool_calls"`
 	} `json:"message"`
-	FinishReason string `json:"finish_reason"`
-	Usage        struct {
-		Tokens struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"tokens"`
-	} `json:"usage"`
+	FinishReason string          `json:"finish_reason"`
+	Usage        json.RawMessage `json:"usage"`
 }
 
 type cohereV2Stream struct {
@@ -594,29 +611,15 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 
 	case "message-end":
 		var delta struct {
-			FinishReason string `json:"finish_reason"`
-			Usage        struct {
-				Tokens struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-				} `json:"tokens"`
-			} `json:"usage"`
+			FinishReason string          `json:"finish_reason"`
+			Usage        json.RawMessage `json:"usage"`
 		}
 		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-			inputTokens := int64(delta.Usage.Tokens.InputTokens)
-			outputTokens := int64(delta.Usage.Tokens.OutputTokens)
-			totalTokens := inputTokens + outputTokens
-			usage := &types.Usage{
-				InputTokens:  &inputTokens,
-				OutputTokens: &outputTokens,
-				TotalTokens:  &totalTokens,
-			}
-			usage.InputDetails = &types.InputTokenDetails{NoCacheTokens: &inputTokens}
-			usage.OutputDetails = &types.OutputTokenDetails{TextTokens: &outputTokens}
+			usage := convertCohereUsage(delta.Usage)
 			return &provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: mapCohereV2FinishReason(delta.FinishReason),
-				Usage:        usage,
+				Usage:        &usage,
 			}, nil
 		}
 		s.err = io.EOF
