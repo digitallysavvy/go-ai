@@ -90,40 +90,40 @@ func TestDetectMode(t *testing.T) {
 
 func TestGetAPIModelName(t *testing.T) {
 	tests := []struct {
-		name         string
-		modelID      string
-		mode         VideoMode
-		wantAPIName  string
+		name        string
+		modelID     string
+		mode        VideoMode
+		wantAPIName string
 	}{
 		{
-			name:         "simple t2v model",
-			modelID:      "kling-v1-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v1",
+			name:        "simple t2v model",
+			modelID:     "kling-v1-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v1",
 		},
 		{
-			name:         "versioned t2v model with dots",
-			modelID:      "kling-v2.6-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v2-6",
+			name:        "versioned t2v model with dots",
+			modelID:     "kling-v2.6-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v2-6",
 		},
 		{
-			name:         "master variant with dots",
-			modelID:      "kling-v2.1-master-t2v",
-			mode:         VideoModeT2V,
-			wantAPIName:  "kling-v2-1-master",
+			name:        "master variant with dots",
+			modelID:     "kling-v2.1-master-t2v",
+			mode:        VideoModeT2V,
+			wantAPIName: "kling-v2-1-master",
 		},
 		{
-			name:         "i2v model",
-			modelID:      "kling-v2.6-i2v",
-			mode:         VideoModeI2V,
-			wantAPIName:  "kling-v2-6",
+			name:        "i2v model",
+			modelID:     "kling-v2.6-i2v",
+			mode:        VideoModeI2V,
+			wantAPIName: "kling-v2-6",
 		},
 		{
-			name:         "motion control model",
-			modelID:      "kling-v2.6-motion-control",
-			mode:         VideoModeMotionControl,
-			wantAPIName:  "kling-v2-6",
+			name:        "motion control model",
+			modelID:     "kling-v2.6-motion-control",
+			mode:        VideoModeMotionControl,
+			wantAPIName: "kling-v2-6",
 		},
 		{
 			name:        "v3.0 t2v model strips .0 suffix",

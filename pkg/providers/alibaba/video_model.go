@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -774,16 +774,16 @@ type alibabaVideoCreateResponse struct {
 
 type alibabaVideoStatusResponse struct {
 	Output *struct {
-		TaskID         string `json:"task_id"`
-		TaskStatus     string `json:"task_status"`
-		VideoURL       string `json:"video_url"`
-		SubmitTime     string `json:"submit_time"`
-		ScheduledTime  string `json:"scheduled_time"`
-		EndTime        string `json:"end_time"`
-		OrigPrompt     string `json:"orig_prompt"`
-		ActualPrompt   string `json:"actual_prompt"`
-		Code           string `json:"code"`
-		Message        string `json:"message"`
+		TaskID        string `json:"task_id"`
+		TaskStatus    string `json:"task_status"`
+		VideoURL      string `json:"video_url"`
+		SubmitTime    string `json:"submit_time"`
+		ScheduledTime string `json:"scheduled_time"`
+		EndTime       string `json:"end_time"`
+		OrigPrompt    string `json:"orig_prompt"`
+		ActualPrompt  string `json:"actual_prompt"`
+		Code          string `json:"code"`
+		Message       string `json:"message"`
 	} `json:"output"`
 	Usage *struct {
 		Duration            *float64 `json:"duration"`

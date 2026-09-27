@@ -146,7 +146,7 @@ type CameraConfig struct {
 
 // DynamicMask represents a dynamic brush configuration
 type DynamicMask struct {
-	Mask        string       `json:"mask"`
+	Mask         string       `json:"mask"`
 	Trajectories []Trajectory `json:"trajectories"`
 }
 
@@ -164,10 +164,10 @@ type createTaskResponse struct {
 	Message   string `json:"message"`
 	RequestID string `json:"request_id,omitempty"`
 	Data      *struct {
-		TaskID    string `json:"task_id"`
+		TaskID     string `json:"task_id"`
 		TaskStatus string `json:"task_status,omitempty"`
-		CreatedAt int64  `json:"created_at,omitempty"`
-		UpdatedAt int64  `json:"updated_at,omitempty"`
+		CreatedAt  int64  `json:"created_at,omitempty"`
+		UpdatedAt  int64  `json:"updated_at,omitempty"`
 	} `json:"data,omitempty"`
 }
 
