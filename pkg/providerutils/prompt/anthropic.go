@@ -373,9 +373,21 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 				"Configure the initial tool set via the tools option instead. " +
 				"The tool changes have been ignored.")
 		}
+		// Initial instruction text goes in the top-level system field.
+		// Effort-only messages (empty content, no clearAt) stay in the
+		// messages array as inline configuration_update-style entries
+		// instead of being silently dropped.
 		for _, m := range converted {
-			if m.clearAt != nil || m.effort != nil {
-				c.warn("clearAt and effort on the initial system message are not supported by Anthropic. " +
+			if len(m.content) == 0 && m.clearAt == nil && m.effort != nil {
+				*out = append(*out, map[string]interface{}{
+					"role":          "system",
+					"content":       m.content,
+					"output_config": map[string]interface{}{"effort": m.effort},
+				})
+				c.addBeta(AnthropicBetaMidConversationOutputCfg)
+			} else if m.clearAt != nil || m.effort != nil {
+				c.warn("clearAt and effort on this initial system message are not supported by Anthropic. " +
+					"Use a separate effort-only system message with empty content to set effort. " +
 					"These options have been ignored.")
 			}
 		}

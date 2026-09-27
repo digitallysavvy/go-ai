@@ -162,6 +162,157 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			wantWarnings: []string{"tool changes on the initial system message are not supported by Anthropic. Configure the initial tool set via the tools option instead. The tool changes have been ignored."},
 		},
 
+		// ── effort-only system messages (TS 67f800090a) ───────────────────
+		// TS: 'should preserve initial effort messages alone'.
+		{
+			name: "preserve initial effort messages alone",
+			messages: []types.Message{
+				systemText("", anthropicOpt("effort", "low")),
+				userText("hi"),
+			},
+			wantSystem: `[]`,
+			wantMessages: `[
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"user","content":[{"type":"text","text":"hi"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve initial effort messages after initial instructions'.
+		{
+			name: "preserve initial effort messages after initial instructions",
+			messages: []types.Message{
+				systemText("initial", nil),
+				systemText("", anthropicOpt("effort", "low")),
+				userText("hi"),
+			},
+			wantSystem: `[{"type":"text","text":"initial"}]`,
+			wantMessages: `[
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"user","content":[{"type":"text","text":"hi"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve initial effort messages before initial instructions'.
+		{
+			name: "preserve initial effort messages before initial instructions",
+			messages: []types.Message{
+				systemText("", anthropicOpt("effort", "low")),
+				systemText("initial", nil),
+				userText("hi"),
+			},
+			wantSystem: `[{"type":"text","text":"initial"}]`,
+			wantMessages: `[
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"user","content":[{"type":"text","text":"hi"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve initial effort messages consecutively'.
+		{
+			name: "preserve initial effort messages consecutively",
+			messages: []types.Message{
+				systemText("", anthropicOpt("effort", "low")),
+				systemText("", anthropicOpt("effort", "high")),
+				userText("hi"),
+			},
+			wantSystem: `[]`,
+			wantMessages: `[
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"system","content":[],"output_config":{"effort":"high"}},
+				{"role":"user","content":[{"type":"text","text":"hi"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve initial effort messages around initial instructions'.
+		{
+			name: "preserve initial effort messages around initial instructions",
+			messages: []types.Message{
+				systemText("", anthropicOpt("effort", "low")),
+				systemText("initial", nil),
+				systemText("", anthropicOpt("effort", "high")),
+				userText("hi"),
+			},
+			wantSystem: `[{"type":"text","text":"initial"}]`,
+			wantMessages: `[
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"system","content":[],"output_config":{"effort":"high"}},
+				{"role":"user","content":[{"type":"text","text":"hi"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve later consecutive effort messages with initial
+		// instructions: false' (no leading system message).
+		{
+			name: "preserve later consecutive effort messages without initial instructions",
+			messages: []types.Message{
+				userText("hi"),
+				systemText("", anthropicOpt("effort", "low")),
+				systemText("", anthropicOpt("effort", "high")),
+				systemText("later instructions", nil),
+			},
+			wantSystem: "",
+			wantMessages: `[
+				{"role":"user","content":[{"type":"text","text":"hi"}]},
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"system","content":[],"output_config":{"effort":"high"}},
+				{"role":"system","content":[{"type":"text","text":"later instructions"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationSystem, AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should preserve later consecutive effort messages with initial
+		// instructions: true'.
+		{
+			name: "preserve later consecutive effort messages with initial instructions",
+			messages: []types.Message{
+				systemText("initial", nil),
+				userText("hi"),
+				systemText("", anthropicOpt("effort", "low")),
+				systemText("", anthropicOpt("effort", "high")),
+				systemText("later instructions", nil),
+			},
+			wantSystem: `[{"type":"text","text":"initial"}]`,
+			wantMessages: `[
+				{"role":"user","content":[{"type":"text","text":"hi"}]},
+				{"role":"system","content":[],"output_config":{"effort":"low"}},
+				{"role":"system","content":[],"output_config":{"effort":"high"}},
+				{"role":"system","content":[{"type":"text","text":"later instructions"}]}
+			]`,
+			wantBetas: []string{AnthropicBetaMidConversationSystem, AnthropicBetaMidConversationOutputCfg},
+		},
+		// TS: 'should warn and ignore unsupported initial system options' (text + effort).
+		{
+			name: "warn and ignore unsupported initial system options: text plus effort",
+			messages: []types.Message{
+				systemText("initial", anthropicOpt("effort", "low")),
+				userText("hi"),
+			},
+			wantSystem:   `[{"type":"text","text":"initial"}]`,
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]}]`,
+			wantWarnings: []string{"clearAt and effort on this initial system message are not supported by Anthropic. Use a separate effort-only system message with empty content to set effort. These options have been ignored."},
+		},
+		// TS: 'should warn and ignore unsupported initial system options' (clearAt only).
+		{
+			name: "warn and ignore unsupported initial system options: clearAt only",
+			messages: []types.Message{
+				systemText("", anthropicOpt("clearAt", "next_user_message")),
+				userText("hi"),
+			},
+			wantSystem:   `[]`,
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]}]`,
+			wantWarnings: []string{"clearAt and effort on this initial system message are not supported by Anthropic. Use a separate effort-only system message with empty content to set effort. These options have been ignored."},
+		},
+		// TS: 'should warn and ignore unsupported initial system options' (clearAt + effort).
+		{
+			name: "warn and ignore unsupported initial system options: clearAt plus effort",
+			messages: []types.Message{
+				systemText("", anthropicOpt("clearAt", "next_user_message", "effort", "low")),
+				userText("hi"),
+			},
+			wantSystem:   `[]`,
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]}]`,
+			wantWarnings: []string{"clearAt and effort on this initial system message are not supported by Anthropic. Use a separate effort-only system message with empty content to set effort. These options have been ignored."},
+		},
+
 		// ── user messages ───────────────────────────────────────────────
 		{
 			name: "image parts for byte images",
