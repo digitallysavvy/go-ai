@@ -361,9 +361,15 @@ func (t *WorkflowChatTransport) pumpChunkStream(body io.Reader, normalizer *uiSt
 		}
 		var chunk ai.UIMessageChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			// Matches TS's safeParseJSON error handling: skip an unparseable
-			// frame rather than aborting the whole stream.
-			continue
+			// TS's parseJsonEventStream runs safeParseJSON with schema
+			// validation and, on failure, `throw chunk.error` — caught by the
+			// enclosing try/catch, which logs and falls through exactly as if
+			// the stream had ended early (workflow-chat-transport.ts:340-353).
+			// A malformed frame is therefore fatal for this attempt, not
+			// silently skipped: stop the pump so the caller's reconnect path
+			// runs, matching TS instead of dropping one frame and continuing
+			// on the same (possibly desynced) connection.
+			return read, gotFinish
 		}
 		read++
 		// The orphan filter runs on the raw chunk, before framing repair —

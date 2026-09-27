@@ -107,6 +107,60 @@ func TestWorkflowChatTransportMissingRunIDHeaderErrors(t *testing.T) {
 	}
 }
 
+// TestWorkflowChatTransportMalformedChunkTriggersReconnect covers
+// workflow-chat-transport.ts:340-353: a JSON-invalid (or schema-invalid)
+// frame is fatal for the current stream attempt, not silently skipped —
+// TS's parseJsonEventStream throws, the enclosing try/catch logs and falls
+// through exactly as if the connection had dropped, and the transport
+// reconnects. A prior Go implementation `continue`d past the bad frame and
+// kept reading from the same (now desynced) connection instead.
+func TestWorkflowChatTransportMalformedChunkTriggersReconnect(t *testing.T) {
+	var postCount, getCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sse := streaming.NewSSEWriter(w)
+		switch r.Method {
+		case http.MethodPost:
+			postCount++
+			w.Header().Set("x-workflow-run-id", "run-malformed")
+			w.WriteHeader(http.StatusOK)
+			writeChunk(t, sse, map[string]interface{}{"type": "text-start", "id": "0"})
+			// A malformed frame: not valid JSON at all. The pump must stop
+			// here (not skip it and keep reading) so the transport falls
+			// through to reconnect, matching TS.
+			if err := sse.WriteData("{not valid json"); err != nil {
+				t.Fatalf("WriteData: %v", err)
+			}
+			// If the pump wrongly kept reading past the malformed frame, it
+			// would also consume this "finish" on the SAME connection and
+			// the reconnect GET below would never happen.
+			writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+		case http.MethodGet:
+			getCount++
+			if got := r.URL.Query().Get("startIndex"); got != "1" {
+				t.Fatalf("expected reconnect startIndex=1 (only the text-start counted), got %s", got)
+			}
+			writeChunk(t, sse, map[string]interface{}{"type": "text-delta", "id": "0", "delta": "hi"})
+			writeChunk(t, sse, map[string]interface{}{"type": "text-end", "id": "0"})
+			writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+		}
+	}))
+	defer srv.Close()
+
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+	out, errs := tr.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{ChatID: "chat-malformed"})
+	chunks, err := collectChunks(out, errs, 2*time.Second)
+	if err != nil {
+		t.Fatalf("SendMessages error: %v", err)
+	}
+	if postCount != 1 || getCount != 1 {
+		t.Fatalf("expected 1 POST and 1 reconnect GET (malformed frame must not be silently skipped), got post=%d get=%d", postCount, getCount)
+	}
+	if len(chunks) != 4 {
+		t.Fatalf("expected 4 chunks (text-start + reconnected delta/end/finish), got %d: %+v", len(chunks), chunks)
+	}
+}
+
 func TestWorkflowChatTransportReconnectsWhenStreamEndsWithoutFinish(t *testing.T) {
 	var postCount, getCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
