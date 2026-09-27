@@ -270,3 +270,130 @@ func TestOTelIntegrationRuntimeContextAttributesOnRootAndToolSpans(t *testing.T)
 		t.Fatalf("expected ai.settings.context.userId=u1 on the tool span, got %v ok=%v", v, ok)
 	}
 }
+
+// TestLegacyOpenTelemetryStepSpanRequestSettingsAttributes covers H4 item 3:
+// the Legacy step span (created by OnStepStart, mirroring TS's onStepStart/
+// onObjectStepStart in legacy-open-telemetry.ts) must carry gen_ai.request.*
+// attributes sourced from the root call's settings —
+// frequency_penalty/max_tokens/presence_penalty/stop_sequences/temperature/
+// top_k/top_p — matching the legacy-open-telemetry.test.ts snapshot rows
+// (e.g. line ~432-437: "gen_ai.request.frequency_penalty": 0.3,
+// "gen_ai.request.presence_penalty": 0.4, "gen_ai.request.temperature": 0.5,
+// "gen_ai.request.top_k": 0.1, "gen_ai.request.top_p": 0.2). These come from
+// state.settings (stashed once at ai.<op>Start), not from any per-step
+// override — so this test also exercises that a per-step ModelID/Provider
+// change doesn't affect which settings values land on gen_ai.request.*.
+func TestLegacyOpenTelemetryStepSpanRequestSettingsAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-step-request-settings-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	maxTokens := 100
+	temp := 0.5
+	topP := 0.2
+	topKInt := 1
+	presence := 0.4
+	frequency := 0.3
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType:    "ai.generateText",
+		ModelProvider:    "mock-provider",
+		ModelID:          "mock-model-id",
+		Settings:         settings,
+		MaxOutputTokens:  &maxTokens,
+		Temperature:      &temp,
+		TopP:             &topP,
+		TopK:             &topKInt,
+		PresencePenalty:  &presence,
+		FrequencyPenalty: &frequency,
+		StopSequences:    []string{"stop"},
+	})
+
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+		ModelProvider: "mock-provider",
+		ModelID:       "mock-model-id",
+	})
+
+	stepSpan := findSpan(rec, "ai.generateText.doGenerate")
+	if stepSpan == nil {
+		t.Fatal("expected an ai.generateText.doGenerate step span")
+	}
+
+	wantFloats := map[string]float64{
+		"gen_ai.request.frequency_penalty": 0.3,
+		"gen_ai.request.presence_penalty":  0.4,
+		"gen_ai.request.temperature":       0.5,
+		"gen_ai.request.top_p":             0.2,
+	}
+	for key, want := range wantFloats {
+		v, ok := attrValue(stepSpan, key)
+		if !ok || v.(float64) != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+	if v, ok := attrValue(stepSpan, "gen_ai.request.max_tokens"); !ok || v.(int64) != 100 {
+		t.Errorf("gen_ai.request.max_tokens = %v (ok=%v), want 100", v, ok)
+	}
+	if v, ok := attrValue(stepSpan, "gen_ai.request.top_k"); !ok || v.(int64) != 1 {
+		t.Errorf("gen_ai.request.top_k = %v (ok=%v), want 1", v, ok)
+	}
+	if v, ok := attrValue(stepSpan, "gen_ai.request.stop_sequences"); !ok {
+		t.Error("expected gen_ai.request.stop_sequences to be set")
+	} else if got, ok := v.([]string); !ok || len(got) != 1 || got[0] != "stop" {
+		t.Errorf("gen_ai.request.stop_sequences = %v, want [stop]", v)
+	}
+}
+
+// TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences covers the
+// onObjectStepStart half of H4 item 3: TS's onObjectStepStart never sets
+// gen_ai.request.stop_sequences (generateObject/streamObject settings never
+// carry StopSequences — see legacy-open-telemetry.ts onObjectOperationStart,
+// which omits it from the settings object entirely), while the other
+// gen_ai.request.* fields are still populated from state.settings.
+func TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-object-step-request-settings-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	temp := 0.5
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateObject",
+		ModelProvider: "mock-provider",
+		ModelID:       "mock-model-id",
+		Settings:      settings,
+		Temperature:   &temp,
+		// StopSequences is set on the event, but generateObject/streamObject
+		// must not surface it as gen_ai.request.stop_sequences — mirroring
+		// OnStart's own `if e.OperationType == "ai.generateText" ||
+		// "ai.streamText"` gate on legacySettings.StopSequences.
+		StopSequences: []string{"stop"},
+	})
+
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{
+		OperationType: "ai.generateObject",
+		Settings:      settings,
+		ModelProvider: "mock-provider",
+		ModelID:       "mock-model-id",
+	})
+
+	stepSpan := findSpan(rec, "ai.generateObject.doGenerate")
+	if stepSpan == nil {
+		t.Fatal("expected an ai.generateObject.doGenerate step span")
+	}
+	if v, ok := attrValue(stepSpan, "gen_ai.request.temperature"); !ok || v.(float64) != 0.5 {
+		t.Errorf("gen_ai.request.temperature = %v (ok=%v), want 0.5", v, ok)
+	}
+	if _, ok := attrValue(stepSpan, "gen_ai.request.stop_sequences"); ok {
+		t.Error("expected gen_ai.request.stop_sequences to be absent for generateObject")
+	}
+}

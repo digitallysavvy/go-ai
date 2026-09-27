@@ -920,6 +920,15 @@ func legacyPromptJSON(isObjectOp bool, system, prompt string, messages []types.M
 // `state.baseTelemetryAttributes` in onStepStart.
 type legacyBaseAttrsKey struct{}
 
+// legacyRequestSettingsKey is a private context key carrying the root
+// call's request settings (maxOutputTokens/temperature/topP/topK/
+// presencePenalty/frequencyPenalty/stopSequences) down to the nested
+// doGenerate/doStream step span, mirroring TS's reuse of `state.settings` in
+// onStepStart/onObjectStepStart to populate that span's gen_ai.request.*
+// attributes (frequency_penalty, max_tokens, presence_penalty,
+// stop_sequences, temperature, top_k, top_p).
+type legacyRequestSettingsKey struct{}
+
 // OnStart starts the root OTel span and embeds it in the returned context.
 // Returns ctx unchanged when settings explicitly disables telemetry.
 // Attribute shape mirrors TS's onGenerateStart / onObjectOperationStart /
@@ -967,6 +976,10 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	// Stashed so the nested doGenerate/doStream step span can reuse the same
 	// base attributes, matching TS's state.baseTelemetryAttributes reuse.
 	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
+	// Stashed so the nested doGenerate/doStream step span can also reuse the
+	// raw request settings, matching TS's state.settings reuse in
+	// onStepStart/onObjectStepStart for gen_ai.request.* attributes.
+	ctx = context.WithValue(ctx, legacyRequestSettingsKey{}, settings)
 
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 
@@ -1167,6 +1180,47 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		attribute.String("gen_ai.request.model", e.ModelID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 	)
+	// gen_ai.request.* settings attributes, sourced from the root call's
+	// settings (stashed via legacyRequestSettingsKey by OnStart) rather than
+	// any per-step override — mirroring TS onStepStart/onObjectStepStart,
+	// which both read from state.settings (set once at ai.<op>Start), never
+	// from per-step values. gen_ai.request.stop_sequences is only set for
+	// generateText/streamText (onObjectStepStart omits it), matching
+	// legacySettings.StopSequences only being populated for those two
+	// operation types in OnStart above.
+	if settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings); ok {
+		if settings.FrequencyPenalty != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.frequency_penalty", *settings.FrequencyPenalty); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if settings.MaxOutputTokens != nil {
+			stepSpan.SetAttributes(attribute.Int("gen_ai.request.max_tokens", *settings.MaxOutputTokens))
+		}
+		if settings.PresencePenalty != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.presence_penalty", *settings.PresencePenalty); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if opType == "ai.generateText" || opType == "ai.streamText" {
+			if settings.StopSequences != nil {
+				stepSpan.SetAttributes(attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
+			}
+		}
+		if settings.Temperature != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", *settings.Temperature); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if settings.TopK != nil {
+			stepSpan.SetAttributes(attribute.Int("gen_ai.request.top_k", *settings.TopK))
+		}
+		if settings.TopP != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.top_p", *settings.TopP); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+	}
 	functionID := ""
 	if e.Settings != nil {
 		functionID = e.Settings.FunctionID
