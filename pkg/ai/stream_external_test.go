@@ -169,6 +169,49 @@ func TestNewStreamTextResultFromParts_PropagatesSourceError(t *testing.T) {
 	}
 }
 
+// TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep verifies
+// that a ChunkTypeError arriving mid-step (with no FinishStep/Finish before
+// it) still flushes whatever the step accumulated so far onto
+// Steps()/Text()/ToolCalls() instead of silently discarding it, and stops
+// consuming src immediately rather than relying on src returning io.EOF.
+func TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "partial"},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+			ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+		}},
+		{Type: provider.ChunkTypeError, Text: "bridge crashed"},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	select {
+	case <-result.processingDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumeExternalParts did not stop after an error chunk")
+	}
+
+	if err := result.Err(); err == nil || err.Error() != "bridge crashed" {
+		t.Fatalf("Err() = %v, want %q", err, "bridge crashed")
+	}
+	if result.Text() != "partial" {
+		t.Errorf("Text() = %q, want %q", result.Text(), "partial")
+	}
+	if len(result.ToolCalls()) != 1 || result.ToolCalls()[0].ToolName != "search" {
+		t.Errorf("ToolCalls() = %+v, want one call to 'search'", result.ToolCalls())
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps() = %d, want 1 (the partial step should still be flushed)", len(steps))
+	}
+	if steps[0].FinishReason != types.FinishReasonError {
+		t.Errorf("Steps()[0].FinishReason = %q, want %q", steps[0].FinishReason, types.FinishReasonError)
+	}
+}
+
 // TestNewStreamTextResultFromParts_RespectsContextCancellation verifies that
 // an already-cancelled ctx stops consumption instead of hanging forever.
 func TestNewStreamTextResultFromParts_RespectsContextCancellation(t *testing.T) {

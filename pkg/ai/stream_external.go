@@ -175,6 +175,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		step = &externalStepAccum{}
 	}
 
+consumeLoop:
 	for {
 		if ctx.Err() != nil {
 			r.err = ctx.Err()
@@ -282,7 +283,22 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 			finishStep(chunk.Type == provider.ChunkTypeFinish)
 
 		case provider.ChunkTypeError:
+			// An error chunk ends the step (and the whole result) the same
+			// way ChunkTypeFinish does, so any text/tool calls/usage
+			// accumulated in the in-progress step before the failure are
+			// still preserved on Steps()/Text()/Usage() rather than
+			// silently dropped. Explicitly stop consuming src instead of
+			// relying on it returning io.EOF next, since a caller-supplied
+			// src is not guaranteed to end immediately after an error part.
+			if step.finishReason == "" {
+				step.finishReason = types.FinishReasonError
+			}
+			if step.rawFinishReason == "" {
+				step.rawFinishReason = "error"
+			}
 			r.err = fmt.Errorf("%s", chunk.Text)
+			finishStep(true)
+			break consumeLoop
 		}
 	}
 
