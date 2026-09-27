@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -9,21 +10,30 @@ import (
 // Listener is a function that receives an event of type E.
 type Listener[E any] func(ctx context.Context, event E)
 
-// Notify safely dispatches event to every listener in listeners.
+// Notify safely dispatches event to every listener in listeners concurrently,
+// mirroring the TypeScript SDK's `notify()` (Promise.all over the callbacks).
 //
-// Each listener is called in order. If a listener panics, the panic is
-// recovered and silently discarded so that subsequent listeners still run
-// and the caller's control flow is never interrupted.
+// Each listener runs in its own goroutine. If a listener panics, the panic is
+// recovered and silently discarded so that other listeners still run and the
+// caller's control flow is never interrupted. Notify blocks until every
+// listener has returned (or panicked).
 //
 // Passing a nil slice or an empty slice is valid and is a no-op.
 func Notify[E any](ctx context.Context, event E, listeners ...Listener[E]) {
 	publishDiagnosticForCallbackEvent(ctx, event)
+
+	var wg sync.WaitGroup
 	for _, fn := range listeners {
 		if fn == nil {
 			continue
 		}
-		safeCall(ctx, event, fn)
+		wg.Add(1)
+		go func(fn Listener[E]) {
+			defer wg.Done()
+			safeCall(ctx, event, fn)
+		}(fn)
 	}
+	wg.Wait()
 }
 
 func publishDiagnosticForCallbackEvent[E any](ctx context.Context, event E) {
