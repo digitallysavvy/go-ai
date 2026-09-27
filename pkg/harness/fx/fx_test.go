@@ -50,12 +50,170 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.ProviderAuthentication == nil || !reflect.DeepEqual(cfg.ProviderAuthentication.GatewayEnv, wantGatewayEnv) {
 		t.Errorf("providerAuthentication = %+v", cfg.ProviderAuthentication)
 	}
-	if len(cfg.BuiltinTools) != 26 {
-		t.Errorf("BuiltinTools has %d entries, want 26", len(cfg.BuiltinTools))
+	if len(cfg.BuiltinTools) != 28 {
+		t.Errorf("BuiltinTools has %d entries, want 28", len(cfg.BuiltinTools))
 	}
 	glob, ok := cfg.BuiltinTools["glob"]
 	if !ok || glob.NativeName != "glob_files" || glob.CommonName != harness.BuiltinToolGlob {
 		t.Errorf("glob = %+v", glob)
+	}
+	terminal, ok := cfg.BuiltinTools["terminal"]
+	if !ok || terminal.ToolUseKind != harness.BuiltinToolUseKindBash {
+		t.Errorf("terminal = %+v", terminal)
+	}
+	shell, ok := cfg.BuiltinTools["shell"]
+	if !ok || shell.ToolUseKind != harness.BuiltinToolUseKindBash {
+		t.Errorf("shell = %+v", shell)
+	}
+	capabilitySearch, ok := cfg.BuiltinTools["capability_search"]
+	if !ok || capabilitySearch.ToolUseKind != harness.BuiltinToolUseKindReadonly {
+		t.Errorf("capability_search = %+v", capabilitySearch)
+	}
+}
+
+// schemaAccepts is a minimal, self-contained JSON Schema subset evaluator
+// (object/string/number/boolean/array, properties, required, const, enum,
+// anyOf) -- just enough to port TS's zod `.safeParse` assertions below
+// without adding a JSON Schema dependency. A present-but-nil field is always
+// accepted, mirroring zod's `.nullish()`; an object schema with no
+// `additionalProperties: false` (this codebase's convention, matching TS
+// `z.looseObject`) ignores properties it doesn't declare.
+func schemaAccepts(schema map[string]any, value any) bool {
+	if anyOf, ok := schema["anyOf"].([]any); ok {
+		for _, sub := range anyOf {
+			if schemaAccepts(sub.(map[string]any), value) {
+				return true
+			}
+		}
+		return false
+	}
+	typ, _ := schema["type"].(string)
+	switch typ {
+	case "object":
+		obj, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		var required []string
+		switch r := schema["required"].(type) {
+		case []string:
+			required = r
+		case []any:
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					required = append(required, s)
+				}
+			}
+		}
+		for _, name := range required {
+			if _, present := obj[name]; !present {
+				return false
+			}
+		}
+		props, _ := schema["properties"].(map[string]any)
+		for k, v := range obj {
+			if v == nil {
+				continue
+			}
+			sub, ok := props[k].(map[string]any)
+			if !ok {
+				continue
+			}
+			if !schemaAccepts(sub, v) {
+				return false
+			}
+		}
+		return true
+	case "string":
+		s, ok := value.(string)
+		if !ok {
+			return false
+		}
+		if c, ok := schema["const"]; ok && c != s {
+			return false
+		}
+		if enum, ok := schema["enum"].([]any); ok {
+			found := false
+			for _, e := range enum {
+				if e == s {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "number":
+		switch value.(type) {
+		case int, int64, float64:
+			return true
+		default:
+			return false
+		}
+	default:
+		return true
+	}
+}
+
+// TestFxShellAndCapabilitySearchInputSchemas ports TS "accepts fx v0.0.10
+// ACP shell and capability search inputs" (fx-harness.test.ts).
+func TestFxShellAndCapabilitySearchInputSchemas(t *testing.T) {
+	cfg := BuildConfig(Settings{})
+	shellSchema, ok := cfg.BuiltinTools["shell"].Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("shell Parameters is %T, want map[string]any", cfg.BuiltinTools["shell"].Parameters)
+	}
+	capabilitySearchSchema, ok := cfg.BuiltinTools["capability_search"].Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("capability_search Parameters is %T, want map[string]any", cfg.BuiltinTools["capability_search"].Parameters)
+	}
+
+	shellCases := []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{"run with cwd", map[string]any{"action": "run", "command": `printf "hello"`, "cwd": "."}, true},
+		{"run with tty", map[string]any{"action": "run", "command": `printf "hello"`, "tty": false}, true},
+		{"run with nulls and unknown option", map[string]any{
+			"action": "run", "command": `printf "hello"`,
+			"cwd": nil, "profile": nil, "tty": false, "yield_time_ms": nil, "timeout_ms": nil,
+			"future_shell_option": true,
+		}, true},
+		{"run with profile", map[string]any{"action": "run", "command": `printf "hello"`, "profile": "clean", "tty": true}, true},
+		{"run with explicit executable", map[string]any{
+			"action": "run", "command": `printf "hello"`,
+			"shell": map[string]any{"kind": "executable", "path": "/bin/bash"}, "tty": true,
+		}, true},
+		{"interact", map[string]any{"action": "interact", "session_id": "session-1", "chars": nil, "yield_time_ms": nil}, true},
+		{"stop", map[string]any{"action": "stop", "session_id": "session-1", "force": nil}, true},
+		{"unknown action", map[string]any{"action": "exec"}, false},
+		{"wrong shape", map[string]any{"request": map[string]any{"action": "run", "command": `printf "hello"`}}, false},
+	}
+	for _, tc := range shellCases {
+		if got := schemaAccepts(shellSchema, tc.input); got != tc.want {
+			t.Errorf("shell %s: schemaAccepts = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	capabilitySearchCases := []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{"query only", map[string]any{"query": "Find a file tool"}, true},
+		{"query and server", map[string]any{"query": "Find a file tool", "server": "filesystem"}, true},
+		{"missing query", map[string]any{}, false},
+	}
+	for _, tc := range capabilitySearchCases {
+		if got := schemaAccepts(capabilitySearchSchema, tc.input); got != tc.want {
+			t.Errorf("capability_search %s: schemaAccepts = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

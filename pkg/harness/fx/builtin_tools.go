@@ -45,9 +45,59 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		obj([]string{"query"}, props("query", str(), "path", str()))),
 	"open_file": tool("open_file", "", obj([]string{"path"}, props("path", str()))),
 	"web_fetch": tool("web_fetch", harness.BuiltinToolUseKindReadonly, obj([]string{"url"}, props("url", str()))),
+	// terminal is fx's original terminal tool, kept unchanged for
+	// back-compat even though fx now also exposes "shell" (TS keeps both in
+	// FX_BUILTIN_TOOLS too).
 	"terminal": tool("terminal", harness.BuiltinToolUseKindBash, obj([]string{"action"}, props(
 		"action", str(), "session_id", str(), "cwd", str(), "command", str(),
 	))),
+	// shell is fx's flat run/interact/stop tool (TS `shellInputSchema`, a
+	// union of 4 variants: run-with-profile, run-with-explicit-executable,
+	// interact, stop). JSON Schema `anyOf` mirrors TS `z.union([...])`, which
+	// accepts a value matched by *any* member schema, not exclusively one
+	// (unlike `oneOf` -- a run call with an explicit `shell` executable also
+	// satisfies the profile variant's laxer requirements, and TS accepts
+	// that); obj()/props() have no native union support, so this is
+	// assembled directly instead of going through them for the outer shape.
+	"shell": tool("shell", harness.BuiltinToolUseKindBash, map[string]any{
+		"anyOf": []any{
+			// run, using a named shell profile.
+			obj([]string{"action", "command"}, props(
+				"action", constStr("run"),
+				"command", str(),
+				"cwd", str(),
+				"profile", enumStr("clean", "user"),
+				"tty", boolean(),
+				"yield_time_ms", number(),
+				"timeout_ms", number(),
+			)),
+			// run, using an explicit executable.
+			obj([]string{"action", "command", "shell", "tty"}, props(
+				"action", constStr("run"),
+				"command", str(),
+				"cwd", str(),
+				"shell", obj([]string{"kind", "path"}, props(
+					"kind", constStr("executable"),
+					"path", str(),
+					"clean_start", boolean(),
+				)),
+				"tty", boolean(),
+				"yield_time_ms", number(),
+				"timeout_ms", number(),
+			)),
+			obj([]string{"action", "session_id"}, props(
+				"action", constStr("interact"),
+				"session_id", str(),
+				"chars", str(),
+				"yield_time_ms", number(),
+			)),
+			obj([]string{"action", "session_id"}, props(
+				"action", constStr("stop"),
+				"session_id", str(),
+				"force", boolean(),
+			)),
+		},
+	}),
 	"skill": tool("skill", harness.BuiltinToolUseKindReadonly,
 		obj([]string{"name"}, props("name", str(), "location", str(), "resource", str(), "offset", number()))),
 	"install_skill": tool("install_skill", harness.BuiltinToolUseKindEdit,
@@ -55,6 +105,8 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 	"subagent": tool("subagent", "", obj([]string{"command"}, props("command", map[string]any{"type": "object"}))),
 	"mcp_search_tools": tool("mcp_search_tools", harness.BuiltinToolUseKindReadonly,
 		obj([]string{"query"}, props("query", str(), "limit", number()))),
+	"capability_search": tool("capability_search", harness.BuiltinToolUseKindReadonly,
+		obj([]string{"query"}, props("query", str(), "server", str()))),
 	"mcp_select_tool": tool("mcp_select_tool", harness.BuiltinToolUseKindReadonly, obj([]string{"name"}, props("name", str()))),
 	"mcp_features": tool("mcp_features", harness.BuiltinToolUseKindReadonly, obj([]string{"action", "server"}, props(
 		"action", str(), "server", str(), "uri", str(), "uri_template", str(),
@@ -101,4 +153,18 @@ func boolean() map[string]any { return map[string]any{"type": "boolean"} }
 
 func arr(items map[string]any) map[string]any {
 	return map[string]any{"type": "array", "items": items}
+}
+
+// constStr mirrors TS `z.literal(value)` on a string field.
+func constStr(value string) map[string]any {
+	return map[string]any{"type": "string", "const": value}
+}
+
+// enumStr mirrors TS `z.enum([...])`.
+func enumStr(values ...string) map[string]any {
+	anyValues := make([]any, len(values))
+	for i, v := range values {
+		anyValues[i] = v
+	}
+	return map[string]any{"type": "string", "enum": anyValues}
 }
