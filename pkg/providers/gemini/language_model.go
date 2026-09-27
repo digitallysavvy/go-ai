@@ -106,6 +106,30 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
+// PrepareBatchRequestBody builds the GenerateContent request body and
+// warnings for opts, without performing the request. Exposes the otherwise
+// unexported buildRequest to batch-processing callers in other packages
+// (google.Batch / googlevertex.Batch), mirroring TS's static
+// GoogleLanguageModel.prepareRequest used by GoogleBatch.
+func (m *LanguageModel) PrepareBatchRequestBody(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	body, _, warnings, err := m.buildRequest(context.Background(), opts, false)
+	return body, warnings, err
+}
+
+// ConvertBatchResponse converts a raw GenerateContent response into a
+// GenerateResult for batch-processing callers in other packages. Batch
+// results are retrieved independently of the original request, so there is
+// no original tool list to map provider tool names against.
+func (m *LanguageModel) ConvertBatchResponse(response Response) *types.GenerateResult {
+	return m.convertResponse(response, newToolNameMapping(nil))
+}
+
+// HandleError exposes the otherwise unexported handleError to callers in
+// other packages (google.Batch / googlevertex.Batch).
+func (m *LanguageModel) HandleError(err error) error {
+	return m.handleError(err)
+}
+
 // googleErrorData mirrors TS googleErrorDataSchema (google-error.ts):
 // {"error":{"code","message","status","details"}}.
 type googleErrorData struct {
