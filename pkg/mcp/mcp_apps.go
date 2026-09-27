@@ -162,11 +162,15 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 		if html == "" {
 			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
 		}
+		var meta map[string]interface{}
+		if uiMeta := mapFromInterface(content.Meta["ui"]); uiMeta != nil {
+			meta = validateMCPAppResourceMeta(uiMeta)
+		}
 		return MCPAppResource{
 			URI:      uri,
 			MimeType: MCPAppMimeType,
 			HTML:     html,
-			Meta:     mapFromInterface(content.Meta["ui"]),
+			Meta:     meta,
 		}, nil
 	}
 	return MCPAppResource{}, fmt.Errorf("MCP App resource not found in read result: %s", uri)
@@ -182,6 +186,62 @@ func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCP
 		return MCPAppResource{}, err
 	}
 	return GetMCPAppResourceFromReadResult(uri, *result)
+}
+
+// validateMCPAppResourceCSP mirrors TS MCPAppResourceCSPSchema (a loose
+// zod object, mcp-apps.ts, hash 48e7e78): connectDomains/resourceDomains/
+// frameDomains are each filtered to their string elements when present as an
+// array, and dropped entirely when the field is present but not an array.
+// Unknown keys pass through unchanged (forward-compat).
+func validateMCPAppResourceCSP(raw map[string]interface{}) map[string]interface{} {
+	out := copyMap(raw)
+	for _, key := range []string{"connectDomains", "resourceDomains", "frameDomains"} {
+		value, ok := out[key]
+		if !ok {
+			continue
+		}
+		values, ok := value.([]interface{})
+		if !ok {
+			delete(out, key)
+			continue
+		}
+		strs := make([]string, 0, len(values))
+		for _, v := range values {
+			if s, ok := v.(string); ok {
+				strs = append(strs, s)
+			}
+		}
+		out[key] = strs
+	}
+	return out
+}
+
+// validateMCPAppResourceMeta mirrors TS MCPAppResourceMetaSchema (a loose
+// zod object with `.catch(undefined)` per field, mcp-apps.ts, hash 48e7e78):
+// prefersBorder must be a bool, csp must be an object (validated
+// recursively), and permissions must be an object; a malformed field is
+// dropped rather than failing the whole parse. Unknown keys pass through
+// unchanged for forward-compat.
+func validateMCPAppResourceMeta(raw map[string]interface{}) map[string]interface{} {
+	out := copyMap(raw)
+	if value, ok := out["prefersBorder"]; ok {
+		if _, isBool := value.(bool); !isBool {
+			delete(out, "prefersBorder")
+		}
+	}
+	if value, ok := out["csp"]; ok {
+		if cspMap, isMap := value.(map[string]interface{}); isMap {
+			out["csp"] = validateMCPAppResourceCSP(cspMap)
+		} else {
+			delete(out, "csp")
+		}
+	}
+	if value, ok := out["permissions"]; ok {
+		if _, isMap := value.(map[string]interface{}); !isMap {
+			delete(out, "permissions")
+		}
+	}
+	return out
 }
 
 func parseMCPAppVisibility(value interface{}) []string {

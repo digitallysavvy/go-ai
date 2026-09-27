@@ -127,3 +127,122 @@ func TestGetMCPAppResourceFromReadResult(t *testing.T) {
 		t.Fatalf("resource = %#v", resource)
 	}
 }
+
+// TestGetMCPAppResourceFromReadResultDropsMalformedMetaFields mirrors TS
+// mcp-apps.test.ts "drops malformed and non-string _meta.ui fields"
+// (hash 48e7e78).
+func TestGetMCPAppResourceFromReadResultDropsMalformedMetaFields(t *testing.T) {
+	resource, err := GetMCPAppResourceFromReadResult("ui://ai-sdk-e2e/dashboard", ReadResourceResult{
+		Contents: []ResourceContent{{
+			URI:      "ui://ai-sdk-e2e/dashboard",
+			MimeType: MCPAppMimeType,
+			Text:     "<!doctype html>",
+			Meta: map[string]interface{}{
+				"ui": map[string]interface{}{
+					"prefersBorder": "yes", // wrong type -> dropped
+					"csp": map[string]interface{}{
+						"connectDomains":  []interface{}{"https://ok.example", float64(42), nil}, // non-strings dropped
+						"resourceDomains": "not-an-array",                                        // wrong type -> dropped
+					},
+					"permissions": "nope", // wrong type -> dropped
+					"extra":       "kept", // unknown key passes through
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GetMCPAppResourceFromReadResult error: %v", err)
+	}
+	if _, ok := resource.Meta["prefersBorder"]; ok {
+		t.Fatalf("prefersBorder should be dropped: %#v", resource.Meta)
+	}
+	if _, ok := resource.Meta["permissions"]; ok {
+		t.Fatalf("permissions should be dropped: %#v", resource.Meta)
+	}
+	if resource.Meta["extra"] != "kept" {
+		t.Fatalf("unknown key should pass through: %#v", resource.Meta)
+	}
+	csp, ok := resource.Meta["csp"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("csp should remain an object: %#v", resource.Meta)
+	}
+	connectDomains, ok := csp["connectDomains"].([]string)
+	if !ok || len(connectDomains) != 1 || connectDomains[0] != "https://ok.example" {
+		t.Fatalf("connectDomains = %#v, want [\"https://ok.example\"]", csp["connectDomains"])
+	}
+	if _, ok := csp["resourceDomains"]; ok {
+		t.Fatalf("resourceDomains should be dropped: %#v", csp)
+	}
+}
+
+// TestFingerprintMCPAppResource mirrors TS mcp-app-fingerprint.test.ts.
+func TestFingerprintMCPAppResource(t *testing.T) {
+	base := func(overrideMeta map[string]interface{}) MCPAppResource {
+		meta := map[string]interface{}{
+			"csp":         map[string]interface{}{"connectDomains": []string{"https://api.example"}},
+			"permissions": map[string]interface{}{"microphone": map[string]interface{}{}},
+		}
+		if overrideMeta != nil {
+			meta = overrideMeta
+		}
+		return MCPAppResource{
+			URI:      "ui://app/dashboard",
+			MimeType: MCPAppMimeType,
+			HTML:     "<!doctype html><html></html>",
+			Meta:     meta,
+		}
+	}
+
+	t.Run("stable digest for equal resources", func(t *testing.T) {
+		if FingerprintMCPAppResource(base(nil)) != FingerprintMCPAppResource(base(nil)) {
+			t.Fatal("expected identical fingerprints for structurally equal resources")
+		}
+	})
+
+	t.Run("ignores key ordering in csp / permissions", func(t *testing.T) {
+		a := FingerprintMCPAppResource(base(map[string]interface{}{
+			"csp":         map[string]interface{}{"connectDomains": []string{"https://api.example"}, "frameDomains": []string{}},
+			"permissions": map[string]interface{}{"microphone": map[string]interface{}{}, "camera": map[string]interface{}{}},
+		}))
+		b := FingerprintMCPAppResource(base(map[string]interface{}{
+			"permissions": map[string]interface{}{"camera": map[string]interface{}{}, "microphone": map[string]interface{}{}},
+			"csp":         map[string]interface{}{"frameDomains": []string{}, "connectDomains": []string{"https://api.example"}},
+		}))
+		if a != b {
+			t.Fatalf("fingerprints differ despite only key ordering differing: %s vs %s", a, b)
+		}
+	})
+
+	t.Run("changes when html, csp, or permissions mutate", func(t *testing.T) {
+		baseline := FingerprintMCPAppResource(base(nil))
+
+		withDifferentHTML := base(nil)
+		withDifferentHTML.HTML = "<html>evil</html>"
+		if FingerprintMCPAppResource(withDifferentHTML) == baseline {
+			t.Fatal("expected fingerprint to change when html mutates")
+		}
+
+		withDifferentCSP := base(map[string]interface{}{
+			"csp": map[string]interface{}{"connectDomains": []string{"https://evil.example"}},
+		})
+		if FingerprintMCPAppResource(withDifferentCSP) == baseline {
+			t.Fatal("expected fingerprint to change when csp mutates")
+		}
+
+		withDifferentPermissions := base(map[string]interface{}{
+			"permissions": map[string]interface{}{"camera": map[string]interface{}{}},
+		})
+		if FingerprintMCPAppResource(withDifferentPermissions) == baseline {
+			t.Fatal("expected fingerprint to change when permissions mutate")
+		}
+	})
+}
+
+func TestDetectMCPAppResourceDrift(t *testing.T) {
+	if !DetectMCPAppResourceDrift("a", "b") {
+		t.Fatal("expected drift between different fingerprints")
+	}
+	if DetectMCPAppResourceDrift("a", "a") {
+		t.Fatal("expected no drift between identical fingerprints")
+	}
+}

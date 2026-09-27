@@ -76,6 +76,31 @@ func TestExtractResourceMetadataURLMatchesTypeScript(t *testing.T) {
 	}
 }
 
+// TestExtractWWWAuthenticateParamsScope mirrors TS oauth.test.ts
+// extractWWWAuthenticateParams scope extraction (hash 1011e33).
+func TestExtractWWWAuthenticateParamsScope(t *testing.T) {
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("WWW-Authenticate", `Bearer realm="mcp", scope="mcp:read mcp:write", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource"`)
+
+	params := ExtractWWWAuthenticateParams(resp)
+	if params.Scope != "mcp:read mcp:write" {
+		t.Fatalf("scope = %q, want %q", params.Scope, "mcp:read mcp:write")
+	}
+	if params.ResourceMetadataURL == nil || params.ResourceMetadataURL.String() != "https://resource.example.com/.well-known/oauth-protected-resource" {
+		t.Fatalf("resourceMetadataURL = %v", params.ResourceMetadataURL)
+	}
+
+	resp.Header.Set("WWW-Authenticate", `Bearer realm="mcp"`)
+	if params := ExtractWWWAuthenticateParams(resp); params.Scope != "" || params.ResourceMetadataURL != nil {
+		t.Fatalf("expected no params, got %#v", params)
+	}
+
+	resp.Header.Set("WWW-Authenticate", `Basic realm="mcp", scope="ignored"`)
+	if params := ExtractWWWAuthenticateParams(resp); params.Scope != "" {
+		t.Fatalf("expected non-Bearer scheme to be ignored, got %#v", params)
+	}
+}
+
 func TestOAuthProtectedResourceMetadataDiscoveryPathFallbackAndHeader(t *testing.T) {
 	var calls []string
 	var protocolHeaders []string

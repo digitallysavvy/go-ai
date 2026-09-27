@@ -11,12 +11,22 @@ import (
 	"syscall"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/google/uuid"
 )
 
 // AgentTUIRunnerOptions configures AgentTUIRunner.
+//
+// Exactly one of Agent or Transport must be set (TS run-agent-tui.ts's
+// `agent`/`transport` mutually-exclusive union). When Transport is set, ChatID
+// identifies the conversation sent on every SendMessages call; if empty, a
+// random per-runner id is generated (mirrors TS AgentTUIRunner's
+// `chatId = generateId()`).
 type AgentTUIRunnerOptions struct {
 	Agent              agent.Agent
+	Transport          ai.ChatTransport
+	ChatID             string
 	Renderer           AgentTUIRenderer
 	Input              io.Reader
 	Title              string
@@ -65,6 +75,8 @@ type AgentTUIStreamResult struct {
 // AgentTUIRunner mirrors the TypeScript AgentTUIRunner loop using Go message types.
 type AgentTUIRunner struct {
 	agent              agent.Agent
+	transport          ai.ChatTransport
+	chatID             string
 	renderer           AgentTUIRenderer
 	input              io.Reader
 	title              string
@@ -99,8 +111,14 @@ func NewAgentTUIRunner(options AgentTUIRunnerOptions) *AgentTUIRunner {
 			ContextSize:        options.ContextSize,
 		})
 	}
+	chatID := options.ChatID
+	if chatID == "" && options.Transport != nil {
+		chatID = uuid.NewString()
+	}
 	return &AgentTUIRunner{
 		agent:              options.Agent,
+		transport:          options.Transport,
+		chatID:             chatID,
 		renderer:           options.Renderer,
 		input:              options.Input,
 		title:              options.Title,
@@ -113,8 +131,11 @@ func NewAgentTUIRunner(options AgentTUIRunnerOptions) *AgentTUIRunner {
 }
 
 func (r *AgentTUIRunner) Run(ctx context.Context) error {
-	if r.agent == nil {
-		return fmt.Errorf("agent is required")
+	if r.agent == nil && r.transport == nil {
+		return fmt.Errorf("agent or transport is required")
+	}
+	if r.agent != nil && r.transport != nil {
+		return fmt.Errorf("agent and transport are mutually exclusive")
 	}
 	if r.renderer == nil {
 		return fmt.Errorf("renderer is required")
@@ -159,12 +180,22 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 		}
 
 		streamCtx, cancel := context.WithCancel(ctx)
-		result, err := r.agent.Stream(streamCtx, agent.AgentStreamOptions{
-			AgentGenerateOptions: agent.AgentGenerateOptions{
-				Messages:            append([]types.Message(nil), messages...),
-				ExperimentalSandbox: r.sandbox,
-			},
-		})
+		var streamResult AgentTUIStreamResult
+		var err error
+		if r.transport != nil {
+			streamResult, err = r.streamViaTransport(streamCtx, messages)
+		} else {
+			var result *ai.StreamTextResult
+			result, err = r.agent.Stream(streamCtx, agent.AgentStreamOptions{
+				AgentGenerateOptions: agent.AgentGenerateOptions{
+					Messages:            append([]types.Message(nil), messages...),
+					ExperimentalSandbox: r.sandbox,
+				},
+			})
+			if err == nil {
+				streamResult = AgentTUIStreamResult{Stream: NewStreamRenderSource(result)}
+			}
+		}
 		if err != nil {
 			cancel()
 			if errors.Is(err, context.Canceled) {
@@ -172,11 +203,9 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 			}
 			return err
 		}
+		streamResult.Abort = cancel
 
-		responseMessages, err := r.renderer.RenderStream(ctx, AgentTUIStreamResult{
-			Stream: NewStreamRenderSource(result),
-			Abort:  cancel,
-		}, TerminalSessionOptions{
+		responseMessages, err := r.renderer.RenderStream(ctx, streamResult, TerminalSessionOptions{
 			Title:              r.title,
 			TitleSet:           r.title != "",
 			SubmittedPrompt:    prompt,

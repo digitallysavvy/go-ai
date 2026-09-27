@@ -28,6 +28,22 @@ type runState struct {
 }
 
 // WorkflowChatTransport serves run-scoped SSE and resume handlers.
+//
+// Parity note (WORKFLOW-TRANSPORT, tracked separately from this file's
+// current scope): in TS, `packages/workflow/src/workflow-chat-transport.ts`
+// exports a client-side WorkflowChatTransport that `implements
+// ChatTransport<UIMessage>` (packages/ai/src/ui/chat-transport.ts) — it
+// parses the server's response into a UIMessageChunk stream, drops orphan
+// chunks on a mid-part resume, and is handed directly to `useChat`/
+// `runAgentTUI` as a `transport`. This Go type is a different, earlier-stage
+// design: a server-side SSE run multiplexer (ServeHTTP/Resume) with its own
+// SendMessages/ReconnectToStream methods that return raw
+// []*streaming.SSEEvent rather than a <-chan pkg/ai.UIMessageChunk, so it
+// does not (and currently cannot) satisfy pkg/ai.ChatTransport. Closing that
+// gap — porting the TS client transport's UIMessageChunk parsing and orphan
+// filter — is WORKFLOW-TRANSPORT's job; until then, do not add a second,
+// competing ChatTransport-shaped interface here. See pkg/ai/chat_transport.go
+// for the one canonical interface.
 type WorkflowChatTransport struct {
 	Runs sync.Map // map[string]*runState
 

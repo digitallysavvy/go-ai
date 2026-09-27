@@ -2,9 +2,17 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // MCPClient represents an MCP client that can communicate with MCP servers
@@ -21,6 +29,28 @@ type MCPClient struct {
 	serverInfo         ServerInfo
 	serverCapability   ServerCapabilities
 	serverInstructions string
+
+	// initializeResultMu guards initializeResult, which is written once by
+	// Connect (from either the modern server/discover or legacy initialize
+	// handshake) and read by InitializeResult, matching TS's cached
+	// `get initializeResult()` (mcp-client.ts: `_initializeResult`).
+	initializeResultMu sync.RWMutex
+	initializeResult   InitializeResult
+
+	// protocolEra is "legacy" (classic `initialize` handshake) or "modern"
+	// (negotiated via `server/discover`, hash e6a9927). The zero value
+	// ("") behaves as "legacy".
+	protocolEra string
+	// protocolVersion is the negotiated MCP protocol version, injected into
+	// modern-era request `_meta` (hash e6a9927).
+	protocolVersion string
+
+	// toolHeaderBindings caches, per tool name, the x-mcp-header bindings
+	// computed the last time tools were listed (hash 0c60a40). Only
+	// populated in the modern protocol era on a transport that supports
+	// per-tool parameter headers.
+	toolHeaderBindingsMu sync.Mutex
+	toolHeaderBindings   map[string][]MCPToolHeaderBinding
 
 	// Client info
 	clientInfo ClientInfo
@@ -55,6 +85,36 @@ type MCPClientConfig struct {
 
 	// EnableLogging enables client-level logging
 	EnableLogging bool
+
+	// MaxRetries is the maximum number of times a failed "tools/call" request
+	// is retried with exponential backoff, matching TypeScript's
+	// MCPClient maxRetries option. Default: 0 (no retries). Negative values
+	// are clamped to 0.
+	//
+	// Only transient failures are retried: HTTP status 408/409/429/>=500 and
+	// transport-level connection errors (refused/reset/timeout/broken pipe/
+	// closed). JSON-RPC application errors (a non-zero MCPClientError.Code)
+	// and successful results with IsError=true are never retried.
+	MaxRetries int
+
+	// ProtocolVersionDiscovery controls whether the client probes the
+	// 2026-07-28 `server/discover` method before falling back to the legacy
+	// `initialize` handshake (hash e6a9927). Default true. Only takes effect
+	// when the transport implements ProtocolVersionDiscoveryTransport and
+	// reports support (only HTTPTransport does today).
+	ProtocolVersionDiscovery *bool
+
+	// OnError, when set, receives non-fatal diagnostics the client would
+	// otherwise drop silently: a tool skipped because its x-mcp-header
+	// annotation is invalid, or a tool call whose header binding failed
+	// (hash 0c60a40).
+	OnError func(error) `json:"-"`
+}
+
+// protocolVersionDiscoveryEnabled reports the effective value of
+// ProtocolVersionDiscovery, defaulting to true when unset.
+func (c MCPClientConfig) protocolVersionDiscoveryEnabled() bool {
+	return c.ProtocolVersionDiscovery == nil || *c.ProtocolVersionDiscovery
 }
 
 // NewMCPClient creates a new MCP client with the given transport
@@ -72,6 +132,9 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	if config.RequestTimeoutMS == 0 {
 		config.RequestTimeoutMS = 30000 // 30 seconds
 	}
+	if config.MaxRetries < 0 {
+		config.MaxRetries = 0
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -83,13 +146,23 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 			Name:    config.ClientName,
 			Version: config.ClientVersion,
 		},
+		// Matches TS's pre-connect default (`_initializeResult` field
+		// initializer, mcp-client.ts): legacy protocol version, empty
+		// capabilities, empty server info.
+		initializeResult: InitializeResult{
+			ProtocolVersion: LatestLegacyProtocolVersion,
+		},
 		ctx:    ctx,
 		cancel: cancel,
 		config: config,
 	}
 }
 
-// Connect connects to the MCP server and initializes the connection
+// Connect connects to the MCP server and initializes the connection. When
+// the transport supports it (hash e6a9927), it first probes the 2026-07-28
+// `server/discover` method with a short timeout; on any failure other than a
+// hard modern-protocol error it falls back to the legacy `initialize`
+// handshake.
 func (c *MCPClient) Connect(ctx context.Context) error {
 	// Connect transport
 	if err := c.transport.Connect(ctx); err != nil {
@@ -99,6 +172,20 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	// Start message receiver
 	go c.receiveLoop()
 
+	if c.supportsProtocolVersionDiscovery() {
+		discovered, err := c.tryProtocolDiscovery(ctx)
+		if err != nil {
+			return fmt.Errorf("protocol discovery failed: %w", err)
+		}
+		if discovered {
+			c.initialized = true
+			return nil
+		}
+	}
+
+	c.protocolEra = "legacy"
+	c.protocolVersion = LatestLegacyProtocolVersion
+
 	// Send initialize request
 	if err := c.initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
@@ -106,6 +193,92 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 
 	c.initialized = true
 	return nil
+}
+
+// supportsProtocolVersionDiscovery reports whether protocol-version
+// discovery should be attempted: the config option is enabled (default
+// true) and the transport implements ProtocolVersionDiscoveryTransport and
+// reports support.
+func (c *MCPClient) supportsProtocolVersionDiscovery() bool {
+	if !c.config.protocolVersionDiscoveryEnabled() {
+		return false
+	}
+	transport, ok := c.transport.(ProtocolVersionDiscoveryTransport)
+	return ok && transport.SupportsProtocolVersionDiscovery()
+}
+
+// tryProtocolDiscovery probes `server/discover`, matching TS
+// MCPClient.tryProtocolDiscovery (mcp-client.ts, hash e6a9927). It returns
+// (true, nil) when modern-era negotiation succeeded; (false, nil) when the
+// server does not support server/discover (or its result doesn't match, in
+// which case the caller should fall back to the legacy initialize
+// handshake); and (false, err) when the server reported a hard
+// modern-protocol error (a JSON-RPC error whose code is in
+// ModernProtocolErrorCodes).
+func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
+	c.protocolEra = "modern"
+	c.protocolVersion = LatestProtocolVersion
+	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
+		versionTransport.SetProtocolVersion(c.protocolVersion)
+	}
+
+	discoverCtx, cancel := context.WithTimeout(ctx, time.Duration(DefaultProtocolDiscoveryTimeoutMS)*time.Millisecond)
+	defer cancel()
+
+	var result DiscoverResult
+	if err := c.call(discoverCtx, "server/discover", map[string]interface{}{}, &result); err != nil {
+		var mcpErr *MCPClientError
+		if errors.As(err, &mcpErr) && intSliceContains(ModernProtocolErrorCodes, mcpErr.Code) {
+			return false, err
+		}
+		return false, nil
+	}
+
+	if err := c.applyDiscoverResult(result); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// applyDiscoverResult validates and applies a `server/discover` result,
+// matching TS applyDiscoverResult (mcp-client.ts).
+func (c *MCPClient) applyDiscoverResult(result DiscoverResult) error {
+	if !containsOAuthString(result.SupportedVersions, c.protocolVersion) {
+		return fmt.Errorf("server does not support the requested protocol version: %s", c.protocolVersion)
+	}
+	if info, ok := DiscoverResultServerInfo(result); ok {
+		c.serverInfo = info
+	}
+	c.serverCapability = result.Capabilities
+	c.serverInstructions = result.Instructions
+	c.setInitializeResult(InitializeResult{
+		ProtocolVersion: c.protocolVersion,
+		Capabilities:    result.Capabilities,
+		ServerInfo:      c.serverInfo,
+		Instructions:    result.Instructions,
+	})
+	return nil
+}
+
+// setInitializeResult caches result for InitializeResult, matching TS's
+// `this._initializeResult = ...` assignments in applyDiscoverResult and
+// applyInitializeResult (mcp-client.ts).
+func (c *MCPClient) setInitializeResult(result InitializeResult) {
+	c.initializeResultMu.Lock()
+	c.initializeResult = result
+	c.initializeResultMu.Unlock()
+}
+
+// InitializeResult returns the cached result of the handshake that
+// established the connection — either the legacy `initialize` response or
+// the fields synthesized from a modern `server/discover` response — matching
+// TS's `get initializeResult()` (mcp-client.ts). Before Connect succeeds, it
+// returns the same pre-connect default TS does: legacy protocol version,
+// empty capabilities, and empty server info.
+func (c *MCPClient) InitializeResult() InitializeResult {
+	c.initializeResultMu.RLock()
+	defer c.initializeResultMu.RUnlock()
+	return c.initializeResult
 }
 
 // Close closes the connection to the MCP server
@@ -126,7 +299,7 @@ func (c *MCPClient) Close() error {
 // initialize sends the initialize request to the server
 func (c *MCPClient) initialize(ctx context.Context) error {
 	params := InitializeParams{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: c.protocolVersion,
 		Capabilities:    c.config.Capabilities,
 		ClientInfo:      c.clientInfo,
 	}
@@ -142,6 +315,9 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 	c.serverInfo = result.ServerInfo
 	c.serverCapability = result.Capabilities
 	c.serverInstructions = result.Instructions
+	c.protocolEra = "legacy"
+	c.protocolVersion = result.ProtocolVersion
+	c.setInitializeResult(result)
 	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
 		versionTransport.SetProtocolVersion(result.ProtocolVersion)
 	}
@@ -156,14 +332,8 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 
 // ListTools lists all available tools from the MCP server
 func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
-	if !c.initialized {
-		return nil, fmt.Errorf("client not initialized")
-	}
-
-	params := ListToolsParams{}
-	var result ListToolsResult
-
-	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+	result, err := c.ListToolsWithCursor(ctx, "")
+	if err != nil {
 		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
 
@@ -171,6 +341,114 @@ func (c *MCPClient) ListTools(ctx context.Context) ([]MCPTool, error) {
 	// the TypeScript SDK's listTools behavior. Use GetSerializableTools when the
 	// pagination cursor needs to be preserved by the caller.
 	return result.Tools, nil
+}
+
+// ListToolsWithCursor lists one page of tools from the MCP server, honoring
+// an explicit pagination cursor (empty string requests the first page). It
+// returns the full ListToolsResult (including NextCursor) so callers can
+// paginate manually.
+func (c *MCPClient) ListToolsWithCursor(ctx context.Context, cursor string) (*ListToolsResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	params := ListToolsParams{Cursor: cursor}
+	var result ListToolsResult
+	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+		return nil, fmt.Errorf("failed to list tools: %w", err)
+	}
+	c.prepareToolDefinitions(&result, cursor == "")
+	return &result, nil
+}
+
+// prepareToolDefinitions computes and caches x-mcp-header bindings for each
+// tool (hash 0c60a40), filtering out any tool whose input schema has an
+// invalid x-mcp-header annotation (reported via MCPClientConfig.OnError,
+// when set). Matches TS MCPClient.prepareToolDefinitions. Only applies in
+// the modern protocol era, and only when the transport supports per-tool
+// parameter headers. resetHeaderBindings clears the previously cached
+// bindings first, matching TS's behavior of resetting the cache on an
+// unpaginated (cursor-less) listing.
+func (c *MCPClient) prepareToolDefinitions(result *ListToolsResult, resetHeaderBindings bool) {
+	if c.protocolEra != "modern" {
+		return
+	}
+	transport, ok := c.transport.(MCPToolParameterHeadersTransport)
+	if !ok || !transport.SupportsMCPToolParameterHeaders() {
+		return
+	}
+
+	c.toolHeaderBindingsMu.Lock()
+	if resetHeaderBindings || c.toolHeaderBindings == nil {
+		c.toolHeaderBindings = map[string][]MCPToolHeaderBinding{}
+	}
+	c.toolHeaderBindingsMu.Unlock()
+
+	tools := make([]MCPTool, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		bindings, err := GetMCPToolHeaderBindings(tool.InputSchema)
+		if err != nil {
+			if c.config.OnError != nil {
+				c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Ignoring MCP tool %q: %s", tool.Name, err.Error()), nil))
+			}
+			continue
+		}
+		c.toolHeaderBindingsMu.Lock()
+		c.toolHeaderBindings[tool.Name] = bindings
+		c.toolHeaderBindingsMu.Unlock()
+		tools = append(tools, tool)
+	}
+	result.Tools = tools
+}
+
+// toolCallHeaders computes the x-mcp-header-derived request headers for a
+// `tools/call` invocation, matching TS getToolRequestHeaders (mcp-client.ts,
+// hash 0c60a40). Returns nil outside the modern era, for any other method,
+// or when the tool has no header bindings.
+func (c *MCPClient) toolCallHeaders(method string, params interface{}) map[string]string {
+	if c.protocolEra != "modern" || method != "tools/call" {
+		return nil
+	}
+	callParams, ok := params.(CallToolParams)
+	if !ok {
+		return nil
+	}
+	c.toolHeaderBindingsMu.Lock()
+	bindings := c.toolHeaderBindings[callParams.Name]
+	c.toolHeaderBindingsMu.Unlock()
+	if len(bindings) == 0 {
+		return nil
+	}
+	headers, err := CreateMCPToolHeaders(bindings, callParams.Arguments)
+	if err != nil {
+		if c.config.OnError != nil {
+			c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Failed to create MCP headers for tool %q", callParams.Name), err))
+		}
+		return nil
+	}
+	return headers
+}
+
+// ListAllTools fetches every page of tools from the MCP server, following
+// NextCursor until exhausted. This matches TypeScript's MCPClient.tools()
+// (mcp-client.ts, hash 1175434), which is used by ConvertToGoAITools /
+// ConvertToGoAIToolsWithSchemas so the resulting tool set is complete even
+// when the server paginates tools/list.
+func (c *MCPClient) ListAllTools(ctx context.Context) ([]MCPTool, error) {
+	var allTools []MCPTool
+	cursor := ""
+	for {
+		result, err := c.ListToolsWithCursor(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		allTools = append(allTools, result.Tools...)
+		if result.NextCursor == "" {
+			break
+		}
+		cursor = result.NextCursor
+	}
+	return allTools, nil
 }
 
 // GetSerializableTools returns tool definitions in a format that can be stored or transmitted.
@@ -198,23 +476,103 @@ func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult,
 	return &result, nil
 }
 
-// CallTool calls a tool on the MCP server
+// CallTool calls a tool on the MCP server. Failed calls are retried with
+// exponential backoff up to MCPClientConfig.MaxRetries times (mirrors
+// TypeScript mcp-client.ts callToolWithRetry / DEFAULT_MAX_TOOL_CALL_RETRIES).
 func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[string]interface{}) (*CallToolResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := CallToolParams{
-		Name:      name,
-		Arguments: arguments,
+	return c.callToolWithRetry(ctx, func() (*CallToolResult, error) {
+		params := CallToolParams{
+			Name:      name,
+			Arguments: arguments,
+		}
+
+		var result CallToolResult
+		if err := c.call(ctx, "tools/call", params, &result); err != nil {
+			return nil, fmt.Errorf("failed to call tool: %w", err)
+		}
+
+		return &result, nil
+	})
+}
+
+// callToolWithRetry mirrors TypeScript's MCPClient.callToolWithRetry: with
+// MaxRetries==0 (the default) it just executes once; otherwise it retries
+// transient failures with exponential backoff.
+func (c *MCPClient) callToolWithRetry(ctx context.Context, execute func() (*CallToolResult, error)) (*CallToolResult, error) {
+	if c.config.MaxRetries <= 0 {
+		return execute()
 	}
 
-	var result CallToolResult
-	if err := c.call(ctx, "tools/call", params, &result); err != nil {
-		return nil, fmt.Errorf("failed to call tool: %w", err)
+	var result *CallToolResult
+	cfg := retry.Config{
+		MaxRetries:   c.config.MaxRetries,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
+		Multiplier:   2.0,
+		ShouldRetry:  isRetryableMCPToolCallError,
 	}
 
-	return &result, nil
+	err := retry.Do(ctx, cfg, func(ctx context.Context) error {
+		r, err := execute()
+		if err != nil {
+			return err
+		}
+		result = r
+		return nil
+	})
+	if err != nil {
+		var retryErr *providererrors.RetryError
+		if errors.As(err, &retryErr) {
+			return nil, NewMCPClientError(0, retryErr.Message, nil)
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+// isRetryableMCPToolCallError mirrors TypeScript's isRetryableMCPToolCallError
+// in mcp-client.ts: HTTP status 408/409/429/>=500 is retryable; a JSON-RPC
+// application error (non-zero MCPClientError.Code) is never retryable;
+// otherwise fall back to transport-level connection error detection (the Go
+// analogue of TS's DEFAULT_RETRY_ERROR_CODES string codes).
+func isRetryableMCPToolCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mcpErr *MCPClientError
+	if errors.As(err, &mcpErr) {
+		if mcpErr.StatusCode != 0 {
+			return mcpErr.StatusCode == 408 || mcpErr.StatusCode == 409 || mcpErr.StatusCode == 429 || mcpErr.StatusCode >= 500
+		}
+		if mcpErr.Code != 0 {
+			return false
+		}
+	}
+	return isRetryableMCPTransportError(err)
+}
+
+// isRetryableMCPTransportError detects connection-level failures equivalent
+// to TS DEFAULT_RETRY_ERROR_CODES: ConnectionRefused, ConnectionClosed,
+// FailedToOpenSocket, ECONNRESET, ECONNREFUSED, ETIMEDOUT, EPIPE.
+func isRetryableMCPTransportError(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{"connection refused", "connection reset", "broken pipe", "connection closed", "i/o timeout"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ListResources lists all available resources from the MCP server
@@ -286,6 +644,24 @@ func (c *MCPClient) GetPrompt(ctx context.Context, name string, arguments map[st
 	return &result, nil
 }
 
+// Complete requests argument autocompletion suggestions from the server for
+// a prompt or resource template reference (hash 68a739a). It errors if the
+// server did not advertise the completions capability.
+func (c *MCPClient) Complete(ctx context.Context, params CompleteRequestParams) (*CompleteResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+	if c.serverCapability.Completions == nil {
+		return nil, NewMCPClientError(0, "Server does not support completions", nil)
+	}
+
+	var result CompleteResult
+	if err := c.call(ctx, "completion/complete", params, &result); err != nil {
+		return nil, fmt.Errorf("failed to complete: %w", err)
+	}
+	return &result, nil
+}
+
 // ServerInfo returns information about the connected server
 func (c *MCPClient) ServerInfo() ServerInfo {
 	return c.serverInfo
@@ -305,7 +681,11 @@ func (c *MCPClient) ServerInstructions() string {
 // call makes a JSON-RPC call and waits for the response
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
 	id := c.idGen.Next()
-	msg, err := CreateRequest(id, method, params)
+	preparedParams, err := c.prepareRequestParams(method, params)
+	if err != nil {
+		return err
+	}
+	msg, err := CreateRequest(id, method, preparedParams)
 	if err != nil {
 		return err
 	}
@@ -323,8 +703,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		c.pendingMu.Unlock()
 	}()
 
-	// Send request
-	if err := c.transport.Send(ctx, msg); err != nil {
+	// Send request, attaching x-mcp-header-derived headers for a modern-era
+	// tools/call when the transport supports per-request headers (hash
+	// 0c60a40).
+	if err := c.sendMessage(ctx, msg, c.toolCallHeaders(method, params)); err != nil {
 		return NewTransportError("failed to send request", err)
 	}
 
@@ -342,6 +724,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		// Check for error
 		if response.Error != nil {
 			return GetError(response)
+		}
+
+		if err := c.validateModernResult(method, response.Result); err != nil {
+			return err
 		}
 
 		// Parse result
@@ -443,6 +829,86 @@ func (c *MCPClient) handleRequest(msg *MCPMessage) {
 func isSupportedProtocolVersion(version string) bool {
 	for _, supported := range SupportedProtocolVersions {
 		if version == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// prepareRequestParams injects the modern-era `_meta` protocol/capabilities/
+// client-info fields into params, matching TS's request() preparedRequest
+// (mcp-client.ts, hash e6a9927). Legacy-era requests and `initialize` itself
+// are left unchanged.
+func (c *MCPClient) prepareRequestParams(method string, params interface{}) (interface{}, error) {
+	if c.protocolEra != "modern" || method == "initialize" {
+		return params, nil
+	}
+
+	paramMap := map[string]interface{}{}
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > 0 && string(data) != "null" {
+			if err := json.Unmarshal(data, &paramMap); err != nil {
+				// params did not marshal to a JSON object (e.g. a bare
+				// array/string); there is nowhere to attach _meta, so send
+				// it unmodified rather than losing the original params.
+				return params, nil
+			}
+		}
+	}
+
+	meta, _ := paramMap["_meta"].(map[string]interface{})
+	if meta == nil {
+		meta = map[string]interface{}{}
+	}
+	meta["io.modelcontextprotocol/protocolVersion"] = c.protocolVersion
+	meta["io.modelcontextprotocol/clientCapabilities"] = c.config.Capabilities
+	meta["io.modelcontextprotocol/clientInfo"] = c.clientInfo
+	paramMap["_meta"] = meta
+	return paramMap, nil
+}
+
+// validateModernResult enforces the modern-era result invariant: every
+// result must carry a `resultType`, and `input_required` is rejected because
+// multi-round-trip requests are not yet supported. Matches TS's generic
+// response handler (mcp-client.ts, hash e6a9927).
+func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessage) error {
+	if c.protocolEra != "modern" {
+		return nil
+	}
+	var probe struct {
+		ResultType *string `json:"resultType"`
+	}
+	if len(rawResult) > 0 {
+		_ = json.Unmarshal(rawResult, &probe)
+	}
+	if probe.ResultType == nil {
+		return NewMCPClientError(0, "Modern MCP result is missing resultType", nil)
+	}
+	if *probe.ResultType == "input_required" {
+		return NewMCPClientError(0, "Server requested additional input, but multi round-trip requests are not supported yet", nil)
+	}
+	return nil
+}
+
+// sendMessage sends msg via the transport, attaching headers through
+// HeaderedSendTransport when the transport supports it and headers is
+// non-empty (hash 0c60a40).
+func (c *MCPClient) sendMessage(ctx context.Context, msg *MCPMessage, headers map[string]string) error {
+	if len(headers) > 0 {
+		if headered, ok := c.transport.(HeaderedSendTransport); ok {
+			return headered.SendWithHeaders(ctx, msg, headers)
+		}
+	}
+	return c.transport.Send(ctx, msg)
+}
+
+func intSliceContains(values []int, want int) bool {
+	for _, v := range values {
+		if v == want {
 			return true
 		}
 	}

@@ -17,10 +17,16 @@ import (
 )
 
 // StreamEvent is a LangGraph stream event. Mode is commonly "messages" or
-// "values"; Data contains the event payload from LangGraph.
+// "values"; Data contains the event payload from LangGraph. Namespace carries
+// the LangGraph subgraph namespace segments when the raw event tuple included
+// one (a 3-element [namespace, type, data] tuple whose first element is an
+// array of strings); HasNamespace distinguishes "no namespace" (a 2-element
+// tuple) from an explicit empty namespace ([]).
 type StreamEvent struct {
-	Mode string
-	Data interface{}
+	Mode         string
+	Data         interface{}
+	Namespace    []string
+	HasNamespace bool
 }
 
 // StreamCallbacks mirrors the TypeScript adapter callback surface for stream
@@ -33,18 +39,71 @@ type StreamCallbacks struct {
 	OnFinish func(finalState interface{}) error
 	OnError  func(error) error
 	OnAbort  func() error
+
+	// SendStart controls whether the outer "start" UI message stream chunk is
+	// emitted. Defaults to true when nil.
+	SendStart *bool
+	// SendFinish controls whether the outer "finish" UI message stream chunk
+	// is emitted. Defaults to true when nil. This does not affect per-step
+	// "finish-step" chunks, which are always emitted when a step was started.
+	SendFinish *bool
+}
+
+func sendStartEnabled(callbacks *StreamCallbacks) bool {
+	if callbacks == nil || callbacks.SendStart == nil {
+		return true
+	}
+	return *callbacks.SendStart
+}
+
+func sendFinishEnabled(callbacks *StreamCallbacks) bool {
+	if callbacks == nil || callbacks.SendFinish == nil {
+		return true
+	}
+	return *callbacks.SendFinish
 }
 
 // ParseLangGraphEvent converts a raw LangGraph event tuple into a StreamEvent.
 // It supports both [type, data] and [namespace, type, data] shapes.
 func ParseLangGraphEvent(event []interface{}) StreamEvent {
-	if len(event) == 3 {
-		return StreamEvent{Mode: stringValue(event[1]), Data: event[2]}
+	var rawNamespace, modeVal, dataVal interface{}
+	switch {
+	case len(event) == 3:
+		rawNamespace, modeVal, dataVal = event[0], event[1], event[2]
+	case len(event) >= 2:
+		modeVal, dataVal = event[0], event[1]
 	}
-	if len(event) >= 2 {
-		return StreamEvent{Mode: stringValue(event[0]), Data: event[1]}
+	namespace, hasNamespace := parseLangGraphNamespace(rawNamespace)
+	return StreamEvent{Mode: stringValue(modeVal), Data: dataVal, Namespace: namespace, HasNamespace: hasNamespace}
+}
+
+// parseLangGraphNamespace mirrors the TypeScript adapter's namespace guard:
+// only a slice whose every element is a string counts as a namespace.
+func parseLangGraphNamespace(v interface{}) ([]string, bool) {
+	items, ok := asSlice(v)
+	if !ok {
+		return nil, false
 	}
-	return StreamEvent{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
+}
+
+// namespaceKey normalizes a namespace slice (including an absent one) into a
+// stable map key, mirroring the TypeScript adapter's
+// `JSON.stringify(namespace ?? [])`.
+func namespaceKey(namespace []string) string {
+	if namespace == nil {
+		namespace = []string{}
+	}
+	data, _ := json.Marshal(namespace)
+	return string(data)
 }
 
 // ToUIMessageStreamFromRaw converts raw LangGraph event tuples into AI SDK UI
@@ -128,9 +187,11 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				return
 			}
 		}
-		if !sendChunk(ctx, out, ai.UIMessageChunk{"type": "start"}) {
-			finalizeCallbacks(errs, callbacks, textChunks, nil, ctx.Err())
-			return
+		if sendStartEnabled(callbacks) {
+			if !sendChunk(ctx, out, ai.UIMessageChunk{"type": "start"}) {
+				finalizeCallbacks(errs, callbacks, textChunks, nil, ctx.Err())
+				return
+			}
 		}
 		for {
 			// Check cancellation first: when ctx is done and an event is also
@@ -146,7 +207,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				return
 			case event, ok := <-events:
 				if !ok {
-					for _, chunk := range finishChunks(state) {
+					for _, chunk := range finishChunks(state, sendFinishEnabled(callbacks)) {
 						if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
 							reportCallbackError(errs, callbacks, err)
 							return
@@ -186,7 +247,11 @@ func handleCallbackChunk(callbacks *StreamCallbacks, textChunks *[]string, chunk
 	if delta == "" {
 		return nil
 	}
-	*textChunks = append(*textChunks, delta)
+	// Only buffer text when OnFinal is actually configured, mirroring the
+	// TypeScript adapter's lazy `if (options?.onFinal) { textChunks.push(...) }`.
+	if callbacks.OnFinal != nil {
+		*textChunks = append(*textChunks, delta)
+	}
 	if callbacks.OnToken != nil {
 		if err := callbacks.OnToken(delta); err != nil {
 			return err
@@ -285,13 +350,31 @@ func sendChunk(ctx context.Context, out chan<- ai.UIMessageChunk, chunk ai.UIMes
 	}
 }
 
+// eventState tracks bookkeeping across the whole LangGraph stream. Namespaced
+// LangGraph subgraphs each get their own step/lifecycle scope (see the
+// `*ByNamespace` fields) so that a step transition or a reused provider tool
+// call ID in one subgraph does not close or suppress lifecycles that are
+// still active in a different subgraph.
 type eventState struct {
-	emittedToolCalls       map[string]bool
-	emittedToolCallsByKey  map[string]string
-	emittedSources         map[string]bool
-	messageSeen            map[string]*messageSeenState
-	toolCallInfoByIndex    map[string]map[int]toolCall
-	currentStep            *int
+	// stream-wide bookkeeping
+	emittedToolCalls            map[string]bool
+	emittedToolCallsByKey       map[string]string
+	emittedToolInputs           map[string]bool
+	emittedToolOutputCallIDs    map[string]bool
+	emittedToolOutputMessageIDs map[string]bool
+	emittedSources              map[string]bool
+	messageSeen                 map[string]*messageSeenState
+	messageNamespaces           map[string][]string
+	toolCallInfoByIndex         map[string]map[int]toolCall
+
+	// per-namespace step lifecycle bookkeeping, keyed by namespaceKey(...)
+	currentStepsByNamespace                    map[string]int
+	messageIdsInCurrentStepByNamespace         map[string]map[string]bool
+	emittedToolCallsInCurrentStepByNamespace   map[string]map[string]bool
+	emittedToolInputsInCurrentStepByNamespace  map[string]map[string]bool
+	emittedToolOutputsInCurrentStepByNamespace map[string]map[string]bool
+
+	// direct model / streamEvents stream state
 	streamMessageID        string
 	streamTextStarted      bool
 	streamTextID           string
@@ -301,11 +384,21 @@ type eventState struct {
 
 func newEventState() *eventState {
 	return &eventState{
-		emittedToolCalls:      map[string]bool{},
-		emittedToolCallsByKey: map[string]string{},
-		emittedSources:        map[string]bool{},
-		messageSeen:           map[string]*messageSeenState{},
-		toolCallInfoByIndex:   map[string]map[int]toolCall{},
+		emittedToolCalls:            map[string]bool{},
+		emittedToolCallsByKey:       map[string]string{},
+		emittedToolInputs:           map[string]bool{},
+		emittedToolOutputCallIDs:    map[string]bool{},
+		emittedToolOutputMessageIDs: map[string]bool{},
+		emittedSources:              map[string]bool{},
+		messageSeen:                 map[string]*messageSeenState{},
+		messageNamespaces:           map[string][]string{},
+		toolCallInfoByIndex:         map[string]map[int]toolCall{},
+
+		currentStepsByNamespace:                    map[string]int{},
+		messageIdsInCurrentStepByNamespace:         map[string]map[string]bool{},
+		emittedToolCallsInCurrentStepByNamespace:   map[string]map[string]bool{},
+		emittedToolInputsInCurrentStepByNamespace:  map[string]map[string]bool{},
+		emittedToolOutputsInCurrentStepByNamespace: map[string]map[string]bool{},
 	}
 }
 
@@ -315,14 +408,233 @@ type messageSeenState struct {
 	tools     map[string]bool
 }
 
+// startNamespaceStep begins a new LangGraph step scope for the given
+// namespace key, resetting the per-step emitted-call/input/output sets.
+func (state *eventState) startNamespaceStep(ns string, step int) {
+	state.currentStepsByNamespace[ns] = step
+	state.messageIdsInCurrentStepByNamespace[ns] = map[string]bool{}
+	state.emittedToolCallsInCurrentStepByNamespace[ns] = map[string]bool{}
+	state.emittedToolInputsInCurrentStepByNamespace[ns] = map[string]bool{}
+	state.emittedToolOutputsInCurrentStepByNamespace[ns] = map[string]bool{}
+}
+
+func (state *eventState) hasEmittedToolCallInCurrentStep(toolCallID, ns string) bool {
+	if _, ok := state.currentStepsByNamespace[ns]; !ok {
+		return state.emittedToolCalls[toolCallID]
+	}
+	return state.emittedToolCallsInCurrentStepByNamespace[ns][toolCallID]
+}
+
+func (state *eventState) markToolCallEmitted(toolCallID, ns string) {
+	state.emittedToolCalls[toolCallID] = true
+	if _, ok := state.currentStepsByNamespace[ns]; ok {
+		if state.emittedToolCallsInCurrentStepByNamespace[ns] == nil {
+			state.emittedToolCallsInCurrentStepByNamespace[ns] = map[string]bool{}
+		}
+		state.emittedToolCallsInCurrentStepByNamespace[ns][toolCallID] = true
+	}
+}
+
+func (state *eventState) hasEmittedToolInputInCurrentStep(toolCallID, ns string) bool {
+	if _, ok := state.currentStepsByNamespace[ns]; !ok {
+		return state.emittedToolInputs[toolCallID]
+	}
+	return state.emittedToolInputsInCurrentStepByNamespace[ns][toolCallID]
+}
+
+func (state *eventState) markToolInputEmitted(toolCallID, ns string) {
+	state.emittedToolInputs[toolCallID] = true
+	if _, ok := state.currentStepsByNamespace[ns]; ok {
+		if state.emittedToolInputsInCurrentStepByNamespace[ns] == nil {
+			state.emittedToolInputsInCurrentStepByNamespace[ns] = map[string]bool{}
+		}
+		state.emittedToolInputsInCurrentStepByNamespace[ns][toolCallID] = true
+	}
+}
+
+func (state *eventState) hasEmittedToolOutputInCurrentStep(toolCallID, ns string) bool {
+	if _, ok := state.currentStepsByNamespace[ns]; !ok {
+		return state.emittedToolOutputCallIDs[toolCallID]
+	}
+	return state.emittedToolOutputsInCurrentStepByNamespace[ns][toolCallID]
+}
+
+func (state *eventState) markToolOutputEmitted(toolCallID, ns string) {
+	state.emittedToolOutputCallIDs[toolCallID] = true
+	if _, ok := state.currentStepsByNamespace[ns]; ok {
+		if state.emittedToolOutputsInCurrentStepByNamespace[ns] == nil {
+			state.emittedToolOutputsInCurrentStepByNamespace[ns] = map[string]bool{}
+		}
+		state.emittedToolOutputsInCurrentStepByNamespace[ns][toolCallID] = true
+	}
+}
+
+// findMessageCurrentStepNamespace returns the namespace key whose current
+// step observed msgID, if any.
+func (state *eventState) findMessageCurrentStepNamespace(msgID string) (string, bool) {
+	for ns, ids := range state.messageIdsInCurrentStepByNamespace {
+		if ids[msgID] {
+			return ns, true
+		}
+	}
+	return "", false
+}
+
+// closeStepNamespaceMessages ends and clears message state for every message
+// belonging to stepNamespace. It returns whether another namespace still has
+// active text/reasoning parts that would be invalidated by a global
+// finish-step chunk (in which case the caller should suppress finish-step).
+func closeStepNamespaceMessages(state *eventState, stepNamespace string) ([]ai.UIMessageChunk, bool) {
+	hasConcurrentMessageParts := false
+	var chunks []ai.UIMessageChunk
+	for _, id := range sortedMessageSeenIDs(state) {
+		seen := state.messageSeen[id]
+		ns, hasNS := state.messageNamespaces[id]
+		if namespaceKey(ns) != stepNamespace {
+			if seen.text || seen.reasoning {
+				hasConcurrentMessageParts = true
+			}
+			continue
+		}
+		// Tag with the per-message namespace before deleting it below: the
+		// namespace map entry will be gone by the time any later, generic
+		// post-processing pass could look it up.
+		if seen.text {
+			chunk := ai.UIMessageChunk{"type": "text-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
+		}
+		if seen.reasoning {
+			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
+		}
+		delete(state.messageSeen, id)
+		delete(state.messageNamespaces, id)
+	}
+	return chunks, hasConcurrentMessageParts
+}
+
+func sortedMessageSeenIDs(state *eventState) []string {
+	ids := make([]string, 0, len(state.messageSeen))
+	for id := range state.messageSeen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// namespaceEligibleTypes mirrors the TypeScript adapter's
+// `addLangGraphNamespace` switch: only these chunk types receive
+// `providerMetadata.langchain.namespace` tagging.
+var namespaceEligibleTypes = map[string]bool{
+	"text-start": true, "text-delta": true, "text-end": true,
+	"reasoning-start": true, "reasoning-delta": true, "reasoning-end": true,
+	"tool-input-start": true, "tool-input-available": true, "tool-input-error": true,
+	"tool-approval-response": true, "tool-output-available": true, "tool-output-error": true,
+	"source-url": true, "source-document": true, "file": true, "reasoning-file": true,
+}
+
+// tagAllChunks applies LangGraph namespace tagging to every eligible chunk
+// produced while processing one raw LangGraph event tuple, mirroring the
+// TypeScript adapter's namespace-wrapping controller.
+func tagAllChunks(state *eventState, chunks []ai.UIMessageChunk, ns []string, hasNS bool) []ai.UIMessageChunk {
+	if len(chunks) == 0 {
+		return chunks
+	}
+	out := make([]ai.UIMessageChunk, len(chunks))
+	for i, chunk := range chunks {
+		out[i] = applyNamespaceToChunk(state, chunk, ns, hasNS)
+	}
+	return out
+}
+
+func applyNamespaceToChunk(state *eventState, chunk ai.UIMessageChunk, ambientNS []string, ambientHasNS bool) ai.UIMessageChunk {
+	typ, _ := chunk["type"].(string)
+	if !namespaceEligibleTypes[typ] {
+		return chunk
+	}
+	// Some finalize helpers (closeStepNamespaceMessages,
+	// finalizeSeenPartsForValues, finalizeOpenMessageParts) tag their own
+	// text-end/reasoning-end chunks inline, before deleting the per-message
+	// namespace bookkeeping this function would otherwise need to look up.
+	// Don't override an already-resolved namespace with the ambient ones.
+	if namespaceAlreadyTagged(chunk) {
+		return chunk
+	}
+	ns := ambientNS
+	hasNS := ambientHasNS
+	switch typ {
+	case "text-start", "text-delta", "text-end", "reasoning-start", "reasoning-delta", "reasoning-end":
+		if id, ok := chunk["id"].(string); ok {
+			if messageNS, found := state.messageNamespaces[id]; found {
+				ns = messageNS
+				hasNS = true
+			}
+		}
+	}
+	if !hasNS {
+		return chunk
+	}
+	return tagNamespaceChunk(chunk, ns)
+}
+
+func namespaceAlreadyTagged(chunk ai.UIMessageChunk) bool {
+	pm, ok := chunk["providerMetadata"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	lc, ok := pm["langchain"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = lc["namespace"]
+	return ok
+}
+
+// tagNamespaceChunk merges providerMetadata.langchain.namespace into chunk
+// without discarding any provider metadata (such as citation metadata)
+// already present.
+func tagNamespaceChunk(chunk ai.UIMessageChunk, ns []string) ai.UIMessageChunk {
+	out := make(ai.UIMessageChunk, len(chunk)+1)
+	for k, v := range chunk {
+		out[k] = v
+	}
+	langchainMeta := map[string]interface{}{}
+	newProviderMetadata := map[string]interface{}{}
+	if existing, ok := out["providerMetadata"].(map[string]interface{}); ok {
+		for k, v := range existing {
+			if k == "langchain" {
+				if lc, ok := v.(map[string]interface{}); ok {
+					for lk, lv := range lc {
+						langchainMeta[lk] = lv
+					}
+				}
+				continue
+			}
+			newProviderMetadata[k] = v
+		}
+	}
+	langchainMeta["namespace"] = ns
+	newProviderMetadata["langchain"] = langchainMeta
+	out["providerMetadata"] = newProviderMetadata
+	return out
+}
+
 func processLangGraphEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
 	switch event.Mode {
 	case "custom":
-		return processCustomEvent(event.Data)
+		return tagAllChunks(state, processCustomEvent(event.Data), event.Namespace, event.HasNamespace)
 	case "messages":
-		return processMessagesEvent(state, event.Data)
+		return tagAllChunks(state, processMessagesEvent(state, event), event.Namespace, event.HasNamespace)
 	case "values":
-		return processValuesEvent(state, event.Data)
+		return tagAllChunks(state, processValuesEvent(state, event), event.Namespace, event.HasNamespace)
+	case "tools":
+		return tagAllChunks(state, processToolsEvent(state, event), event.Namespace, event.HasNamespace)
 	case "streamEvents", "stream-events":
 		return processStreamEventsEvent(state, event.Data)
 	case "model":
@@ -332,13 +644,15 @@ func processLangGraphEvent(state *eventState, event StreamEvent) []ai.UIMessageC
 	}
 }
 
-func finishChunks(state *eventState) []ai.UIMessageChunk {
+func finishChunks(state *eventState, sendFinish bool) []ai.UIMessageChunk {
 	chunks := finalizeOpenMessageParts(state)
 	chunks = append(chunks, finalizeStreamEventParts(state)...)
-	if state.currentStep != nil {
+	if len(state.currentStepsByNamespace) > 0 {
 		chunks = append(chunks, ai.UIMessageChunk{"type": "finish-step"})
 	}
-	chunks = append(chunks, ai.UIMessageChunk{"type": "finish"})
+	if sendFinish {
+		chunks = append(chunks, ai.UIMessageChunk{"type": "finish"})
+	}
 	return chunks
 }
 
@@ -361,8 +675,8 @@ func processCustomEvent(data interface{}) []ai.UIMessageChunk {
 	}}
 }
 
-func processMessagesEvent(state *eventState, data interface{}) []ai.UIMessageChunk {
-	items, ok := asSlice(data)
+func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
+	items, ok := asSlice(event.Data)
 	if !ok || len(items) == 0 {
 		return nil
 	}
@@ -370,27 +684,56 @@ func processMessagesEvent(state *eventState, data interface{}) []ai.UIMessageChu
 	if !ok {
 		return nil
 	}
-	var chunks []ai.UIMessageChunk
-	if metadata, ok := metadataMap(items); ok {
-		if step, ok := numberAsInt(metadata["langgraph_step"]); ok {
-			if state.currentStep == nil || *state.currentStep != step {
-				if state.currentStep != nil {
-					chunks = append(chunks, finalizeOpenMessageParts(state)...)
-					chunks = append(chunks, ai.UIMessageChunk{"type": "finish-step"})
-				}
-				chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
-				state.currentStep = &step
-			}
-		}
-	}
 
 	msgID := messageID(message)
 	if msgID == "" {
 		msgID = "langchain-msg-1"
 	}
-	if isToolMessage(message) {
-		return processToolMessage(message)
+
+	eventNS := namespaceKey(event.Namespace)
+	if event.HasNamespace {
+		state.messageNamespaces[msgID] = event.Namespace
 	}
+
+	var chunks []ai.UIMessageChunk
+
+	// Each namespace has an independent LangGraph step counter. Advancing a
+	// namespace starts a new reducer scope so provider-scoped tool call IDs
+	// can be reused in that namespace. A finish-step chunk clears every
+	// active UI text/reasoning part, so it is omitted when another namespace
+	// is still active (hasConcurrentMessageParts).
+	if metadata, ok := metadataMap(items); ok {
+		if step, ok := numberAsInt(metadata["langgraph_step"]); ok {
+			currentStep, exists := state.currentStepsByNamespace[eventNS]
+			switch {
+			case !exists:
+				if len(state.currentStepsByNamespace) == 0 {
+					chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
+				}
+				state.startNamespaceStep(eventNS, step)
+			case step != currentStep:
+				closeChunks, hasConcurrentMessageParts := closeStepNamespaceMessages(state, eventNS)
+				chunks = append(chunks, closeChunks...)
+				if !hasConcurrentMessageParts {
+					chunks = append(chunks, ai.UIMessageChunk{"type": "finish-step"})
+				}
+				chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
+				state.startNamespaceStep(eventNS, step)
+			}
+		}
+	}
+	if _, exists := state.currentStepsByNamespace[eventNS]; exists {
+		if state.messageIdsInCurrentStepByNamespace[eventNS] == nil {
+			state.messageIdsInCurrentStepByNamespace[eventNS] = map[string]bool{}
+		}
+		state.messageIdsInCurrentStepByNamespace[eventNS][msgID] = true
+	}
+
+	if isToolMessage(message) {
+		chunks = append(chunks, processToolMessage(state, message, eventNS)...)
+		return chunks
+	}
+
 	for _, call := range extractToolCallChunks(message) {
 		if call.id != "" {
 			if state.toolCallInfoByIndex[msgID] == nil {
@@ -411,9 +754,11 @@ func processMessagesEvent(state *eventState, data interface{}) []ai.UIMessageChu
 			seen.tools = map[string]bool{}
 		}
 		if !seen.tools[call.id] {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": firstString(call.name, "unknown"), "dynamic": true})
 			seen.tools[call.id] = true
-			state.emittedToolCalls[call.id] = true
+			if !state.hasEmittedToolCallInCurrentStep(call.id, eventNS) {
+				state.markToolCallEmitted(call.id, eventNS)
+				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": firstString(call.name, "unknown"), "dynamic": true})
+			}
 		}
 		if argDelta, ok := call.args.(string); ok && argDelta != "" {
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-delta", "toolCallId": call.id, "inputTextDelta": argDelta})
@@ -421,6 +766,13 @@ func processMessagesEvent(state *eventState, data interface{}) []ai.UIMessageChu
 	}
 	if text := messageText(message); text != "" {
 		seen := state.seenFor(msgID)
+		// Close any reasoning part still open on this message before
+		// starting/continuing text, mirroring LangGraph model turns that
+		// stream reasoning followed by text on the same message ID.
+		if seen.reasoning && !seen.text {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": msgID})
+			seen.reasoning = false
+		}
 		if !seen.text {
 			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
 			seen.text = true
@@ -439,42 +791,122 @@ func processMessagesEvent(state *eventState, data interface{}) []ai.UIMessageChu
 	return chunks
 }
 
-func processValuesEvent(state *eventState, data interface{}) []ai.UIMessageChunk {
-	root, ok := asMap(data)
+func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
+	root, ok := asMap(event.Data)
 	if !ok {
 		return nil
 	}
+	eventNS := namespaceKey(event.Namespace)
 	var chunks []ai.UIMessageChunk
-	completedToolCallIDs := completedToolCalls(root)
+
 	toolCallsByID := extractToolCallsByID(root)
 	chunks = append(chunks, finalizeSeenPartsForValues(state, toolCallsByID)...)
-	for _, message := range messageMaps(root) {
-		msgID := messageID(message)
-		if msgID == "" {
-			msgID = "langchain-msg-1"
+
+	messages := messageMaps(root)
+	if len(messages) > 0 {
+		// First pass: collect every tool call ID that has been responded to
+		// by a ToolMessage, and separately track which of those ToolMessages
+		// are "trailing" (the tail run of ToolMessages at the end of the
+		// message list). Calls followed by another non-tool message are
+		// historical; trailing ToolMessages can be the only evidence of a
+		// completed call when the node producing them isn't streamed.
+		completedToolCallIDs := map[string]bool{}
+		type trailingToolMessage struct {
+			data     map[string]interface{}
+			outputID string
 		}
-		chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(message))...)
-		for _, call := range extractToolCalls(message) {
-			if call.id == "" || call.name == "" {
+		trailingToolMessages := map[string]trailingToolMessage{}
+		trailingStart := len(messages)
+		for trailingStart > 0 && isToolMessage(messages[trailingStart-1]) {
+			trailingStart--
+		}
+		for idx, msg := range messages {
+			if !isToolMessage(msg) {
 				continue
 			}
-			key := toolCallKey(call.name, call.args)
-			if state.emittedToolCalls[call.id] {
-				state.emittedToolCallsByKey[key] = call.id
+			source := messageDataSource(msg)
+			toolCallID := stringValue(source["tool_call_id"])
+			if toolCallID == "" {
 				continue
 			}
-			if completedToolCallIDs[call.id] {
+			completedToolCallIDs[toolCallID] = true
+			if idx >= trailingStart {
+				outputID := messageID(msg)
+				if outputID == "" {
+					outputID = fmt.Sprintf("%s:%d", toolCallID, idx)
+				}
+				trailingToolMessages[toolCallID] = trailingToolMessage{data: source, outputID: outputID}
+			}
+		}
+
+		// Second pass: emit tool lifecycles for new tool calls, including
+		// calls completed by trailing ToolMessages that were never streamed.
+		for _, msg := range messages {
+			msgID := messageID(msg)
+			if msgID == "" {
 				continue
 			}
-			state.emittedToolCalls[call.id] = true
-			state.emittedToolCallsByKey[key] = call.id
-			chunks = append(chunks,
-				ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true},
-				ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": call.id, "toolName": call.name, "input": call.args, "dynamic": true},
-			)
+
+			for _, call := range extractToolCalls(msg) {
+				if call.id == "" {
+					continue
+				}
+				messageNS, wasObservedInCurrentStep := state.findMessageCurrentStepNamespace(msgID)
+				lifecycleNS := eventNS
+				if wasObservedInCurrentStep {
+					lifecycleNS = messageNS
+				}
+				wasToolCallEmittedInCurrentStep := state.hasEmittedToolCallInCurrentStep(call.id, lifecycleNS)
+				trailing, hasTrailing := trailingToolMessages[call.id]
+				canRecoverCompletedToolCall := wasObservedInCurrentStep || wasToolCallEmittedInCurrentStep
+
+				// Emit tool calls recovered from a message in the current
+				// step, even when a prior step used the same provider-scoped
+				// ID. Otherwise, preserve stream-wide suppression for
+				// historical calls while recovering completed calls observed
+				// in the current step or an earlier values snapshot before
+				// their trailing ToolMessage arrived.
+				if !wasToolCallEmittedInCurrentStep &&
+					(wasObservedInCurrentStep || (!state.emittedToolCalls[call.id] && !completedToolCallIDs[call.id])) {
+					state.markToolCallEmitted(call.id, lifecycleNS)
+					key := toolCallKey(call.name, call.args)
+					state.emittedToolCallsByKey[key] = call.id
+					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true})
+					state.markToolInputEmitted(call.id, lifecycleNS)
+					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": call.id, "toolName": call.name, "input": call.args, "dynamic": true})
+				} else if state.emittedToolCalls[call.id] {
+					key := toolCallKey(call.name, call.args)
+					state.emittedToolCallsByKey[key] = call.id
+				}
+
+				if hasTrailing &&
+					!state.emittedToolOutputMessageIDs[trailing.outputID] &&
+					!state.hasEmittedToolOutputInCurrentStep(call.id, lifecycleNS) &&
+					canRecoverCompletedToolCall {
+					state.emittedToolOutputMessageIDs[trailing.outputID] = true
+					state.markToolOutputEmitted(call.id, lifecycleNS)
+					if stringValue(trailing.data["status"]) == "error" {
+						errText := "Tool execution failed"
+						if s, ok := trailing.data["content"].(string); ok {
+							errText = s
+						}
+						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": call.id, "errorText": errText})
+					} else {
+						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": call.id, "output": trailing.data["content"]})
+					}
+				}
+			}
+
+			chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(msg))...)
 		}
 	}
 
+	chunks = append(chunks, actionRequestChunks(state, root, eventNS)...)
+	return chunks
+}
+
+func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
 	for _, request := range actionRequests(root) {
 		if request.name == "" {
 			continue
@@ -488,32 +920,110 @@ func processValuesEvent(state *eventState, data interface{}) []ai.UIMessageChunk
 			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, time.Now().UnixMilli())
 		}
 		if !state.emittedToolCalls[toolCallID] {
-			state.emittedToolCalls[toolCallID] = true
+			state.markToolCallEmitted(toolCallID, eventNS)
 			state.emittedToolCallsByKey[key] = toolCallID
-			chunks = append(chunks,
-				ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": request.name, "dynamic": true},
-				ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": request.name, "input": request.input, "dynamic": true},
-			)
+			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": request.name, "dynamic": true})
+			state.markToolInputEmitted(toolCallID, eventNS)
+			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": request.name, "input": request.input, "dynamic": true})
 		}
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-approval-request", "approvalId": toolCallID, "toolCallId": toolCallID})
 	}
 	return chunks
 }
 
-func processToolMessage(message map[string]interface{}) []ai.UIMessageChunk {
+// processToolsEvent handles LangGraph's "tools" stream mode, which surfaces
+// LangChain tool run lifecycle events (on_tool_start/on_tool_event/
+// on_tool_end/on_tool_error) directly, independent of the "messages"/"values"
+// modes. on_tool_event carries preliminary (streamed) tool output.
+func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
+	payload, ok := asMap(event.Data)
+	if !ok {
+		return nil
+	}
+	toolCallID := stringValue(payload["toolCallId"])
+	if toolCallID == "" {
+		return nil
+	}
+	toolName := firstString(payload["name"], "unknown")
+	ns := namespaceKey(event.Namespace)
+
+	var chunks []ai.UIMessageChunk
+	switch stringValue(payload["event"]) {
+	case "on_tool_start":
+		key := toolCallKey(toolName, payload["input"])
+		state.emittedToolCallsByKey[key] = toolCallID
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], false)...)
+	case "on_tool_event":
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["data"], "preliminary": true})
+	case "on_tool_end":
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		state.markToolOutputEmitted(toolCallID, ns)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["output"]})
+	case "on_tool_error":
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		state.markToolOutputEmitted(toolCallID, ns)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": formatToolError(payload["error"])})
+	}
+	return chunks
+}
+
+// ensureToolInputLifecycle emits tool-input-start/tool-input-available for a
+// tools-mode tool call if they have not already been emitted. When
+// allowPreviousStep is true and the call was already emitted in a prior step
+// (globally, but not in the current step), it is treated as a delayed event
+// for that prior step's call and no new input lifecycle is synthesized at all.
+func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, input interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	if !state.hasEmittedToolCallInCurrentStep(toolCallID, ns) {
+		if allowPreviousStep && state.emittedToolCalls[toolCallID] {
+			return nil
+		}
+		state.markToolCallEmitted(toolCallID, ns)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true})
+	}
+	if !state.hasEmittedToolInputInCurrentStep(toolCallID, ns) {
+		state.markToolInputEmitted(toolCallID, ns)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "input": input, "dynamic": true})
+	}
+	return chunks
+}
+
+func formatToolError(v interface{}) string {
+	switch e := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return e
+	case error:
+		return e.Error()
+	default:
+		data, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Sprint(e)
+		}
+		return string(data)
+	}
+}
+
+func processToolMessage(state *eventState, message map[string]interface{}, ns string) []ai.UIMessageChunk {
 	source := messageDataSource(message)
 	toolCallID := stringValue(firstPresent(source, "tool_call_id", "toolCallId"))
 	if toolCallID == "" {
 		return nil
 	}
-	chunkType := "tool-output-available"
-	key := "output"
-	if status := stringValue(source["status"]); status == "error" {
-		chunkType = "tool-output-error"
-		key = "errorText"
+	if msgID := messageID(message); msgID != "" {
+		state.emittedToolOutputMessageIDs[msgID] = true
 	}
-	output := source["content"]
-	return []ai.UIMessageChunk{{"type": chunkType, "toolCallId": toolCallID, key: output}}
+	state.markToolOutputEmitted(toolCallID, ns)
+	if status := stringValue(source["status"]); status == "error" {
+		errText := "Tool execution failed"
+		if s, ok := source["content"].(string); ok {
+			errText = s
+		}
+		return []ai.UIMessageChunk{{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errText}}
+	}
+	return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": toolCallID, "output": source["content"]}}
 }
 
 func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk {
@@ -622,21 +1132,27 @@ func (state *eventState) seenFor(messageID string) *messageSeenState {
 }
 
 func finalizeOpenMessageParts(state *eventState) []ai.UIMessageChunk {
-	ids := make([]string, 0, len(state.messageSeen))
-	for id := range state.messageSeen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := sortedMessageSeenIDs(state)
 	chunks := make([]ai.UIMessageChunk, 0, len(ids)*2)
 	for _, id := range ids {
 		seen := state.messageSeen[id]
+		ns, hasNS := state.messageNamespaces[id]
 		if seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-end", "id": id})
+			chunk := ai.UIMessageChunk{"type": "text-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
 		}
 		if seen.reasoning {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": id})
+			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
 		}
 		delete(state.messageSeen, id)
+		delete(state.messageNamespaces, id)
 	}
 	return chunks
 }
@@ -657,27 +1173,41 @@ func finalizeStreamEventParts(state *eventState) []ai.UIMessageChunk {
 }
 
 func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall) []ai.UIMessageChunk {
-	ids := make([]string, 0, len(state.messageSeen))
-	for id := range state.messageSeen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
 	var chunks []ai.UIMessageChunk
-	for _, id := range ids {
+	for _, id := range sortedMessageSeenIDs(state) {
 		seen := state.messageSeen[id]
+		ns, hasNS := state.messageNamespaces[id]
+		msgNSKey := namespaceKey(ns)
+
+		// Tag with the per-message namespace before deleting it below.
 		if seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-end", "id": id})
-		}
-		if seen.reasoning {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": id})
+			chunk := ai.UIMessageChunk{"type": "text-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
 		}
 		for callID := range seen.tools {
-			call := callsByID[callID]
-			if call.name != "" {
-				state.emittedToolCallsByKey[toolCallKey(call.name, call.args)] = callID
+			call, ok := callsByID[callID]
+			if !ok || call.name == "" {
+				continue
+			}
+			state.markToolCallEmitted(callID, msgNSKey)
+			state.emittedToolCallsByKey[toolCallKey(call.name, call.args)] = callID
+			if !state.hasEmittedToolInputInCurrentStep(callID, msgNSKey) {
+				state.markToolInputEmitted(callID, msgNSKey)
+				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": callID, "toolName": call.name, "input": call.args, "dynamic": true})
 			}
 		}
+		if seen.reasoning {
+			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
+			if hasNS {
+				chunk = tagNamespaceChunk(chunk, ns)
+			}
+			chunks = append(chunks, chunk)
+		}
 		delete(state.messageSeen, id)
+		delete(state.messageNamespaces, id)
 	}
 	return chunks
 }
@@ -755,19 +1285,6 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	}
 	raw, _ := asSlice(additional["tool_calls"])
 	return raw
-}
-
-func completedToolCalls(root map[string]interface{}) map[string]bool {
-	completed := map[string]bool{}
-	for _, msg := range messageMaps(root) {
-		source := messageDataSource(msg)
-		if isToolMessage(msg) {
-			if id := stringValue(source["tool_call_id"]); id != "" {
-				completed[id] = true
-			}
-		}
-	}
-	return completed
 }
 
 func extractToolCallsByID(root map[string]interface{}) map[string]toolCall {
@@ -1096,12 +1613,7 @@ func convertUserContent(parts []types.ContentPart) interface{} {
 		case types.TextContent:
 			blocks = append(blocks, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ImageContent:
-			blocks = append(blocks, map[string]interface{}{
-				"type": "image_url",
-				"image_url": map[string]interface{}{
-					"url": imageURL(p),
-				},
-			})
+			blocks = append(blocks, imageContentBlock(p))
 		case types.FileContent:
 			blocks = append(blocks, fileContentBlock(p))
 		}
@@ -1156,21 +1668,73 @@ func toolResultContent(result types.ToolResultContent) string {
 	}
 }
 
-func imageURL(part types.ImageContent) string {
-	if part.URL != "" {
-		return part.URL
-	}
-	mediaType := part.MimeType
+// imageContentBlock converts an ImageContent part into LangChain's canonical
+// image content block shape (`{type:'image', url}` or
+// `{type:'image', data, mimeType}`), matching
+// `convertImageToContentBlock` in the TypeScript adapter.
+func imageContentBlock(part types.ImageContent) map[string]interface{} {
+	return canonicalImageContentBlock(part.URL, "", part.Image, part.MimeType)
+}
+
+// canonicalImageContentBlock builds LangChain's canonical image content
+// block. httpUrlOrData may be a plain http(s) URL, a `data:` URL, or empty;
+// dataString is a plain (non-data-URL) base64 string; rawData is used only
+// when neither string source is present. mediaType defaults to "image/png".
+func canonicalImageContentBlock(urlOrDataURL string, dataString string, rawData []byte, mediaType string) map[string]interface{} {
 	if mediaType == "" {
 		mediaType = "image/png"
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Image)
+	if urlOrDataURL != "" {
+		return canonicalImageBlockFromString(urlOrDataURL, mediaType)
+	}
+	if dataString != "" {
+		return canonicalImageBlockFromString(dataString, mediaType)
+	}
+	return map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString(rawData), "mimeType": mediaType}
+}
+
+// canonicalImageBlockFromString mirrors the TypeScript adapter's
+// `convertImageToContentBlock` string handling: http(s) URLs and non-base64
+// data URLs become `{type:'image', url}`; `data:...;base64,...` URLs are
+// split into `{type:'image', data, mimeType}`; anything else is treated as a
+// bare base64 string.
+func canonicalImageBlockFromString(data string, mediaType string) map[string]interface{} {
+	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		return map[string]interface{}{"type": "image", "url": data}
+	}
+	if strings.HasPrefix(data, "data:") {
+		if mime, b64, ok := parseBase64DataURL(data); ok {
+			return map[string]interface{}{"type": "image", "data": b64, "mimeType": mime}
+		}
+		return map[string]interface{}{"type": "image", "url": data}
+	}
+	return map[string]interface{}{"type": "image", "data": data, "mimeType": mediaType}
+}
+
+// parseBase64DataURL parses a `data:<mime>;base64,<data>` URL, mirroring the
+// TypeScript adapter's `/^data:([^;]+);base64,(.+)$/` regex.
+func parseBase64DataURL(dataURL string) (mime string, data string, ok bool) {
+	rest := strings.TrimPrefix(dataURL, "data:")
+	const marker = ";base64,"
+	idx := strings.Index(rest, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	mime = rest[:idx]
+	data = rest[idx+len(marker):]
+	if mime == "" || data == "" {
+		return "", "", false
+	}
+	return mime, data, true
 }
 
 func fileContentBlock(part types.FileContent) map[string]interface{} {
 	mediaType := part.MediaType
 	if mediaType == "" {
 		mediaType = part.MimeType
+	}
+	if strings.HasPrefix(mediaType, "image/") {
+		return canonicalImageBlockForFile(part, mediaType)
 	}
 	filename := part.Filename
 	if filename == "" {
@@ -1197,6 +1761,22 @@ func fileContentBlock(part types.FileContent) map[string]interface{} {
 		}
 		return map[string]interface{}{"type": "file", "source_type": "base64", "data": encoded, "mime_type": mediaType, "metadata": metadata}
 	}
+}
+
+// canonicalImageBlockForFile converts a non-image-typed FileContent whose
+// mediaType is an image/* MIME type into LangChain's canonical image content
+// block, matching the TypeScript adapter's `isImage` branch in
+// `convertUserContent`.
+func canonicalImageBlockForFile(part types.FileContent, mediaType string) map[string]interface{} {
+	urlOrDataURL := part.URL
+	if urlOrDataURL == "" && part.FileData.Type == types.FileDataTypeURL {
+		urlOrDataURL = part.FileData.URL
+	}
+	data := part.Data
+	if len(data) == 0 && len(part.FileData.Data) > 0 {
+		data = part.FileData.Data
+	}
+	return canonicalImageContentBlock(urlOrDataURL, part.FileData.DataString, data, mediaType)
 }
 
 func defaultFilename(mediaType, prefix string) string {

@@ -47,6 +47,73 @@ func TestMCPToolConverterPropagatesMcpProviderMetadata(t *testing.T) {
 	}
 }
 
+// TestMCPToolConverterSurfacesAnnotations mirrors TS toolsFromDefinitions
+// annotation handling (mcp-client.ts, hash 33ba8fd): all five known hints are
+// mapped, unknown keys are dropped, and an absent annotations object yields
+// no "annotations" key at all.
+func TestMCPToolConverterSurfacesAnnotations(t *testing.T) {
+	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
+	converter := NewMCPToolConverter(client)
+
+	t.Run("all five hints mapped, unknown keys dropped", func(t *testing.T) {
+		tool, err := converter.convertTool(MCPTool{
+			Name:        "delete_file",
+			InputSchema: map[string]interface{}{"type": "object"},
+			Annotations: map[string]interface{}{
+				"title":           "Delete File",
+				"readOnlyHint":    false,
+				"destructiveHint": true,
+				"idempotentHint":  true,
+				"openWorldHint":   false,
+				"unknownHint":     "should be dropped",
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("convertTool error: %v", err)
+		}
+		mcpMeta, ok := tool.ProviderMetadata["mcp"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("missing mcp provider metadata: %#v", tool.ProviderMetadata)
+		}
+		annotations, ok := mcpMeta["annotations"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("missing annotations in mcp metadata: %#v", mcpMeta)
+		}
+		want := map[string]interface{}{
+			"title":           "Delete File",
+			"readOnlyHint":    false,
+			"destructiveHint": true,
+			"idempotentHint":  true,
+			"openWorldHint":   false,
+		}
+		if len(annotations) != len(want) {
+			t.Fatalf("annotations = %#v, want %#v", annotations, want)
+		}
+		for k, v := range want {
+			if annotations[k] != v {
+				t.Fatalf("annotations[%q] = %#v, want %#v", k, annotations[k], v)
+			}
+		}
+		if _, ok := annotations["unknownHint"]; ok {
+			t.Fatalf("unknown annotation key must be dropped: %#v", annotations)
+		}
+	})
+
+	t.Run("absent annotations yield no key", func(t *testing.T) {
+		tool, err := converter.convertTool(MCPTool{
+			Name:        "read_file",
+			InputSchema: map[string]interface{}{"type": "object"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("convertTool error: %v", err)
+		}
+		mcpMeta := tool.ProviderMetadata["mcp"].(map[string]interface{})
+		if _, ok := mcpMeta["annotations"]; ok {
+			t.Fatalf("annotations key must be absent: %#v", mcpMeta)
+		}
+	})
+}
+
 func TestMCPToolConverterTitleUsesTSNullishSemantics(t *testing.T) {
 	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
 	converter := NewMCPToolConverter(client)

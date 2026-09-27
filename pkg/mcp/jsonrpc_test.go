@@ -6,6 +6,69 @@ import (
 	"testing"
 )
 
+// TestValidateJSONRPCMessage mirrors TS json-rpc-message.test.ts
+// (hash 3c30eb4): validates requests and responses, rejects a non-"2.0"
+// jsonrpc version.
+func TestValidateJSONRPCMessage(t *testing.T) {
+	t.Run("validates JSON-RPC requests", func(t *testing.T) {
+		msg, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.Method != "tools/list" || msg.ID != int64(1) {
+			t.Fatalf("msg = %#v", msg)
+		}
+	})
+
+	t.Run("validates JSON-RPC responses", func(t *testing.T) {
+		msg, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.ID != int64(1) || string(msg.Result) != `{"tools":[]}` {
+			t.Fatalf("msg = %#v", msg)
+		}
+	})
+
+	t.Run("validates JSON-RPC notifications", func(t *testing.T) {
+		msg, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.ID != nil || msg.Method != "notifications/initialized" {
+			t.Fatalf("msg = %#v", msg)
+		}
+	})
+
+	t.Run("validates JSON-RPC errors", func(t *testing.T) {
+		msg, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msg.Error == nil || msg.Error.Code != -32601 {
+			t.Fatalf("msg = %#v", msg)
+		}
+	})
+
+	t.Run("rejects invalid JSON-RPC messages", func(t *testing.T) {
+		if _, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"1.0","id":1,"result":{"tools":[]}}`)); err == nil {
+			t.Fatal("expected error for jsonrpc version 1.0")
+		}
+	})
+
+	t.Run("rejects string id that is not string or int", func(t *testing.T) {
+		if _, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0","id":1.5,"method":"tools/list"}`)); err == nil {
+			t.Fatal("expected error for non-integer numeric id")
+		}
+	})
+
+	t.Run("rejects a message matching no shape", func(t *testing.T) {
+		if _, err := ValidateJSONRPCMessage([]byte(`{"jsonrpc":"2.0"}`)); err == nil {
+			t.Fatal("expected error for message with no method/result/error")
+		}
+	})
+}
+
 func TestIDGeneratorNextReturnsIncrementingIDs(t *testing.T) {
 	gen := NewIDGenerator()
 

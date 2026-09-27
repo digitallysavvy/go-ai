@@ -71,3 +71,90 @@ func TestMCPInitializeAndListTypesRoundTrip(t *testing.T) {
 		t.Fatalf("decoded list result mismatch: %#v", decodedList)
 	}
 }
+
+// TestCallToolResultSynthesizesTextFromStructuredContentOnly mirrors TS
+// CallToolResultWithStructuredContentSchema (types.ts, hash 3da84fd /
+// types.test.ts "normalizes structured-only results with %s content"): a
+// result carrying only structuredContent (no content field) gets a
+// synthesized single text content block and isError defaults to false.
+func TestCallToolResultSynthesizesTextFromStructuredContentOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"object", `{"structuredContent":{"value":42}}`, `{"value":42}`},
+		{"array", `{"structuredContent":[1,"two",false]}`, `[1,"two",false]`},
+		{"string", `{"structuredContent":"result"}`, `"result"`},
+		{"number", `{"structuredContent":42}`, `42`},
+		{"boolean", `{"structuredContent":true}`, `true`},
+		{"null", `{"structuredContent":null}`, `null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var result CallToolResult
+			if err := json.Unmarshal([]byte(tc.json), &result); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("IsError = true, want false (default)")
+			}
+			if len(result.Content) != 1 {
+				t.Fatalf("Content = %#v, want a single synthesized text block", result.Content)
+			}
+			block := result.Content[0]
+			if block.Type != "text" || block.Text != tc.want {
+				t.Fatalf("synthesized block = %#v, want type=text text=%s", block, tc.want)
+			}
+		})
+	}
+}
+
+// TestCallToolResultStructuredOnlyPreservesIsError mirrors TS types.test.ts
+// "preserves structured-only error results".
+func TestCallToolResultStructuredOnlyPreservesIsError(t *testing.T) {
+	var result CallToolResult
+	if err := json.Unmarshal([]byte(`{"structuredContent":{"code":"NOT_FOUND"},"isError":true}`), &result); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("IsError = false, want true (preserved)")
+	}
+	if len(result.Content) != 1 || result.Content[0].Text != `{"code":"NOT_FOUND"}` {
+		t.Fatalf("Content = %#v", result.Content)
+	}
+}
+
+// TestCallToolResultWithContentDoesNotSynthesize mirrors TS types.test.ts
+// "preserves results that already contain content": when content is already
+// present, structuredContent must not trigger synthesis/override.
+func TestCallToolResultWithContentDoesNotSynthesize(t *testing.T) {
+	var result CallToolResult
+	raw := `{"content":[{"type":"text","text":"Existing content"}],"structuredContent":{"value":42}}`
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Text != "Existing content" {
+		t.Fatalf("Content = %#v, want the original content preserved", result.Content)
+	}
+}
+
+// TestServerInfoTitleRoundTrip mirrors TS Configuration.title addition
+// (mcp-client.ts/types.ts, hash a98bf66).
+func TestServerInfoTitleRoundTrip(t *testing.T) {
+	info := ServerInfo{Name: "filesystem", Title: "Filesystem Server", Version: "1.0.0"}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if string(data) != `{"name":"filesystem","title":"Filesystem Server","version":"1.0.0"}` {
+		t.Fatalf("ServerInfo JSON = %s", string(data))
+	}
+	var decoded ServerInfo
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if decoded.Title != "Filesystem Server" {
+		t.Fatalf("decoded title = %q", decoded.Title)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -348,5 +349,135 @@ func TestSSETransportUnexpectedCloseReturnsReceiveError(t *testing.T) {
 	_, err := transport.Receive(ctx)
 	if err == nil || !strings.Contains(err.Error(), "MCP SSE Transport Error: Connection closed unexpectedly") {
 		t.Fatalf("Receive error = %v", err)
+	}
+}
+
+// oauthStaleSSEClient serves the GET SSE handshake normally, and treats any
+// POST whose Authorization header still carries the original token as
+// unauthorized (401) — a fresh token (whatever value RefreshTokenFunc
+// returns) always succeeds. This lets tests simulate a 401 that becomes
+// stale mid-flight without needing to coordinate exact call counts.
+type oauthStaleSSEClient struct {
+	mu           sync.Mutex
+	staleToken   string
+	authAttempts []string
+	getStream    io.ReadCloser
+}
+
+func (c *oauthStaleSSEClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       c.getStream,
+		}, nil
+	}
+	auth := req.Header.Get("Authorization")
+	c.mu.Lock()
+	c.authAttempts = append(c.authAttempts, auth)
+	stale := auth == "Bearer "+c.staleToken
+	c.mu.Unlock()
+	if stale {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader("unauthorized"))}, nil
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`))}, nil
+}
+
+// TestSSETransportRetriesOnce401WithRefresh mirrors TS mcp-sse-transport's
+// 401 recovery (hash 4b5cb49): a 401 triggers exactly one token refresh and
+// the request is retried with the new token.
+func TestSSETransportRetriesOnce401WithRefresh(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close() //nolint:errcheck
+
+	var refreshes int32
+	client := &oauthStaleSSEClient{staleToken: "old", getStream: reader}
+	transport := NewSSETransport(SSETransportConfig{
+		URL:       "http://localhost:3000/sse",
+		SSEClient: client,
+		OAuth: &OAuthConfig{
+			AccessToken: "old",
+			ExpiresAt:   time.Now().Add(time.Hour), // not proactively expired
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				atomic.AddInt32(&refreshes, 1)
+				return "fresh", time.Hour, nil
+			},
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(ctx) }()
+	writer.Write([]byte("event: endpoint\ndata: http://localhost:3000/messages\n\n")) //nolint:errcheck
+	if err := <-done; err != nil {
+		t.Fatalf("Connect error = %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	if err := transport.Send(ctx, &MCPMessage{JSONRpc: "2.0", Method: "test", ID: "1"}); err != nil {
+		t.Fatalf("Send error = %v", err)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh count = %d, want 1", got)
+	}
+	client.mu.Lock()
+	attempts := append([]string(nil), client.authAttempts...)
+	client.mu.Unlock()
+	if len(attempts) != 2 || attempts[0] != "Bearer old" || attempts[1] != "Bearer fresh" {
+		t.Fatalf("auth attempts = %v, want [Bearer old, Bearer fresh]", attempts)
+	}
+}
+
+// TestSSETransportConcurrent401sRefreshOnceAndStaleRetriesSkipRefresh mirrors
+// TS mcp-sse-transport.test.ts's dedup + stale-401 behavior (hash 4b5cb49):
+// several concurrent Sends that all observe a 401 for the same stale token
+// trigger exactly one refresh, and every Send still succeeds by retrying
+// with the (by-then) current token without each triggering its own refresh.
+func TestSSETransportConcurrent401sRefreshOnceAndStaleRetriesSkipRefresh(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close() //nolint:errcheck
+
+	var refreshes int32
+	client := &oauthStaleSSEClient{staleToken: "old", getStream: reader}
+	transport := NewSSETransport(SSETransportConfig{
+		URL:       "http://localhost:3000/sse",
+		SSEClient: client,
+		OAuth: &OAuthConfig{
+			AccessToken: "old",
+			ExpiresAt:   time.Now().Add(time.Hour),
+			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
+				atomic.AddInt32(&refreshes, 1)
+				time.Sleep(30 * time.Millisecond)
+				return "fresh", time.Hour, nil
+			},
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(ctx) }()
+	writer.Write([]byte("event: endpoint\ndata: http://localhost:3000/messages\n\n")) //nolint:errcheck
+	if err := <-done; err != nil {
+		t.Fatalf("Connect error = %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			if err := transport.Send(ctx, &MCPMessage{JSONRpc: "2.0", Method: "test", ID: id}); err != nil {
+				t.Errorf("Send %d error = %v", id, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh count = %d, want 1 (deduplicated across concurrent 401s)", got)
 	}
 }
