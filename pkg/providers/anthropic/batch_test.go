@@ -462,6 +462,144 @@ func TestBatch_ResultsURLOnUntrustedOriginIsRejectedWithoutLeakingCredentials(t 
 	}
 }
 
+// anthropicValidBatchMessageJSON returns a well-formed succeeded-result
+// message with the given text, matching the shape anthropic-batch.test.ts's
+// messageResultBody helper produces.
+func anthropicValidBatchMessageJSON(text string) string {
+	return `{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-haiku-20240307",` +
+		`"content":[{"type":"text","text":"` + text + `"}],"stop_reason":"end_turn",` +
+		`"usage":{"input_tokens":10,"output_tokens":3}}`
+}
+
+// TestBatch_FailsInvalidSucceededItemWithoutAbortingLaterResults ports TS
+// "fails an invalid succeeded item without aborting later results"
+// (anthropic-batch.test.ts:1665): a succeeded message with no content array
+// and no usage (just {"type":"message"}) can't be salvaged and must fail
+// with invalid_response, without stopping the stream.
+func TestBatch_FailsInvalidSucceededItemWithoutAbortingLaterResults(t *testing.T) {
+	lines := []string{
+		`{"custom_id":"invalid","result":{"type":"succeeded","message":{"type":"message"}}}`,
+		`{"custom_id":"valid","result":{"type":"succeeded","message":` + anthropicValidBatchMessageJSON("Paris") + `}}`,
+	}
+	srv := anthropicBatchResultsServer(t, strings.Join(lines, "\n"))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	if got := items["invalid"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil ||
+		got.Error.Code != "invalid_response" || got.Error.Message != "Anthropic returned an invalid Message batch result." {
+		t.Fatalf("invalid = %+v", got)
+	}
+	if got := items["valid"]; got == nil || got.Status != provider.BatchItemSucceeded {
+		t.Fatalf("valid = %+v", got)
+	}
+}
+
+// TestBatch_FailsUnknownResultTypeWithoutAbortingLaterResults ports TS
+// "fails an unknown result type without aborting later results"
+// (anthropic-batch.test.ts:1714).
+func TestBatch_FailsUnknownResultTypeWithoutAbortingLaterResults(t *testing.T) {
+	lines := []string{
+		`{"custom_id":"unknown","result":{"type":"future_result","data":"opaque"}}`,
+		`{"custom_id":"valid","result":{"type":"succeeded","message":` + anthropicValidBatchMessageJSON("Paris") + `}}`,
+	}
+	srv := anthropicBatchResultsServer(t, strings.Join(lines, "\n"))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	if got := items["unknown"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("unknown = %+v", got)
+	}
+	if got := items["valid"]; got == nil || got.Status != provider.BatchItemSucceeded {
+		t.Fatalf("valid = %+v", got)
+	}
+}
+
+// TestBatch_SkipsUnknownContentBlocksButFailsOnMalformedKnownBlock ports TS
+// "skips unknown content blocks in a succeeded result"
+// (anthropic-batch.test.ts:1760): an unrecognized content-block type is
+// dropped and the rest of the message still succeeds; a recognized type
+// (text) missing its required field (text) fails the whole item.
+func TestBatch_SkipsUnknownContentBlocksButFailsOnMalformedKnownBlock(t *testing.T) {
+	futureContentMessage := `{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-haiku-20240307",` +
+		`"content":[{"type":"future_content","data":"opaque"},{"type":"text","text":"Paris"}],"stop_reason":"end_turn",` +
+		`"usage":{"input_tokens":10,"output_tokens":3}}`
+	malformedContentMessage := `{"id":"msg_124","type":"message","role":"assistant","model":"claude-3-haiku-20240307",` +
+		`"content":[{"type":"text"},{"type":"text","text":"Paris"}],"stop_reason":"end_turn",` +
+		`"usage":{"input_tokens":10,"output_tokens":3}}`
+	lines := []string{
+		`{"custom_id":"future-content","result":{"type":"succeeded","message":` + futureContentMessage + `}}`,
+		`{"custom_id":"malformed-known-content","result":{"type":"succeeded","message":` + malformedContentMessage + `}}`,
+	}
+	srv := anthropicBatchResultsServer(t, strings.Join(lines, "\n"))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	future := items["future-content"]
+	if future == nil || future.Status != provider.BatchItemSucceeded || future.TextResult == nil || future.TextResult.Text != "Paris" {
+		t.Fatalf("future-content = %+v (TextResult = %+v)", future, future.TextResult)
+	}
+	if got := items["malformed-known-content"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("malformed-known-content = %+v", got)
+	}
+}
+
+// anthropicBatchResultsServer starts a batch server that reports batch "b1"
+// as ended (with results_url same-origin), streaming resultsBody as the
+// results file's NDJSON content.
+func anthropicBatchResultsServer(t *testing.T, resultsBody string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":"","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(resultsBody + "\n"))
+	})
+	return srv
+}
+
+func drainAnthropicBatchResults(t *testing.T, stream provider.BatchV4ItemResultStream) map[string]*provider.BatchV4ItemResult {
+	t.Helper()
+	items := map[string]*provider.BatchV4ItemResult{}
+	for {
+		item, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		items[item.ID] = item
+	}
+	return items
+}
+
 func asInvalidArgumentError(err error, target **providererrors.InvalidArgumentError) bool {
 	if e, ok := err.(*providererrors.InvalidArgumentError); ok {
 		*target = e

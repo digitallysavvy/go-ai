@@ -484,7 +484,7 @@ func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {
 		RawStatus:     r.ProcessingStatus,
 		RequestCounts: providerutils.NormalizeBatchRequestCounts(&total, &pending, &completed, &failed),
 		CreatedAt:     r.CreatedAt,
-		ExpiresAt: r.ExpiresAt,
+		ExpiresAt:     r.ExpiresAt,
 		ProviderMetadata: map[string]interface{}{
 			"anthropic": map[string]interface{}{
 				"archivedAt":        r.ArchivedAt,
@@ -596,8 +596,12 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 		}
 		return item
 	case "succeeded":
+		validated, ok := validateAnthropicBatchMessage(result.Message)
+		if !ok {
+			return invalidAnthropicBatchResult(wire.CustomID)
+		}
 		var response anthropicResponse
-		if err := json.Unmarshal(result.Message, &response); err != nil {
+		if err := json.Unmarshal(validated, &response); err != nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		lm := &LanguageModel{provider: s.provider}
@@ -617,6 +621,112 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 	default:
 		return invalidAnthropicBatchResult(wire.CustomID)
 	}
+}
+
+// anthropicKnownBatchContentTypes are the content-block types
+// anthropicResponseSchema's discriminated union recognizes, mirroring TS
+// knownAnthropicBatchContentTypes (anthropic-batch.ts). A block outside
+// this set is a possible future/unrecognized type and is dropped silently,
+// matching TS's parseAnthropicBatchResponse; a block inside this set that
+// fails its structural check instead fails the whole item.
+var anthropicKnownBatchContentTypes = map[string]bool{
+	"advisor_tool_result":                    true,
+	"bash_code_execution_tool_result":        true,
+	"code_execution_tool_result":             true,
+	"compaction":                             true,
+	"container_upload":                       true,
+	"fallback":                               true,
+	"mcp_tool_result":                        true,
+	"mcp_tool_use":                           true,
+	"redacted_thinking":                      true,
+	"server_tool_use":                        true,
+	"text":                                   true,
+	"text_editor_code_execution_tool_result": true,
+	"thinking":                               true,
+	"tool_search_tool_result":                true,
+	"tool_use":                               true,
+	"web_fetch_tool_result":                  true,
+	"web_search_tool_result":                 true,
+}
+
+// anthropicBatchContentBlockRequiredFields lists the JSON fields
+// anthropicResponseSchema requires to be present for content-block types
+// simple enough to check by field presence alone (mirrors the per-variant
+// required fields in anthropic-api.ts's anthropicResponseSchema). A known
+// type with no entry here (e.g. the several deeply nested
+// *_tool_result/*_code_execution_* variants) is accepted once it parses as
+// a JSON object with a recognized type; porting every nested union's full
+// shape is out of scope for this presence-level check.
+var anthropicBatchContentBlockRequiredFields = map[string][]string{
+	"text":              {"text"},
+	"thinking":          {"thinking", "signature"},
+	"redacted_thinking": {"data"},
+	"tool_use":          {"id", "name"},
+	"server_tool_use":   {"id", "name"},
+	"mcp_tool_use":      {"id", "name", "server_name"},
+	"mcp_tool_result":   {"tool_use_id", "is_error", "content"},
+}
+
+// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: a
+// partial, field-presence-level port of anthropicResponseSchema. It
+// validates the message envelope (type "message", a content array, and a
+// usage object with numeric input/output token counts — all required,
+// non-nullish fields of the schema), then per content block: an
+// unrecognized block type is dropped; a recognized type missing one of its
+// required fields fails the whole message; anything else is kept as-is.
+// Returns the (possibly content-filtered) message JSON and true on success,
+// or nil/false when the message can't be salvaged into a valid result at
+// all, matching TS returning undefined from parseAnthropicBatchResponse.
+func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) {
+	var envelope struct {
+		Type    string            `json:"type"`
+		Content []json.RawMessage `json:"content"`
+		Usage   *struct {
+			InputTokens  *float64 `json:"input_tokens"`
+			OutputTokens *float64 `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil ||
+		envelope.Type != "message" ||
+		envelope.Content == nil ||
+		envelope.Usage == nil ||
+		envelope.Usage.InputTokens == nil ||
+		envelope.Usage.OutputTokens == nil {
+		return nil, false
+	}
+
+	filtered := make([]json.RawMessage, 0, len(envelope.Content))
+	for _, block := range envelope.Content {
+		var fields map[string]interface{}
+		if err := json.Unmarshal(block, &fields); err != nil {
+			return nil, false
+		}
+		blockType, _ := fields["type"].(string)
+		if !anthropicKnownBatchContentTypes[blockType] {
+			continue
+		}
+		for _, field := range anthropicBatchContentBlockRequiredFields[blockType] {
+			if v, ok := fields[field]; !ok || v == nil {
+				return nil, false
+			}
+		}
+		filtered = append(filtered, block)
+	}
+
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil {
+		return nil, false
+	}
+	filteredJSON, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, false
+	}
+	full["content"] = filteredJSON
+	rebuilt, err := json.Marshal(full)
+	if err != nil {
+		return nil, false
+	}
+	return rebuilt, true
 }
 
 func invalidAnthropicBatchResult(id string) *provider.BatchV4ItemResult {
