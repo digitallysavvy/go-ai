@@ -1,5 +1,7 @@
 package codemode
 
+import "fmt"
+
 // Execution limits applied to each sandbox invocation. Zero-value fields
 // fall back to their documented defaults when the policy is resolved.
 // Mirrors the TypeScript SDK's CodeModeExecutionPolicy
@@ -76,7 +78,19 @@ type resolvedPolicy struct {
 	MaxInFlightBridgeRequests int
 }
 
-func resolveExecutionPolicy(p *ExecutionPolicy) resolvedPolicy {
+// resolveExecutionPolicy defaults every unset (zero-value) field of p and
+// validates the rest. Mirrors TypeScript's resolveExecutionPolicy
+// (code-mode/src/run-code-mode.ts) and its "rejects invalid positive
+// integer option" test cases (code-mode/src/utils/options.test.ts), with
+// one deliberate, Go-runtime-forced difference: TS's options are `number |
+// undefined`, so it can and does reject an explicit `0` ("must be a
+// positive integer"); Go's ExecutionPolicy fields are plain `int` with no
+// separate "unset" representation, so (per this type's own doc comment) a
+// zero field means "use the default" and is not an error -- only a
+// negative value, which can never mean "unset", is rejected. TS's
+// non-integer (`1.5`) and `NaN` cases have no Go equivalent: `int` cannot
+// hold either.
+func resolveExecutionPolicy(p *ExecutionPolicy) (resolvedPolicy, error) {
 	r := resolvedPolicy{
 		TimeoutMs:                 DefaultTimeoutMs,
 		MemoryLimitBytes:          DefaultMemoryLimitBytes,
@@ -90,37 +104,32 @@ func resolveExecutionPolicy(p *ExecutionPolicy) resolvedPolicy {
 		MaxInFlightBridgeRequests: DefaultMaxInFlightBridgeRequests,
 	}
 	if p == nil {
-		return r
+		return r, nil
 	}
-	if p.TimeoutMs > 0 {
-		r.TimeoutMs = p.TimeoutMs
+
+	fields := [...]struct {
+		name string
+		val  int
+		dst  *int
+	}{
+		{"timeoutMs", p.TimeoutMs, &r.TimeoutMs},
+		{"memoryLimitBytes", p.MemoryLimitBytes, &r.MemoryLimitBytes},
+		{"maxStackSizeBytes", p.MaxStackSizeBytes, &r.MaxStackSizeBytes},
+		{"maxResultBytes", p.MaxResultBytes, &r.MaxResultBytes},
+		{"maxConsoleOutputBytes", p.MaxConsoleOutputBytes, &r.MaxConsoleOutputBytes},
+		{"maxSourceBytes", p.MaxSourceBytes, &r.MaxSourceBytes},
+		{"maxToolInputBytes", p.MaxToolInputBytes, &r.MaxToolInputBytes},
+		{"maxToolOutputBytes", p.MaxToolOutputBytes, &r.MaxToolOutputBytes},
+		{"maxBridgeRequests", p.MaxBridgeRequests, &r.MaxBridgeRequests},
+		{"maxInFlightBridgeRequests", p.MaxInFlightBridgeRequests, &r.MaxInFlightBridgeRequests},
 	}
-	if p.MemoryLimitBytes > 0 {
-		r.MemoryLimitBytes = p.MemoryLimitBytes
+	for _, f := range fields {
+		if f.val < 0 {
+			return resolvedPolicy{}, fmt.Errorf("codemode: executionPolicy.%s must be a positive integer, got %d", f.name, f.val)
+		}
+		if f.val > 0 {
+			*f.dst = f.val
+		}
 	}
-	if p.MaxStackSizeBytes > 0 {
-		r.MaxStackSizeBytes = p.MaxStackSizeBytes
-	}
-	if p.MaxResultBytes > 0 {
-		r.MaxResultBytes = p.MaxResultBytes
-	}
-	if p.MaxConsoleOutputBytes > 0 {
-		r.MaxConsoleOutputBytes = p.MaxConsoleOutputBytes
-	}
-	if p.MaxSourceBytes > 0 {
-		r.MaxSourceBytes = p.MaxSourceBytes
-	}
-	if p.MaxToolInputBytes > 0 {
-		r.MaxToolInputBytes = p.MaxToolInputBytes
-	}
-	if p.MaxToolOutputBytes > 0 {
-		r.MaxToolOutputBytes = p.MaxToolOutputBytes
-	}
-	if p.MaxBridgeRequests > 0 {
-		r.MaxBridgeRequests = p.MaxBridgeRequests
-	}
-	if p.MaxInFlightBridgeRequests > 0 {
-		r.MaxInFlightBridgeRequests = p.MaxInFlightBridgeRequests
-	}
-	return r
+	return r, nil
 }

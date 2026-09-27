@@ -58,10 +58,20 @@ var (
 // code-mode); note that TypeScript's cap bounds worker *threads*, while
 // this Go port has no worker threads (see the package doc), so it simply
 // bounds concurrent in-flight RunCodeMode/Run calls.
-func SetMaxWorkers(n int) {
+//
+// Mirrors TypeScript's setMaxWorkers validation ("rejects invalid
+// maxWorkers values", code-mode/src/utils/options.test.ts) for negative
+// values; unlike TypeScript, n == 0 is accepted (it is Go's "unlimited"
+// sentinel here, not an unset/undefined value -- see the doc above and
+// resolveExecutionPolicy's doc comment for the same reasoning).
+func SetMaxWorkers(n int) error {
+	if n < 0 {
+		return fmt.Errorf("codemode: maxWorkers must be a positive integer, got %d", n)
+	}
 	maxWorkersMu.Lock()
 	defer maxWorkersMu.Unlock()
 	maxWorkers = n
+	return nil
 }
 
 // acquireWorkerSlot reserves a concurrency slot for one sandbox invocation,

@@ -19,9 +19,13 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	if input.Options != nil {
 		options = input.Options
 	}
-	policy := resolveExecutionPolicy(nil)
+	var policyInput *ExecutionPolicy
 	if options != nil {
-		policy = resolveExecutionPolicy(options.ExecutionPolicy)
+		policyInput = options.ExecutionPolicy
+	}
+	policy, perr := resolveExecutionPolicy(policyInput)
+	if perr != nil {
+		return nil, perr
 	}
 
 	if err := assertSourceSize(input.JS, policy.MaxSourceBytes); err != nil {

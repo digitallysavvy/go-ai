@@ -115,7 +115,9 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	execOptions := b.baseOptions
 	execOptions.ToolCallID = toolCallID
 
-	needsApproval, aerr := resolveNeedsApproval(b.ctx, tool, input, execOptions)
+	needsApproval, aerr := raceAgainstAbort(b.ctx, func() (bool, error) {
+		return resolveNeedsApproval(b.ctx, tool, input, execOptions)
+	})
 	if aerr != nil {
 		return "", aerr
 	}
@@ -125,8 +127,16 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		}
 	}
 
-	output, oerr := tool.Execute(b.ctx, input, execOptions)
+	output, oerr := raceAgainstAbort(b.ctx, func() (interface{}, error) {
+		return tool.Execute(b.ctx, input, execOptions)
+	})
 	if oerr != nil {
+		if cmErr, ok := oerr.(CodeModeError); ok && cmErr.ErrorCode() == "CODE_MODE_ABORTED" {
+			// Mirrors TypeScript's raceAgainstAbort: cancellation wins
+			// the race and propagates as-is, unsanitized (it is not a
+			// tool-thrown error).
+			return "", oerr
+		}
 		// Mirrors TypeScript's invokeCodeModeTool: any non-CodeModeError
 		// thrown by a host tool is sanitized to a generic message so raw
 		// tool internals never leak into the sandbox.
@@ -157,7 +167,9 @@ func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map
 		return NewToolApprovalRequiredError(toolName, input, toolCallID)
 	}
 
-	decision, derr := onApprovalRequired(b.ctx, ApprovalRequest{ToolName: toolName, Input: input, ToolCallID: toolCallID})
+	decision, derr := raceAgainstAbort(b.ctx, func() (ApprovalDecision, error) {
+		return onApprovalRequired(b.ctx, ApprovalRequest{ToolName: toolName, Input: input, ToolCallID: toolCallID})
+	})
 	if derr != nil {
 		return derr
 	}
@@ -211,4 +223,41 @@ func toolInputValidator(tool types.Tool) schema.Validator {
 		return s.Validator()
 	}
 	return nil
+}
+
+// raceAgainstAbort runs fn in its own goroutine and returns its result,
+// unless ctx is done first -- in which case it returns immediately with
+// *AbortedError without waiting for fn to finish. If fn never returns (a
+// misbehaving host tool that ignores context cancellation), its goroutine
+// is abandoned; this is the same accepted trade-off runInSandbox makes for
+// a timed-out sandbox invocation (see engine.go's doc comment) -- Go has
+// no way to forcibly stop a goroutine, so the alternative is to hang
+// indefinitely, which is worse.
+//
+// Mirrors TypeScript's raceAgainstAbort (code-mode/src/tool-invocation.ts),
+// which races every nested host-tool step (needsApproval, the approval
+// callback, execute) against the outer AbortSignal so cancellation takes
+// effect immediately instead of only being observed between bridge calls.
+func raceAgainstAbort[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, NewAbortedError()
+	}
+
+	type outcome struct {
+		v   T
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		v, err := fn()
+		ch <- outcome{v, err}
+	}()
+
+	select {
+	case out := <-ch:
+		return out.v, out.err
+	case <-ctx.Done():
+		return zero, NewAbortedError()
+	}
 }
