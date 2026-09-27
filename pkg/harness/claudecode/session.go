@@ -19,6 +19,7 @@ import (
 var _ harness.Session = (*session)(nil)
 var _ harness.PromptControl = (*promptControl)(nil)
 var _ harness.ToolApprovalSubmitter = (*promptControl)(nil)
+var _ harness.UserMessageSubmitter = (*promptControl)(nil)
 
 // sessionOptions is the input of newSession. Mirrors the object TS
 // `createSession` closes over.
@@ -50,6 +51,16 @@ type sessionOptions struct {
 
 	sandbox        providerutils.SandboxSession
 	sandboxHomeDir string
+
+	// supportsUserMessages is whether the bridge advertised acknowledged
+	// mid-turn user messages (experimental_userMessageResponses) on the
+	// hello it sent during the connection this session was built from.
+	// DoStart captures it via OpenBridgeWebSocket's OnHello — the hello
+	// frame is consumed by the dial/hello-wait handshake itself and never
+	// reaches the Channel's normal dispatch, so it cannot be observed via
+	// channel.On. Mirrors TS `supportsUserMessageResponses()`, captured once
+	// at channel-build (session) time, the same way.
+	supportsUserMessages bool
 }
 
 type session struct {
@@ -312,6 +323,14 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		emit(part)
 	}
 
+	// Mid-turn steering: only when the bridge advertised acknowledged user
+	// messages on its hello (captured once at DoStart time — see
+	// sessionOptions.supportsUserMessages). Mirrors TS `wireTurn`'s
+	// `supportsUserMessageResponses() ? experimental_createBridgeUserMessageSubmitter(...) : undefined`.
+	if s.opts.supportsUserMessages {
+		pc.userMessages = bridge.NewChannelUserMessageSubmitter(s.opts.channel)
+	}
+
 	eventTypes := []string{
 		harness.PartTypeStreamStart, harness.PartTypeTextStart, harness.PartTypeTextDelta, harness.PartTypeTextEnd,
 		harness.PartTypeReasoningStart, harness.PartTypeReasoningDelta, harness.PartTypeReasoningEnd,
@@ -379,10 +398,12 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	return pc
 }
 
-// promptControl implements harness.PromptControl + ToolApprovalSubmitter.
+// promptControl implements harness.PromptControl + ToolApprovalSubmitter +
+// UserMessageSubmitter (when the bridge advertises support).
 type promptControl struct {
-	channel *bridge.Channel
-	unsubs  []func()
+	channel      *bridge.Channel
+	unsubs       []func()
+	userMessages *bridge.ExperimentalUserMessageSubmitter
 
 	once sync.Once
 	done chan struct{}
@@ -394,6 +415,9 @@ func (c *promptControl) settleSuccess() {
 		for _, u := range c.unsubs {
 			u()
 		}
+		if c.userMessages != nil {
+			c.userMessages.Close(nil)
+		}
 		close(c.done)
 	})
 }
@@ -403,6 +427,9 @@ func (c *promptControl) settleError(err error) {
 		c.err = err
 		for _, u := range c.unsubs {
 			u()
+		}
+		if c.userMessages != nil {
+			c.userMessages.Close(err)
 		}
 		close(c.done)
 	})
@@ -422,6 +449,20 @@ func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }
 func (c *promptControl) Err() error            { return c.err }
+
+// SubmitUserMessage steers the in-flight turn with an acknowledged mid-turn
+// user message. It is only reachable when the bridge advertised
+// experimental_userMessageResponses on hello (see wireTurn); c.userMessages
+// is nil otherwise, and this type does not satisfy
+// harness.UserMessageSubmitter for that turn (the interface is checked with
+// a type assertion by callers, mirroring TS's `submitUserMessage` being
+// absent from the returned object rather than throwing).
+func (c *promptControl) SubmitUserMessage(ctx context.Context, text string) error {
+	if c.userMessages == nil {
+		return errors.New("claude-code: the connected bridge does not support mid-turn user messages.")
+	}
+	return c.userMessages.Submit(ctx, text)
+}
 
 // extractUserText mirrors TS `extractUserText`: a bare string prompt, or a
 // user message whose content is only text parts.

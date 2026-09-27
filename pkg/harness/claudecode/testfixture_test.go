@@ -2,6 +2,7 @@ package claudecode_test
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -14,12 +15,17 @@ import (
 // fake bridge server without any real Node process or CLI.
 type testSandbox struct {
 	*bridgetest.Sandbox
-	home     string
-	id       string
-	workDir  string
-	endpoint harness.PortEndpoint
-	ports    []int
+	home       string
+	id         string
+	workDir    string
+	endpoint   harness.PortEndpoint
+	ports      []int
+	spawnCount int32
 }
+
+// SpawnCount returns how many times Spawn has been called, so a test can
+// assert an attach rung skipped (or a fallback rung required) a respawn.
+func (t *testSandbox) SpawnCount() int { return int(atomic.LoadInt32(&t.spawnCount)) }
 
 func newTestSandbox(srv *bridgetest.Server) *testSandbox {
 	return &testSandbox{
@@ -62,6 +68,7 @@ var _ harness.NetworkSandboxSession = (*testSandbox)(nil)
 // this fake (no real OS process is involved).
 func wireSpawn(sandbox *testSandbox) {
 	sandbox.SetSpawn(func(context.Context, providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
+		atomic.AddInt32(&sandbox.spawnCount, 1)
 		proc := bridgetest.NewProcess()
 		proc.WriteStdout("{\"type\":\"bridge-ready\",\"port\":4319}\n")
 		go func() {
