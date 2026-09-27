@@ -45,6 +45,15 @@ type BatchTextRequest struct {
 	Tools      []types.Tool
 	ToolChoice types.ToolChoice
 
+	// ToolOrder controls the order tools are sent to the provider for this
+	// request. Mirrors TypeScript's TextBatchRequest.toolOrder.
+	ToolOrder []string
+
+	// ToolsContext resolves per-tool dynamic descriptions (Tool.DescriptionFunc)
+	// before the request is sent. Mirrors TypeScript's
+	// TextBatchRequest.toolsContext, threaded through prepareTools.
+	ToolsContext map[string]interface{}
+
 	Reasoning      *types.ReasoningLevel
 	ResponseFormat *provider.ResponseFormat
 
@@ -154,9 +163,9 @@ type StartBatchResult struct {
 	Warnings []provider.BatchV4Warning
 }
 
-// ExperimentalStartTextBatch starts a batch of text and/or image generation
+// ExperimentalStartBatch starts a batch of text and/or image generation
 // requests. Experimental: may change in patch releases.
-func ExperimentalStartTextBatch(ctx context.Context, opts StartBatchOptions) (*StartBatchResult, error) {
+func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*StartBatchResult, error) {
 	if err := validateBatchRequests(opts.Requests); err != nil {
 		return nil, err
 	}
@@ -633,6 +642,11 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if normErr != nil {
 			return provider.BatchV4Request{}, normErr
 		}
+		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
+		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
+		// resolved via toolsContext, then tools are reordered per toolOrder.
+		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
+		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
 		genOpts := provider.GenerateOptions{
 			Prompt:           normalizedPrompt,
 			Temperature:      t.Temperature,
@@ -643,7 +657,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 			PresencePenalty:  t.PresencePenalty,
 			StopSequences:    t.StopSequences,
 			Seed:             t.Seed,
-			Tools:            t.Tools,
+			Tools:            resolvedTools,
 			ToolChoice:       t.ToolChoice,
 			Reasoning:        t.Reasoning,
 			ResponseFormat:   t.ResponseFormat,

@@ -92,8 +92,8 @@ func textBatchRequest(id, model string) BatchRequest {
 	return BatchRequest{Text: &BatchTextRequest{ID: id, Model: model, Prompt: "hi"}}
 }
 
-func TestExperimentalStartTextBatch_RejectsEmptyRequests(t *testing.T) {
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+func TestExperimentalStartBatch_RejectsEmptyRequests(t *testing.T) {
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: &mockBatchV4{providerName: "mock.batch"},
 		Requests: nil,
 	})
@@ -102,8 +102,8 @@ func TestExperimentalStartTextBatch_RejectsEmptyRequests(t *testing.T) {
 	}
 }
 
-func TestExperimentalStartTextBatch_RejectsDuplicateIDs(t *testing.T) {
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+func TestExperimentalStartBatch_RejectsDuplicateIDs(t *testing.T) {
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: &mockBatchV4{providerName: "mock.batch"},
 		Requests: []BatchRequest{textBatchRequest("req-1", "m"), textBatchRequest("req-1", "m")},
 	})
@@ -112,8 +112,8 @@ func TestExperimentalStartTextBatch_RejectsDuplicateIDs(t *testing.T) {
 	}
 }
 
-func TestExperimentalStartTextBatch_RejectsEmptyID(t *testing.T) {
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+func TestExperimentalStartBatch_RejectsEmptyID(t *testing.T) {
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: &mockBatchV4{providerName: "mock.batch"},
 		Requests: []BatchRequest{textBatchRequest("  ", "m")},
 	})
@@ -122,8 +122,8 @@ func TestExperimentalStartTextBatch_RejectsEmptyID(t *testing.T) {
 	}
 }
 
-func TestExperimentalStartTextBatch_RejectsIncompleteRequest(t *testing.T) {
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+func TestExperimentalStartBatch_RejectsIncompleteRequest(t *testing.T) {
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: &mockBatchV4{providerName: "mock.batch"},
 		Requests: []BatchRequest{{}},
 	})
@@ -132,7 +132,7 @@ func TestExperimentalStartTextBatch_RejectsIncompleteRequest(t *testing.T) {
 	}
 }
 
-func TestExperimentalStartTextBatch_RejectsIncompatibleToolDefinitions(t *testing.T) {
+func TestExperimentalStartBatch_RejectsIncompatibleToolDefinitions(t *testing.T) {
 	toolA := types.Tool{Name: "search", Description: "v1", Parameters: map[string]interface{}{"type": "object"}}
 	toolB := types.Tool{Name: "search", Description: "v2 (different)", Parameters: map[string]interface{}{"type": "object"}}
 
@@ -141,7 +141,7 @@ func TestExperimentalStartTextBatch_RejectsIncompatibleToolDefinitions(t *testin
 	req2 := textBatchRequest("req-2", "m")
 	req2.Text.Tools = []types.Tool{toolB}
 
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: &mockBatchV4{providerName: "mock.batch"},
 		Requests: []BatchRequest{req1, req2},
 	})
@@ -150,7 +150,7 @@ func TestExperimentalStartTextBatch_RejectsIncompatibleToolDefinitions(t *testin
 	}
 }
 
-func TestExperimentalStartTextBatch_AllowsIdenticalToolDefinitions(t *testing.T) {
+func TestExperimentalStartBatch_AllowsIdenticalToolDefinitions(t *testing.T) {
 	tool := types.Tool{Name: "search", Description: "v1", Parameters: map[string]interface{}{"type": "object"}}
 	req1 := textBatchRequest("req-1", "m")
 	req1.Text.Tools = []types.Tool{tool}
@@ -169,12 +169,12 @@ func TestExperimentalStartTextBatch_AllowsIdenticalToolDefinitions(t *testing.T)
 		},
 	}
 
-	result, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+	result, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: mock,
 		Requests: []BatchRequest{req1, req2},
 	})
 	if err != nil {
-		t.Fatalf("ExperimentalStartTextBatch() error = %v", err)
+		t.Fatalf("ExperimentalStartBatch() error = %v", err)
 	}
 	if len(gotRequests) != 2 {
 		t.Fatalf("gotRequests = %d, want 2", len(gotRequests))
@@ -187,13 +187,50 @@ func TestExperimentalStartTextBatch_AllowsIdenticalToolDefinitions(t *testing.T)
 	}
 }
 
-// TestExperimentalStartTextBatch_NormalizesPromptDownloads mirrors
+// TestExperimentalStartBatch_AppliesToolOrder mirrors TypeScript's
+// `prepareTools({ tools, toolOrder, toolsContext })` in
+// packages/ai/src/batch/batch.ts: a text request's ToolOrder reorders the
+// tools sent to the provider.
+func TestExperimentalStartBatch_AppliesToolOrder(t *testing.T) {
+	toolA := types.Tool{Name: "a", Parameters: map[string]interface{}{"type": "object"}}
+	toolB := types.Tool{Name: "b", Parameters: map[string]interface{}{"type": "object"}}
+
+	var gotRequests []provider.BatchV4Request
+	mock := &mockBatchV4{
+		providerName: "mock.batch",
+		startFn: func(_ context.Context, opts provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+			gotRequests = opts.Requests
+			return &provider.BatchV4StartResult{BatchID: "job_1"}, nil
+		},
+	}
+
+	req := textBatchRequest("req-1", "m")
+	req.Text.Tools = []types.Tool{toolA, toolB}
+	req.Text.ToolOrder = []string{"b", "a"}
+
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: mock,
+		Requests: []BatchRequest{req},
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalStartBatch() error = %v", err)
+	}
+	if len(gotRequests) != 1 || gotRequests[0].Text == nil {
+		t.Fatalf("gotRequests = %+v", gotRequests)
+	}
+	sentTools := gotRequests[0].Text.Options.Tools
+	if len(sentTools) != 2 || sentTools[0].Name != "b" || sentTools[1].Name != "a" {
+		t.Fatalf("sentTools = %+v, want [b, a]", sentTools)
+	}
+}
+
+// TestExperimentalStartBatch_NormalizesPromptDownloads mirrors
 // TypeScript's use of convertToLanguageModelPrompt with the batch
 // interface's supportedUrls in packages/ai/src/batch/batch.ts: a file URL
 // the batch interface cannot pass through directly must be downloaded and
 // inlined before the request reaches DoStartBatch, exactly like
 // generateText/streamText.
-func TestExperimentalStartTextBatch_NormalizesPromptDownloads(t *testing.T) {
+func TestExperimentalStartBatch_NormalizesPromptDownloads(t *testing.T) {
 	originalDownload := DefaultDownload
 	defer func() { DefaultDownload = originalDownload }()
 
@@ -231,12 +268,12 @@ func TestExperimentalStartTextBatch_NormalizesPromptDownloads(t *testing.T) {
 		}},
 	}}
 
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: mock,
 		Requests: []BatchRequest{req},
 	})
 	if err != nil {
-		t.Fatalf("ExperimentalStartTextBatch() error = %v", err)
+		t.Fatalf("ExperimentalStartBatch() error = %v", err)
 	}
 
 	if len(downloadedURLs) != 1 || downloadedURLs[0] != "https://example.com/image.png" {
@@ -262,7 +299,7 @@ func TestExperimentalStartTextBatch_NormalizesPromptDownloads(t *testing.T) {
 	}
 }
 
-func TestExperimentalStartTextBatch_ViaBatchProvider(t *testing.T) {
+func TestExperimentalStartBatch_ViaBatchProvider(t *testing.T) {
 	mock := &mockBatchV4{
 		providerName: "mock.batch",
 		startFn: func(_ context.Context, _ provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
@@ -271,12 +308,12 @@ func TestExperimentalStartTextBatch_ViaBatchProvider(t *testing.T) {
 	}
 	bp := mockBatchProvider{batch: mock}
 
-	result, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+	result, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: bp,
 		Requests: []BatchRequest{textBatchRequest("req-1", "m")},
 	})
 	if err != nil {
-		t.Fatalf("ExperimentalStartTextBatch() error = %v", err)
+		t.Fatalf("ExperimentalStartBatch() error = %v", err)
 	}
 	if result.ID != "job_1" {
 		t.Fatalf("result.ID = %q", result.ID)
@@ -289,8 +326,8 @@ type mockBatchProvider struct {
 
 func (p mockBatchProvider) ExperimentalBatch() provider.BatchV4 { return p.batch }
 
-func TestExperimentalStartTextBatch_UnsupportedProviderReturnsError(t *testing.T) {
-	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+func TestExperimentalStartBatch_UnsupportedProviderReturnsError(t *testing.T) {
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
 		Provider: "not-a-batch-provider",
 		Requests: []BatchRequest{textBatchRequest("req-1", "m")},
 	})
