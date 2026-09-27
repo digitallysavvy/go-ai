@@ -30,11 +30,25 @@ type TelemetryStartEvent struct {
 	// Settings holds the caller-supplied telemetry configuration.
 	// nil means telemetry was not configured for this call.
 	Settings *Settings
-	// Prompt and System are only populated when Settings.RecordInputs is true.
+	// Prompt, System, and Messages are only populated when
+	// Settings.RecordInputs is true.
 	Prompt string
 	System string
+	// Messages carries the caller-supplied message list (generateText/
+	// streamText/generateObject/streamObject), used to build
+	// gen_ai.input.messages on the root span (fc15550, 12cfe40).
+	Messages []types.Message
 	// ValueCount is populated for batch value operations such as embedMany.
 	ValueCount int
+	// Headers carries caller-supplied request headers, emitted as
+	// ai.request.headers.* when OpenTelemetryOptions.Headers is set (18651f6).
+	Headers map[string]string
+	// Schema, SchemaName, and SchemaDescription are populated for
+	// generateObject/streamObject and emitted as ai.schema* when
+	// OpenTelemetryOptions.Schema is set (18651f6).
+	Schema            map[string]interface{}
+	SchemaName        string
+	SchemaDescription string
 	// RuntimeContext and ToolsContext contain only keys explicitly included by
 	// Settings.IncludeRuntimeContext and Settings.IncludeToolsContext.
 	RuntimeContext map[string]interface{}
@@ -46,10 +60,14 @@ type TelemetryStepStartEvent struct {
 	Settings *Settings
 	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
 	// Used to name the per-step OTel child span.
-	OperationType  string
-	StepNumber     int
-	ModelProvider  string
-	ModelID        string
+	OperationType string
+	StepNumber    int
+	ModelProvider string
+	ModelID       string
+	// ToolChoice is the effective tool choice for this step, emitted as
+	// ai.prompt.toolChoice when OpenTelemetryOptions.ToolChoice is set
+	// (152c67c, 18651f6). The zero value (Type == "") means unset.
+	ToolChoice     types.ToolChoice
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
 }
@@ -90,6 +108,10 @@ type LanguageModelCallEndEvent struct {
 	Content       interface{}
 	ResponseID    string
 	Performance   LanguageModelCallPerformance
+	// ProviderMetadata holds provider-specific response metadata, emitted as
+	// ai.response.providerMetadata when OpenTelemetryOptions.ProviderMetadata
+	// is set (18651f6).
+	ProviderMetadata map[string]interface{}
 }
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
@@ -245,6 +267,10 @@ type TelemetryFinishEvent struct {
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+	// ProviderMetadata holds the final step's provider-specific response
+	// metadata, emitted as ai.response.providerMetadata when
+	// OpenTelemetryOptions.ProviderMetadata is set (18651f6).
+	ProviderMetadata map[string]interface{}
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -492,6 +518,11 @@ type OTelTelemetryIntegration = LegacyOpenTelemetry
 
 type otelSpanEntry struct {
 	span trace.Span
+	// toolDefs is used only by the GenAI OpenTelemetry integration's
+	// languageModel span entries: the declared tool definitions captured at
+	// OnLanguageModelCallStart, merged with provider-executed tool calls
+	// observed at OnLanguageModelCallEnd (5ad6abf).
+	toolDefs []map[string]interface{}
 }
 
 var otelModelCallSpans sync.Map

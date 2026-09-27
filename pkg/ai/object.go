@@ -764,13 +764,23 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// an OTel span directly in core (G4/5d0f18e): with no integration
 	// registered this is a no-op, and with one registered it creates exactly
 	// one "ai.generateObject" span instead of a duplicate.
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
+	startEvent := telemetry.TelemetryStartEvent{
 		OperationType: "ai.generateObject",
 		ModelProvider: opts.Model.Provider(),
 		ModelID:       opts.Model.ModelID(),
 		Settings:      opts.ExperimentalTelemetry,
 		Prompt:        telemetryInputValue(opts.ExperimentalTelemetry, opts.Prompt),
-	})
+		Headers:       opts.Headers,
+	}
+	if telObjectRecordInputs {
+		startEvent.System = opts.System
+		startEvent.Messages = opts.Messages
+		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.SchemaName = opts.SchemaName
+		startEvent.SchemaDescription = opts.SchemaDescription
+	}
+	ctx = telemetry.FireOnStart(ctx, startEvent)
 
 	callCtx := objectCallCtx{
 		callID:   callID,

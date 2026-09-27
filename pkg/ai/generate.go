@@ -656,12 +656,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// the fire function is a no-op.
 	telPrompt := ""
 	telSystem := ""
+	var telMessages []types.Message
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
 		}
+		telMessages = opts.Messages
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		OperationType:  "ai.generateText",
@@ -670,6 +672,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Settings:       telemetrySettings,
 		Prompt:         telPrompt,
 		System:         telSystem,
+		Messages:       telMessages,
+		Headers:        opts.Headers,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
@@ -1000,6 +1004,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			StepNumber:     stepIndex,
 			ModelProvider:  stepModel.Provider(),
 			ModelID:        stepModel.ModelID(),
+			ToolChoice:     stepToolChoice,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
@@ -1098,15 +1103,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Performance:      languageModelCallPerformance(performance),
 		}, onLanguageModelCallEnd)
 		telemetry.FireOnLanguageModelCallEnd(stepCtx, telemetry.LanguageModelCallEndEvent{
-			Settings:      telemetrySettings,
-			CallID:        callID,
-			ModelProvider: stepModel.Provider(),
-			ModelID:       stepModel.ModelID(),
-			FinishReason:  string(genResult.FinishReason),
-			Usage:         modelCallUsage,
-			Content:       genResult.Content,
-			ResponseID:    responseID,
-			Performance:   languageModelCallPerformance(performance),
+			Settings:         telemetrySettings,
+			CallID:           callID,
+			ModelProvider:    stepModel.Provider(),
+			ModelID:          stepModel.ModelID(),
+			FinishReason:     string(genResult.FinishReason),
+			Usage:            modelCallUsage,
+			Content:          generateResultContentParts(genResult),
+			ResponseID:       responseID,
+			ProviderMetadata: genResult.ProviderMetadata,
+			Performance:      languageModelCallPerformance(performance),
 		})
 
 		// Extract sources, files, and reasoning from content parts

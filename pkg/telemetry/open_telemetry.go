@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -15,68 +14,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// mapProviderName / mapOperationName (otel/src/gen-ai-format-messages.ts)
-// ---------------------------------------------------------------------------
-
-type providerNameMapping struct{ prefix, mapped string }
-
-// wellKnownProviderPrefixes is checked longest-prefix-first (declaration
-// order matters for multi-segment prefixes like "google.vertex" needing to
-// win over the single-segment "google"), mirroring TS mapProviderName.
-var wellKnownProviderPrefixes = []providerNameMapping{
-	{"google.vertex", "gcp.vertex_ai"},
-	{"google.generative-ai", "gcp.gemini"},
-	{"google-vertex", "gcp.vertex_ai"},
-	{"amazon-bedrock", "aws.bedrock"},
-	{"azure-openai", "azure.ai.openai"},
-	{"anthropic", "anthropic"},
-	{"openai", "openai"},
-	{"azure", "azure.ai.inference"},
-	{"google", "gcp.gemini"},
-	{"mistral", "mistral_ai"},
-	{"cohere", "cohere"},
-	{"bedrock", "aws.bedrock"},
-	{"groq", "groq"},
-	{"deepseek", "deepseek"},
-	{"perplexity", "perplexity"},
-	{"xai", "x_ai"},
-}
-
-// mapProviderName maps a go-ai provider string to a well-known
-// gen_ai.provider.name value per the OTel GenAI SemConv, mirroring TS's
-// mapProviderName (eb70e72, fc15550).
-func mapProviderName(provider string) string {
-	lower := strings.ToLower(provider)
-	for _, m := range wellKnownProviderPrefixes {
-		if lower == m.prefix || strings.HasPrefix(lower, m.prefix+".") || strings.HasPrefix(lower, m.prefix+"-") {
-			return m.mapped
-		}
-	}
-	return provider
-}
-
-var operationNameMapping = map[string]string{
-	"ai.generateText":   "invoke_agent",
-	"ai.streamText":     "invoke_agent",
-	"ai.generateObject": "invoke_agent",
-	"ai.streamObject":   "invoke_agent",
-	"ai.embed":          "embeddings",
-	"ai.embedMany":      "embeddings",
-	"ai.rerank":         "rerank",
-}
-
-// mapOperationName maps a go-ai operationId to a gen_ai.operation.name value,
-// mirroring TS's mapOperationName (fc15550).
-func mapOperationName(operationID string) string {
-	if v, ok := operationNameMapping[operationID]; ok {
-		return v
-	}
-	return operationID
-}
-
-// ---------------------------------------------------------------------------
 // OpenTelemetry: GenAI semantic-convention integration
 // ---------------------------------------------------------------------------
+//
+// mapProviderName, mapOperationName, and the gen_ai.input.messages /
+// gen_ai.output.messages / gen_ai.system_instructions formatters live in
+// gen_ai_format_messages.go (the Go port of TS's
+// otel/src/gen-ai-format-messages.ts).
 
 // OpenTelemetryOptions configures an OpenTelemetry (GenAI semconv)
 // integration, matching TS's `new OpenTelemetry(options)`
@@ -191,11 +135,37 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	if e.Settings != nil && e.Settings.FunctionID != "" {
 		span.SetAttributes(attribute.String("gen_ai.agent.name", e.Settings.FunctionID))
 	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.Prompt != "" {
-		span.SetAttributes(attribute.String("gen_ai.system_instructions", e.Prompt))
+	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	if recordInputs && e.System != "" {
+		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
+			span.SetAttributes(attribute.String("gen_ai.system_instructions", string(b)))
+		}
+	}
+	if recordInputs && len(e.Messages) > 0 {
+		if b, err := json.Marshal(formatInputMessages(e.Messages)); err == nil {
+			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
+		}
 	}
 	if i.opts.Embedding && e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
 		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
+	}
+	if i.opts.Headers {
+		for _, attr := range headerAttributes(e.Headers) {
+			span.SetAttributes(attr)
+		}
+	}
+	if i.opts.Schema {
+		if len(e.Schema) > 0 {
+			if b, err := json.Marshal(e.Schema); err == nil {
+				span.SetAttributes(attribute.String("ai.schema", string(b)))
+			}
+		}
+		if e.SchemaName != "" {
+			span.SetAttributes(attribute.String("ai.schema.name", e.SchemaName))
+		}
+		if e.SchemaDescription != "" {
+			span.SetAttributes(attribute.String("ai.schema.description", e.SchemaDescription))
+		}
 	}
 	if i.opts.RuntimeContext {
 		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
@@ -204,6 +174,20 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		}
 	}
 	return ctx
+}
+
+// headerAttributes converts caller-supplied request headers into
+// ai.request.headers.* attributes, mirroring TS's getHeaderAttributes
+// (otel/src/supplemental-attributes.ts).
+func headerAttributes(headers map[string]string) []attribute.KeyValue {
+	if len(headers) == 0 {
+		return nil
+	}
+	attrs := make([]attribute.KeyValue, 0, len(headers))
+	for k, v := range headers {
+		attrs = append(attrs, attribute.String("ai.request.headers."+k, v))
+	}
+	return attrs
 }
 
 // OnStepStart creates a "step {n}" child span with gen_ai.operation.name
@@ -228,6 +212,11 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
+		if b, err := json.Marshal(e.ToolChoice); err == nil {
+			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
+		}
+	}
 	return context.WithValue(ctx, genAIStepSpanKey{}, stepSpan)
 }
 
@@ -281,48 +270,106 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	if e.Seed != nil {
 		attrs = append(attrs, attribute.Int("gen_ai.request.seed", *e.Seed))
 	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.System != "" {
-		attrs = append(attrs, attribute.String("gen_ai.system_instructions", e.System))
-	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.Prompt != nil {
-		if b, err := json.Marshal(e.Prompt); err == nil {
-			attrs = append(attrs, attribute.String("gen_ai.input.messages", string(b)))
+	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	if recordInputs && e.System != "" {
+		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.system_instructions", string(b)))
 		}
 	}
-	if toolDefs, ok := toolDefinitionsJSON(e.Tools); ok {
-		attrs = append(attrs, attribute.String("gen_ai.tool.definitions", toolDefs))
+	if recordInputs {
+		if messages, ok := promptMessages(e.Prompt); ok && len(messages) > 0 {
+			if b, err := json.Marshal(formatInputMessages(messages)); err == nil {
+				attrs = append(attrs, attribute.String("gen_ai.input.messages", string(b)))
+			}
+		}
+	}
+	toolDefs := toolDefinitionsList(e.Tools)
+	if len(toolDefs) > 0 {
+		if b, err := json.Marshal(toolDefs); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
+		}
 	}
 	span.SetAttributes(attrs...)
 	if e.CallID != "" {
-		genAICallSpans.Store(genAISpanKey("languageModel", e.CallID), otelSpanEntry{span: span})
+		genAICallSpans.Store(genAISpanKey("languageModel", e.CallID), otelSpanEntry{span: span, toolDefs: toolDefs})
 	}
 	return ctx
 }
 
-// toolDefinitionsJSON encodes a []types.Tool (or nil) as a compact JSON array
-// of {name, description}, matching TS's gen_ai.tool.definitions shape.
-func toolDefinitionsJSON(tools interface{}) (string, bool) {
+// toolDefinitionsList builds the gen_ai.tool.definitions SemConv value (a
+// list of {name, description?} objects) from the tools declared for this
+// call, matching TS's gen_ai.tool.definitions shape. The returned slice is
+// also retained on the span entry so OnLanguageModelCallEnd can append
+// provider-executed tools observed only in the response (5ad6abf).
+func toolDefinitionsList(tools interface{}) []map[string]interface{} {
 	list, ok := tools.([]types.Tool)
 	if !ok || len(list) == 0 {
-		return "", false
+		return nil
 	}
-	type toolDef struct {
-		Name        string `json:"name"`
-		Description string `json:"description,omitempty"`
-	}
-	defs := make([]toolDef, 0, len(list))
+	defs := make([]map[string]interface{}, 0, len(list))
 	for _, t := range list {
-		defs = append(defs, toolDef{Name: t.Name, Description: t.Description})
+		def := map[string]interface{}{"name": t.Name}
+		if t.Description != "" {
+			def["description"] = t.Description
+		}
+		defs = append(defs, def)
 	}
-	b, err := json.Marshal(defs)
-	if err != nil {
-		return "", false
-	}
-	return string(b), true
+	return defs
 }
 
-// OnLanguageModelCallEnd records response attributes and ends the "chat" span.
-func (i OpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e LanguageModelCallEndEvent) {
+// mergeProviderExecutedToolDefs appends {type:"extension", name} entries for
+// any provider-executed tool call in content whose name isn't already in
+// existing, mirroring TS's onLanguageModelCallEnd toolDefinitions merge
+// (5ad6abf). Returns the (possibly extended) list and whether it changed.
+func mergeProviderExecutedToolDefs(existing []map[string]interface{}, content []types.ContentPart) ([]map[string]interface{}, bool) {
+	names := make(map[string]bool, len(existing))
+	for _, d := range existing {
+		if n, ok := d["name"].(string); ok {
+			names[n] = true
+		}
+	}
+	merged := existing
+	changed := false
+	for _, c := range content {
+		tc, ok := c.(types.ToolCallContent)
+		if !ok || !tc.ProviderExecuted || names[tc.ToolName] {
+			continue
+		}
+		merged = append(merged, map[string]interface{}{"type": "extension", "name": tc.ToolName})
+		names[tc.ToolName] = true
+		changed = true
+	}
+	return merged, changed
+}
+
+// contentParts extracts a []types.ContentPart from a LanguageModelCallEndEvent's
+// untyped Content field, when that's the concrete type it holds.
+func contentParts(content interface{}) []types.ContentPart {
+	parts, _ := content.([]types.ContentPart)
+	return parts
+}
+
+// finalToolResultsByCallID indexes the final (non-preliminary) tool result or
+// error for each tool call id in content, mirroring TS's finalToolOutputs map.
+func finalToolResultsByCallID(content []types.ContentPart) map[string]types.ContentPart {
+	out := make(map[string]types.ContentPart)
+	for _, c := range content {
+		switch p := c.(type) {
+		case types.ToolResultContent:
+			if !p.Preliminary {
+				out[p.ToolCallID] = p
+			}
+		case types.ToolErrorContent:
+			out[p.ToolCallID] = p
+		}
+	}
+	return out
+}
+
+// OnLanguageModelCallEnd records response attributes, ends the "chat" span,
+// and creates short-lived execute_tool spans for provider-executed tool
+// calls surfaced in the response (37b75e8), parented under the chat span.
+func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID))
 	if !ok {
 		return
@@ -331,6 +378,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e LanguageModel
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
+	content := contentParts(e.Content)
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
@@ -348,13 +396,68 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e LanguageModel
 	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
 		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", msToSeconds(stats.Median)/1000)
 	}
-	if (e.Settings == nil || e.Settings.RecordOutputs) && e.Content != nil {
-		if b, err := json.Marshal(e.Content); err == nil {
+	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	if recordOutputs && len(content) > 0 {
+		if b, err := json.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
+	if i.opts.ProviderMetadata && recordOutputs && e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
+	mergedToolDefs, changed := mergeProviderExecutedToolDefs(entry.toolDefs, content)
+	if changed {
+		if b, err := json.Marshal(mergedToolDefs); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
+		}
+	}
 	entry.span.SetAttributes(attrs...)
+
+	inferenceCtx := trace.ContextWithSpan(ctx, entry.span)
+	tracer := entry.span.TracerProvider().Tracer("go-ai")
+	finalOutputs := finalToolResultsByCallID(content)
+	recorded := make(map[string]bool)
+	for _, c := range content {
+		tc, ok := c.(types.ToolCallContent)
+		if !ok || !tc.ProviderExecuted || recorded[tc.ToolCallID] {
+			continue
+		}
+		recorded[tc.ToolCallID] = true
+		_, toolSpan := tracer.Start(inferenceCtx, "execute_tool "+tc.ToolName)
+		toolSpan.SetAttributes(
+			attribute.String("gen_ai.operation.name", "execute_tool"),
+			attribute.String("gen_ai.tool.name", tc.ToolName),
+			attribute.String("gen_ai.tool.call.id", tc.ToolCallID),
+			attribute.String("gen_ai.tool.type", "extension"),
+		)
+		switch out := finalOutputs[tc.ToolCallID].(type) {
+		case types.ToolResultContent:
+			if b, err := json.Marshal(toolResultResponseValue(out)); err == nil {
+				toolSpan.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
+			}
+		case types.ToolErrorContent:
+			if err, ok := out.Error.(error); ok {
+				RecordErrorOnSpan(toolSpan, err)
+			} else if out.Error != nil {
+				toolSpan.SetStatus(codes.Error, jsonOrString(out.Error))
+			}
+		}
+		toolSpan.End()
+	}
+
 	entry.span.End()
+}
+
+func jsonOrString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return ""
 }
 
 func appendGenAIUsageAttrs(attrs []attribute.KeyValue, usage TelemetryUsage, legacyUsage bool) []attribute.KeyValue {

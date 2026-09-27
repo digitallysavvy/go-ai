@@ -492,9 +492,12 @@ type StreamTextResult struct {
 	cbRuntimeCtx          interface{}
 	cbSensitiveRuntimeCtx bool
 	cbToolsCtx            map[string]interface{}
-	cbInclude             IncludeOptions
-	cbSteps               []types.StepResult
-	cbResponseMessages    []types.Message
+	// cbToolChoice carries the current step's effective tool choice across
+	// into processStream, for TelemetryStepStartEvent.ToolChoice (152c67c).
+	cbToolChoice       types.ToolChoice
+	cbInclude          IncludeOptions
+	cbSteps            []types.StepResult
+	cbResponseMessages []types.Message
 	// initialResponseMessages holds the tool message produced by resuming
 	// tool approvals from the input messages (prepended to ResponseMessages).
 	initialResponseMessages []types.Message
@@ -630,9 +633,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// from processStream or ReadAll once the stream completes.
 	telPrompt := ""
 	telSystem := ""
+	var telMessages []types.Message
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = system
+		telMessages = opts.Messages
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		OperationType:  "ai.streamText",
@@ -641,6 +646,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Settings:       telemetrySettings,
 		Prompt:         telPrompt,
 		System:         telSystem,
+		Messages:       telMessages,
+		Headers:        opts.Headers,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
@@ -1036,6 +1043,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbRuntimeCtx = runtimeContext
 	r.cbSensitiveRuntimeCtx = opts.SensitiveRuntimeContext
 	r.cbToolsCtx = toolsContext
+	r.cbToolChoice = stepToolChoice
 	r.cbInclude = include
 	r.cbMessages = stepMessages
 	r.cbTools = stepTools
@@ -1219,6 +1227,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StepNumber:     stepIndex,
 			ModelProvider:  stepProvider,
 			ModelID:        stepModelID,
+			ToolChoice:     r.cbToolChoice,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
@@ -1449,14 +1458,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Performance:      languageModelCallPerformance(performance),
 					}, onLanguageModelCallEnd)
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
-						Settings:      r.telemetrySettings,
-						CallID:        r.cbCallID,
-						ModelProvider: stepProvider,
-						ModelID:       stepModelID,
-						FinishReason:  string(chunk.FinishReason),
-						Usage:         telemetryUsageFromUsage(stepUsage),
-						ResponseID:    responseID,
-						Performance:   languageModelCallPerformance(performance),
+						Settings:         r.telemetrySettings,
+						CallID:           r.cbCallID,
+						ModelProvider:    stepProvider,
+						ModelID:          stepModelID,
+						FinishReason:     string(chunk.FinishReason),
+						Usage:            telemetryUsageFromUsage(stepUsage),
+						Content:          append([]types.ContentPart(nil), stepContent...),
+						ResponseID:       responseID,
+						ProviderMetadata: decodeProviderMetadataMap(chunk.ProviderMetadata),
+						Performance:      languageModelCallPerformance(performance),
 					})
 				}
 			}
@@ -2015,6 +2026,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbModelID = nextModel.ModelID()
 		r.cbSystem = nextSystem
 		r.cbInstructionMessages = nextInstructionMessages
+		r.cbToolChoice = nextToolChoice
 		currentTools = append([]types.Tool(nil), nextTools...)
 		opts.ExperimentalSandbox = nextSandbox
 		nextStepCtx := ctx
