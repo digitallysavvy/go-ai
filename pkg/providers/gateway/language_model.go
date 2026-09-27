@@ -172,6 +172,19 @@ type gatewayTextStream struct {
 	includeRawChunks bool
 }
 
+// gatewayStreamErrorPayload is the wire shape of a Gateway `error` stream
+// part's `error` field: a ProviderStreamError forwarded verbatim from the
+// origin provider (already normalized server-side), mirroring
+// pkg/provider/errors.StreamProviderError's fields.
+type gatewayStreamErrorPayload struct {
+	Message     string          `json:"message"`
+	Type        string          `json:"type"`
+	Code        json.RawMessage `json:"code"`
+	StatusCode  *int            `json:"statusCode"`
+	IsRetryable *bool           `json:"isRetryable"`
+	Data        interface{}     `json:"data"`
+}
+
 // gatewayStreamChunk represents a chunk from the Gateway streaming API
 // This follows the LanguageModelV3StreamPart format
 type gatewayStreamChunk struct {
@@ -203,8 +216,16 @@ type gatewayStreamChunk struct {
 		TotalTokens      *int64 `json:"totalTokens,omitempty"`
 	} `json:"usage,omitempty"`
 
-	// For error chunks
-	Error string `json:"error,omitempty"`
+	// For error chunks. The Gateway server is itself built on this SDK and
+	// forwards a stream part shaped exactly like the origin provider's own
+	// normalized error (a ProviderStreamError: message/type/code/statusCode/
+	// isRetryable/data), not a bare string — mirrors TS
+	// gateway-language-model.ts's transform(), which passes `streamPart`
+	// through verbatim with no re-parsing. P1-1c part 2: this used to be
+	// typed `string`, which fails to unmarshal against a real error object
+	// and aborts the whole chunk with a generic parse error before ever
+	// reaching `case "error"` below.
+	Error *gatewayStreamErrorPayload `json:"error,omitempty"`
 
 	Warnings []types.Warning `json:"warnings,omitempty"`
 
@@ -452,10 +473,24 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		return s.Next()
 
 	case "error":
+		if chunk.Error == nil {
+			return &provider.StreamChunk{Type: provider.ChunkTypeError}, fmt.Errorf("stream error")
+		}
+		var code interface{}
+		if len(chunk.Error.Code) > 0 {
+			_ = json.Unmarshal(chunk.Error.Code, &code)
+		}
+		// The Gateway forwards an already-normalized ProviderStreamError
+		// verbatim (see the Error field doc above), so its own
+		// statusCode/isRetryable are used as-is (P1-1c part 2) — no
+		// discriminator/inference needed, unlike a raw provider frame.
+		streamErr := providererrors.NewStreamProviderError(chunk.Error.Message, "gateway", chunk.Error.Type, code, chunk.Error.StatusCode, chunk.Error.IsRetryable, chunk.Error.Data)
 		return &provider.StreamChunk{
 			Type:        provider.ChunkTypeError,
-			AbortReason: chunk.Error,
-		}, fmt.Errorf("stream error: %s", chunk.Error)
+			Text:        chunk.Error.Message,
+			AbortReason: chunk.Error.Message,
+			Err:         streamErr,
+		}, fmt.Errorf("stream error: %s", chunk.Error.Message)
 
 	default:
 		// Skip unknown chunk types and get next chunk

@@ -3,11 +3,13 @@ package gateway
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewaytools "github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -118,6 +120,47 @@ func TestGatewayTextStreamIncludesRawChunksWhenRequested(t *testing.T) {
 
 func streamingParser(data string) *streaming.SSEParser {
 	return streaming.NewSSEParser(strings.NewReader(data))
+}
+
+// TestGatewayTextStreamErrorChunkAttachesStructuredPayload is a P1-1c part 2
+// regression test: the Gateway server forwards an already-normalized
+// ProviderStreamError object verbatim on an `error` stream part (TS
+// gateway-language-model.ts's transform() passes streamPart through as-is).
+// The `error` field was previously typed as a Go string, which fails to
+// unmarshal against this object shape and aborted the whole chunk with a
+// generic parse error before ever reaching the error-chunk handling.
+func TestGatewayTextStreamErrorChunkAttachesStructuredPayload(t *testing.T) {
+	stream := &gatewayTextStream{
+		parser: streamingParser(`data: {"type":"error","error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","statusCode":429,"isRetryable":true}}` + "\n\n"),
+		body:   io.NopCloser(strings.NewReader("")),
+	}
+
+	chunk, err := stream.Next()
+	if chunk == nil {
+		t.Fatalf("stream.Next() chunk = nil, err = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	if chunk.Text != "Rate limit exceeded" {
+		t.Errorf("chunk.Text = %q, want Rate limit exceeded", chunk.Text)
+	}
+	if chunk.AbortReason != "Rate limit exceeded" {
+		t.Errorf("chunk.AbortReason = %q, want Rate limit exceeded", chunk.AbortReason)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.Type != "rate_limit_exceeded" {
+		t.Errorf("Type = %q, want rate_limit_exceeded", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true")
+	}
 }
 
 func TestGatewayLanguageModelMetadataAndCapabilities(t *testing.T) {
