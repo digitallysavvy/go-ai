@@ -427,7 +427,7 @@ func (t *HTTPTransport) ProtocolVersion() string {
 // refreshOAuthToken refreshes the OAuth access token
 func (t *HTTPTransport) refreshOAuthToken(ctx context.Context) error {
 	if t.oauth == nil {
-		return fmt.Errorf("LOAuth not configured")
+		return fmt.Errorf("OAuth not configured")
 	}
 
 	t.refreshMu.Lock()
@@ -462,14 +462,14 @@ func (t *HTTPTransport) doRefreshOAuthToken(ctx context.Context) error {
 	oauth := t.oauth
 	t.mu.Unlock()
 	if oauth == nil || oauth.RefreshTokenFunc == nil {
-		return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
+		return fmt.Errorf("OAuth refresh not yet implemented - please provide access token manually")
 	}
 	token, expiresIn, err := oauth.RefreshTokenFunc(ctx, oauth)
 	if err != nil {
 		return err
 	}
 	if token == "" {
-		return fmt.Errorf("LOAuth refresh returned empty access token")
+		return fmt.Errorf("OAuth refresh returned empty access token")
 	}
 	if expiresIn <= 0 {
 		expiresIn = time.Hour

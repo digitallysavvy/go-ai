@@ -132,7 +132,7 @@ func (stt *OpenAISTT) Transcribe(ctx context.Context, audioFile string, options 
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LAPI error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response
@@ -191,7 +191,7 @@ func (stt *OpenAISTT) Translate(ctx context.Context, audioFile string) (*Transcr
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LAPI error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response

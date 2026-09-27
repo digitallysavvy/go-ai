@@ -129,7 +129,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 			// Call MCP tool
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)
 			if err != nil {
-				return nil, fmt.Errorf("LMCP tool execution failed: %w", err)
+				return nil, fmt.Errorf("MCP tool execution failed: %w", err)
 			}
 			if outputSchema != nil && !result.IsError {
 				return extractMCPStructuredOutput(*result, outputSchema, mcpTool.Name)

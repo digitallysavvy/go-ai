@@ -132,9 +132,9 @@ type HTTPStatusError struct {
 
 func (e *HTTPStatusError) Error() string {
 	if e == nil {
-		return "LHTTP <nil>"
+		return "HTTP <nil>"
 	}
-	return fmt.Sprintf("LHTTP %d: %s", e.StatusCode, string(e.Body))
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
 }
 
 // Do performs an HTTP request
@@ -194,7 +194,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LHTTP request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
@@ -316,7 +316,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LHTTP request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 
 	// Check for error status codes

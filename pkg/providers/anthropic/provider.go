@@ -231,13 +231,13 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	// Anthropic doesn't provide transcription models
-	return nil, fmt.Errorf("LAnthropic does not support transcription")
+	return nil, fmt.Errorf("Anthropic does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Anthropic doesn't provide reranking models
-	return nil, fmt.Errorf("LAnthropic does not support reranking")
+	return nil, fmt.Errorf("Anthropic does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

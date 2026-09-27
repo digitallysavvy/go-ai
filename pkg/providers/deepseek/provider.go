@@ -134,27 +134,27 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LDeepseek does not support embeddings")
+	return nil, fmt.Errorf("Deepseek does not support embeddings")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LDeepseek does not support image generation")
+	return nil, fmt.Errorf("Deepseek does not support image generation")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LDeepseek does not support speech synthesis")
+	return nil, fmt.Errorf("Deepseek does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LDeepseek does not support transcription")
+	return nil, fmt.Errorf("Deepseek does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LDeepseek does not support reranking")
+	return nil, fmt.Errorf("Deepseek does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

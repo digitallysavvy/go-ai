@@ -85,12 +85,12 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGroq does not support transcription")
+	return nil, fmt.Errorf("Groq does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGroq does not support reranking")
+	return nil, fmt.Errorf("Groq does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

@@ -35,7 +35,7 @@ func NewConfig(apiKey string) (Config, error) {
 // Validate checks if the configuration is valid
 func (c Config) Validate() error {
 	if c.APIKey == "" {
-		return fmt.Errorf("LAPI key is required")
+		return fmt.Errorf("API key is required")
 	}
 	return nil
 }

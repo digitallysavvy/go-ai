@@ -408,14 +408,14 @@ func (t *SSETransport) queueReceivedMessages(messages []*MCPMessage) {
 
 func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 	if t.oauth == nil || t.oauth.RefreshTokenFunc == nil {
-		return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
+		return fmt.Errorf("OAuth refresh not yet implemented - please provide access token manually")
 	}
 	token, expiresIn, err := t.oauth.RefreshTokenFunc(ctx, t.oauth)
 	if err != nil {
 		return err
 	}
 	if token == "" {
-		return fmt.Errorf("LOAuth refresh returned empty access token")
+		return fmt.Errorf("OAuth refresh returned empty access token")
 	}
 	if expiresIn <= 0 {
 		expiresIn = time.Hour

@@ -67,7 +67,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LBFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	var createResp bflCreateResponse

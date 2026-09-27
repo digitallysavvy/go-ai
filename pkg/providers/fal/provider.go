@@ -78,17 +78,17 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LFal.ai does not support speech synthesis")
+	return nil, fmt.Errorf("Fal.ai does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LFal.ai does not support transcription")
+	return nil, fmt.Errorf("Fal.ai does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LFal.ai does not support reranking")
+	return nil, fmt.Errorf("Fal.ai does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

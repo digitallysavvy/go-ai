@@ -42,7 +42,7 @@ func New(cfg Config) (*Provider, error) {
 		accessKey = os.Getenv("KLINGAI_ACCESS_KEY")
 	}
 	if accessKey == "" {
-		return nil, fmt.Errorf("LKlingAI access key is required (set KLINGAI_ACCESS_KEY or provide Config.AccessKey)")
+		return nil, fmt.Errorf("KlingAI access key is required (set KLINGAI_ACCESS_KEY or provide Config.AccessKey)")
 	}
 
 	// Load secret key from env if not provided
@@ -51,7 +51,7 @@ func New(cfg Config) (*Provider, error) {
 		secretKey = os.Getenv("KLINGAI_SECRET_KEY")
 	}
 	if secretKey == "" {
-		return nil, fmt.Errorf("LKlingAI secret key is required (set KLINGAI_SECRET_KEY or provide Config.SecretKey)")
+		return nil, fmt.Errorf("KlingAI secret key is required (set KLINGAI_SECRET_KEY or provide Config.SecretKey)")
 	}
 
 	// Use default base URL if not provided
@@ -84,17 +84,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support language models")
+	return nil, fmt.Errorf("KlingAI does not support language models")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support embeddings")
+	return nil, fmt.Errorf("KlingAI does not support embeddings")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support image generation")
+	return nil, fmt.Errorf("KlingAI does not support image generation")
 }
 
 // VideoModel returns a video generation model by ID
@@ -108,17 +108,17 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support speech synthesis")
+	return nil, fmt.Errorf("KlingAI does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support transcription")
+	return nil, fmt.Errorf("KlingAI does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LKlingAI does not support reranking")
+	return nil, fmt.Errorf("KlingAI does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

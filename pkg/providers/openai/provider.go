@@ -294,7 +294,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("LOpenAI does not support reranking")
+	return nil, fmt.Errorf("OpenAI does not support reranking")
 }
 
 // ResponsesModel returns a language model that uses the OpenAI Responses API
