@@ -285,6 +285,17 @@ type StreamChunk struct {
 	// Carries the provider-level HTTP response metadata emitted early in the
 	// stream (after headers arrive, before content begins).
 	ResponseMetadata *ResponseMetadata
+
+	// Err optionally carries a structured error for a ChunkTypeError chunk
+	// (e.g. a *providererrors.ProviderError or a pre-built
+	// *providererrors.StreamProviderError with provider-specific type/code/
+	// statusCode/isRetryable already resolved). When nil, core falls back to
+	// wrapping Text as a plain error and normalizing it generically
+	// (pkg/ai/stream.go, providererrors.NormalizeStreamProviderError). A
+	// provider that can distinguish real error metadata from a bare message
+	// should set this instead of only Text, so streamRetries' retryability
+	// classification is accurate (audit row 35841f5 / WG8).
+	Err error
 }
 
 // ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.

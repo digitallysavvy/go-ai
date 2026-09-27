@@ -12,11 +12,19 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
+
+// StreamTextOnErrorRetryEvent is the argument to StreamTextOptions.OnErrorRetry.
+type StreamTextOnErrorRetryEvent struct {
+	// Error is the normalized mid-stream provider error (typically a
+	// *providererrors.StreamProviderError).
+	Error error
+}
 
 // StreamTextOptions contains options for streaming text generation
 type StreamTextOptions struct {
@@ -279,6 +287,25 @@ type StreamTextOptions struct {
 	// the stream. If nil, error chunks are silently forwarded to OnChunk.
 	OnError func(ctx context.Context, err error)
 
+	// StreamRetries is the maximum number of automatic retries for a
+	// retryable provider error received after streaming has already
+	// started (a mid-stream error chunk, normalized to a
+	// providererrors.StreamProviderError). nil disables automatic stream
+	// retries (OnErrorRetry can still request one manually). 0 disables
+	// automatic retries too, but still allows OnErrorRetry to request at
+	// most one retry. A ToolChoiceViolationError is never retried,
+	// automatically or via OnErrorRetry (TS stream-text.ts
+	// isToolChoiceViolation check). Audit row 802af1e / WG8.
+	StreamRetries *int
+
+	// OnErrorRetry is called for a mid-stream provider error (after
+	// OnError) and, if StreamRetries permits a retry, may request one by
+	// returning true. It is consulted only when no automatic retry
+	// applies (StreamRetries exhausted or unset) and is honored at most
+	// once per streamText call, matching TS's
+	// StreamTextOnErrorRetryCallback semantics.
+	OnErrorRetry func(ctx context.Context, event StreamTextOnErrorRetryEvent) bool
+
 	// OnAbort is called when streaming is aborted by context cancellation or
 	// deadline before normal completion.
 	//
@@ -392,6 +419,16 @@ func newIncompleteModelStreamError() error {
 type StreamTextResult struct {
 	// Stream of chunks
 	stream provider.TextStream
+
+	// stepReopenModel/stepReopenGenOpts/stepReopenCtx record the exact model
+	// call used to open the CURRENT step's stream, so a retryable mid-stream
+	// provider error (streamRetries, audit row 802af1e / WG8) can re-issue
+	// the same call. Only ever read/written by the single background
+	// goroutine that runs bootstrapAndStream+processStream, so (unlike most
+	// StreamTextResult fields) these need no mutex.
+	stepReopenModel   provider.LanguageModel
+	stepReopenGenOpts *provider.GenerateOptions
+	stepReopenCtx     context.Context
 
 	// status tracks the lifecycle of the stream.
 	// Protected by mu because it is read by Status() and written by processStream.
@@ -1053,6 +1090,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	})
 
 	// Start streaming
+	r.stepReopenModel = stepModel
+	r.stepReopenGenOpts = genOpts
+	r.stepReopenCtx = modelCallCtx
 	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
 		if stepCancel != nil {
@@ -1369,6 +1409,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Track how many files existed before this step so we can slice per-step files.
 		stepFilesStart := len(r.files)
 		stepWarningsStart := len(r.warnings)
+		// stepTextPartsStart: like the slices above, but for the call-level
+		// accumulatedTextParts (used for r.text below) — a retried attempt
+		// (see the ChunkTypeError branch) truncates back to this marker too,
+		// so a discarded attempt's text is not double-counted in Text().
+		stepTextPartsStart := len(accumulatedTextParts)
 
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends.
@@ -1404,6 +1449,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// resetChunkDeadlineOnOutput below manage the swap.
 		chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason := armStepChunkDeadline(stepCtx, r.timeout)
 
+		// automaticStreamRetryCount/callbackStreamRetryCount: see the
+		// streamRetries handling in the ChunkTypeError branch below (audit
+		// row 802af1e / WG8). Reset per step, matching TS stream-text.ts
+		// (declared where each step's model call is opened).
+		automaticStreamRetryCount := 0
+		callbackStreamRetryCount := 0
+
+	stepAttempt:
 		for {
 			chunk, err := r.nextChunk(chunkDeadlineCtx)
 			if err == io.EOF {
@@ -1686,14 +1739,108 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Call OnError for error chunks before forwarding.
+			// Call OnError for error chunks before forwarding, and decide
+			// whether a retryable mid-stream provider error should reopen
+			// this step's model call instead of terminating the stream
+			// (streamRetries, audit row 802af1e / 35841f5 / WG8).
 			if chunk.Type == provider.ChunkTypeError {
+				var rawErr error = errors.New(chunk.Text)
+				if chunk.Err != nil {
+					rawErr = chunk.Err
+				}
+				// A ToolChoiceViolationError is never retried, automatically
+				// or via OnErrorRetry (TS ToolChoiceViolationError.isInstance
+				// check, which normalizeStreamProviderError leaves alone by
+				// returning early on any AISDKError) — it reflects the
+				// model's own response content, not a transient provider
+				// failure. Checked on the RAW error before normalization, so
+				// it isn't lost inside a generic *StreamProviderError. Go's
+				// tool-choice enforcement currently runs after this loop
+				// (checkToolChoiceViolation below) rather than as a chunk
+				// here, but the guard is kept so a future refactor that
+				// raises it as a chunk can't accidentally make it retryable.
+				isToolChoiceViolation := IsToolChoiceViolationError(rawErr)
+				normalizedErr := rawErr
+				if !isToolChoiceViolation {
+					normalizedErr = providererrors.NormalizeStreamProviderError(rawErr, stepProvider, chunk.Raw)
+				}
+				if opts.OnError != nil {
+					safeInvoke(func() { opts.OnError(ctx, normalizedErr) })
+				}
+
+				isRetryableErr := !isToolChoiceViolation && isStreamErrorRetryable(normalizedErr)
+				streamRetriesLimit := 0
+				if opts.StreamRetries != nil {
+					streamRetriesLimit = *opts.StreamRetries
+				}
+				automaticRetry := !isToolChoiceViolation && isRetryableErr && automaticStreamRetryCount < streamRetriesLimit
+				callbackRetry := false
+				if !isToolChoiceViolation && !automaticRetry && opts.OnErrorRetry != nil && callbackStreamRetryCount < 1 {
+					callbackRetry = safeInvokeBool(func() bool {
+						return opts.OnErrorRetry(ctx, StreamTextOnErrorRetryEvent{Error: normalizedErr})
+					})
+				}
+
+				if (automaticRetry || callbackRetry) && r.stepReopenModel != nil && r.stepReopenGenOpts != nil {
+					if automaticRetry {
+						automaticStreamRetryCount++
+					} else {
+						callbackStreamRetryCount++
+					}
+					if s := r.currentStream(); s != nil {
+						_ = s.Close()
+					}
+					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, opts.MaxRetries)
+					if reopenErr != nil {
+						r.err = reopenErr
+						if isAbortErr(ctx, reopenErr) {
+							fireAbort(reopenErr)
+						}
+						break
+					}
+					r.setStream(newStream)
+
+					// Discard this attempt's buffered step output and start
+					// the step's aggregation fresh, so the recovered step
+					// reflects only the successful attempt (TS: the
+					// attempt-boundary reset in stream-text.ts's transform).
+					firstTokenAt = nil
+					previousOutputChunkAt = nil
+					outputChunkGapsMs = nil
+					stepResponseModelID = stepModelID
+					stepResponseID = ""
+					stepResponseTimestamp = time.Time{}
+					toolInputCallbacks = newStreamToolInputCallbacks(stepTools, currentMessages, r.cbToolsCtx)
+					preRefinementCalls = nil
+					stepTextParts = nil
+					hasPublishedPartial = false
+					stepLastPartialJSON = ""
+					stepToolCalls = nil
+					stepContent = nil
+					stepReasoningBuilder.Reset()
+					modelCallEndFired = false
+					stepUsage = types.Usage{}
+					stepSawTerminal = false
+					stepSawFinish = false
+					stepSawOutput = false
+					streamedToolResults = make(map[string]types.ToolResult)
+					stepTextIDRemap = make(map[string]string)
+					stepReasoningIDRemap = make(map[string]string)
+					r.mu.Lock()
+					r.sources = r.sources[:stepSourcesStart]
+					r.files = r.files[:stepFilesStart]
+					r.warnings = r.warnings[:stepWarningsStart]
+					r.partialOutput = nil
+					r.mu.Unlock()
+					accumulatedTextParts = accumulatedTextParts[:stepTextPartsStart]
+					chunkDeadlineCancel()
+					chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = armStepChunkDeadline(stepCtx, r.timeout)
+					continue stepAttempt
+				}
+
 				stepSawTerminal = true
 				if r.finishReason == "" {
 					r.finishReason = types.FinishReasonError
-				}
-				if opts.OnError != nil {
-					safeInvoke(func() { opts.OnError(ctx, errors.New(chunk.Text)) })
 				}
 			}
 
@@ -2340,6 +2487,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StopSequences:    nextGenOpts.StopSequences,
 			Seed:             nextGenOpts.Seed,
 		})
+		r.stepReopenModel = nextModel
+		r.stepReopenGenOpts = nextGenOpts
+		r.stepReopenCtx = nextModelCallCtx
 		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
 		if err != nil {
 			nextStepCancel()
@@ -3463,6 +3613,21 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+// isStreamErrorRetryable reports whether a normalized mid-stream provider
+// error (see providererrors.NormalizeStreamProviderError) is retryable,
+// checking the two shapes NormalizeStreamProviderError can produce.
+func isStreamErrorRetryable(err error) bool {
+	var streamErr *providererrors.StreamProviderError
+	if errors.As(err, &streamErr) {
+		return streamErr.IsRetryable
+	}
+	var providerErr *providererrors.ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.IsRetryable()
+	}
+	return false
 }
 
 // armStepChunkDeadline returns the initial chunk-read deadline context for a
