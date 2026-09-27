@@ -940,3 +940,230 @@ func TestToOpenAIMessagesImageDetailProviderOption(t *testing.T) {
 		t.Fatalf("file image detail: got %v, want low", secondImage["detail"])
 	}
 }
+
+// promptCacheBreakpoint tests below port TS
+// convert-to-openai-chat-messages.test.ts (b2b1bb9): promptCacheBreakpoint is
+// unique to OpenAI's (and Azure's, which wraps it) chat conversion, so these
+// only exercise ToOpenAIMessages with IncludePromptCacheBreakpoint: true.
+
+var breakpointOpts = ToOpenAIMessagesOptions{IncludePromptCacheBreakpoint: true}
+
+func promptCacheBreakpointOption() map[string]interface{} {
+	return map[string]interface{}{
+		"openai": map[string]interface{}{
+			"promptCacheBreakpoint": map[string]interface{}{"mode": "explicit"},
+		},
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointIgnoredWithoutOption verifies the
+// feature is inert unless the caller opts in (Groq/DeepSeek/openai-compatible/
+// Alibaba/etc. must never emit prompt_cache_breakpoint).
+func TestToOpenAIMessagesPromptCacheBreakpointIgnoredWithoutOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Hello", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs)
+	if _, isString := result[0]["content"].(string); !isString {
+		t.Fatalf("expected plain string content without the option, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointUserSingleText ports "should add
+// prompt cache breakpoints to supported content blocks" for the single-text
+// shortcut: a lone text part with a breakpoint must NOT take the plain-string
+// fast path.
+func TestToOpenAIMessagesPromptCacheBreakpointUserSingleText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleSystem,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "You are a helpful assistant.", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if len(content) != 1 || content[0]["text"] != "You are a helpful assistant." {
+		t.Fatalf("unexpected content: %#v", content)
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0]["prompt_cache_breakpoint"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointUserContentBlocks ports "should add
+// prompt cache breakpoints to supported content blocks": text, image (via
+// FileContent), audio (via FileContent) and a referenced pdf file all carry
+// the breakpoint through.
+func TestToOpenAIMessagesPromptCacheBreakpointUserContentBlocks(t *testing.T) {
+	bp := promptCacheBreakpointOption()
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Hello", ProviderOptions: bp},
+				types.ImageContent{URL: "https://example.com/image.png", ProviderOptions: bp},
+				types.FileContent{
+					MediaType:       "audio/wav",
+					Data:            []byte{0, 1, 2, 3},
+					ProviderOptions: bp,
+				},
+				types.FileContent{
+					MediaType:       "application/pdf",
+					Reference:       "file-pdf-123",
+					ProviderOptions: bp,
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 4 {
+		t.Fatalf("expected 4 content parts, got %#v", result[0]["content"])
+	}
+	for i, part := range content {
+		got, ok := part["prompt_cache_breakpoint"].(map[string]interface{})
+		if !ok || got["mode"] != "explicit" {
+			t.Fatalf("part %d missing breakpoint: %#v", i, part)
+		}
+	}
+	if content[0]["type"] != "text" {
+		t.Fatalf("part 0 type = %v, want text", content[0]["type"])
+	}
+	if content[1]["type"] != "image_url" {
+		t.Fatalf("part 1 type = %v, want image_url", content[1]["type"])
+	}
+	if content[2]["type"] != "input_audio" {
+		t.Fatalf("part 2 type = %v, want input_audio", content[2]["type"])
+	}
+	if content[3]["type"] != "file" {
+		t.Fatalf("part 3 type = %v, want file", content[3]["type"])
+	}
+	fileObj, ok := content[3]["file"].(map[string]interface{})
+	if !ok || fileObj["file_id"] != "file-pdf-123" {
+		t.Fatalf("part 3 file = %#v, want file_id file-pdf-123", content[3]["file"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointAssistantText ports "assistant text
+// content with promptCacheBreakpoint": the assistant message switches from a
+// flattened string to a textParts array when any text part has a breakpoint.
+func TestToOpenAIMessagesPromptCacheBreakpointAssistantText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Cached assistant content", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if content[0]["text"] != "Cached assistant content" {
+		t.Fatalf("unexpected text: %#v", content[0])
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointAssistantWithToolCalls verifies the
+// textParts array form is used even when the assistant message also made
+// tool calls (TS keeps tool_calls and content independent).
+func TestToOpenAIMessagesPromptCacheBreakpointAssistantWithToolCalls(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "thinking", ProviderOptions: promptCacheBreakpointOption()},
+			},
+			ToolCalls: []types.ToolCall{
+				{ID: "call_1", ToolName: "lookup", Arguments: map[string]interface{}{}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if _, ok := result[0]["tool_calls"].([]map[string]interface{}); !ok {
+		t.Fatalf("expected tool_calls to be preserved, got %#v", result[0]["tool_calls"])
+	}
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 || content[0]["text"] != "thinking" {
+		t.Fatalf("expected textParts content, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointToolResult ports "tool result
+// content with promptCacheBreakpoint": a tool role message's content is
+// wrapped in the array form when its output carries a breakpoint.
+func TestToOpenAIMessagesPromptCacheBreakpointToolResult(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "cached-tool",
+					ToolName:   "cached-tool",
+					Output: &types.ToolResultOutput{
+						Type:            types.ToolResultOutputText,
+						Value:           "Cached tool content",
+						ProviderOptions: promptCacheBreakpointOption(),
+					},
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["tool_call_id"] != "cached-tool" {
+		t.Fatalf("unexpected tool_call_id: %#v", result[0])
+	}
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if content[0]["text"] != "Cached tool content" {
+		t.Fatalf("unexpected text: %#v", content[0])
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointToolResultWithoutOption verifies
+// tool results stay plain strings for non-OpenAI/Azure callers.
+func TestToOpenAIMessagesPromptCacheBreakpointToolResultWithoutOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "cached-tool",
+					ToolName:   "cached-tool",
+					Output: &types.ToolResultOutput{
+						Type:            types.ToolResultOutputText,
+						Value:           "Cached tool content",
+						ProviderOptions: promptCacheBreakpointOption(),
+					},
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs)
+	if _, isString := result[0]["content"].(string); !isString {
+		t.Fatalf("expected plain string content without the option, got %#v", result[0]["content"])
+	}
+}
