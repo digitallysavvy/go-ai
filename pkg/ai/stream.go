@@ -71,6 +71,12 @@ type StreamTextOptions struct {
 	ToolOrder   []string
 	ActiveTools []string
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools (programmatic tool calling / code mode), and which tools stay
+	// hidden from the model until discovered via ai.ToolSearch. Mirrors the
+	// TypeScript SDK's experimental_toolCallers.
+	ExperimentalToolCallers ExperimentalToolCallers
+
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
 
@@ -580,6 +586,13 @@ type StreamTextResult struct {
 	cbTools    []types.Tool
 	cbSystem   string
 
+	// cbExecutionTools is the tool set actually invoked when a tool call
+	// arrives (bound local tool callers), as opposed to cbTools (the
+	// model-visible set, which may carry a caller's stable unbound
+	// definition instead). Equal to cbTools unless tool callers are
+	// configured. See PrepareToolsForToolCallers.
+	cbExecutionTools []types.Tool
+
 	// cbInstructionMessages is the current step's instructions, when given as
 	// system messages (TS instructions: SystemModelMessage[]). Updated by
 	// processStream at the start of each continuation step, mirroring
@@ -616,6 +629,12 @@ type StreamTextResult struct {
 	// making the first provider stream request) that hasn't produced a
 	// stream yet — see the StreamText/bootstrapAndStream split below.
 	cancelBootstrap context.CancelFunc
+
+	// resolvedToolCallers and toolSearchState are resolved once,
+	// synchronously, in StreamText and reused for every step (initial and
+	// continuation) by bootstrapAndStream/processStream.
+	resolvedToolCallers ResolvedToolCallers
+	toolSearchState     *ToolSearchState
 }
 
 // StreamText performs streaming text generation.
@@ -648,12 +667,24 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if err := validateInstructionMessages(instructionMessages); err != nil {
 		return nil, err
 	}
+	// Resolved synchronously, matching TS's DefaultStreamTextResult
+	// constructor (which runs synchronously before the async IIFE starts).
+	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
+	if err != nil {
+		return nil, err
+	}
+	toolSearchState, err := NewToolSearchState(opts.Tools, resolvedToolCallers)
+	if err != nil {
+		return nil, err
+	}
 
 	bootstrapCtx, cancelBootstrap := context.WithCancel(ctx)
 	result := &StreamTextResult{
-		status:          StreamStatusSubmitted, // actively streaming; set before any chunks arrive
-		timeout:         opts.Timeout,
-		cancelBootstrap: cancelBootstrap,
+		status:              StreamStatusSubmitted, // actively streaming; set before any chunks arrive
+		timeout:             opts.Timeout,
+		cancelBootstrap:     cancelBootstrap,
+		resolvedToolCallers: resolvedToolCallers,
+		toolSearchState:     toolSearchState,
 	}
 	result.chunkBuf = newChunkBuffer()
 	result.processingDone = make(chan struct{})
@@ -991,8 +1022,20 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepReasoningLevel = prepared.Reasoning
 		}
 	}
+
+	// Apply deferred tool discovery (ai.ToolSearch) and tool-caller routing
+	// (ExperimentalToolCallers). stepTools becomes the model-visible set;
+	// stepExecutionTools is used to look up the tool actually invoked.
+	stepTools = r.toolSearchState.Apply(stepTools, toolsContext, stepSandbox)
+	stepExecutionTools, modelTools, toolCallerMessages := PrepareToolsForToolCallers(stepTools, r.resolvedToolCallers)
+	stepTools = modelTools
+	if len(toolCallerMessages) > 0 {
+		stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
+	}
+
 	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 	stepTools = orderStepTools(stepTools, stepToolOrder)
+	stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 	opts.ExperimentalSandbox = stepSandbox
 
 	stepCtx := ctx
@@ -1184,6 +1227,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbInclude = include
 	r.cbMessages = stepMessages
 	r.cbTools = stepTools
+	r.cbExecutionTools = stepExecutionTools
 	r.cbSystem = stepSystem
 	r.cbInstructionMessages = stepInstructionMessages
 	r.cbInitialInstructionMessages = cloneInstructionMessages(instructionMessages)
@@ -1283,6 +1327,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
 	currentTools := append([]types.Tool(nil), r.cbTools...)
+	currentExecutionTools := append([]types.Tool(nil), r.cbExecutionTools...)
 	repairToolCall := effectiveRepairToolCall(opts.RepairToolCall, opts.ExperimentalRepairToolCall)
 	onLanguageModelCallStart := firstLMCallStart(opts.OnLanguageModelCallStart, opts.ExperimentalOnLanguageModelCallStart)
 	onLanguageModelCallEnd := firstLMCallEnd(opts.OnLanguageModelCallEnd, opts.ExperimentalOnLanguageModelCallEnd)
@@ -1413,14 +1458,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
-		toolsByName := make(map[string]*types.Tool, len(stepTools))
-		for i := range stepTools {
-			toolsByName[stepTools[i].Name] = &stepTools[i]
+		stepExecutionTools := append([]types.Tool(nil), currentExecutionTools...)
+		toolsByName := make(map[string]*types.Tool, len(stepExecutionTools))
+		for i := range stepExecutionTools {
+			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 		// toolInputCallbacks invokes Tool.OnInputStart/OnInputDelta/OnInputAvailable
-		// as tool-input-start/delta/tool-call chunks arrive (TS
-		// invokeToolCallbacksFromStream). Reset for every step.
-		toolInputCallbacks := newStreamToolInputCallbacks(stepTools, currentMessages, r.cbToolsCtx)
+		// as tool-input-start/delta/tool-call chunks arrive. TS's
+		// invokeToolCallbacksFromStream is given `tools: stepExecutionTools`
+		// (not stepModelTools), so a caller-only callee's callbacks still
+		// fire even though it's hidden from the model. Reset for every step.
+		toolInputCallbacks := newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 		// preRefinementCalls mirrors stepToolCalls before ExperimentalRefineToolInput
 		// runs, for the approval inputSchemaInput diff.
 		var preRefinementCalls []types.ToolCall
@@ -2055,7 +2103,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 			}
 			usageForTools := r.usage.Add(stepUsage)
-			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
+			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
@@ -2482,8 +2530,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextReasoningLevel = prepared.Reasoning
 			}
 		}
+
+		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
+		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
+		nextTools = nextModelTools
+		if len(nextToolCallerMessages) > 0 {
+			// Appended only to the prompt sent for this step, not persisted
+			// into currentMessages: each step recomputes its own caller
+			// announcement (TS appendToolCallerMessages is applied per-step,
+			// not accumulated into the conversation history).
+			nextMessages = AppendToolCallerMessages(nextMessages, nextToolCallerMessages)
+		}
+
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		nextTools = orderStepTools(nextTools, nextToolOrder)
+		nextExecutionTools = resolveStepTools(ctx, nextExecutionTools, r.cbToolsCtx, nextSandbox)
 		r.cbModel = nextModel
 		r.cbModelProvider = nextModel.Provider()
 		r.cbModelID = nextModel.ModelID()
@@ -2491,6 +2552,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbInstructionMessages = nextInstructionMessages
 		r.cbToolChoice = nextToolChoice
 		currentTools = append([]types.Tool(nil), nextTools...)
+		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
 		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
 		nextStepCtx := ctx

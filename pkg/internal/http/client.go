@@ -378,6 +378,19 @@ func (c *Client) SetHeader(key, value string) {
 	c.headers[key] = value
 }
 
+// Headers returns a copy of the client's default headers (e.g.
+// Authorization, provider-specific auth headers, and any custom headers
+// merged in at construction). Used by callers that need to authenticate a
+// non-HTTP connection (e.g. a WebSocket handshake) the same way the client
+// authenticates its own requests.
+func (c *Client) Headers() map[string]string {
+	out := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		out[k] = v
+	}
+	return out
+}
+
 // SetBaseURL updates the base URL
 func (c *Client) SetBaseURL(baseURL string) {
 	c.baseURL = baseURL

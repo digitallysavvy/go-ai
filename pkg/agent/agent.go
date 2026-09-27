@@ -90,6 +90,11 @@ type AgentGenerateOptions struct {
 	StopWhen    []ai.StopCondition
 	MaxSteps    int
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
+	// Forwarded to the underlying GenerateText/StreamText call.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
+
 	Temperature           *float64
 	MaxTokens             *int
 	TopP                  *float64
@@ -273,6 +278,12 @@ type AgentConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers.
 	ToolOrder []string
+
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
+	// Forwarded to the underlying GenerateText/StreamText call. Mirrors the
+	// TypeScript SDK's ToolLoopAgentSettings.experimental_toolCallers.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
 
 	// Skills are reusable agent behaviors
 	// Skills can be registered and executed by the agent
@@ -611,6 +622,10 @@ type PrepareCallConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers for this call.
 	ToolOrder []string
+
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools for this call.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
 
 	// ToolApproval configures automatic approval handling for this call.
 	ToolApproval types.ToolApprovalConfig

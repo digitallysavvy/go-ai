@@ -300,6 +300,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
 		ToolOrder:                      callConfig.ToolOrder,
+		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
 		StopWhen:                       callConfig.StopWhen,
@@ -411,6 +412,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
 		ToolOrder:                      callConfig.ToolOrder,
+		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
 		StopWhen:                       callConfig.StopWhen,
@@ -855,6 +857,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ActiveTools:                    a.config.ActiveTools,
 		ToolChoice:                     a.config.ToolChoice,
 		ToolOrder:                      a.config.ToolOrder,
+		ExperimentalToolCallers:        a.config.ExperimentalToolCallers,
 		ToolApproval:                   a.config.ToolApproval,
 		ExperimentalToolApprovalSecret: a.config.ExperimentalToolApprovalSecret,
 		SensitiveRuntimeContext:        a.config.SensitiveRuntimeContext,
@@ -1009,6 +1012,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if opts.ToolOrder != nil {
 		c.ToolOrder = opts.ToolOrder
+	}
+	if opts.ExperimentalToolCallers != nil {
+		c.ExperimentalToolCallers = opts.ExperimentalToolCallers
 	}
 	if opts.ToolChoice.Type != "" {
 		c.ToolChoice = opts.ToolChoice

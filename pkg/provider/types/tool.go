@@ -145,6 +145,62 @@ type Tool struct {
 
 	// OnInputAvailable is called when complete tool input is available
 	OnInputAvailable OnInputAvailableFunc `json:"-"`
+
+	// ========================================================================
+	// Tool Search / Deferred Tools / Tool Callers
+	// ========================================================================
+
+	// DeferLoading defers exposing this tool to the model until it is
+	// discovered by a toolSearch tool (see ai.ToolSearch). Deferred tools
+	// still support direct calls and local callers that announce tools in
+	// conversation messages. Discovered tools become available on the next
+	// model step.
+	DeferLoading bool `json:"deferLoading,omitempty"`
+
+	// ExperimentalToolCaller marks this tool as usable as a tool caller for
+	// other tools (TS experimental_toolCaller / ToolCallerTool). Nil means
+	// this tool is not a caller.
+	ExperimentalToolCaller *ToolCallerDefinition `json:"-"`
+
+	// IsToolSearch marks this tool as the native tool search tool created by
+	// ai.ToolSearch(). It mirrors the TypeScript SDK's internal
+	// vercel.ai.toolSearch symbol tag and must not be set directly.
+	IsToolSearch bool `json:"-"`
+}
+
+// ToolCallerType identifies the wiring style of a ToolCallerDefinition.
+const (
+	// ToolCallerTypeLocal routes calls through a locally bound tool.
+	ToolCallerTypeLocal = "local"
+
+	// ToolCallerTypeProvider routes calls by augmenting provider options on
+	// the callee tool so the provider itself allows this caller.
+	ToolCallerTypeProvider = "provider"
+)
+
+// ToolCallerDefinition describes how a tool can act as a caller for other
+// tools, mirroring the TypeScript SDK's ToolCallerDefinition
+// (experimental_toolCaller).
+type ToolCallerDefinition struct {
+	// Type is ToolCallerTypeLocal or ToolCallerTypeProvider.
+	Type string
+
+	// Bind creates the tool exposed to the model/runtime, given the tools
+	// routed through this caller. Only used when Type is
+	// ToolCallerTypeLocal.
+	Bind func(tools map[string]Tool) Tool
+
+	// PrepareModelMessage optionally returns conversation content describing
+	// the tools available through this caller. When non-nil, the unbound
+	// caller tool remains model-visible (its definition stays stable) and
+	// the returned content is added to the conversation instead. Only used
+	// when Type is ToolCallerTypeLocal.
+	PrepareModelMessage func(tools map[string]Tool) *string
+
+	// PrepareProviderOptions augments a tool's provider options so the
+	// provider allows this caller to invoke it. Only used when Type is
+	// ToolCallerTypeProvider.
+	PrepareProviderOptions func(providerOptions map[string]interface{}) map[string]interface{}
 }
 
 // ToolExecutor is a function that executes a tool

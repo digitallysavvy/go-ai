@@ -43,36 +43,74 @@ type RealtimeSessionOptions struct {
 }
 
 type RealtimeSession struct {
-	model provider.Experimental_RealtimeModelV4
-	conn  RealtimeWebSocketConn
-	mu    sync.Mutex
-	done  chan struct{}
+	model     provider.Experimental_RealtimeModelV4
+	conn      RealtimeWebSocketConn
+	mu        sync.Mutex
+	done      chan struct{}
+	parser    func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error)
+	lifecycle provider.RealtimeLifecycle
 }
 
 func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeModelV4, opts RealtimeSessionOptions) (*RealtimeSession, error) {
 	if model == nil {
 		return nil, errors.New("realtime model is required")
 	}
-	secret := opts.ClientSecret
-	if secret == nil {
-		created, err := model.DoCreateClientSecret(ctx, provider.ClientSecretOptions{SessionConfig: opts.SessionConfig})
-		if err != nil {
-			return nil, err
-		}
-		secret = &created
-	}
 	dialer := opts.Dialer
 	if dialer == nil {
 		dialer = WebSocketRealtimeDialer{}
 	}
-	cfg := model.GetWebSocketConfig(secret.Token, secret.URL)
+
+	// A server-websocket-config model (e.g. OpenAI Live) authenticates the
+	// connection itself with request headers instead of a per-connection
+	// token minted via DoCreateClientSecret, matching TS
+	// getServerWebSocketConfig().
+	var cfg provider.WebSocketConfig
+	if serverModel, ok := model.(provider.RealtimeServerWebSocketConfigProvider); ok {
+		built, err := serverModel.GetServerWebSocketConfig()
+		if err != nil {
+			return nil, err
+		}
+		cfg = built
+	} else {
+		secret := opts.ClientSecret
+		if secret == nil {
+			created, err := model.DoCreateClientSecret(ctx, provider.ClientSecretOptions{SessionConfig: opts.SessionConfig})
+			if err != nil {
+				return nil, err
+			}
+			secret = &created
+		}
+		cfg = model.GetWebSocketConfig(secret.Token, secret.URL)
+	}
+
 	conn, err := dialer.Dial(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
+
 	s := &RealtimeSession{model: model, conn: conn, done: make(chan struct{})}
-	if opts.SessionConfig != nil {
-		if err := s.Send(ctx, provider.RealtimeClientEvent{Type: "session-update", Config: *opts.SessionConfig}); err != nil {
+	if factory, ok := model.(provider.RealtimeServerEventParserFactory); ok {
+		s.parser = factory.NewServerEventParser()
+	}
+	if lp, ok := model.(provider.RealtimeLifecycleProvider); ok {
+		s.lifecycle = lp.RealtimeLifecycle()
+	}
+
+	startupType := s.lifecycle.StartupEventType
+	if startupType == "" {
+		startupType = "session-update"
+	}
+	sessionConfig := opts.SessionConfig
+	// A non-default startup event (e.g. OpenAI Live's "session-start")
+	// starts the session itself, so it must always be sent, even with an
+	// empty config; the default "session-update" is only sent when the
+	// caller supplied a config.
+	if sessionConfig != nil || s.lifecycle.StartupEventType != "" {
+		cfgValue := provider.RealtimeSessionConfig{}
+		if sessionConfig != nil {
+			cfgValue = *sessionConfig
+		}
+		if err := s.Send(ctx, provider.RealtimeClientEvent{Type: startupType, Config: cfgValue}); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
@@ -185,6 +223,9 @@ func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEv
 				}
 			}
 		}
+		if s.parser != nil {
+			return s.parser(raw)
+		}
 		return s.model.ParseServerEvent(raw)
 	}
 }
@@ -198,6 +239,12 @@ func (s *RealtimeSession) Close() error {
 		return nil
 	default:
 		close(s.done)
+	}
+	if s.lifecycle.FinalizationEventType != "" {
+		// Best-effort: a graceful finalization event (e.g. OpenAI Live's
+		// "session-close") lets the provider end the session cleanly. A
+		// failure here must not prevent the socket from closing.
+		_ = s.Send(context.Background(), provider.RealtimeClientEvent{Type: s.lifecycle.FinalizationEventType})
 	}
 	return s.conn.Close()
 }
@@ -213,7 +260,7 @@ type WebSocketRealtimeDialer struct {
 }
 
 func (d WebSocketRealtimeDialer) Dial(ctx context.Context, config provider.WebSocketConfig) (RealtimeWebSocketConn, error) {
-	conn, err := wsutil.Dial(ctx, config.URL, wsutil.DialOptions{Protocols: config.Protocols})
+	conn, err := wsutil.Dial(ctx, config.URL, wsutil.DialOptions{Protocols: config.Protocols, Headers: config.Headers})
 	if err != nil {
 		return nil, err
 	}

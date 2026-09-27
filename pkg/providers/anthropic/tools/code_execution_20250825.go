@@ -104,10 +104,20 @@ Important: This tool must be executed by the Anthropic API, not locally.`,
 		},
 		ProviderExecuted:        true,
 		SupportsDeferredResults: true,
+		// ExperimentalToolCaller lets other tools opt into programmatic
+		// tool calling through code_execution_20250825 via
+		// ai.ExperimentalToolCallers, mirroring the TypeScript SDK's
+		// codeExecution_20250825() (experimental_toolCaller wrapper).
+		ExperimentalToolCaller: codeExecutionToolCaller(codeExecution20250825AllowedCaller),
 	}
 
 	return tool
 }
+
+// codeExecution20250825AllowedCaller is the value the Anthropic API expects
+// in providerOptions.anthropic.allowedCallers for a tool routed through
+// code_execution_20250825.
+const codeExecution20250825AllowedCaller = "code_execution_20250825"
 
 func buildCodeExecution20250825Schema() map[string]interface{} {
 	// Build a discriminated union schema

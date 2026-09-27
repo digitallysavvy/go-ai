@@ -35,5 +35,47 @@ func NewProgrammaticToolCallingTool() types.Tool {
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("programmatic tool calling is executed by the OpenAI API, not locally")
 		},
+		// ExperimentalToolCaller lets function tools opt into programmatic
+		// tool calling via ai.ExperimentalToolCallers instead of setting
+		// providerOptions.openai.allowedCallers by hand, mirroring the
+		// TypeScript SDK's programmaticToolCalling() (experimental_toolCaller
+		// wrapper in tool/programmatic-tool-calling.ts).
+		ExperimentalToolCaller: &types.ToolCallerDefinition{
+			Type: types.ToolCallerTypeProvider,
+			PrepareProviderOptions: func(providerOptions map[string]interface{}) map[string]interface{} {
+				out := make(map[string]interface{}, len(providerOptions)+1)
+				for k, v := range providerOptions {
+					out[k] = v
+				}
+				openaiOpts := map[string]interface{}{}
+				if existing, ok := providerOptions["openai"].(map[string]interface{}); ok {
+					for k, v := range existing {
+						openaiOpts[k] = v
+					}
+				}
+				const allowedCaller = "programmatic"
+				seen := map[string]bool{allowedCaller: true}
+				callers := []string{allowedCaller}
+				switch existing := openaiOpts["allowedCallers"].(type) {
+				case []string:
+					for _, c := range existing {
+						if !seen[c] {
+							seen[c] = true
+							callers = append(callers, c)
+						}
+					}
+				case []interface{}:
+					for _, c := range existing {
+						if s, ok := c.(string); ok && !seen[s] {
+							seen[s] = true
+							callers = append(callers, s)
+						}
+					}
+				}
+				openaiOpts["allowedCallers"] = callers
+				out["openai"] = openaiOpts
+				return out
+			},
+		},
 	}
 }
