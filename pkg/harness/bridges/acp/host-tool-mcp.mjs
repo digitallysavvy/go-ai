@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   McpError
 } from "@modelcontextprotocol/sdk/types.js";
-var VERSION = true ? "1.0.61" : "0.0.0-test";
+var VERSION = true ? "1.0.66" : "0.0.0-test";
 function createHostToolMCPServer({
   tools: tools2,
   revision = 1,
