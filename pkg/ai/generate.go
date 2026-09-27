@@ -1809,16 +1809,21 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
+			// Leave the reason unset (rather than synthesizing a default
+			// here) so each provider converter applies its own default
+			// denial text (TS leaves `reason` undefined; see audit row
+			// 58a2ad7 / G6).
 			reason := approval.Reason
-			if reason == nil {
-				reason = strPtr("Tool execution denied.")
+			reasonText := ""
+			if reason != nil {
+				reasonText = *reason
 			}
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,

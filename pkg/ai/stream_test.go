@@ -1637,17 +1637,18 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
 		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
 	}
-	if toolResults[0].ApprovalReason == nil || *toolResults[0].ApprovalReason == "" {
-		t.Fatalf("expected default denial reason, got %#v", toolResults[0].ApprovalReason)
-	}
-	if *toolResults[0].ApprovalReason != "Tool execution denied." {
-		t.Fatalf("unexpected default denial reason: %q", *toolResults[0].ApprovalReason)
+	// No reason was supplied, so Go must leave it unset here (matching TS,
+	// which leaves `reason` undefined) rather than synthesize a default;
+	// each provider converter applies its own default denial text when it
+	// serializes the tool result (audit row 58a2ad7 / G6).
+	if toolResults[0].ApprovalReason != nil {
+		t.Fatalf("expected no synthesized denial reason, got %#v", *toolResults[0].ApprovalReason)
 	}
 	output, ok := toolResults[0].Result.(types.ToolResultOutput)
 	if !ok {
 		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
 	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "Tool execution denied." {
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "" {
 		t.Fatalf("unexpected denied output: %#v", output)
 	}
 }
