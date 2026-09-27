@@ -1589,13 +1589,11 @@ function mergeToolUpdate({
       state.values[property] = parsed[property];
     }
   }
-  const programmaticName = getStringProperty2({
-    value: rawUpdate,
-    property: "name"
-  });
+  const programmaticName = getStringProperty2({ value: update, property: "name" }) ?? getStringProperty2({ value: rawUpdate, property: "name" });
   if (programmaticName != null) state.values.name = programmaticName;
 }
 function createACPToolCall({ state }) {
+  const name2 = getStringProperty2({ value: state.values, property: "name" });
   const title = getStringProperty2({
     value: state.values,
     property: "title"
@@ -1604,6 +1602,7 @@ function createACPToolCall({ state }) {
   const status = state.values.status;
   return {
     toolCallId: state.toolCallId,
+    ...name2 == null ? {} : { name: name2 },
     title: title ?? state.toolName ?? `Tool ${state.toolCallId}`,
     ...isACPToolKind(kind) ? { kind } : {},
     ...isACPToolCallStatus(status) ? { status } : {},
@@ -1979,6 +1978,7 @@ function mergeObservedToolCall({
 }) {
   return {
     toolCallId: update.toolCallId,
+    ...(update.name ?? previous?.name) == null ? {} : { name: update.name ?? previous?.name },
     title: update.title ?? previous?.title ?? `Tool ${update.toolCallId}`,
     ...update.kind == null ? {} : { kind: update.kind },
     ...update.status == null ? {} : { status: update.status },
@@ -2003,6 +2003,9 @@ function hasPortableEvidence({
       value: evidence,
       property: "name"
     });
+    if (programmaticName === invocation.toolName) {
+      hasToolName = true;
+    }
     const deferredToolName = getProperty({
       value: rawInput,
       property: "tool_name"
@@ -2413,7 +2416,7 @@ import {
   ListToolsRequestSchema,
   McpError
 } from "@modelcontextprotocol/sdk/types.js";
-var VERSION = true ? "1.0.61" : "0.0.0-test";
+var VERSION = true ? "1.0.66" : "0.0.0-test";
 function createHostToolMCPServer({
   tools,
   revision = 1,

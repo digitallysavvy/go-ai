@@ -5,14 +5,14 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-acp/dist/bridge (tsup bundle of packages/harness-acp/src/v1/bridge)",
       "files": {
-        "bridge.mjs": "debcf34399e37d3e05bc09ee67e1ff700280ea85e62b28a927cd44eff070bb26",
-        "host-tool-mcp.mjs": "7889f914893a146a6d1a6cb4dc018cec99a9f446729db36c0bd630a1e3caf04a",
-        "package.json": "40490267f1ef8418462daadb7a1c5355e4a246f0bc3322b3dbe2f8d051297e53",
-        "pnpm-lock.yaml": "9d381f7f2aafd6fac9c4aa55622ea8e58def0f4a6bcd9e90404a2aa407726997"
+        "bridge.mjs": "62793e93bf34154f0ec00d50efaceade3b736fb91de73b3c4fa74e8a02acc39a",
+        "host-tool-mcp.mjs": "f1233d429089063a0aa79b4a474e0cd33cf0a9111655fa259a1135ab09c9a00e",
+        "package.json": "33a1cf383ce385379c403fe26a94158f44a40b09a72151b99aa75ae9286046b3",
+        "pnpm-lock.yaml": "f8bef47bb6398e4b0a78259c9bab3098a798f33e37e7e746713a9bd8fd3c79af"
       },
       "sourceDir": "packages/harness-acp/src/v1/bridge",
       "sourcePackage": "@ai-sdk/harness-acp",
-      "sourceVersion": "1.0.61"
+      "sourceVersion": "1.0.66"
     },
     "claudecode": {
       "bridgeEntry": "bridge.mjs",
