@@ -199,17 +199,35 @@ func assistantTextContent(content []types.ContentPart) string {
 }
 
 // openAIToolResultText extracts a plain string from a ToolResultContent for
-// use as the "content" field of an OpenAI tool role message.
+// use as the "content" field of an OpenAI tool role message, mirroring TS
+// convert-to-openai-chat-messages.ts's per-output-type switch: text/error-text
+// use the raw string value, execution-denied falls back to the default denial
+// text (audit row 58a2ad7 / G6), and json/error-json are JSON-stringified.
+// Reuses resolveToolOutput (shared with the Anthropic converter) so the
+// legacy Result/Error fields are also handled. Before this fix, every output
+// other than "content" fell through to the deprecated Result field, which
+// resolveToolOutput leaves nil once Output is set, printing the literal
+// string "<nil>" as the tool's content.
 func openAIToolResultText(p types.ToolResultContent) string {
-	if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
-		for _, block := range p.Output.Content {
+	out := resolveToolOutput(p)
+	switch out.kind {
+	case "text", "error-text":
+		return stringValue(out.value)
+	case "execution-denied":
+		if out.reason != "" {
+			return out.reason
+		}
+		return "Tool call execution denied."
+	case "content":
+		for _, block := range out.content {
 			if textBlock, ok := block.(types.TextContentBlock); ok {
 				return textBlock.Text
 			}
 		}
 		return fmt.Sprintf("[complex output from %s]", p.ToolName)
+	default: // json, error-json
+		return jsonStringify(out.value)
 	}
-	return fmt.Sprintf("%v", p.Result)
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
