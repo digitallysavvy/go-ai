@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math/big"
+	"regexp"
+	"strings"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -287,18 +290,83 @@ func mergeImageProviderMetadata(dst map[string]interface{}, src map[string]inter
 	}
 }
 
+// gatewayCostMetadataKeys are the numeric cost fields the AI Gateway attaches
+// to image-generation provider metadata that must be summed (not
+// overwritten) across split multi-call requests. Mirrors TS
+// generate-image.ts's gatewayCostMetadataKeys (audit row dd32de2 / WG10).
+var gatewayCostMetadataKeys = []string{
+	"cost", "gatewayCost", "inferenceCost", "inputInferenceCost",
+	"marketCost", "outputInferenceCost", "surchargeCost",
+}
+
 func mergeGatewayImageMetadata(currentRaw interface{}, next map[string]interface{}) map[string]interface{} {
-	current, _ := currentRaw.(map[string]interface{})
-	if current == nil {
-		current = map[string]interface{}{}
+	current, hasCurrent := currentRaw.(map[string]interface{})
+
+	merged := map[string]interface{}{}
+	for key, value := range current {
+		merged[key] = value
 	}
 	for key, value := range next {
-		current[key] = value
+		merged[key] = value
 	}
-	if images, ok := current["images"].([]interface{}); ok && len(images) == 0 {
-		delete(current, "images")
+
+	if hasCurrent {
+		for _, key := range gatewayCostMetadataKeys {
+			if sum, ok := addDecimalStrings(current[key], next[key]); ok {
+				merged[key] = sum
+			}
+		}
 	}
-	return current
+
+	if images, ok := merged["images"].([]interface{}); ok && len(images) == 0 {
+		delete(merged, "images")
+	}
+	return merged
+}
+
+var decimalStringRe = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+
+// addDecimalStrings adds two decimal-string numbers with exact (BigInt-based)
+// arithmetic, avoiding float imprecision for currency values. Returns
+// ("", false) when either value is not a valid non-negative decimal string,
+// matching TS addDecimalStrings returning undefined in that case (the caller
+// then leaves the field's "last write wins" value untouched).
+func addDecimalStrings(v1, v2 interface{}) (string, bool) {
+	s1, ok1 := v1.(string)
+	s2, ok2 := v2.(string)
+	if !ok1 || !ok2 || !decimalStringRe.MatchString(s1) || !decimalStringRe.MatchString(s2) {
+		return "", false
+	}
+
+	int1, frac1, _ := strings.Cut(s1, ".")
+	int2, frac2, _ := strings.Cut(s2, ".")
+	precision := len(frac1)
+	if len(frac2) > precision {
+		precision = len(frac2)
+	}
+
+	n1, ok := new(big.Int).SetString(int1+frac1+strings.Repeat("0", precision-len(frac1)), 10)
+	if !ok {
+		return "", false
+	}
+	n2, ok := new(big.Int).SetString(int2+frac2+strings.Repeat("0", precision-len(frac2)), 10)
+	if !ok {
+		return "", false
+	}
+
+	sumStr := new(big.Int).Add(n1, n2).String()
+	for len(sumStr) < precision+1 {
+		sumStr = "0" + sumStr
+	}
+
+	if precision == 0 {
+		return sumStr, true
+	}
+
+	result := sumStr[:len(sumStr)-precision] + "." + sumStr[len(sumStr)-precision:]
+	result = strings.TrimRight(result, "0")
+	result = strings.TrimRight(result, ".")
+	return result, true
 }
 
 func appendImageMetadata(currentRaw interface{}, nextRaw interface{}) []interface{} {

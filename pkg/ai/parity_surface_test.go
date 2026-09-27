@@ -152,6 +152,55 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	}
 }
 
+// TestGenerateImage_SumsGatewayCostAcrossSplitCalls ports TS generate-image.ts's
+// gateway cost-summation behavior (audit row dd32de2 / WG10): numeric/decimal-
+// string gateway cost fields must be summed across split multi-call requests,
+// not overwritten by the last call's metadata.
+func TestGenerateImage_SumsGatewayCostAcrossSplitCalls(t *testing.T) {
+	callIndex := 0
+	m := &testutil.MockImageModel{
+		MaxImages: 2,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			callIndex++
+			images := make([][]byte, *opts.N)
+			for i := range images {
+				images[i] = []byte{byte(callIndex), byte(i)}
+			}
+			costs := map[int]map[string]interface{}{
+				1: {"cost": "0.05", "marketCost": "1.5"},
+				2: {"cost": "0.025", "marketCost": "0.5"},
+			}
+			return &types.ImageResult{
+				Images:   images,
+				MimeType: "image/png",
+				ProviderMetadata: map[string]interface{}{
+					"gateway": costs[callIndex],
+				},
+			}, nil
+		},
+	}
+	n := 4
+
+	got, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:  m,
+		Prompt: "cat",
+		N:      &n,
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	gateway, ok := got.ProviderMetadata["gateway"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("providerMetadata[gateway] = %#v, want map", got.ProviderMetadata["gateway"])
+	}
+	if gateway["cost"] != "0.075" {
+		t.Errorf("cost = %v, want 0.075", gateway["cost"])
+	}
+	if gateway["marketCost"] != "2" {
+		t.Errorf("marketCost = %v, want 2", gateway["marketCost"])
+	}
+}
+
 func TestGenerateImage_DetectsMediaTypeWhenProviderOmitsIt(t *testing.T) {
 	m := &testutil.MockImageModel{
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
@@ -655,5 +704,29 @@ func TestCreateTextStreamResponse_ContentType(t *testing.T) {
 	}
 	if string(body) != "hello" {
 		t.Fatalf("body = %q, want hello", string(body))
+	}
+}
+
+func TestAddDecimalStrings(t *testing.T) {
+	tests := []struct {
+		v1, v2  interface{}
+		wantSum string
+		wantOK  bool
+	}{
+		{"0.05", "0.025", "0.075", true},
+		{"1.5", "0.5", "2", true},
+		{"0.9", "0.9", "1.8", true},
+		{"5", "3", "8", true},
+		{"1.25", "3", "4.25", true},
+		{"1.5", 0.5, "", false},    // non-string value
+		{"1.5", nil, "", false},    // missing value
+		{"-1.5", "0.5", "", false}, // negative not allowed (matches TS regex)
+		{"1.5", "abc", "", false},  // non-numeric string
+	}
+	for _, tt := range tests {
+		got, ok := addDecimalStrings(tt.v1, tt.v2)
+		if ok != tt.wantOK || (ok && got != tt.wantSum) {
+			t.Errorf("addDecimalStrings(%#v, %#v) = (%q, %v), want (%q, %v)", tt.v1, tt.v2, got, ok, tt.wantSum, tt.wantOK)
+		}
 	}
 }
