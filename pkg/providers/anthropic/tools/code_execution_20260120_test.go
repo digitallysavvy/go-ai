@@ -760,4 +760,17 @@ func TestCodeExecution20260120_ToolCaller(t *testing.T) {
 		assert.Equal(t, "keep", anthropicOpts["other"])
 		assert.Equal(t, []string{"code_execution_20260120", "direct"}, anthropicOpts["allowedCallers"])
 	})
+
+	// TS: [...new Set([...existing, allowedCallerName])] -- existing
+	// entries keep their original order and the new caller is appended at
+	// the end, not prepended.
+	t.Run("appends the new caller after existing callers, not before", func(t *testing.T) {
+		in := map[string]interface{}{
+			"anthropic": map[string]interface{}{"allowedCallers": []string{"direct"}},
+		}
+		out := tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+		anthropicOpts, ok := out["anthropic"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, []string{"direct", "code_execution_20260120"}, anthropicOpts["allowedCallers"])
+	})
 }

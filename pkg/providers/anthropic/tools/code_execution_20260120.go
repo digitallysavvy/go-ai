@@ -374,8 +374,12 @@ func codeExecutionToolCaller(allowedCallerName string) *types.ToolCallerDefiniti
 					anthropicOpts[k] = v
 				}
 			}
-			seen := map[string]bool{allowedCallerName: true}
-			callers := []string{allowedCallerName}
+			// TS: [...new Set([...(anthropicOptions?.allowedCallers ?? []),
+			// allowedCallerName])] -- existing entries keep their original
+			// order (Set dedup keeps the first occurrence), and the new
+			// caller is appended at the end only if not already present.
+			seen := map[string]bool{}
+			var callers []string
 			if existing, ok := anthropicOpts["allowedCallers"].([]string); ok {
 				for _, c := range existing {
 					if !seen[c] {
@@ -390,6 +394,9 @@ func codeExecutionToolCaller(allowedCallerName string) *types.ToolCallerDefiniti
 						callers = append(callers, s)
 					}
 				}
+			}
+			if !seen[allowedCallerName] {
+				callers = append(callers, allowedCallerName)
 			}
 			anthropicOpts["allowedCallers"] = callers
 			out["anthropic"] = anthropicOpts

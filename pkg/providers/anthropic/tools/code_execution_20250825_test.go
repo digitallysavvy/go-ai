@@ -131,4 +131,15 @@ func TestCodeExecution20250825_ToolCaller(t *testing.T) {
 	anthropicOpts, ok := out["anthropic"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, []string{"code_execution_20250825"}, anthropicOpts["allowedCallers"])
+
+	// TS: [...new Set([...existing, allowedCallerName])] -- existing
+	// entries keep their original order and the new caller is appended at
+	// the end, not prepended.
+	in := map[string]interface{}{
+		"anthropic": map[string]interface{}{"allowedCallers": []string{"direct"}},
+	}
+	out = tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+	anthropicOpts, ok = out["anthropic"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, []string{"direct", "code_execution_20250825"}, anthropicOpts["allowedCallers"])
 }
