@@ -116,10 +116,6 @@ func moonshotStreamErrorMetadata(errType string) (statusCode int, isRetryable bo
 // *providererrors.StreamProviderError for attaching to StreamChunk.Err
 // (P1-1c part 2), mirroring TS createMoonshotAIStreamError(value.error, value).
 func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.RawMessage) *providererrors.StreamProviderError {
-	code := payload.Code
-	if code == "" {
-		code = payload.Type
-	}
 	var data interface{}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &data)
@@ -130,6 +126,14 @@ func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.
 	if matched {
 		statusPtr = &statusCode
 		retryablePtr = &isRetryable
+	}
+	// TS createMoonshotAIStreamError forwards error.code as-is (no fallback
+	// to type — that fallback belongs only to newMoonshotStreamProviderError
+	// above, which reports a single ErrorCode string with no separate type
+	// field).
+	var code interface{}
+	if payload.Code != "" {
+		code = payload.Code
 	}
 	return providererrors.NewStreamProviderError(payload.Message, "moonshot", payload.Type, code, statusPtr, retryablePtr, data)
 }

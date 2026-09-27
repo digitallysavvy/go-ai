@@ -89,5 +89,8 @@ func newGroqStreamProviderErrorChunk(raw json.RawMessage) *providererrors.Stream
 		statusPtr = &statusCode
 		retryablePtr = &isRetryable
 	}
-	return providererrors.NewStreamProviderError(message, "groq", payload.Type, payload.Type, statusPtr, retryablePtr, data)
+	// TS createGroqStreamError only forwards {message, type}; Groq's error
+	// shape has no separate `code` field, so code is left nil (matching TS's
+	// `code: undefined`, unlike OpenAI/DeepSeek/Moonshot).
+	return providererrors.NewStreamProviderError(message, "groq", payload.Type, nil, statusPtr, retryablePtr, data)
 }
