@@ -1,6 +1,5 @@
-// Package minimax implements the MiniMax provider's chat/language-model
-// surface. It mirrors @ai-sdk/minimax at ai@7.0.113 (video model support is
-// added separately once the async video core lands).
+// Package minimax implements the MiniMax provider's chat/language-model and
+// video-generation surfaces. It mirrors @ai-sdk/minimax at ai@7.0.113.
 //
 // MiniMax chat delegates to the Anthropic Messages protocol: TS
 // createMiniMax constructs an AnthropicLanguageModel directly against
@@ -16,6 +15,7 @@ import (
 	"fmt"
 	"os"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -23,11 +23,22 @@ import (
 // DefaultBaseURL is MiniMax's Anthropic-compatible chat endpoint.
 const DefaultBaseURL = "https://api.minimax.io/anthropic/v1"
 
+// DefaultVideoBaseURL is MiniMax's video generation API root.
+const DefaultVideoBaseURL = "https://api.minimax.io"
+
 // Provider implements the provider.Provider interface for MiniMax chat
-// models.
+// models, plus a VideoModel method for MiniMax's video generation API.
 type Provider struct {
 	config            Config
 	anthropicProvider *anthropic.Provider
+
+	// videoClient and videoReqHeaders serve the video generation API
+	// (Authorization: Bearer <apiKey>, no anthropic-version header, unlike
+	// the chat client). videoReqHeaders is forwarded to VideoModel.DoStatus's
+	// fileutil-based polling, which does not go through videoClient.
+	videoClient     *internalhttp.Client
+	videoReqHeaders map[string]string
+	videoBaseURL    string
 }
 
 // Config contains configuration for the MiniMax provider.
@@ -40,6 +51,10 @@ type Config struct {
 	// Anthropic-compatible endpoint (https://api.minimax.io/anthropic/v1).
 	BaseURL string
 
+	// VideoBaseURL is the base URL for video generation API calls. Defaults
+	// to https://api.minimax.io.
+	VideoBaseURL string
+
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string
 }
@@ -51,6 +66,11 @@ func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
+	}
+
+	videoBaseURL := cfg.VideoBaseURL
+	if videoBaseURL == "" {
+		videoBaseURL = DefaultVideoBaseURL
 	}
 
 	apiKey := cfg.APIKey
@@ -71,9 +91,23 @@ func New(cfg Config) *Provider {
 		},
 	})
 
+	videoReqHeaders := map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}
+	for k, v := range cfg.Headers {
+		videoReqHeaders[k] = v
+	}
+	videoClient := internalhttp.NewClient(internalhttp.Config{
+		BaseURL: videoBaseURL,
+		Headers: videoReqHeaders,
+	})
+
 	return &Provider{
 		config:            cfg,
 		anthropicProvider: anthropicProvider,
+		videoClient:       videoClient,
+		videoReqHeaders:   videoReqHeaders,
+		videoBaseURL:      videoBaseURL,
 	}
 }
 
@@ -127,4 +161,13 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns an error: MiniMax does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	return nil, fmt.Errorf("minimax provider does not support reranking")
+}
+
+// VideoModel returns a MiniMax video generation model by ID (TS
+// provider.video / provider.videoModel).
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID is required")
+	}
+	return newVideoModel(p, modelID), nil
 }
