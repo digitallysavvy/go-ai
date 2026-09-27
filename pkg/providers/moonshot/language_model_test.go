@@ -338,6 +338,20 @@ data: [DONE]
 		t.Fatalf("expected an error chunk with the message, got %#v", chunk)
 	}
 
+	// P1-1c part 2: the chunk itself must also carry a structured
+	// StreamProviderError (not just Text), so a mid-stream consumer (and
+	// pkg/ai's streamRetries) doesn't have to wait for the stream to end.
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 500 {
+		t.Errorf("chunk.Err.StatusCode = %v, want 500", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("chunk.Err.IsRetryable = false, want true for server_error")
+	}
+
 	_, err = stream.Next()
 	if err == nil {
 		t.Fatal("expected the stream to terminate with a rich provider error")

@@ -82,6 +82,58 @@ func moonshotStreamErrorStatusCode(errType string) int {
 	}
 }
 
+// moonshotStreamErrorMetadata mirrors TS getMoonshotAIStreamErrorMetadata
+// exactly, returning both statusCode and isRetryable (unlike
+// moonshotStreamErrorStatusCode above, which only returns a status code and
+// defaults to 500 for ProviderError.StatusCode reporting). ok is false for
+// an unrecognized type (TS's `default: return {}`, both fields undefined),
+// signaling the caller should not override NewStreamProviderError's own
+// inference.
+func moonshotStreamErrorMetadata(errType string) (statusCode int, isRetryable bool, ok bool) {
+	switch errType {
+	case "rate_limit_exceeded", "rate_limit_error":
+		return 429, true, true
+	case "server_error", "api_error", "internal_server_error":
+		return 500, true, true
+	case "overloaded_error", "service_unavailable":
+		return 503, true, true
+	case "timeout", "timeout_error":
+		return 504, true, true
+	case "authentication_error", "invalid_api_key":
+		return 401, false, true
+	case "permission_error":
+		return 403, false, true
+	case "not_found_error", "model_not_found":
+		return 404, false, true
+	case "bad_request", "context_length_exceeded", "invalid_request_error":
+		return 400, false, true
+	default:
+		return 0, false, false
+	}
+}
+
+// newMoonshotStreamProviderErrorChunk builds a
+// *providererrors.StreamProviderError for attaching to StreamChunk.Err
+// (P1-1c part 2), mirroring TS createMoonshotAIStreamError(value.error, value).
+func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.RawMessage) *providererrors.StreamProviderError {
+	code := payload.Code
+	if code == "" {
+		code = payload.Type
+	}
+	var data interface{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &data)
+	}
+	statusCode, isRetryable, matched := moonshotStreamErrorMetadata(payload.Type)
+	var statusPtr *int
+	var retryablePtr *bool
+	if matched {
+		statusPtr = &statusCode
+		retryablePtr = &isRetryable
+	}
+	return providererrors.NewStreamProviderError(payload.Message, "moonshot", payload.Type, code, statusPtr, retryablePtr, data)
+}
+
 // newMoonshotStreamProviderError builds the ProviderError surfaced for an
 // {"error": {...}} envelope encountered mid-stream (a Moonshot Chat
 // Completions SSE error frame). Mirrors TS createMoonshotAIStreamError.
