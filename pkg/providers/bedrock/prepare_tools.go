@@ -99,11 +99,18 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	// providerToolsForRequest mirrors TS: when a forced named-tool choice is
 	// rejected, only the requested provider tool is still sent to the model
 	// (with 'auto' tool choice) so the model can still use it if instructed.
+	// TS filters by the tool's wire/API name (tool.name, e.g. "bash") — not
+	// its id (e.g. "anthropic.bash_20250124") — because TS keeps those as
+	// separate fields. Go's types.Tool collapses them into a single Name
+	// field holding the id, so the comparison must resolve each provider
+	// tool's Anthropic wire name (bedrockAnthropicProviderToolWireName)
+	// before matching toolChoice.ToolName, which callers set to the wire
+	// name that will actually appear in the request's toolSpec/tool_choice.
 	providerToolsForRequest := providerTools
 	if rejectsForcedToolChoice && toolChoice.Type == types.ToolChoiceTool {
 		var filtered []types.Tool
 		for _, t := range providerTools {
-			if t.Name == toolChoice.ToolName {
+			if bedrockAnthropicProviderToolWireName(t) == toolChoice.ToolName {
 				filtered = append(filtered, t)
 			}
 		}
@@ -334,6 +341,20 @@ func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
 	}
 
 	return nil
+}
+
+// bedrockAnthropicProviderToolWireName returns the Anthropic API tool name
+// (e.g. "bash") that bedrockAnthropicProviderTool would send for t, or "" if
+// t does not resolve to a recognized Anthropic provider tool. Used to match
+// a forced types.ToolChoiceTool.ToolName against provider-defined tools by
+// their wire name (see providerToolsForRequest above).
+func bedrockAnthropicProviderToolWireName(t types.Tool) string {
+	spec := bedrockAnthropicProviderTool(t)
+	if spec == nil {
+		return ""
+	}
+	name, _ := spec["name"].(string)
+	return name
 }
 
 // bedrockAnthropicToolChoice maps a ToolChoice to Bedrock's Anthropic

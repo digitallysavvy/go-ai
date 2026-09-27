@@ -829,6 +829,50 @@ func TestPrepareTools_RejectsForcedToolUse(t *testing.T) {
 		}
 	})
 
+	// TestPrepareTools_RejectsForcedToolUse/should_drop_provider_tools_that_are_not_the_named_tool
+	// ports TS "should drop provider tools that are not the named tool for
+	// tool choice 'tool'": a mix of a function tool and an Anthropic
+	// provider-defined tool, with toolChoice targeting the function tool,
+	// drops the (non-matching) provider tool entirely and sends only the
+	// named function tool with 'auto' tool choice.
+	t.Run("should drop provider tools that are not the named tool for tool choice 'tool'", func(t *testing.T) {
+		bashTool := types.Tool{Name: "anthropic.bash_20250124", ProviderExecuted: true}
+		result := prepareBedrockTools([]types.Tool{weatherTool, bashTool}, types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "getWeather"}, true, "us.anthropic.claude-opus-5-5", "", nil, nil, true)
+		if result.ToolConfig.ToolChoice == nil || result.ToolConfig.ToolChoice["auto"] == nil {
+			t.Fatalf("toolConfig.toolChoice = %#v, want {auto: {}}", result.ToolConfig.ToolChoice)
+		}
+		if len(result.ToolConfig.Tools) != 1 || result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})["name"] != "getWeather" {
+			t.Fatalf("toolConfig.tools = %#v, want only getWeather", result.ToolConfig.Tools)
+		}
+		if result.AdditionalTools != nil {
+			t.Fatalf("additionalTools = %#v, want nil", result.AdditionalTools)
+		}
+	})
+
+	// TestPrepareTools_RejectsForcedToolUse/should_forward_rejectsForcedToolUse_to_the_Anthropic_provider_tool_path
+	// ports TS "should pass the forced-tool capability to Anthropic provider
+	// tool preparation": when the forced tool choice targets an Anthropic
+	// provider-defined tool (not a function tool), the usingAnthropicTools
+	// branch (bedrockAnthropicToolChoice) must itself receive
+	// rejectsForcedToolUse and fall back to 'auto', not just the
+	// function-tool branch exercised by the subtests above.
+	t.Run("should forward rejectsForcedToolUse to the Anthropic provider tool path", func(t *testing.T) {
+		bashTool := types.Tool{Name: "anthropic.bash_20250124", ProviderExecuted: true}
+		result := prepareBedrockTools([]types.Tool{bashTool}, types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "bash"}, true, "us.anthropic.claude-opus-5-5", "", nil, nil, true)
+		toolChoiceField, ok := result.AdditionalTools["tool_choice"].(map[string]interface{})
+		if !ok || toolChoiceField["type"] != "auto" {
+			t.Fatalf("additionalTools.tool_choice = %#v, want {type: auto}", result.AdditionalTools["tool_choice"])
+		}
+		wantWarning := types.Warning{
+			Type:    "unsupported",
+			Feature: "toolChoice",
+			Details: "toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the 'bash' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
+		}
+		if len(result.Warnings) != 1 || result.Warnings[0] != wantWarning {
+			t.Fatalf("warnings = %#v, want [%#v]", result.Warnings, wantWarning)
+		}
+	})
+
 	t.Run("should keep building forced tool choices for models that support them", func(t *testing.T) {
 		// claude-opus-5 (not 5-5) does not set RejectsForcedToolUse.
 		result := prepareBedrockTools([]types.Tool{weatherTool}, types.RequiredToolChoice(), true, "anthropic.claude-opus-5", "", nil, nil, false)
