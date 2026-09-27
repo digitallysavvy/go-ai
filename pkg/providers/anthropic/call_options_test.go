@@ -177,6 +177,32 @@ func TestPerCall_CacheControl(t *testing.T) {
 	}
 }
 
+// TestPerCall_AutomaticCachingAndContainerID verifies the Go-only
+// automaticCaching/containerId ModelOptions shorthands (no TS schema
+// equivalent) still round-trip through the per-call providerOptions JSON
+// decode: their struct tags must stay camelCase like every other field in
+// ModelOptions (decodeAnthropicCallOptions marshals the raw providerOptions
+// map and unmarshals it into *ModelOptions, so a snake_case tag here would
+// silently fail to match a caller's camelCase key).
+func TestPerCall_AutomaticCachingAndContainerID(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+
+	body := model.buildRequestBody(genOpts("hi", map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"automaticCaching": true,
+			"containerId":      "container-abc123",
+		},
+	}), false)
+
+	if cc, ok := body["cache_control"].(map[string]string); !ok || cc["type"] != "auto" {
+		t.Fatalf("cache_control = %#v, want {type: auto} from automaticCaching", body["cache_control"])
+	}
+	if body["container"] != "container-abc123" {
+		t.Fatalf("container = %#v, want %q from containerId", body["container"], "container-abc123")
+	}
+}
+
 // TestPerCall_MCPServers verifies providerOptions.anthropic.mcpServers flows
 // per call and adds the mcp-client beta.
 func TestPerCall_MCPServers(t *testing.T) {

@@ -283,6 +283,17 @@ func applyModelOptionsOverlay(dst *ModelOptions, overlay *ModelOptions) {
 	if overlay.CacheControl != nil {
 		dst.CacheControl = overlay.CacheControl
 	}
+	// AutomaticCaching is a plain bool (not *bool, unlike ToolStreaming /
+	// DisableParallelToolUse / SendReasoning), so a per-call `false` cannot
+	// be distinguished from "not provided" here; only a per-call `true` can
+	// meaningfully override. This mirrors FallbacksDefault below, the
+	// struct's other plain-bool shorthand.
+	if overlay.AutomaticCaching {
+		dst.AutomaticCaching = true
+	}
+	if overlay.ContainerID != "" {
+		dst.ContainerID = overlay.ContainerID
+	}
 	if overlay.Effort != "" {
 		dst.Effort = overlay.Effort
 	}

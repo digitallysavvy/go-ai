@@ -227,7 +227,7 @@ type ModelOptions struct {
 	//   }
 	//
 	// See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching for details.
-	AutomaticCaching bool `json:"automatic_caching,omitempty"`
+	AutomaticCaching bool `json:"automaticCaching,omitempty"`
 
 	// CacheControl configures explicit ephemeral prompt caching.
 	// Mutually exclusive with AutomaticCaching; CacheControl takes precedence if both are set.
@@ -334,7 +334,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       ContainerID: "container-abc123",
 	//   }
-	ContainerID string `json:"container_id,omitempty"`
+	ContainerID string `json:"containerId,omitempty"`
 
 	// StructuredOutputMode controls how ResponseFormat is sent to the API.
 	// Default (empty/"auto"): uses output_config.format for models that support it
