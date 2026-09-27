@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 func TestMintRealtimeClientSecretWireFormat(t *testing.T) {
@@ -193,7 +195,7 @@ func TestGatewayRealtimeGetToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	result, err := p.GetRealtimeToken(context.Background(), "openai/gpt-realtime", nil)
+	result, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "openai/gpt-realtime"})
 	if err != nil {
 		t.Fatalf("GetRealtimeToken error = %v", err)
 	}
@@ -213,7 +215,7 @@ func TestGatewayRealtimeGetTokenOmitsNullExpiresAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	result, err := p.GetRealtimeToken(context.Background(), "openai/gpt-realtime", nil)
+	result, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "openai/gpt-realtime"})
 	if err != nil {
 		t.Fatalf("GetRealtimeToken error = %v", err)
 	}
@@ -245,7 +247,7 @@ func TestGatewayBaseURLTrimsTrailingSlashForRuntimeAndModelRoutes(t *testing.T) 
 	if _, err := NewEmbeddingModel(p, "openai/text-embedding-3-small").DoEmbed(context.Background(), "x", nil); err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if _, err := p.GetRealtimeToken(context.Background(), "openai/gpt-realtime", nil); err != nil {
+	if _, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "openai/gpt-realtime"}); err != nil {
 		t.Fatalf("GetRealtimeToken error = %v", err)
 	}
 	if len(paths) != 2 || paths[0] != "/v4/ai/embedding-model" || paths[1] != "/v1/realtime/client-secrets" {
