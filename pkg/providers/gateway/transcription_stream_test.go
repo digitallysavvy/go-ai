@@ -48,6 +48,12 @@ func (s *chanTestAudioStream) Cancel(reason error) {
 	s.cancelled = true
 }
 
+func (s *chanTestAudioStream) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
+}
+
 // gatewayTranscriptionTestServer implements the server side of the
 // transcription-stream envelope for tests.
 type gatewayTranscriptionTestServer struct {
@@ -57,6 +63,7 @@ type gatewayTranscriptionTestServer struct {
 	receivedFrames []map[string]interface{}
 	receivedAudio  [][]byte
 	protocolHeader string
+	requestHeaders stdhttp.Header
 
 	toSend    chan interface{}
 	closeConn chan struct{}
@@ -68,6 +75,7 @@ func newGatewayTranscriptionTestServer(t *testing.T) *gatewayTranscriptionTestSe
 	handlerFn := func(conn *websocket.Conn) {
 		s.mu.Lock()
 		s.protocolHeader = conn.Request().Header.Get("Sec-Websocket-Protocol")
+		s.requestHeaders = conn.Request().Header.Clone()
 		s.mu.Unlock()
 
 		// Closes the underlying connection on demand (simulating the server
@@ -196,6 +204,39 @@ func TestTranscriptionModel_DoStream_NegotiatesSubprotocolAndSendsEnvelope(t *te
 	}
 }
 
+// TestTranscriptionModel_DoStream_SendsAuthHeaders verifies the WS handshake
+// carries auth on both channels, matching TS createAuthHeaders: the raw
+// Authorization/ai-gateway-auth-method headers alongside the
+// ai-gateway-auth.<token> subprotocol already covered by the negotiation
+// test above.
+func TestTranscriptionModel_DoStream_SendsAuthHeaders(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+
+	server.mu.Lock()
+	headers := server.requestHeaders
+	server.mu.Unlock()
+
+	if got := headers.Get("Authorization"); got != "Bearer test-token" {
+		t.Errorf("Authorization header = %q, want %q", got, "Bearer test-token")
+	}
+	if got := headers.Get("ai-gateway-auth-method"); got != "api-key" {
+		t.Errorf("ai-gateway-auth-method header = %q, want %q", got, "api-key")
+	}
+}
+
 // TestTranscriptionModel_DoStream_StreamsDeltasAndFinish mirrors the shared
 // TS transcription-stream envelope round trip (stream-start, deltas, final,
 // finish -> clean close).
@@ -284,4 +325,43 @@ func TestTranscriptionModel_DoStream_SurfacesServerErrorOnClose(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("Stream.Next() error = %v, want containing 'rate limited'", err)
 	}
+}
+
+// TestTranscriptionModel_DoStream_StopsAudioOnServerError verifies envelope
+// rule 5 (TS gateway-transcription-model.ts stopAudio()): once a server
+// `error` part arrives, the caller's audio stream is cancelled instead of
+// continuing to send audio while the server holds the connection open.
+func TestTranscriptionModel_DoStream_StopsAudioOnServerError(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+
+	// A never-closed channel: pumpAudio would block waiting for the next
+	// chunk forever unless something actively stops it.
+	audio := &chanTestAudioStream{chunks: make(chan []byte)}
+
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+	server.toSend <- map[string]interface{}{"type": "error", "error": map[string]interface{}{"message": "rate limited"}}
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (error part) error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if audio.wasCancelled() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("expected the audio stream to be cancelled after a server error part")
 }

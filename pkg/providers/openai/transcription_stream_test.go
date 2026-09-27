@@ -61,12 +61,13 @@ type realtimeTranscriptionTestServer struct {
 	mu       sync.Mutex
 	received []map[string]interface{}
 
-	toSend chan interface{}
+	toSend    chan interface{}
+	closeConn chan struct{}
 }
 
 func newRealtimeTranscriptionTestServer(t *testing.T) *realtimeTranscriptionTestServer {
 	t.Helper()
-	s := &realtimeTranscriptionTestServer{toSend: make(chan interface{}, 16)}
+	s := &realtimeTranscriptionTestServer{toSend: make(chan interface{}, 16), closeConn: make(chan struct{})}
 	wsHandlerFn := func(conn *websocket.Conn) {
 		go func() {
 			for msg := range s.toSend {
@@ -78,6 +79,13 @@ func newRealtimeTranscriptionTestServer(t *testing.T) *realtimeTranscriptionTest
 					return
 				}
 			}
+		}()
+		// Closes the underlying connection on demand (simulating the server
+		// closing before any completed/error event), returning from the
+		// handler without blocking the still-open httptest.Server.
+		go func() {
+			<-s.closeConn
+			_ = conn.Close()
 		}()
 		for {
 			var raw string
@@ -116,6 +124,12 @@ func (s *realtimeTranscriptionTestServer) wsURL() string {
 func (s *realtimeTranscriptionTestServer) close() {
 	close(s.toSend)
 	s.ts.Close()
+}
+
+// closeConnection closes just the active WebSocket connection, simulating
+// the server closing before a completed/error event was ever sent.
+func (s *realtimeTranscriptionTestServer) closeConnection() {
+	close(s.closeConn)
 }
 
 func (s *realtimeTranscriptionTestServer) receivedTypes() []string {
@@ -260,5 +274,39 @@ func TestTranscriptionModel_DoStream_EmitsErrorOnRealtimeError(t *testing.T) {
 	_, err = result.Stream.Next()
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("Stream.Next() error = %v, want containing 'boom'", err)
+	}
+}
+
+// TestTranscriptionModel_DoStream_PrematureCloseIsNotAnError mirrors TS
+// openai-transcription-model.ts's onClose: `if (finished) return; ...
+// controller.close()` — a clean WebSocket close before any
+// completed/error event ever arrives ends the stream successfully (io.EOF),
+// not as a failure, matching a consumer that just sees the stream end.
+func TestTranscriptionModel_DoStream_PrematureCloseIsNotAnError(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+
+	audio := newChanTestAudioStream()
+	model := newTestTranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitForReceived(t, "session.update", time.Second)
+
+	// drain the stream-start part
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	server.closeConnection()
+
+	if _, err := result.Stream.Next(); err != io.EOF {
+		t.Fatalf("Stream.Next() error = %v, want io.EOF for a premature clean close", err)
 	}
 }

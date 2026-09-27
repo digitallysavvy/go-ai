@@ -368,9 +368,21 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 		if err != nil {
 			select {
 			case <-s.ctx.Done():
-				s.setErr(s.ctx.Err())
+				cause := s.ctx.Err()
+				s.setErr(cause)
+				cfg.audio.Cancel(cause)
 			default:
-				s.setErr(err)
+				if errors.Is(err, io.EOF) {
+					// A clean close with no completed/error event yet is a
+					// normal end of stream, not a failure (TS onClose calls
+					// controller.close(), not controller.error(), when the
+					// stream isn't already finished).
+					cfg.audio.Cancel(nil)
+					return
+				}
+				realtimeErr := errors.New("OpenAI realtime transcription error")
+				s.setErr(realtimeErr)
+				cfg.audio.Cancel(realtimeErr)
 			}
 			return
 		}
@@ -414,7 +426,9 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 					message = m
 				}
 			}
-			s.setErr(errors.New(message))
+			streamErr := errors.New(message)
+			s.setErr(streamErr)
+			cfg.audio.Cancel(streamErr)
 			return
 		}
 	}
@@ -460,21 +474,12 @@ func (s *openAIRealtimeTranscriptionStream) dial(wsURL string, headers map[strin
 		}
 	}
 
-	type result struct {
-		conn *websocket.Conn
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		conn, err := websocket.DialConfig(wsConfig)
-		ch <- result{conn: conn, err: err}
-	}()
-	select {
-	case <-s.ctx.Done():
-		return nil, s.ctx.Err()
-	case res := <-ch:
-		return res.conn, res.err
-	}
+	// DialContext (rather than DialConfig, which always dials against
+	// context.Background()) forces the pending handshake to fail and cleans
+	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
+	// unread, unclosed connection behind if the dial completes after we've
+	// already given up on it.
+	return wsConfig.DialContext(s.ctx)
 }
 
 func (s *openAIRealtimeTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

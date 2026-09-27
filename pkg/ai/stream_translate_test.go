@@ -110,7 +110,7 @@ func TestStreamTranslate_StreamsAudioAndResolvesMetadata(t *testing.T) {
 				provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart},
 				provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: "a1", AudioData: []byte{1, 2, 3}},
 				provider.SpeechTranslationStreamPart{
-					Type: provider.SpeechTranslationStreamPartTypeFinish,
+					Type:       provider.SpeechTranslationStreamPartTypeFinish,
 					SourceText: "hello", OutputText: "hola",
 				},
 			), nil
