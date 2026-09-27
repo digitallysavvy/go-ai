@@ -54,8 +54,71 @@ type FunctionCallItem struct {
 	// came from Responses API tool search.
 	Namespace string `json:"namespace,omitempty"`
 
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
+
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
+
 	// Arguments is the JSON-encoded argument string.
 	Arguments string `json:"arguments"`
+}
+
+// ToolCaller identifies who invoked a function/custom tool call: either the
+// model directly ("direct"), or generated code running inside a hosted
+// programmatic-tool-calling "program" ("program", carrying the generating
+// program call's id). Mirrors TS OpenAIResponsesToolCaller (row 1f6dd3a).
+type ToolCaller struct {
+	// Type is "direct" or "program".
+	Type string `json:"type"`
+
+	// CallerID is the call_id of the generating "program" item. Only set
+	// when Type is "program".
+	CallerID string `json:"caller_id,omitempty"`
+}
+
+// ProgramItem represents a "program" output item: JavaScript code OpenAI's
+// hosted programmatic tool calling generated and is executing, which may in
+// turn invoke declared function tools with generated arguments (row
+// 1f6dd3a).
+type ProgramItem struct {
+	// Type is always "program".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID links this program to its ProgramOutputItem.
+	CallID string `json:"call_id"`
+
+	// Code is the JavaScript source generated and executed by OpenAI.
+	Code string `json:"code"`
+
+	// Fingerprint is an opaque replay fingerprint that must be preserved
+	// across requests.
+	Fingerprint string `json:"fingerprint"`
+}
+
+// ProgramOutputItem represents the result of a ProgramItem's hosted
+// execution (row 1f6dd3a).
+type ProgramOutputItem struct {
+	// Type is always "program_output".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID matches the originating ProgramItem.CallID.
+	CallID string `json:"call_id"`
+
+	// Result is the result emitted by the hosted JavaScript program.
+	Result string `json:"result"`
+
+	// Status is "completed" or "incomplete".
+	Status string `json:"status"`
 }
 
 // CustomToolCallItem represents a custom tool call output item.
@@ -71,6 +134,15 @@ type CustomToolCallItem struct {
 
 	// Name is the custom tool name.
 	Name string `json:"name"`
+
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
+
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
 
 	// Input is the raw input string for the custom tool.
 	Input string `json:"input"`
@@ -211,6 +283,19 @@ type FunctionToolDef struct {
 
 	// DeferLoading marks the function as deferred for OpenAI tool_search.
 	DeferLoading *bool `json:"defer_loading,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
+
+	// AllowedCallers restricts which callers ("direct"/"programmatic") may
+	// invoke this tool (programmatic tool calling).
+	AllowedCallers []string `json:"allowed_callers,omitempty"`
+
+	// OutputSchema, when set, tells OpenAI to parse the function's
+	// function_call_output.output as JSON against this schema.
+	OutputSchema interface{} `json:"output_schema,omitempty"`
 }
 
 // NamespaceToolDef groups function tools under an OpenAI Responses namespace.
@@ -293,6 +378,11 @@ type CustomToolDef struct {
 
 	// Format specifies output format constraints.
 	Format *CustomToolDefFormat `json:"format,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
 }
 
 // CustomToolDefFormat specifies the output format constraints for a custom tool.
@@ -336,7 +426,9 @@ type AllowedToolsToolChoice struct {
 
 type AllowedToolsToolEntry struct {
 	Type string `json:"type"`
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
+	// ServerLabel identifies an "mcp" entry (mutually exclusive with Name).
+	ServerLabel string `json:"server_label,omitempty"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,10 +494,37 @@ type ResponsesAPIResponse struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// Status is the terminal state: "completed", "incomplete", "failed".
 	// Primary signal for finish reason; use IncompleteDetails for truncation details.
-	Status            string             `json:"status,omitempty"`
-	Output            []json.RawMessage  `json:"output"`
-	Usage             ResponsesAPIUsage  `json:"usage"`
+	Status string            `json:"status,omitempty"`
+	Output []json.RawMessage `json:"output"`
+	// Usage is a pointer so a JSON `null`/absent usage field can be
+	// distinguished from an explicit all-zero usage object (row f6fac50).
+	Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+
+	// Reasoning carries the effective reasoning configuration echoed back by
+	// the API (row b2b1bb9, Responses half: GPT-5.6 reasoningContext).
+	Reasoning *ResponsesReasoningInfo `json:"reasoning,omitempty"`
+
+	// Error is populated for a 200 response that failed at the API level
+	// (row 75f86f4): non-nil means the request must fail with the embedded
+	// message, mapped to HTTP status 400.
+	Error *ResponsesAPIError `json:"error,omitempty"`
+}
+
+// ResponsesReasoningInfo is the `reasoning` object echoed back on a
+// Responses API response, carrying the effective reasoning context
+// (row b2b1bb9: GPT-5.6 `reasoningContext`).
+type ResponsesReasoningInfo struct {
+	Context string `json:"context,omitempty"`
+}
+
+// ResponsesAPIError is the `error` object embedded in an otherwise-200
+// Responses API response body.
+type ResponsesAPIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Param   string `json:"param,omitempty"`
+	Code    string `json:"code,omitempty"`
 }
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
@@ -416,11 +535,37 @@ type ResponsesAPIUsage struct {
 	InputTokensCost    *float64 `json:"input_tokens_cost,omitempty"`
 	OutputTokensCost   *float64 `json:"output_tokens_cost,omitempty"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+		CachedTokens     int  `json:"cached_tokens,omitempty"`
+		CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	} `json:"output_tokens_details,omitempty"`
+
+	// Raw holds the complete usage JSON object as a generic map, capturing
+	// any provider-specific fields not modeled by the typed fields above
+	// (e.g. xAI's total_tokens/num_sources_used/num_server_side_tools_used,
+	// OpenAI's orchestration_* fields). Populated by UnmarshalJSON below.
+	// Row 41e7760 (xAI) / 7243530 (OpenAI): consumers should assign this to
+	// types.Usage.Raw instead of hand-picking individual fields.
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields as usual, then separately decodes
+// the same bytes into Raw so no field present in the response is lost, even
+// ones not modeled above.
+func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
+	type responsesAPIUsageAlias ResponsesAPIUsage
+	var alias responsesAPIUsageAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*u = ResponsesAPIUsage(alias)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 // IncompleteDetails explains why a Responses API response was cut short.
@@ -436,6 +581,12 @@ type IncompleteDetails struct {
 // before full parsing.
 type ResponsesStreamEvent struct {
 	Type string `json:"type"`
+
+	// Choices is only ever populated for a Chat Completions-shaped chunk
+	// (row 1ead90c): a Responses API event always has a "type" discriminator
+	// and never a top-level "choices" array. Used to detect a caller
+	// pointing this model at a Chat Completions-compatible endpoint.
+	Choices json.RawMessage `json:"choices,omitempty"`
 }
 
 // ResponseCreatedEvent is emitted at the start of a streaming response.
@@ -506,9 +657,11 @@ type ResponseCompletedEvent struct {
 	Response struct {
 		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
-		Status            string             `json:"status,omitempty"`
-		Usage             ResponsesAPIUsage  `json:"usage"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		Status            string                  `json:"status,omitempty"`
+		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		ServiceTier       string                  `json:"service_tier,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
@@ -516,14 +669,15 @@ type ResponseCompletedEvent struct {
 type ResponseFailedEvent struct {
 	Type     string `json:"type"` // "response.failed"
 	Response struct {
-		ID          string            `json:"id"`
-		ServiceTier string            `json:"service_tier,omitempty"`
-		Usage       ResponsesAPIUsage `json:"usage"`
+		ID          string             `json:"id"`
+		ServiceTier string             `json:"service_tier,omitempty"`
+		Usage       *ResponsesAPIUsage `json:"usage,omitempty"`
 		Error       *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`
 		} `json:"error,omitempty"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 

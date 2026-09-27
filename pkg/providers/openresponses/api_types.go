@@ -1,5 +1,7 @@
 package openresponses
 
+import "encoding/json"
+
 // OpenResponsesRequestBody represents the request body for the Open Responses API
 type OpenResponsesRequestBody struct {
 	// Model is the model ID to use (e.g., "llama-2-7b", "mistral-7b")
@@ -59,13 +61,21 @@ type FunctionTool struct {
 // Used to forward reasoning blocks from previous response turns back to the API
 // so multi-turn reasoning works when store=false or itemId is unavailable (#12869).
 type ReasoningInputItem struct {
-	Type             string        `json:"type"`
-	EncryptedContent string        `json:"encrypted_content,omitempty"`
-	Summary          []SummaryPart `json:"summary,omitempty"`
+	Type             string              `json:"type"`
+	ID               string              `json:"id,omitempty"`
+	EncryptedContent string              `json:"encrypted_content,omitempty"`
+	Summary          []SummaryPart       `json:"summary,omitempty"`
+	Content          []ReasoningTextPart `json:"content,omitempty"`
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
 type SummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ReasoningTextPart is a single entry in a reasoning item's content array.
+type ReasoningTextPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
@@ -105,6 +115,12 @@ type InputFileContent struct {
 type OutputTextContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// Annotations and Logprobs are only populated when replaying assistant
+	// history under strictResponseInput, mirroring the TS SDK's complete
+	// output-text item shape.
+	Annotations []Annotation  `json:"annotations,omitempty"`
+	Logprobs    []interface{} `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call
@@ -177,6 +193,26 @@ type OutputItem struct {
 	// For reasoning type
 	Summary          []ContentPart `json:"summary,omitempty"`
 	EncryptedContent string        `json:"encrypted_content,omitempty"`
+
+	// Raw preserves this item's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension item's
+	// custom fields). Used for extension item decode/replay (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
+// default struct-tag-driven decoding still applies), then separately
+// preserves the item's original bytes in Raw.
+func (o *OutputItem) UnmarshalJSON(data []byte) error {
+	type outputItemAlias OutputItem
+	var alias outputItemAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*o = OutputItem(alias)
+	o.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // ContentPart represents a part of message content
@@ -244,4 +280,25 @@ type StreamEvent struct {
 	CallID         string                 `json:"call_id,omitempty"`
 	Arguments      string                 `json:"arguments,omitempty"`
 	Error          *ResponseError         `json:"error,omitempty"`
+
+	// Raw preserves this event's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension event's
+	// custom fields). Used for extension event decode (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON; left nil for StreamEvent values
+	// constructed directly (e.g. in tests) rather than decoded from JSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known StreamEvent fields via a type alias (so
+// the default struct-tag-driven decoding still applies), then separately
+// preserves the event's original bytes in Raw.
+func (e *StreamEvent) UnmarshalJSON(data []byte) error {
+	type streamEventAlias StreamEvent
+	var alias streamEventAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*e = StreamEvent(alias)
+	e.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }

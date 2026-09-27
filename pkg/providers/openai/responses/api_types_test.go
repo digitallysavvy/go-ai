@@ -316,7 +316,10 @@ func TestFileURLInToolOutput(t *testing.T) {
 		},
 	}
 
-	items := convertToolItems(msg)
+	items, err := convertToolItems(msg)
+	if err != nil {
+		t.Fatalf("convertToolItems failed: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -350,7 +353,7 @@ func TestConvertAssistantItems_DefaultToolCallArgsToEmptyObject(t *testing.T) {
 		},
 	}
 
-	items := convertAssistantItems(msg, ConvertOptions{})
+	items, _ := convertAssistantItems(msg, ConvertOptions{})
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -382,7 +385,7 @@ func TestConvertAssistantItems_PreservesToolCallNamespace(t *testing.T) {
 		},
 	}
 
-	items := convertAssistantItems(msg, ConvertOptions{})
+	items, _ := convertAssistantItems(msg, ConvertOptions{})
 	call := items[0].(FunctionCallItem)
 	if call.Namespace != "weather.tools" {
 		t.Fatalf("namespace = %q, want weather.tools", call.Namespace)
@@ -412,7 +415,10 @@ func TestImageDetailInToolOutput(t *testing.T) {
 		},
 	}
 
-	items := convertToolItems(msg)
+	items, err := convertToolItems(msg)
+	if err != nil {
+		t.Fatalf("convertToolItems failed: %v", err)
+	}
 	out := items[0].(FunctionCallOutputItem)
 	parts, ok := out.Output.([]CustomToolCallOutputPart)
 	if !ok {
@@ -445,7 +451,10 @@ func TestMixedContentWithFileURL(t *testing.T) {
 		},
 	}
 
-	items := convertToolItems(msg)
+	items, err := convertToolItems(msg)
+	if err != nil {
+		t.Fatalf("convertToolItems failed: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}

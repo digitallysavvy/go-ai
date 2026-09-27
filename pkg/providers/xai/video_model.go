@@ -1,17 +1,19 @@
 package xai
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"io"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for XAI
@@ -80,17 +82,25 @@ type XAIVideoProviderOptions struct {
 	// PollTimeoutMs is the maximum time to wait for video generation in milliseconds (default: 600000)
 	PollTimeoutMs *int `json:"pollTimeoutMs,omitempty"`
 
-	// Resolution is the output resolution: "480p" or "720p"
+	// Resolution is the output resolution: "480p", "720p", or "1080p"
 	Resolution *string `json:"resolution,omitempty"`
 
-	// VideoURL is the source video URL for video editing
+	// VideoURL is the source video URL for video editing/extension
 	VideoURL *string `json:"videoUrl,omitempty"`
 
 	// Mode selects the operation: edit-video, extend-video, reference-to-video
 	Mode *string `json:"mode,omitempty"`
 
-	// ReferenceImageURLs are reference image URLs for reference-to-video mode
+	// ReferenceImageURLs are reference image URLs (1-7) for reference-to-video mode
 	ReferenceImageURLs []string `json:"referenceImageUrls,omitempty"`
+
+	// ReferenceVoiceIDs are preset voice ids (up to 3) that give the R2V
+	// subject a voice. Only applies to reference-to-video generation.
+	ReferenceVoiceIDs []string `json:"referenceVoiceIds,omitempty"`
+
+	// User is a unique identifier representing the end user, for abuse
+	// monitoring. Not sent for video extension requests.
+	User *string `json:"user,omitempty"`
 }
 
 // DoGenerate performs video generation with polling
@@ -112,7 +122,8 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	warnings = append(warnings, m.checkUnsupportedOptions(opts, provOpts, mode)...)
 
 	// Build request body
-	body := m.buildRequestBody(opts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
+	body, bodyWarnings := m.buildRequestBody(opts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
+	warnings = append(warnings, bodyWarnings...)
 
 	// Determine endpoint
 	endpoint := "/videos/generations"
@@ -122,7 +133,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		endpoint = "/videos/extensions"
 	}
 
-	// Submit video generation/edit request
+	// Submit video generation/edit/extension request
 	var createResp xaiVideoCreateResponse
 	if err := m.provider.client.PostJSON(ctx, endpoint, body, &createResp); err != nil {
 		return nil, m.handleError(err)
@@ -151,26 +162,29 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	statusChecker := func(ctx context.Context) (*polling.JobResult, error) {
-		var status xaiVideoStatusResponse
-		statusPath := "/videos/" + providerutils.EncodePathSegment(createResp.RequestID)
-
-		if err := m.provider.client.GetJSON(ctx, statusPath, &status); err != nil {
+		status, err := m.checkVideoStatus(ctx, createResp.RequestID)
+		if err != nil {
 			return nil, m.handleError(err)
 		}
 
 		// Check if done
 		if status.Status == "done" || (status.Status == "" && status.Video != nil && status.Video.URL != "") {
-			// Check for moderation rejection: respect_moderation == false means blocked.
+			// Terminal outcomes (moderation rejection, missing URL) are
+			// reported as an upstream `failed` status via polling.JobResult
+			// rather than thrown as a Go error, so they surface the same way
+			// as any other job failure.
 			if status.Video != nil && status.Video.RespectModeration != nil && !*status.Video.RespectModeration {
-				return nil, &ModerationError{
-					Code:    "",
-					Message: "Video generation was blocked due to a content policy violation.",
-				}
+				return &polling.JobResult{
+					Status: polling.JobStatusFailed,
+					Error:  "Video generation was blocked due to a content policy violation.",
+				}, nil
 			}
 
 			if status.Video == nil || status.Video.URL == "" {
-				return nil, providererrors.NewProviderError("xai", 0, "",
-					"Video generation completed but no video URL was returned", nil)
+				return &polling.JobResult{
+					Status: polling.JobStatusFailed,
+					Error:  "Video generation completed but no video URL was returned.",
+				}, nil
 			}
 			return &polling.JobResult{
 				Status:    polling.JobStatusCompleted,
@@ -189,14 +203,28 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if status.Status == "expired" {
 			return &polling.JobResult{
 				Status: polling.JobStatusFailed,
-				Error:  "Video generation request expired",
+				Error:  "Video generation request expired.",
 			}, nil
 		}
 
 		if status.Status == "failed" {
+			errDetails := ""
+			if status.Error != nil {
+				if status.Error.Message != "" {
+					errDetails = status.Error.Message
+				} else {
+					errDetails = status.Error.Code
+				}
+			}
+			if errDetails != "" {
+				return &polling.JobResult{
+					Status: polling.JobStatusFailed,
+					Error:  fmt.Sprintf("Video generation failed: %s", errDetails),
+				}, nil
+			}
 			return &polling.JobResult{
 				Status: polling.JobStatusFailed,
-				Error:  "Video generation failed",
+				Error:  "Video generation failed.",
 			}, nil
 		}
 
@@ -271,24 +299,82 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	return resp, nil
 }
 
+// maxPendingStatusBodyBytes bounds how much of a 202 (still processing)
+// status response body we attempt to parse. xAI answers 202 while a
+// generation is still running, sometimes with an empty body; this is a
+// generous bound for a `{status, progress}` payload of roughly 50 bytes.
+const maxPendingStatusBodyBytes = 1024 * 1024
+
+// checkVideoStatus fetches the current status of a video generation/edit/
+// extension job. It uses the lower-level client.Get (rather than GetJSON) so
+// a 202 response with an empty or non-JSON body can be treated as "pending"
+// instead of failing on JSON unmarshal.
+func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string) (*xaiVideoStatusResponse, error) {
+	statusPath := "/videos/" + providerutils.EncodePathSegment(requestID)
+
+	resp, err := m.provider.client.Get(ctx, statusPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == 202 {
+		// Bound how much of the body we attempt to parse; treat an empty,
+		// invalid, or oversized payload as a pending status rather than an
+		// error.
+		limited, readErr := io.ReadAll(io.LimitReader(bytes.NewReader(resp.Body), maxPendingStatusBodyBytes+1))
+		if readErr != nil || len(limited) > maxPendingStatusBodyBytes || len(limited) == 0 {
+			return &xaiVideoStatusResponse{Status: "pending"}, nil
+		}
+
+		var status xaiVideoStatusResponse
+		if err := json.Unmarshal(limited, &status); err != nil {
+			return &xaiVideoStatusResponse{Status: "pending"}, nil
+		}
+		if status.Status == "" && (status.Video == nil || status.Video.URL == "") {
+			status.Status = "pending"
+		}
+		return &status, nil
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
+			parseXAIErrorMessage(resp.Body), nil)
+	}
+
+	var status xaiVideoStatusResponse
+	if err := json.Unmarshal(resp.Body, &status); err != nil {
+		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
+	}
+	return &status, nil
+}
+
 // buildRequestBody constructs the API request body
-func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions, extra map[string]interface{}, isEdit bool, isExtension bool, hasReferenceImages bool) map[string]interface{} {
+func (m *VideoModel) buildRequestBody(
+	opts *provider.VideoModelV3CallOptions,
+	provOpts *XAIVideoProviderOptions,
+	extra map[string]interface{},
+	isEdit bool,
+	isExtension bool,
+	hasReferenceImages bool,
+) (map[string]interface{}, []types.Warning) {
+	warnings := []types.Warning{}
+
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"prompt": opts.Prompt,
 	}
 
-	// Add duration (not for edits)
+	// Add duration (not for edits; extension allows duration)
 	if !isEdit && opts.Duration != nil {
 		body["duration"] = *opts.Duration
 	}
 
-	// Add aspect ratio (not for edits)
+	// Add aspect ratio (not for edits or extension)
 	if !isEdit && !isExtension && opts.AspectRatio != "" {
 		body["aspect_ratio"] = opts.AspectRatio
 	}
 
-	// Add resolution (not for edits)
+	// Add resolution (not for edits or extension)
 	if !isEdit && !isExtension && provOpts.Resolution != nil {
 		body["resolution"] = *provOpts.Resolution
 	} else if !isEdit && !isExtension && opts.Resolution != "" {
@@ -299,19 +385,11 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		}
 	}
 
-	// Video editing: add source video URL
+	// Video editing/extension: add source video URL
 	if (isEdit || isExtension) && provOpts.VideoURL != nil {
 		body["video"] = map[string]interface{}{
 			"url": *provOpts.VideoURL,
 		}
-	}
-
-	if hasReferenceImages {
-		items := make([]map[string]interface{}, 0, len(provOpts.ReferenceImageURLs))
-		for _, u := range provOpts.ReferenceImageURLs {
-			items = append(items, map[string]interface{}{"url": u})
-		}
-		body["reference_images"] = items
 	}
 
 	// Image-to-video: add source image
@@ -319,12 +397,85 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		body["image"] = m.convertImageToXAIFormat(opts.Image)
 	}
 
+	// Reference images for R2V (reference-to-video) generation.
+	if hasReferenceImages {
+		referenceImages := resolveReferenceImages(provOpts)
+
+		if referenceImages != nil {
+			body["reference_images"] = referenceImages
+		} else {
+			// Explicit R2V with no usable image references would silently
+			// send a plain generations request; tell the caller rather than
+			// ever sending an empty `reference_images: []`.
+			warnings = append(warnings, unsupportedVideoWarning("referenceImageUrls",
+				"xAI reference-to-video requires at least one image reference. The video will be generated without reference images."))
+		}
+
+		if len(provOpts.ReferenceVoiceIDs) > 0 {
+			// validateVideoProviderOptions already rejects more than 3
+			// voice ids with InvalidArgumentError, so every id here is
+			// used as-is.
+			audios := make([]map[string]interface{}, 0, len(provOpts.ReferenceVoiceIDs))
+			for _, voiceID := range provOpts.ReferenceVoiceIDs {
+				audios = append(audios, map[string]interface{}{"voice_id": voiceID})
+			}
+			body["reference_audios"] = audios
+		}
+
+		// Reference-to-video is limited to 720p; downgrade a 1080p request.
+		if res, ok := body["resolution"].(string); ok && res == "1080p" {
+			warnings = append(warnings, unsupportedVideoWarning("resolution",
+				"xAI reference-to-video is limited to 720p. The request was downgraded from 1080p to 720p."))
+			body["resolution"] = "720p"
+		}
+	}
+
+	// 1080p requires grok-imagine-video-1.5; the original grok-imagine-video
+	// rejects it. Warn, but send the request as the caller asked.
+	if res, ok := body["resolution"].(string); ok && res == "1080p" && m.modelID == ModelGrokImagineVideo {
+		warnings = append(warnings, unsupportedVideoWarning("resolution",
+			fmt.Sprintf("xAI model %q does not support 1080p. Use %q for 1080p, or a lower resolution. The request was sent with 1080p.",
+				ModelGrokImagineVideo, ModelGrokImagineVideo15)))
+	}
+
+	// Preset reference voices only apply to reference-to-video generation.
+	if !hasReferenceImages && len(provOpts.ReferenceVoiceIDs) > 0 {
+		warnings = append(warnings, unsupportedVideoWarning("referenceVoiceIds",
+			"xAI only supports reference voices for reference-to-video generation. The reference voices were ignored."))
+	}
+
+	if !isExtension && provOpts.User != nil {
+		body["user"] = *provOpts.User
+	}
+
 	// Passthrough any extra provider options not handled above.
 	for k, v := range extra {
 		body[k] = v
 	}
 
-	return body
+	return body, warnings
+}
+
+// resolveReferenceImages resolves the reference images for R2V generation
+// from the ReferenceImageURLs provider option. Empty entries are skipped so
+// an empty `reference_images: []` is never sent.
+func resolveReferenceImages(provOpts *XAIVideoProviderOptions) []map[string]interface{} {
+	if len(provOpts.ReferenceImageURLs) == 0 {
+		return nil
+	}
+
+	refs := make([]map[string]interface{}, 0, len(provOpts.ReferenceImageURLs))
+	for _, url := range provOpts.ReferenceImageURLs {
+		if url == "" {
+			continue
+		}
+		refs = append(refs, map[string]interface{}{"url": url})
+	}
+
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
 }
 
 // convertImageToXAIFormat converts VideoModelV3File to XAI image format
@@ -389,7 +540,7 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	if !isEdit && !isExtension && provOpts.Resolution == nil && opts.Resolution != "" && mapResolution(opts.Resolution) == "" {
 		warnings = append(warnings, unsupportedVideoWarning(
 			"resolution",
-			fmt.Sprintf("Unrecognized resolution %q. Use providerOptions.xai.resolution with \"480p\" or \"720p\" instead.", opts.Resolution),
+			fmt.Sprintf("Unrecognized resolution %q. Use providerOptions.xai.resolution with \"480p\", \"720p\", or \"1080p\" instead.", opts.Resolution),
 		))
 	}
 
@@ -421,9 +572,10 @@ func resolveMode(provOpts *XAIVideoProviderOptions) string {
 // mapResolution maps standard resolution strings to XAI format
 func mapResolution(resolution string) string {
 	resolutionMap := map[string]string{
-		"1280x720": "720p",
-		"854x480":  "480p",
-		"640x480":  "480p",
+		"1920x1080": "1080p",
+		"1280x720":  "720p",
+		"854x480":   "480p",
+		"640x480":   "480p",
 	}
 
 	if mapped, ok := resolutionMap[resolution]; ok {
@@ -469,6 +621,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 		"pollIntervalMs": true, "pollTimeoutMs": true,
 		"resolution": true, "videoUrl": true,
 		"mode": true, "referenceImageUrls": true,
+		"referenceVoiceIds": true, "user": true,
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -488,20 +641,37 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 		return fmt.Errorf("xai provider option pollTimeoutMs must be positive")
 	}
 
-	if _, ok := rawMap["referenceImageUrls"]; !ok {
-		return nil
-	}
-	if len(provOpts.ReferenceImageURLs) == 0 {
-		return fmt.Errorf("xai provider option referenceImageUrls must contain at least 1 image")
-	}
-	if len(provOpts.ReferenceImageURLs) > 7 {
-		return fmt.Errorf("xai provider option referenceImageUrls must contain at most 7 images")
-	}
-	for _, url := range provOpts.ReferenceImageURLs {
-		if url == "" {
-			return fmt.Errorf("xai provider option referenceImageUrls must not contain empty URLs")
+	if _, ok := rawMap["referenceImageUrls"]; ok {
+		if len(provOpts.ReferenceImageURLs) == 0 {
+			return fmt.Errorf("xai provider option referenceImageUrls must contain at least 1 image")
+		}
+		if len(provOpts.ReferenceImageURLs) > 7 {
+			return fmt.Errorf("xai provider option referenceImageUrls must contain at most 7 images")
+		}
+		for _, url := range provOpts.ReferenceImageURLs {
+			if url == "" {
+				return fmt.Errorf("xai provider option referenceImageUrls must not contain empty URLs")
+			}
 		}
 	}
+
+	if len(provOpts.ReferenceVoiceIDs) > 0 {
+		// TS: z.array(nonEmptyStringSchema).max(3) -- more than 3 voice ids
+		// is a hard validation error (InvalidArgumentError), not a warning
+		// with silent truncation.
+		if len(provOpts.ReferenceVoiceIDs) > 3 {
+			return &providererrors.InvalidArgumentError{
+				Field:   "referenceVoiceIds",
+				Message: "xai provider option referenceVoiceIds accepts at most 3 voice ids",
+			}
+		}
+		for _, voiceID := range provOpts.ReferenceVoiceIDs {
+			if voiceID == "" {
+				return fmt.Errorf("xai provider option referenceVoiceIds must not contain empty ids")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -520,12 +690,19 @@ type xaiVideoCreateResponse struct {
 
 // xaiVideoStatusResponse represents the video status API response
 type xaiVideoStatusResponse struct {
-	Status   string         `json:"status"`
-	Video    *xaiVideoData  `json:"video,omitempty"`
-	Model    string         `json:"model,omitempty"`
-	Usage    *xaiVideoUsage `json:"usage,omitempty"`
-	Progress *int           `json:"progress,omitempty"`
-	Warnings []xaiWarning   `json:"warnings,omitempty"`
+	Status   string             `json:"status"`
+	Video    *xaiVideoData      `json:"video,omitempty"`
+	Model    string             `json:"model,omitempty"`
+	Usage    *xaiVideoUsage     `json:"usage,omitempty"`
+	Progress *int               `json:"progress,omitempty"`
+	Warnings []xaiWarning       `json:"warnings,omitempty"`
+	Error    *xaiVideoStatusErr `json:"error,omitempty"`
+}
+
+// xaiVideoStatusErr holds the error details from a failed video status response.
+type xaiVideoStatusErr struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // xaiVideoUsage holds top-level usage data from the video status response.

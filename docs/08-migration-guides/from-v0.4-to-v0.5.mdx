@@ -41,6 +41,24 @@ telemetry.RegisterTelemetryIntegration(
 Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true)}
 ```
 
+### xAI Chat Completions API removed
+
+**Impact:** compile error if you use it.
+
+`xai.Provider.ChatCompletionsLanguageModel()` / `xai.NewLanguageModel` and the Chat Completions `SearchParameters` option are removed, matching the TS SDK. `LanguageModel()` (Responses API) is the only xAI language model. For live search, use the provider-executed `xai.WebSearch` or `xai.XSearch` tools.
+
+**Before:**
+
+```go
+model, _ := provider.ChatCompletionsLanguageModel("grok-3")
+```
+
+**After:**
+
+```go
+model, _ := provider.LanguageModel("grok-3")
+```
+
 ### Telemetry names are stable
 
 **Impact:** low

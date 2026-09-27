@@ -20,21 +20,16 @@ func TestConvertAssistantContent_ReasoningWithEncryptedContent(t *testing.T) {
 		},
 	}
 
-	textParts, separateItems := convertAssistantContent(content, "openai")
+	items := convertAssistantContent(content, "openai", false)
 
-	// No text content should be added to the message body.
-	if len(textParts) != 0 {
-		t.Errorf("expected no text content parts, got %d", len(textParts))
+	// One item should be emitted, and it should not be a text message.
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d: %+v", len(items), items)
 	}
 
-	// One separate top-level item should be emitted.
-	if len(separateItems) != 1 {
-		t.Fatalf("expected 1 separate item, got %d", len(separateItems))
-	}
-
-	item, ok := separateItems[0].(ReasoningInputItem)
+	item, ok := items[0].(ReasoningInputItem)
 	if !ok {
-		t.Fatalf("expected ReasoningInputItem, got %T", separateItems[0])
+		t.Fatalf("expected ReasoningInputItem, got %T", items[0])
 	}
 	if item.Type != "reasoning" {
 		t.Errorf("item.Type = %q, want %q", item.Type, "reasoning")
@@ -42,18 +37,22 @@ func TestConvertAssistantContent_ReasoningWithEncryptedContent(t *testing.T) {
 	if item.EncryptedContent != "enc-xyz789" {
 		t.Errorf("item.EncryptedContent = %q, want %q", item.EncryptedContent, "enc-xyz789")
 	}
-	if len(item.Summary) != 1 || item.Summary[0].Text != "some thinking" {
-		t.Errorf("unexpected summary: %+v", item.Summary)
+	// No reasoningSummary provider data was present, so summary stays empty
+	// (TS never derives `summary` from part.text — only `content` does).
+	if len(item.Summary) != 0 {
+		t.Errorf("expected empty summary, got %+v", item.Summary)
 	}
-	if item.Summary[0].Type != "summary_text" {
-		t.Errorf("summary part type = %q, want %q", item.Summary[0].Type, "summary_text")
+	if len(item.Content) != 1 || item.Content[0].Text != "some thinking" || item.Content[0].Type != "reasoning_text" {
+		t.Errorf("unexpected content: %+v", item.Content)
 	}
 }
 
-// TestConvertAssistantContent_ReasoningWithoutEncryptedContent verifies that a
-// ReasoningContent part without EncryptedContent is silently dropped (it may be
-// from a non-OpenAI provider that doesn't use encrypted_content).
-func TestConvertAssistantContent_ReasoningWithoutEncryptedContent(t *testing.T) {
+// TestConvertAssistantContent_ReasoningWithoutEncryptedContentIsStillEmitted
+// verifies that a ReasoningContent part without EncryptedContent (e.g. from a
+// provider that doesn't use encrypted_content) is still emitted as a
+// reasoning input item — the TS SDK never drops reasoning parts here
+// (OR-CORE item 4/5).
+func TestConvertAssistantContent_ReasoningWithoutEncryptedContentIsStillEmitted(t *testing.T) {
 	content := []types.ContentPart{
 		types.ReasoningContent{
 			Text: "anthropic thinking — no encrypted content",
@@ -61,21 +60,33 @@ func TestConvertAssistantContent_ReasoningWithoutEncryptedContent(t *testing.T) 
 		types.TextContent{Text: "final answer"},
 	}
 
-	textParts, separateItems := convertAssistantContent(content, "openai")
-
-	// Text content should appear.
-	if len(textParts) != 1 {
-		t.Errorf("expected 1 text part, got %d", len(textParts))
+	items := convertAssistantContent(content, "openai", false)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (reasoning + message), got %d: %+v", len(items), items)
 	}
 
-	// Reasoning without EncryptedContent must NOT produce a separate item.
-	if len(separateItems) != 0 {
-		t.Errorf("expected no separate items, got %d: %+v", len(separateItems), separateItems)
+	reasoning, ok := items[0].(ReasoningInputItem)
+	if !ok {
+		t.Fatalf("items[0] = %T, want ReasoningInputItem", items[0])
+	}
+	if reasoning.EncryptedContent != "" {
+		t.Errorf("EncryptedContent = %q, want empty", reasoning.EncryptedContent)
+	}
+	if len(reasoning.Summary) != 0 {
+		t.Errorf("expected empty summary, got %+v", reasoning.Summary)
+	}
+	if len(reasoning.Content) != 1 || reasoning.Content[0].Text != "anthropic thinking — no encrypted content" {
+		t.Errorf("unexpected content: %+v", reasoning.Content)
+	}
+
+	message, ok := items[1].(MessageItem)
+	if !ok || message.Role != "assistant" {
+		t.Fatalf("items[1] = %#v, want assistant message", items[1])
 	}
 }
 
 // TestConvertAssistantContent_ReasoningEmptySummaryWhenNoText verifies that when
-// EncryptedContent is set but Text is empty, the Summary array is omitted.
+// EncryptedContent is set but Text is empty, the Summary array is empty (not nil).
 func TestConvertAssistantContent_ReasoningEmptySummaryWhenNoText(t *testing.T) {
 	content := []types.ContentPart{
 		types.ReasoningContent{
@@ -84,12 +95,12 @@ func TestConvertAssistantContent_ReasoningEmptySummaryWhenNoText(t *testing.T) {
 		},
 	}
 
-	_, separateItems := convertAssistantContent(content, "openai")
+	items := convertAssistantContent(content, "openai", false)
 
-	if len(separateItems) != 1 {
-		t.Fatalf("expected 1 separate item, got %d", len(separateItems))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	item := separateItems[0].(ReasoningInputItem)
+	item := items[0].(ReasoningInputItem)
 	if len(item.Summary) != 0 {
 		t.Errorf("expected empty Summary when Text is empty, got %+v", item.Summary)
 	}
@@ -105,12 +116,12 @@ func TestConvertAssistantContent_ReasoningInputItemSerializesCorrectly(t *testin
 		},
 	}
 
-	_, separateItems := convertAssistantContent(content, "openai")
-	if len(separateItems) == 0 {
-		t.Fatal("expected a separate item")
+	items := convertAssistantContent(content, "openai", false)
+	if len(items) == 0 {
+		t.Fatal("expected an item")
 	}
 
-	b, err := json.Marshal(separateItems[0])
+	b, err := json.Marshal(items[0])
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}

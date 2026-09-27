@@ -14,6 +14,7 @@ type WebSearchLocation struct {
 // WebSearchFilters restricts OpenAI web search results.
 type WebSearchFilters struct {
 	AllowedDomains []string `json:"allowedDomains,omitempty"`
+	BlockedDomains []string `json:"blockedDomains,omitempty"`
 }
 
 // WebSearchConfig configures the stable OpenAI Responses web_search tool.

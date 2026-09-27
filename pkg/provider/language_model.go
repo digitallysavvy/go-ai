@@ -221,6 +221,13 @@ type StreamChunk struct {
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
 
+	// RawFinishReason is the raw, provider-specific finish/incomplete reason
+	// string (when Type is ChunkTypeFinish), mirroring
+	// types.GenerateResult.RawFinishReason for the non-streaming path.
+	// Row e6376c2: for a response.failed event, this carries the failure's
+	// raw reason (or "error" if none was given).
+	RawFinishReason string
+
 	// Context management information (Anthropic-specific)
 	// Contains statistics about automatic conversation history cleanup
 	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata

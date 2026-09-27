@@ -40,6 +40,8 @@ type ImageGenerationMask struct {
 
 // ImageGenerationConfig configures the provider-executed image_generation tool.
 type ImageGenerationConfig struct {
+	// Action is "generate", "edit", or "auto".
+	Action            string               `json:"action,omitempty"`
 	Background        string               `json:"background,omitempty"`
 	InputFidelity     string               `json:"inputFidelity,omitempty"`
 	InputImageMask    *ImageGenerationMask `json:"inputImageMask,omitempty"`

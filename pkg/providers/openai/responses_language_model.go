@@ -1,11 +1,14 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -14,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -68,7 +72,23 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, m.wrapErr(err)
 	}
 
-	result, err := m.convertResponse(resp, store, webSearchToolName, m.provider.responsesProviderOptionsName())
+	// Row 75f86f4: a 200 response with an embedded error object maps to a
+	// 400 ProviderError.
+	if resp.Error != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 400, resp.Error.Code, resp.Error.Message, nil)
+	}
+	// Row 75f86f4: a 200 response with no `output` field means the API
+	// returned nothing to work with; raise a descriptive error instead of
+	// silently producing an empty result.
+	if resp.Output == nil {
+		message := "Responses API returned no output"
+		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
+			message = fmt.Sprintf("Responses API returned no output (%s)", resp.IncompleteDetails.Reason)
+		}
+		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+	}
+
+	result, err := m.convertResponse(resp, store, webSearchToolName, opts.Tools, m.provider.responsesProviderOptionsName())
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +115,9 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header), warnings), nil
+	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
+	stream.tools = opts.Tools
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,8 +138,12 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	conversation := ""
 	previousResponseID := ""
 	promptCacheRetention := ""
+	var promptCacheOptions interface{}
 	promptCacheKey := ""
 	reasoningEffort := ""
+	reasoningEffortUpdate := ""
+	reasoningMode := ""
+	reasoningContext := ""
 	reasoningSummary := ""
 	reasoningSummarySet := false
 	strictJSONSchema := true
@@ -137,7 +163,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	var topLogprobs interface{}
 	var contextManagement []map[string]interface{}
 	contextManagementExplicit := false
-	var allowedTools *responses.AllowedToolsToolChoice
+	var allowedToolNames []string
+	var allowedToolsMode string
 	providerOptionsName := m.provider.responsesProviderOptionsName()
 	var openaiOpts map[string]interface{}
 
@@ -161,11 +188,23 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["promptCacheRetention"].(string); ok {
 				promptCacheRetention = v
 			}
+			if v, ok := openaiOpts["promptCacheOptions"]; ok {
+				promptCacheOptions = v
+			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
 				promptCacheKey = v
 			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
 				reasoningEffort = v
+			}
+			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
+				reasoningEffortUpdate = v
+			}
+			if v, ok := openaiOpts["reasoningMode"].(string); ok {
+				reasoningMode = v
+			}
+			if v, ok := openaiOpts["reasoningContext"].(string); ok {
+				reasoningContext = v
 			}
 			if v, ok := openaiOpts["reasoningSummary"]; ok {
 				reasoningSummarySet = true
@@ -220,7 +259,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if contextManagementExplicit {
 				contextManagement = responsesContextManagement(openaiOpts["contextManagement"])
 			}
-			allowedTools = parseAllowedTools(openaiOpts["allowedTools"], opts.Tools)
+			if raw, ok := openaiOpts["allowedTools"].(map[string]interface{}); ok {
+				allowedToolNames = stringSliceFromInterface(raw["toolNames"])
+				allowedToolsMode, _ = raw["mode"].(string)
+			}
 		}
 	}
 
@@ -248,9 +290,23 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		})
 	}
 
+	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
+
 	isReasoning := isReasoningModel(m.modelID)
 	if forceReasoning != nil {
 		isReasoning = *forceReasoning
+	}
+
+	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
+	// on anything else (row 17e489e).
+	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
+		!slices.Contains(modelCapabilities.SupportedReasoningEfforts, reasoningEffort) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningEffort",
+			Details: fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", ")),
+		})
+		reasoningEffort = ""
 	}
 
 	// Determine system message mode based on model type.
@@ -281,7 +337,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Convert prompt to Responses API input format.
-	input, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
+	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
 		HasPreviousResponseID:       previousResponseID != "",
 		HasConversation:             conversation != "",
@@ -290,12 +346,46 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		HasLocalShellTool:           hasTool(opts.Tools, "openai.local_shell"),
 		HasShellTool:                hasTool(opts.Tools, "openai.shell"),
 		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
+		HasComputerTool:             hasTool(opts.Tools, "openai.computer"),
 		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:         providerOptionsName,
+		ToolSearchToolName:          toolSearchToolName(opts.Tools),
+		OutputSchemaToolNames:       outputSchemaToolNames(opts.Tools),
 		ExplicitMessageItemType:     m.provider.explicitMessageItemType(),
 	})
 	if err != nil {
 		return nil, store, warnings, err
+	}
+	warnings = append(warnings, inputWarnings...)
+
+	// reasoningEffortUpdate (GPT-6+): prepend a configuration_update item so
+	// the model's reasoning effort can change mid-conversation without a new
+	// response chain. Requires standard reasoning mode (no auto-compaction,
+	// no auto-truncation).
+	if reasoningEffortUpdate != "" {
+		configurationUpdateSupported := modelCapabilities.SupportsConfigurationUpdate &&
+			reasoningMode != "pro" && !contextManagementExplicit && truncation != "auto"
+		if !configurationUpdateSupported {
+			details := "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
+			if !modelCapabilities.SupportsConfigurationUpdate {
+				details = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffortUpdate",
+				Details: details,
+			})
+		} else {
+			input = append([]interface{}{map[string]interface{}{
+				"type":      "configuration_update",
+				"reasoning": map[string]interface{}{"effort": reasoningEffortUpdate},
+			}}, input...)
+		}
+	}
+
+	// compactionTrigger: append a compaction_trigger item to the end of input.
+	if v, ok := openaiOpts["compactionTrigger"].(bool); ok && v {
+		input = append(input, map[string]interface{}{"type": "compaction_trigger"})
 	}
 
 	body := map[string]interface{}{
@@ -332,13 +422,21 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
 		resolvedReasoningSummary = "detailed"
 	}
-	if isReasoning && (effort != "" || resolvedReasoningSummary != "") {
+	if isReasoning && (effort != "" || resolvedReasoningSummary != "" || reasoningMode != "" || reasoningContext != "") {
 		reasoning := map[string]interface{}{}
 		if effort != "" {
 			reasoning["effort"] = effort
 		}
 		if resolvedReasoningSummary != "" {
 			reasoning["summary"] = resolvedReasoningSummary
+		}
+		// Row b2b1bb9 (Responses half): GPT-5.6 reasoningMode ("standard"/
+		// "pro") and reasoningContext ("auto"/"current_turn"/"all_turns").
+		if reasoningMode != "" {
+			reasoning["mode"] = reasoningMode
+		}
+		if reasoningContext != "" {
+			reasoning["context"] = reasoningContext
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoning {
@@ -354,6 +452,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Type:    "unsupported",
 				Feature: "reasoningSummary",
 				Details: "reasoningSummary is not supported for non-reasoning models",
+			})
+		}
+		if reasoningMode != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningMode",
+				Details: "reasoningMode is not supported for non-reasoning models",
+			})
+		}
+		if reasoningContext != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningContext",
+				Details: "reasoningContext is not supported for non-reasoning models",
 			})
 		}
 	}
@@ -383,6 +495,16 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Details: "topP is not supported for reasoning models",
 			})
 		}
+		// GPT-6+ models (which have a fixed SupportedReasoningEfforts list)
+		// do not support logprobs while reasoning is active.
+		if modelCapabilities.SupportedReasoningEfforts != nil && topLogprobs != nil {
+			topLogprobs = nil
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "logprobs",
+				Details: "logprobs is not supported for reasoning models",
+			})
+		}
 	}
 
 	if opts.MaxTokens != nil {
@@ -396,11 +518,25 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		textObj := map[string]interface{}{}
 		if hasJSONFormat {
 			if opts.ResponseFormat.Schema != nil {
+				// Normalize the response schema for OpenAI structured outputs
+				// (d5e3024, 411b3f2: drop propertyNames / lookaround
+				// patterns), matching the chat model's handling.
+				responseSchema := opts.ResponseFormat.Schema
+				if rawSchema := providerutils.ResponseFormatJSONSchema(responseSchema); rawSchema != nil {
+					if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
+						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
+						if normErr != nil {
+							return nil, false, warnings, normErr
+						}
+						warnings = append(warnings, schemaWarnings...)
+						responseSchema = normalizedSchema
+					}
+				}
 				format := map[string]interface{}{
 					"type":   "json_schema",
 					"strict": strictJSONSchema,
 					"name":   opts.ResponseFormat.Name,
-					"schema": opts.ResponseFormat.Schema,
+					"schema": responseSchema,
 				}
 				if format["name"] == "" {
 					format["name"] = "response"
@@ -425,9 +561,21 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
+		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools, modelCapabilities.SupportsAsyncToolCalling)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		warnings = append(warnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
-		if allowedTools != nil {
-			body["tool_choice"] = *allowedTools
+		if len(allowedToolNames) > 0 {
+			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
+			warnings = append(warnings, allowedToolWarnings...)
+			if err != nil {
+				return nil, false, warnings, err
+			}
+			if allowedTools != nil {
+				body["tool_choice"] = *allowedTools
+			}
 		} else if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
@@ -478,7 +626,15 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
 		body["previous_response_id"] = nil
 	}
-	if promptCacheRetention != "" {
+	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+		// GPT-6+ models do not support promptCacheRetention; use
+		// promptCacheOptions instead.
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "promptCacheRetention",
+			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+		})
+	} else if promptCacheRetention != "" {
 		body["prompt_cache_retention"] = promptCacheRetention
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
 		body["prompt_cache_retention"] = nil
@@ -487,6 +643,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["prompt_cache_key"] = promptCacheKey
 	} else if hasNilProviderOption(openaiOpts, "promptCacheKey") {
 		body["prompt_cache_key"] = nil
+	}
+	if promptCacheOptions != nil {
+		body["prompt_cache_options"] = promptCacheOptions
 	}
 	if serviceTier != "" {
 		switch serviceTier {
@@ -500,7 +659,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 					Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
 				})
 			}
-		case "priority":
+		case "priority", "fast":
+			// "fast" is an alias for priority processing (row 4cd4548) and
+			// is gated the same way.
 			if supportsPriorityProcessing(m.modelID) {
 				body["service_tier"] = serviceTier
 			} else {
@@ -551,31 +712,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	return body, store, warnings, nil
-}
-
-func parseAllowedTools(value interface{}, tools []types.Tool) *responses.AllowedToolsToolChoice {
-	raw, ok := value.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	names := stringSliceFromInterface(raw["toolNames"])
-	if len(names) == 0 {
-		return nil
-	}
-	mode, _ := raw["mode"].(string)
-	if mode == "" {
-		mode = "auto"
-	}
-	entries := make([]responses.AllowedToolsToolEntry, len(names))
-	for i, name := range names {
-		mapped, _ := resolveResponsesToolChoiceName(name, tools)
-		entries[i] = responses.AllowedToolsToolEntry{Type: "function", Name: mapped}
-	}
-	return &responses.AllowedToolsToolChoice{
-		Type:  "allowed_tools",
-		Mode:  mode,
-		Tools: entries,
-	}
 }
 
 func stringSliceFromInterface(value interface{}) []string {
@@ -699,7 +835,7 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	case types.ToolChoiceTool:
 		name, tool := resolveResponsesToolChoiceName(tc.ToolName, tools)
 		switch name {
-		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch":
+		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer":
 			return map[string]interface{}{"type": name}
 		}
 		if tool != nil {
@@ -716,6 +852,73 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	}
 }
 
+// normalizeResponsesToolSchemas normalizes the "parameters" JSON Schema of
+// every function tool (including tools grouped under a namespace) for
+// OpenAI structured outputs (d5e3024, 411b3f2: drop propertyNames /
+// lookaround patterns), mirroring the chat model's
+// normalizeOpenAIChatToolSchemas. It mutates tools in place.
+func normalizeResponsesToolSchemas(tools []interface{}, supportsAsync bool) ([]types.Warning, error) {
+	var warnings []types.Warning
+	for i, t := range tools {
+		switch v := t.(type) {
+		case responses.FunctionToolDef:
+			normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(v, supportsAsync)
+			if err != nil {
+				return nil, err
+			}
+			warnings = append(warnings, toolWarnings...)
+			tools[i] = normalized
+		case responses.CustomToolDef:
+			toolWarnings := gateResponsesToolAsync(&v.Async, v.Name, supportsAsync)
+			warnings = append(warnings, toolWarnings...)
+			tools[i] = v
+		case *responses.NamespaceToolDef:
+			// PrepareToolsWithError always stores namespaces as pointers, so
+			// mutating v.Tools mutates the shared underlying struct.
+			for j, fn := range v.Tools {
+				normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(fn, supportsAsync)
+				if err != nil {
+					return nil, err
+				}
+				warnings = append(warnings, toolWarnings...)
+				v.Tools[j] = normalized
+			}
+		}
+	}
+	return warnings, nil
+}
+
+func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsync bool) (responses.FunctionToolDef, []types.Warning, error) {
+	var warnings []types.Warning
+	schemaMap, ok := fn.Parameters.(map[string]interface{})
+	if ok && schemaMap != nil {
+		normalized, schemaWarnings, err := NormalizeOpenAIJSONSchema(schemaMap)
+		if err != nil {
+			return fn, nil, err
+		}
+		fn.Parameters = normalized
+		warnings = append(warnings, schemaWarnings...)
+	}
+	warnings = append(warnings, gateResponsesToolAsync(&fn.Async, fn.Name, supportsAsync)...)
+	return fn, warnings, nil
+}
+
+// gateResponsesToolAsync implements row 4a09793's model gating: async tool
+// calling is only supported by GPT-6 and later models. If async=true was
+// requested on an unsupported model, drop it and warn, mirroring TS
+// resolveAsyncToolOption.
+func gateResponsesToolAsync(async **bool, toolName string, supportsAsync bool) []types.Warning {
+	if *async == nil || !**async || supportsAsync {
+		return nil
+	}
+	*async = nil
+	return []types.Warning{{
+		Type:    "unsupported",
+		Feature: fmt.Sprintf("async tool calling for %q", toolName),
+		Details: "Async tool calling is only supported by GPT-6 and later models.",
+	}}
+}
+
 func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
 	providerNames := map[string]string{
 		"openai.code_interpreter":   "code_interpreter",
@@ -725,6 +928,7 @@ func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *t
 		"openai.web_search":         "web_search",
 		"openai.mcp":                "mcp",
 		"openai.apply_patch":        "apply_patch",
+		"openai.computer":           "computer",
 		"code_interpreter":          "code_interpreter",
 		"file_search":               "file_search",
 		"image_generation":          "image_generation",
@@ -732,6 +936,7 @@ func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *t
 		"web_search":                "web_search",
 		"mcp":                       "mcp",
 		"apply_patch":               "apply_patch",
+		"computer":                  "computer",
 	}
 	if mapped, ok := providerNames[name]; ok {
 		for i := range tools {
@@ -791,6 +996,45 @@ func hasTool(tools []types.Tool, name string) bool {
 	return false
 }
 
+// toolSearchToolName returns the SDK tool name of the tool whose ProviderID
+// is "openai.tool_search", if any is present in this request. Matches TS
+// `getOpenAIToolName('openai.tool_search')`.
+func toolSearchToolName(tools []types.Tool) string {
+	for _, tool := range tools {
+		if tool.ProviderID == "openai.tool_search" {
+			return tool.Name
+		}
+	}
+	return ""
+}
+
+// outputSchemaToolNames returns the set of function tool names that declared
+// providerOptions.openai.outputSchema, so the input converter can JSON-encode
+// their text-like results.
+func outputSchemaToolNames(tools []types.Tool) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		options, ok := tool.ProviderOptions.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		openaiOptions, ok := options["openai"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if openaiOptions["outputSchema"] != nil {
+			names[tool.Name] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
 func responsesWebSearchToolName(tools []types.Tool) string {
 	for _, tool := range tools {
 		switch {
@@ -817,7 +1061,7 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
-func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, providerOptionsName ...string) (*types.GenerateResult, error) {
+func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
 	if len(providerOptionsName) > 0 && providerOptionsName[0] != "" {
 		providerName = providerOptionsName[0]
@@ -857,15 +1101,95 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
+			// Row 6be0f51: expand an internal "parallel" wrapper call into
+			// one tool call per nested recipient, when every recipient names
+			// a declared function tool.
+			if expanded, ok := responses.ExpandParallelToolCall(item.CallID, item.Name, item.Arguments, item.ID, tools, providerName); ok {
+				toolCalls = append(toolCalls, expanded...)
+				continue
+			}
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			tc := types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
 			toolCalls = append(toolCalls, tc)
+
+		case "apply_patch_call":
+			// Row 45f2b6a: decode into a tool call ({callId, operation}) and
+			// drive a tool-calls finish reason like any other tool call.
+			var item responses.ApplyPatchCall
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			rawArgs, _ := json.Marshal(map[string]interface{}{
+				"callId":    item.CallID,
+				"operation": item.Operation,
+			})
+			var args map[string]interface{}
+			json.Unmarshal(rawArgs, &args) //nolint:errcheck
+			itemID := ""
+			if item.ID != nil {
+				itemID = *item.ID
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.apply_patch",
+				Arguments:        args,
+				RawArguments:     string(rawArgs),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
+			})
+
+		case "computer_call":
+			// Row 0063c2d: decode a batch of UI actions into a tool call.
+			var item responses.ComputerCall
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			computerItemID := ""
+			if item.ID != nil {
+				computerItemID = *item.ID
+			}
+			if item.CallID == nil {
+				// A null call_id means this call is fully server-executed
+				// with no client round-trip: emit the immediate
+				// "computer_use" tool-call/tool-result pair TS produces,
+				// instead of a client-executable "computer" tool call.
+				tc := types.ToolCall{
+					ID:               computerItemID,
+					ToolName:         "openai.computer_use",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				}
+				toolCalls = append(toolCalls, tc)
+				result.Content = append(result.Content,
+					types.ToolCallContent{
+						ToolCallID:       computerItemID,
+						ToolName:         "openai.computer_use",
+						Input:            "",
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+					types.ToolResultContent{
+						ToolCallID:       computerItemID,
+						ToolName:         "openai.computer_use",
+						Result:           map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
+						ProviderExecuted: true,
+					},
+				)
+				continue
+			}
+			args, rawArgs := computerCallArguments(item)
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               *item.CallID,
+				ToolName:         "openai.computer",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
+			})
 
 		case "reasoning":
 			// Parse encrypted_content and summary text.
@@ -898,9 +1222,49 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        map[string]interface{}{"input": item.Input},
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, item.Caller),
+			})
+
+		case "program":
+			// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox
+			// generated and is executing this JavaScript program; the result
+			// arrives as a separate "program_output" item below.
+			var item responses.ProgramItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			args, rawArgs := programCallArguments(item)
+			tc := types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderExecuted: true,
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+			}
+			toolCalls = append(toolCalls, tc)
+			result.Content = append(result.Content, types.ToolCallContent{
+				ToolCallID:       item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Input:            rawArgs,
+				Arguments:        args,
+				ProviderExecuted: true,
+			})
+
+		case "program_output":
+			// Row 1f6dd3a: the result of a "program" item's hosted execution.
+			var item responses.ProgramOutputItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			result.Content = append(result.Content, types.ToolResultContent{
+				ToolCallID:       item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Result:           map[string]interface{}{"result": item.Result, "status": item.Status},
+				ProviderExecuted: true,
 			})
 
 		case "web_search_call":
@@ -954,16 +1318,94 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, false)
 	}
 
+	// Row b2b1bb9 (Responses half): surface the response id, echoed
+	// service tier, and effective reasoning context (GPT-5.6
+	// reasoningContext) in provider metadata, mirroring TS's
+	// doGenerate providerMetadata assembly.
+	meta := map[string]interface{}{"responseId": resp.ID}
+	if resp.ServiceTier != "" {
+		meta["serviceTier"] = resp.ServiceTier
+	}
+	if resp.Reasoning != nil && resp.Reasoning.Context != "" {
+		meta["reasoningContext"] = resp.Reasoning.Context
+	}
+	result.ProviderMetadata = map[string]interface{}{providerName: meta}
+
 	return result, nil
 }
 
-func openAIResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
+// programCallArguments builds the SDK-facing {code, fingerprint} arguments
+// for a decoded "program" item, mirroring TS's
+// programmaticToolCallingInputSchema (row 1f6dd3a).
+func programCallArguments(item responses.ProgramItem) (map[string]interface{}, string) {
+	args := map[string]interface{}{
+		"code":        item.Code,
+		"fingerprint": item.Fingerprint,
+	}
+	raw, _ := json.Marshal(args)
+	return args, string(raw)
+}
+
+// computerCallArguments builds the SDK-facing {actions, pendingSafetyChecks,
+// status} arguments for a decoded computer_call item, mirroring TS
+// mapComputerCallInput (row 0063c2d): actions are translated from wire
+// (scroll_x/scroll_y) to SDK (scrollX/scrollY) field names.
+func computerCallArguments(item responses.ComputerCall) (map[string]interface{}, string) {
+	// TS: `actions ?? (action != null ? [action] : [])` -- fall back to the
+	// singular `action` field when `actions` is empty/absent.
+	rawActions := item.Actions
+	if len(rawActions) == 0 && item.Action != nil {
+		rawActions = []map[string]interface{}{item.Action}
+	}
+	actions := make([]map[string]interface{}, 0, len(rawActions))
+	for _, action := range rawActions {
+		actions = append(actions, responses.MapComputerActionToSDK(action))
+	}
+	checks := make([]map[string]interface{}, 0, len(item.PendingSafetyChecks))
+	for _, c := range item.PendingSafetyChecks {
+		check := map[string]interface{}{"id": c.ID}
+		if c.Code != "" {
+			check["code"] = c.Code
+		}
+		if c.Message != "" {
+			check["message"] = c.Message
+		}
+		checks = append(checks, check)
+	}
+	status := item.Status
+	if status == "" {
+		status = "completed"
+	}
+	args := map[string]interface{}{
+		"actions":             actions,
+		"pendingSafetyChecks": checks,
+		"status":              status,
+	}
+	raw, _ := json.Marshal(args)
+	return args, string(raw)
+}
+
+func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async *bool, caller *responses.ToolCaller) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
 	}
 	if namespace != "" {
 		openai["namespace"] = namespace
+	}
+	// Row 4a09793: forward async on tool-call replay/decode metadata.
+	if async != nil {
+		openai["async"] = *async
+	}
+	// Row 1f6dd3a: forward the caller (direct vs. a programmatic-tool-calling
+	// "program") on tool-call replay/decode metadata, mirroring TS's
+	// caller.type === 'program' ? {type:'program', callerId} : caller.
+	if caller != nil {
+		if caller.Type == "program" {
+			openai["caller"] = map[string]interface{}{"type": "program", "callerId": caller.CallerID}
+		} else {
+			openai["caller"] = map[string]interface{}{"type": caller.Type}
+		}
 	}
 	if len(openai) == 0 {
 		return nil
@@ -1010,6 +1452,24 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 			mapped["queries"] = action.Queries
 		}
 		result["action"] = mapped
+		// TS only ever includes `sources` on the "search" action
+		// (mapWebSearchOutput's `case 'search'` branch); open_page/
+		// find_in_page never carry a sources key even if the API returned
+		// one.
+		if action.Sources != nil {
+			sources := make([]map[string]interface{}, 0, len(action.Sources))
+			for _, source := range action.Sources {
+				mapped := map[string]interface{}{"type": source.Type}
+				if source.URL != "" {
+					mapped["url"] = source.URL
+				}
+				if source.Name != "" {
+					mapped["name"] = source.Name
+				}
+				sources = append(sources, mapped)
+			}
+			result["sources"] = sources
+		}
 	case "open_page":
 		mapped := map[string]interface{}{"type": "openPage", "url": nil}
 		if action.URL != nil {
@@ -1025,20 +1485,6 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 			mapped["pattern"] = *action.Pattern
 		}
 		result["action"] = mapped
-	}
-	if action.Sources != nil {
-		sources := make([]map[string]interface{}, 0, len(action.Sources))
-		for _, source := range action.Sources {
-			mapped := map[string]interface{}{"type": source.Type}
-			if source.URL != "" {
-				mapped["url"] = source.URL
-			}
-			if source.Name != "" {
-				mapped["name"] = source.Name
-			}
-			sources = append(sources, mapped)
-		}
-		result["sources"] = sources
 	}
 	return result
 }
@@ -1061,8 +1507,14 @@ func mapResponsesFinishReason(details *responses.IncompleteDetails, hasToolCalls
 	}
 }
 
-// convertResponsesUsage converts Responses API usage to types.Usage.
-func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
+// convertResponsesUsage converts Responses API usage to types.Usage. Row
+// f6fac50: a nil usage (JSON null/absent) yields an all-nil-fields
+// types.Usage rather than a zero-token usage that looks like a real
+// (empty) response.
+func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
+	if u == nil {
+		return types.Usage{}
+	}
 	inputTokens := int64(u.InputTokens)
 	outputTokens := int64(u.OutputTokens)
 	total := inputTokens + outputTokens
@@ -1073,12 +1525,19 @@ func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 		TotalTokens:  &total,
 	}
 
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
+	if u.InputTokensDetails != nil && (u.InputTokensDetails.CachedTokens > 0 || u.InputTokensDetails.CacheWriteTokens != nil) {
 		cached := int64(u.InputTokensDetails.CachedTokens)
-		noCached := inputTokens - cached
+		var cacheWrite int64
+		var cacheWritePtr *int64
+		if u.InputTokensDetails.CacheWriteTokens != nil {
+			cacheWrite = int64(*u.InputTokensDetails.CacheWriteTokens)
+			cacheWritePtr = &cacheWrite
+		}
+		noCached := inputTokens - cached - cacheWrite
 		result.InputDetails = &types.InputTokenDetails{
-			CacheReadTokens: &cached,
-			NoCacheTokens:   &noCached,
+			CacheReadTokens:  &cached,
+			CacheWriteTokens: cacheWritePtr,
+			NoCacheTokens:    &noCached,
 		}
 	}
 
@@ -1089,6 +1548,14 @@ func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 			ReasoningTokens: &reasoning,
 			TextTokens:      &textOut,
 		}
+	}
+
+	// Row 7243530/2c4767d: keep the complete raw usage object (captured by
+	// ResponsesAPIUsage's UnmarshalJSON), so fields not modeled above --
+	// e.g. orchestration_input_tokens/orchestration_input_cached_tokens/
+	// orchestration_output_tokens -- are still available to callers.
+	if u.Raw != nil {
+		result.Raw = u.Raw
 	}
 
 	return result
@@ -1128,6 +1595,12 @@ type responsesStream struct {
 	reasoningAccum map[int]*responsesReasoningAccum
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
+	// firstItemIDByOutputIndex records the item id first seen for a given
+	// output_index (row 73d48d0): OpenAI can rotate/reuse item ids across
+	// events sharing the same output_index mid-stream, so the id observed at
+	// output_item.added -- not whatever the later done event reports -- is
+	// used consistently for reasoning-end ids and itemId metadata.
+	firstItemIDByOutputIndex map[int]string
 	// Chunks ready to emit without reading more SSE events.
 	flushQueue        []*provider.StreamChunk
 	includeRawChunks  bool
@@ -1138,7 +1611,39 @@ type responsesStream struct {
 	pendingRaw        []*provider.StreamChunk
 	pendingMetadata   *provider.StreamChunk
 	responseHeaders   http.Header
+
+	// hadDecodeError is set when a known event type (one with a dedicated
+	// case below) fails schema decode (row eee6200). The stream keeps
+	// running (a single malformed event doesn't necessarily invalidate the
+	// whole response), but the eventual finish reason is forced to "error"
+	// instead of whatever response.completed/incomplete would otherwise
+	// report, so callers don't see a false "stop"/"length" outcome.
+	hadDecodeError bool
+
+	// tools holds the request's declared tools, used to expand an internal
+	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
+	// Left nil in most tests; only DoStream and tests exercising parallel
+	// expansion set it.
+	tools []types.Tool
 }
+
+// emitDecodeError reports a decode failure for a known Responses API SSE
+// event type: emits a ChunkTypeError chunk (instead of silently skipping the
+// event) and marks the eventual finish reason to be forced to "error".
+func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, error) {
+	s.hadDecodeError = true
+	return s.emitParsedChunk(&provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: fmt.Sprintf("failed to parse %s event: %v", eventType, err),
+	})
+}
+
+// chatCompletionsMismatchMessage adapts TS
+// createOpenAIResponsesChatCompletionsMismatchError's message (row 1ead90c)
+// to this SDK's Go API surface.
+const chatCompletionsMismatchMessage = "Received a Chat Completions stream while using the OpenAI Responses API. " +
+	"The default OpenAI provider model uses the Responses API. If your custom baseURL targets a Chat Completions-compatible endpoint, use Provider.ChatModel(\"model-id\") instead of Provider.ResponsesModel/LanguageModel. " +
+	"You can also use one of this SDK's OpenAI-compatible providers."
 
 func newResponsesStream(r io.ReadCloser, includeRawChunks bool, args ...string) *responsesStream {
 	return newResponsesStreamWithMetadata(r, includeRawChunks, argOrDefault(args, 0, "web_search"), argOrDefault(args, 1, "openai"), nil)
@@ -1152,15 +1657,16 @@ func newResponsesStreamWithMetadata(r io.ReadCloser, includeRawChunks bool, tool
 		providerName = "openai"
 	}
 	return &responsesStream{
-		reader:            r,
-		parser:            streaming.NewSSEParser(r),
-		toolAccum:         make(map[int]*responsesToolAccum),
-		reasoningAccum:    make(map[int]*responsesReasoningAccum),
-		itemTypes:         make(map[int]string),
-		includeRawChunks:  includeRawChunks,
-		webSearchToolName: toolName,
-		providerName:      providerName,
-		responseHeaders:   headers,
+		reader:                   r,
+		parser:                   streaming.NewSSEParser(r),
+		toolAccum:                make(map[int]*responsesToolAccum),
+		reasoningAccum:           make(map[int]*responsesReasoningAccum),
+		itemTypes:                make(map[int]string),
+		firstItemIDByOutputIndex: make(map[int]string),
+		includeRawChunks:         includeRawChunks,
+		webSearchToolName:        toolName,
+		providerName:             providerName,
+		responseHeaders:          headers,
 	}
 }
 
@@ -1237,6 +1743,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 		})
 	}
+	// Row 1ead90c: a Chat Completions-shaped chunk (top-level "choices"
+	// array, no "type" discriminator) means the configured baseURL points
+	// at a Chat Completions-compatible endpoint instead of the Responses
+	// API. Surface a helpful error instead of silently skipping it.
+	if peek.Type == "" && len(peek.Choices) > 0 {
+		var isArray bool
+		trimmed := bytes.TrimSpace(peek.Choices)
+		isArray = len(trimmed) > 0 && trimmed[0] == '['
+		if isArray {
+			s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+			return nil, s.err
+		}
+	}
 	var eventRawChunk *provider.StreamChunk
 	if s.includeRawChunks {
 		eventRawChunk = openAIResponsesRawChunk(event.Data)
@@ -1256,7 +1775,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.created":
 		var e responses.ResponseCreatedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Response.ID != "" {
 			s.responseID = e.Response.ID
@@ -1277,9 +1796,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_item.added":
 		var e responses.OutputItemAddedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.itemTypes[e.OutputIndex] = e.Item.Type
+		if e.Item.ID != "" {
+			if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
+				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
+			}
+		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
@@ -1329,7 +1853,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_text.delta":
 		var e responses.OutputTextDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Delta == "" {
 			return s.Next()
@@ -1346,7 +1870,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.function_call_arguments.delta":
 		var e responses.FunctionCallArgumentsDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
@@ -1360,7 +1884,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.reasoning_summary_text.delta":
 		var e responses.ReasoningSummaryTextDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Delta == "" {
 			return s.Next()
@@ -1381,7 +1905,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_item.done":
 		var e responses.OutputItemDoneEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
@@ -1392,11 +1916,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.completed", "response.incomplete":
 		var e responses.ResponseCompletedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			s.err = io.EOF
-			return nil, io.EOF
+			return s.emitDecodeError(peek.Type, err)
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+		// Row eee6200: an earlier known-event decode failure forces the
+		// finish reason to "error", regardless of what this event reports.
+		if s.hadDecodeError {
+			finishReason = types.FinishReasonError
+		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
@@ -1434,8 +1962,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := types.FinishReason("error")
+		rawFinishReason := "error"
 		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 			finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+			rawFinishReason = e.Response.IncompleteDetails.Reason
 		}
 
 		metaMap := map[string]interface{}{}
@@ -1458,6 +1988,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
+			RawFinishReason:  rawFinishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
 		})
@@ -1538,6 +2069,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if accum.arguments != "" {
 			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
 		}
+		rawArguments := accum.arguments
 		var item responses.FunctionCallItem
 		if err := json.Unmarshal(e.Item, &item); err == nil {
 			if item.ID != "" {
@@ -1548,7 +2080,21 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			}
 			if accum.arguments == "" && item.Arguments != "" {
 				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+				rawArguments = item.Arguments
 			}
+		}
+		// Row 6be0f51: expand an internal "parallel" wrapper call into one
+		// tool-call chunk per nested recipient, when every recipient names a
+		// declared function tool.
+		if expanded, ok := responses.ExpandParallelToolCall(accum.id, accum.name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
+			for _, tc := range expanded {
+				tc := tc
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolCall,
+					ToolCall: &tc,
+				})
+			}
+			return s.Next()
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
@@ -1556,7 +2102,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               accum.id,
 				ToolName:         accum.name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async, item.Caller),
 			},
 		})
 
@@ -1572,8 +2118,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Reasoning text was already emitted as ChunkTypeReasoning deltas.
 		// Forward encrypted_content so callers can round-trip it for multi-turn
 		// reasoning when store=false.
+		// Row 73d48d0: use the id first seen for this output_index (at
+		// output_item.added) rather than this done event's own id, in case
+		// OpenAI rotated the item id mid-stream.
+		firstID := s.firstItemIDByOutputIndex[e.OutputIndex]
 		delete(s.reasoningAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
+		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		var item struct {
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
@@ -1581,18 +2132,106 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
 			return s.Next()
 		}
+		id := firstID
+		if id == "" {
+			id = item.ID
+		}
 		meta := map[string]interface{}{}
 		if item.EncryptedContent != "" {
 			meta["encryptedContent"] = item.EncryptedContent
 		}
-		if item.ID != "" {
-			meta["itemId"] = item.ID
+		if id != "" {
+			meta["itemId"] = id
 		}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
-			ID:               "reasoning-" + item.ID,
+			ID:               id,
 			ProviderMetadata: providerMeta,
+		})
+
+	case "apply_patch_call":
+		// Row 45f2b6a.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ApplyPatchCall
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.emitDecodeError("apply_patch_call", err)
+		}
+		rawArgs, _ := json.Marshal(map[string]interface{}{
+			"callId":    item.CallID,
+			"operation": item.Operation,
+		})
+		var args map[string]interface{}
+		json.Unmarshal(rawArgs, &args) //nolint:errcheck
+		itemID := ""
+		if item.ID != nil {
+			itemID = *item.ID
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.apply_patch",
+				Arguments:        args,
+				RawArguments:     string(rawArgs),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
+			},
+		})
+
+	case "computer_call":
+		// Row 0063c2d.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ComputerCall
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.emitDecodeError("computer_call", err)
+		}
+		computerItemID := ""
+		if item.ID != nil {
+			computerItemID = *item.ID
+		}
+		if item.CallID == nil {
+			// A null call_id means this call is fully server-executed with
+			// no client round-trip: emit the immediate "computer_use"
+			// tool-input-end/tool-call/tool-result sequence TS produces,
+			// instead of a client-executable "computer" tool call.
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputEnd,
+					ToolCall: &types.ToolCall{
+						ID:               computerItemID,
+						ToolName:         "openai.computer_use",
+						ProviderExecuted: true,
+					},
+				},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:               computerItemID,
+						ToolName:         "openai.computer_use",
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+				},
+			)
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+					ToolCallID: computerItemID,
+					ToolName:   "openai.computer_use",
+					Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
+				},
+			})
+		}
+		computerArgs, computerRawArgs := computerCallArguments(item)
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               *item.CallID,
+				ToolName:         "openai.computer",
+				Arguments:        computerArgs,
+				RawArguments:     computerRawArgs,
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
+			},
 		})
 
 	case "custom_tool_call":
@@ -1604,9 +2243,10 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        map[string]interface{}{"input": item.Input},
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, item.Caller),
 			},
 		})
 
@@ -1622,6 +2262,44 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID: item.ID,
 				ToolName:   s.webSearchToolName,
 				Result:     mapWebSearchOutput(item.Action),
+			},
+		})
+
+	case "program":
+		// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox generated
+		// and is executing this JavaScript program; the result arrives as a
+		// separate "program_output" item's own output_item.done event.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ProgramItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		args, rawArgs := programCallArguments(item)
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.programmatic_tool_calling",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderExecuted: true,
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+			},
+		})
+
+	case "program_output":
+		// Row 1f6dd3a: the result of a "program" item's hosted execution.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ProgramOutputItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.CallID,
+				ToolName:   "openai.programmatic_tool_calling",
+				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 			},
 		})
 

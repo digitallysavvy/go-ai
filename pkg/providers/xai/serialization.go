@@ -2,7 +2,6 @@ package xai
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -12,21 +11,19 @@ func init() {
 	provider.RegisterModelDeserializer("xai.responses", deserializeModel)
 }
 
-func (m *LanguageModel) Serialize() provider.SerializedModel {
-	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.config)}
-}
-
 func (m *ResponsesLanguageModel) Serialize() provider.SerializedModel {
 	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.config)}
 }
 
+// deserializeModel reconstructs a language model from a serialized
+// workflow/agent state. The xAI Chat Completions API (and its "xai"-tagged
+// serialized models) was removed (row 1f20dba); a model serialized with the
+// legacy "xai" provider tag now deserializes to the Responses API model,
+// matching LanguageModel()'s current (and only) behavior.
 func deserializeModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {
 	var cfg Config
 	data, _ := json.Marshal(serialized.Config)
 	_ = json.Unmarshal(data, &cfg)
 	p := New(cfg)
-	if strings.HasSuffix(serialized.Provider, ".responses") {
-		return p.LanguageModel(serialized.ModelID)
-	}
-	return p.ChatCompletionsLanguageModel(serialized.ModelID)
+	return p.LanguageModel(serialized.ModelID)
 }

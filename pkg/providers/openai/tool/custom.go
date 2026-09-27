@@ -62,6 +62,19 @@ type CustomTool struct {
 	// Format specifies output format constraints (optional).
 	// Omit for unconstrained text output.
 	Format *CustomToolFormat `json:"format,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result. Only supported by GPT-6 and
+	// later models; ignored (with a warning) otherwise.
+	Async *bool `json:"async,omitempty"`
+}
+
+// WithAsync sets whether the model may continue generating without waiting
+// for this tool's result.
+func WithAsync(async bool) CustomToolOption {
+	return func(t *CustomTool) {
+		t.Async = &async
+	}
 }
 
 // CustomToolOption is a functional option for configuring a CustomTool.
@@ -117,8 +130,13 @@ func NewCustomTool(opts ...CustomToolOption) CustomTool {
 //	})
 func (ct CustomTool) ToTool(name string) types.Tool {
 	return types.Tool{
-		Name:             name,
-		Description:      func() string { if ct.Description != nil { return *ct.Description }; return "" }(),
+		Name: name,
+		Description: func() string {
+			if ct.Description != nil {
+				return *ct.Description
+			}
+			return ""
+		}(),
 		ProviderExecuted: true,
 		ProviderOptions:  ct,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {

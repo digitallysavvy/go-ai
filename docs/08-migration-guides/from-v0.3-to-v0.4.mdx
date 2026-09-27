@@ -50,6 +50,8 @@ This code is unchanged between v0.3.x and v0.4.0. What changes is the order `OnC
 
 `xai.Provider.LanguageModel()` now returns a model backed by xAI's Responses API instead of Chat Completions. The Responses API adds image input and finer-grained reasoning effort levels. Call `ChatCompletionsLanguageModel()` for the v0.3.x behavior.
 
+> **v0.5.0:** `ChatCompletionsLanguageModel()` has since been removed (the TS SDK dropped xAI's Chat Completions API). On v0.5.0, `LanguageModel()` is the only xAI language model. See [Migrating from v0.4 to v0.5](./from-v0.4-to-v0.5.mdx).
+
 ```go
 provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
 

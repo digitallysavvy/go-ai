@@ -1436,6 +1436,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepSawTerminal = true
 				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
+				r.rawFinishReason = chunk.RawFinishReason
 				if chunk.ContextManagement != nil {
 					r.contextManagement = chunk.ContextManagement
 				}
@@ -1760,7 +1761,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepReasoning = []types.ReasoningContent{{Text: stepReasoningBuilder.String()}}
 		}
 
-		stepRawFinishReason := ""
+		// Row e6376c2: carry the raw, provider-specific finish/incomplete
+		// reason from the chunk stream into the step result, mirroring how
+		// r.finishReason (the mapped reason) is read directly.
+		stepRawFinishReason := r.rawFinishReason
 
 		// Build response headers snapshot.
 		r.mu.Lock()
@@ -2985,6 +2989,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		if chunk.Type == provider.ChunkTypeFinish {
 			sawTerminal = true
 			r.finishReason = chunk.FinishReason
+			r.rawFinishReason = chunk.RawFinishReason
 			if chunk.ContextManagement != nil {
 				r.contextManagement = chunk.ContextManagement
 			}

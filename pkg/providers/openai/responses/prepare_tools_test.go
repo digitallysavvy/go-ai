@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -209,8 +210,11 @@ func TestPrepareTools_FunctionTool_NamespaceConflictingDescription(t *testing.T)
 	if err == nil {
 		t.Fatal("PrepareToolsWithError() error = nil, want conflict")
 	}
-	if got, want := err.Error(), `unsupported functionality: conflicting descriptions for OpenAI tool namespace "crm"`; got != want {
+	if got, want := err.Error(), `'conflicting descriptions for OpenAI tool namespace "crm"' functionality not supported.`; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("error = %#v, want an UnsupportedFunctionalityError", err)
 	}
 }
 
@@ -789,5 +793,92 @@ func TestPrepareTools_ToolSearch_SerializesToJSON(t *testing.T) {
 	}
 	if raw[0]["execution"] != "client" {
 		t.Errorf("execution: got %v, want client", raw[0]["execution"])
+	}
+}
+
+// TestPrepareTools_WebSearch_BlockedDomains covers row 96a237d: the web
+// search tool's filters must serialize blockedDomains as blocked_domains
+// alongside allowed_domains.
+func TestPrepareTools_WebSearch_BlockedDomains(t *testing.T) {
+	result := PrepareTools([]types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{
+		Filters: &openaitool.WebSearchFilters{
+			AllowedDomains: []string{"example.com"},
+			BlockedDomains: []string{"blocked.example.com"},
+		},
+	})})
+	def, ok := result[0].(WebSearchToolDef)
+	if !ok {
+		t.Fatalf("expected WebSearchToolDef, got %T", result[0])
+	}
+	allowed := def.Filters["allowed_domains"].([]string)
+	blocked := def.Filters["blocked_domains"].([]string)
+	if allowed[0] != "example.com" || blocked[0] != "blocked.example.com" {
+		t.Fatalf("filters = %#v", def.Filters)
+	}
+}
+
+// TestPrepareTools_ImageGeneration_Action covers row b54e551: the
+// image_generation tool must serialize the "action" field.
+func TestPrepareTools_ImageGeneration_Action(t *testing.T) {
+	result := PrepareTools([]types.Tool{
+		openaitool.ImageGeneration(openaitool.ImageGenerationConfig{Action: "edit"}),
+	})
+	def, ok := result[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{}, got %T", result[0])
+	}
+	if def["action"] != "edit" {
+		t.Fatalf("image generation def = %#v, want action=edit", def)
+	}
+}
+
+// TestResolveAllowedTools_MCPServerLabel covers the MCP branch of a062795:
+// an allowed MCP tool resolves to {type:"mcp", server_label}.
+func TestResolveAllowedTools_MCPServerLabel(t *testing.T) {
+	tools := []types.Tool{{
+		Type:            types.ToolTypeProviderDefined,
+		Name:            "docs",
+		ProviderID:      "openai.mcp",
+		ProviderOptions: openaitool.MCPConfig{ServerLabel: "docs-server"},
+	}}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"docs"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if choice.Mode != "auto" || choice.Tools[0].Type != "mcp" || choice.Tools[0].ServerLabel != "docs-server" {
+		t.Fatalf("choice = %#v, want mcp entry with server_label", choice)
+	}
+}
+
+// TestResolveAllowedTools_NamespacedToolDropped covers the namespace branch
+// of a062795: a namespaced function tool cannot be allow-listed.
+func TestResolveAllowedTools_NamespacedToolDropped(t *testing.T) {
+	tools := []types.Tool{{
+		Type: types.ToolTypeFunction,
+		Name: "grouped_tool",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"namespace": map[string]interface{}{"name": "ns", "description": "d"},
+			},
+		},
+	}}
+	_, warnings, err := ResolveAllowedTools(tools, []string{"grouped_tool"}, "")
+	if err == nil {
+		t.Fatal("expected an error since the only entry is dropped")
+	}
+	if len(warnings) != 1 || warnings[0].Feature != `allowedTools entry "grouped_tool"` {
+		t.Fatalf("warnings = %#v, want namespace warning", warnings)
+	}
+}
+
+// TestResolveAllowedTools_EmptyReturnsNil covers the no-op path: no
+// allowedTools requested means no tool_choice override.
+func TestResolveAllowedTools_EmptyReturnsNil(t *testing.T) {
+	choice, warnings, err := ResolveAllowedTools(nil, nil, "")
+	if choice != nil || warnings != nil || err != nil {
+		t.Fatalf("ResolveAllowedTools(nil) = %#v, %#v, %v, want all nil", choice, warnings, err)
 	}
 }

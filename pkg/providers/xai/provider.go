@@ -90,25 +90,19 @@ func (p *Provider) Name() string {
 	return "xai"
 }
 
-// LanguageModel returns a language model by ID using the Responses API (default).
-// Use ChatCompletionsLanguageModel for the legacy Chat Completions API.
+// LanguageModel returns a language model by ID using the Responses API.
+//
+// BREAKING (row 1f20dba, ai@7.0.113): the xAI Chat Completions API
+// (/v1/chat/completions) has been removed, matching the TypeScript SDK's
+// removal of XaiChatLanguageModel. The Responses API is now the only
+// language model path for xAI; ChatCompletionsLanguageModel() has been
+// removed. See RELEASE_NOTES for migration guidance.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
 		modelID = "grok-beta"
 	}
 
 	return NewResponsesLanguageModel(p, modelID), nil
-}
-
-// ChatCompletionsLanguageModel returns a language model that uses the Chat Completions
-// API (/v1/chat/completions). This is the legacy API path; prefer LanguageModel() for
-// new code which uses the Responses API by default.
-func (p *Provider) ChatCompletionsLanguageModel(modelID string) (provider.LanguageModel, error) {
-	if modelID == "" {
-		modelID = "grok-beta"
-	}
-
-	return NewLanguageModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID

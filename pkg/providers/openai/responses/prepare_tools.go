@@ -2,7 +2,9 @@ package responses
 
 import (
 	"fmt"
+	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -49,7 +51,11 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 						namespaces[namespace.Name] = namespaceDef
 						result = append(result, namespaceDef)
 					} else if namespaceDef.Description != namespace.Description {
-						return nil, fmt.Errorf("unsupported functionality: conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						functionality := fmt.Sprintf("conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						return nil, &providererrors.UnsupportedFunctionalityError{
+							Functionality: functionality,
+							Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+						}
 					}
 					namespaceDef.Tools = append(namespaceDef.Tools, functionDef)
 					continue
@@ -79,6 +85,8 @@ func convertTool(t types.Tool) interface{} {
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.computer":
+		return map[string]interface{}{"type": "computer"}
 	case "openai.code_interpreter":
 		return convertCodeInterpreterTool(t)
 	case "openai.file_search":
@@ -93,6 +101,8 @@ func convertTool(t types.Tool) interface{} {
 		return convertMCPTool(t)
 	case "openai.tool_search":
 		return convertToolSearchTool(t)
+	case "openai.programmatic_tool_calling":
+		return map[string]interface{}{"type": "programmatic_tool_calling"}
 	default:
 		if t.Type == types.ToolTypeProviderDefined {
 			return nil
@@ -123,6 +133,9 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 			f.Definition = ct.Format.Definition
 		}
 		def.Format = f
+	}
+	if ct.Async != nil {
+		def.Async = ct.Async
 	}
 
 	return def
@@ -182,6 +195,9 @@ func convertFileSearchTool(t types.Tool) map[string]interface{} {
 func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "image_generation"}
 	cfg, _ := t.ProviderOptions.(openaitool.ImageGenerationConfig)
+	if cfg.Action != "" {
+		def["action"] = cfg.Action
+	}
 	if cfg.Background != "" {
 		def["background"] = cfg.Background
 	}
@@ -225,8 +241,15 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	def := WebSearchToolDef{Type: "web_search"}
 	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
-	if cfg.Filters != nil && len(cfg.Filters.AllowedDomains) > 0 {
-		def.Filters = map[string]interface{}{"allowed_domains": cfg.Filters.AllowedDomains}
+	if cfg.Filters != nil && (len(cfg.Filters.AllowedDomains) > 0 || len(cfg.Filters.BlockedDomains) > 0) {
+		filters := map[string]interface{}{}
+		if len(cfg.Filters.AllowedDomains) > 0 {
+			filters["allowed_domains"] = cfg.Filters.AllowedDomains
+		}
+		if len(cfg.Filters.BlockedDomains) > 0 {
+			filters["blocked_domains"] = cfg.Filters.BlockedDomains
+		}
+		def.Filters = filters
 	}
 	def.ExternalWebAccess = cfg.ExternalWebAccess
 	def.SearchContextSize = cfg.SearchContextSize
@@ -418,6 +441,19 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
 		def.DeferLoading = &deferLoading
 	}
+	// Row 4a09793: async is read here without model-capability gating --
+	// the caller (responses_language_model.go, which knows the model id)
+	// is responsible for warning and stripping it when unsupported, since
+	// this package has no model ID to check against.
+	if async, ok := functionToolAsync(t.ProviderOptions); ok {
+		def.Async = &async
+	}
+	if allowedCallers, ok := functionToolAllowedCallers(t.ProviderOptions); ok {
+		def.AllowedCallers = allowedCallers
+	}
+	if outputSchema, ok := functionToolOutputSchema(t.ProviderOptions); ok {
+		def.OutputSchema = outputSchema
+	}
 
 	return def
 }
@@ -429,6 +465,49 @@ func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
 	}
 	deferLoading, ok := openaiOptions["deferLoading"].(bool)
 	return deferLoading, ok
+}
+
+func functionToolAsync(providerOptions interface{}) (bool, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false, false
+	}
+	async, ok := openaiOptions["async"].(bool)
+	return async, ok
+}
+
+func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	raw, ok := openaiOptions["allowedCallers"]
+	if !ok {
+		return nil, false
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v, len(v) > 0
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
+func functionToolOutputSchema(providerOptions interface{}) (interface{}, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	schema, ok := openaiOptions["outputSchema"]
+	return schema, ok && schema != nil
 }
 
 type functionToolNamespaceOption struct {
@@ -471,6 +550,124 @@ func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interfac
 		return nil, false
 	}
 	return openaiOptions, true
+}
+
+// allowedToolResolution mirrors TS AllowedToolResolution: a requested
+// allowedTools name either resolves to a concrete tool_choice.allowed_tools
+// entry, or is unsupported (with a reason) and gets dropped with a warning.
+type allowedToolResolution struct {
+	supported bool
+	entry     AllowedToolsToolEntry
+	reason    string
+}
+
+// resolveAllowedToolForTool determines the tool_choice.allowed_tools entry
+// shape for a single SDK tool, mirroring TS `toAllowedToolResolution` plus
+// the "custom" and "function" cases from `openai-responses-prepare-tools.ts`.
+func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
+	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: t.Name}}
+	}
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
+	case "openai.mcp":
+		cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "mcp", ServerLabel: cfg.ServerLabel}}
+	case "openai.file_search", "openai.web_search", "openai.web_search_preview",
+		"openai.image_generation", "openai.code_interpreter", "openai.computer",
+		"openai.apply_patch", "openai.shell", "openai.local_shell",
+		"openai.programmatic_tool_calling":
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: normalizeOpenAIToolName(toolID)}}
+	}
+	if t.Type == types.ToolTypeProviderDefined {
+		return allowedToolResolution{
+			supported: false,
+			reason:    fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", toolID),
+		}
+	}
+	if _, ok := functionToolNamespace(t.ProviderOptions); ok {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "tools inside an OpenAI tool namespace are not visible to tool_choice.allowed_tools",
+		}
+	}
+	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok && deferLoading {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "deferred tools are not visible to tool_choice.allowed_tools",
+		}
+	}
+	return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "function", Name: t.Name}}
+}
+
+// ResolveAllowedTools implements the TS openai-responses-prepare-tools.ts
+// `allowedTools` handling (row a062795): each requested tool name is
+// resolved against the actual tool list by exact name match to determine
+// whether it needs a "function", "custom", "mcp" (by server_label), or
+// built-in provider tool_choice.allowed_tools entry — sending the wrong
+// shape (e.g. `{type:"function"}` for an actual built-in web_search tool) is
+// rejected by the API. Unknown names are sent through as a function tool
+// with a warning; unsupported tools (namespaced/deferred/provider-defined
+// without an allow-list entry) are dropped with a warning. If every
+// requested name is dropped, this returns an error (TS throws
+// UnsupportedFunctionalityError).
+//
+// Note: unlike TS, this does not implement the provider-tool-name alias
+// resolution layer (matching an allowedTools entry against a tool's
+// *mapped* wire name in addition to its SDK name) — Go's tool model has no
+// separate name-mapping layer, so direct SDK tool name matching is the only
+// resolution path.
+func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
+	if len(toolNames) == 0 {
+		return nil, nil, nil
+	}
+	if mode == "" {
+		mode = "auto"
+	}
+
+	resolutions := make(map[string]allowedToolResolution, len(tools))
+	for _, t := range tools {
+		resolutions[t.Name] = resolveAllowedToolForTool(t)
+	}
+
+	var warnings []types.Warning
+	var entries []AllowedToolsToolEntry
+	var dropped []string
+	for _, name := range toolNames {
+		resolution, ok := resolutions[name]
+		if !ok {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "the tool is not part of the tools for this request and is sent as a function tool",
+			})
+			entries = append(entries, AllowedToolsToolEntry{Type: "function", Name: name})
+			continue
+		}
+		if !resolution.supported {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: resolution.reason + "; the tool is removed from the allowed tools",
+			})
+			dropped = append(dropped, name)
+			continue
+		}
+		entries = append(entries, resolution.entry)
+	}
+
+	if len(entries) == 0 {
+		functionality := fmt.Sprintf("allowedTools with only tools that cannot be allow-listed (%s)", strings.Join(dropped, ", "))
+		return nil, warnings, &providererrors.UnsupportedFunctionalityError{
+			Functionality: functionality,
+			Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+		}
+	}
+
+	return &AllowedToolsToolChoice{Type: "allowed_tools", Mode: mode, Tools: entries}, warnings, nil
 }
 
 func defaultFunctionParameters(parameters interface{}) interface{} {

@@ -13,8 +13,9 @@ import (
 // This provider enables compatibility with local LLMs (LMStudio, Ollama) and
 // other services that implement the OpenAI Responses API format.
 type Provider struct {
-	config Config
-	client *http.Client
+	config            Config
+	client            *http.Client
+	extensionRegistry *ExtensionRegistry
 }
 
 // Config contains configuration for the Open Responses provider
@@ -35,6 +36,21 @@ type Config struct {
 
 	// Name is the provider name for identification (default: "open-responses")
 	Name string
+
+	// StrictResponseInput controls how assistant history is serialized back to
+	// the Responses API. When true, assistant text with no known item ID is
+	// sent as a plain string "message" input item, while assistant text with a
+	// known item ID is replayed as a complete "output_text" output item
+	// (status "completed", with annotations/logprobs arrays). Mirrors the
+	// TypeScript SDK's `strictResponseInput` provider setting.
+	//
+	// @default false
+	StrictResponseInput bool
+
+	// Extensions registers codecs for Open Responses extension tools,
+	// items, and streaming events (row 9a68261, OR-EXT). Most Open
+	// Responses servers need none of this; see Extension for details.
+	Extensions []Extension
 }
 
 // New creates a new Open Responses provider with the given configuration
@@ -70,9 +86,15 @@ func New(cfg Config) *Provider {
 		Headers: headers,
 	})
 
+	registry, err := NewExtensionRegistry(cfg.Extensions)
+	if err != nil {
+		panic("openresponses: " + err.Error())
+	}
+
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:            cfg,
+		client:            client,
+		extensionRegistry: registry,
 	}
 }
 

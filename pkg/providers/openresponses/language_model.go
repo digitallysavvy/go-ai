@@ -21,11 +21,15 @@ type LanguageModel struct {
 	modelID  string
 }
 
+// OpenResponsesProviderOptions holds providerOptions.openai for the Open
+// Responses model. Unlike the OpenAI chat/Responses packages, Open Responses
+// has no "forceReasoning" concept — reasoning.effort/summary are always sent
+// when resolved, with no reasoning-model gating (row 3b9f025/e69a836), so
+// there is nothing to force.
 type OpenResponsesProviderOptions struct {
 	ReasoningSummary    string                 `json:"reasoningSummary,omitempty"`
 	ReasoningSummarySet bool                   `json:"-"`
 	ReasoningEffort     string                 `json:"reasoningEffort,omitempty"`
-	ForceReasoning      *bool                  `json:"forceReasoning,omitempty"`
 	StrictJSONSchema    *bool                  `json:"strictJsonSchema,omitempty"`
 	TextVerbosity       string                 `json:"textVerbosity,omitempty"`
 	Raw                 map[string]interface{} `json:"-"`
@@ -95,9 +99,29 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 
-	// Check for error in response
+	// Row 75f86f4: a 200 response with an embedded error object maps to a
+	// 400 ProviderError.
 	if response.Error != nil {
-		return nil, fmt.Errorf("%s: %s", response.Error.Code, response.Error.Message)
+		return nil, providererrors.NewProviderError(m.provider.config.Name, 400, response.Error.Code, response.Error.Message, nil)
+	}
+
+	// Row 75f86f4: a 200 response with no `output` field is not a valid
+	// (if unusual) result -- it means the API returned nothing to work
+	// with, and must raise a descriptive error rather than silently
+	// producing an empty result.
+	if response.Output == nil {
+		detail := ""
+		if response.IncompleteDetails != nil {
+			detail = response.IncompleteDetails.Reason
+		}
+		if detail == "" {
+			detail = response.Status
+		}
+		message := "Responses API returned no output"
+		if detail != "" {
+			message = fmt.Sprintf("Responses API returned no output (%s)", detail)
+		}
+		return nil, providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
 	}
 
 	// Convert response to GenerateResult
@@ -129,7 +153,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name), nil
+	stream := newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name)
+	stream.extensionRegistry = m.provider.extensionRegistry
+	return stream, nil
 }
 
 // buildRequestBody builds the Open Responses API request body
@@ -145,7 +171,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProvider(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name)
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools})
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -209,15 +235,30 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
-	// TS prepareResponsesTools returns an empty tools array even when no tools
-	// are configured, and getArgs includes it in the request body.
-	body["tools"] = convertToolsToOpenResponses(opts.Tools)
+	// Convert tools. Provider-defined tools are encoded via a registered
+	// extension when one matches (row 9a68261, OR-EXT); otherwise they're
+	// skipped with an "unsupported" warning, mirroring TS's getArgs behavior
+	// when no matching extension is registered. Only send the tools field
+	// when the resulting list is non-empty (TS: `tools: convertedTools.length
+	// ? convertedTools : undefined`).
+	convertedTools, encodedProviderTools, toolWarnings := convertToolsToOpenResponses(opts.Tools, m.provider.extensionRegistry)
+	warnings = append(warnings, toolWarnings...)
+	if len(convertedTools) > 0 {
+		body["tools"] = convertedTools
+	}
 
 	// Convert tool choice
 	if allowedToolsChoice := openResponsesAllowedToolsChoice(provOpts.Raw); allowedToolsChoice != nil {
 		body["tool_choice"] = allowedToolsChoice
+	} else if opts.ToolChoice.Type == "tool" && openResponsesToolChoiceTargetsProviderTool(opts.Tools, opts.ToolChoice.ToolName, encodedProviderTools) {
+		// Targets a provider-defined tool we couldn't encode; omit tool_choice
+		// like TS does when no extension is registered for it.
 	} else if opts.ToolChoice.Type != "" {
-		body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice)
+		toolChoice, toolChoiceWarnings := convertToolChoiceToOpenResponses(opts.ToolChoice, encodedProviderTools)
+		warnings = append(warnings, toolChoiceWarnings...)
+		if toolChoice != nil {
+			body["tool_choice"] = toolChoice
+		}
 	}
 
 	// Add response format if present. TS only serializes responseFormat when
@@ -252,15 +293,29 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["text"] = textConfig
 	}
 
-	// Map top-level Reasoning to Open Responses reasoning.effort.
-	// Same mapping as TS open-responses behavior.
+	// Map top-level Reasoning to Open Responses reasoning.effort. The Open
+	// Responses package (unlike the OpenAI chat/responses model packages)
+	// applies no "is this a reasoning model" gating: reasoning.effort /
+	// reasoning.summary are always sent to the endpoint when resolved,
+	// regardless of the model ID (OR-CORE item 8/9). A resolved provider
+	// option (reasoningEffort raw string) always takes precedence and is
+	// passed through verbatim, matching TS's
+	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
 	var reasoningEffort string
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			reasoningEffort = "none"
 		case types.ReasoningMinimal:
-			reasoningEffort = "minimal"
+			// TS effortMap maps minimal -> low for Open Responses (there is no
+			// "minimal" effort value on this API) and reports a compatibility
+			// warning when the mapped value differs from the requested one.
+			reasoningEffort = "low"
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "reasoning",
+				Details: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`,
+			})
 		case types.ReasoningLow:
 			reasoningEffort = "low"
 		case types.ReasoningMedium:
@@ -269,18 +324,27 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoningEffort = "high"
 		case types.ReasoningXHigh:
 			reasoningEffort = "xhigh"
-			// ReasoningDefault: omit
+			// ReasoningDefault ("provider-default"): omit.
+		}
+	}
+	resolvedReasoningSummary := provOpts.ReasoningSummary
+	if provOpts.ReasoningSummarySet && resolvedReasoningSummary != "" {
+		switch resolvedReasoningSummary {
+		case "concise", "detailed", "auto":
+			// valid
+		default:
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningSummary",
+				Details: fmt.Sprintf("reasoningSummary %q is not a supported value (concise, detailed, auto)", resolvedReasoningSummary),
+			})
+			resolvedReasoningSummary = ""
 		}
 	}
 	if provOpts.ReasoningEffort != "" {
 		reasoningEffort = provOpts.ReasoningEffort
 	}
-	isReasoningModel := openResponsesIsReasoningModel(m.modelID)
-	if provOpts.ForceReasoning != nil {
-		isReasoningModel = *provOpts.ForceReasoning
-	}
-	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if isReasoningModel && (reasoningEffort != "" || resolvedReasoningSummary != "") {
+	if reasoningEffort != "" || resolvedReasoningSummary != "" {
 		reasoning := map[string]interface{}{}
 		if reasoningEffort != "" {
 			reasoning["effort"] = reasoningEffort
@@ -289,42 +353,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoning["summary"] = resolvedReasoningSummary
 		}
 		body["reasoning"] = reasoning
-	} else if !isReasoningModel {
-		if provOpts.ReasoningEffort != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningEffort",
-				Details: "reasoningEffort is not supported for non-reasoning models",
-			})
-		}
-		if provOpts.ReasoningSummary != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningSummary",
-				Details: "reasoningSummary is not supported for non-reasoning models",
-			})
-		}
-	}
-	if isReasoningModel && !(reasoningEffort == "none" && openResponsesSupportsNonReasoningParameters(m.modelID)) {
-		if _, ok := body["temperature"]; ok {
-			delete(body, "temperature")
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "temperature",
-				Details: "temperature is not supported for reasoning models",
-			})
-		}
-		if _, ok := body["top_p"]; ok {
-			delete(body, "top_p")
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "topP",
-				Details: "topP is not supported for reasoning models",
-			})
-		}
 	}
 	addOpenResponsesProviderOptionBodyFields(body, provOpts.Raw)
-	if store, ok := provOpts.Raw["store"].(bool); ok && !store && isReasoningModel {
+	if store, ok := provOpts.Raw["store"].(bool); ok && !store {
 		addOpenResponsesInclude(body, "reasoning.encrypted_content")
 	}
 	if serviceTier, ok := body["service_tier"].(string); ok {
@@ -351,25 +382,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	return body, warnings, nil
-}
-
-func openResponsesIsReasoningModel(modelID string) bool {
-	if modelID == "" {
-		return false
-	}
-	return strings.HasPrefix(modelID, "o1") ||
-		strings.HasPrefix(modelID, "o1-") ||
-		strings.HasPrefix(modelID, "o3") ||
-		strings.HasPrefix(modelID, "o4-mini") ||
-		(strings.HasPrefix(modelID, "gpt-5") && !strings.HasPrefix(modelID, "gpt-5-chat"))
-}
-
-func openResponsesSupportsNonReasoningParameters(modelID string) bool {
-	return strings.HasPrefix(modelID, "gpt-5.1") ||
-		strings.HasPrefix(modelID, "gpt-5.2") ||
-		strings.HasPrefix(modelID, "gpt-5.3") ||
-		strings.HasPrefix(modelID, "gpt-5.4") ||
-		strings.HasPrefix(modelID, "gpt-5.5")
 }
 
 func openResponsesSupportsFlexProcessing(modelID string) bool {
@@ -597,11 +609,60 @@ func openResponsesTruthyString(value interface{}) bool {
 	return ok && text != ""
 }
 
-// convertToolsToOpenResponses converts AI SDK tools to Open Responses format
-func convertToolsToOpenResponses(tools []types.Tool) []FunctionTool {
-	result := make([]FunctionTool, 0, len(tools))
+// convertToolsToOpenResponses converts AI SDK tools to Open Responses format.
+// Provider-defined tools (Type == "provider") are encoded via a registered
+// extension's EncodeTool when one is registered for the tool's ProviderID
+// (row 9a68261, OR-EXT); otherwise they are skipped with an "unsupported"
+// warning, mirroring TS's getArgs behavior when no matching extension is
+// encodedProviderTool pairs a provider-defined tool's extension with the
+// tool's own declared ProviderArgs, mirroring TS's
+// encodedProviderToolsByName map (name -> the full LanguageModelV4ProviderTool,
+// args included), so EncodeToolChoice below can be called with the same args
+// TS passes it instead of always nil.
+type encodedProviderTool struct {
+	ext  *Extension
+	args map[string]interface{}
+}
+
+// registered for a provider tool. encodedProviderTools maps each
+// successfully-encoded provider tool's SDK name to the extension (and its
+// declared args) that encoded it, for tool_choice encoding below.
+func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry) (result []interface{}, encodedProviderTools map[string]encodedProviderTool, warnings []types.Warning) {
+	result = make([]interface{}, 0, len(tools))
+	encodedProviderTools = map[string]encodedProviderTool{}
 
 	for _, t := range tools {
+		if t.Type == "provider" {
+			var ext *Extension
+			if registry != nil {
+				ext = registry.ByProviderToolID[t.ProviderID]
+			}
+
+			var encoded map[string]interface{}
+			if ext != nil && ext.EncodeTool != nil {
+				fields, err := ext.EncodeTool(t.Name, t.ProviderArgs)
+				if err == nil && fields != nil {
+					encoded = map[string]interface{}{}
+					for k, v := range fields {
+						encoded[k] = v
+					}
+					encoded["type"] = ext.ToolType
+				}
+			}
+
+			if encoded == nil {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: fmt.Sprintf("provider-defined tool %s", t.ProviderID),
+				})
+				continue
+			}
+
+			result = append(result, encoded)
+			encodedProviderTools[t.Name] = encodedProviderTool{ext: ext, args: t.ProviderArgs}
+			continue
+		}
+
 		ft := FunctionTool{
 			Type:        "function",
 			Name:        t.Name,
@@ -620,25 +681,70 @@ func convertToolsToOpenResponses(tools []types.Tool) []FunctionTool {
 		result = append(result, ft)
 	}
 
-	return result
+	return result, encodedProviderTools, warnings
 }
 
-// convertToolChoiceToOpenResponses converts tool choice to Open Responses format
-func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice) interface{} {
+// openResponsesToolChoiceTargetsProviderTool reports whether toolName refers
+// to a provider-defined tool this package couldn't encode (no extension
+// registered for it), used to omit tool_choice entirely for it (item 7). A
+// provider tool that WAS encoded via a registered extension is not reported
+// here; it gets its own tool_choice encoding (row 9a68261, OR-EXT).
+func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName string, encodedProviderTools map[string]encodedProviderTool) bool {
+	if _, encoded := encodedProviderTools[toolName]; encoded {
+		return false
+	}
+	for _, t := range tools {
+		if t.Name == toolName {
+			return t.Type == "provider"
+		}
+	}
+	return false
+}
+
+// convertToolChoiceToOpenResponses converts tool choice to Open Responses
+// format. When toolChoice targets a provider tool encoded via a registered
+// extension, it's encoded via that extension's EncodeToolChoice (called with
+// the tool's own declared ProviderArgs, matching TS's
+// encodeToolChoice({name: tool.name, args: tool.args})); when
+// EncodeToolChoice is unset, {"type": extension.ToolType} is used as
+// before. When EncodeToolChoice IS set but fails or returns invalid output,
+// TS emits an "unsupported: tool choice for provider-defined tool <id>"
+// warning and omits tool_choice entirely rather than falling back to
+// {"type": extension.ToolType} (row 9a68261, OR-EXT).
+func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProviderTools map[string]encodedProviderTool) (interface{}, []types.Warning) {
 	switch toolChoice.Type {
 	case "auto":
-		return "auto"
+		return "auto", nil
 	case "required":
-		return "required"
+		return "required", nil
 	case "none":
-		return "none"
+		return "none", nil
 	case "tool":
+		if encoded, ok := encodedProviderTools[toolChoice.ToolName]; ok && encoded.ext != nil {
+			ext := encoded.ext
+			if ext.EncodeToolChoice != nil {
+				fields, err := ext.EncodeToolChoice(toolChoice.ToolName, encoded.args)
+				if err == nil && fields != nil {
+					result := map[string]interface{}{}
+					for k, v := range fields {
+						result[k] = v
+					}
+					result["type"] = ext.ToolType
+					return result, nil
+				}
+				return nil, []types.Warning{{
+					Type:    "unsupported",
+					Feature: fmt.Sprintf("tool choice for provider-defined tool %s", ext.ID),
+				}}
+			}
+			return map[string]interface{}{"type": ext.ToolType}, nil
+		}
 		return map[string]interface{}{
 			"type": "function",
 			"name": toolChoice.ToolName,
-		}
+		}, nil
 	default:
-		return "auto"
+		return "auto", nil
 	}
 }
 
@@ -683,11 +789,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 				if summaryText != "" {
 					textParts = append(textParts, summaryText)
 				}
+				itemCopy := item
 				// Preserve EncryptedContent so callers can forward this reasoning
-				// block in subsequent turns (input-side round-trip, #12869).
+				// block in subsequent turns (input-side round-trip, #12869), plus
+				// full itemId/reasoningSummary/reasoningContent metadata (row
+				// 1c1a9d1) so replay can reconstruct the original item exactly.
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             summaryText,
 					EncryptedContent: item.EncryptedContent,
+					ProviderMetadata: openResponsesReasoningProviderMetadata(m.providerName(), &itemCopy),
 				})
 			}
 
@@ -714,6 +824,44 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 				ToolName:  item.Name,
 				Arguments: map[string]interface{}{"input": item.Input},
 			})
+
+		default:
+			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
+			// registered extension's namespaced output item.
+			decoded, handled, err := decodeExtensionItem(m.provider.extensionRegistry, item.Raw, "generate", m.providerName())
+			if handled {
+				if err != nil {
+					// NOTE: this deliberately diverges from TS, which has no
+					// try/catch around decodeExtensionItem in doGenerate --
+					// there, a decode failure propagates and fails the whole
+					// generate call. convertResponse has no error return, so
+					// making this call site match TS exactly would require
+					// threading an error out of convertResponse (and
+					// updating its non-test callers); until that lands, a
+					// decode failure here just skips the malformed item
+					// instead of aborting the response. The streaming path
+					// (decodeExtensionEvent below) does match TS: it
+					// downgrades a decode failure to a per-event stream
+					// error without aborting the whole stream.
+					continue
+				}
+				result.Content = append(result.Content, decoded...)
+				for _, part := range decoded {
+					tc, ok := part.(types.ToolCallContent)
+					if !ok {
+						continue
+					}
+					hasToolCalls = true
+					toolCalls = append(toolCalls, types.ToolCall{
+						ID:               tc.ToolCallID,
+						ToolName:         tc.ToolName,
+						Arguments:        tc.Arguments,
+						RawArguments:     tc.Input,
+						ProviderExecuted: tc.ProviderExecuted,
+						ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
+					})
+				}
+			}
 		}
 	}
 
@@ -814,6 +962,24 @@ type openResponsesStream struct {
 	toolCallsByItemID map[string]*toolCallState
 	hasToolCalls      bool
 	finishReason      types.FinishReason
+
+	// activeReasoningID tracks the item id of an in-progress reasoning block
+	// (row a0d2e8c/6fe187f), so an unfinished reasoning block can be closed
+	// with its original id if the stream ends before output_item.done fires.
+	activeReasoningID string
+
+	// pending holds chunks queued to be returned by subsequent Next() calls,
+	// used when a single event must emit more than one chunk (e.g. a
+	// reasoning-end synthesized before the finish chunk).
+	pending []*provider.StreamChunk
+
+	// extensionRegistry and extensionState support decoding registered Open
+	// Responses extension items/events (row 9a68261, OR-EXT). extensionState
+	// persists for the stream's lifetime, shared across all DecodeEvent
+	// calls. Left nil (no-op) in most tests; only DoStream and tests
+	// exercising extensions set extensionRegistry.
+	extensionRegistry *ExtensionRegistry
+	extensionState    map[string]interface{}
 }
 
 // toolCallState tracks the state of a tool call during streaming
@@ -837,6 +1003,7 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 		providerName:      name,
 		toolCallsByItemID: make(map[string]*toolCallState),
 		finishReason:      types.FinishReasonOther,
+		extensionState:    make(map[string]interface{}),
 	}
 }
 
@@ -852,6 +1019,11 @@ func (s *openResponsesStream) Close() error {
 
 // Next returns the next chunk in the stream
 func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
+	if len(s.pending) > 0 {
+		chunk := s.pending[0]
+		s.pending = s.pending[1:]
+		return chunk, nil
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -892,6 +1064,15 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ArgsJSON:         "",
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
 			}
+			return s.Next()
+		}
+		// Row a0d2e8c: a new reasoning block starts streaming its summary.
+		if event.Item != nil && event.Item.Type == "reasoning" {
+			s.activeReasoningID = event.Item.ID
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeReasoningStart,
+				ID:   event.Item.ID,
+			}, nil
 		}
 		// Don't emit a chunk for this event
 		return s.Next()
@@ -903,20 +1084,42 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			Text: event.Delta,
 		}, nil
 
+	// Row a0d2e8c: reasoning summary/text deltas. response.reasoning_text.delta
+	// is an LM Studio extension not in the official Responses spec, but both
+	// carry the same {item_id, delta} shape.
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		return &provider.StreamChunk{
+			Type:      provider.ChunkTypeReasoning,
+			ID:        event.ItemID,
+			Reasoning: event.Delta,
+		}, nil
+
 	case "response.function_call_arguments.delta":
-		// Tool call arguments delta (accumulate but don't emit yet)
-		if toolCallState, ok := s.toolCallsByItemID[event.ItemID]; ok {
-			toolCallState.ArgsJSON += event.Delta
+		// Tool call arguments delta. Row fb82a6c: create the accumulator
+		// lazily if a delta arrives without a prior output_item.added.
+		state, ok := s.toolCallsByItemID[event.ItemID]
+		if !ok {
+			state = &toolCallState{
+				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
+			}
+			s.toolCallsByItemID[event.ItemID] = state
 		}
+		state.ArgsJSON += event.Delta
 		return s.Next()
 
 	case "response.function_call_arguments.done":
-		// Tool call arguments complete
-		if toolCallState, ok := s.toolCallsByItemID[event.ItemID]; ok {
-			// Use the final arguments from the event if provided
-			if event.Arguments != "" {
-				toolCallState.ArgsJSON = event.Arguments
+		// Tool call arguments complete. Row fb82a6c: create the accumulator
+		// lazily if this arrives without a prior output_item.added.
+		state, ok := s.toolCallsByItemID[event.ItemID]
+		if !ok {
+			state = &toolCallState{
+				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
 			}
+			s.toolCallsByItemID[event.ItemID] = state
+		}
+		// Use the final arguments from the event if provided
+		if event.Arguments != "" {
+			state.ArgsJSON = event.Arguments
 		}
 		return s.Next()
 
@@ -928,21 +1131,43 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		switch event.Item.Type {
 		case "function_call":
 			s.hasToolCalls = true
-			if toolCallState, ok := s.toolCallsByItemID[event.Item.ID]; ok {
-				var args map[string]interface{}
-				if toolCallState.ArgsJSON != "" {
-					_ = json.Unmarshal([]byte(toolCallState.ArgsJSON), &args) //nolint:errcheck
+			// Row fb82a6c: the done item's own id/call_id/name are
+			// authoritative; fall back to the accumulator (built from
+			// output_item.added and/or delta events, if any were seen) only
+			// for provider metadata and for arguments when the done event
+			// itself doesn't carry them.
+			state, ok := s.toolCallsByItemID[event.Item.ID]
+			id := event.Item.CallID
+			toolName := event.Item.Name
+			argsJSON := event.Item.Arguments
+			providerMetadata := openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace)
+			if ok {
+				if id == "" {
+					id = state.ID
 				}
-				return &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:               toolCallState.ID,
-						ToolName:         toolCallState.ToolName,
-						Arguments:        args,
-						ProviderMetadata: toolCallState.ProviderMetadata,
-					},
-				}, nil
+				if toolName == "" {
+					toolName = state.ToolName
+				}
+				if argsJSON == "" {
+					argsJSON = state.ArgsJSON
+				}
+				if state.ProviderMetadata != nil {
+					providerMetadata = state.ProviderMetadata
+				}
 			}
+			var args map[string]interface{}
+			if argsJSON != "" {
+				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               id,
+					ToolName:         toolName,
+					Arguments:        args,
+					ProviderMetadata: providerMetadata,
+				},
+			}, nil
 		case "custom_tool_call":
 			s.hasToolCalls = true
 			return &provider.StreamChunk{
@@ -954,23 +1179,100 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				},
 			}, nil
 		case "reasoning":
-			// Forward encrypted_content for multi-turn reasoning when store=false.
-			if event.Item.ID == "" && event.Item.EncryptedContent == "" {
-				return s.Next()
+			// Row a0d2e8c/6fe187f: close the reasoning block using its real
+			// item id (not a synthesized "reasoning-"+id), carrying full
+			// provider metadata ({itemId, reasoningSummary, reasoningContent,
+			// reasoningEncryptedContent}) like createReasoningProviderMetadata.
+			if s.activeReasoningID == event.Item.ID {
+				s.activeReasoningID = ""
 			}
-			meta := map[string]interface{}{}
-			if event.Item.EncryptedContent != "" {
-				meta["encryptedContent"] = event.Item.EncryptedContent
-			}
-			if event.Item.ID != "" {
-				meta["itemId"] = event.Item.ID
-			}
-			providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
+			providerMeta := openResponsesReasoningProviderMetadata(s.providerName, event.Item)
 			return &provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoningEnd,
-				ID:               "reasoning-" + event.Item.ID,
+				ID:               event.Item.ID,
 				ProviderMetadata: providerMeta,
 			}, nil
+
+		default:
+			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
+			// registered extension's namespaced output item.
+			decoded, handled, err := decodeExtensionItem(s.extensionRegistry, event.Item.Raw, "stream", s.providerName)
+			if !handled {
+				break
+			}
+			if err != nil {
+				// Mirrors TS's try/catch around decodeExtensionItem: a
+				// decode failure doesn't abort the whole stream.
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+			}
+			for _, part := range decoded {
+				if tc, ok := part.(types.ToolCallContent); ok {
+					s.hasToolCalls = true
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               tc.ToolCallID,
+							ToolName:         tc.ToolName,
+							Arguments:        tc.Arguments,
+							RawArguments:     tc.Input,
+							ProviderExecuted: tc.ProviderExecuted,
+							ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
+						},
+					})
+					continue
+				}
+				if tr, ok := part.(types.ToolResultContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolResult,
+						ToolResult: &types.ToolResult{
+							ToolCallID: tr.ToolCallID,
+							ToolName:   tr.ToolName,
+							Result:     tr.Result,
+						},
+					})
+					continue
+				}
+				if cc, ok := part.(types.CustomContent); ok {
+					// The replay carrier (or any other custom content an
+					// extension's DecodeItem returns): passed through as-is
+					// so it round-trips into the assistant message's content
+					// like any other stream part, preserving the original
+					// wire item for replay.
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:          provider.ChunkTypeCustom,
+						CustomContent: &cc,
+					})
+					continue
+				}
+				// Row 9a68261 (OR-EXT): TS forwards every part an
+				// extension's decodeItem returns unconditionally
+				// (controller.enqueue(part) for each of decoded ?? []); Go
+				// must forward these remaining OpenResponsesExtensionContentPart
+				// members too instead of silently dropping them, matching
+				// the unconditional append the non-streaming path already
+				// does in convertResponse.
+				if fc, ok := part.(types.GeneratedFileContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:                 provider.ChunkTypeFile,
+						GeneratedFileContent: &fc,
+					})
+					continue
+				}
+				if rf, ok := part.(types.ReasoningFileContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:                 provider.ChunkTypeReasoningFile,
+						ReasoningFileContent: &rf,
+					})
+					continue
+				}
+				if sc, ok := part.(types.SourceContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:          provider.ChunkTypeSource,
+						SourceContent: &sc,
+					})
+				}
+			}
+			return s.Next()
 		}
 		return s.Next()
 
@@ -988,11 +1290,21 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		}
 
 		s.err = io.EOF
-		return &provider.StreamChunk{
+		finishChunk := &provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
 			FinishReason: fr,
 			Usage:        usage,
-		}, nil
+		}
+		// Row 6fe187f: close an unfinished reasoning block (using its
+		// original item id) before the finish chunk, mirroring TS's
+		// transform stream flush().
+		if s.activeReasoningID != "" {
+			reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
+			s.activeReasoningID = ""
+			s.pending = append(s.pending, finishChunk)
+			return reasoningEnd, nil
+		}
+		return finishChunk, nil
 
 	case "response.failed":
 		// Response failed
@@ -1012,9 +1324,60 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return s.Next()
 
 	default:
-		// Unknown event type, skip
+		// Row 9a68261 (OR-EXT): an unrecognized event type may be a
+		// registered extension's namespaced streaming event.
+		decoded, handled, err := decodeExtensionEvent(s.extensionRegistry, event.Raw, s.extensionState)
+		if !handled {
+			return s.Next()
+		}
+		if err != nil {
+			// Mirrors TS's try/catch around extension.decodeEvent: a decode
+			// failure doesn't abort the whole stream.
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+		}
+		for _, chunk := range decoded {
+			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {
+				s.hasToolCalls = true
+			}
+			s.pending = append(s.pending, chunk)
+		}
 		return s.Next()
 	}
+}
+
+// openResponsesReasoningProviderMetadata builds the provider metadata for a
+// reasoning content part / reasoning-end chunk, mirroring TS
+// createReasoningProviderMetadata: {itemId, reasoningSummary:[{type,text}],
+// reasoningContent:[{type,text}]|null, reasoningEncryptedContent?}.
+func openResponsesReasoningProviderMetadata(providerName string, item *OutputItem) json.RawMessage {
+	if item == nil {
+		return nil
+	}
+	summary := make([]map[string]interface{}, 0, len(item.Summary))
+	for _, part := range item.Summary {
+		summary = append(summary, map[string]interface{}{"type": "summary_text", "text": part.Text})
+	}
+	var reasoningContent interface{}
+	if len(item.Content) > 0 {
+		content := make([]map[string]interface{}, 0, len(item.Content))
+		for _, part := range item.Content {
+			content = append(content, map[string]interface{}{"type": "reasoning_text", "text": part.Text})
+		}
+		reasoningContent = content
+	}
+	payload := map[string]interface{}{
+		"itemId":           item.ID,
+		"reasoningSummary": summary,
+		"reasoningContent": reasoningContent,
+	}
+	if item.EncryptedContent != "" {
+		payload["reasoningEncryptedContent"] = item.EncryptedContent
+	}
+	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
