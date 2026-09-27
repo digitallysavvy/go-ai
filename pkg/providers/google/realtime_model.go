@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 const realtimeWebSocketPath = "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
@@ -135,7 +136,7 @@ func isThinkingLiveModel(modelID string) bool {
 }
 
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
-	setup := map[string]interface{}{"model": googleModelPath(m.modelID)}
+	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	generation := map[string]interface{}{}
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
@@ -451,16 +452,6 @@ func googleRealtimeBaseURL(base string) *url.URL {
 		}
 	}
 	return u
-}
-
-// googleModelPath mirrors TS get-model-path.ts getModelPath: a model ID that
-// already contains a "/" (e.g. a fully-qualified "tunedModels/{id}") is used
-// verbatim as the path segment; otherwise it is prefixed with "models/".
-func googleModelPath(modelID string) string {
-	if strings.Contains(modelID, "/") {
-		return modelID
-	}
-	return "models/" + modelID
 }
 
 func googleRealtimeISOString(t time.Time) string {
