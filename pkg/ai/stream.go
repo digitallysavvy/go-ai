@@ -3351,9 +3351,22 @@ func responseIDFromMetadata(metadata *provider.ResponseMetadata) string {
 }
 
 // Warnings returns any provider warnings surfaced via stream-start chunks.
+// Safe to call concurrently with streaming.
 func (r *StreamTextResult) Warnings() []types.Warning {
 	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.warnings
+}
+
+// Files returns model-generated output files accumulated across every step,
+// matching the TypeScript SDK's accumulative StreamTextResult.files.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Files() []types.GeneratedFileContent {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.files
 }
 
 // Chunks returns a channel that streams the full, processed multi-step chunk

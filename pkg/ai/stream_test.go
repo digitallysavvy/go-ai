@@ -2205,6 +2205,111 @@ func TestStreamEmitsGeneratedFile(t *testing.T) {
 	}
 }
 
+// TestStreamTextResult_FilesAccumulatesAcrossSteps verifies that
+// StreamTextResult.Files() accumulates generated files from every step,
+// matching the TypeScript SDK's accumulative StreamTextResult.files.
+func TestStreamTextResult_FilesAccumulatesAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name:        "makeFile",
+		Description: "make a file",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	file1 := &types.GeneratedFileContent{MediaType: "image/png", Data: []byte{1}}
+	file2 := &types.GeneratedFileContent{MediaType: "image/jpeg", Data: []byte{2}}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file1},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID: "call_1", ToolName: "makeFile", Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			case 2:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file2},
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Fatalf("unexpected stream call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "make two files",
+		Tools:  []types.Tool{tool},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	files := result.Files()
+	if len(files) != 2 {
+		t.Fatalf("Files() = %d files, want 2: %+v", len(files), files)
+	}
+	if files[0].MediaType != "image/png" || files[1].MediaType != "image/jpeg" {
+		t.Errorf("unexpected file media types: %q, %q", files[0].MediaType, files[1].MediaType)
+	}
+}
+
+// TestStreamTextResult_FilesEmptyWhenNoFiles verifies Files() returns an
+// empty slice (never panics/nil-dereferences) when no files were generated.
+func TestStreamTextResult_FilesEmptyWhenNoFiles(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+	if got := result.Files(); len(got) != 0 {
+		t.Errorf("Files() = %+v, want empty", got)
+	}
+}
+
 // TestStreamEmitsCustomContent verifies that a provider can emit a
 // ChunkTypeCustom chunk and that it flows through to the OnChunk consumer.
 func TestStreamEmitsCustomContent(t *testing.T) {
