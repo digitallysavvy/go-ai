@@ -677,6 +677,116 @@ func TestAgent_PrepareCallInstructionsAcceptsSystemMessage(t *testing.T) {
 	}
 }
 
+// TestAgent_SurfacesEveryApprovalFromACountedToolCallStep ports TS 32349cc's
+// regression test ("surfaces every approval request from a counted tool-call
+// step"): when a step's tool-call events all carry the same
+// StepToolCallCount, the host collects every approval request from that step
+// before pausing once, instead of pausing after the first one and leaving
+// the rest permanently stuck — the exact deadlock 32349cc fixed.
+func TestAgent_SurfacesEveryApprovalFromACountedToolCallStep(t *testing.T) {
+	two := 2
+	var pendingOrder []string
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`, StepToolCallCount: &two},
+				&ToolCallPart{ToolCallID: "c2", ToolName: "weather", Input: `{"city":"NYC"}`, StepToolCallCount: &two},
+			}
+		},
+	})
+	weather := types.Tool{
+		Name: "weather", Parameters: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"temperature": 72}, nil
+		},
+	}
+	toolApproval := ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusUserApproval}
+	callbacks := Callbacks{}
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, UserTools: map[string]types.Tool{"weather": weather}, Callbacks: callbacks, ToolApproval: toolApproval})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+
+	approvals, _, _ := session.snapshotPendingState()
+	if len(approvals) != 2 {
+		t.Fatalf("pending approvals = %+v, want 2 (both c1 and c2, not just the first)", approvals)
+	}
+	seen := map[string]bool{}
+	for _, approval := range approvals {
+		pendingOrder = append(pendingOrder, approval.ToolCallID)
+		seen[approval.ToolCallID] = true
+	}
+	if !seen["c1"] || !seen["c2"] {
+		t.Fatalf("pending approval tool call IDs = %v, want both c1 and c2", pendingOrder)
+	}
+
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps() = %d, want 1", len(steps))
+	}
+	if len(steps[0].ToolCalls) != 2 {
+		t.Fatalf("Steps()[0].ToolCalls = %+v, want both tool calls in the single (paused) step", steps[0].ToolCalls)
+	}
+}
+
+// TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount verifies the
+// backward-compatible default: an adapter that never populates
+// StepToolCallCount on its tool-call events keeps the original
+// pause-on-first behavior — only the first of two approval-required tool
+// calls is surfaced before the turn pauses, matching pre-32349cc behavior
+// for adapters that cannot know a step's tool-call cardinality up front.
+func TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`},
+				&ToolCallPart{ToolCallID: "c2", ToolName: "weather", Input: `{"city":"NYC"}`},
+			}
+		},
+	})
+	weather := types.Tool{Name: "weather", Parameters: map[string]any{"type": "object"}}
+	toolApproval := ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusUserApproval}
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, UserTools: map[string]types.Tool{"weather": weather}, ToolApproval: toolApproval})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+
+	approvals, _, _ := session.snapshotPendingState()
+	if len(approvals) != 1 || approvals[0].ToolCallID != "c1" {
+		t.Fatalf("pending approvals = %+v, want only c1 (pause-on-first, unaware of c2)", approvals)
+	}
+}
+
 // TestAgent_StopWhenStopsBeforeFurtherSteps ports StopWhen (isStepCount(1)):
 // the local result finishes after the first step without waiting for the
 // bridge's own terminal finish.

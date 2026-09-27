@@ -248,6 +248,22 @@ type turnDriver struct {
 	stepOpen        bool
 	startCalled     bool
 
+	// expectedStepToolCallCount/observedStepToolCallCount/
+	// pauseAfterStepToolCalls implement TS 32349cc's multi-approval grouping:
+	// an adapter that knows a step's complete tool-call cardinality up front
+	// (populates ToolCallPart.StepToolCallCount on every tool call in the
+	// step) lets the host collect every approval/result request from that
+	// step before pausing once, instead of pausing after the first one and
+	// leaving the rest permanently stuck (the bug 32349cc fixed: a step with
+	// two approval-required host tool calls exposed only the first). Applies
+	// to every host tool call pause point (see handleHostToolCall), not only
+	// harness-pi (the adapter TS shipped it for first) — an adapter that
+	// never sets StepToolCallCount keeps the original pause-on-first
+	// behavior, since expectedStepToolCallCount then stays nil.
+	expectedStepToolCallCount *int
+	observedStepToolCallCount int
+	pauseAfterStepToolCalls   bool
+
 	// completedSteps accumulates the locally-tracked StepResult from every
 	// completeStep call, used to evaluate StopConditions (which need the
 	// real completed-step history, e.g. ai.IsStepCount) — independent of
@@ -430,6 +446,17 @@ func (d *turnDriver) processStartupContinuations() (turnOutcome, error) {
 // TS's finishForHostInputPause).
 func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alreadySettled bool, err error) {
 	for {
+		// TS 32349cc: every tool call in the current step has now been
+		// observed (a handleHostToolCall pause point deferred instead of
+		// pausing immediately, via shouldDeferPause) — pause once for all of
+		// them now, rather than waiting for a part that will never arrive.
+		if d.pauseAfterStepToolCalls && d.expectedStepToolCallCount != nil && d.observedStepToolCallCount >= *d.expectedStepToolCallCount {
+			if err := d.pauseForHostInput(); err != nil {
+				return false, false, err
+			}
+			return false, true, nil
+		}
+
 		var part StreamPart
 		var ok bool
 		select {
@@ -518,6 +545,14 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			d.providerExecByID[tc.ToolCallID] = tc.ProviderExecuted
 			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &validated})
 			d.stepToolCalls = append(d.stepToolCalls, validated)
+			// TS 32349cc: counted for every tool call in the step (not only
+			// host ones), and the first non-nil StepToolCallCount observed
+			// wins (mirrors TS `expectedStepToolCallCount ??=
+			// value.stepToolCallCount`).
+			d.observedStepToolCallCount++
+			if d.expectedStepToolCallCount == nil {
+				d.expectedStepToolCallCount = tc.StepToolCallCount
+			}
 		} else if tr, isResult := display.(*ToolResultPart); isResult {
 			chunks := TranslatePart(tr, d.translateOpts())
 			d.bufferedResultChunks = append(d.bufferedResultChunks, chunks)
@@ -726,6 +761,17 @@ func (d *turnDriver) resetStepAccum() {
 	d.stepToolResults = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
+	d.expectedStepToolCallCount = nil
+	d.observedStepToolCallCount = 0
+	d.pauseAfterStepToolCalls = false
+}
+
+// shouldDeferPause reports whether a pause for host input should be deferred
+// until every tool call in the current step has been observed, so the host
+// collects every approval/result request from the step in one pass instead
+// of pausing on the first one (TS 32349cc). See the turnDriver field doc.
+func (d *turnDriver) shouldDeferPause() bool {
+	return d.expectedStepToolCallCount != nil && d.observedStepToolCallCount < *d.expectedStepToolCallCount
 }
 
 func (d *turnDriver) flushBufferedResultChunks() {
@@ -1026,6 +1072,10 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	if isClientExecutedBuiltin {
 		d.recordPendingResult(raw)
+		if d.shouldDeferPause() {
+			d.pauseAfterStepToolCalls = true
+			return false, nil
+		}
 		if err := d.pauseForHostInput(); err != nil {
 			return false, err
 		}
@@ -1071,6 +1121,10 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
 			ApprovalID: pending.ApprovalID, ToolCallID: pending.ToolCallID, ToolCall: call,
 		}})
+		if d.shouldDeferPause() {
+			d.pauseAfterStepToolCalls = true
+			return false, nil
+		}
 		if err := d.pauseForHostInput(); err != nil {
 			return false, err
 		}
@@ -1080,6 +1134,10 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		tool, executable := d.in.ActiveTools[raw.ToolName]
 		if !executable || tool.Execute == nil {
 			d.recordPendingResult(raw)
+			if d.shouldDeferPause() {
+				d.pauseAfterStepToolCalls = true
+				return false, nil
+			}
 			if err := d.pauseForHostInput(); err != nil {
 				return false, err
 			}
