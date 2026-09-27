@@ -509,9 +509,24 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
+		span.SetAttributes(attribute.StringSlice("ai.values", jsonStringifyEach(e.Values)))
+	}
 	if callID != "" {
 		genAICallSpans.Store(genAISpanKey("embedding", callID), otelSpanEntry{span: span})
 	}
+}
+
+// jsonStringifyEach JSON-encodes each value individually, matching TS's
+// `values.map(v => JSON.stringify(v))` pattern used for ai.values/ai.documents.
+func jsonStringifyEach[T any](values []T) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		if b, err := json.Marshal(v); err == nil {
+			out[i] = string(b)
+		}
+	}
+	return out
 }
 
 // OnEmbedEnd records usage on the embeddings request span only — NOT on the
@@ -530,6 +545,9 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 	}
 	if e.Usage.InputTokens > 0 {
 		entry.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", e.Usage.InputTokens))
+	}
+	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
+		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	entry.span.End()
 }
@@ -559,6 +577,11 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
+		if docs, ok := e.Documents.([]string); ok && len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", jsonStringifyEach(docs)))
+		}
+	}
 	if callID != "" {
 		genAICallSpans.Store(genAISpanKey("reranking", callID), otelSpanEntry{span: span})
 	}
@@ -576,6 +599,12 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 		return
 	}
 	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))
+	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
+		entry.span.SetAttributes(
+			attribute.String("ai.ranking.type", e.DocumentsType),
+			attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)),
+		)
+	}
 	entry.span.End()
 }
 

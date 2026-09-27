@@ -223,3 +223,147 @@ func TestOpenTelemetryStepSpanNaming(t *testing.T) {
 		t.Fatalf("expected gen_ai.operation.name=agent_step, got %v ok=%v", v, ok)
 	}
 }
+
+// TestOpenTelemetryOnStartUsesSystemNotPrompt covers a regression where
+// gen_ai.system_instructions was populated from e.Prompt (the raw text-mode
+// prompt) instead of e.System (the actual system instructions).
+func TestOpenTelemetryOnStartUsesSystemNotPrompt(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+		Prompt:        "the user prompt text",
+		System:        "Be helpful",
+	})
+	trace.SpanFromContext(ctx).End()
+
+	span := findSpan(rec, "ai.generateText")
+	v, ok := attrValue(span, "gen_ai.system_instructions")
+	if !ok {
+		t.Fatal("expected gen_ai.system_instructions to be set")
+	}
+	got := v.(string)
+	if got != `[{"content":"Be helpful","type":"text"}]` {
+		t.Fatalf("gen_ai.system_instructions = %s, want the SemConv shape for e.System, not e.Prompt", got)
+	}
+}
+
+// TestOpenTelemetryOnStartInputMessages covers gen_ai.input.messages on the
+// root span, built from TelemetryStartEvent.Messages via formatInputMessages.
+func TestOpenTelemetryOnStartInputMessages(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+		Messages:      []types.Message{textMessage(types.RoleUser, "hi")},
+	})
+	trace.SpanFromContext(ctx).End()
+
+	span := findSpan(rec, "ai.generateText")
+	v, ok := attrValue(span, "gen_ai.input.messages")
+	if !ok {
+		t.Fatal("expected gen_ai.input.messages to be set")
+	}
+	want := `[{"role":"user","parts":[{"content":"hi","type":"text"}]}]`
+	if v.(string) != want {
+		t.Fatalf("gen_ai.input.messages = %s, want %s", v, want)
+	}
+}
+
+// TestOpenTelemetryLanguageModelCallOutputMessagesSemConvShape covers
+// gen_ai.output.messages on the chat span using the SemConv per-part shape
+// instead of a raw JSON dump of the internal content-part structs.
+func TestOpenTelemetryLanguageModelCallOutputMessagesSemConvShape(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-2", ModelID: "gpt-5"})
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings:     settings,
+		CallID:       "call-2",
+		FinishReason: "stop",
+		Content:      []types.ContentPart{types.TextContent{Text: "hello"}},
+	})
+
+	span := findSpan(rec, "chat gpt-5")
+	v, ok := attrValue(span, "gen_ai.output.messages")
+	if !ok {
+		t.Fatal("expected gen_ai.output.messages to be set")
+	}
+	want := `[{"role":"assistant","parts":[{"content":"hello","type":"text"}],"finish_reason":"stop"}]`
+	if v.(string) != want {
+		t.Fatalf("gen_ai.output.messages = %s, want %s", v, want)
+	}
+}
+
+// TestOpenTelemetryStepToolChoiceOptIn covers 152c67c/18651f6:
+// ai.prompt.toolChoice on the step span, gated by OpenTelemetryOptions.ToolChoice.
+func TestOpenTelemetryStepToolChoiceOptIn(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ToolChoice: true})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{
+		Settings:   settings,
+		StepNumber: 1,
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+	})
+
+	span := findSpan(rec, "step 1")
+	v, ok := attrValue(span, "ai.prompt.toolChoice")
+	if !ok {
+		t.Fatal("expected ai.prompt.toolChoice to be set when OpenTelemetryOptions.ToolChoice is true")
+	}
+	if v.(string) != `{"type":"required"}` {
+		t.Fatalf("ai.prompt.toolChoice = %s, want {\"type\":\"required\"}", v)
+	}
+}
+
+// TestOpenTelemetryStepToolChoiceOptedOut confirms ai.prompt.toolChoice is
+// omitted by default (matching TS's opt-in gate).
+func TestOpenTelemetryStepToolChoiceOptedOut(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{
+		Settings:   settings,
+		StepNumber: 1,
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+	})
+
+	span := findSpan(rec, "step 1")
+	if _, ok := attrValue(span, "ai.prompt.toolChoice"); ok {
+		t.Fatal("expected ai.prompt.toolChoice to be omitted when OpenTelemetryOptions.ToolChoice is unset")
+	}
+}
