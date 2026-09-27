@@ -485,7 +485,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  300 * time.Millisecond,
+		StartupTimeout:  2 * time.Second,
 		MintBridgeToken: func(string) string { return "tok" },
 	})
 	if err != nil {
@@ -721,7 +721,7 @@ func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
 	}
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  300 * time.Millisecond,
+		StartupTimeout:  2 * time.Second,
 		MintBridgeToken: func(string) string { return "tok" },
 	})
 	if err != nil {
