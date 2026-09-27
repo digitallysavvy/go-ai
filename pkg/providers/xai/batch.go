@@ -3,7 +3,6 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -497,7 +496,7 @@ func (s *xaiBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 		if s.idx < len(s.buffer) {
 			item := s.buffer[s.idx]
 			s.idx++
-			return s.batch.convertBatchResult(item), nil
+			return s.batch.convertBatchResult(s.ctx, item), nil
 		}
 		if s.done {
 			return nil, io.EOF
@@ -544,7 +543,7 @@ func (s *xaiBatchResultsStream) Err() error { return s.err }
 func (s *xaiBatchResultsStream) Close() error { return nil }
 
 // convertBatchResult mirrors TS XaiBatch#convertBatchResult.
-func (b *Batch) convertBatchResult(wire xaiBatchResultWire) *provider.BatchV4ItemResult {
+func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) *provider.BatchV4ItemResult {
 	var errWire *xaiBatchErrorWire
 	if wire.BatchResult != nil {
 		errWire = wire.BatchResult.Error
@@ -586,7 +585,7 @@ func (b *Batch) convertBatchResult(wire xaiBatchResultWire) *provider.BatchV4Ite
 	}
 
 	if isPresentRawJSON(response.ImageGeneration) {
-		var imgResp xaiBatchImageResponseWire
+		var imgResp xaiImageResponse
 		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
 			return invalidXAIBatchImageResult(wire.BatchRequestID)
 		}
@@ -600,7 +599,7 @@ func (b *Batch) convertBatchResult(wire xaiBatchResultWire) *provider.BatchV4Ite
 				}
 			}
 		}
-		imgResult, err := convertXAIBatchImageResponse(imgResp)
+		imgResult, err := b.convertImageBatchResponse(ctx, imgResp)
 		if err != nil {
 			return invalidXAIBatchImageResult(wire.BatchRequestID)
 		}
@@ -914,37 +913,22 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 }
 
 // --- Image batch result conversion --------------------------------------
+//
+// The batch image wire shape is identical to the (unbatched) image model's
+// response (xaiImageResponse/xaiImageData in image_model.go), so it is
+// reused directly instead of being duplicated here.
 
-type xaiBatchImageDataWire struct {
-	URL               string  `json:"url,omitempty"`
-	B64JSON           string  `json:"b64_json,omitempty"`
-	RevisedPrompt     *string `json:"revised_prompt,omitempty"`
-	RespectModeration *bool   `json:"respect_moderation,omitempty"`
-}
-
-type xaiBatchImageResponseWire struct {
-	Data  []xaiBatchImageDataWire `json:"data"`
-	Usage *xaiImageUsage          `json:"usage,omitempty"`
-}
-
-// convertXAIBatchImageResponse mirrors TS
-// XaiBatch#convertImageBatchResponse. It reuses the same
-// url/b64_json-fallback logic as the (unbatched) image model's response
-// handling, but never downloads a remote URL — batch results always request
-// b64_json (see prepareBatchRequest / ImageModel.buildRequestBody).
-func convertXAIBatchImageResponse(resp xaiBatchImageResponseWire) (*types.ImageResult, error) {
-	images := make([][]byte, 0, len(resp.Data))
-	base64Images := make([]string, 0, len(resp.Data))
-	for _, d := range resp.Data {
-		if d.B64JSON == "" {
-			return nil, fmt.Errorf("xAI batch image result missing b64_json data")
-		}
-		decoded, err := base64.StdEncoding.DecodeString(d.B64JSON)
-		if err != nil {
-			return nil, err
-		}
-		images = append(images, decoded)
-		base64Images = append(base64Images, d.B64JSON)
+// convertImageBatchResponse mirrors TS XaiBatch#convertImageBatchResponse. It
+// reuses ImageModel.responseImages for the same url/b64_json-fallback
+// decoding (including downloading a remote URL when b64_json is absent) that
+// the unbatched image model uses, so a defensive path exists even though
+// batch requests always ask for b64_json (see prepareBatchRequest /
+// ImageModel.buildRequestBody).
+func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResponse) (*types.ImageResult, error) {
+	im := NewImageModel(b.provider, "")
+	images, base64Images, err := im.responseImages(ctx, resp.Data)
+	if err != nil {
+		return nil, err
 	}
 
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))
@@ -965,6 +949,8 @@ func convertXAIBatchImageResponse(resp xaiBatchImageResponseWire) (*types.ImageR
 	if len(images) > 0 {
 		result.Image = images[0]
 		result.Images = images
+	}
+	if len(base64Images) > 0 {
 		result.Base64Image = base64Images[0]
 		result.Base64Images = base64Images
 	}

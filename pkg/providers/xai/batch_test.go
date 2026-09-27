@@ -727,6 +727,56 @@ func TestBatch_DoGetBatchResults_ImageResults(t *testing.T) {
 	}
 }
 
+// Batch image results without b64_json fall back to downloading the `url`,
+// mirroring TS XaiBatch#convertImageBatchResponse (reused via
+// ImageModel.responseImages). A data: URL is used so the fallback exercises
+// real decoding without a network round trip to an SSRF-blocked test host.
+func TestBatch_DoGetBatchResults_ImageURLFallback(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{
+		{
+			"results": []map[string]interface{}{
+				{
+					"batch_request_id": "image-url",
+					"batch_result": map[string]interface{}{
+						"response": map[string]interface{}{
+							"image_generation": map[string]interface{}{
+								"data": []map[string]interface{}{
+									{"url": "data:image/png;base64,aGVsbG8="},
+								},
+							},
+						},
+						"error": map[string]interface{}{"code": 0, "message": ""},
+					},
+				},
+			},
+			"pagination_token": nil,
+		},
+	}
+
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults() error = %v", err)
+	}
+	results := drainXAIBatchResults(t, stream)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	item := results[0]
+	if item.Type != provider.BatchRequestTypeImage || item.Status != provider.BatchItemSucceeded {
+		t.Fatalf("item = %+v, want a succeeded image result", item)
+	}
+	if item.ImageResult == nil || len(item.ImageResult.Images) != 1 || string(item.ImageResult.Images[0]) != "hello" {
+		t.Fatalf("ImageResult = %+v, want decoded image bytes %q", item.ImageResult, "hello")
+	}
+	if len(item.ImageResult.Base64Images) != 0 {
+		t.Errorf("Base64Images = %v, want empty for a URL-downloaded image", item.ImageResult.Base64Images)
+	}
+}
+
 func TestBatch_DoGetBatchResults_ModeratedImageIsFailed(t *testing.T) {
 	server := newXAIBatchTestServer(t)
 	defer server.close()
