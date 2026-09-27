@@ -787,7 +787,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	generateTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	// H5: compute callID before FireOnStart (previously computed further down,
+	// after OnStart had already fired) so TelemetryStartEvent.CallID is
+	// populated — every telemetry integration needs it from the very first
+	// event to track its own root span by CallID.
+	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:           callID,
 		OperationType:    "ai.generateText",
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
@@ -807,7 +813,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
-	callID := ""
 
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
@@ -825,7 +830,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
 				return
 			}
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 	}()
 
@@ -846,7 +851,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	generateID := internalGenerateID(opts.Internal)
-	callID = internalGenerateCallID(opts.Internal)()
+	// callID was already computed above (H5: before FireOnStart) — reused
+	// here rather than generating a second, different id.
 
 	// Emit OnStartEvent.
 	onStepEnd := opts.OnStepEnd
@@ -1194,6 +1200,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Fire step-start telemetry. OTel implementations create a child step span
 		// and embed it in the returned context so OnStepFinish can end it.
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
+			CallID:         callID,
 			OperationType:  "ai.generateText",
 			Settings:       telemetrySettings,
 			StepNumber:     stepIndex,
@@ -1664,6 +1671,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 			}
 			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
+				CallID:           callID,
 				OperationType:    "ai.generateText",
 				StepNumber:       stepIndex,
 				FinishReason:     string(genResult.FinishReason),
@@ -1761,6 +1769,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           callID,
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
 		Usage:            telUsage,
@@ -2157,6 +2166,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
 			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
 				Settings:    callbacks.telemetrySettings,
+				CallID:      callbacks.callID,
 				ToolCallID:  call.ID,
 				ToolName:    call.ToolName,
 				Args:        call.Arguments,
@@ -2250,6 +2260,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// Fire telemetry OnToolCallFinish so integrations can record errors.
 			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    callbacks.telemetrySettings,
+				CallID:      callbacks.callID,
 				ToolCallID:  call.ID,
 				ToolName:    call.ToolName,
 				Args:        call.Arguments,

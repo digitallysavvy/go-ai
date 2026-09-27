@@ -813,6 +813,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
 	objectMaxRetries := opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
+		CallID:           callID,
 		OperationType:    "ai.generateObject",
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
@@ -861,11 +862,12 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 
 	if err != nil {
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return result, err
 	}
 	if result != nil {
 		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+			CallID:           callID,
 			OperationType:    "ai.generateObject",
 			Settings:         opts.ExperimentalTelemetry,
 			ModelProvider:    opts.Model.Provider(),
@@ -1718,6 +1720,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	streamObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
 	streamObjectMaxRetries := opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
+		CallID:           callID,
 		OperationType:    "ai.streamObject",
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
@@ -1794,7 +1797,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		// "chat" span) opened by fireObjectStepStart above before the root
 		// FireOnError call below, which only closes the root span (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, fmt.Errorf("stream error: %w", err)
 	}
 	defer stream.Close() //nolint:errcheck
@@ -1991,7 +1994,7 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: streamErr})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
 		return nil, fmt.Errorf("stream error: %w", streamErr)
 	}
 
@@ -2053,7 +2056,7 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: parseErr})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: parseErr})
 		return nil, parseErr
 	}
 	finalObject = parsedObject
@@ -2090,6 +2093,7 @@ streamLoop:
 		ProviderMetadata: streamProviderMetadata,
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           callID,
 		OperationType:    "ai.streamObject",
 		Settings:         opts.ExperimentalTelemetry,
 		ModelProvider:    opts.Model.Provider(),

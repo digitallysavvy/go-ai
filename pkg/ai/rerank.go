@@ -346,6 +346,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:         callID,
 		OperationType:  "ai.rerank",
 		ModelProvider:  opts.Model.Provider(),
 		ModelID:        opts.Model.ModelID(),
@@ -402,7 +403,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	})
 	if err != nil {
 		wrappedErr := fmt.Errorf("reranking failed: %w", err)
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: wrappedErr})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: wrappedErr})
 		return nil, wrappedErr
 	}
 
@@ -411,7 +412,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	// retrying and without firing onEnd (rerank.test.ts "should reject
 	// invalid provider ranking index").
 	if err := validateRankingIndices(modelResult.Ranking, documentsSlice); err != nil {
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 
@@ -483,6 +484,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		CallID:        callID,
 		OperationType: "ai.rerank",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),

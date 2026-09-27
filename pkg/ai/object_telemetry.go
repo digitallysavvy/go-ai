@@ -42,6 +42,7 @@ func fireObjectStepStart(
 	settings *telemetry.Settings,
 ) objectTelemetryStep {
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
+		CallID:         callID,
 		OperationType:  operationType,
 		Settings:       settings,
 		StepNumber:     0,
@@ -138,6 +139,7 @@ func fireObjectStepEnd(
 		perf.TimeToFirstOutputMs = &ms
 	}
 	telemetry.FireOnStepEnd(step.stepCtx, telemetry.TelemetryStepEndEvent{
+		CallID:            step.callID,
 		OperationType:     operationType,
 		StepNumber:        0,
 		FinishReason:      string(finishReason),

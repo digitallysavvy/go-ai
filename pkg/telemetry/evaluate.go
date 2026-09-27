@@ -93,21 +93,24 @@ type evaluationModelCallEndHandler interface {
 }
 
 // FireOnEvaluateStart publishes and fans out an evaluate-operation start
-// event to integrations implementing OnEvaluateStart, threading ctx through
-// each call so an OTel integration can embed a root span in the returned
-// ctx (used by FireOnEvaluationModelCallStart, FireOnEvaluateEnd, and
-// FireOnError).
+// event to integrations implementing OnEvaluateStart. Each integration is
+// given the SAME base ctx (H5 — see the identical rationale on FireOnStart in
+// registry.go) rather than the previous integration's result, so two
+// registered integrations' root spans come out as siblings and each resolves
+// its own root/nested spans from its own callId-keyed state rather than
+// trace.SpanFromContext(ctx).
 func FireOnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnEvaluateStart, e)
+	result := ctx
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(evaluateStartHandler); ok {
-			ctx = handler.OnEvaluateStart(ctx, e)
+			result = handler.OnEvaluateStart(ctx, e)
 		}
 	}
-	return ctx
+	return result
 }
 
 // FireOnEvaluateEnd publishes and fans out an evaluate-operation end event.
@@ -217,14 +220,24 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 		span.SetAttributes(attrs...)
 		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
 	}
+	// H5: record this integration's own root span by CallID, so
+	// OnEvaluateEnd/OnEvaluationModelCallStart can find it instead of relying
+	// on trace.SpanFromContext(ctx), which only ever resolves the single
+	// "current" span and would break with a second integration registered.
+	if e.CallID != "" {
+		st := legacyState(e.CallID)
+		st.mu.Lock()
+		st.rootSpan = span
+		st.mu.Unlock()
+	}
 	return ctx
 }
 
 // OnEvaluateEnd sets output attributes on the root "ai.evaluate" span
-// (found via trace.SpanFromContext, embedded by OnEvaluateStart) and ends
-// it, mirroring TS's onEvaluateOperationEnd.
+// (resolved by CallID, embedded by OnEvaluateStart) and ends it, mirroring
+// TS's onEvaluateOperationEnd.
 func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
-	span := trace.SpanFromContext(ctx)
+	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -234,6 +247,7 @@ func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEve
 		}
 	}
 	span.End()
+	legacyDeleteState(e.CallID)
 }
 
 // OnEvaluationModelCallStart creates the nested "ai.evaluate.doEvaluate"
@@ -242,12 +256,14 @@ func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEve
 // Mirrors TS's experimental_onEvaluationModelCallStart — which, like
 // onEvaluateOperationStart, carries no gen_ai.* attributes.
 func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
-	parent := trace.SpanFromContext(ctx)
+	// H5: resolve our own root span by CallID rather than
+	// trace.SpanFromContext(ctx).
+	parent := legacyRootSpanFor(e.CallID, ctx)
 	if !parent.IsRecording() {
 		return
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
-	_, span := tracer.Start(ctx, e.OperationID)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), e.OperationID)
 	functionID := ""
 	if e.Settings != nil {
 		functionID = e.Settings.FunctionID
@@ -351,13 +367,22 @@ func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent
 			ctx = context.WithValue(ctx, genAIRuntimeContextKey{}, attrs)
 		}
 	}
+	// H5: record this integration's own root span by CallID, so
+	// OnEvaluateEnd/OnEvaluationModelCallStart can find it instead of relying
+	// on trace.SpanFromContext(ctx).
+	if e.CallID != "" {
+		st := genAIState(e.CallID)
+		st.mu.Lock()
+		st.rootSpan = span
+		st.mu.Unlock()
+	}
 	return ctx
 }
 
-// OnEvaluateEnd sets output attributes on the root evaluate span and ends
-// it, mirroring TS's onEvaluateOperationEnd.
+// OnEvaluateEnd sets output attributes on the root evaluate span (resolved
+// by CallID) and ends it, mirroring TS's onEvaluateOperationEnd.
 func (i OpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
-	span := trace.SpanFromContext(ctx)
+	span := genAIRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -368,13 +393,16 @@ func (i OpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
 		}
 	}
 	span.End()
+	genAIDeleteState(e.CallID)
 }
 
 // OnEvaluationModelCallStart creates the nested "evaluate {modelId}" child
 // span for the underlying model call, tracked by CallID, mirroring TS's
 // experimental_onEvaluationModelCallStart.
 func (i OpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
-	parent := trace.SpanFromContext(ctx)
+	// H5: resolve our own root span by CallID rather than
+	// trace.SpanFromContext(ctx).
+	parent := genAIRootSpanFor(e.CallID, ctx)
 	if !parent.IsRecording() {
 		return
 	}
@@ -383,7 +411,7 @@ func (i OpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e Evaluat
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(ctx, spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
 	span.SetAttributes(
 		attribute.String("gen_ai.operation.name", "evaluate"),
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),

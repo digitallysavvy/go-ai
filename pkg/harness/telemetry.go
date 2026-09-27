@@ -144,6 +144,7 @@ func telemetryToolContext(settings *telemetry.Settings, toolName string, toolCon
 // ensureStarted, which already guards against firing more than once.
 func (d *turnDriver) telStart() {
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
+		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
@@ -162,6 +163,7 @@ func (d *turnDriver) telStart() {
 func (d *turnDriver) telStepStart() {
 	provider := "harness:" + d.in.Harness.HarnessID()
 	d.telStepCtx = telemetry.FireOnStepStart(d.telCtx, telemetry.TelemetryStepStartEvent{
+		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		StepNumber:     d.stepNumber,
@@ -258,6 +260,7 @@ func (d *turnDriver) telToolExecution(call types.ToolCall, result types.ToolResu
 	}
 	toolCtx := telemetry.FireOnToolCallStart(d.telStepCtx, telemetry.TelemetryToolCallStartEvent{
 		Settings:    d.in.Telemetry,
+		CallID:      d.telCallID,
 		ToolCallID:  call.ID,
 		ToolName:    call.ToolName,
 		Args:        call.Arguments,
@@ -265,6 +268,7 @@ func (d *turnDriver) telToolExecution(call types.ToolCall, result types.ToolResu
 	})
 	telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
 		Settings:    d.in.Telemetry,
+		CallID:      d.telCallID,
 		ToolCallID:  call.ID,
 		ToolName:    call.ToolName,
 		Args:        call.Arguments,
@@ -287,6 +291,7 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 	}
 	telemetry.FireOnStepEnd(d.telStepCtx, telemetry.TelemetryStepEndEvent{
 		Settings:       d.in.Telemetry,
+		CallID:         d.telCallID,
 		StepNumber:     stepNumber,
 		FinishReason:   string(step.FinishReason),
 		Usage:          telemetryUsageFromTypesUsage(step.Usage),
@@ -313,6 +318,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
 	telemetry.FireOnEnd(d.telCtx, telemetry.TelemetryFinishEvent{
+		CallID:         d.telCallID,
 		FinishReason:   string(finalStep.FinishReason),
 		Usage:          telemetryUsageFromTypesUsage(totalUsage),
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
@@ -337,11 +343,10 @@ func (d *turnDriver) telError(err error) {
 	}
 	d.ensureStarted()
 	d.telEnded = true
-	// CallID intentionally left unset — mirrors pkg/ai/generate.go's own
-	// FireOnError call for generateText/streamText, which likewise omits it
-	// (TelemetryErrorEvent.CallID's genAICallSpans cleanup only applies to
-	// the "evaluation" span kind, not "languageModel").
-	telemetry.FireOnError(d.telCtx, telemetry.TelemetryErrorEvent{Settings: d.in.Telemetry, Error: err})
+	// H5: CallID is now required so each registered integration can resolve
+	// ITS OWN root span by CallID instead of trace.SpanFromContext(ctx) —
+	// pkg/ai/generate.go's matching FireOnError call was updated the same way.
+	telemetry.FireOnError(d.telCtx, telemetry.TelemetryErrorEvent{Settings: d.in.Telemetry, CallID: d.telCallID, Error: err})
 }
 
 // telAbort fires the turn-abort telemetry event instead of telError's
