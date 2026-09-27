@@ -51,8 +51,8 @@ func TestOTelIntegrationSkipsNonFiniteFloatAttributes(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "lm-1"})
@@ -94,10 +94,9 @@ func TestOTelIntegrationCustomSpanAttributesDropsNonFiniteFloats(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled: Bool(true),
-		Tracer:    tracer,
 		EnrichSpan: func(context.Context, EnrichSpanOptions) map[string]interface{} {
 			return map[string]interface{}{
 				"custom.bad":        math.NaN(),
@@ -134,8 +133,8 @@ func TestOTelIntegrationRecordsHTTPStatusOnErrorSpan(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
 
 	apiErr := providererrors.NewProviderError("openai", 503, "server_error", "boom", nil)
 	retryErr := &providererrors.RetryError{Message: "retries exhausted", LastError: apiErr}
@@ -156,8 +155,8 @@ func TestOTelIntegrationDirectProviderErrorRecordsHTTPStatus(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{
 		Settings: settings,
@@ -176,8 +175,8 @@ func TestOTelIntegrationNonProviderErrorOmitsHTTPStatus(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{Settings: settings, Error: errors.New("plain error")})
 	span := findSpan(rec, "ai.generateText")
@@ -196,8 +195,8 @@ func TestOTelIntegrationRuntimeContextAttributesOnRootAndToolSpans(t *testing.T)
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true)}
 
 	runtimeContext := map[string]interface{}{
 		"userId": "u1",

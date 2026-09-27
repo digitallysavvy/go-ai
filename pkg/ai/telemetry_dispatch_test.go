@@ -35,7 +35,6 @@ func TestEmbedNoSpanWithoutIntegration(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tracer := tp.Tracer("embed-test")
 
 	model := &testutil.MockEmbeddingModel{
 		DoEmbedFunc: func(context.Context, string, *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
@@ -47,9 +46,9 @@ func TestEmbedNoSpanWithoutIntegration(t *testing.T) {
 		Input: "hello",
 		Telemetry: &telemetry.Settings{
 			IsEnabled: telemetry.Bool(true),
-			Tracer:    tracer,
 			// Explicit Noop isolates this test from any globally registered
 			// integration another test in this package may have left behind.
+			// tracer is unused since Noop never creates spans.
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NoopTelemetryIntegration{}},
 		},
 	})
@@ -77,8 +76,7 @@ func TestEmbedExactlyOneSpanWithIntegration(t *testing.T) {
 		Input: "hello",
 		Telemetry: &telemetry.Settings{
 			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
-			Integrations: []telemetry.TelemetryIntegration{telemetry.OTelTelemetryIntegration{}},
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
 	if err != nil {
@@ -105,8 +103,7 @@ func TestEmbedManyExactlyOneSpanWithIntegration(t *testing.T) {
 		Inputs: []string{"a", "b"},
 		Telemetry: &telemetry.Settings{
 			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
-			Integrations: []telemetry.TelemetryIntegration{telemetry.OTelTelemetryIntegration{}},
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
 	if err != nil {
@@ -121,7 +118,6 @@ func TestGenerateObjectNoSpanWithoutIntegration(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	tracer := tp.Tracer("object-test")
 
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
@@ -137,8 +133,8 @@ func TestGenerateObjectNoSpanWithoutIntegration(t *testing.T) {
 			"properties": map[string]interface{}{"ok": map[string]interface{}{"type": "boolean"}},
 		}),
 		Telemetry: &telemetry.Settings{
-			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
+			IsEnabled: telemetry.Bool(true),
+			// tracer is unused since Noop never creates spans.
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NoopTelemetryIntegration{}},
 		},
 	})
@@ -171,8 +167,7 @@ func TestGenerateObjectExactlyOneSpanWithIntegration(t *testing.T) {
 		}),
 		Telemetry: &telemetry.Settings{
 			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
-			Integrations: []telemetry.TelemetryIntegration{telemetry.OTelTelemetryIntegration{}},
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
 	if err != nil {
@@ -206,8 +201,7 @@ func TestGenerateTextModelCallRunsInsideChatSpan(t *testing.T) {
 		Prompt: "hello",
 		Telemetry: &telemetry.Settings{
 			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
-			Integrations: []telemetry.TelemetryIntegration{telemetry.OTelTelemetryIntegration{}},
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
 	if err != nil {
@@ -259,8 +253,7 @@ func TestStreamTextModelCallRunsInsideChatSpan(t *testing.T) {
 		Prompt: "hello",
 		Telemetry: &telemetry.Settings{
 			IsEnabled:    telemetry.Bool(true),
-			Tracer:       tracer,
-			Integrations: []telemetry.TelemetryIntegration{telemetry.OTelTelemetryIntegration{}},
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
 	if err != nil {

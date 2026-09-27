@@ -963,12 +963,21 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// children. stepCtx itself is unchanged for subsequent chunk processing
 	// and tool execution, which are parented under the step span instead.
 	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:      telemetrySettings,
-		CallID:        callID,
-		ModelProvider: stepModel.Provider(),
-		ModelID:       stepModel.ModelID(),
-		Prompt:        genOpts.Prompt,
-		Tools:         genOpts.Tools,
+		Settings:         telemetrySettings,
+		CallID:           callID,
+		ModelProvider:    stepModel.Provider(),
+		ModelID:          stepModel.ModelID(),
+		Prompt:           genOpts.Prompt,
+		Tools:            genOpts.Tools,
+		System:           stepSystem,
+		Temperature:      genOpts.Temperature,
+		MaxOutputTokens:  genOpts.MaxTokens,
+		TopP:             genOpts.TopP,
+		TopK:             genOpts.TopK,
+		PresencePenalty:  genOpts.PresencePenalty,
+		FrequencyPenalty: genOpts.FrequencyPenalty,
+		StopSequences:    genOpts.StopSequences,
+		Seed:             genOpts.Seed,
 	})
 
 	// Start streaming
@@ -2089,12 +2098,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Scoped to just this call (594029e): see the analogous comment where
 		// the first step's stream is started, above.
 		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:      r.telemetrySettings,
-			CallID:        r.cbCallID,
-			ModelProvider: nextModel.Provider(),
-			ModelID:       nextModel.ModelID(),
-			Prompt:        nextGenOpts.Prompt,
-			Tools:         nextGenOpts.Tools,
+			Settings:         r.telemetrySettings,
+			CallID:           r.cbCallID,
+			ModelProvider:    nextModel.Provider(),
+			ModelID:          nextModel.ModelID(),
+			Prompt:           nextGenOpts.Prompt,
+			Tools:            nextGenOpts.Tools,
+			System:           nextSystem,
+			Temperature:      nextGenOpts.Temperature,
+			MaxOutputTokens:  nextGenOpts.MaxTokens,
+			TopP:             nextGenOpts.TopP,
+			TopK:             nextGenOpts.TopK,
+			PresencePenalty:  nextGenOpts.PresencePenalty,
+			FrequencyPenalty: nextGenOpts.FrequencyPenalty,
+			StopSequences:    nextGenOpts.StopSequences,
+			Seed:             nextGenOpts.Seed,
 		})
 		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
 		if err != nil {

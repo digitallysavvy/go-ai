@@ -1030,12 +1030,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// should be parented under the step span, not the (by-then-ended)
 		// model-call span.
 		modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:      telemetrySettings,
-			CallID:        callID,
-			ModelProvider: stepModel.Provider(),
-			ModelID:       stepModel.ModelID(),
-			Prompt:        genOpts.Prompt,
-			Tools:         genOpts.Tools,
+			Settings:         telemetrySettings,
+			CallID:           callID,
+			ModelProvider:    stepModel.Provider(),
+			ModelID:          stepModel.ModelID(),
+			Prompt:           genOpts.Prompt,
+			Tools:            genOpts.Tools,
+			System:           stepSystem,
+			Temperature:      genOpts.Temperature,
+			MaxOutputTokens:  genOpts.MaxTokens,
+			TopP:             genOpts.TopP,
+			TopK:             genOpts.TopK,
+			PresencePenalty:  genOpts.PresencePenalty,
+			FrequencyPenalty: genOpts.FrequencyPenalty,
+			StopSequences:    genOpts.StopSequences,
+			Seed:             genOpts.Seed,
 		})
 
 		// Call the model with step context
