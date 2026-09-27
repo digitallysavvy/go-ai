@@ -996,6 +996,35 @@ type anthropicErrorBody struct {
 	} `json:"error"`
 }
 
+// anthropicStreamErrorMetadata returns the inferred (statusCode, isRetryable)
+// pair for a mid-stream Anthropic error's type field, mirroring TS
+// anthropic-language-model.ts's getAnthropicStreamErrorMetadata. The zero
+// value (0, false) means "no inference" (TS returns {}); the caller only
+// falls back to it when the wire event didn't supply its own statusCode/
+// isRetryable.
+func anthropicStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) {
+	switch errType {
+	case "api_error":
+		return 500, true
+	case "overloaded_error":
+		return 529, true
+	case "rate_limit_error":
+		return 429, true
+	case "request_too_large":
+		return 413, false
+	case "authentication_error":
+		return 401, false
+	case "permission_error":
+		return 403, false
+	case "not_found_error":
+		return 404, false
+	case "billing_error", "invalid_request_error":
+		return 400, false
+	default:
+		return 0, false
+	}
+}
+
 // handleError converts various errors to provider errors.
 // It attempts to parse Anthropic API error responses (HTTP NNN: {...}) so that
 // error.type is surfaced as ProviderError.ErrorCode rather than being lost.
@@ -2329,6 +2358,49 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		return s.Next()
+
+	case "error":
+		// A mid-stream provider error (TS `case 'error'`, e.g. an
+		// overloaded_error sent on an otherwise-200 response). Previously
+		// this event type fell through to "Unknown event, get next" below
+		// and was silently discarded; port TS's createAnthropicStreamError:
+		// build a fully-normalized *providererrors.StreamProviderError so
+		// pkg/ai's streamRetries / IsRetryable sees the correct type/
+		// statusCode/isRetryable without falling back to generic inference.
+		var errEvent struct {
+			Error struct {
+				Type        string          `json:"type"`
+				Message     string          `json:"message"`
+				Code        json.RawMessage `json:"code"`
+				StatusCode  *int            `json:"statusCode"`
+				IsRetryable *bool           `json:"isRetryable"`
+				Data        interface{}     `json:"data"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			return s.Next()
+		}
+		inferredStatus, inferredRetryable := anthropicStreamErrorMetadata(errEvent.Error.Type)
+		statusCode := errEvent.Error.StatusCode
+		if statusCode == nil && inferredStatus != 0 {
+			sc := inferredStatus
+			statusCode = &sc
+		}
+		isRetryable := errEvent.Error.IsRetryable
+		if isRetryable == nil {
+			ir := inferredRetryable
+			isRetryable = &ir
+		}
+		var code interface{}
+		if len(errEvent.Error.Code) > 0 {
+			json.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
+		}
+		data := errEvent.Error.Data
+		if data == nil {
+			data = errEvent.Error
+		}
+		chunkErr := providererrors.NewStreamProviderError(errEvent.Error.Message, "anthropic", errEvent.Error.Type, code, statusCode, isRetryable, data)
+		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: errEvent.Error.Message, Err: chunkErr}, nil
 
 	case "message_stop":
 		s.isMessageOpen = false
