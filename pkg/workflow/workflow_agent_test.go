@@ -1277,3 +1277,103 @@ func TestWorkflowAgentPrepareCallInitialInstructionsAndMessages(t *testing.T) {
 }
 
 func durationPtr(d time.Duration) *time.Duration { return &d }
+
+// wfToolSearchModel drives a two-step tool-discovery scenario: step 1 calls
+// ai.ToolSearch() to surface a tool marked DeferLoading, step 2 calls that
+// newly-discovered tool.
+type wfToolSearchModel struct {
+	calls         int
+	toolNamesSeen [][]string
+}
+
+func (m *wfToolSearchModel) SpecificationVersion() string   { return "v3" }
+func (m *wfToolSearchModel) Provider() string               { return "mock" }
+func (m *wfToolSearchModel) ModelID() string                { return "mock-model" }
+func (m *wfToolSearchModel) SupportsTools() bool            { return true }
+func (m *wfToolSearchModel) SupportsStructuredOutput() bool { return true }
+func (m *wfToolSearchModel) SupportsImageInput() bool       { return false }
+func (m *wfToolSearchModel) DoGenerate(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.calls++
+	names := make([]string, 0, len(opts.Tools))
+	for _, tl := range opts.Tools {
+		names = append(names, tl.Name)
+	}
+	m.toolNamesSeen = append(m.toolNamesSeen, names)
+	switch m.calls {
+	case 1:
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{
+			{ID: "c1", ToolName: "toolSearch", Arguments: map[string]interface{}{"query": "secret"}},
+		}}, nil
+	case 2:
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{
+			{ID: "c2", ToolName: "secret", Arguments: map[string]interface{}{}},
+		}}, nil
+	default:
+		return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+	}
+}
+func (m *wfToolSearchModel) DoStream(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	chunks := []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "ok"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}
+	return testutil.NewMockTextStream(chunks), nil
+}
+
+// TestWorkflowAgentDeferredToolDiscovery closes audit row #24
+// (state/parity/sep_23_2026/core-ai-part00.md): a WorkflowAgent tool marked
+// DeferLoading must be hidden from the model until ai.ToolSearch() surfaces
+// it, then callable on the very next step. Mirrors TS
+// workflow/stream-text-iterator.ts's createToolSearchState +
+// prepareToolSearch(filterActiveTools(...)), built on ai.NewToolSearchState
+// / ai.ToolSearch (pkg/ai/tool_search.go, merged by P1-2c).
+func TestWorkflowAgentDeferredToolDiscovery(t *testing.T) {
+	model := &wfToolSearchModel{}
+	secretExecuted := false
+	deferredTool := types.Tool{
+		Name:         "secret",
+		Description:  "a secret tool",
+		DeferLoading: true,
+		Type:         types.ToolTypeFunction,
+		Parameters:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			secretExecuted = true
+			return "ok", nil
+		},
+	}
+
+	wa, err := NewWorkflowAgent(WorkflowAgent{
+		Model:    model,
+		Tools:    []types.Tool{ai.ToolSearch(), deferredTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+
+	result, err := wa.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	if len(model.toolNamesSeen) < 2 {
+		t.Fatalf("expected at least 2 model calls, got %d", len(model.toolNamesSeen))
+	}
+	for _, name := range model.toolNamesSeen[0] {
+		if name == "secret" {
+			t.Fatalf("step 1 tools = %v, want secret hidden until discovered", model.toolNamesSeen[0])
+		}
+	}
+	var discoveredOnStep2 bool
+	for _, name := range model.toolNamesSeen[1] {
+		if name == "secret" {
+			discoveredOnStep2 = true
+		}
+	}
+	if !discoveredOnStep2 {
+		t.Fatalf("step 2 tools = %v, want secret discovered and visible", model.toolNamesSeen[1])
+	}
+	if !secretExecuted {
+		t.Fatal("expected the deferred tool to be executed once discovered")
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
+	}
+}

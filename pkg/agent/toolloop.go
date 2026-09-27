@@ -582,10 +582,57 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	// Custom data for PrepareCall (persists across steps)
 	var customData interface{}
 
+	// Deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading):
+	// created once per run from the full configured tool set, then applied
+	// per step below so tools marked DeferLoading stay hidden from the
+	// model until a toolSearch call surfaces them. This native step loop
+	// (executeWithMessages) calls the provider model directly instead of
+	// delegating to ai.GenerateText, so it needs its own copy of the same
+	// per-step application ai.GenerateText/StreamText perform internally.
+	// Mirrors TS workflow/stream-text-iterator.ts's createToolSearchState +
+	// prepareToolSearch(filterActiveTools(...)).
+	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(a.config.Tools, a.config.ExperimentalToolCallers)
+	if err != nil {
+		if a.config.OnChainError != nil {
+			a.config.OnChainError(err)
+		}
+		return nil, err
+	}
+	toolSearchState, err := ai.NewToolSearchState(a.config.Tools, resolvedToolCallers)
+	if err != nil {
+		if a.config.OnChainError != nil {
+			a.config.OnChainError(err)
+		}
+		return nil, err
+	}
+
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
 		callConfig := a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+
+		// Apply deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading)
+		// and tool-caller routing (ExperimentalToolCallers) before the
+		// step-start notification and the model call, mirroring
+		// ai.GenerateText's per-step pipeline
+		// (pkg/ai/generate.go: toolSearchState.Apply ->
+		// PrepareToolsForToolCallers -> AppendToolCallerMessages ->
+		// resolve/order -> Notify(OnStepStartEvent)): undiscovered
+		// DeferLoading tools are hidden and any toolSearch tool is rebound
+		// with an Execute scoped to its deferred candidates, then tools
+		// routed exclusively through a local/provider caller are hidden
+		// from the model (executionTools keeps the caller-bound Execute
+		// used below to actually run the call; callConfig.Tools becomes
+		// the model-visible set reported to OnStepStartEvent and sent to
+		// the model). A local caller's catalog-announcement message, if
+		// any, is appended to this step's messages only (not to
+		// currentMessages, so it never becomes part of persisted history).
+		callConfig.Tools = toolSearchState.Apply(callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
+		executionTools, modelTools, toolCallerMessages := ai.PrepareToolsForToolCallers(callConfig.Tools, resolvedToolCallers)
+		callConfig.Tools = modelTools
+		if len(toolCallerMessages) > 0 {
+			callConfig.Messages = ai.AppendToolCallerMessages(callConfig.Messages, toolCallerMessages)
+		}
 
 		// CB-T23: Emit OnStepStartEvent
 		ai.Notify(ctx, ai.OnStepStartEvent{
@@ -607,7 +654,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		}
 
 		// Execute one step with custom data
-		stepResult, shouldContinue, newCustomData, activeTools, err := a.executeStep(ctx, callConfig)
+		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(ctx, callConfig)
 		customData = newCustomData
 		if err != nil {
 			// Call OnChainError callback
@@ -648,7 +695,7 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 				}
 				stepResult.ToolCalls = refined
 			}
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, activeTools, currentMessages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, executionTools, currentMessages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
 			if err != nil {
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
