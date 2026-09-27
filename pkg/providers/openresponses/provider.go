@@ -35,6 +35,16 @@ type Config struct {
 
 	// Name is the provider name for identification (default: "open-responses")
 	Name string
+
+	// StrictResponseInput controls how assistant history is serialized back to
+	// the Responses API. When true, assistant text with no known item ID is
+	// sent as a plain string "message" input item, while assistant text with a
+	// known item ID is replayed as a complete "output_text" output item
+	// (status "completed", with annotations/logprobs arrays). Mirrors the
+	// TypeScript SDK's `strictResponseInput` provider setting.
+	//
+	// @default false
+	StrictResponseInput bool
 }
 
 // New creates a new Open Responses provider with the given configuration

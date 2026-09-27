@@ -56,12 +56,23 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 }
 
 func TestConvertToolsChoicesAndUsage(t *testing.T) {
-	tools := convertToolsToOpenResponses([]types.Tool{
+	tools, toolWarnings := convertToolsToOpenResponses([]types.Tool{
 		{Name: "weather", Description: "lookup", Parameters: map[string]interface{}{"type": "object"}, Strict: true},
 	})
 	if len(tools) != 1 || tools[0].Name != "weather" || !tools[0].Strict {
 		t.Fatalf("tools conversion failed: %+v", tools)
 	}
+	if len(toolWarnings) != 0 {
+		t.Fatalf("unexpected tool warnings: %+v", toolWarnings)
+	}
+
+	providerTools, providerToolWarnings := convertToolsToOpenResponses([]types.Tool{
+		{Name: "search", Type: "provider", ProviderID: "openai.web_search"},
+	})
+	if len(providerTools) != 0 {
+		t.Fatalf("provider-defined tools should be skipped: %+v", providerTools)
+	}
+	assertUnsupportedWarning(t, providerToolWarnings, "provider-defined tool openai.web_search")
 
 	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "auto"}); got != "auto" {
 		t.Fatalf("auto choice = %#v", got)
@@ -115,8 +126,8 @@ func TestBuildRequestBodyWarningsAndReasoningMapping(t *testing.T) {
 	if _, ok := body["stream"]; ok {
 		t.Fatalf("non-stream request should omit stream field like TS baseArgs: %#v", body["stream"])
 	}
-	if tools, ok := body["tools"].([]FunctionTool); !ok || len(tools) != 0 {
-		t.Fatalf("request should include empty tools array like TS, got %#v", body["tools"])
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("request should omit tools field when no tools are configured like TS, got %#v", body["tools"])
 	}
 	if len(warnings) < 5 {
 		t.Fatalf("expected warnings for unsupported settings, got %+v", warnings)
@@ -339,7 +350,14 @@ func TestBuildRequestBodyConversationPreviousResponseWarning(t *testing.T) {
 	}
 }
 
-func TestBuildRequestBodyReasoningOptionsOnNonReasoningModel(t *testing.T) {
+// TestBuildRequestBodyReasoningOptionsSentRegardlessOfModel covers rows
+// 3b9f025/e69a836: Open Responses (unlike the OpenAI chat/Responses model
+// packages) applies NO "is this a reasoning model" gating — reasoning
+// options are always sent when resolved, and never produce an "unsupported"
+// warning, even on a model OpenAI's own capability detection would classify
+// as non-reasoning (e.g. gpt-4o). See TS open-responses-language-model.ts,
+// which has no isReasoningModel check at all.
+func TestBuildRequestBodyReasoningOptionsSentRegardlessOfModel(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
 	model := NewLanguageModel(p, "gpt-4o")
 
@@ -357,51 +375,22 @@ func TestBuildRequestBodyReasoningOptionsOnNonReasoningModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody() error = %v", err)
 	}
-	if _, ok := body["reasoning"]; ok {
-		t.Fatalf("non-reasoning model should omit reasoning like TS: %#v", body["reasoning"])
-	}
-	warningFeatures := map[string]bool{}
-	for _, warning := range warnings {
-		if warning.Type == "unsupported" {
-			warningFeatures[warning.Feature] = true
-		}
-	}
-	for _, feature := range []string{"reasoningEffort", "reasoningSummary"} {
-		if !warningFeatures[feature] {
-			t.Fatalf("missing unsupported warning for %s: %+v", feature, warnings)
-		}
-	}
-}
-
-func TestBuildRequestBodyForceReasoningForCustomModel(t *testing.T) {
-	p := New(Config{BaseURL: "http://localhost:1234/v1"})
-	model := NewLanguageModel(p, "local-model")
-
-	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "hi"},
-		ProviderOptions: map[string]interface{}{
-			"openai": map[string]interface{}{
-				"forceReasoning":   true,
-				"reasoningEffort":  "high",
-				"reasoningSummary": "concise",
-			},
-		},
-	}, false)
-	if err != nil {
-		t.Fatalf("buildRequestBody() error = %v", err)
-	}
-	reasoning := body["reasoning"].(map[string]interface{})
-	if reasoning["effort"] != "high" || reasoning["summary"] != "concise" {
-		t.Fatalf("reasoning = %#v, want forced reasoning payload", reasoning)
+	reasoning, ok := body["reasoning"].(map[string]interface{})
+	if !ok || reasoning["effort"] != "high" || reasoning["summary"] != "concise" {
+		t.Fatalf("reasoning = %#v, want effort=high summary=concise sent unconditionally", body["reasoning"])
 	}
 	for _, warning := range warnings {
 		if warning.Feature == "reasoningEffort" || warning.Feature == "reasoningSummary" {
-			t.Fatalf("forced reasoning should not warn for reasoning options: %+v", warnings)
+			t.Fatalf("reasoning options should never warn as unsupported on Open Responses: %+v", warnings)
 		}
 	}
 }
 
-func TestBuildRequestBodyReasoningModelOmitsUnsupportedSampling(t *testing.T) {
+// TestBuildRequestBodySamplingAlwaysSentAlongsideReasoning covers the same
+// rows for sampling parameters: Open Responses never omits temperature/topP
+// when reasoning is also set (that omission logic is OpenAI-package-specific
+// and does not exist in open-responses-language-model.ts).
+func TestBuildRequestBodySamplingAlwaysSentAlongsideReasoning(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
 	model := NewLanguageModel(p, "gpt-5")
 
@@ -417,20 +406,12 @@ func TestBuildRequestBodyReasoningModelOmitsUnsupportedSampling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody() error = %v", err)
 	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if _, ok := body[key]; ok {
-			t.Fatalf("%s should be omitted for reasoning models like TS: %#v", key, body)
-		}
+	if body["temperature"] != temperature || body["top_p"] != topP {
+		t.Fatalf("temperature/top_p should be sent unconditionally alongside reasoning: %#v", body)
 	}
-	warningFeatures := map[string]bool{}
 	for _, warning := range warnings {
-		if warning.Type == "unsupported" {
-			warningFeatures[warning.Feature] = true
-		}
-	}
-	for _, feature := range []string{"temperature", "topP"} {
-		if !warningFeatures[feature] {
-			t.Fatalf("missing unsupported warning for %s: %+v", feature, warnings)
+		if warning.Feature == "temperature" || warning.Feature == "topP" {
+			t.Fatalf("sampling should never warn as unsupported on Open Responses: %+v", warnings)
 		}
 	}
 }
@@ -489,7 +470,12 @@ func TestBuildRequestBodyReasoningNoneKeepsSamplingOnLaterGPT5Families(t *testin
 	}
 }
 
-func TestBuildRequestBodyGPT5ChatUsesNonReasoningCapabilities(t *testing.T) {
+// TestBuildRequestBodyGPT5ChatSendsReasoningButRejectsFlexTier verifies that
+// gpt-5-chat-latest still gets its serviceTier "flex" rejected (a
+// Go-specific model-capability check unrelated to rows 3b9f025/e69a836,
+// mirroring OpenAI's own serviceTier support matrix), while reasoning
+// options ARE sent unconditionally like any other model on Open Responses.
+func TestBuildRequestBodyGPT5ChatSendsReasoningButRejectsFlexTier(t *testing.T) {
 	p := New(Config{BaseURL: "http://localhost:1234/v1"})
 	model := NewLanguageModel(p, "gpt-5-chat-latest")
 
@@ -510,15 +496,20 @@ func TestBuildRequestBodyGPT5ChatUsesNonReasoningCapabilities(t *testing.T) {
 		t.Fatalf("buildRequestBody() error = %v", err)
 	}
 	if body["temperature"] != temperature || body["top_p"] != topP {
-		t.Fatalf("gpt-5-chat-latest should preserve sampling as a non-reasoning model: %#v", body)
+		t.Fatalf("gpt-5-chat-latest should preserve sampling: %#v", body)
 	}
-	if _, ok := body["reasoning"]; ok {
-		t.Fatalf("gpt-5-chat-latest should not serialize reasoning without forceReasoning: %#v", body)
+	reasoning, ok := body["reasoning"].(map[string]interface{})
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("reasoning should be sent unconditionally on Open Responses: %#v", body["reasoning"])
 	}
 	if _, ok := body["service_tier"]; ok {
 		t.Fatalf("gpt-5-chat-latest should reject flex tier like TS: %#v", body)
 	}
-	assertUnsupportedWarning(t, warnings, "reasoningEffort")
+	for _, warning := range warnings {
+		if warning.Feature == "reasoningEffort" {
+			t.Fatalf("reasoningEffort should never warn as unsupported on Open Responses: %+v", warnings)
+		}
+	}
 	assertUnsupportedWarning(t, warnings, "serviceTier")
 }
 
@@ -688,7 +679,10 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 	if !ok {
 		t.Fatalf("provider metadata = %+v, want open-responses key", reasoningMetadata)
 	}
-	if currentMetadata["encryptedContent"] != "enc" || currentMetadata["itemId"] != "r1" {
+	// Row a0d2e8c/6fe187f: full createReasoningProviderMetadata shape
+	// ({itemId, reasoningSummary, reasoningContent, reasoningEncryptedContent}),
+	// not just a bare "encryptedContent" key.
+	if currentMetadata["reasoningEncryptedContent"] != "enc" || currentMetadata["itemId"] != "r1" {
 		t.Fatalf("provider metadata payload = %+v", currentMetadata)
 	}
 
@@ -747,4 +741,126 @@ func TestOpenResponsesStreamFunctionCallPreservesProviderMetadata(t *testing.T) 
 	if metadata["itemId"] != "fc_item_1" || metadata["namespace"] != "weather" {
 		t.Fatalf("provider metadata payload = %+v", metadata)
 	}
+}
+
+// TestOpenResponsesStreamReasoningDeltaLifecycle covers row a0d2e8c:
+// reasoning-start on output_item.added, reasoning deltas from both
+// response.reasoning_summary_text.delta and response.reasoning_text.delta,
+// and reasoning-end (with full metadata) on output_item.done.
+func TestOpenResponsesStreamReasoningDeltaLifecycle(t *testing.T) {
+	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+
+	start, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.added",
+		Item: &OutputItem{Type: "reasoning", ID: "r1"},
+	})
+	if err != nil || start.Type != provider.ChunkTypeReasoningStart || start.ID != "r1" {
+		t.Fatalf("reasoning-start chunk = %+v, err=%v", start, err)
+	}
+	if s.activeReasoningID != "r1" {
+		t.Fatalf("activeReasoningID = %q, want r1", s.activeReasoningID)
+	}
+
+	delta1, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.reasoning_summary_text.delta", ItemID: "r1", Delta: "thinking ",
+	})
+	if err != nil || delta1.Type != provider.ChunkTypeReasoning || delta1.ID != "r1" || delta1.Reasoning != "thinking " {
+		t.Fatalf("reasoning delta (summary) = %+v, err=%v", delta1, err)
+	}
+
+	delta2, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.reasoning_text.delta", ItemID: "r1", Delta: "harder",
+	})
+	if err != nil || delta2.Type != provider.ChunkTypeReasoning || delta2.ID != "r1" || delta2.Reasoning != "harder" {
+		t.Fatalf("reasoning delta (text, LM Studio extension) = %+v, err=%v", delta2, err)
+	}
+
+	end, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.done",
+		Item: &OutputItem{Type: "reasoning", ID: "r1", Summary: []ContentPart{{Type: "summary_text", Text: "thinking harder"}}},
+	})
+	if err != nil || end.Type != provider.ChunkTypeReasoningEnd || end.ID != "r1" {
+		t.Fatalf("reasoning-end chunk = %+v, err=%v", end, err)
+	}
+	if s.activeReasoningID != "" {
+		t.Fatalf("activeReasoningID should be cleared after reasoning-end, got %q", s.activeReasoningID)
+	}
+}
+
+// TestOpenResponsesStreamFlushClosesUnfinishedReasoning covers row 6fe187f:
+// if the stream finishes while a reasoning block is still open (no matching
+// output_item.done), a reasoning-end using the original item id is emitted
+// before the finish chunk.
+func TestOpenResponsesStreamFlushClosesUnfinishedReasoning(t *testing.T) {
+	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+
+	_, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.added",
+		Item: &OutputItem{Type: "reasoning", ID: "r2"},
+	})
+	if err != nil {
+		t.Fatalf("output_item.added error = %v", err)
+	}
+
+	first, err := s.handleStreamEvent(&StreamEvent{Type: "response.completed", Response: &OpenResponsesResponse{}})
+	if err != nil {
+		t.Fatalf("response.completed error = %v", err)
+	}
+	if first.Type != provider.ChunkTypeReasoningEnd || first.ID != "r2" {
+		t.Fatalf("first chunk after unfinished reasoning = %+v, want reasoning-end for r2", first)
+	}
+
+	second, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() after flushed reasoning-end error = %v", err)
+	}
+	if second.Type != provider.ChunkTypeFinish {
+		t.Fatalf("second chunk = %+v, want finish", second)
+	}
+}
+
+// TestOpenResponsesStreamToolCallOutOfOrder covers row fb82a6c: deltas or a
+// done event arriving without a prior output_item.added must not be dropped.
+func TestOpenResponsesStreamToolCallOutOfOrder(t *testing.T) {
+	t.Run("delta before add", func(t *testing.T) {
+		s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+		// The delta-only event accumulates and then calls s.Next() to read
+		// the next SSE event; against this empty test reader that hits EOF,
+		// which is expected here (a real stream would keep reading). What
+		// matters is that the accumulator was created lazily despite no
+		// prior output_item.added.
+		_, _ = s.handleStreamEvent(&StreamEvent{
+			Type: "response.function_call_arguments.delta", ItemID: "oo1", Delta: `{"q":"go"}`,
+		})
+		if _, ok := s.toolCallsByItemID["oo1"]; !ok {
+			t.Fatalf("expected a lazily-created accumulator for oo1")
+		}
+		chunk, err := s.handleStreamEvent(&StreamEvent{
+			Type: "response.output_item.done",
+			Item: &OutputItem{Type: "function_call", ID: "oo1", CallID: "call-oo1", Name: "search"},
+		})
+		if err != nil {
+			t.Fatalf("output_item.done error = %v", err)
+		}
+		if chunk.ToolCall == nil || chunk.ToolCall.Arguments["q"] != "go" {
+			t.Fatalf("tool call = %+v, want arguments from the out-of-order delta", chunk.ToolCall)
+		}
+	})
+
+	t.Run("done with no prior state", func(t *testing.T) {
+		s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+		chunk, err := s.handleStreamEvent(&StreamEvent{
+			Type: "response.output_item.done",
+			Item: &OutputItem{Type: "function_call", ID: "oo2", CallID: "call-oo2", Name: "lookup", Arguments: `{"x":1}`},
+		})
+		if err != nil {
+			t.Fatalf("output_item.done with no prior state error = %v", err)
+		}
+		if chunk.ToolCall == nil || chunk.ToolCall.ID != "call-oo2" || chunk.ToolCall.ToolName != "lookup" {
+			t.Fatalf("tool call = %+v, want fallback from the done item's own fields", chunk.ToolCall)
+		}
+		if chunk.ToolCall.Arguments["x"] != float64(1) {
+			t.Fatalf("tool call arguments = %+v, want x=1 from done item's raw arguments", chunk.ToolCall.Arguments)
+		}
+	})
 }

@@ -59,13 +59,21 @@ type FunctionTool struct {
 // Used to forward reasoning blocks from previous response turns back to the API
 // so multi-turn reasoning works when store=false or itemId is unavailable (#12869).
 type ReasoningInputItem struct {
-	Type             string        `json:"type"`
-	EncryptedContent string        `json:"encrypted_content,omitempty"`
-	Summary          []SummaryPart `json:"summary,omitempty"`
+	Type             string              `json:"type"`
+	ID               string              `json:"id,omitempty"`
+	EncryptedContent string              `json:"encrypted_content,omitempty"`
+	Summary          []SummaryPart       `json:"summary,omitempty"`
+	Content          []ReasoningTextPart `json:"content,omitempty"`
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
 type SummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ReasoningTextPart is a single entry in a reasoning item's content array.
+type ReasoningTextPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
@@ -105,6 +113,12 @@ type InputFileContent struct {
 type OutputTextContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// Annotations and Logprobs are only populated when replaying assistant
+	// history under strictResponseInput, mirroring the TS SDK's complete
+	// output-text item shape.
+	Annotations []Annotation  `json:"annotations,omitempty"`
+	Logprobs    []interface{} `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call

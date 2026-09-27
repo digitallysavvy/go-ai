@@ -25,6 +25,17 @@ func ConvertToOpenResponsesInput(messages []types.Message, system string) (inter
 // SDK provider adapters, which throw NoSuchProviderReferenceError when a file
 // reference does not contain an ID for the current provider.
 func ConvertToOpenResponsesInputForProvider(messages []types.Message, system string, providerName string) (interface{}, string, []types.Warning, error) {
+	return ConvertToOpenResponsesInputForProviderStrict(messages, system, providerName, false)
+}
+
+// ConvertToOpenResponsesInputForProviderStrict is the full-featured entry
+// point used by the language model. strictResponseInput mirrors the
+// TypeScript SDK's `strictResponseInput` provider setting (see
+// Config.StrictResponseInput / item 5 of the OR-CORE port): when true,
+// assistant text without a known item ID is serialized as a plain string
+// message, while assistant text with a known item ID is replayed as a
+// complete output-text output item.
+func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, system string, providerName string, strictResponseInput bool) (interface{}, string, []types.Warning, error) {
 	var input []interface{}
 	var warnings []types.Warning
 	var systemMessages []string
@@ -60,19 +71,7 @@ func ConvertToOpenResponsesInputForProvider(messages []types.Message, system str
 			})
 
 		case types.RoleAssistant:
-			assistantContent, toolCalls := convertAssistantContent(msg.Content, providerName)
-
-			// Add assistant message if it has text content
-			if len(assistantContent) > 0 {
-				input = append(input, MessageItem{
-					Type:    "message",
-					Role:    "assistant",
-					Content: assistantContent,
-				})
-			}
-
-			// Add tool calls as separate items
-			input = append(input, toolCalls...)
+			input = append(input, convertAssistantContent(msg.Content, providerName, strictResponseInput)...)
 
 		case types.RoleTool:
 			// Convert tool results
@@ -111,6 +110,7 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 				result = append(result, InputImageContent{
 					Type:     "input_image",
 					ImageURL: imageURL,
+					Detail:   openResponsesImageDetail(p.ProviderOptions, nil, providerName),
 				})
 			}
 
@@ -123,7 +123,11 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 				imageURL := convertFileToImageURL(file, warnings)
 				if imageURL != "" {
-					result = append(result, InputImageContent{Type: "input_image", ImageURL: imageURL})
+					result = append(result, InputImageContent{
+						Type:     "input_image",
+						ImageURL: imageURL,
+						Detail:   openResponsesImageDetail(file.ProviderOptions, nil, providerName),
+					})
 				}
 				continue
 			}
@@ -133,10 +137,14 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			case file.Reference != "":
 				result = append(result, InputFileContent{Type: "input_file", FileID: file.Reference})
 			case len(file.Data) > 0:
+				filename := file.Filename
+				if filename == "" {
+					filename = "data"
+				}
 				result = append(result, InputFileContent{
 					Type:     "input_file",
 					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), base64.StdEncoding.EncodeToString(file.Data)),
-					Filename: file.Filename,
+					Filename: filename,
 				})
 			case file.Text != "":
 				result = append(result, InputTextContent{Type: "input_text", Text: file.Text})
@@ -224,59 +232,148 @@ func mediaTypeOrDefault(mediaType string) string {
 	return mediaType
 }
 
-// convertAssistantContent converts assistant message content
-func convertAssistantContent(content []types.ContentPart, providerName string) ([]interface{}, []interface{}) {
-	var textContent []interface{}
-	var toolCalls []interface{}
+// convertAssistantContent converts assistant message content to an ordered
+// list of Open Responses input items, mirroring the TypeScript SDK's
+// convertToOpenResponsesInput assistant branch: an in-progress assistant
+// message is flushed whenever a reasoning or tool-call item interrupts it, or
+// whenever a text part's itemId boundary changes, so reasoning/text/tool-call
+// ordering and per-item boundaries survive a round trip (OR-CORE item 3).
+func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool) []interface{} {
+	var items []interface{}
+	var assistantContent []OutputTextContent
+	var assistantMessageID string
+
+	flush := func() {
+		if len(assistantContent) == 0 {
+			return
+		}
+		switch {
+		case strictResponseInput && assistantMessageID == "":
+			var text strings.Builder
+			for _, part := range assistantContent {
+				text.WriteString(part.Text)
+			}
+			items = append(items, MessageItem{Type: "message", Role: "assistant", Content: text.String()})
+		case strictResponseInput:
+			parts := make([]interface{}, 0, len(assistantContent))
+			for _, part := range assistantContent {
+				if part.Annotations == nil {
+					part.Annotations = []Annotation{}
+				}
+				if part.Logprobs == nil {
+					part.Logprobs = []interface{}{}
+				}
+				parts = append(parts, part)
+			}
+			items = append(items, MessageItem{
+				ID:      assistantMessageID,
+				Type:    "message",
+				Status:  "completed",
+				Role:    "assistant",
+				Content: parts,
+			})
+		default:
+			parts := make([]interface{}, 0, len(assistantContent))
+			for _, part := range assistantContent {
+				parts = append(parts, part)
+			}
+			item := MessageItem{Type: "message", Role: "assistant", Content: parts}
+			if assistantMessageID != "" {
+				item.ID = assistantMessageID
+			}
+			items = append(items, item)
+		}
+		assistantContent = nil
+		assistantMessageID = ""
+	}
 
 	for _, part := range content {
-		contentType := part.ContentType()
+		switch p := part.(type) {
+		case types.ReasoningContent:
+			// Always emit reasoning as a top-level reasoning input item (OR-CORE
+			// item 4/5) — do not gate on EncryptedContent being present; the TS
+			// SDK never drops a reasoning part here.
+			flush()
 
-		switch contentType {
-		case "text":
-			if textPart, ok := part.(types.TextContent); ok {
-				textContent = append(textContent, OutputTextContent{
-					Type: "output_text",
-					Text: textPart.Text,
-				})
+			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
+			itemID, _ := data["itemId"].(string)
+			summary := openResponsesParseSummaryParts(data["reasoningSummary"])
+			if summary == nil {
+				summary = []SummaryPart{}
+			}
+			reasoningContent, hasReasoningContentKey := openResponsesParseReasoningTextParts(data)
+			encryptedContent, _ := data["reasoningEncryptedContent"].(string)
+			if encryptedContent == "" {
+				encryptedContent = p.EncryptedContent
 			}
 
-		case "reasoning":
-			// Emit reasoning as a top-level reasoning input item, not as output_text.
-			// Only forward when EncryptedContent is present; without it the API cannot
-			// reconstruct the reasoning context for multi-turn conversations (#12869).
-			if reasoningPart, ok := part.(types.ReasoningContent); ok {
-				if reasoningPart.EncryptedContent != "" {
-					item := ReasoningInputItem{
-						Type:             "reasoning",
-						EncryptedContent: reasoningPart.EncryptedContent,
-					}
-					if reasoningPart.Text != "" {
-						item.Summary = []SummaryPart{{Type: "summary_text", Text: reasoningPart.Text}}
-					}
-					toolCalls = append(toolCalls, item)
-				}
-				// No EncryptedContent: skip (e.g. Anthropic reasoning blocks, or
-				// reasoning from a provider that doesn't use this field).
+			reasoningItem := ReasoningInputItem{Type: "reasoning", Summary: summary}
+			if itemID != "" {
+				reasoningItem.ID = itemID
+			}
+			switch {
+			case reasoningContent != nil:
+				reasoningItem.Content = reasoningContent
+			case !hasReasoningContentKey && p.Text != "":
+				reasoningItem.Content = []ReasoningTextPart{{Type: "reasoning_text", Text: p.Text}}
+			}
+			if encryptedContent != "" {
+				reasoningItem.EncryptedContent = encryptedContent
 			}
 
-		case "tool-call":
-			if toolCall, ok := part.(types.ToolCallContent); ok {
-				if toolCall.ProviderExecuted {
+			if reasoningItem.ID != "" && len(items) > 0 {
+				if prev, ok := items[len(items)-1].(ReasoningInputItem); ok && prev.ID == reasoningItem.ID {
+					if reasoningItem.Content != nil {
+						prev.Content = append(prev.Content, reasoningItem.Content...)
+						items[len(items)-1] = prev
+					}
 					continue
 				}
-				toolCalls = append(toolCalls, FunctionCallItem{
-					Type:      "function_call",
-					CallID:    toolCall.ToolCallID,
-					Name:      toolCall.ToolName,
-					Arguments: serializeToolCallArguments(toolCall),
-					Namespace: openResponsesMetadataString(toolCall.ProviderOptions, toolCall.ProviderMetadata, providerName, "namespace"),
-				})
 			}
+			items = append(items, reasoningItem)
+
+		case types.TextContent:
+			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
+			itemID, _ := data["itemId"].(string)
+			annotations := openResponsesParseAnnotations(data["annotations"])
+
+			if len(assistantContent) > 0 && assistantMessageID != itemID {
+				flush()
+			}
+			assistantMessageID = itemID
+			assistantContent = append(assistantContent, OutputTextContent{
+				Type:        "output_text",
+				Text:        p.Text,
+				Annotations: annotations,
+			})
+
+		case types.ToolCallContent:
+			if p.ProviderExecuted {
+				continue
+			}
+			flush()
+
+			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
+			itemID, _ := data["itemId"].(string)
+			namespace, _ := data["namespace"].(string)
+
+			item := FunctionCallItem{
+				Type:      "function_call",
+				CallID:    p.ToolCallID,
+				Name:      p.ToolName,
+				Arguments: serializeToolCallArguments(p),
+				Namespace: namespace,
+			}
+			if itemID != "" {
+				item.ID = itemID
+			}
+			items = append(items, item)
 		}
 	}
 
-	return textContent, toolCalls
+	flush()
+
+	return items
 }
 
 func serializeToolCallArguments(toolCall types.ToolCallContent) string {
@@ -298,59 +395,198 @@ func serializeToolCallArguments(toolCall types.ToolCallContent) string {
 	return "{}"
 }
 
-func openResponsesMetadataString(providerOptions map[string]interface{}, providerMetadata json.RawMessage, providerName, field string) string {
-	for _, key := range []string{providerName, "openai", "openResponses", "open-responses"} {
-		if value := nestedString(providerOptions, key, field); value != "" {
-			return value
+// openResponsesProviderKeys returns the ordered, de-duplicated set of
+// provider-options/metadata keys to check for Open Responses data, mirroring
+// the fallback set the language model already accepts elsewhere in this
+// package (the active provider name, then the historical aliases).
+func openResponsesProviderKeys(providerName string) []string {
+	candidates := []string{providerName, "openai", "openResponses", "open-responses"}
+	seen := make(map[string]bool, len(candidates))
+	keys := make([]string, 0, len(candidates))
+	for _, key := range candidates {
+		if key == "" || seen[key] {
+			continue
 		}
-		if value := nestedRawString(providerMetadata, key, field); value != "" {
-			return value
-		}
+		seen[key] = true
+		keys = append(keys, key)
 	}
-	return ""
+	return keys
 }
 
-func nestedString(values map[string]interface{}, key, field string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	nested, ok := values[key]
-	if !ok {
-		return ""
-	}
-	switch typed := nested.(type) {
-	case map[string]interface{}:
-		if value, ok := typed[field].(string); ok {
-			return value
+// openResponsesProviderData extracts the provider-scoped metadata map for a
+// content part, checking ProviderOptions first (the input direction; set by
+// callers replaying history) and falling back to ProviderMetadata (raw JSON
+// this provider attaches to model output), across all recognized provider
+// keys. Mirrors the TS SDK's getProviderData helper.
+func openResponsesProviderData(providerOptions map[string]interface{}, providerMetadata json.RawMessage, providerName string) map[string]interface{} {
+	for _, key := range openResponsesProviderKeys(providerName) {
+		if nested, ok := asStringMap(providerOptions[key]); ok {
+			return nested
 		}
-	case map[string]string:
-		return typed[field]
-	default:
-		rv := reflect.ValueOf(nested)
-		if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
-			value := rv.MapIndex(reflect.ValueOf(field))
-			if value.IsValid() && value.Kind() == reflect.String {
-				return value.String()
+	}
+	if len(providerMetadata) > 0 {
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(providerMetadata, &values); err == nil {
+			for _, key := range openResponsesProviderKeys(providerName) {
+				raw, ok := values[key]
+				if !ok {
+					continue
+				}
+				var nested map[string]interface{}
+				if err := json.Unmarshal(raw, &nested); err == nil {
+					return nested
+				}
 			}
 		}
 	}
-	return ""
+	return nil
 }
 
-func nestedRawString(raw json.RawMessage, key, field string) string {
-	if len(raw) == 0 {
-		return ""
+func asStringMap(value interface{}) (map[string]interface{}, bool) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return typed, true
+	case nil:
+		return nil, false
+	default:
+		rv := reflect.ValueOf(value)
+		if rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+			return nil, false
+		}
+		out := make(map[string]interface{}, rv.Len())
+		for _, k := range rv.MapKeys() {
+			out[k.String()] = rv.MapIndex(k).Interface()
+		}
+		return out, true
 	}
-	var values map[string]map[string]interface{}
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return ""
-	}
-	if nested, ok := values[key]; ok {
-		if value, ok := nested[field].(string); ok {
-			return value
+}
+
+// openResponsesImageDetail resolves the `detail` field for input images,
+// defaulting to "auto" when unset or invalid (OR-CORE item 6). Mirrors TS
+// getImageDetail(providerOptions[providerName].imageDetail).
+func openResponsesImageDetail(providerOptions map[string]interface{}, providerMetadata json.RawMessage, providerName string) string {
+	data := openResponsesProviderData(providerOptions, providerMetadata, providerName)
+	if detail, ok := data["imageDetail"].(string); ok {
+		switch detail {
+		case "low", "high", "auto":
+			return detail
 		}
 	}
-	return ""
+	return "auto"
+}
+
+// openResponsesParseSummaryParts validates and converts a raw
+// reasoningSummary provider-data value into SummaryPart entries. Returns nil
+// when the value isn't a well-formed summary_text array (mirrors TS
+// parseReasoningSummary, which returns undefined on any shape mismatch).
+func openResponsesParseSummaryParts(value interface{}) []SummaryPart {
+	list, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]SummaryPart, 0, len(list))
+	for _, entry := range list {
+		m, ok := entry.(map[string]interface{})
+		if !ok || m["type"] != "summary_text" {
+			return nil
+		}
+		text, ok := m["text"].(string)
+		if !ok {
+			return nil
+		}
+		out = append(out, SummaryPart{Type: "summary_text", Text: text})
+	}
+	return out
+}
+
+// openResponsesParseReasoningTextParts validates and converts a raw
+// reasoningContent provider-data value into ReasoningTextPart entries. The
+// second return value reports whether the "reasoningContent" key was present
+// at all (even if null/invalid), mirroring TS's `'reasoningContent' in
+// providerData` check used to distinguish "no content recorded" from
+// "content was explicitly empty".
+func openResponsesParseReasoningTextParts(data map[string]interface{}) ([]ReasoningTextPart, bool) {
+	value, hasKey := data["reasoningContent"]
+	if !hasKey {
+		return nil, false
+	}
+	list, ok := value.([]interface{})
+	if !ok {
+		return nil, true
+	}
+	out := make([]ReasoningTextPart, 0, len(list))
+	for _, entry := range list {
+		m, ok := entry.(map[string]interface{})
+		if !ok || m["type"] != "reasoning_text" {
+			return nil, true
+		}
+		text, ok := m["text"].(string)
+		if !ok {
+			return nil, true
+		}
+		out = append(out, ReasoningTextPart{Type: "reasoning_text", Text: text})
+	}
+	if len(out) == 0 {
+		return nil, true
+	}
+	return out, true
+}
+
+// openResponsesParseAnnotations validates and converts a raw annotations
+// provider-data value into Annotation entries, mirroring TS
+// parseOutputTextAnnotations / getOutputTextAnnotations: only well-formed
+// url_citation entries are accepted, otherwise nil is returned.
+func openResponsesParseAnnotations(value interface{}) []Annotation {
+	list, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]Annotation, 0, len(list))
+	for _, entry := range list {
+		m, ok := entry.(map[string]interface{})
+		if !ok || m["type"] != "url_citation" {
+			return nil
+		}
+		start, ok := asInt(m["start_index"])
+		if !ok {
+			return nil
+		}
+		end, ok := asInt(m["end_index"])
+		if !ok {
+			return nil
+		}
+		url, ok := m["url"].(string)
+		if !ok {
+			return nil
+		}
+		title, ok := m["title"].(string)
+		if !ok {
+			return nil
+		}
+		out = append(out, Annotation{Type: "url_citation", StartIndex: start, EndIndex: end, URL: url, Title: title})
+	}
+	return out
+}
+
+func asInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	default:
+		return 0, false
+	}
 }
 
 // convertToolResults converts tool results to Open Responses format
@@ -438,6 +674,7 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 				parts = append(parts, InputImageContent{
 					Type:     "input_image",
 					ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(item.Data)),
+					Detail:   openResponsesImageDetail(item.ProviderOptions, nil, providerName),
 				})
 			case types.FileContentBlock:
 				converted, ok, err := convertToolFileContentBlock(item, warnings, providerName)
@@ -485,20 +722,23 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 	}
 	mediaType := mediaTypeOrDefault(file.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
+		detail := openResponsesImageDetail(block.ProviderOptions, nil, providerName)
 		switch {
 		case file.URL != "":
-			return InputImageContent{Type: "input_image", ImageURL: file.URL}, true, nil
+			return InputImageContent{Type: "input_image", ImageURL: file.URL, Detail: detail}, true, nil
 		case file.Reference != "":
-			return InputImageContent{Type: "input_image", ImageURL: file.Reference}, true, nil
+			return InputImageContent{Type: "input_image", ImageURL: file.Reference, Detail: detail}, true, nil
 		case len(file.Data) > 0:
 			return InputImageContent{
 				Type:     "input_image",
 				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+				Detail:   detail,
 			}, true, nil
 		case file.Text != "":
 			return InputImageContent{
 				Type:     "input_image",
 				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text))),
+				Detail:   detail,
 			}, true, nil
 		default:
 			*warnings = append(*warnings, types.Warning{Type: "other", Message: "unsupported tool content part type: file"})

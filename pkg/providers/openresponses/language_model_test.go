@@ -281,9 +281,11 @@ func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody(minimal) error = %v", err)
 	}
+	// Row 3b9f025: Open Responses has no "minimal" effort value, so TS's
+	// effortMap maps minimal -> low (with a compatibility warning).
 	reasoningMinimal := bodyMinimal["reasoning"].(map[string]interface{})
-	if reasoningMinimal["effort"] != "minimal" {
-		t.Fatalf("minimal effort = %v, want minimal", reasoningMinimal["effort"])
+	if reasoningMinimal["effort"] != "low" {
+		t.Fatalf("minimal effort = %v, want low (mapped)", reasoningMinimal["effort"])
 	}
 
 	high := types.ReasoningHigh
