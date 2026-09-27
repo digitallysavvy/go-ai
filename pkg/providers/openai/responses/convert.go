@@ -600,9 +600,17 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		if nested, ok := arguments["arguments"]; ok {
 			rawArguments, _ = json.Marshal(nested)
 		}
+		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
+		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
+		// non-null assertion with no fallback), tool_search_call falls back
+		// to the tool call's own id when no persisted itemId exists.
+		id := itemID
+		if id == "" {
+			id = tc.ID
+		}
 		return ToolSearchCallItem{
 			Type:      "tool_search_call",
-			ID:        itemID,
+			ID:        id,
 			Status:    "completed",
 			Execution: execution,
 			CallID:    callID,

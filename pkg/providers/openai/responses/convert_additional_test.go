@@ -1401,9 +1401,14 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 		}
 	}
 
+	// Unlike local_shell_call/shell_call/apply_patch_call/function_call
+	// (which use a bare `id!` with no fallback, so they end up with no id at
+	// all here), TS's tool_search_call uses `id ?? part.toolCallId` --
+	// falling back to the tool call's own id when there's no persisted item
+	// id.
 	search, ok := input[0].(ToolSearchCallItem)
-	if !ok || search.ID != "" || search.CallID != nil {
-		t.Fatalf("input[0] = %#v, want tool_search_call without item id and nil call_id", input[0])
+	if !ok || search.ID != "search-call" || search.CallID != nil {
+		t.Fatalf("input[0] = %#v, want tool_search_call with id falling back to the tool call id, and nil call_id", input[0])
 	}
 	local, ok := input[1].(LocalShellCall)
 	if !ok || local.ID != "" || local.CallID != "local-call" {
