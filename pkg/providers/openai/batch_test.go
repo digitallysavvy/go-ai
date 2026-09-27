@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -164,6 +166,50 @@ func TestOpenAIBatch_CreatesBatchFromPreparedJSONL(t *testing.T) {
 
 	if batchCreateBody["input_file_id"] != "file-input" || batchCreateBody["endpoint"] != "/v1/responses" || batchCreateBody["completion_window"] != "24h" {
 		t.Fatalf("batch create body = %+v", batchCreateBody)
+	}
+}
+
+// TestOpenAIBatch_ThreadsContextToFileUploadAndBatchCreation ports TS
+// "forwards the abort signal to file upload and batch creation"
+// (openai-batch.test.ts:393): doStartBatch makes two HTTP calls (upload the
+// JSONL input file, then create the batch), and TS asserts both fetch calls
+// carry the same AbortSignal. Go has no AbortSignal option; the equivalent
+// mechanism is ctx. This cancels ctx from inside the /files handler (after
+// the upload response is already in flight) so that by the time DoStartBatch
+// issues the second HTTP call to POST /batches, ctx is already done -
+// proving both calls use the same context rather than the second one
+// deriving a fresh background context.
+func TestOpenAIBatch_ThreadsContextToFileUploadAndBatchCreation(t *testing.T) {
+	var batchCalls atomic.Int32
+	ctx, cancel := context.WithCancel(t.Context())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/files":
+			_, _ = w.Write([]byte(`{"id":"file-input","object":"file"}`))
+			cancel()
+		case "/batches":
+			batchCalls.Add(1)
+			_, _ = w.Write([]byte(`{"id":"batch_123","status":"validating","created_at":1700000000,"expires_at":1700086400}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+
+	_, err := b.DoStartBatch(ctx, provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{
+			openaiTextBatchRequest("france", "gpt-5.6", "What is the capital of France?"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("err = %v, want a context canceled error", err)
+	}
+	if got := batchCalls.Load(); got != 0 {
+		t.Fatalf("POST /batches should not have been attempted once ctx was canceled during upload, got %d call(s)", got)
 	}
 }
 
