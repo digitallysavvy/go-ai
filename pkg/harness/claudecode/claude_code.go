@@ -212,6 +212,14 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		return nil, err
 	}
 
+	// Normalize each forwarded bridge diagnostics frame into the general
+	// harness.Diagnostic and report it. Mirrors TS `claude-code-harness.ts`
+	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
+	var onDiagnostic func(bridge.OutboundMessage)
+	if opts.Observability != nil {
+		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
+	}
+
 	// Rung 1 — ATTACH. When lifecycle state carries live bridge coordinates,
 	// try to reopen a socket to the still-running bridge instead of
 	// respawning. No spawn, no fresh token (the existing bridge still
@@ -230,6 +238,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
 			permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
 			mcpServers: settings.MCPServers, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
+			onDiagnostic: onDiagnostic,
 		}); sess != nil {
 			return sess, nil
 		}
@@ -292,7 +301,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 				},
 			})
 		},
-		Reconnect: settings.Reconnect,
+		Reconnect:    settings.Reconnect,
+		OnDiagnostic: onDiagnostic,
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -344,6 +354,7 @@ type attachOptions struct {
 	mcpServers                   map[string]any
 	sandbox                      providerutils.SandboxSession
 	sandboxHomeDir               string
+	onDiagnostic                 func(bridge.OutboundMessage)
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
@@ -374,6 +385,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		},
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
+		OnDiagnostic:           opts.onDiagnostic,
 	})
 	var finishAttachment func()
 	if opts.isContinue {

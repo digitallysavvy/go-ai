@@ -181,6 +181,14 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		return nil, err
 	}
 
+	// Normalize each forwarded bridge diagnostics frame into the general
+	// harness.Diagnostic and report it. Mirrors TS `codex-harness.ts`
+	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
+	var onDiagnostic func(bridge.OutboundMessage)
+	if opts.Observability != nil {
+		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
+	}
+
 	// Rung 1 — ATTACH. When lifecycle state carries live bridge coordinates,
 	// try to reopen a socket to the still-running bridge instead of
 	// respawning. No spawn, no fresh token. A continued (suspended) turn
@@ -199,6 +207,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
 			permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 			turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
+			onDiagnostic:                 onDiagnostic,
 		}); sess != nil {
 			return sess, nil
 		}
@@ -266,7 +275,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		Connect: func(ctx context.Context) (bridge.Conn, error) {
 			return bridge.Dial(ctx, launched.Endpoint, bridge.DialOptions{Name: "codex bridge"})
 		},
-		Reconnect: settings.Reconnect,
+		Reconnect:    settings.Reconnect,
+		OnDiagnostic: onDiagnostic,
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -319,6 +329,7 @@ type attachOptions struct {
 	sandbox                      providerutils.SandboxSession
 	sandboxHomeDir               string
 	turnConfigurationFingerprint string
+	onDiagnostic                 func(bridge.OutboundMessage)
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
@@ -341,6 +352,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		},
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
+		OnDiagnostic:           opts.onDiagnostic,
 	})
 	var finishAttachment func()
 	if opts.isContinue {
