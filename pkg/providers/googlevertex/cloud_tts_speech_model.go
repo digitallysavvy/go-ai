@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -133,8 +134,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to synthesize speech: "+err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, providererrors.NewProviderError("google-vertex", resp.StatusCode, "",
-			fmt.Sprintf("Cloud Text-to-Speech API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	var parsed struct {
@@ -171,4 +171,33 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 			Body:      json.RawMessage(resp.Body),
 		},
 	}, nil
+}
+
+// cloudTTSErrorData mirrors TS googleVertexErrorDataSchema
+// (google-vertex-error.ts): {"error":{"code","message","status"}}.
+type cloudTTSErrorData struct {
+	Error struct {
+		Code    *int   `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+}
+
+// cloudTTSError builds a ProviderError from a failed Cloud Text-to-Speech
+// response, mirroring TS googleVertexFailedResponseHandler
+// (createJsonErrorResponseHandler with errorToMessage: data => data.error.message):
+// the message is the parsed Google error's `message` field alone, not the
+// raw response body, falling back to the raw body when it doesn't parse.
+func cloudTTSError(statusCode int, body []byte, headers http.Header) error {
+	message := string(body)
+	var data cloudTTSErrorData
+	if err := json.Unmarshal(body, &data); err == nil && data.Error.Message != "" {
+		message = data.Error.Message
+	}
+	perr := providererrors.NewProviderError("google-vertex", statusCode, data.Error.Status, message, nil)
+	perr.ResponseBody = string(body)
+	if len(headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
+	}
+	return perr
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // Ported from ai/packages/google-vertex/src/google-vertex-cloud-tts-speech-model.test.ts
@@ -293,6 +296,26 @@ func TestCloudTTS_ErrorResponseReturnsProviderError(t *testing.T) {
 	_, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "Hello!"})
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+	// TS googleVertexFailedResponseHandler (createJsonErrorResponseHandler
+	// with errorToMessage: data => data.error.message) surfaces exactly the
+	// parsed error's `message` field as the error Message, not the raw JSON
+	// response body, and keeps status/code as structured fields alongside it.
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) {
+		t.Fatalf("error = %#v, want *providererrors.ProviderError", err)
+	}
+	if perr.Message != "Voice not found." {
+		t.Fatalf("Message = %q, want exactly the parsed error message", perr.Message)
+	}
+	if strings.Contains(perr.Message, `"code"`) || strings.Contains(perr.Message, "{") {
+		t.Fatalf("Message = %q, want the raw error JSON not to leak into it", perr.Message)
+	}
+	if perr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("StatusCode = %d, want 400", perr.StatusCode)
+	}
+	if perr.ErrorCode != "INVALID_ARGUMENT" {
+		t.Fatalf("ErrorCode = %q, want INVALID_ARGUMENT", perr.ErrorCode)
 	}
 }
 
