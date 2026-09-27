@@ -80,7 +80,7 @@ func main() {
 
 When enabled, language model providers that support strict tool calling will only generate tool calls that are valid according to your defined `Parameters` schema. This increases the reliability of tool calling. However, not all schemas may be supported in strict mode, and what is supported depends on the specific provider.
 
-By default, strict mode is disabled. You can enable it per-tool by setting `Strict: true`:
+By default, strict mode is disabled. You can enable it per-tool by setting `Strict: types.BoolPtr(true)`:
 
 ```go
 weatherTool := types.Tool{
@@ -93,7 +93,7 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Strict: true, // Enable strict validation for this tool
+    Strict: types.BoolPtr(true), // Enable strict validation for this tool
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // ...
         return nil, nil
