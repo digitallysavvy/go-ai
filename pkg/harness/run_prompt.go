@@ -62,6 +62,43 @@ func (d *turnDriver) fail(err error) {
 	d.stream.closeOK()
 }
 
+// abort settles the turn as a caller-initiated stop: a ChunkTypeAbort chunk
+// carrying the ctx's cancellation reason (falling back to err), then a
+// normal channel close — instead of the ChunkTypeError chunk `fail` would
+// push. Mirrors TS `HarnessStreamTextResult.abort()` (TS 86a84c9).
+func (d *turnDriver) abort(err error) {
+	reason := ""
+	if ctxErr := d.ctx.Err(); ctxErr != nil {
+		reason = ctxErr.Error()
+	} else if err != nil {
+		reason = err.Error()
+	}
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: reason})
+	d.stream.closeOK()
+}
+
+// settleFailure settles a failed turn, firing OnTurnFailed first (so the
+// session's turn tracking returns to idle regardless of which branch below
+// runs — mirrors TS "Both outcomes notify onTurnFailed"). When the caller's
+// own ctx has already been cancelled or timed out, the failure is a
+// user-initiated stop, not a real error: it settles through d.abort (an
+// `abort` stream part) instead of d.fail (an `error` part), matching TS
+// `settleFailure`'s `input.abortSignal?.aborted` branch (TS 86a84c9). Every
+// runPrompt failure path (turn bootstrap, a wire-level `error` event, the
+// consume loop itself failing) settles through this single helper so the
+// abort/error classification is applied consistently everywhere, exactly as
+// TS applies it "at all three settle points".
+func (d *turnDriver) settleFailure(err error) {
+	if d.in.OnTurnFailed != nil {
+		d.in.OnTurnFailed()
+	}
+	if d.ctx.Err() != nil {
+		d.abort(err)
+		return
+	}
+	d.fail(err)
+}
+
 func (s *chunkChannelStream) Next() (*provider.StreamChunk, error) {
 	c, ok := <-s.ch
 	if !ok {
@@ -291,17 +328,14 @@ func (d *turnDriver) run() {
 		})
 	}
 	if err != nil {
-		// OnTurnFailed is called before the stream is pushed to/closed
-		// (d.fail): a caller blocked on the returned *ai.StreamTextResult's
-		// Err()/Text()/etc — which unblock once the stream settles — must
-		// never observe that before the session's turn-state callback has
-		// already run, or AgentSession.HasUnfinishedTurn() could still
-		// (harmlessly but confusingly) report true for an instant after the
-		// caller's own wait returned.
-		if d.in.OnTurnFailed != nil {
-			d.in.OnTurnFailed()
-		}
-		d.fail(err)
+		// OnTurnFailed is called before the stream is pushed to/closed (see
+		// settleFailure): a caller blocked on the returned
+		// *ai.StreamTextResult's Err()/Text()/etc — which unblock once the
+		// stream settles — must never observe that before the session's
+		// turn-state callback has already run, or AgentSession.
+		// HasUnfinishedTurn() could still (harmlessly but confusingly)
+		// report true for an instant after the caller's own wait returned.
+		d.settleFailure(err)
 		return
 	}
 	d.control = control
@@ -315,10 +349,7 @@ func (d *turnDriver) run() {
 	}()
 
 	if outcome, err := d.processStartupContinuations(); err != nil {
-		if d.in.OnTurnFailed != nil {
-			d.in.OnTurnFailed()
-		}
-		d.fail(err)
+		d.settleFailure(err)
 		return
 	} else if outcome == turnOutcomeAwaitingToolResult {
 		// Already fully settled (pushed+closed) by pauseForHostInput inside
@@ -333,10 +364,7 @@ func (d *turnDriver) run() {
 		return
 	}
 	if turnErr != nil {
-		if d.in.OnTurnFailed != nil {
-			d.in.OnTurnFailed()
-		}
-		d.fail(turnErr)
+		d.settleFailure(turnErr)
 		return
 	}
 	if finished && d.in.OnTurnFinished != nil {

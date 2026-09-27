@@ -463,6 +463,121 @@ func TestAgent_ClientSideToolPauseAndContinue(t *testing.T) {
 	}
 }
 
+// TestAgent_CallerCancelSettlesWithAbortNotError ports TS 86a84c9's contract
+// at the HarnessAgent level: when the caller's own ctx is already cancelled
+// by the time the turn settles — even though the mock harness reports a
+// wire-level error, exactly like a real adapter surfacing an AbortError once
+// its own subprocess is killed — the turn ends with an "abort" chunk (never
+// an "error" one), Err() still returns a non-nil error so an awaiting caller
+// does not hang, and the session still returns to idle (OnTurnFailed fires
+// either way, matching TS "Both outcomes notify onTurnFailed").
+func TestAgent_CallerCancelSettlesWithAbortNotError(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "partial "},
+				&ErrorPart{Error: "AbortError: This operation was aborted"},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := a.Stream(ctx, agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Deliberately a fresh, non-cancelled ctx: reading back the already-
+	// buffered result (e.g. to finish writing an HTTP response) happens on
+	// its own live ctx, independent of the generation ctx that aborted.
+	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	var chunkTypes []string
+	for c := range uiChunks {
+		if ty, ok := c["type"].(string); ok {
+			chunkTypes = append(chunkTypes, ty)
+		}
+	}
+	if e, ok := <-errs; ok && e != nil {
+		t.Fatalf("ToUIMessageStream error = %v, want none (an abort must not surface as an error)", e)
+	}
+
+	sawAbort, sawError := false, false
+	for _, ty := range chunkTypes {
+		if ty == "abort" {
+			sawAbort = true
+		}
+		if ty == "error" {
+			sawError = true
+		}
+	}
+	if !sawAbort {
+		t.Fatalf("chunk types = %v, want an \"abort\" chunk", chunkTypes)
+	}
+	if sawError {
+		t.Fatalf("chunk types = %v, want no \"error\" chunk", chunkTypes)
+	}
+
+	if err := result.Err(); err == nil {
+		t.Fatal("Err() = nil, want a non-nil error (accessors still reject with the underlying error)")
+	}
+	if session.HasUnfinishedTurn() {
+		t.Fatal("session should be idle after an aborted turn (OnTurnFailed must still fire)")
+	}
+}
+
+// TestAgent_WireErrorWithoutCancelStaysAnError verifies the counterpart to
+// the above: absent caller cancellation, a wire-level `error` event keeps
+// its ordinary ChunkTypeError classification (an "error" chunk, no "abort"
+// chunk) — TS's "keeps a real error part when the abort signal has not
+// fired".
+func TestAgent_WireErrorWithoutCancelStaysAnError(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ErrorPart{Error: "boom"},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err == nil {
+		t.Fatal("Err() = nil, want a non-nil error")
+	}
+
+	uiChunks, _ := result.ToUIMessageStream(context.Background())
+	sawAbort, sawError := false, false
+	for c := range uiChunks {
+		switch c["type"] {
+		case "abort":
+			sawAbort = true
+		case "error":
+			sawError = true
+		}
+	}
+	if sawAbort {
+		t.Fatal("chunk types include \"abort\", want none (no caller cancellation occurred)")
+	}
+	if !sawError {
+		t.Fatal("chunk types do not include \"error\", want one")
+	}
+	if session.HasUnfinishedTurn() {
+		t.Fatal("session should be idle after a failed turn")
+	}
+}
+
 // TestAgent_StopWhenStopsBeforeFurtherSteps ports StopWhen (isStepCount(1)):
 // the local result finishes after the first step without waiting for the
 // bridge's own terminal finish.

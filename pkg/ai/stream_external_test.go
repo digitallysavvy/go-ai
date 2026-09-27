@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,6 +330,86 @@ func TestNewStreamTextResultFromParts_TerminalFinishAppliesFinishReasonAndMetada
 	}
 	if decoded["harness"]["turnID"] != "t1" {
 		t.Fatalf("ProviderMetadata() = %s, want harness.turnID = t1", md)
+	}
+}
+
+// TestNewStreamTextResultFromParts_AbortChunkPreservesPartialStep ports TS
+// 86a84c9's "settle a turn aborted by the caller's abortSignal with an
+// `abort` stream part instead of an [error]" contract at the
+// NewStreamTextResultFromParts level: a ChunkTypeAbort arriving mid-step
+// (like ChunkTypeError) still flushes accumulated text/tool calls onto
+// Steps()/Text() instead of discarding them, uses FinishReasonOther (not
+// FinishReasonError, since this is a clean stop, not a failure), and Err()
+// is still non-nil so an awaiting caller does not hang.
+func TestNewStreamTextResultFromParts_AbortChunkPreservesPartialStep(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "partial"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "stopped by caller"},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	err := result.Err()
+	if err == nil || !strings.Contains(err.Error(), "stopped by caller") {
+		t.Fatalf("Err() = %v, want it to mention %q", err, "stopped by caller")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Err() = %v, want errors.Is(err, context.Canceled) so downstream abort-detection classifies it correctly regardless of which ctx later reads the result", err)
+	}
+	if result.Text() != "partial" {
+		t.Errorf("Text() = %q, want %q (partial content preserved)", result.Text(), "partial")
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps() = %d, want 1 (the partial step should still be flushed)", len(steps))
+	}
+	if steps[0].FinishReason != types.FinishReasonOther {
+		t.Errorf("Steps()[0].FinishReason = %q, want %q (a clean stop, not an error)", steps[0].FinishReason, types.FinishReasonOther)
+	}
+}
+
+// TestNewStreamTextResultFromParts_AbortChunkSurfacesAsUIMessageAbort verifies
+// that ToUIMessageStream forwards a ChunkTypeAbort as an "abort" UI chunk
+// rather than an "error" one, matching TS's "toUIMessageStream emits an
+// abort chunk [and] skips onError" expectation (TS 86a84c9).
+func TestNewStreamTextResultFromParts_AbortChunkSurfacesAsUIMessageAbort(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "stopped by caller"},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	var types_ []string
+	for c := range uiChunks {
+		ty, _ := c["type"].(string)
+		types_ = append(types_, ty)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("ToUIMessageStream error = %v", err)
+	}
+
+	sawAbort, sawError := false, false
+	for _, ty := range types_ {
+		if ty == "abort" {
+			sawAbort = true
+		}
+		if ty == "error" {
+			sawError = true
+		}
+	}
+	if !sawAbort {
+		t.Fatalf("chunk types = %v, want an \"abort\" chunk", types_)
+	}
+	if sawError {
+		t.Fatalf("chunk types = %v, want no \"error\" chunk", types_)
 	}
 }
 

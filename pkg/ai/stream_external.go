@@ -65,6 +65,15 @@ type ExternalStreamOptions struct {
 //     own usage), then a terminal, content-less ChunkTypeFinish carrying the
 //     turn's real totalUsage (see state/parity/sep_23_2026/harness.md WG4,
 //     TS 57e0a59).
+//   - provider.ChunkTypeAbort closes the in-progress step the same way
+//     ChunkTypeError does (preserving whatever it accumulated), marks the
+//     result done, and sets Err() to a non-nil error — but with
+//     types.FinishReasonOther instead of FinishReasonError, since it
+//     represents a clean, caller-initiated stop (TS 86a84c9) rather than a
+//     failure. Consumers using ToUIMessageStream see the usual `abort` UI
+//     chunk and no `onError`, exactly as for a provider.LanguageModel-driven
+//     stream, since every chunk (including this one) is forwarded to
+//     opts.OnChunk/the internal chunk buffer unconditionally.
 //
 // No provider is called and no tools are executed: src is assumed to already
 // represent everything that happened (e.g. a harness bridge session that ran
@@ -352,6 +361,48 @@ consumeLoop:
 				}
 			}
 			finishStep(chunk.Type == provider.ChunkTypeFinish)
+
+		case provider.ChunkTypeAbort:
+			// Mirrors ChunkTypeError's handling below: preserve whatever
+			// content the in-progress step accumulated instead of silently
+			// dropping it, and stop consuming src immediately. Unlike
+			// ChunkTypeError, this is a clean, caller-initiated stop (TS
+			// 86a84c9: "settle a turn aborted by the caller's abortSignal
+			// with an `abort` stream part instead of an [error]"), so
+			// FinishReason is FinishReasonOther rather than
+			// FinishReasonError. Err() is still set so callers awaiting
+			// completion observe the abort rather than hanging — TS's
+			// equivalent note is that "the delayed promise accessors still
+			// reject with the underlying error". ChunkTypeAbort was already
+			// forwarded to opts.OnChunk and r.chunkBuf above (unconditional,
+			// like every other chunk type), so ToUIMessageStream's own
+			// abort handling (isAborted, an `abort` UI chunk, no onError)
+			// applies to this result exactly as it does to a
+			// provider.LanguageModel-driven one.
+			if step.finishReason == "" {
+				step.finishReason = types.FinishReasonOther
+			}
+			if step.rawFinishReason == "" {
+				step.rawFinishReason = "aborted"
+			}
+			reason := chunk.AbortReason
+			if reason == "" {
+				reason = "aborted"
+			}
+			// Wraps context.Canceled (rather than a plain fmt.Errorf string)
+			// so that generic abort-detection helpers downstream —
+			// isAbortErr, used by ToUIMessageStream to decide whether a
+			// terminal stream error is an abort (no "error" chunk, no
+			// errCh error) or a real failure — classify it correctly via
+			// errors.Is(err, context.Canceled) regardless of which ctx
+			// instance a later ToUIMessageStream call happens to be given:
+			// a harness turn's own ctx (the abort's actual cause) is often
+			// no longer the same ctx used to read back the already-buffered
+			// result afterward (e.g. an HTTP handler keeps writing the
+			// response with a live ctx after the generation ctx aborted).
+			r.err = fmt.Errorf("%s: %w", reason, context.Canceled)
+			finishStep(true)
+			break consumeLoop
 
 		case provider.ChunkTypeError:
 			// An error chunk ends the step (and the whole result) the same
