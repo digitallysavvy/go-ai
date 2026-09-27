@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -1247,7 +1248,15 @@ func rejectDeniedProgrammaticToolResult(part types.ToolResultContent, opts Conve
 	if !isProgrammatic {
 		return nil
 	}
-	return fmt.Errorf("openai.responses: execution-denied results for programmatic tool calls are not supported")
+	// Matches TS's UnsupportedFunctionalityError({ functionality:
+	// 'execution-denied results for programmatic tool calls' }), whose
+	// default message template is `'${functionality}' functionality not
+	// supported.`.
+	const functionality = "execution-denied results for programmatic tool calls"
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+	}
 }
 
 // sameParallelToolCall reports whether two ParallelToolCallMetadata values

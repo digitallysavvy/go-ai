@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -209,8 +210,11 @@ func TestPrepareTools_FunctionTool_NamespaceConflictingDescription(t *testing.T)
 	if err == nil {
 		t.Fatal("PrepareToolsWithError() error = nil, want conflict")
 	}
-	if got, want := err.Error(), `unsupported functionality: conflicting descriptions for OpenAI tool namespace "crm"`; got != want {
+	if got, want := err.Error(), `'conflicting descriptions for OpenAI tool namespace "crm"' functionality not supported.`; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("error = %#v, want an UnsupportedFunctionalityError", err)
 	}
 }
 

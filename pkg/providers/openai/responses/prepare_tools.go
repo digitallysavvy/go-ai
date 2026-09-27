@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -50,7 +51,11 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 						namespaces[namespace.Name] = namespaceDef
 						result = append(result, namespaceDef)
 					} else if namespaceDef.Description != namespace.Description {
-						return nil, fmt.Errorf("unsupported functionality: conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						functionality := fmt.Sprintf("conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						return nil, &providererrors.UnsupportedFunctionalityError{
+							Functionality: functionality,
+							Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+						}
 					}
 					namespaceDef.Tools = append(namespaceDef.Tools, functionDef)
 					continue
@@ -655,10 +660,11 @@ func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*
 	}
 
 	if len(entries) == 0 {
-		return nil, warnings, fmt.Errorf(
-			"unsupported functionality: allowedTools with only tools that cannot be allow-listed (%s)",
-			strings.Join(dropped, ", "),
-		)
+		functionality := fmt.Sprintf("allowedTools with only tools that cannot be allow-listed (%s)", strings.Join(dropped, ", "))
+		return nil, warnings, &providererrors.UnsupportedFunctionalityError{
+			Functionality: functionality,
+			Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+		}
 	}
 
 	return &AllowedToolsToolChoice{Type: "allowed_tools", Mode: mode, Tools: entries}, warnings, nil
