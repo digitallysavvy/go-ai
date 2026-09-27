@@ -628,6 +628,20 @@ func (s *stream) processFuncCallPart(part Part) {
 		}
 		toolName := fc.Name
 		argsJSON := completeCallArgsJSON(fc)
+		args := fc.Args
+		if fc.ArgsIsString {
+			// Best-effort: the raw wire "args" was itself a JSON string (see
+			// FunctionCall.UnmarshalJSON); if it happens to decode to an
+			// object, expose it structurally too. TS has no equivalent field
+			// here (its tool-call chunk only carries `input` text).
+			var m map[string]interface{}
+			if json.Unmarshal([]byte(argsJSON), &m) == nil {
+				args = m
+			}
+		}
+		if args == nil {
+			args = map[string]interface{}{}
+		}
 
 		s.chunkBuffer = append(s.chunkBuffer,
 			&provider.StreamChunk{
@@ -651,7 +665,7 @@ func (s *stream) processFuncCallPart(part Part) {
 				ToolCall: &types.ToolCall{
 					ID:               toolCallID,
 					ToolName:         toolName,
-					Arguments:        fc.Args,
+					Arguments:        args,
 					RawArguments:     argsJSON,
 					ThoughtSignature: part.ThoughtSignature,
 				},
@@ -727,6 +741,9 @@ func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulat
 // `JSON.stringify(part.functionCall.args ?? {})`, where args was already
 // parsed from JSON text that preserves object key insertion order).
 func completeCallArgsJSON(fc *FunctionCall) string {
+	if fc.ArgsIsString {
+		return fc.ArgsString
+	}
 	if !fc.ArgsSet {
 		return "{}"
 	}

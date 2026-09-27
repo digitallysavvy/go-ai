@@ -296,3 +296,26 @@ func TestStream_PartialArgsStreaming_NestedArrayAndObject(t *testing.T) {
 		t.Fatalf("ingredients[0] = %#v", first)
 	}
 }
+
+// TestStream_CompleteCall_StringArgs ports TS google-language-model.ts's
+// `typeof part.functionCall.args === 'string' ? part.functionCall.args :
+// JSON.stringify(...)` branch (line ~1180): a rare wire shape where "args"
+// itself decodes to a JSON string rather than an object, used verbatim as
+// the tool call's input text instead of being re-encoded. Before this fix,
+// FunctionCall.UnmarshalJSON hard-failed trying to unmarshal a JSON string
+// into a map, which would have aborted the whole SSE event.
+func TestStream_CompleteCall_StringArgs(t *testing.T) {
+	chunk1 := `{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-s","name":"raw_tool","args":"already-json-text"}}]},"finishReason":"STOP"}]}`
+
+	s := newTestStream(sseStream(chunk1, "[DONE]"))
+	chunks := drainStream(t, s)
+
+	calls := toolCallsOf(chunks)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool-call, got %d: %v", len(calls), chunkTypes(chunks))
+	}
+	tc := calls[0].ToolCall
+	if tc.RawArguments != "already-json-text" {
+		t.Fatalf("RawArguments = %q, want the string used verbatim", tc.RawArguments)
+	}
+}

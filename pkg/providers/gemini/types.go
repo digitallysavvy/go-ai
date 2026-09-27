@@ -110,6 +110,13 @@ type FunctionCall struct {
 	ArgsRaw json.RawMessage
 	ArgsSet bool
 
+	// ArgsIsString/ArgsString handle the rare wire shape where "args" is a
+	// JSON string rather than an object (TS: `typeof part.functionCall.args
+	// === 'string'`), which google-language-model.ts uses verbatim as the
+	// call's `input` text instead of re-stringifying it.
+	ArgsIsString bool
+	ArgsString   string
+
 	// PartialArgs holds the streamed leaf values for this chunk.
 	// PartialArgsSet is true iff the wire JSON had a non-null "partialArgs"
 	// field (as opposed to PartialArgs being nil because the field was
@@ -143,7 +150,21 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 		f.ArgsSet = true
 		f.ArgsRaw = raw.Args
 		if err := json.Unmarshal(raw.Args, &f.Args); err != nil {
-			return err
+			// "args" is `z.unknown()` in the TS schema: a string value is a
+			// valid (if rare) wire shape, used as-is rather than re-encoded
+			// (google-language-model.ts:1180). Any other non-object shape
+			// (number/bool/array) falls back to an empty object, mirroring
+			// the effect of `JSON.stringify(part.functionCall.args ?? {})`
+			// only for the object/null cases — such payloads aren't valid
+			// tool arguments either way.
+			var s string
+			if jsonErr := json.Unmarshal(raw.Args, &s); jsonErr == nil {
+				f.ArgsIsString = true
+				f.ArgsString = s
+				f.Args = nil
+			} else {
+				f.Args = map[string]interface{}{}
+			}
 		}
 	}
 	if len(raw.PartialArgs) > 0 && string(raw.PartialArgs) != "null" {
