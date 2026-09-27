@@ -1616,3 +1616,458 @@ func TestVideoModel_StatusPending202OversizedBodyErrors(t *testing.T) {
 	require.Nil(t, resp)
 	assert.Contains(t, err.Error(), "exceeded")
 }
+
+// doneVideoHandler returns an http.HandlerFunc that answers request 1 with
+// a create response and every subsequent request with a "done" status
+// response, capturing the create request body into gotBody.
+func doneVideoHandler(t *testing.T, gotBody *map[string]interface{}, videoURL string) http.HandlerFunc {
+	t.Helper()
+	requestCount := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(gotBody))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "done",
+			"video":  map[string]interface{}{"url": videoURL},
+		})
+	}
+}
+
+// TestVideoModel_MapsKeyframesLastFrameGenerateAudioStorageOptions ports TS
+// "should map current xAI generation options"
+// (xai-video-model.test.ts:149).
+func TestVideoModel_MapsKeyframesLastFrameGenerateAudioStorageOptions(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://vidgen.x.ai/output/video-001.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	generateAudio := false
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt:        "A chicken flying into the sunset",
+		GenerateAudio: &generateAudio,
+		FrameImages: []provider.VideoFrameImage{
+			{
+				FrameType: provider.VideoFrameTypeLastFrame,
+				Image:     provider.VideoModelV3File{Type: "url", URL: "https://example.com/end.png"},
+			},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"storageOptions": map[string]interface{}{
+					"filename":     "result.mp4",
+					"expiresAfter": 86_400,
+					"publicUrl":    map[string]interface{}{"expiresAfter": 3_600},
+				},
+				"keyframes": []map[string]interface{}{
+					{"imageUrl": "https://example.com/middle.png", "timestampSeconds": 2.5},
+				},
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Equal(t, false, gotBody["generate_audio"])
+	lastFrame, ok := gotBody["last_frame"].(map[string]interface{})
+	require.True(t, ok, "expected last_frame in body, got: %+v", gotBody)
+	assert.Equal(t, "https://example.com/end.png", lastFrame["url"])
+
+	storageOptions, ok := gotBody["storage_options"].(map[string]interface{})
+	require.True(t, ok, "expected storage_options in body, got: %+v", gotBody)
+	assert.Equal(t, "result.mp4", storageOptions["filename"])
+	assert.Equal(t, float64(86_400), storageOptions["expires_after"])
+	publicURL, ok := storageOptions["public_url"].(map[string]interface{})
+	require.True(t, ok, "expected public_url object, got: %+v", storageOptions["public_url"])
+	assert.Equal(t, float64(3_600), publicURL["expires_after"])
+
+	keyframes, ok := gotBody["keyframes"].([]interface{})
+	require.True(t, ok, "expected keyframes in body, got: %+v", gotBody)
+	require.Len(t, keyframes, 1)
+	kf := keyframes[0].(map[string]interface{})
+	kfImage := kf["image"].(map[string]interface{})
+	assert.Equal(t, "https://example.com/middle.png", kfImage["url"])
+	assert.Equal(t, 2.5, kf["timestamp_s"])
+}
+
+// TestVideoModel_LastFrame_WarnsForOldModel ports TS "should warn and omit
+// last_frame for grok-imagine-video" (xai-video-model.test.ts:196).
+func TestVideoModel_LastFrame_WarnsForOldModel(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		FrameImages: []provider.VideoFrameImage{
+			{
+				FrameType: provider.VideoFrameTypeLastFrame,
+				Image:     provider.VideoModelV3File{Type: "url", URL: "https://example.com/end.png"},
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	_, hasLastFrame := gotBody["last_frame"]
+	assert.False(t, hasLastFrame, "last_frame should be omitted, got body: %+v", gotBody)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if w.Feature == "frameImages" && strings.Contains(w.Message, `only supports last_frame with "grok-imagine-video-1.5"`) {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a last_frame unsupported warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_InputReferences_SeparatesImageAndAudio ports TS "should
+// separate image and audio inputReferences" (xai-video-model.test.ts:962).
+func TestVideoModel_InputReferences_SeparatesImageAndAudio(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/ref1.jpg"},
+			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
+
+	refImages, ok := gotBody["reference_images"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refImages, 1)
+	assert.Equal(t, "https://example.com/ref1.jpg", refImages[0].(map[string]interface{})["url"])
+
+	refAudios, ok := gotBody["reference_audios"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refAudios, 1)
+	assert.Equal(t, "https://example.com/voice.mp3", refAudios[0].(map[string]interface{})["url"])
+}
+
+// TestVideoModel_InputReferences_AudioOnlyR2V ports TS "should support
+// audio-only reference-to-video" (xai-video-model.test.ts:986).
+func TestVideoModel_InputReferences_AudioOnlyR2V(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
+
+	_, hasRefImages := gotBody["reference_images"]
+	assert.False(t, hasRefImages, "reference_images should be omitted, got: %+v", gotBody)
+	refAudios, ok := gotBody["reference_audios"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refAudios, 1)
+	assert.Equal(t, "https://example.com/voice.mp3", refAudios[0].(map[string]interface{})["url"])
+}
+
+// TestVideoModel_InputReferences_VideoOnly_NoEmptyReferenceImages ports TS
+// "should not send an empty reference_images array for video-only
+// inputReferences" (xai-video-model.test.ts:1008).
+func TestVideoModel_InputReferences_VideoOnly_NoEmptyReferenceImages(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/clip.mp4", MediaType: "video/mp4"},
+		},
+	}
+
+	_, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	_, hasRefImages := gotBody["reference_images"]
+	assert.False(t, hasRefImages, "reference_images should be omitted, got: %+v", gotBody)
+}
+
+// TestVideoModel_InputReferences_FirstFrameWithAudioReference ports TS
+// "should combine a pinned first frame with an audio reference"
+// (xai-video-model.test.ts:1026).
+func TestVideoModel_InputReferences_FirstFrameWithAudioReference(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/start.jpg", MediaType: "image/jpeg"},
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
+
+	image, ok := gotBody["image"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "https://example.com/start.jpg", image["url"])
+	_, hasRefImages := gotBody["reference_images"]
+	assert.False(t, hasRefImages, "reference_images should be omitted, got: %+v", gotBody)
+	refAudios, ok := gotBody["reference_audios"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refAudios, 1)
+}
+
+// TestVideoModel_InputReferences_ExplicitAudioOnlyR2V ports TS "should
+// support explicit audio-only R2V without reference_images"
+// (xai-video-model.test.ts:1054).
+func TestVideoModel_InputReferences_ExplicitAudioOnlyR2V(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"mode": "reference-to-video"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
+
+	_, hasRefImages := gotBody["reference_images"]
+	assert.False(t, hasRefImages, "reference_images should be omitted, got: %+v", gotBody)
+	refAudios, ok := gotBody["reference_audios"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refAudios, 1)
+}
+
+// TestVideoModel_ExplicitR2V_NoReferences_Warns ports TS "should warn when
+// explicit R2V has no references at all" (xai-video-model.test.ts:1081).
+func TestVideoModel_ExplicitR2V_NoReferences_Warns(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"mode": "reference-to-video"},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	_, hasRefImages := gotBody["reference_images"]
+	assert.False(t, hasRefImages, "reference_images should be omitted, got: %+v", gotBody)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if w.Feature == "referenceImages" && strings.Contains(w.Message, "without reference images") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a no-references warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_InputReferences_CombinedAudioCapTruncatesWithWarning
+// mirrors the xai-video-model.ts referenceAudioInputs truncation ("xAI
+// reference-to-video supports at most 3 audio references. Only the first 3
+// were used."): 2 audio inputReferences plus 2 referenceVoiceIds (4 total)
+// must be capped at 3, with a warning rather than a hard error (only the
+// standalone referenceVoiceIds array itself has a schema-level max of 3).
+func TestVideoModel_InputReferences_CombinedAudioCapTruncatesWithWarning(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/ref.jpg"},
+			{Type: "url", URL: "https://example.com/a1.mp3", MediaType: "audio/mpeg"},
+			{Type: "url", URL: "https://example.com/a2.mp3", MediaType: "audio/mpeg"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"mode":              "reference-to-video",
+				"referenceVoiceIds": []string{"voice-1", "voice-2"},
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+
+	refAudios, ok := gotBody["reference_audios"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, refAudios, 3, "expected the combined list to be capped at 3, got: %+v", refAudios)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if strings.Contains(w.Message, "at most 3 audio references") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a truncation warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_InputReferences_IgnoredOutsideR2V_Warns mirrors the
+// xai-video-model.ts inputReferences-ignored warning: an explicit
+// non-R2V mode (edit-video here) with inputReferences present must warn
+// that the references were ignored.
+func TestVideoModel_InputReferences_IgnoredOutsideR2V_Warns(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		InputReferences: []provider.VideoModelV3File{
+			{Type: "url", URL: "https://example.com/ref.jpg"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"mode":     "edit-video",
+				"videoUrl": "https://example.com/source.mp4",
+			},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if w.Feature == "inputReferences" && strings.Contains(w.Message, "only supports inputReferences for reference-to-video") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected an inputReferences-ignored warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_StartImage_RejectsVideoFile mirrors xai-video-model.ts
+// resolveStartImage / isVideoFile: a video file passed as the start image
+// (or a pinned first_frame) is rejected with a warning rather than sent as
+// `image`.
+func TestVideoModel_StartImage_RejectsVideoFile(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(doneVideoHandler(t, &gotBody, "https://example.com/out.mp4"))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A chicken flying into the sunset",
+		Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/clip.mp4", MediaType: "video/mp4"},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.NoError(t, err)
+	_, hasImage := gotBody["image"]
+	assert.False(t, hasImage, "image should be omitted for a video file, got: %+v", gotBody)
+
+	found := false
+	for _, w := range resp.Warnings {
+		if w.Feature == "image" && strings.Contains(w.Message, "does not accept a video as a start/frame image") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a video-start-image warning, got: %+v", resp.Warnings)
+}
+
+// TestVideoModel_FileOutput_MapsToProviderMetadata mirrors the xAI status
+// response's file_output/storage_error fields (persisted-video Files API
+// metadata), and the URL fallback from file_output.public_url when the
+// direct video.url is empty.
+func TestVideoModel_FileOutput_MapsToProviderMetadata(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "done",
+			"video": map[string]interface{}{
+				"file_output": map[string]interface{}{
+					"file_id":    "file-123",
+					"filename":   "result.mp4",
+					"public_url": "https://files.x.ai/result.mp4",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, ModelGrokImagineVideo15)
+
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "A sunset"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "https://files.x.ai/result.mp4", resp.Videos[0].URL)
+
+	xaiMeta := resp.ProviderMetadata["xai"].(map[string]interface{})
+	fileOutput, ok := xaiMeta["fileOutput"].(map[string]interface{})
+	require.True(t, ok, "expected fileOutput metadata, got: %+v", xaiMeta)
+	assert.Equal(t, "file-123", fileOutput["fileId"])
+	assert.Equal(t, "result.mp4", fileOutput["filename"])
+	assert.Equal(t, "https://files.x.ai/result.mp4", fileOutput["publicUrl"])
+}

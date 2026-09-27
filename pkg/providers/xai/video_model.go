@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
@@ -98,9 +99,40 @@ type XAIVideoProviderOptions struct {
 	// subject a voice. Only applies to reference-to-video generation.
 	ReferenceVoiceIDs []string `json:"referenceVoiceIds,omitempty"`
 
+	// Keyframes are mid-video image anchors (up to 4). Only supported by
+	// "grok-imagine-video-1.5" for standard generation (not edit/extension).
+	Keyframes []XAIVideoKeyframe `json:"keyframes,omitempty"`
+
+	// StorageOptions persists the generated video in the xAI Files API.
+	StorageOptions *XAIVideoStorageOptions `json:"storageOptions,omitempty"`
+
 	// User is a unique identifier representing the end user, for abuse
 	// monitoring. Not sent for video extension requests.
 	User *string `json:"user,omitempty"`
+}
+
+// XAIVideoKeyframe is a mid-video image anchor.
+type XAIVideoKeyframe struct {
+	ImageURL         string  `json:"imageUrl"`
+	TimestampSeconds float64 `json:"timestampSeconds"`
+}
+
+// XAIVideoStorageOptions requests that the generated video be persisted in
+// the xAI Files API.
+type XAIVideoStorageOptions struct {
+	Filename     string `json:"filename"`
+	ExpiresAfter *int   `json:"expiresAfter,omitempty"`
+
+	// PublicURL is either a bool or an object with an ExpiresAfter field
+	// (XAIVideoPublicURLOptions). Both shapes are supported by xAI; use
+	// PublicURLBool / PublicURLWithExpiry to construct one.
+	PublicURL interface{} `json:"publicUrl,omitempty"`
+}
+
+// XAIVideoPublicURLOptions is the object form of
+// XAIVideoStorageOptions.PublicURL.
+type XAIVideoPublicURLOptions struct {
+	ExpiresAfter *int `json:"expiresAfter,omitempty"`
 }
 
 // DoGenerate performs video generation with polling
@@ -113,7 +145,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, err
 	}
 
-	mode := resolveMode(provOpts)
+	mode := resolveMode(opts, provOpts)
 	isEdit := mode == "edit-video"
 	isExtension := mode == "extend-video"
 	hasReferenceImages := mode == "reference-to-video"
@@ -168,7 +200,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		}
 
 		// Check if done
-		if status.Status == "done" || (status.Status == "" && status.Video != nil && status.Video.URL != "") {
+		if status.Status == "done" || (status.Status == "" && status.Video != nil && resolveVideoURL(status.Video) != "") {
 			// Terminal outcomes (moderation rejection, missing URL) are
 			// reported as an upstream `failed` status via polling.JobResult
 			// rather than thrown as a Go error, so they surface the same way
@@ -180,7 +212,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 				}, nil
 			}
 
-			if status.Video == nil || status.Video.URL == "" {
+			if status.Video == nil || resolveVideoURL(status.Video) == "" {
 				return &polling.JobResult{
 					Status: polling.JobStatusFailed,
 					Error:  "Video generation completed but no video URL was returned.",
@@ -188,7 +220,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			}
 			return &polling.JobResult{
 				Status:    polling.JobStatusCompleted,
-				OutputURL: status.Video.URL,
+				OutputURL: resolveVideoURL(status.Video),
 				Metadata: map[string]interface{}{
 					"video":    status.Video,
 					"model":    status.Model,
@@ -261,7 +293,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	// Build xai-scoped metadata.
 	xaiMeta := map[string]interface{}{
 		"requestId": createResp.RequestID,
-		"videoUrl":  videoData.URL,
+		"videoUrl":  resolveVideoURL(videoData),
 	}
 	if videoData.Duration != nil {
 		xaiMeta["duration"] = *videoData.Duration
@@ -275,13 +307,35 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	if progress, ok := jobResult.Metadata["progress"].(*int); ok && progress != nil {
 		xaiMeta["progress"] = *progress
 	}
+	if videoData.FileOutput != nil {
+		fileOutput := map[string]interface{}{
+			"fileId":   videoData.FileOutput.FileID,
+			"filename": videoData.FileOutput.Filename,
+		}
+		if videoData.FileOutput.ExpiresAt != nil {
+			fileOutput["expiresAt"] = *videoData.FileOutput.ExpiresAt
+		}
+		if videoData.FileOutput.PublicURL != nil {
+			fileOutput["publicUrl"] = *videoData.FileOutput.PublicURL
+		}
+		if videoData.FileOutput.PublicURLError != nil {
+			fileOutput["publicUrlError"] = *videoData.FileOutput.PublicURLError
+		}
+		if videoData.FileOutput.PublicURLExpiresAt != nil {
+			fileOutput["publicUrlExpiresAt"] = *videoData.FileOutput.PublicURLExpiresAt
+		}
+		xaiMeta["fileOutput"] = fileOutput
+	}
+	if videoData.StorageError != nil {
+		xaiMeta["storageError"] = *videoData.StorageError
+	}
 
 	// Build response
 	resp := &provider.VideoModelV3Response{
 		Videos: []provider.VideoModelV3VideoData{
 			{
 				Type:      "url",
-				URL:       videoData.URL,
+				URL:       resolveVideoURL(videoData),
 				MediaType: "video/mp4",
 			},
 		},
@@ -340,7 +394,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string) (*x
 		if err := json.Unmarshal(limited, &status); err != nil {
 			return &xaiVideoStatusResponse{Status: "pending"}, nil
 		}
-		if status.Status == "" && (status.Video == nil || status.Video.URL == "") {
+		if status.Status == "" && (status.Video == nil || resolveVideoURL(status.Video) == "") {
 			status.Status = "pending"
 		}
 		return &status, nil
@@ -395,6 +449,49 @@ func (m *VideoModel) buildRequestBody(
 		}
 	}
 
+	// GenerateAudio requests generated audio alongside the video. Not
+	// supported for edit/extension.
+	if opts.GenerateAudio != nil && !isEdit && !isExtension {
+		body["generate_audio"] = *opts.GenerateAudio
+	} else if opts.GenerateAudio != nil {
+		mode := "video editing"
+		if isExtension {
+			mode = "video extension"
+		}
+		warnings = append(warnings, unsupportedVideoWarning("generateAudio",
+			fmt.Sprintf("xAI %s does not support generateAudio.", mode)))
+	}
+
+	// Persist the generated video in the xAI Files API.
+	if provOpts.StorageOptions != nil {
+		body["storage_options"] = storageOptionsToWire(provOpts.StorageOptions)
+	}
+
+	// Mid-video image anchors. Only grok-imagine-video-1.5 supports them,
+	// and only for standard generation (not edit/extension).
+	if len(provOpts.Keyframes) > 0 {
+		if m.modelID != ModelGrokImagineVideo15 || isEdit || isExtension {
+			details := fmt.Sprintf("xAI only supports keyframes with %q.", ModelGrokImagineVideo15)
+			if m.modelID == ModelGrokImagineVideo15 {
+				mode := "video editing"
+				if isExtension {
+					mode = "video extension"
+				}
+				details = fmt.Sprintf("xAI %s does not support keyframes.", mode)
+			}
+			warnings = append(warnings, unsupportedVideoWarning("keyframes", details))
+		} else {
+			keyframes := make([]map[string]interface{}, 0, len(provOpts.Keyframes))
+			for _, kf := range provOpts.Keyframes {
+				keyframes = append(keyframes, map[string]interface{}{
+					"image":       map[string]interface{}{"url": kf.ImageURL},
+					"timestamp_s": kf.TimestampSeconds,
+				})
+			}
+			body["keyframes"] = keyframes
+		}
+	}
+
 	// Video editing/extension: add source video URL
 	if (isEdit || isExtension) && provOpts.VideoURL != nil {
 		body["video"] = map[string]interface{}{
@@ -402,34 +499,66 @@ func (m *VideoModel) buildRequestBody(
 		}
 	}
 
-	// Image-to-video: add source image
-	if opts.Image != nil {
-		body["image"] = m.convertImageToXAIFormat(opts.Image)
+	// Convert the start image (first_frame or legacy image-to-video input)
+	// to the nested xAI request image object.
+	startImage := resolveStartImage(opts)
+	if startImage != nil {
+		if isVideoFile(startImage) {
+			feature := "image"
+			if getFirstFrameImage(opts) != nil {
+				feature = "frameImages"
+			}
+			warnings = append(warnings, unsupportedVideoWarning(feature,
+				"xAI does not accept a video as a start/frame image. The video was ignored. "+
+					`Use providerOptions.xai.mode "extend-video" to continue from a video instead.`))
+		} else {
+			body["image"] = map[string]interface{}{"url": fileToXAIURL(startImage)}
+		}
+	}
+
+	// Only grok-imagine-video-1.5 supports a pinned last frame.
+	if lastFrameImage := getLastFrameImage(opts); lastFrameImage != nil {
+		if m.modelID != ModelGrokImagineVideo15 || isEdit || isExtension || isVideoFile(lastFrameImage) {
+			details := fmt.Sprintf("xAI only supports last_frame with %q. The last frame was ignored.", ModelGrokImagineVideo15)
+			if m.modelID == ModelGrokImagineVideo15 {
+				details = "xAI only accepts an image last_frame for video generation. The last frame was ignored."
+			}
+			warnings = append(warnings, unsupportedVideoWarning("frameImages", details))
+		} else {
+			body["last_frame"] = map[string]interface{}{"url": fileToXAIURL(lastFrameImage)}
+		}
 	}
 
 	// Reference images for R2V (reference-to-video) generation.
 	if hasReferenceImages {
-		referenceImages := resolveReferenceImages(provOpts)
+		referenceImages := resolveReferences(opts, provOpts, &warnings)
+		referenceAudiosFromInputs := resolveReferenceAudiosFromInputs(opts)
 
 		if referenceImages != nil {
 			body["reference_images"] = referenceImages
-		} else {
+		} else if len(referenceAudiosFromInputs) == 0 {
 			// Explicit R2V with no usable image references would silently
 			// send a plain generations request; tell the caller rather than
 			// ever sending an empty `reference_images: []`.
-			warnings = append(warnings, unsupportedVideoWarning("referenceImageUrls",
+			warnings = append(warnings, unsupportedVideoWarning("referenceImages",
 				"xAI reference-to-video requires at least one image reference. The video will be generated without reference images."))
 		}
 
-		if len(provOpts.ReferenceVoiceIDs) > 0 {
-			// validateVideoProviderOptions already rejects more than 3
-			// voice ids with InvalidArgumentError, so every id here is
-			// used as-is.
-			audios := make([]map[string]interface{}, 0, len(provOpts.ReferenceVoiceIDs))
-			for _, voiceID := range provOpts.ReferenceVoiceIDs {
-				audios = append(audios, map[string]interface{}{"voice_id": voiceID})
+		// validateVideoProviderOptions already rejects more than 3
+		// voice ids with InvalidArgumentError, so every id here is used
+		// as-is.
+		referenceVoices := make([]map[string]interface{}, 0, len(provOpts.ReferenceVoiceIDs))
+		for _, voiceID := range provOpts.ReferenceVoiceIDs {
+			referenceVoices = append(referenceVoices, map[string]interface{}{"voice_id": voiceID})
+		}
+		referenceAudioInputs := append(append([]map[string]interface{}{}, referenceAudiosFromInputs...), referenceVoices...)
+		if len(referenceAudioInputs) > 0 {
+			if len(referenceAudioInputs) > 3 {
+				warnings = append(warnings, unsupportedVideoWarning("inputReferences",
+					"xAI reference-to-video supports at most 3 audio references. Only the first 3 were used."))
+				referenceAudioInputs = referenceAudioInputs[:3]
 			}
-			body["reference_audios"] = audios
+			body["reference_audios"] = referenceAudioInputs
 		}
 
 		// Reference-to-video is limited to 720p; downgrade a 1080p request.
@@ -448,6 +577,18 @@ func (m *VideoModel) buildRequestBody(
 				ModelGrokImagineVideo, ModelGrokImagineVideo15)))
 	}
 
+	// Warn when references were provided but cannot be used in the resolved
+	// mode (e.g. alongside frameImages, in edit/extend modes, or when the
+	// references carried no usable image or audio to drive
+	// reference-to-video).
+	if len(opts.InputReferences) > 0 && !hasReferenceImages {
+		details := "xAI reference-to-video requires at least one image or audio reference. The references were ignored."
+		if hasImageInputReference(opts) || hasAudioInputReference(opts) {
+			details = "xAI only supports inputReferences for reference-to-video generation. The references were ignored."
+		}
+		warnings = append(warnings, unsupportedVideoWarning("inputReferences", details))
+	}
+
 	// Preset reference voices only apply to reference-to-video generation.
 	if !hasReferenceImages && len(provOpts.ReferenceVoiceIDs) > 0 {
 		warnings = append(warnings, unsupportedVideoWarning("referenceVoiceIds",
@@ -464,6 +605,41 @@ func (m *VideoModel) buildRequestBody(
 	}
 
 	return body, warnings
+}
+
+// storageOptionsToWire converts XAIVideoStorageOptions to the xAI wire
+// shape (snake_case, with publicUrl passed through as either a bool or
+// {expires_after}).
+func storageOptionsToWire(opts *XAIVideoStorageOptions) map[string]interface{} {
+	wire := map[string]interface{}{"filename": opts.Filename}
+	if opts.ExpiresAfter != nil {
+		wire["expires_after"] = *opts.ExpiresAfter
+	}
+	switch v := opts.PublicURL.(type) {
+	case bool:
+		wire["public_url"] = v
+	case map[string]interface{}:
+		obj := map[string]interface{}{}
+		if raw, ok := v["expiresAfter"]; ok {
+			obj["expires_after"] = raw
+		}
+		wire["public_url"] = obj
+	case *XAIVideoPublicURLOptions:
+		if v != nil {
+			obj := map[string]interface{}{}
+			if v.ExpiresAfter != nil {
+				obj["expires_after"] = *v.ExpiresAfter
+			}
+			wire["public_url"] = obj
+		}
+	case XAIVideoPublicURLOptions:
+		obj := map[string]interface{}{}
+		if v.ExpiresAfter != nil {
+			obj["expires_after"] = *v.ExpiresAfter
+		}
+		wire["public_url"] = obj
+	}
+	return wire
 }
 
 // resolveReferenceImages resolves the reference images for R2V generation
@@ -486,27 +662,6 @@ func resolveReferenceImages(provOpts *XAIVideoProviderOptions) []map[string]inte
 		return nil
 	}
 	return refs
-}
-
-// convertImageToXAIFormat converts VideoModelV3File to XAI image format
-func (m *VideoModel) convertImageToXAIFormat(img *provider.VideoModelV3File) map[string]interface{} {
-	if img.Type == "url" {
-		return map[string]interface{}{
-			"url": img.URL,
-		}
-	}
-
-	// Convert binary data to base64 data URL
-	base64Data := base64.StdEncoding.EncodeToString(img.Data)
-	mediaType := img.MediaType
-	if mediaType == "" {
-		mediaType = "image/png"
-	}
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64Data)
-
-	return map[string]interface{}{
-		"url": dataURL,
-	}
 }
 
 // checkUnsupportedOptions checks for unsupported options and generates warnings
@@ -566,17 +721,153 @@ func unsupportedVideoWarning(feature, details string) types.Warning {
 	}
 }
 
-func resolveMode(provOpts *XAIVideoProviderOptions) string {
+func resolveMode(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions) string {
 	if provOpts.Mode != nil && *provOpts.Mode != "" {
 		return *provOpts.Mode
 	}
 	if provOpts.VideoURL != nil && *provOpts.VideoURL != "" {
 		return "edit-video"
 	}
-	if len(provOpts.ReferenceImageURLs) > 0 {
+	hasLegacyReferenceURLs := len(provOpts.ReferenceImageURLs) > 0
+	// xAI supports image references, audio references, or both. Video-only
+	// references must not flip a standard generation request into R2V.
+	if hasImageInputReference(opts) || hasAudioInputReference(opts) || hasLegacyReferenceURLs {
 		return "reference-to-video"
 	}
 	return ""
+}
+
+// topLevelMediaType returns the type before the "/" in a MIME media type
+// (e.g. "video/mp4" -> "video"), or "" when mediaType is empty or has no
+// "/".
+func topLevelMediaType(mediaType string) string {
+	idx := strings.IndexByte(mediaType, '/')
+	if idx < 0 {
+		return ""
+	}
+	return mediaType[:idx]
+}
+
+func isVideoFile(file *provider.VideoModelV3File) bool {
+	return file != nil && file.MediaType != "" && topLevelMediaType(file.MediaType) == "video"
+}
+
+// isImageReference reports whether file should be treated as an image
+// reference. References without a media type (only possible for URLs) are
+// treated as images, matching the legacy ReferenceImageURLs behavior.
+func isImageReference(file *provider.VideoModelV3File) bool {
+	return file != nil && (file.MediaType == "" || topLevelMediaType(file.MediaType) == "image")
+}
+
+func isAudioReference(file *provider.VideoModelV3File) bool {
+	return file != nil && file.MediaType != "" && topLevelMediaType(file.MediaType) == "audio"
+}
+
+// fileToXAIURL converts a VideoModelV3File to the URL xAI expects: the raw
+// URL for a "url" file, or a base64 data: URL for a "file" (raw binary)
+// file.
+func fileToXAIURL(file *provider.VideoModelV3File) string {
+	if file.Type == "url" {
+		return file.URL
+	}
+	base64Data := base64.StdEncoding.EncodeToString(file.Data)
+	mediaType := file.MediaType
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mediaType, base64Data)
+}
+
+func getFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+	for i := range opts.FrameImages {
+		if opts.FrameImages[i].FrameType == provider.VideoFrameTypeFirstFrame {
+			return &opts.FrameImages[i].Image
+		}
+	}
+	return nil
+}
+
+func getLastFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+	for i := range opts.FrameImages {
+		if opts.FrameImages[i].FrameType == provider.VideoFrameTypeLastFrame {
+			return &opts.FrameImages[i].Image
+		}
+	}
+	return nil
+}
+
+// resolveStartImage prefers a role-tagged first_frame image over the legacy
+// Image field.
+func resolveStartImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+	if first := getFirstFrameImage(opts); first != nil {
+		return first
+	}
+	return opts.Image
+}
+
+func hasImageInputReference(opts *provider.VideoModelV3CallOptions) bool {
+	for i := range opts.InputReferences {
+		if isImageReference(&opts.InputReferences[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAudioInputReference(opts *provider.VideoModelV3CallOptions) bool {
+	for i := range opts.InputReferences {
+		if isAudioReference(&opts.InputReferences[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveReferences resolves the reference images for R2V generation.
+// First-class InputReferences win over the legacy ReferenceImageURLs
+// provider option. Video references are not supported for
+// reference-to-video and are skipped with a warning. Audio references are
+// handled separately by resolveReferenceAudiosFromInputs.
+func resolveReferences(opts *provider.VideoModelV3CallOptions, provOpts *XAIVideoProviderOptions, warnings *[]types.Warning) []map[string]interface{} {
+	if len(opts.InputReferences) > 0 {
+		var imageURLs []string
+		for i := range opts.InputReferences {
+			reference := &opts.InputReferences[i]
+			if isAudioReference(reference) {
+				continue
+			}
+			if !isImageReference(reference) {
+				*warnings = append(*warnings, unsupportedVideoWarning("inputReferences",
+					"xAI reference-to-video does not accept video references. The video reference was ignored. "+
+						`Use providerOptions.xai.mode "extend-video" to continue from a video.`))
+				continue
+			}
+			imageURLs = append(imageURLs, fileToXAIURL(reference))
+		}
+		if len(imageURLs) == 0 {
+			return nil
+		}
+		refs := make([]map[string]interface{}, 0, len(imageURLs))
+		for _, url := range imageURLs {
+			refs = append(refs, map[string]interface{}{"url": url})
+		}
+		return refs
+	}
+
+	return resolveReferenceImages(provOpts)
+}
+
+// resolveReferenceAudiosFromInputs extracts audio references from
+// InputReferences.
+func resolveReferenceAudiosFromInputs(opts *provider.VideoModelV3CallOptions) []map[string]interface{} {
+	var audios []map[string]interface{}
+	for i := range opts.InputReferences {
+		reference := &opts.InputReferences[i]
+		if isAudioReference(reference) {
+			audios = append(audios, map[string]interface{}{"url": fileToXAIURL(reference)})
+		}
+	}
+	return audios
 }
 
 // mapResolution maps standard resolution strings to XAI format
@@ -632,6 +923,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 		"resolution": true, "videoUrl": true,
 		"mode": true, "referenceImageUrls": true,
 		"referenceVoiceIds": true, "user": true,
+		"keyframes": true, "storageOptions": true,
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -682,7 +974,63 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 		}
 	}
 
+	if len(provOpts.Keyframes) > 4 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "keyframes",
+			Message: "xai provider option keyframes accepts at most 4 entries",
+		}
+	}
+	for _, kf := range provOpts.Keyframes {
+		if kf.ImageURL == "" {
+			return fmt.Errorf("xai provider option keyframes[].imageUrl must not be empty")
+		}
+		if kf.TimestampSeconds <= 0 {
+			return fmt.Errorf("xai provider option keyframes[].timestampSeconds must be positive")
+		}
+	}
+
+	if provOpts.StorageOptions != nil {
+		if provOpts.StorageOptions.Filename == "" {
+			return fmt.Errorf("xai provider option storageOptions.filename must not be empty")
+		}
+		if provOpts.StorageOptions.ExpiresAfter != nil {
+			if *provOpts.StorageOptions.ExpiresAfter <= 0 || *provOpts.StorageOptions.ExpiresAfter > 2_592_000 {
+				return fmt.Errorf("xai provider option storageOptions.expiresAfter must be between 1 and 2592000 seconds")
+			}
+		}
+		if publicURLExpiresAfter, ok := publicURLObjectExpiresAfter(provOpts.StorageOptions.PublicURL); ok && publicURLExpiresAfter != nil {
+			if *publicURLExpiresAfter < 3_600 || *publicURLExpiresAfter > 2_592_000 {
+				return fmt.Errorf("xai provider option storageOptions.publicUrl.expiresAfter must be between 3600 and 2592000 seconds")
+			}
+		}
+	}
+
 	return nil
+}
+
+// publicURLObjectExpiresAfter extracts the expiresAfter field from a
+// StorageOptions.PublicURL value when it is the object form (as opposed to
+// a plain bool). ok is false when PublicURL is a bool or nil.
+func publicURLObjectExpiresAfter(publicURL interface{}) (expiresAfter *int, ok bool) {
+	switch v := publicURL.(type) {
+	case map[string]interface{}:
+		raw, present := v["expiresAfter"]
+		if !present {
+			return nil, true
+		}
+		f, isFloat := raw.(float64)
+		if !isFloat {
+			return nil, true
+		}
+		i := int(f)
+		return &i, true
+	case *XAIVideoPublicURLOptions:
+		return v.ExpiresAfter, true
+	case XAIVideoPublicURLOptions:
+		return v.ExpiresAfter, true
+	default:
+		return nil, false
+	}
 }
 
 // handleError converts provider errors
@@ -722,9 +1070,38 @@ type xaiVideoUsage struct {
 
 // xaiVideoData represents video data in the status response
 type xaiVideoData struct {
-	URL               string   `json:"url"`
-	Duration          *float64 `json:"duration,omitempty"`
-	RespectModeration *bool    `json:"respect_moderation,omitempty"`
+	URL               string              `json:"url"`
+	Duration          *float64            `json:"duration,omitempty"`
+	RespectModeration *bool               `json:"respect_moderation,omitempty"`
+	FileOutput        *xaiVideoFileOutput `json:"file_output,omitempty"`
+	StorageError      *string             `json:"storage_error,omitempty"`
+}
+
+// xaiVideoFileOutput describes a video persisted via storageOptions to the
+// xAI Files API.
+type xaiVideoFileOutput struct {
+	FileID             string  `json:"file_id"`
+	Filename           string  `json:"filename"`
+	ExpiresAt          *int64  `json:"expires_at,omitempty"`
+	PublicURL          *string `json:"public_url,omitempty"`
+	PublicURLError     *string `json:"public_url_error,omitempty"`
+	PublicURLExpiresAt *int64  `json:"public_url_expires_at,omitempty"`
+}
+
+// resolveVideoURL mirrors TS `video?.url ?? video?.file_output?.public_url
+// ?? undefined`: the direct video URL wins, falling back to the persisted
+// Files API public URL when storageOptions was used.
+func resolveVideoURL(video *xaiVideoData) string {
+	if video == nil {
+		return ""
+	}
+	if video.URL != "" {
+		return video.URL
+	}
+	if video.FileOutput != nil && video.FileOutput.PublicURL != nil {
+		return *video.FileOutput.PublicURL
+	}
+	return ""
 }
 
 type xaiWarning struct {
