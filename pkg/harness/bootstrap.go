@@ -337,13 +337,25 @@ type RunSandboxBootstrapOptions struct {
 	RecipeIdentity string
 	WorkDir        string
 	OnBootstrap    func(ctx context.Context, bc SandboxBootstrapContext) error
+	// BootstrapHash is the caller-controlled identity OnBootstrap is keyed
+	// by. Required for SkipOnBootstrapIfMarked and for the completion
+	// marker this writes after a successful OnBootstrap run.
+	BootstrapHash string
+	// SkipOnBootstrapIfMarked skips OnBootstrap entirely when a marker for
+	// BootstrapHash already exists on this sandbox (from a prior call, e.g.
+	// a snapshot-provider's OnFirstCreate having already run it). Mirrors
+	// TS `runSandboxBootstrap`'s `skipOnBootstrapIfMarked` (31742b9a1b).
+	SkipOnBootstrapIfMarked bool
 	// DefaultWorkingDirectory skips the `pwd` lookup when known.
 	DefaultWorkingDirectory string
 }
 
 // RunSandboxBootstrap applies the adapter recipe under the sandbox HOME, then
 // runs the caller's OnBootstrap in the (optionally fixed) work directory.
-// Mirrors TS `runSandboxBootstrap`.
+// When BootstrapHash is set, a completion marker is written after OnBootstrap
+// succeeds (and, with SkipOnBootstrapIfMarked, checked first) so repeated
+// calls against the same physical sandbox are cheap no-ops. Mirrors TS
+// `runSandboxBootstrap` (31742b9a1b).
 func RunSandboxBootstrap(ctx context.Context, opts RunSandboxBootstrapOptions) error {
 	if opts.Recipe == nil && opts.OnBootstrap == nil {
 		return nil
@@ -362,6 +374,15 @@ func RunSandboxBootstrap(ctx context.Context, opts RunSandboxBootstrapOptions) e
 	if opts.OnBootstrap == nil {
 		return nil
 	}
+	if opts.SkipOnBootstrapIfMarked && opts.BootstrapHash != "" {
+		marked, err := HasOnBootstrapMarker(ctx, opts.Session, opts.BootstrapHash)
+		if err != nil {
+			return err
+		}
+		if marked {
+			return nil
+		}
+	}
 	defaultWD := opts.DefaultWorkingDirectory
 	if defaultWD == "" {
 		var err error
@@ -377,7 +398,13 @@ func RunSandboxBootstrap(ctx context.Context, opts RunSandboxBootstrapOptions) e
 	if err := EnsureSandboxDirectory(ctx, opts.Session, bootstrapWorkDir); err != nil {
 		return err
 	}
-	return opts.OnBootstrap(ctx, SandboxBootstrapContext{Session: opts.Session, WorkDir: bootstrapWorkDir})
+	if err := opts.OnBootstrap(ctx, SandboxBootstrapContext{Session: opts.Session, WorkDir: bootstrapWorkDir}); err != nil {
+		return err
+	}
+	if opts.BootstrapHash != "" {
+		return WriteOnBootstrapMarker(ctx, opts.Session, opts.BootstrapHash)
+	}
+	return nil
 }
 
 // EnsureSandboxDirectory runs `mkdir -p "$WORK_DIR"`. Mirrors TS

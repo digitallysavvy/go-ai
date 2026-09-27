@@ -204,3 +204,123 @@ func TestPrepareHarnessSandboxTemplate(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateHarnessSandboxTemplate ports TS
+// create-harness-sandbox-template.test.ts's core scenarios: combining
+// multiple harnesses' recipes into one template with a deterministic
+// Identity, and Prepare applying every recipe plus the caller's OnBootstrap
+// (marker-guarded so a second Prepare call is a cheap no-op). Mirrors
+// 31742b9a1b.
+func TestCreateHarnessSandboxTemplate(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("combines multiple harnesses and applies them in sorted order", func(t *testing.T) {
+		alpha, beta := makeRecipe("alpha"), makeRecipe("beta")
+		onBootstrapCalls := 0
+		tmpl, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+			Harnesses: []Harness{makeHarness("beta", beta), makeHarness("alpha", alpha)},
+			SandboxConfig: &SandboxConfig{
+				BootstrapHash: "repo-v1",
+				OnBootstrap: func(context.Context, SandboxBootstrapContext) error {
+					onBootstrapCalls++
+					return nil
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tmpl == nil {
+			t.Fatal("expected a template")
+		}
+		if !hex16.MatchString(tmpl.Identity) {
+			t.Fatal(tmpl.Identity)
+		}
+
+		sb := newMockSandbox()
+		if err := tmpl.Prepare(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{
+			`printf "%s" "$HOME"`, `mkdir -p "$BOOTSTRAP_DIR"`, "echo alpha",
+			`printf "%s" "$HOME"`, `mkdir -p "$BOOTSTRAP_DIR"`, "echo beta",
+			`printf "%s" "$HOME"`, "pwd", `mkdir -p "$WORK_DIR"`, `printf "%s" "$HOME"`, `mkdir -p "$MARKER_DIR"`,
+		}
+		if cmds := sb.runCommands(); !reflect.DeepEqual(cmds, want) {
+			t.Fatalf("commands = %q, want %q", cmds, want)
+		}
+		if onBootstrapCalls != 1 {
+			t.Fatalf("onBootstrap called %d times, want 1", onBootstrapCalls)
+		}
+
+		// A second Prepare against the same sandbox is a cheap no-op for
+		// OnBootstrap (marker-guarded) but still re-applies each recipe
+		// (guarded by its own bootstrap marker, so those are cheap too).
+		if err := tmpl.Prepare(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+		if onBootstrapCalls != 1 {
+			t.Fatalf("onBootstrap called %d times after second Prepare, want 1 (marker should skip it)", onBootstrapCalls)
+		}
+	})
+
+	t.Run("returns nil when there is nothing to prepare", func(t *testing.T) {
+		tmpl, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+			Harnesses: []Harness{makeHarness("mock", nil)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tmpl != nil {
+			t.Fatalf("expected nil template, got %+v", tmpl)
+		}
+	})
+
+	t.Run("rejects an empty harness list", func(t *testing.T) {
+		if _, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{}); err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+
+	t.Run("dedupes repeated harness ids", func(t *testing.T) {
+		alpha := makeRecipe("alpha")
+		tmpl, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+			Harnesses: []Harness{makeHarness("alpha", alpha), makeHarness("alpha", alpha)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sb := newMockSandbox()
+		if err := tmpl.Prepare(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{`printf "%s" "$HOME"`, `mkdir -p "$BOOTSTRAP_DIR"`, "echo alpha"}
+		if cmds := sb.runCommands(); !reflect.DeepEqual(cmds, want) {
+			t.Fatalf("commands = %q, want %q (recipe applied once)", cmds, want)
+		}
+	})
+}
+
+// TestAgent_GetSandboxTemplate verifies HarnessAgent.getSandboxTemplate's Go
+// port: it derives the template from the agent's own harness and
+// sandboxConfig. Mirrors TS `HarnessAgent.getSandboxTemplate`.
+func TestAgent_GetSandboxTemplate(t *testing.T) {
+	recipe := makeRecipe("mock")
+	a, err := NewAgent(AgentSettings{
+		Harness: makeHarness("mock", recipe),
+		SandboxConfig: SandboxConfig{
+			BootstrapHash: "v1",
+			OnBootstrap:   func(context.Context, SandboxBootstrapContext) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := a.GetSandboxTemplate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tmpl == nil || !hex16.MatchString(tmpl.Identity) {
+		t.Fatalf("tmpl = %+v", tmpl)
+	}
+}

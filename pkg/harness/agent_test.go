@@ -1038,6 +1038,47 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 	}
 }
 
+// TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap ports the
+// 31742b9a1b gap fix: sandboxConfig.OnBootstrap previously never ran when
+// the caller supplied its own SandboxSession to CreateSession (only the
+// harness's own bootstrap recipe did) — it must now run unconditionally,
+// the same as the provider-managed paths, mirroring TS `HarnessAgent.
+// createSession`'s unconditional post-branch `runSandboxBootstrap` call.
+func TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	calls := 0
+	a, err := NewAgent(AgentSettings{
+		Harness: mock.harness,
+		SandboxConfig: SandboxConfig{
+			BootstrapHash: "v1",
+			OnBootstrap: func(context.Context, SandboxBootstrapContext) error {
+				calls++
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	sb := newMockSandbox()
+	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnBootstrap called %d times, want 1", calls)
+	}
+
+	// A second session against the same physical sandbox must not re-run
+	// OnBootstrap (marker-guarded), the same idempotency
+	// CreateHarnessSandboxTemplate relies on.
+	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+		t.Fatalf("CreateSession (second): %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnBootstrap called %d times after a second CreateSession, want 1 (marker should skip it)", calls)
+	}
+}
+
 // TestAgent_HasOutput mirrors TS `HarnessAgent.hasOutput`'s
 // `this.settings.output != null`.
 func TestAgent_HasOutput(t *testing.T) {
