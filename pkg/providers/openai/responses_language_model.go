@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,6 +70,22 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		Headers: opts.Headers,
 	}, &resp); err != nil {
 		return nil, m.wrapErr(err)
+	}
+
+	// Row 75f86f4: a 200 response with an embedded error object maps to a
+	// 400 ProviderError.
+	if resp.Error != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 400, resp.Error.Code, resp.Error.Message, nil)
+	}
+	// Row 75f86f4: a 200 response with no `output` field means the API
+	// returned nothing to work with; raise a descriptive error instead of
+	// silently producing an empty result.
+	if resp.Output == nil {
+		message := "Responses API returned no output"
+		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
+			message = fmt.Sprintf("Responses API returned no output (%s)", resp.IncompleteDetails.Reason)
+		}
+		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
 	}
 
 	result, err := m.convertResponse(resp, store, webSearchToolName, m.provider.responsesProviderOptionsName())
@@ -1020,6 +1037,31 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolCalls = append(toolCalls, tc)
 
+		case "apply_patch_call":
+			// Row 45f2b6a: decode into a tool call ({callId, operation}) and
+			// drive a tool-calls finish reason like any other tool call.
+			var item responses.ApplyPatchCall
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			rawArgs, _ := json.Marshal(map[string]interface{}{
+				"callId":    item.CallID,
+				"operation": item.Operation,
+			})
+			var args map[string]interface{}
+			json.Unmarshal(rawArgs, &args) //nolint:errcheck
+			itemID := ""
+			if item.ID != nil {
+				itemID = *item.ID
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.apply_patch",
+				Arguments:        args,
+				RawArguments:     string(rawArgs),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, ""),
+			})
+
 		case "reasoning":
 			// Parse encrypted_content and summary text.
 			var item struct {
@@ -1214,8 +1256,14 @@ func mapResponsesFinishReason(details *responses.IncompleteDetails, hasToolCalls
 	}
 }
 
-// convertResponsesUsage converts Responses API usage to types.Usage.
-func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
+// convertResponsesUsage converts Responses API usage to types.Usage. Row
+// f6fac50: a nil usage (JSON null/absent) yields an all-nil-fields
+// types.Usage rather than a zero-token usage that looks like a real
+// (empty) response.
+func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
+	if u == nil {
+		return types.Usage{}
+	}
 	inputTokens := int64(u.InputTokens)
 	outputTokens := int64(u.OutputTokens)
 	total := inputTokens + outputTokens
@@ -1249,6 +1297,14 @@ func convertResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
 			ReasoningTokens: &reasoning,
 			TextTokens:      &textOut,
 		}
+	}
+
+	// Row 7243530/2c4767d: keep the complete raw usage object (captured by
+	// ResponsesAPIUsage's UnmarshalJSON), so fields not modeled above --
+	// e.g. orchestration_input_tokens/orchestration_input_cached_tokens/
+	// orchestration_output_tokens -- are still available to callers.
+	if u.Raw != nil {
+		result.Raw = u.Raw
 	}
 
 	return result
@@ -1288,6 +1344,12 @@ type responsesStream struct {
 	reasoningAccum map[int]*responsesReasoningAccum
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
+	// firstItemIDByOutputIndex records the item id first seen for a given
+	// output_index (row 73d48d0): OpenAI can rotate/reuse item ids across
+	// events sharing the same output_index mid-stream, so the id observed at
+	// output_item.added -- not whatever the later done event reports -- is
+	// used consistently for reasoning-end ids and itemId metadata.
+	firstItemIDByOutputIndex map[int]string
 	// Chunks ready to emit without reading more SSE events.
 	flushQueue        []*provider.StreamChunk
 	includeRawChunks  bool
@@ -1298,7 +1360,33 @@ type responsesStream struct {
 	pendingRaw        []*provider.StreamChunk
 	pendingMetadata   *provider.StreamChunk
 	responseHeaders   http.Header
+
+	// hadDecodeError is set when a known event type (one with a dedicated
+	// case below) fails schema decode (row eee6200). The stream keeps
+	// running (a single malformed event doesn't necessarily invalidate the
+	// whole response), but the eventual finish reason is forced to "error"
+	// instead of whatever response.completed/incomplete would otherwise
+	// report, so callers don't see a false "stop"/"length" outcome.
+	hadDecodeError bool
 }
+
+// emitDecodeError reports a decode failure for a known Responses API SSE
+// event type: emits a ChunkTypeError chunk (instead of silently skipping the
+// event) and marks the eventual finish reason to be forced to "error".
+func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, error) {
+	s.hadDecodeError = true
+	return s.emitParsedChunk(&provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: fmt.Sprintf("failed to parse %s event: %v", eventType, err),
+	})
+}
+
+// chatCompletionsMismatchMessage adapts TS
+// createOpenAIResponsesChatCompletionsMismatchError's message (row 1ead90c)
+// to this SDK's Go API surface.
+const chatCompletionsMismatchMessage = "Received a Chat Completions stream while using the OpenAI Responses API. " +
+	"The default OpenAI provider model uses the Responses API. If your custom baseURL targets a Chat Completions-compatible endpoint, use Provider.ChatModel(\"model-id\") instead of Provider.ResponsesModel/LanguageModel. " +
+	"You can also use one of this SDK's OpenAI-compatible providers."
 
 func newResponsesStream(r io.ReadCloser, includeRawChunks bool, args ...string) *responsesStream {
 	return newResponsesStreamWithMetadata(r, includeRawChunks, argOrDefault(args, 0, "web_search"), argOrDefault(args, 1, "openai"), nil)
@@ -1312,15 +1400,16 @@ func newResponsesStreamWithMetadata(r io.ReadCloser, includeRawChunks bool, tool
 		providerName = "openai"
 	}
 	return &responsesStream{
-		reader:            r,
-		parser:            streaming.NewSSEParser(r),
-		toolAccum:         make(map[int]*responsesToolAccum),
-		reasoningAccum:    make(map[int]*responsesReasoningAccum),
-		itemTypes:         make(map[int]string),
-		includeRawChunks:  includeRawChunks,
-		webSearchToolName: toolName,
-		providerName:      providerName,
-		responseHeaders:   headers,
+		reader:                   r,
+		parser:                   streaming.NewSSEParser(r),
+		toolAccum:                make(map[int]*responsesToolAccum),
+		reasoningAccum:           make(map[int]*responsesReasoningAccum),
+		itemTypes:                make(map[int]string),
+		firstItemIDByOutputIndex: make(map[int]string),
+		includeRawChunks:         includeRawChunks,
+		webSearchToolName:        toolName,
+		providerName:             providerName,
+		responseHeaders:          headers,
 	}
 }
 
@@ -1397,6 +1486,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 		})
 	}
+	// Row 1ead90c: a Chat Completions-shaped chunk (top-level "choices"
+	// array, no "type" discriminator) means the configured baseURL points
+	// at a Chat Completions-compatible endpoint instead of the Responses
+	// API. Surface a helpful error instead of silently skipping it.
+	if peek.Type == "" && len(peek.Choices) > 0 {
+		var isArray bool
+		trimmed := bytes.TrimSpace(peek.Choices)
+		isArray = len(trimmed) > 0 && trimmed[0] == '['
+		if isArray {
+			s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+			return nil, s.err
+		}
+	}
 	var eventRawChunk *provider.StreamChunk
 	if s.includeRawChunks {
 		eventRawChunk = openAIResponsesRawChunk(event.Data)
@@ -1416,7 +1518,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.created":
 		var e responses.ResponseCreatedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Response.ID != "" {
 			s.responseID = e.Response.ID
@@ -1437,9 +1539,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_item.added":
 		var e responses.OutputItemAddedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.itemTypes[e.OutputIndex] = e.Item.Type
+		if e.Item.ID != "" {
+			if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
+				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
+			}
+		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
@@ -1489,7 +1596,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_text.delta":
 		var e responses.OutputTextDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Delta == "" {
 			return s.Next()
@@ -1506,7 +1613,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.function_call_arguments.delta":
 		var e responses.FunctionCallArgumentsDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
@@ -1520,7 +1627,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.reasoning_summary_text.delta":
 		var e responses.ReasoningSummaryTextDeltaEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		if e.Delta == "" {
 			return s.Next()
@@ -1541,7 +1648,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.output_item.done":
 		var e responses.OutputItemDoneEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
+			return s.emitDecodeError(peek.Type, err)
 		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
@@ -1552,11 +1659,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 	case "response.completed", "response.incomplete":
 		var e responses.ResponseCompletedEvent
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			s.err = io.EOF
-			return nil, io.EOF
+			return s.emitDecodeError(peek.Type, err)
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+		// Row eee6200: an earlier known-event decode failure forces the
+		// finish reason to "error", regardless of what this event reports.
+		if s.hadDecodeError {
+			finishReason = types.FinishReasonError
+		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
@@ -1594,8 +1705,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := types.FinishReason("error")
+		rawFinishReason := "error"
 		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 			finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+			rawFinishReason = e.Response.IncompleteDetails.Reason
 		}
 
 		metaMap := map[string]interface{}{}
@@ -1618,6 +1731,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
+			RawFinishReason:  rawFinishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
 		})
@@ -1732,8 +1846,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Reasoning text was already emitted as ChunkTypeReasoning deltas.
 		// Forward encrypted_content so callers can round-trip it for multi-turn
 		// reasoning when store=false.
+		// Row 73d48d0: use the id first seen for this output_index (at
+		// output_item.added) rather than this done event's own id, in case
+		// OpenAI rotated the item id mid-stream.
+		firstID := s.firstItemIDByOutputIndex[e.OutputIndex]
 		delete(s.reasoningAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
+		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		var item struct {
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
@@ -1741,18 +1860,50 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
 			return s.Next()
 		}
+		id := firstID
+		if id == "" {
+			id = item.ID
+		}
 		meta := map[string]interface{}{}
 		if item.EncryptedContent != "" {
 			meta["encryptedContent"] = item.EncryptedContent
 		}
-		if item.ID != "" {
-			meta["itemId"] = item.ID
+		if id != "" {
+			meta["itemId"] = id
 		}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
-			ID:               "reasoning-" + item.ID,
+			ID:               id,
 			ProviderMetadata: providerMeta,
+		})
+
+	case "apply_patch_call":
+		// Row 45f2b6a.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ApplyPatchCall
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.emitDecodeError("apply_patch_call", err)
+		}
+		rawArgs, _ := json.Marshal(map[string]interface{}{
+			"callId":    item.CallID,
+			"operation": item.Operation,
+		})
+		var args map[string]interface{}
+		json.Unmarshal(rawArgs, &args) //nolint:errcheck
+		itemID := ""
+		if item.ID != nil {
+			itemID = *item.ID
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.apply_patch",
+				Arguments:        args,
+				RawArguments:     string(rawArgs),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, ""),
+			},
 		})
 
 	case "custom_tool_call":

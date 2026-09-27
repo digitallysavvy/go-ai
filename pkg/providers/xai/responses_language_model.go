@@ -400,14 +400,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		Usage:       convertXAIResponsesUsage(resp.Usage),
 		RawResponse: resp,
 	}
-	if resp.Usage.CostInUsdTicks != nil {
+	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 		result.ProviderMetadata = map[string]interface{}{
 			"xai": map[string]interface{}{
 				"costInUsdTicks": *resp.Usage.CostInUsdTicks,
 			},
 		}
 	}
-	if resp.Usage.InputTokensCost != nil || resp.Usage.OutputTokensCost != nil {
+	if resp.Usage != nil && (resp.Usage.InputTokensCost != nil || resp.Usage.OutputTokensCost != nil) {
 		if result.ProviderMetadata == nil {
 			result.ProviderMetadata = map[string]interface{}{}
 		}
@@ -888,7 +888,10 @@ func mapXAIResponsesFinishReason(status string, details *responses.IncompleteDet
 }
 
 // convertXAIResponsesUsage converts Responses API usage to types.Usage.
-func convertXAIResponsesUsage(u responses.ResponsesAPIUsage) types.Usage {
+func convertXAIResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
+	if u == nil {
+		return types.Usage{}
+	}
 	inputTokens := int64(u.InputTokens)
 	outputTokens := int64(u.OutputTokens)
 	total := inputTokens + outputTokens
@@ -1250,7 +1253,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var meta json.RawMessage
 		metaMap := map[string]interface{}{}
-		if e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil {
+		if e.Response.Usage != nil && (e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil) {
 			xaiMeta := map[string]interface{}{}
 			if e.Response.Usage.CostInUsdTicks != nil {
 				xaiMeta["costInUsdTicks"] = *e.Response.Usage.CostInUsdTicks
@@ -1284,7 +1287,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			Type     string `json:"type"`
 			Response struct {
 				ID                string                       `json:"id,omitempty"`
-				Usage             responses.ResponsesAPIUsage  `json:"usage"`
+				Usage             *responses.ResponsesAPIUsage `json:"usage,omitempty"`
 				IncompleteDetails *responses.IncompleteDetails `json:"incomplete_details,omitempty"`
 			} `json:"response"`
 		}

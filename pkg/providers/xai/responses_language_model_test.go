@@ -1220,7 +1220,7 @@ func TestXAIResponsesWebSearchToolResultAction(t *testing.T) {
 	})
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
@@ -1274,7 +1274,7 @@ func TestXAIResponsesImageGenerationTool(t *testing.T) {
 	})
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
@@ -1310,7 +1310,7 @@ func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
 	})
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)

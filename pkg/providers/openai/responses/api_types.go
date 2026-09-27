@@ -404,10 +404,26 @@ type ResponsesAPIResponse struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// Status is the terminal state: "completed", "incomplete", "failed".
 	// Primary signal for finish reason; use IncompleteDetails for truncation details.
-	Status            string             `json:"status,omitempty"`
-	Output            []json.RawMessage  `json:"output"`
-	Usage             ResponsesAPIUsage  `json:"usage"`
+	Status string            `json:"status,omitempty"`
+	Output []json.RawMessage `json:"output"`
+	// Usage is a pointer so a JSON `null`/absent usage field can be
+	// distinguished from an explicit all-zero usage object (row f6fac50).
+	Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+
+	// Error is populated for a 200 response that failed at the API level
+	// (row 75f86f4): non-nil means the request must fail with the embedded
+	// message, mapped to HTTP status 400.
+	Error *ResponsesAPIError `json:"error,omitempty"`
+}
+
+// ResponsesAPIError is the `error` object embedded in an otherwise-200
+// Responses API response body.
+type ResponsesAPIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Param   string `json:"param,omitempty"`
+	Code    string `json:"code,omitempty"`
 }
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
@@ -464,6 +480,12 @@ type IncompleteDetails struct {
 // before full parsing.
 type ResponsesStreamEvent struct {
 	Type string `json:"type"`
+
+	// Choices is only ever populated for a Chat Completions-shaped chunk
+	// (row 1ead90c): a Responses API event always has a "type" discriminator
+	// and never a top-level "choices" array. Used to detect a caller
+	// pointing this model at a Chat Completions-compatible endpoint.
+	Choices json.RawMessage `json:"choices,omitempty"`
 }
 
 // ResponseCreatedEvent is emitted at the start of a streaming response.
@@ -535,7 +557,7 @@ type ResponseCompletedEvent struct {
 		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
 		Status            string             `json:"status,omitempty"`
-		Usage             ResponsesAPIUsage  `json:"usage"`
+		Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
 		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
 	} `json:"response"`
 }
@@ -544,9 +566,9 @@ type ResponseCompletedEvent struct {
 type ResponseFailedEvent struct {
 	Type     string `json:"type"` // "response.failed"
 	Response struct {
-		ID          string            `json:"id"`
-		ServiceTier string            `json:"service_tier,omitempty"`
-		Usage       ResponsesAPIUsage `json:"usage"`
+		ID          string             `json:"id"`
+		ServiceTier string             `json:"service_tier,omitempty"`
+		Usage       *ResponsesAPIUsage `json:"usage,omitempty"`
 		Error       *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`

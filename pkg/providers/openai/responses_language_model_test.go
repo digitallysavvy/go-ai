@@ -31,7 +31,7 @@ func mockResponsesResponse(id, text string) responses.ResponsesAPIResponse {
 		ID:     id,
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{content},
-		Usage: responses.ResponsesAPIUsage{
+		Usage: &responses.ResponsesAPIUsage{
 			InputTokens:  5,
 			OutputTokens: 10,
 		},
@@ -120,7 +120,7 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, true, responsesWebSearchToolName(opts.Tools))
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
@@ -161,7 +161,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, true, responsesWebSearchToolName(tools))
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
@@ -268,7 +268,7 @@ func TestResponsesLanguageModel_DoGenerate_ToolCall(t *testing.T) {
 			ID:     "resp_tool",
 			Model:  "gpt-4o",
 			Output: []json.RawMessage{callItem},
-			Usage:  responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
+			Usage:  &responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
 		})
 	}))
 	defer server.Close()
@@ -473,7 +473,7 @@ func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
 	}, true, responsesWebSearchToolName(tools))
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
@@ -2032,7 +2032,7 @@ func TestConvertResponsesUsage_CacheWriteTokens(t *testing.T) {
 			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 		}{CachedTokens: 30, CacheWriteTokens: &cacheWrite},
 	}
-	got := convertResponsesUsage(usage)
+	got := convertResponsesUsage(&usage)
 	if got.InputDetails == nil || got.InputDetails.CacheWriteTokens == nil || *got.InputDetails.CacheWriteTokens != 5 {
 		t.Fatalf("InputDetails = %#v, want CacheWriteTokens=5", got.InputDetails)
 	}
@@ -2083,5 +2083,230 @@ func TestNormalizeResponsesToolSchemas(t *testing.T) {
 	schema := format["schema"].(map[string]interface{})
 	if _, ok := schema["propertyNames"]; ok {
 		t.Fatalf("response_format schema propertyNames should be stripped: %#v", schema)
+	}
+}
+
+// TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError covers
+// row 75f86f4: a 200 response with no `output` field must raise a
+// descriptive 500 ProviderError instead of silently producing an empty
+// result.
+func TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_1", "status": "incomplete",
+			"incomplete_details": map[string]interface{}{"reason": "max_output_tokens"},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with no output")
+	}
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 500 {
+		t.Fatalf("error = %v, want a 500 ProviderError", err)
+	}
+	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
+		t.Fatalf("error = %v, want descriptive no-output message", err)
+	}
+}
+
+// TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400 covers row
+// 75f86f4: a 200 response with an embedded `error` object maps to a 400
+// ProviderError.
+func TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id":    "resp_1",
+			"error": map[string]interface{}{"message": "bad prompt", "code": "invalid_request", "type": "invalid_request_error"},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with an embedded error object")
+	}
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 400 {
+		t.Fatalf("error = %v, want a 400 ProviderError", err)
+	}
+	if !strings.Contains(err.Error(), "bad prompt") {
+		t.Fatalf("error = %v, want to contain the embedded error message", err)
+	}
+}
+
+// TestResponsesLanguageModel_NullUsageYieldsNilUsageFields covers row
+// f6fac50: a JSON `null`/absent usage field yields an all-nil types.Usage
+// instead of an all-zero usage that looks like a real (empty) response.
+func TestResponsesLanguageModel_NullUsageYieldsNilUsageFields(t *testing.T) {
+	got := convertResponsesUsage(nil)
+	if got.InputTokens != nil || got.OutputTokens != nil || got.TotalTokens != nil {
+		t.Fatalf("convertResponsesUsage(nil) = %#v, want all-nil fields", got)
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError covers row
+// 1ead90c: a Chat Completions-shaped chunk (top-level "choices" array, no
+// "type" discriminator) produces a helpful error instead of being silently
+// skipped.
+func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	_, err := stream.Next()
+	if err == nil {
+		t.Fatal("expected an error for a Chat Completions-shaped chunk")
+	}
+	if !strings.Contains(err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
+		t.Fatalf("error = %v, want the Chat Completions mismatch message", err)
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish
+// covers row eee6200: a decode failure on a known event type emits a
+// ChunkTypeError chunk, and forces the eventual finish reason to "error"
+// even though the terminal event itself reports a normal completion.
+func TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":123}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	errChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first Next() error = %v", err)
+	}
+	if errChunk.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %#v, want ChunkTypeError", errChunk)
+	}
+
+	finishChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("second Next() error = %v", err)
+	}
+	if finishChunk.Type != provider.ChunkTypeFinish || finishChunk.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish chunk = %#v, want FinishReasonError forced by the earlier decode failure", finishChunk)
+	}
+}
+
+// TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall covers row
+// 45f2b6a: apply_patch_call output items decode into a tool call
+// ({callId,operation}) and drive a tool-calls finish reason, in both
+// generate and stream.
+func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "apply_patch_call", "id": "ap_1", "call_id": "call_1", "status": "completed",
+		"operation": map[string]interface{}{"type": "create_file", "path": "foo.go", "diff": "+package foo"},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one apply_patch tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 and toolName openai.apply_patch", tc)
+	}
+	if tc.Arguments["callId"] != "call_1" {
+		t.Fatalf("arguments = %#v, want callId call_1", tc.Arguments)
+	}
+	operation, ok := tc.Arguments["operation"].(map[string]interface{})
+	if !ok || operation["type"] != "create_file" || operation["path"] != "foo.go" {
+		t.Fatalf("operation = %#v, want create_file foo.go", tc.Arguments["operation"])
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+}
+
+// TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
+// 45f2b6a for the streaming path.
+func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall == nil {
+		t.Fatalf("chunk = %#v, want a tool call", chunk)
+	}
+	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "openai.apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.apply_patch", chunk.ToolCall)
+	}
+	operation, ok := chunk.ToolCall.Arguments["operation"].(map[string]interface{})
+	if !ok || operation["type"] != "delete_file" {
+		t.Fatalf("operation = %#v, want delete_file", chunk.ToolCall.Arguments["operation"])
+	}
+}
+
+// TestResponsesLanguageModel_RotatingItemIDUsesFirstSeenID covers row
+// 73d48d0: reasoning-end uses the item id first seen at output_item.added
+// for a given output_index, not a later (rotated) id from output_item.done.
+func TestResponsesLanguageModel_RotatingItemIDUsesFirstSeenID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_original"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_rotated","encrypted_content":"enc"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original" {
+		t.Fatalf("chunk = %#v, want reasoning-end with the original (first-seen) item id", chunk)
+	}
+}
+
+// TestResponsesLanguageModel_StreamFailedRawFinishReason covers row
+// e6376c2: a response.failed event carries a RawFinishReason on the finish
+// chunk, using the incomplete reason if present or "error" otherwise.
+func TestResponsesLanguageModel_StreamFailedRawFinishReason(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"gpt-4o"}}
+
+data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeFinish || chunk.RawFinishReason != "max_output_tokens" {
+		t.Fatalf("finish chunk = %#v, want RawFinishReason=max_output_tokens", chunk)
 	}
 }
