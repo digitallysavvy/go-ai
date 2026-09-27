@@ -133,6 +133,13 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 			return
 		}
 		for {
+			// Check cancellation first: when ctx is done and an event is also
+			// ready, select picks either case at random, so a cancelled
+			// stream could still process (and report) one more event.
+			if ctx.Err() != nil {
+				finalizeCallbacks(errs, callbacks, textChunks, nil, ctx.Err())
+				return
+			}
 			select {
 			case <-ctx.Done():
 				finalizeCallbacks(errs, callbacks, textChunks, nil, ctx.Err())
