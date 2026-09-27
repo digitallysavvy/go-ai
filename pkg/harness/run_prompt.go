@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -45,6 +46,21 @@ func (s *chunkChannelStream) fail(err error) {
 }
 
 func (s *chunkChannelStream) closeOK() { close(s.ch) }
+
+// fail settles the turn as a soft (data-preserving) failure: a
+// ChunkTypeError chunk carrying msg, then a normal channel close. Mirrors TS
+// `result.fail(err)` (settleFailure's non-abort branch), which always
+// surfaces failures — a harness `error` part, a host tool execution
+// exception, an unclosed-step protocol violation — as a terminal `error`
+// stream part rather than rejecting/discarding whatever the turn already
+// produced. Distinct from chunkChannelStream.fail, which is a hard,
+// non-data-preserving channel failure reserved for driver-internal errors
+// that occur before or between chunks (e.g. ctx cancellation, DoPromptTurn
+// itself returning an error before any content exists to preserve).
+func (d *turnDriver) fail(err error) {
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
+	d.stream.closeOK()
+}
 
 func (s *chunkChannelStream) Next() (*provider.StreamChunk, error) {
 	c, ok := <-s.ch
@@ -195,6 +211,13 @@ type turnDriver struct {
 	stepOpen        bool
 	startCalled     bool
 
+	// completedSteps accumulates the locally-tracked StepResult from every
+	// completeStep call, used to evaluate StopConditions (which need the
+	// real completed-step history, e.g. ai.IsStepCount) — independent of
+	// ai.StreamTextResult's own Steps(), for the same reason as the rest of
+	// this local step tracking (see struct doc above).
+	completedSteps []types.StepResult
+
 	bufferedResultChunks [][]provider.StreamChunk
 
 	execWG  sync.WaitGroup
@@ -268,10 +291,17 @@ func (d *turnDriver) run() {
 		})
 	}
 	if err != nil {
-		d.stream.fail(err)
+		// OnTurnFailed is called before the stream is pushed to/closed
+		// (d.fail): a caller blocked on the returned *ai.StreamTextResult's
+		// Err()/Text()/etc — which unblock once the stream settles — must
+		// never observe that before the session's turn-state callback has
+		// already run, or AgentSession.HasUnfinishedTurn() could still
+		// (harmlessly but confusingly) report true for an instant after the
+		// caller's own wait returned.
 		if d.in.OnTurnFailed != nil {
 			d.in.OnTurnFailed()
 		}
+		d.fail(err)
 		return
 	}
 	d.control = control
@@ -285,26 +315,34 @@ func (d *turnDriver) run() {
 	}()
 
 	if outcome, err := d.processStartupContinuations(); err != nil {
-		d.stream.fail(err)
 		if d.in.OnTurnFailed != nil {
 			d.in.OnTurnFailed()
 		}
+		d.fail(err)
 		return
 	} else if outcome == turnOutcomeAwaitingToolResult {
+		// Already fully settled (pushed+closed) by pauseForHostInput inside
+		// processApprovalContinuation; the session's turn state was already
+		// set to awaiting-approval/awaiting-tool-result when the pending
+		// approval/result was recorded.
 		return
 	}
 
-	finished, turnErr := d.consumeLoop(partsCh)
+	finished, alreadySettled, turnErr := d.consumeLoop(partsCh)
+	if alreadySettled {
+		return
+	}
 	if turnErr != nil {
-		d.stream.fail(turnErr)
 		if d.in.OnTurnFailed != nil {
 			d.in.OnTurnFailed()
 		}
+		d.fail(turnErr)
 		return
 	}
 	if finished && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
+	d.stream.closeOK()
 }
 
 type turnOutcome int
@@ -353,20 +391,33 @@ func (d *turnDriver) processStartupContinuations() (turnOutcome, error) {
 }
 
 // consumeLoop reads harness stream parts until the channel closes (adapter
-// finished the turn) or the driver pauses/stops early. finished is true only
-// when the harness's own terminal `finish` part was observed and forwarded.
-func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, err error) {
+// finished the turn) or the driver pauses/stops early.
+//
+// finished is true only when the harness's own terminal `finish` part was
+// observed and forwarded. alreadySettled is true when some other path
+// (pauseForHostInput, finishNow) already pushed the closing chunk(s) and
+// closed d.stream itself — the caller (run) must not touch d.stream again in
+// that case, and must not fire OnTurnFinished/OnTurnFailed (whichever
+// settled it already did, if appropriate: a pause fires neither, matching
+// TS's finishForHostInputPause).
+func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alreadySettled bool, err error) {
 	for {
 		var part StreamPart
 		var ok bool
 		select {
 		case part, ok = <-partsCh:
 		case <-d.ctx.Done():
-			return false, d.ctx.Err()
+			return false, false, d.ctx.Err()
 		}
 		if !ok {
-			d.stream.closeOK()
-			return finished, nil
+			if !finished {
+				// The adapter ended the turn (closed its Done channel)
+				// without ever emitting `finish`. Mirrors TS's fallback
+				// `else { input.onTurnFailed?.(); }` branch for a reader
+				// loop that ends without reaching a terminal `finish`.
+				return false, false, errors.New("harness: adapter ended the turn without emitting `finish`")
+			}
+			return true, false, nil
 		}
 
 		if sp, isStart := part.(*StreamStartPart); isStart {
@@ -399,18 +450,37 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, err 
 		if _, isFinishStep := display.(*FinishStepPart); isFinishStep && d.closingResumedStep {
 			d.closingResumedStep = false
 			if err := d.joinOutstandingExecutions(); err != nil {
-				return false, err
+				return false, false, err
 			}
 			d.flushBufferedResultChunks()
 			d.resetStepAccum()
 			continue
 		}
 
-		d.ensureStepOpen()
+		// Open the step lazily before the first real content of each step,
+		// but not for step/turn boundaries or the error part themselves —
+		// mirrors TS's exact exclusion list (`!== 'finish-step' && !==
+		// 'finish' && !== 'error'`; 'stream-start' is handled earlier above
+		// and never reaches this point). This is also what makes the
+		// unclosed-step check below meaningful: d.stepOpen only reflects
+		// genuine unflushed content, never a boundary part opening "itself".
+		switch display.(type) {
+		case *FinishStepPart, *FinishPart, *ErrorPart:
+		default:
+			d.ensureStepOpen()
+		}
 
 		if ep, isErr := display.(*ErrorPart); isErr {
+			// Returned as an error, not handled inline: run() converts every
+			// non-nil consumeLoop error into a soft (data-preserving)
+			// ChunkTypeError chunk via d.fail — so any text/tool calls
+			// already accumulated in the in-progress step are still flushed
+			// onto Steps()/Text() instead of being silently discarded,
+			// mirroring TS `settleFailure`/`result.fail()` adapted to Go's
+			// Err()-based error surface (see pkg/ai/stream_external_test.go
+			// TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep).
 			_ = d.joinOutstandingExecutions()
-			return false, fmt.Errorf("%v", ep.Error)
+			return false, false, fmt.Errorf("%v", ep.Error)
 		}
 
 		if tc, isCall := display.(*ToolCallPart); isCall {
@@ -440,28 +510,39 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, err 
 		if tar, isApproval := display.(*ToolApprovalRequestPart); isApproval {
 			awaiting, err := d.handleApprovalRequest(tar)
 			if err != nil {
-				return false, err
+				return false, false, err
 			}
 			if awaiting {
-				return false, nil
+				// Already fully settled by pauseForHostInput.
+				return false, true, nil
 			}
 			continue
 		}
 
 		if fs, isFinishStep := display.(*FinishStepPart); isFinishStep {
 			if err := d.joinOutstandingExecutions(); err != nil {
-				return false, err
+				return false, false, err
 			}
 			d.completeStep(fs.FinishReason, fs.Usage)
 			if reason := d.evaluateStopConditions(); reason != "" {
-				d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(fs.FinishReason), RawFinishReason: fs.FinishReason.Raw})
-				return false, nil
+				d.finishNow(fs.FinishReason)
+				return false, true, nil
 			}
 		}
 
 		if fp, isFinish := display.(*FinishPart); isFinish {
 			if err := d.joinOutstandingExecutions(); err != nil {
-				return false, err
+				return false, false, err
+			}
+			// A terminal `finish` must not carry unclosed step content: every
+			// step (including the last) must be closed by its own
+			// `finish-step` first. A harness adapter that skips this is a
+			// protocol violation, surfaced as a failure rather than silently
+			// accepted as a valid (and wrongly step-boundary-less) finish.
+			// Mirrors TS `HarnessStreamTextResult.finish()`'s
+			// `currentStepContent.length > 0` check.
+			if d.stepOpen {
+				return false, false, errors.New(unclosedStepErrorMessage)
 			}
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
 			d.stream.push(provider.StreamChunk{
@@ -476,10 +557,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, err 
 		if tc, isCall := part.(*ToolCallPart); isCall && !tc.ProviderExecuted {
 			awaiting, err := d.handleHostToolCall(tc)
 			if err != nil {
-				return false, err
+				return false, false, err
 			}
 			if awaiting {
-				return finished, nil
+				// Already fully settled by pauseForHostInput.
+				return finished, true, nil
 			}
 		}
 	}
@@ -698,6 +780,7 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
 		Usage:           harnessUsageToTypesUsage(usage),
 	})
 
+	d.completedSteps = append(d.completedSteps, step)
 	d.stepNumber++
 	d.resetStepAccum()
 }
@@ -706,7 +789,7 @@ func (d *turnDriver) evaluateStopConditions() string {
 	if len(d.in.StopConditions) == 0 {
 		return ""
 	}
-	return ai.EvaluateStopConditions(d.in.StopConditions, ai.StopConditionState{})
+	return ai.EvaluateStopConditions(d.in.StopConditions, ai.StopConditionState{Steps: d.completedSteps})
 }
 
 // joinOutstandingExecutions waits for every host tool execution goroutine
@@ -720,6 +803,53 @@ func (d *turnDriver) joinOutstandingExecutions() error {
 	d.execErr = nil
 	d.execMu.Unlock()
 	return err
+}
+
+// pauseForHostInput settles the local result for a turn that is pausing to
+// wait on host input (an approval decision or a client-supplied tool
+// result), joining outstanding host tool executions first. The underlying
+// harness Session/PromptControl are left exactly as they are — this only
+// settles the *ai.StreamTextResult this runPrompt call returned, so its
+// caller (Agent.Generate/.Stream) does not hang waiting on a turn that
+// deliberately isn't finished; AgentSession's turn-state (awaiting-approval /
+// awaiting-tool-result) is what actually tracks the unfinished turn, and
+// ContinueGenerate/ContinueStream resume it. Mirrors TS
+// `finishForHostInputPause`. completeCurrentStep is derived from whether any
+// content has been seen since the last real step boundary (d.stepOpen),
+// which serves the same purpose as TS's per-call-site flag: closing a step
+// only when there is one to close, instead of manufacturing an empty one.
+func (d *turnDriver) pauseForHostInput() error {
+	if err := d.joinOutstandingExecutions(); err != nil {
+		return err
+	}
+	if d.stepOpen {
+		d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, Usage{})
+	} else {
+		d.flushBufferedResultChunks()
+	}
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish})
+	d.stream.closeOK()
+	return nil
+}
+
+// finishNow settles the turn as fully complete right now, ahead of any later
+// `finish` the adapter might still emit — used only by the StopConditions
+// early-stop path. It fires OnTurnFinished (unlike pauseForHostInput, this
+// really is "done" from the session's point of view: WG4 does not yet keep
+// the underlying harness Session turn reachable afterward for a later
+// resume, so — pending WG13's workflow-harness suspend/continue slicing —
+// treating it as finished is more useful than leaving the session
+// permanently stuck as "running"). finishReason is the last completed
+// step's; usage is deliberately left unset so the locally-summed total
+// stands, since this is not a real bridge-reported total the way a genuine
+// terminal `finish` carries one (contrast pauseForHostInput/the FinishPart
+// branch in consumeLoop).
+func (d *turnDriver) finishNow(finishReason FinishReason) {
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
+	if d.in.OnTurnFinished != nil {
+		d.in.OnTurnFinished()
+	}
+	d.stream.closeOK()
 }
 
 func unifiedFinishReason(r FinishReason) types.FinishReason {
@@ -843,7 +973,7 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
 		ApprovalID: pending.ApprovalID, ToolCallID: pending.ToolCallID, ToolCall: call,
 	}})
-	if err := d.joinOutstandingExecutions(); err != nil {
+	if err := d.pauseForHostInput(); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -868,6 +998,9 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	if isClientExecutedBuiltin {
 		d.recordPendingResult(raw)
+		if err := d.pauseForHostInput(); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 
@@ -910,12 +1043,18 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
 			ApprovalID: pending.ApprovalID, ToolCallID: pending.ToolCallID, ToolCall: call,
 		}})
+		if err := d.pauseForHostInput(); err != nil {
+			return false, err
+		}
 		return true, nil
 
 	default: // allow (not-applicable / approved)
 		tool, executable := d.in.ActiveTools[raw.ToolName]
 		if !executable || tool.Execute == nil {
 			d.recordPendingResult(raw)
+			if err := d.pauseForHostInput(); err != nil {
+				return false, err
+			}
 			return true, nil
 		}
 		d.executeHostToolAsync(tool, raw, call)
@@ -1028,6 +1167,9 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	tool, executable := d.in.ActiveTools[approval.ToolName]
 	if !executable || tool.Execute == nil {
 		d.recordPendingResult(&ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input})
+		if err := d.pauseForHostInput(); err != nil {
+			return turnOutcomeContinue, err
+		}
 		return turnOutcomeAwaitingToolResult, nil
 	}
 	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, call)

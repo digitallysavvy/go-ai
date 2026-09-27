@@ -161,12 +161,18 @@ func (s *AgentSession) startTrackedTurn() {
 	s.mu.Unlock()
 }
 
-// finishTrackedTurn records the outcome of a completed runPrompt call:
-// TurnStateIdle when the turn naturally finished, or the state matching
-// whatever it is now waiting on.
-func (s *AgentSession) finishTrackedTurn(next TurnState) {
+// finishTrackedTurn unconditionally returns the session to idle. Called from
+// runPrompt's OnTurnFinished/OnTurnFailed callbacks — synchronously, from
+// the turn driver's own goroutine, before it signals Done — for both a
+// natural finish and a failure. Mirrors TS `HarnessAgentSession`'s private
+// `finishTrackedTurn`, which likewise always sets `turnState = 'idle'`
+// regardless of what markAwaitingApprovalIfActive/markAwaitingToolResultIfActive
+// set earlier: those calls only fire when a turn *pauses* for host input,
+// a case in which runPrompt never calls OnTurnFinished/OnTurnFailed (see
+// pauseForHostInput), so there is no ordering conflict between the two.
+func (s *AgentSession) finishTrackedTurn() {
 	s.mu.Lock()
-	s.turnState = next
+	s.turnState = TurnStateIdle
 	s.mu.Unlock()
 }
 
@@ -187,9 +193,17 @@ func (s *AgentSession) snapshotPendingState() ([]PendingToolApproval, []PendingT
 	return approvals, results, s.turnSettings
 }
 
+// recordPendingApproval records a newly pending approval and — mirroring TS
+// `markAwaitingApprovalIfActive` — immediately marks the turn as
+// awaiting-approval if it is currently running. It is wired as runPrompt's
+// OnPendingToolApproval callback, so this happens synchronously as the turn
+// discovers it needs one, not retrospectively once the turn settles.
 func (s *AgentSession) recordPendingApproval(a PendingToolApproval) {
 	s.mu.Lock()
 	s.pendingApprovals[a.ApprovalID] = a
+	if s.turnState == TurnStateRunning {
+		s.turnState = TurnStateAwaitingApproval
+	}
 	s.mu.Unlock()
 }
 
@@ -199,9 +213,15 @@ func (s *AgentSession) settleApproval(approvalID string) {
 	s.mu.Unlock()
 }
 
+// recordPendingResult records a newly pending client tool result and marks
+// the turn as awaiting-tool-result if it is currently running. Mirrors TS
+// `markAwaitingToolResultIfActive`; see recordPendingApproval.
 func (s *AgentSession) recordPendingResult(r PendingToolResult) {
 	s.mu.Lock()
 	s.pendingResults[r.ToolCallID] = r
+	if s.turnState == TurnStateRunning {
+		s.turnState = TurnStateAwaitingResult
+	}
 	s.mu.Unlock()
 }
 
@@ -209,25 +229,6 @@ func (s *AgentSession) settleResult(toolCallID string) {
 	s.mu.Lock()
 	delete(s.pendingResults, toolCallID)
 	s.mu.Unlock()
-}
-
-// resolveTurnState computes the TurnState a paused/finished turn leaves the
-// session in, from its own pending maps. Mirrors the ternary in TS
-// `createSession`'s initial turnState computation, reused here after every
-// turn.
-func (s *AgentSession) resolveTurnState(finished bool) TurnState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if finished {
-		return TurnStateIdle
-	}
-	if len(s.pendingApprovals) > 0 {
-		return TurnStateAwaitingApproval
-	}
-	if len(s.pendingResults) > 0 {
-		return TurnStateAwaitingResult
-	}
-	return TurnStateSuspended
 }
 
 // Compact requests that the runtime compact its context. Mirrors TS
