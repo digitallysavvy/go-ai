@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -118,10 +119,13 @@ func NewToolSearchState(tools []types.Tool, toolCallers ResolvedToolCallers) (*T
 			}
 		}
 		if invalid || (tool.IsToolSearch && tool.DeferLoading) {
-			return nil, fmt.Errorf(
-				"tool %q must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
-				name,
-			)
+			return nil, &providererrors.InvalidArgumentError{
+				Field: "tools",
+				Message: fmt.Sprintf(
+					"tool %q must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
+					name,
+				),
+			}
 		}
 	}
 

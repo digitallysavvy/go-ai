@@ -3,6 +3,7 @@ package ai
 import (
 	"fmt"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -38,7 +39,10 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 	resolved := make(ResolvedToolCallers, len(toolCallers))
 	for toolName, callers := range toolCallers {
 		if _, ok := byName[toolName]; !ok {
-			return nil, fmt.Errorf("experimental_toolCallers: unknown tool %q.", toolName)
+			return nil, &providererrors.InvalidArgumentError{
+				Field:   "experimental_toolCallers",
+				Message: fmt.Sprintf("unknown tool %q.", toolName),
+			}
 		}
 
 		out := make([]string, len(callers))
@@ -49,7 +53,10 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 			}
 			callerTool, ok := byName[caller]
 			if !ok || callerTool.ExperimentalToolCaller == nil {
-				return nil, fmt.Errorf("experimental_toolCallers: tool %q contains an invalid caller.", toolName)
+				return nil, &providererrors.InvalidArgumentError{
+					Field:   "experimental_toolCallers",
+					Message: fmt.Sprintf("tool %q contains an invalid caller.", toolName),
+				}
 			}
 			out[i] = caller
 		}
