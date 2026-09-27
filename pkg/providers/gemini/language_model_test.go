@@ -658,45 +658,6 @@ func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 	}
 }
 
-func TestConvertResponse_ModalityTokenCountsInMetadata(t *testing.T) {
-	m := makeTestModel("gemini-2.5-pro")
-	resp := Response{
-		Candidates: []Candidate{{
-			Content: struct {
-				Parts []Part `json:"parts"`
-				Role  string `json:"role"`
-			}{Parts: []Part{{Text: "Hello"}}},
-			FinishReason: "STOP",
-		}},
-		UsageMetadata: &UsageMetadata{
-			PromptTokenCount:     14,
-			CandidatesTokenCount: 9,
-			PromptTokensDetails: []tokenDetail{
-				{Modality: "TEXT", TokenCount: 5},
-				{Modality: "IMAGE", TokenCount: 7},
-				{Modality: "AUDIO", TokenCount: 2},
-			},
-			CandidatesTokensDetails: []tokenDetail{
-				{Modality: "TEXT", TokenCount: 6},
-				{Modality: "VIDEO", TokenCount: 3},
-			},
-		},
-	}
-
-	result := m.convertResponse(resp, nil)
-	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
-	if !ok {
-		t.Fatal("expected google providerMetadata")
-	}
-	var counts ModalityTokenCounts
-	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
-		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
-	}
-	if counts.TextTokens != 11 || counts.ImageTokens != 7 || counts.AudioTokens != 2 || counts.VideoTokens != 3 {
-		t.Errorf("modalityTokenCounts = %+v", counts)
-	}
-}
-
 func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *testing.T) {
 	m := makeTestModel("gemini-3-pro-preview")
 	resp := Response{

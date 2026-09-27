@@ -81,13 +81,6 @@ func isConfirmedPromptBlockReason(blockReason string) bool {
 		blockReason != "BLOCKED_REASON_UNSPECIFIED"
 }
 
-type ModalityTokenCounts struct {
-	TextTokens  int32 `json:"textTokens,omitempty"`
-	ImageTokens int32 `json:"imageTokens,omitempty"`
-	AudioTokens int32 `json:"audioTokens,omitempty"`
-	VideoTokens int32 `json:"videoTokens,omitempty"`
-}
-
 // FunctionCall represents a Gemini `functionCall` part. It carries both the
 // traditional complete form (name + args) and the streaming partial-args
 // form (TS `google-json-accumulator.ts` / google-language-model.ts): a
@@ -286,30 +279,4 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 	}
 
 	return result
-}
-
-func modalityTokenCounts(usage *UsageMetadata) ModalityTokenCounts {
-	var counts ModalityTokenCounts
-	add := func(modality string, tokenCount int) {
-		switch modality {
-		case "TEXT":
-			counts.TextTokens += int32(tokenCount)
-		case "IMAGE":
-			counts.ImageTokens += int32(tokenCount)
-		case "AUDIO":
-			counts.AudioTokens += int32(tokenCount)
-		case "VIDEO":
-			counts.VideoTokens += int32(tokenCount)
-		}
-	}
-	if usage == nil {
-		return counts
-	}
-	for _, detail := range usage.PromptTokensDetails {
-		add(detail.Modality, detail.TokenCount)
-	}
-	for _, detail := range usage.CandidatesTokensDetails {
-		add(detail.Modality, detail.TokenCount)
-	}
-	return counts
 }

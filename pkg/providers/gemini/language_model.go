@@ -377,9 +377,6 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 		if um, err := json.Marshal(response.UsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
-		if mtc, err := json.Marshal(modalityTokenCounts(response.UsageMetadata)); err == nil {
-			meta["modalityTokenCounts"] = mtc
-		}
 		serviceTier = response.UsageMetadata.ServiceTier
 	} else {
 		meta["usageMetadata"] = json.RawMessage("null")

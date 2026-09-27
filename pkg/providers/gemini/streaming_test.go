@@ -698,35 +698,3 @@ func TestStreamServiceTierLastValueWins(t *testing.T) {
 		t.Errorf("serviceTier = %q, want last value %q", serviceTier, "SERVICE_TIER_PRIORITY")
 	}
 }
-
-func TestStreamModalityTokenCountsInMetadata(t *testing.T) {
-	chunk := `{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":7,"promptTokensDetails":[{"modality":"TEXT","tokenCount":4},{"modality":"IMAGE","tokenCount":6}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":7},{"modality":"AUDIO","tokenCount":2}]}}`
-
-	s := newTestStream(sseStream(chunk))
-	chunks := drainChunks(t, s)
-
-	var finishChunk *provider.StreamChunk
-	for _, c := range chunks {
-		if c.Type == provider.ChunkTypeFinish {
-			finishChunk = c
-		}
-	}
-	if finishChunk == nil || finishChunk.ProviderMetadata == nil {
-		t.Fatal("no finish chunk or no metadata")
-	}
-	var meta map[string]json.RawMessage
-	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
-		t.Fatalf("unmarshal outer meta: %v", err)
-	}
-	var googleMeta map[string]json.RawMessage
-	if err := json.Unmarshal(meta["google"], &googleMeta); err != nil {
-		t.Fatalf("unmarshal google meta: %v", err)
-	}
-	var counts ModalityTokenCounts
-	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
-		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
-	}
-	if counts.TextTokens != 11 || counts.ImageTokens != 6 || counts.AudioTokens != 2 {
-		t.Errorf("modalityTokenCounts = %+v", counts)
-	}
-}

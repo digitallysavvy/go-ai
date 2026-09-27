@@ -395,9 +395,6 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
-		if mtc, err := json.Marshal(modalityTokenCounts(s.lastUsageMetadata)); err == nil {
-			meta["modalityTokenCounts"] = mtc
-		}
 	} else {
 		meta["usageMetadata"] = json.RawMessage("null")
 	}
