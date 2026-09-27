@@ -223,7 +223,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	// Parse response based on model type
@@ -548,7 +548,7 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	var parsed struct {
