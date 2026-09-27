@@ -4,12 +4,14 @@
 //
 // MiniMax chat delegates to the Anthropic Messages protocol: TS
 // createMiniMax constructs an AnthropicLanguageModel directly against
-// MiniMax's Anthropic-compatible endpoint. This Go package does the same by
-// embedding pkg/providers/anthropic, adding only the per-call
-// providerOptions.minimax.thinking -> Anthropic ModelOptions.Thinking bridge
-// (see language_model.go) that the shared Anthropic provider does not do on
-// its own (its thinking option is resolved once at model construction, not
-// per call).
+// MiniMax's Anthropic-compatible endpoint, with config.provider =
+// "minimax.messages". This Go package does the same by constructing a single
+// shared *anthropic.LanguageModel (Provider.Name() = "minimax") and
+// delegating every call to it: pkg/providers/anthropic's per-call
+// provider-options resolution (call_options.go) already derives the
+// "minimax" providerOptionsName and reads providerOptions.minimax /
+// providerOptions.anthropic fresh on every call, so this package adds no
+// MiniMax-specific request-building logic of its own.
 package minimax
 
 import (
@@ -19,27 +21,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
-
-// validateThinkingType narrows the shared Anthropic thinking.type schema to
-// MiniMax's own minimaxLanguageModelOptions enum ("adaptive"|"disabled",
-// unlike plain Anthropic which also allows "enabled") once the per-call
-// provider options (construction defaults merged with providerOptions.
-// minimax / providerOptions.anthropic) have been resolved. Wired as
-// anthropic.Config.ValidateCallOptions so pkg/providers/anthropic's shared
-// per-call provider-options merge (call_options.go) handles all the actual
-// providerOptions plumbing; this is the one MiniMax-specific narrowing left
-// on top of it.
-func validateThinkingType(_ string, o *anthropic.ModelOptions) error {
-	if o.Thinking == nil {
-		return nil
-	}
-	switch o.Thinking.Type {
-	case "", anthropic.ThinkingTypeAdaptive, anthropic.ThinkingTypeDisabled:
-		return nil
-	default:
-		return fmt.Errorf("invalid minimax provider options: thinking.type must be %q or %q", anthropic.ThinkingTypeAdaptive, anthropic.ThinkingTypeDisabled)
-	}
-}
 
 // DefaultBaseURL is MiniMax's Anthropic-compatible chat endpoint.
 const DefaultBaseURL = "https://api.minimax.io/anthropic/v1"
@@ -90,7 +71,6 @@ func New(cfg Config) *Provider {
 		SupportedURLs: func(string) map[string][]string {
 			return map[string][]string{}
 		},
-		ValidateCallOptions: validateThinkingType,
 	})
 
 	return &Provider{

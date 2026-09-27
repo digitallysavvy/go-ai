@@ -45,8 +45,19 @@ func (m *LanguageModel) providerOptionsName() string {
 // merged (canonical "anthropic" + custom providerOptionsName, custom wins)
 // per-call provider options. Returns a validation error shaped like TS's
 // parseProviderOptions InvalidArgumentError when either raw options object
-// fails to decode, plus any error from the provider's ValidateCallOptions
-// hook (used by MiniMax to narrow the thinking.type enum).
+// fails to decode.
+//
+// There is deliberately no provider-specific narrowing hook here (e.g. for
+// MiniMax's thinking.type): TS's AnthropicLanguageModel.prepareRequest always
+// parses providerOptions.<name> against the single shared
+// anthropicLanguageModelOptions schema, regardless of which wrapper
+// constructed it. MiniMax exports a narrower MiniMaxLanguageModelOptions type
+// (thinking.type: "adaptive" | "disabled") purely for compile-time
+// TypeScript ergonomics — minimax-provider.ts never imports or validates
+// against it at runtime, and minimax-reasoning.test.ts never asserts
+// rejection of `thinking: { type: "enabled" }`. Matching that, Go accepts
+// whatever the shared anthropicLanguageModelOptions-equivalent schema allows
+// for every wrapper.
 func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*ModelOptions, error) {
 	base := ModelOptions{}
 	if m.options != nil {
@@ -80,15 +91,6 @@ func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*Mod
 
 	applyModelOptionsOverlay(&base, canonicalOverlay)
 	applyModelOptionsOverlay(&base, customOverlay)
-
-	if m.provider.config.ValidateCallOptions != nil {
-		if err := m.provider.config.ValidateCallOptions(m.modelID, &base); err != nil {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: err.Error(),
-			}
-		}
-	}
 
 	return &base, nil
 }

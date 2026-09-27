@@ -105,16 +105,6 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
-
-	// ValidateCallOptions optionally validates the fully-resolved per-call
-	// ModelOptions (construction-time defaults merged with per-call
-	// providerOptions) before the request is built. Return a non-nil error
-	// to reject the call; its message becomes the InvalidArgumentError
-	// message surfaced to the caller. Used by providers layered on top of
-	// the shared Anthropic implementation (e.g. MiniMax) that need to
-	// narrow a field beyond what the base anthropicLanguageModelOptions
-	// schema allows.
-	ValidateCallOptions func(modelID string, opts *ModelOptions) error `json:"-"`
 }
 
 // DefaultSupportedURLs returns the URL patterns the direct Anthropic API and

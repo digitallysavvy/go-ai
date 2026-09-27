@@ -15,15 +15,17 @@ import (
 // with provider: "minimax.messages" (see minimax-provider.ts). Every call
 // then resolves providerOptions.minimax (falling back to the canonical
 // providerOptions.anthropic key) fresh via AnthropicLanguageModel's own
-// prepareRequest. Go mirrors this the same way: pkg/providers/anthropic's
-// shared per-call provider-options merge (call_options.go) derives the
-// "minimax" providerOptionsName from Provider.Name() (set to "minimax" in
-// provider.go) and reads providerOptions.minimax / providerOptions.anthropic
-// on every call, so this wrapper only needs to hold a single, shared
-// *anthropic.LanguageModel and delegate to it — no more per-call model
-// construction or manual thinking bridging. The one MiniMax-specific
-// behavior left (narrowing thinking.type to "adaptive"|"disabled") is wired
-// as anthropic.Config.ValidateCallOptions in provider.go.
+// prepareRequest, validated against the same shared
+// anthropicLanguageModelOptions schema used for every other Anthropic
+// wrapper — MiniMax's own MiniMaxLanguageModelOptions type (which narrows
+// thinking.type to "adaptive"|"disabled") is a compile-time-only TypeScript
+// export never consulted at runtime. Go mirrors this the same way:
+// pkg/providers/anthropic's shared per-call provider-options merge
+// (call_options.go) derives the "minimax" providerOptionsName from
+// Provider.Name() (set to "minimax" in provider.go) and reads
+// providerOptions.minimax / providerOptions.anthropic on every call with no
+// MiniMax-specific narrowing, so this wrapper only needs to hold a single,
+// shared *anthropic.LanguageModel and delegate to it.
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
