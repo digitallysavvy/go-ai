@@ -206,6 +206,14 @@ func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*Trans
 }
 
 func detectTranscriptionMediaType(data []byte) string {
+	// MP4/M4A share the `ftyp` box signature (bytes 4-7) with MP4 video;
+	// generic detection returns "video/mp4" for both, so map it to
+	// "audio/mp4" here rather than falling through to the "audio/wav"
+	// default (TS detectMediaType, 76cb673).
+	if len(data) >= 8 &&
+		data[4] == 'f' && data[5] == 't' && data[6] == 'y' && data[7] == 'p' {
+		return "audio/mp4"
+	}
 	mediaType := fileutil.DetectMediaType(data).MimeType
 	if mediaType == "audio/wave" {
 		return "audio/wav"
