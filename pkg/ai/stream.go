@@ -1056,7 +1056,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	combinedOnChunk := func(c provider.StreamChunk) {
 		r.chunkBuf.push(c)
 		if userOnChunk != nil {
-			userOnChunk(c)
+			safeInvoke(func() { userOnChunk(c) })
 		}
 	}
 	r.processStream(ctx, combinedOnChunk, onEnd)
@@ -1507,7 +1507,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					r.finishReason = types.FinishReasonError
 				}
 				if opts.OnError != nil {
-					opts.OnError(ctx, errors.New(chunk.Text))
+					safeInvoke(func() { opts.OnError(ctx, errors.New(chunk.Text)) })
 				}
 			}
 
@@ -2142,7 +2142,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			fireAbort(r.err)
 		}
 		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
-			opts.OnError(ctx, r.err)
+			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
 			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{

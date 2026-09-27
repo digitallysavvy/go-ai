@@ -59,3 +59,15 @@ func safeCall[E any](ctx context.Context, event E, fn Listener[E]) {
 	}()
 	fn(ctx, event)
 }
+
+// safeInvoke calls fn() and recovers from any panic, so a panicking
+// synchronous callback (e.g. StreamText/StreamObject's OnChunk or OnError)
+// cannot kill the stream-processing goroutine mid-stream (audit row 9a37469
+// / WG5). Unlike Notify/safeCall, this does not run fn concurrently: OnChunk
+// and OnError must observe chunks/errors in stream order.
+func safeInvoke(fn func()) {
+	defer func() {
+		recover() //nolint:errcheck // intentionally ignore panic value
+	}()
+	fn()
+}

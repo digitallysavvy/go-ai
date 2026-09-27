@@ -911,6 +911,41 @@ func TestStreamObject_Basic(t *testing.T) {
 	}
 }
 
+// TestStreamObject_PanickingOnChunkDoesNotAbortStream ports TS's callback
+// exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
+// not kill StreamObject's stream-processing loop.
+func TestStreamObject_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result"`},
+				{Type: provider.ChunkTypeText, Text: `: "streamed"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: testSchema,
+		OnChunk: func(partialObject interface{}) {
+			panic("boom from OnChunk")
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Error("expected non-nil object despite panicking OnChunk")
+	}
+}
+
 func TestStreamObject_DefaultRetriesMatchesTS(t *testing.T) {
 	t.Parallel()
 

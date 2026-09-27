@@ -1637,7 +1637,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			err = errors.New("stream is nil")
 		}
 		if opts.OnError != nil {
-			opts.OnError(ctx, err)
+			safeInvoke(func() { opts.OnError(ctx, err) })
 		}
 		return nil, fmt.Errorf("stream error: %w", err)
 	}
@@ -1671,7 +1671,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 				break
 			}
 			if opts.OnError != nil {
-				opts.OnError(ctx, chunkErr)
+				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
 			streamErr = chunkErr
 			break
@@ -1695,7 +1695,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			if partial, ok := parseStreamPartial(opts.OutputMode, opts.Schema, opts.EnumValues, parseResult); ok && !deepEqual(partial, lastObject) {
 				lastObject = partial
 				if opts.OnChunk != nil {
-					opts.OnChunk(lastObject)
+					safeInvoke(func() { opts.OnChunk(lastObject) })
 				}
 			}
 
@@ -1718,7 +1718,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		case provider.ChunkTypeError:
 			chunkErr := errors.New(chunk.Text)
 			if opts.OnError != nil {
-				opts.OnError(ctx, chunkErr)
+				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
 			streamErr = chunkErr
 

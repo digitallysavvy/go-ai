@@ -3277,3 +3277,51 @@ func TestStreamTextResult_NoCallbacksChunksChannelYieldsFullMultiStep(t *testing
 		t.Fatalf("expected DoStream to be called twice, got %d", got)
 	}
 }
+
+// TestStreamText_PanickingOnChunkDoesNotAbortStream ports TS's callback
+// exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
+// not kill the stream-processing goroutine, and the full text/finish must
+// still be produced.
+func TestStreamText_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "Hello, "},
+				{Type: provider.ChunkTypeText, Text: "world!"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var onErrorCalls int
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnChunk: func(chunk provider.StreamChunk) {
+			panic("boom from OnChunk")
+		},
+		OnError: func(ctx context.Context, err error) {
+			onErrorCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "Hello, world!" {
+		t.Fatalf("text = %q, want %q", text, "Hello, world!")
+	}
+	if result.FinishReason() != types.FinishReasonStop {
+		t.Fatalf("FinishReason() = %q, want stop", result.FinishReason())
+	}
+	// The panic must not be misreported as a stream error.
+	if onErrorCalls != 0 {
+		t.Fatalf("onErrorCalls = %d, want 0", onErrorCalls)
+	}
+}
