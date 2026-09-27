@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	telemetrypkg "github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // StepEndCallback is called after each completed step.
@@ -438,6 +439,11 @@ type workflowApprovalResumeOptions struct {
 	toolApprovalSecret  []byte
 	onToolStart         ToolExecutionStartCallback
 	onToolEnd           ToolExecutionEndCallback
+	// telemetrySettings, when set, wraps each approved tool's execution in an
+	// OTel tool call span parented under ctx's current span (27d294d) — the
+	// caller is expected to have already started the workflow-level
+	// operation span so this has a root to parent under.
+	telemetrySettings *telemetrypkg.Settings
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -667,8 +673,17 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 			ToolsContext:        opts.toolsContext,
 		})
 	}
+	// Fire the OTel tool call span for this pre-step approved-tool execution
+	// under ctx's current span, so it is grouped under the root operation
+	// span rather than dropped for lack of a parent (27d294d).
+	toolCtx := telemetrypkg.FireOnToolCallStart(ctx, telemetrypkg.TelemetryToolCallStartEvent{
+		Settings:   opts.telemetrySettings,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+	})
 	start := time.Now()
-	result, err := tool.Execute(ctx, call.Arguments, types.ToolExecutionOptions{
+	result, err := tool.Execute(toolCtx, call.Arguments, types.ToolExecutionOptions{
 		ToolCallID:          call.ID,
 		UserContext:         opts.runtimeContext,
 		RuntimeContext:      opts.runtimeContext,
@@ -677,6 +692,15 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		ToolMetadata:        call.ToolMetadata,
 		Messages:            opts.messages,
 		ExperimentalSandbox: opts.experimentalSandbox,
+	})
+	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
+		Settings:   opts.telemetrySettings,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result,
+		Error:      err,
+		DurationMs: time.Since(start).Milliseconds(),
 	})
 	if opts.onToolEnd != nil {
 		finish := ai.OnToolCallFinishEvent{
@@ -1065,6 +1089,22 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
+	telemetrySettings := w.Telemetry
+	if opts.Telemetry != nil {
+		telemetrySettings = opts.Telemetry
+	}
+	modelProvider, modelID := workflowModelInfo(w.Model)
+	// Start the workflow-level operation span before any pre-step approved
+	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
+	// for 'ai.workflowAgent.generate' (stream-text-iterator.ts). Without this,
+	// approval-resume tool execution has no root span to parent under and its
+	// tool span is silently skipped (27d294d).
+	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
+		OperationType: "ai.workflowAgent.generate",
+		ModelProvider: modelProvider,
+		ModelID:       modelID,
+		Settings:      telemetrySettings,
+	})
 	var err error
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
@@ -1075,12 +1115,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
+		telemetrySettings:   telemetrySettings,
 	})
 	if err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
@@ -1093,22 +1136,44 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	telemetry := w.Telemetry
-	if opts.Telemetry != nil {
-		telemetry = opts.Telemetry
-	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings}
 	result, err := a.GenerateAgent(ctx, call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil && onAbort != nil {
-			onAbort(ctx, nil)
+		if ctx != nil && ctx.Err() != nil {
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+			if onAbort != nil {
+				onAbort(ctx, nil)
+			}
+		} else {
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
 		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 			onError(ctx, err)
 		}
 		return nil, err
 	}
+	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
+		Settings:      telemetrySettings,
+		FinishReason:  string(result.FinishReason),
+		ModelProvider: modelProvider,
+		ModelID:       modelID,
+		Text:          result.Text,
+		Usage: telemetrypkg.TelemetryUsage{
+			InputTokens:  result.Usage.InputTokens,
+			OutputTokens: result.Usage.OutputTokens,
+			TotalTokens:  result.Usage.TotalTokens,
+		},
+	})
 	return &WorkflowResult{AgentResult: result}, nil
+}
+
+// workflowModelInfo returns the model's provider and model id, or two empty
+// strings when model is nil (validated separately by callers).
+func workflowModelInfo(model provider.LanguageModel) (string, string) {
+	if model == nil {
+		return "", ""
+	}
+	return model.Provider(), model.ModelID()
 }
 
 // Stream runs the workflow agent in streaming mode.
@@ -1147,6 +1212,25 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
+	telemetrySettings := w.Telemetry
+	if opts.Telemetry != nil {
+		telemetrySettings = opts.Telemetry
+	}
+	modelProvider, modelID := workflowModelInfo(w.Model)
+	// Start the workflow-level operation span before any pre-step approved
+	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
+	// for 'ai.workflowAgent.stream' (stream-text-iterator.ts). Without this,
+	// approval-resume tool execution has no root span to parent under and its
+	// tool span is silently skipped (27d294d). The span is ended as soon as
+	// the underlying stream is obtained: the actual streaming happens
+	// asynchronously as the caller drains WorkflowStreamResult, under the
+	// child span the delegated ai.StreamText call creates for itself.
+	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
+		OperationType: "ai.workflowAgent.stream",
+		ModelProvider: modelProvider,
+		ModelID:       modelID,
+		Settings:      telemetrySettings,
+	})
 	var err error
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -1158,12 +1242,15 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
+		telemetrySettings:   telemetrySettings,
 	})
 	if err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
@@ -1176,24 +1263,30 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 			system = normalized
 		}
 	}
-	telemetry := w.Telemetry
-	if opts.Telemetry != nil {
-		telemetry = opts.Telemetry
-	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetry},
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings},
 		OnChunk:              opts.OnChunk,
 		InitialStreamChunks:  prefixChunks,
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil && onAbort != nil {
-			onAbort(ctx, nil)
+		if ctx != nil && ctx.Err() != nil {
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+			if onAbort != nil {
+				onAbort(ctx, nil)
+			}
+		} else {
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
 		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 			onError(ctx, err)
 		}
 		return nil, err
 	}
+	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
+		Settings:      telemetrySettings,
+		ModelProvider: modelProvider,
+		ModelID:       modelID,
+	})
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
 }
