@@ -32,13 +32,16 @@ type Provider struct {
 	config            Config
 	anthropicProvider *anthropic.Provider
 
-	// videoClient and videoReqHeaders serve the video generation API
-	// (Authorization: Bearer <apiKey>, no anthropic-version header, unlike
-	// the chat client). videoReqHeaders is forwarded to VideoModel.DoStatus's
-	// fileutil-based polling, which does not go through videoClient.
-	videoClient     *internalhttp.Client
-	videoReqHeaders map[string]string
-	videoBaseURL    string
+	// videoClient serves the video generation API (Authorization: Bearer
+	// <apiKey>, no anthropic-version header, unlike the chat client). The
+	// client itself carries no static headers: the API key is resolved fresh
+	// on every call via resolveVideoHeaders (TS's `getVideoHeaders` closure,
+	// re-invoked per request via `resolve(this.config.headers)`) rather than
+	// baked in once at New() time, so a key that is only set in the
+	// environment after New() runs (or rotated afterward) still takes effect
+	// on the next request.
+	videoClient  *internalhttp.Client
+	videoBaseURL string
 }
 
 // Config contains configuration for the MiniMax provider.
@@ -73,13 +76,12 @@ func New(cfg Config) *Provider {
 		videoBaseURL = DefaultVideoBaseURL
 	}
 
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("MINIMAX_API_KEY")
-	}
-
+	// resolveAPIKey() below re-reads MINIMAX_API_KEY per call, so the
+	// Anthropic sub-provider (which resolves its own API key once, here, at
+	// construction time) is the one exception: that eager resolution is the
+	// existing pkg/providers/anthropic convention, unchanged by this package.
 	anthropicProvider := anthropic.New(anthropic.Config{
-		APIKey:  apiKey,
+		APIKey:  resolveAPIKey(cfg.APIKey),
 		Name:    "minimax",
 		BaseURL: baseURL,
 		Headers: cfg.Headers,
@@ -91,24 +93,46 @@ func New(cfg Config) *Provider {
 		},
 	})
 
-	videoReqHeaders := map[string]string{
-		"Authorization": "Bearer " + apiKey,
-	}
-	for k, v := range cfg.Headers {
-		videoReqHeaders[k] = v
-	}
+	// No static headers: resolveVideoHeaders builds the Authorization header
+	// fresh on every video request instead.
 	videoClient := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: videoBaseURL,
-		Headers: videoReqHeaders,
 	})
 
 	return &Provider{
 		config:            cfg,
 		anthropicProvider: anthropicProvider,
 		videoClient:       videoClient,
-		videoReqHeaders:   videoReqHeaders,
 		videoBaseURL:      videoBaseURL,
 	}
+}
+
+// resolveAPIKey returns explicitKey, trimmed, or falls back to the
+// MINIMAX_API_KEY environment variable.
+func resolveAPIKey(explicitKey string) string {
+	if explicitKey != "" {
+		return explicitKey
+	}
+	return os.Getenv("MINIMAX_API_KEY")
+}
+
+// resolveVideoHeaders builds the headers for a MiniMax video API request,
+// resolving the API key fresh on every call (TS `getVideoHeaders`, a closure
+// re-invoked per request via `resolve(this.config.headers)` — not resolved
+// once and cached) and layering per-request headers over the provider's
+// configured ones (TS `combineHeaders(await resolve(this.config.headers),
+// options.headers)`: request headers win).
+func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[string]string {
+	headers := map[string]string{
+		"Authorization": "Bearer " + resolveAPIKey(p.config.APIKey),
+	}
+	for k, v := range p.config.Headers {
+		headers[k] = v
+	}
+	for k, v := range requestHeaders {
+		headers[k] = v
+	}
+	return headers
 }
 
 // CreateMiniMax creates a new MiniMax provider.

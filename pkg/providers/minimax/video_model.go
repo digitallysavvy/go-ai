@@ -92,7 +92,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	submitResp, err := m.prov.videoClient.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/v2/video_generation",
-		Headers: opts.Headers,
+		Headers: m.prov.resolveVideoHeaders(opts.Headers),
 		Body:    body,
 	})
 	if err != nil {
@@ -158,7 +158,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.videoBaseURL, nil)
-	downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.videoReqHeaders, opts.Headers)
+	downloadOpts.Headers = m.prov.resolveVideoHeaders(opts.Headers)
 
 	statusURL := strings.TrimRight(m.prov.videoBaseURL, "/") + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
 

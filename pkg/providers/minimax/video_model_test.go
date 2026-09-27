@@ -813,6 +813,55 @@ func TestDoGenerate_RequestHeaders(t *testing.T) {
 	}
 }
 
+// TestVideoModel_ResolvesAPIKeyLazilyPerCall verifies that the video API key
+// is resolved fresh on every request rather than being baked into the
+// Provider once at New() time (TS `getVideoHeaders`, a closure re-invoked per
+// request via `resolve(this.config.headers)`). A Provider constructed before
+// MINIMAX_API_KEY is set in the environment must still pick up the key on
+// its first video request, and a later change to the environment variable
+// must be reflected on the next request too.
+func TestVideoModel_ResolvesAPIKeyLazilyPerCall(t *testing.T) {
+	var gotAuth []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/video_generation", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"task_id": %q}`, minimaxTestTaskID)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	t.Setenv("MINIMAX_API_KEY", "")
+	// No APIKey configured and no environment variable set yet: New() must
+	// not fail or freeze an empty/missing key for the provider's lifetime.
+	prov := New(Config{VideoBaseURL: server.URL})
+	model := newVideoModel(prov, ModelH3)
+
+	t.Setenv("MINIMAX_API_KEY", "first-env-key")
+	if _, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: *minimaxDefaultCallOptions(nil),
+	}); err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+
+	t.Setenv("MINIMAX_API_KEY", "second-env-key")
+	if _, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: *minimaxDefaultCallOptions(nil),
+	}); err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+
+	if len(gotAuth) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(gotAuth))
+	}
+	if gotAuth[0] != "Bearer first-env-key" {
+		t.Errorf("first request Authorization = %q, want %q", gotAuth[0], "Bearer first-env-key")
+	}
+	if gotAuth[1] != "Bearer second-env-key" {
+		t.Errorf("second request Authorization = %q, want %q", gotAuth[1], "Bearer second-env-key")
+	}
+}
+
 // TestDoGenerate_ResolvedInputsReferenceVideoUrls verifies that DoGenerate
 // (unlike a plain DoStatus call) resolves reference-video indices back to
 // their original URLs in providerMetadata.minimax.resolvedInputs (TS
