@@ -292,7 +292,17 @@ type ContinuationAuth struct {
 	Nonce       string `json:"nonce"`
 	IssuedAtMs  int64  `json:"issuedAtMs"`
 	ExpiresAtMs int64  `json:"expiresAtMs"`
-	Signature   string `json:"signature"`
+
+	// Signature is tagged omitempty so that signContinuationPayload's
+	// signing/verification copy (which blanks this field to "" before
+	// canonicalizing) produces a payload with the "signature" key entirely
+	// absent -- matching TypeScript's signContinuationPayload/
+	// stripSignature, which build the signed payload by omitting the key
+	// via destructuring rather than setting it to an empty string. Without
+	// omitempty, canonicalJSON would emit `"signature":""`, a byte-for-byte
+	// mismatch that silently produces HMACs TypeScript never signs or
+	// accepts (self-consistent within Go, but not cross-implementation).
+	Signature string `json:"signature,omitempty"`
 }
 
 // PendingInterruption is one authenticated, not-yet-resolved interruption

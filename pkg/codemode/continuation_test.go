@@ -288,6 +288,55 @@ func TestSetCodeModeContinuationSigningKey_RejectsNonPositiveMaxAge(t *testing.T
 	}
 }
 
+// Byte-for-byte cross-implementation fixture: the exact HMAC-SHA256
+// signature TypeScript's signContinuationPayload/canonicalJson
+// (continuation-capability.ts) compute for a fixed envelope and key,
+// captured by independently running that algorithm under Node against the
+// same inputs (see the parity review notes). Guards against regressions
+// like the one this fixture caught: tagging ContinuationAuth.Signature
+// without `omitempty` made Go's canonical payload include `"signature":""`
+// where TypeScript's omits the key entirely (via destructuring), which
+// silently produced HMACs TypeScript never signs or verifies even though
+// every Go-only round trip (sign then verify) stayed internally
+// consistent and so never caught it.
+func TestSignContinuationPayload_MatchesTypeScriptFixture(t *testing.T) {
+	continuation := Continuation{
+		Version:         2,
+		JS:              "return 1;",
+		OuterToolCallID: "x",
+		ToolNames:       []string{"a"},
+		Token:           "tok",
+		PendingInterruptions: []PendingInterruption{{
+			RunInterruptionID: "r1",
+			InterruptID:       "i1",
+			ToolName:          "a",
+			ToolCallID:        "c1",
+			Input:             map[string]interface{}{},
+			Payload:           InterruptPayload{"kind": "k"},
+		}},
+		Resolutions: []PendingResolution{},
+		Auth: ContinuationAuth{
+			Alg:         signatureAlgorithm,
+			Nonce:       strings.Repeat("n", 32),
+			IssuedAtMs:  1000,
+			ExpiresAtMs: 2000,
+		},
+	}
+	got, err := signContinuationPayload(continuation, []byte("key"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Computed by running TypeScript's own canonicalJson + createHmac('sha256',
+	// 'key').update(json).digest('base64url') under Node against the
+	// identical continuation/auth object above (auth built without ever
+	// setting a "signature" property, matching signContinuationPayload's
+	// `{ ...auth }` where auth: Omit<CodeModeContinuationAuth,'signature'>).
+	const wantTypeScriptSignature = "2t9zRLwGhJ40AqlofAb377pYH8KGKtqk4aR-C7DS-1I"
+	if got != wantTypeScriptSignature {
+		t.Fatalf("signature mismatch with TypeScript fixture:\n got:  %s\n want: %s", got, wantTypeScriptSignature)
+	}
+}
+
 // A tampered continuation (any field of the signed envelope changed after
 // signing) must fail verification, so IsCodeModeInterrupt/
 // ContinueCodeModeInterrupt reject it even though it is otherwise
