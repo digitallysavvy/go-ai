@@ -1151,6 +1151,32 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// one is registered, so the provider's own DoStream/HTTP spans become its
 	// children. stepCtx itself is unchanged for subsequent chunk processing
 	// and tool execution, which are parented under the step span instead.
+	//
+	// Known ordering divergence from TS (H5 review): TS's streamText always
+	// fires onStepStart (telemetryDispatcher.onStepStart, which creates the
+	// GenAI "chat" span's parent step span) BEFORE calling doStream for that
+	// step (packages/ai/src/generate-text/stream-language-model-call.ts:
+	// `notify({event: {promptMessages}, callbacks: onStart})` runs, then
+	// `executeLanguageModelCallInTelemetryContext(... resolvedModel.doStream
+	// ...)`), for every step including the first — TS's step loop is fully
+	// sequential (each streamStep() is awaited from the previous step's
+	// flush callback; there is no cross-step prefetching). Go's bootstrap
+	// path calls FireOnLanguageModelCallStart/DoStream here for step 1
+	// BEFORE telemetry.FireOnStepStart ever runs for step 1 (that only
+	// happens once processStream starts consuming the resulting stream), and
+	// the same eager-prefetch shape repeats for every later step (the next
+	// step's DoStream is issued at the tail of the current step's iteration,
+	// before the loop advances and fires that next step's FireOnStepStart —
+	// see the analogous nextModelCallCtx/nextModel.DoStream call below).
+	// Reordering this so FireOnStepStart always precedes the model call
+	// would require restructuring the eager-prefetch step pipeline (moving
+	// prompt/tool preparation and the DoStream call from "tail of the prior
+	// iteration" to "top of the current iteration, after FireOnStepStart")
+	// for every step, not just step 1 — assessed as NOT a small, contained
+	// change, so it is intentionally left as-is; OpenTelemetry.
+	// OnLanguageModelCallStart in pkg/telemetry/open_telemetry.go documents
+	// and compensates for it with a root-span fallback when no step span has
+	// been recorded yet.
 	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:         telemetrySettings,
 		CallID:           callID,
