@@ -51,7 +51,12 @@ type PartialOutput[T any] struct {
 type outputProcessor interface {
 	ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error)
 	parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error)
-	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error)
+	// parsePartialOutput returns (value, hasValue, err). hasValue is false
+	// only when there isn't enough content to parse anything yet
+	// (TS: `result` itself is undefined); a JSON null is a legitimate parsed
+	// value (hasValue=true, value=nil) and must not be conflated with "not
+	// parseable yet" (audit row 84f5d1b / WG4).
+	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (value interface{}, hasValue bool, err error)
 }
 
 // =============================================================================
@@ -206,15 +211,15 @@ func (o *textOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -375,15 +380,15 @@ func (o *objectOutput[T]) parseCompleteOutput(ctx context.Context, opts ParseCom
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -739,15 +744,15 @@ func (o *arrayOutput[ELEMENT]) parseCompleteOutput(ctx context.Context, opts Par
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -963,15 +968,15 @@ func (o *choiceOutput[CHOICE]) parseCompleteOutput(ctx context.Context, opts Par
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -1059,13 +1064,13 @@ func (o *jsonOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }

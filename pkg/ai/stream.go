@@ -439,6 +439,14 @@ type StreamTextResult struct {
 	// Used for deduplication — only written from the stream-consuming goroutine.
 	lastPartialJSON string
 
+	// hasPublishedPartialLegacy tracks whether readAllLegacy has published a
+	// partial yet, distinguishing that from lastPartialJSON's zero value so a
+	// genuine first empty-string/null partial is not suppressed (audit row
+	// 84f5d1b / WG4). Only the multi-step path (processStream) is used in
+	// practice; this exists so readAllLegacy compiles against the same
+	// outputProcessor.parsePartialOutput contract.
+	hasPublishedPartialLegacy bool
+
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
 
@@ -1152,6 +1160,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// compare each step's tool calls against the choice that produced them
 	// (audit rows 8b6b756/36b3364/ccf98e7, WG3).
 	currentToolChoice := r.cbToolChoice
+	// lastStepText holds the most recently completed step's own text (not
+	// the all-steps concatenation in accumulatedTextParts/r.text), so the
+	// final structured-output parse below uses only the step that actually
+	// produced it, matching TS stream-text.ts (audit row 2a5ed55 / WG4).
+	var lastStepText string
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
 	var accumulatedTextParts []string
@@ -1242,6 +1255,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends.
 		var stepTextParts []string
+		// hasPublishedPartial/stepLastPartialJSON reset every step (audit row
+		// 2a5ed55 / WG4: partial output must be parsed from the current
+		// step's text only, not all steps concatenated), and
+		// hasPublishedPartial replaces relying on stepLastPartialJSON=="" as
+		// a "nothing published yet" sentinel, which incorrectly suppressed a
+		// genuine first empty-string partial (audit row 84f5d1b / WG4).
+		hasPublishedPartial := false
+		stepLastPartialJSON := ""
 		var stepToolCalls []types.ToolCall
 		var stepContent []types.ContentPart
 		var stepReasoningBuilder strings.Builder
@@ -1333,20 +1354,27 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
-				// matching the TypeScript SDK's deduplication behavior.
+				// matching the TypeScript SDK's deduplication behavior. Parses from
+				// this step's text only (audit row 2a5ed55 / WG4): in a multi-step
+				// tool-loop call, only the final step's text is ever a candidate
+				// structured-output response.
 				if r.outputSpec != nil {
-					currentText := strings.Join(accumulatedTextParts, "")
-					partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+					currentText := strings.Join(stepTextParts, "")
+					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 						Text: currentText,
 					})
 					if partialErr != nil {
 						r.err = partialErr
 						break
 					}
-					if partial != nil {
+					// A nil partial is a legitimate JSON null value, not "no
+					// partial yet": hasPartial distinguishes the two so a
+					// null value still publishes (audit row 84f5d1b / WG4).
+					if hasPartial {
 						newJSONStr, ok := partialOutputDedupKey(partial)
-						if ok && newJSONStr != r.lastPartialJSON {
-							r.lastPartialJSON = newJSONStr
+						if ok && (!hasPublishedPartial || newJSONStr != stepLastPartialJSON) {
+							hasPublishedPartial = true
+							stepLastPartialJSON = newJSONStr
 							r.mu.Lock()
 							r.partialOutput = partial
 							r.mu.Unlock()
@@ -1615,6 +1643,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		stepText := strings.Join(stepTextParts, "")
+		lastStepText = stepText
 		r.text = strings.Join(accumulatedTextParts, "")
 		// stepToolCalls were already parsed (with repair) and refined
 		// per-chunk above, as each ChunkTypeToolCall arrived.
@@ -2171,17 +2200,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		return
 	}
 
-	// Resolve final typed output if spec was provided and stream completed cleanly.
-	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
-	// would produce invalid JSON, matching the TypeScript SDK's behavior.
-	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+	// Resolve final typed output if spec was provided and stream completed
+	// cleanly, from the last step's own text (audit row 2a5ed55 / WG4).
+	// Parse whenever finishReason is stop, or whenever it's anything other
+	// than tool-calls and the step actually produced text — e.g. a provider
+	// that omits/misreports finishReason but still returned the object
+	// (audit rows eed7950/9de0baf / WG4), matching TS generate-text.ts:
+	// `finishReason === 'stop' || (finishReason !== 'tool-calls' && text.length > 0)`.
+	if r.outputSpec != nil && shouldParseFinalOutput(r.finishReason, lastStepText) {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         r.text,
+			Text:         lastStepText,
 			FinishReason: r.finishReason,
 			Usage:        &r.usage,
 		})
 		r.mu.Lock()
-		r.outputResult = parsed
+		// Only publish a result on success: the generic outputProcessor
+		// interface returns the parse method's zero value (e.g. a
+		// zero-valued struct, not untyped nil) alongside a non-nil error, so
+		// assigning it unconditionally would make Output() return a
+		// non-nil-but-empty value instead of nil on a parse failure.
+		if parseErr == nil {
+			r.outputResult = parsed
+		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
 	}
@@ -2916,16 +2956,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 
 			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
-				partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+				partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 					Text: r.text,
 				})
 				if partialErr != nil {
 					r.err = partialErr
 					return "", partialErr
 				}
-				if partial != nil {
+				// A nil partial is a legitimate JSON null value, not "no
+				// partial yet" (audit row 84f5d1b / WG4).
+				if hasPartial {
 					newJSONStr, ok := partialOutputDedupKey(partial)
-					if ok && newJSONStr != r.lastPartialJSON {
+					if ok && (!r.hasPublishedPartialLegacy || newJSONStr != r.lastPartialJSON) {
+						r.hasPublishedPartialLegacy = true
 						r.lastPartialJSON = newJSONStr
 						r.mu.Lock()
 						r.partialOutput = partial
@@ -3105,15 +3148,18 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	r.stepResponse = step.Response
 	r.mu.Unlock()
 
-	// Resolve final typed output if spec was provided and stream completed cleanly.
-	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+	// Resolve final typed output if spec was provided and stream completed
+	// cleanly (audit rows eed7950/9de0baf / WG4).
+	if r.outputSpec != nil && shouldParseFinalOutput(r.finishReason, r.text) {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         r.text,
 			FinishReason: r.finishReason,
 			Usage:        &r.usage,
 		})
 		r.mu.Lock()
-		r.outputResult = parsed
+		if parseErr == nil {
+			r.outputResult = parsed
+		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
 	}
@@ -3366,6 +3412,18 @@ func (r *StreamTextResult) ProviderMetadata() json.RawMessage {
 func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	_ = r.ensureConsumed()
 	return r.responseHeaders
+}
+
+// shouldParseFinalOutput mirrors TS generate-text.ts's final-output parse
+// condition: parse on a clean stop, or on any other finish reason besides
+// tool-calls as long as the step actually produced text (a provider that
+// omits/misreports finishReason but still returned the object). Mirrors
+// audit rows eed7950/9de0baf, WG4.
+func shouldParseFinalOutput(finishReason types.FinishReason, stepText string) bool {
+	if finishReason == types.FinishReasonStop {
+		return true
+	}
+	return finishReason != types.FinishReasonToolCalls && stepText != ""
 }
 
 func partialOutputDedupKey(partial interface{}) (string, bool) {

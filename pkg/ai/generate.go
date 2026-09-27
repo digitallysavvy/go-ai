@@ -1343,10 +1343,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs
 
-			// Parse typed output if an Output spec was provided.
-			// Only parse when generation finished cleanly; a 'length' finish means
-			// the response was truncated and would likely produce invalid JSON.
-			if op, ok := opts.Output.(outputProcessor); ok && genResult.FinishReason == types.FinishReasonStop {
+			// Parse typed output if an Output spec was provided. Parse on a
+			// clean stop, or on any other finish reason besides tool-calls
+			// as long as the step produced text — e.g. a provider that
+			// omits/misreports finishReason but still returned the object
+			// (audit rows eed7950/9de0baf / WG4). A 'length' finish with no
+			// text is still skipped: it would likely be invalid/truncated
+			// JSON, surfaced instead as NoObjectGeneratedError by the Output
+			// spec's own parseCompleteOutput.
+			if op, ok := opts.Output.(outputProcessor); ok && shouldParseFinalOutput(genResult.FinishReason, genResult.Text) {
 				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
 					Text:         genResult.Text,
 					FinishReason: genResult.FinishReason,

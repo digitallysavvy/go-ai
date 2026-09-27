@@ -2757,6 +2757,42 @@ func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
 	}
 }
 
+// TestStreamText_PublishesEmptyStringPartialOutput ports TS's "stream null
+// and empty-string JSON partial outputs" case (audit row 84f5d1b / WG4): a
+// genuine first empty-string partial must be published, not suppressed by
+// comparing against the "nothing published yet" sentinel.
+func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: ""},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		Output: TextOutput(),
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	partial := result.PartialOutput()
+	s, ok := partial.(string)
+	if !ok {
+		t.Fatalf("PartialOutput() = %#v (%T), want the published empty string, not the unpublished zero value", partial, partial)
+	}
+	if s != "" {
+		t.Fatalf("PartialOutput() = %q, want empty string", s)
+	}
+}
+
 func TestStreamTextIncompletePartialOutputEmitsFinishStep(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {

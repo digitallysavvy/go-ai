@@ -46,6 +46,57 @@ func TestTextOutput_ParsePartialOutput(t *testing.T) {
 	}
 }
 
+// TestOutputProcessor_ParsePartialOutput_DistinguishesNullFromNotYetParseable
+// ports TS stream-text.ts's `result !== undefined` check (audit row
+// 84f5d1b / WG4): a JSON null is a legitimate parsed value (hasValue=true,
+// value=nil), distinct from "not enough content to parse anything yet"
+// (hasValue=false).
+func TestOutputProcessor_ParsePartialOutput_DistinguishesNullFromNotYetParseable(t *testing.T) {
+	t.Parallel()
+
+	jsonOut := JSONOutput(JSONOutputOptions{}).(outputProcessor)
+
+	value, hasValue, err := jsonOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: "null"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasValue {
+		t.Fatal("hasValue = false for a fully-parsed JSON null, want true")
+	}
+	if value != nil {
+		t.Fatalf("value = %#v, want nil", value)
+	}
+
+	_, hasValue, err = jsonOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasValue {
+		t.Fatal("hasValue = true for empty/unparseable input, want false")
+	}
+}
+
+// TestOutputProcessor_ParsePartialOutput_TextOutputAlwaysHasValue verifies
+// that Output.Text's partial value (including the empty string) always
+// reports hasValue=true, since any accumulated text is already valid partial
+// text output.
+func TestOutputProcessor_ParsePartialOutput_TextOutputAlwaysHasValue(t *testing.T) {
+	t.Parallel()
+
+	textOut := TextOutput().(outputProcessor)
+
+	value, hasValue, err := textOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasValue {
+		t.Fatal("hasValue = false for empty text output, want true (an empty string is a valid partial)")
+	}
+	if value != "" {
+		t.Fatalf("value = %#v, want empty string", value)
+	}
+}
+
 func TestObjectOutput_ParseCompleteOutput(t *testing.T) {
 	t.Parallel()
 
@@ -1297,7 +1348,13 @@ func TestStreamText_NoOutput_NoResponseFormat(t *testing.T) {
 // NOT call parseCompleteOutput (and leaves result.Output nil) when the model
 // finishes with reason "length" (truncated response). Parsing truncated JSON
 // would always fail; the TS SDK guards with if (finishReason === 'stop').
-func TestGenerateText_FinishReasonLength_NilOutput(t *testing.T) {
+// TestGenerateText_FinishReasonLength_SurfacesNoObjectGeneratedError ports TS
+// generate-text.ts's length-truncation diagnostics (audit rows eed7950/
+// 9de0baf / WG4): a non-stop, non-tool-calls finish reason with non-empty
+// text is still a parse candidate (a provider may truncate structured
+// output), so truncated/invalid JSON now surfaces NoObjectGeneratedError
+// instead of silently leaving Output nil with no error at all.
+func TestGenerateText_FinishReasonLength_SurfacesNoObjectGeneratedError(t *testing.T) {
 	t.Parallel()
 
 	type Obj struct {
@@ -1321,13 +1378,15 @@ func TestGenerateText_FinishReasonLength_NilOutput(t *testing.T) {
 			Schema: SchemaFor[Obj](),
 		}),
 	})
-	// Should succeed (no error), but Output must be nil because parseCompleteOutput
-	// is skipped for non-stop finish reasons.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	var noObj *NoObjectGeneratedError
+	if !errors.As(err, &noObj) {
+		t.Fatalf("error = %v, want *NoObjectGeneratedError", err)
 	}
-	if result.Output != nil {
-		t.Errorf("expected nil Output for length finish reason, got %v", result.Output)
+	if noObj.FinishReason != types.FinishReasonLength {
+		t.Errorf("FinishReason = %q, want length", noObj.FinishReason)
+	}
+	if result != nil {
+		t.Errorf("expected nil result on output parsing failure, got %+v", result)
 	}
 }
 
@@ -1391,7 +1450,15 @@ func TestStreamText_Output_FinalResult(t *testing.T) {
 // TestStreamText_Output_NilWhenLengthFinish verifies that Output() is nil when
 // the stream ends with finishReason "length" (truncated response), matching the
 // TS SDK guard: parseCompleteOutput is only called on 'stop' finish reason.
-func TestStreamText_Output_NilWhenLengthFinish(t *testing.T) {
+// TestStreamText_Output_LengthFinishSurfacesOutputErr ports TS
+// stream-text.ts's length-truncation diagnostics (audit rows eed7950/
+// 9de0baf / WG4): non-empty text with a non-stop, non-tool-calls finish
+// reason is still a parse candidate, so truncated/invalid JSON now surfaces
+// through OutputErr() (NoObjectGeneratedError) instead of leaving both
+// Output() and OutputErr() silently nil. Output() itself must stay nil: a
+// failed parse must never publish the parser's zero value as if it were a
+// real result.
+func TestStreamText_Output_LengthFinishSurfacesOutputErr(t *testing.T) {
 	t.Parallel()
 
 	type Obj struct {
@@ -1424,7 +1491,11 @@ func TestStreamText_Output_NilWhenLengthFinish(t *testing.T) {
 	}
 
 	if result.Output() != nil {
-		t.Errorf("expected nil Output() for length finish reason, got %v", result.Output())
+		t.Errorf("expected nil Output() on parse failure, got %v", result.Output())
+	}
+	var noObj *NoObjectGeneratedError
+	if !errors.As(result.OutputErr(), &noObj) {
+		t.Fatalf("OutputErr() = %v, want *NoObjectGeneratedError", result.OutputErr())
 	}
 }
 
