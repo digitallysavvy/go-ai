@@ -102,6 +102,7 @@ func PrepareSandboxForHarness(ctx context.Context, opts PrepareSandboxForHarness
 			Session:                 opts.Session,
 			WorkDir:                 workDir,
 			OnBootstrap:             cfg.OnBootstrap,
+			BootstrapHash:           cfg.BootstrapHash,
 			DefaultWorkingDirectory: defaultWD,
 		}); err != nil {
 			return nil, err

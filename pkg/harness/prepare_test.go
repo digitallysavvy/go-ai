@@ -47,7 +47,11 @@ func TestPrepareSandboxForHarness(t *testing.T) {
 		if len(result.SkippedHarnessIDs) != 0 {
 			t.Fatal(result.SkippedHarnessIDs)
 		}
-		want := []string{`printf "%s" "$HOME"`, `mkdir -p "$BOOTSTRAP_DIR"`, "echo alpha", `mkdir -p "$BOOTSTRAP_DIR"`, "echo beta", "pwd", `mkdir -p "$WORK_DIR"`}
+		// Ported from TS prepare-sandbox-for-harness.test.ts (31742b9a1b): once
+		// bootstrapHash is forwarded to runSandboxBootstrap, a successful
+		// OnBootstrap now writes a completion marker (resolve $HOME, then
+		// mkdir -p the marker directory).
+		want := []string{`printf "%s" "$HOME"`, `mkdir -p "$BOOTSTRAP_DIR"`, "echo alpha", `mkdir -p "$BOOTSTRAP_DIR"`, "echo beta", "pwd", `mkdir -p "$WORK_DIR"`, `printf "%s" "$HOME"`, `mkdir -p "$MARKER_DIR"`}
 		if got := sb.runCommands(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("commands = %q", got)
 		}

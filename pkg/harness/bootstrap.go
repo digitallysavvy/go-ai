@@ -316,7 +316,7 @@ func CreateSandboxBootstrapPlan(recipe *Bootstrap, cfg SandboxConfig) (SandboxBo
 		plan.Identity = plan.RecipeIdentity
 	}
 	if recipe != nil || cfg.OnBootstrap != nil {
-		recipeIdentity, workDir, onBootstrap := plan.RecipeIdentity, plan.WorkDir, cfg.OnBootstrap
+		recipeIdentity, workDir, onBootstrap, bootstrapHash := plan.RecipeIdentity, plan.WorkDir, cfg.OnBootstrap, cfg.BootstrapHash
 		plan.OnFirstCreate = func(ctx context.Context, session providerutils.SandboxSession) error {
 			return RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
 				Session:        session,
@@ -324,6 +324,7 @@ func CreateSandboxBootstrapPlan(recipe *Bootstrap, cfg SandboxConfig) (SandboxBo
 				RecipeIdentity: recipeIdentity,
 				WorkDir:        workDir,
 				OnBootstrap:    onBootstrap,
+				BootstrapHash:  bootstrapHash,
 			})
 		}
 	}
