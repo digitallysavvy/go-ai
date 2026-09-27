@@ -16,9 +16,10 @@ import (
 // This transport launches a command and communicates via stdin/stdout
 type StdioTransport struct {
 	// Command to execute
-	command string
-	args    []string
-	env     []string
+	command    string
+	args       []string
+	env        []string
+	workingDir string
 
 	// Process
 	cmd    *exec.Cmd
@@ -86,10 +87,11 @@ func validateStdioCommandForGOOS(goos, command string, args []string) error {
 // NewStdioTransport creates a new stdio transport
 func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 	return &StdioTransport{
-		command: config.Command,
-		args:    config.Args,
-		env:     config.Env,
-		config:  config.Config,
+		command:    config.Command,
+		args:       config.Args,
+		env:        config.Env,
+		workingDir: config.WorkingDir,
+		config:     config.Config,
 	}
 }
 
@@ -112,6 +114,11 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	// Env merged with a safe allowlist of inherited parent env vars, not a
 	// blind inherit of the whole parent environment.
 	t.cmd.Env = getEnvironment(t.env)
+	// Mirrors TS createChildProcess's `cwd: config.cwd`: an empty
+	// workingDir leaves cmd.Dir unset, which os/exec treats the same way
+	// Node's spawn treats an undefined cwd -- the child starts in the
+	// parent process's current working directory.
+	t.cmd.Dir = t.workingDir
 
 	// Get stdin, stdout, stderr pipes
 	var err error

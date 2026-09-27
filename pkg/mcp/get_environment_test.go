@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -144,6 +146,62 @@ func TestStdioTransportAppliesEnv(t *testing.T) {
 	}
 	if _, ok := lookupEnvOK(transport.cmd.Env, "PATH"); !ok {
 		t.Fatalf("expected PATH to be inherited into cmd.Env, got %v", transport.cmd.Env)
+	}
+}
+
+// TestStdioTransportAppliesWorkingDir ports the TS createChildProcess 'should
+// spawn a child process with cwd' coverage (mcp-stdio/create-child-process.ts
+// passes `cwd: config.cwd` straight through to spawn): a caller-supplied
+// WorkingDir must reach the child process as its working directory.
+func TestStdioTransportAppliesWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	// Use the OS temp dir's real path (not a symlinked alias like macOS's
+	// /tmp -> /private/tmp) so the child's reported pwd compares equal.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+	}
+
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command:    "sh",
+		Args:       []string{"-c", "pwd"},
+		WorkingDir: resolved,
+	})
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	if transport.cmd.Dir != resolved {
+		t.Fatalf("cmd.Dir = %q, want %q", transport.cmd.Dir, resolved)
+	}
+
+	out, err := io.ReadAll(transport.stdout)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != resolved {
+		t.Fatalf("child pwd = %q, want %q", got, resolved)
+	}
+}
+
+// TestStdioTransportEmptyWorkingDirInheritsCurrentDir verifies that leaving
+// WorkingDir unset does not override cmd.Dir, matching TS's `cwd: undefined`
+// (Node spawn keeps the parent's current working directory in that case).
+func TestStdioTransportEmptyWorkingDirInheritsCurrentDir(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", "true"},
+	})
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	if transport.cmd.Dir != "" {
+		t.Fatalf("cmd.Dir = %q, want empty (inherit current dir)", transport.cmd.Dir)
 	}
 }
 
