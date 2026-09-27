@@ -337,8 +337,13 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			// (TS: content.push({type: 'custom', kind:
 			// 'anthropic.container_upload', providerMetadata: {anthropic:
 			// {fileId}}})). TS's doStream doesn't handle this block type, so
-			// this is generate-only, matching TS parity.
-			metadata, _ := json.Marshal(map[string]interface{}{"fileId": content.FileID})
+			// this is generate-only, matching TS parity. ProviderMetadata
+			// must be namespaced under "anthropic" like every other
+			// provider-metadata payload (see e.g. Google's CustomContent,
+			// which nests under "google"), not a flat {fileId} object.
+			metadata, _ := json.Marshal(map[string]interface{}{
+				"anthropic": map[string]interface{}{"fileId": content.FileID},
+			})
 			result.Content = append(result.Content, types.CustomContent{
 				Kind:             "anthropic.container_upload",
 				ProviderMetadata: metadata,

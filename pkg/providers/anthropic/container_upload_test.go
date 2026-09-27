@@ -62,12 +62,16 @@ func TestDoGenerate_ContainerUploadContentBlock(t *testing.T) {
 	if custom.Kind != "anthropic.container_upload" {
 		t.Errorf("Kind = %q, want %q", custom.Kind, "anthropic.container_upload")
 	}
-	var metadata map[string]interface{}
+	var metadata map[string]map[string]interface{}
 	if err := json.Unmarshal(custom.ProviderMetadata, &metadata); err != nil {
 		t.Fatalf("failed to unmarshal ProviderMetadata: %v", err)
 	}
-	if metadata["fileId"] != "file_123" {
-		t.Errorf("ProviderMetadata[\"fileId\"] = %v, want %q", metadata["fileId"], "file_123")
+	anthropicMeta, ok := metadata["anthropic"]
+	if !ok {
+		t.Fatalf("expected ProviderMetadata namespaced under \"anthropic\", got %+v", metadata)
+	}
+	if anthropicMeta["fileId"] != "file_123" {
+		t.Errorf("ProviderMetadata[\"anthropic\"][\"fileId\"] = %v, want %q", anthropicMeta["fileId"], "file_123")
 	}
 	if result.Text != "Here is the file." {
 		t.Errorf("Text = %q, want %q", result.Text, "Here is the file.")
