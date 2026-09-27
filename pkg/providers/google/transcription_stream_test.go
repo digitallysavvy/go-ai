@@ -272,6 +272,51 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 	}
 }
 
+// TestTranscriptionModel_DoStream_PerCallAPIKeyOverridesProviderLevel
+// verifies that a per-call header deterministically wins over the
+// provider-level API key regardless of casing, and that the reverse case
+// (no per-call override) falls back to the provider-level key. Resolving the
+// key from each header source separately (rather than from an
+// already-merged map) avoids depending on Go's unspecified map iteration
+// order when the two sources use different casings of x-goog-api-key.
+func TestTranscriptionModel_DoStream_PerCallAPIKeyOverridesProviderLevel(t *testing.T) {
+	p := New(Config{APIKey: "provider-level-key"})
+	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)
+
+	for _, callKeyHeaderName := range []string{"x-goog-api-key", "X-Goog-Api-Key", "X-GOOG-API-KEY"} {
+		for i := 0; i < 20; i++ {
+			headers := m.baseTranscriptionHeaders()
+			callHeaders := map[string]string{callKeyHeaderName: "call-level-key"}
+			baseAPIKey, filteredBase := extractGoogleAPIKeyHeader(headers)
+			callAPIKey, filteredCall := extractGoogleAPIKeyHeader(callHeaders)
+			apiKey := baseAPIKey
+			if callAPIKey != "" {
+				apiKey = callAPIKey
+			}
+			if apiKey != "call-level-key" {
+				t.Fatalf("header %q, iteration %d: apiKey = %q, want the per-call override", callKeyHeaderName, i, apiKey)
+			}
+			if _, ok := filteredBase["x-goog-api-key"]; ok {
+				t.Fatalf("filteredBase still carries x-goog-api-key: %v", filteredBase)
+			}
+			if len(filteredCall) != 0 {
+				t.Fatalf("filteredCall = %v, want the key header stripped", filteredCall)
+			}
+		}
+	}
+
+	// No per-call override: the provider-level key is used.
+	baseAPIKey, _ := extractGoogleAPIKeyHeader(m.baseTranscriptionHeaders())
+	callAPIKey, _ := extractGoogleAPIKeyHeader(map[string]string{"other-header": "x"})
+	apiKey := baseAPIKey
+	if callAPIKey != "" {
+		apiKey = callAPIKey
+	}
+	if apiKey != "provider-level-key" {
+		t.Fatalf("apiKey = %q, want the provider-level key when no per-call override is set", apiKey)
+	}
+}
+
 // TestTranscriptionModel_DoStream_StreamsTranscriptEndToEnd mirrors the TS
 // "streams transcription over the Gemini Live API WebSocket" test.
 func TestTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.T) {

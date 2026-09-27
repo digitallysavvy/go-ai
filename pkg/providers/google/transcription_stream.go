@@ -55,10 +55,14 @@ func (m *TranscriptionModel) baseTranscriptionHeaders() map[string]string {
 }
 
 // extractGoogleAPIKeyHeader pulls the x-goog-api-key header value out of a
-// combined header map case-insensitively (mirrors TS's "last case-variant
-// wins" scan over combineHeaders' output) and returns the remaining headers
-// with any case-variant of that key removed, matching TS's webSocketHeaders
-// filter.
+// header map case-insensitively and returns the remaining headers with any
+// case-variant of that key removed, matching TS's webSocketHeaders filter.
+// Within a single map holding more than one case-variant of the key, which
+// one wins is unspecified (Go map iteration order); callers that need TS's
+// deterministic "last case-variant wins, per-call overrides provider-level"
+// behavior across the provider-level and per-call header sources should call
+// this once per source, in precedence order, rather than on an
+// already-merged map (see DoStream).
 func extractGoogleAPIKeyHeader(headers map[string]string) (apiKey string, filtered map[string]string) {
 	filtered = make(map[string]string, len(headers))
 	for k, v := range headers {
@@ -137,11 +141,23 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 
 	transcriptionOpts := parseTranscriptionModelOptions(opts.ProviderOptions)
 
-	headers := internalhttp.MergeHeaders(m.baseTranscriptionHeaders(), opts.Headers)
-	apiKey, wsHeaders := extractGoogleAPIKeyHeader(headers)
+	// Resolve the API key from the provider-level and per-call header maps
+	// separately, with the per-call value taking precedence, before merging
+	// them: extracting it from the already-merged map would make "last
+	// case-variant wins" depend on Go's unspecified map iteration order
+	// whenever a per-call header overrides a differently-cased provider
+	// header (TS's combineHeaders is deterministic here because JS object
+	// spread preserves insertion order).
+	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseTranscriptionHeaders())
+	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
+	apiKey := baseAPIKey
+	if callAPIKey != "" {
+		apiKey = callAPIKey
+	}
 	if apiKey == "" {
 		return nil, errors.New("Google Generative AI API key is required for streaming transcription.")
 	}
+	wsHeaders := internalhttp.MergeHeaders(filteredBaseHeaders, filteredCallHeaders)
 
 	audioConfig := buildAudioTranscriptionConfig(transcriptionOpts)
 	if audioConfig == nil {
