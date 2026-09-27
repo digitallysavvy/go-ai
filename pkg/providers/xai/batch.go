@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	stdhttp "net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -168,7 +169,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			return nil, err
 		}
 	}
-	part, err := writer.CreateFormFile("file", "batch.jsonl")
+	// CreateFormFile hardcodes Content-Type: application/octet-stream; TS
+	// uploads the JSONL body as `new Blob(fileParts, {type:
+	// 'application/jsonl'})`, so the part header is built manually to match.
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="batch.jsonl"`)
+	fileHeader.Set("Content-Type", "application/jsonl")
+	part, err := writer.CreatePart(fileHeader)
 	if err != nil {
 		return nil, err
 	}

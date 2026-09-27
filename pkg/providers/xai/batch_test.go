@@ -41,6 +41,7 @@ type xaiBatchTestRequest struct {
 	// the file part), in append order, when the request was multipart.
 	MultipartFieldOrder []string
 	FileContent         []byte
+	FileContentType     string
 }
 
 func newXAIBatchTestServer(t *testing.T) *xaiBatchTestServer {
@@ -117,6 +118,7 @@ func (s *xaiBatchTestServer) record(r *http.Request) {
 				if part.FormName() == "file" {
 					content, _ := io.ReadAll(part)
 					rec.FileContent = content
+					rec.FileContentType = part.Header.Get("Content-Type")
 				} else {
 					_, _ = io.ReadAll(part)
 				}
@@ -326,6 +328,10 @@ func TestBatch_DoStartBatch_TextRequests(t *testing.T) {
 	}
 
 	uploadReq := server.request(0)
+	// TS: `new Blob(fileParts, { type: 'application/jsonl' })`
+	if uploadReq.FileContentType != "application/jsonl" {
+		t.Errorf("file part Content-Type = %q, want application/jsonl", uploadReq.FileContentType)
+	}
 	lines := strings.Split(strings.TrimSpace(string(uploadReq.FileContent)), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("got %d JSONL lines, want 2", len(lines))
