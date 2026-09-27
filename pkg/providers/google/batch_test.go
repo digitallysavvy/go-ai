@@ -55,7 +55,7 @@ func TestGoogleBatch_RejectsUnsupportedRequestType(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	b := p.ExperimentalBatch()
 	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
-		Requests: []provider.BatchV4Request{{Type: provider.BatchRequestTypeImage, Image: &provider.ImageBatchV4Request{ID: "img-1"}}},
+		Requests: []provider.BatchV4Request{{Type: provider.BatchRequestType("audio")}},
 	})
 	if err == nil || !providererrors.IsUnsupportedFunctionalityError(err) {
 		t.Fatalf("err = %v", err)
@@ -484,9 +484,14 @@ func TestGoogleBatch_RejectsCompletedBatchWithoutOutput(t *testing.T) {
 	}
 }
 
-func TestGoogleBatch_UnsupportedContentFailsItemButContinues(t *testing.T) {
-	// An inline image part (mediaType image/png, data) produces a "file"
-	// content type, which is unsupported for text batches.
+// TestGoogleBatch_InlineImageContentSucceedsRegardlessOfRequestType mirrors
+// TS "fails unsupported items and continues with later results"
+// (google-batch.test.ts): an inline image part (mediaType image/png, data)
+// is converted to a succeeded "image" item unconditionally, regardless of
+// the original request's declared modality (a text batch item whose model
+// happened to return image content). Text and tool-call items in the same
+// batch still succeed independently.
+func TestGoogleBatch_InlineImageContentSucceedsRegardlessOfRequestType(t *testing.T) {
 	imageResponse := `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`
 	lines := []string{
 		`{"key":"ok","response":` + googleGenerateContentResponseJSON("r1", "Paris") + `}`,
@@ -515,10 +520,181 @@ func TestGoogleBatch_UnsupportedContentFailsItemButContinues(t *testing.T) {
 		}
 		items[item.ID] = item
 	}
-	if got := items["ok"]; got == nil || got.Status != provider.BatchItemSucceeded {
+	if got := items["ok"]; got == nil || got.Status != provider.BatchItemSucceeded || got.Type != provider.BatchRequestTypeText {
 		t.Fatalf("ok = %+v", got)
 	}
-	if got := items["image"]; got == nil || got.Status != provider.BatchItemFailed || got.Error.Code != "unsupported_content" {
-		t.Fatalf("image = %+v", got)
+	image := items["image"]
+	if image == nil || image.Status != provider.BatchItemSucceeded || image.Type != provider.BatchRequestTypeImage {
+		t.Fatalf("image = %+v", image)
+	}
+	if image.ImageResult == nil || len(image.ImageResult.Base64Images) != 1 || image.ImageResult.Base64Images[0] != "AAAA" {
+		t.Fatalf("image.ImageResult = %+v", image.ImageResult)
+	}
+}
+
+// TestGoogleBatch_ConvertsGeneratedImageResults ports TS "converts generated
+// image results" (google-batch.test.ts).
+func TestGoogleBatch_ConvertsGeneratedImageResults(t *testing.T) {
+	response := `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aGVsbG8="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}`
+	srv := newGoogleBatchAndDownloadServer(t,
+		`{"name":"batches/batch-123","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED","output":{"responsesFile":"files/batch-output"}}}`,
+		`{"key":"image-1","response":`+response+`}`+"\n")
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batches/batch-123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	item, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if item.Type != provider.BatchRequestTypeImage || item.ID != "image-1" || item.Status != provider.BatchItemSucceeded {
+		t.Fatalf("item = %+v", item)
+	}
+	img := item.ImageResult
+	if img == nil {
+		t.Fatal("ImageResult is nil")
+	}
+	if len(img.Base64Images) != 1 || img.Base64Images[0] != "aGVsbG8=" {
+		t.Fatalf("Base64Images = %+v", img.Base64Images)
+	}
+	if img.Usage.InputTokens != 2 || img.Usage.OutputTokens != 3 || img.Usage.TotalTokens != 5 {
+		t.Fatalf("Usage = %+v", img.Usage)
+	}
+	meta, _ := img.ProviderMetadata["google"].(map[string]interface{})
+	images, _ := meta["images"].([]map[string]interface{})
+	if len(images) != 1 {
+		t.Fatalf("providerMetadata.google.images = %+v", meta["images"])
+	}
+
+	if _, err := stream.Next(); err != io.EOF {
+		t.Fatalf("expected io.EOF after one item, got %v", err)
+	}
+}
+
+// TestGoogleBatch_StartsInlineImageBatch ports TS "starts an inline image
+// generation batch" (google-batch.test.ts).
+func TestGoogleBatch_StartsInlineImageBatch(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/batch-123","done":false,"metadata":{"state":"BATCH_STATE_PENDING"}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	n := 1
+	seed := 42
+	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{{
+			Type: provider.BatchRequestTypeImage,
+			Image: &provider.ImageBatchV4Request{
+				ID:      "image-1",
+				ModelID: "gemini-2.5-flash",
+				Options: provider.ImageGenerateOptions{
+					Prompt:      "A red panda",
+					N:           &n,
+					AspectRatio: "16:9",
+					Seed:        &seed,
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+
+	batch, _ := gotBody["batch"].(map[string]interface{})
+	inputConfig, _ := batch["inputConfig"].(map[string]interface{})
+	requestsWrapper, _ := inputConfig["requests"].(map[string]interface{})
+	requests, _ := requestsWrapper["requests"].([]interface{})
+	if len(requests) != 1 {
+		t.Fatalf("requests = %+v", requests)
+	}
+	entry, _ := requests[0].(map[string]interface{})
+	metadata, _ := entry["metadata"].(map[string]interface{})
+	if metadata["key"] != "image-1" {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+	req, _ := entry["request"].(map[string]interface{})
+	contents, _ := req["contents"].([]interface{})
+	if len(contents) != 1 {
+		t.Fatalf("contents = %+v", contents)
+	}
+	content, _ := contents[0].(map[string]interface{})
+	if content["role"] != "user" {
+		t.Fatalf("role = %v", content["role"])
+	}
+	parts, _ := content["parts"].([]interface{})
+	part, _ := parts[0].(map[string]interface{})
+	if part["text"] != "A red panda" {
+		t.Fatalf("parts[0] = %+v", part)
+	}
+	generationConfig, _ := req["generationConfig"].(map[string]interface{})
+	if generationConfig["seed"] != float64(42) {
+		t.Fatalf("generationConfig.seed = %v", generationConfig["seed"])
+	}
+	modalities, _ := generationConfig["responseModalities"].([]interface{})
+	if len(modalities) != 1 || modalities[0] != "IMAGE" {
+		t.Fatalf("responseModalities = %v", generationConfig["responseModalities"])
+	}
+	imageConfig, _ := generationConfig["imageConfig"].(map[string]interface{})
+	if imageConfig["aspectRatio"] != "16:9" {
+		t.Fatalf("imageConfig.aspectRatio = %v", imageConfig["aspectRatio"])
+	}
+}
+
+// TestGoogleBatch_ImageRequestRejectsMask verifies the Go equivalent of TS
+// prepareImageRequest's mask rejection (mask-based editing has no batch
+// equivalent test in google-batch.test.ts, but the TS source throws
+// UnsupportedFunctionalityError; mirrored here directly).
+func TestGoogleBatch_ImageRequestRejectsMask(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	b := p.ExperimentalBatch()
+	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{{
+			Type: provider.BatchRequestTypeImage,
+			Image: &provider.ImageBatchV4Request{
+				ID:      "image-1",
+				ModelID: "gemini-2.5-flash",
+				Options: provider.ImageGenerateOptions{
+					Prompt: "A red panda",
+					Mask:   &provider.ImageFile{Data: []byte("x")},
+				},
+			},
+		}},
+	})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestGoogleBatch_ImageRequestRejectsMultipleImages verifies the Go
+// equivalent of TS prepareImageRequest's n>1 rejection.
+func TestGoogleBatch_ImageRequestRejectsMultipleImages(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	b := p.ExperimentalBatch()
+	n := 2
+	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{{
+			Type: provider.BatchRequestTypeImage,
+			Image: &provider.ImageBatchV4Request{
+				ID:      "image-1",
+				ModelID: "gemini-2.5-flash",
+				Options: provider.ImageGenerateOptions{
+					Prompt: "A red panda",
+					N:      &n,
+				},
+			},
+		}},
+	})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v", err)
 	}
 }

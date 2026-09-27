@@ -4,16 +4,19 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -28,21 +31,22 @@ const googleBatchInputFileMaxBytes = 2 * 1024 * 1024 * 1024
 const googleBatchInlineCreationMaxBytes = 20_000_000
 
 // googleBatchSupportedContentTypes are the LanguageModelV4GenerateResult
-// content part types a text batch result can carry. Anything else (e.g.
-// generated image/file parts) fails that item's conversion, matching TS
-// supportedGoogleBatchContentTypes. Image batch requests are not implemented
-// (see package docs / hand-off notes); only text batch requests are
-// supported here.
+// content part types a text batch result can carry. Anything else fails
+// that item's conversion, matching TS supportedGoogleBatchContentTypes.
+// Generated image content is handled separately (and takes priority): see
+// convertGoogleBatchImageResult, called unconditionally before this check,
+// mirroring TS's iterateBatchResults calling convertGoogleImageBatchResult
+// before checking supportedGoogleBatchContentTypes.
 var googleBatchSupportedContentTypes = map[string]bool{
 	"text": true, "reasoning": true, "source": true, "tool-call": true, "tool-result": true,
 }
 
 // Batch implements provider.BatchV4 for the Gemini Batch API
 // (`{model}:batchGenerateContent`, inline or file-based input). Mirrors
-// TypeScript's GoogleBatch (packages/google/src/google-batch.ts). Only text
-// requests are supported; image batch requests are out of scope for this
-// port (TS also treats it as a distinct, more involved path — see
-// prepareImageRequest in google-batch.ts).
+// TypeScript's GoogleBatch (packages/google/src/google-batch.ts). Both text
+// and image requests are supported; only inline (non-GCS-file) image
+// requests are implemented, matching prepareImageRequest in
+// google-batch.ts.
 type Batch struct {
 	provider *Provider
 }
@@ -73,7 +77,7 @@ func (b *Batch) SupportedURLs() map[string][]string {
 // using an inline request body when it fits under the 20MB threshold and an
 // uploaded JSONL file otherwise.
 func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
-	if err := validateGoogleTextBatchRequests(opts.Requests); err != nil {
+	if err := validateGoogleBatchRequests(opts.Requests); err != nil {
 		return nil, err
 	}
 	modelID, err := getGoogleBatchModelID(opts.Requests)
@@ -85,19 +89,27 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	inlinedRequests := make([]map[string]interface{}, 0, len(opts.Requests))
 	fileLines := make([]map[string]interface{}, 0, len(opts.Requests))
 	for _, req := range opts.Requests {
-		textReq := req.Text
-		lm := NewLanguageModel(b.provider, textReq.ModelID)
-		body, reqWarnings, err := lm.PrepareBatchRequestBody(&textReq.Options)
+		var body map[string]interface{}
+		var reqWarnings []types.Warning
+		switch req.Type {
+		case provider.BatchRequestTypeImage:
+			body, reqWarnings, err = b.prepareImageBatchRequest(req.Image)
+		default:
+			textReq := req.Text
+			lm := NewLanguageModel(b.provider, textReq.ModelID)
+			body, reqWarnings, err = lm.PrepareBatchRequestBody(&textReq.Options)
+		}
 		if err != nil {
 			return nil, err
 		}
+		id := req.RequestID()
 		inlinedRequests = append(inlinedRequests, map[string]interface{}{
 			"request":  body,
-			"metadata": map[string]interface{}{"key": textReq.ID},
+			"metadata": map[string]interface{}{"key": id},
 		})
-		fileLines = append(fileLines, map[string]interface{}{"key": textReq.ID, "request": body})
+		fileLines = append(fileLines, map[string]interface{}{"key": id, "request": body})
 		for _, w := range reqWarnings {
-			warnings = append(warnings, provider.BatchV4Warning{RequestID: textReq.ID, Warning: w})
+			warnings = append(warnings, provider.BatchV4Warning{RequestID: id, Warning: w})
 		}
 	}
 
@@ -254,6 +266,53 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	return &googleBatchUploadedFile{Name: result.File.Name, ExpirationTime: result.File.ExpirationTime}, nil
 }
 
+// prepareImageBatchRequest builds a GenerateContent request body for one
+// image batch item, mirroring TS GoogleBatch.prepareImageRequest: translates
+// ImageGenerateOptions into a single-turn Gemini chat request with
+// responseModalities: ["IMAGE"], reusing the same content/providerOptions
+// construction as ImageModel.DoGenerate (googleGeminiImageContent,
+// geminiImageProviderOptions, googleImageWarnings) instead of duplicating
+// it.
+func (b *Batch) prepareImageBatchRequest(req *provider.ImageBatchV4Request) (map[string]interface{}, []types.Warning, error) {
+	opts := req.Options
+
+	if opts.Mask != nil {
+		return nil, nil, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "mask-based image editing in Google batches",
+		}
+	}
+	if opts.N != nil && *opts.N > 1 {
+		return nil, nil, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "multiple images per Google batch request",
+		}
+	}
+
+	warnings := googleImageWarnings(&opts)
+
+	providerOptions, googleSearch := geminiImageProviderOptions(&opts)
+	lmOpts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{{
+				Role:    types.RoleUser,
+				Content: googleGeminiImageContent(&opts),
+			}},
+		},
+		Seed:            opts.Seed,
+		ProviderOptions: providerOptions,
+	}
+	if googleSearch != nil {
+		googleSearchArgs, _ := googleSearch.(map[string]interface{})
+		lmOpts.Tools = []types.Tool{gemini.GoogleSearchTool(googleSearchArgs)}
+	}
+
+	lm := NewLanguageModel(b.provider, req.ModelID)
+	body, reqWarnings, err := lm.PrepareBatchRequestBody(lmOpts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, append(warnings, reqWarnings...), nil
+}
+
 // DoGetBatchStatus retrieves a batch's lifecycle status (`GET {batchId}`).
 func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4Status, error) {
 	operation, err := b.retrieveBatch(ctx, opts.BatchID, opts.Headers)
@@ -388,11 +447,26 @@ func (b *Batch) handleError(err error) error {
 	return lm.HandleError(err)
 }
 
-// validateGoogleTextBatchRequests mirrors TS assertSupportedBatchRequests,
-// restricted to text requests (image batch requests are not implemented).
-func validateGoogleTextBatchRequests(requests []provider.BatchV4Request) error {
+// validateGoogleBatchRequests mirrors TS assertSupportedBatchRequests: text
+// and image requests are supported, anything else is rejected.
+func validateGoogleBatchRequests(requests []provider.BatchV4Request) error {
 	for _, req := range requests {
-		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
+		switch req.Type {
+		case provider.BatchRequestTypeText:
+			if req.Text == nil {
+				return &providererrors.UnsupportedFunctionalityError{
+					Functionality: fmt.Sprintf("batch request type: %s", req.Type),
+					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
+				}
+			}
+		case provider.BatchRequestTypeImage:
+			if req.Image == nil {
+				return &providererrors.UnsupportedFunctionalityError{
+					Functionality: fmt.Sprintf("batch request type: %s", req.Type),
+					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
+				}
+			}
+		default:
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
 				Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
@@ -408,9 +482,9 @@ func getGoogleBatchModelID(requests []provider.BatchV4Request) (string, error) {
 	if len(requests) == 0 {
 		return "", &providererrors.InvalidArgumentError{Field: "requests", Message: "Google batches require at least one request."}
 	}
-	modelID := requests[0].Text.ModelID
+	modelID := requests[0].RequestModelID()
 	for _, req := range requests {
-		if req.Text.ModelID != modelID {
+		if req.RequestModelID() != modelID {
 			return "", &providererrors.InvalidArgumentError{
 				Field:   "requests",
 				Message: "Google batches require every request to use the same model because the model is part of the batch endpoint.",
@@ -647,6 +721,15 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	lm := NewLanguageModel(b.provider, "")
 	genResult := lm.ConvertBatchResponse(geminiResp)
 
+	if imageResult := convertGoogleBatchImageResult(genResult); imageResult != nil {
+		return &provider.BatchV4ItemResult{
+			Type:        provider.BatchRequestTypeImage,
+			ID:          key,
+			Status:      provider.BatchItemSucceeded,
+			ImageResult: imageResult,
+		}
+	}
+
 	for _, part := range genResult.Content {
 		if !googleBatchSupportedContentTypes[part.ContentType()] {
 			return &provider.BatchV4ItemResult{
@@ -662,6 +745,78 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	}
 
 	return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: key, Status: provider.BatchItemSucceeded, TextResult: genResult}
+}
+
+// convertGoogleBatchImageResult mirrors TS convertGoogleImageBatchResult:
+// unconditionally inspects a converted batch result for inline generated
+// image data (regardless of the original request's declared modality,
+// matching TS's iterateBatchResults calling this before the text
+// content-type check) and, if any is found, builds an ImageResult. Returns
+// nil when the result carries no generated image content, so the caller
+// falls through to text-result handling.
+func convertGoogleBatchImageResult(genResult *types.GenerateResult) *types.ImageResult {
+	var images [][]byte
+	var base64Images []string
+	for _, part := range genResult.Content {
+		file, ok := part.(types.GeneratedFileContent)
+		if !ok || !strings.HasPrefix(file.MediaType, "image/") || len(file.Data) == 0 {
+			continue
+		}
+		images = append(images, file.Data)
+		base64Images = append(base64Images, base64.StdEncoding.EncodeToString(file.Data))
+	}
+	if len(images) == 0 {
+		return nil
+	}
+
+	googleMetadata := map[string]interface{}{}
+	if raw, ok := genResult.ProviderMetadata["google"]; ok {
+		if meta, ok := raw.(map[string]interface{}); ok {
+			for k, v := range meta {
+				googleMetadata[k] = v
+			}
+		}
+	}
+	imagesMeta := make([]map[string]interface{}, len(images))
+	for i := range imagesMeta {
+		imagesMeta[i] = map[string]interface{}{}
+	}
+	googleMetadata["images"] = imagesMeta
+
+	var inputTokens, outputTokens int
+	if genResult.Usage.InputTokens != nil {
+		inputTokens = int(*genResult.Usage.InputTokens)
+	}
+	if genResult.Usage.OutputTokens != nil {
+		outputTokens = int(*genResult.Usage.OutputTokens)
+	}
+
+	var modelID string
+	var headers map[string]string
+	if genResult.ResponseMetadata != nil {
+		modelID = genResult.ResponseMetadata.ModelID
+		headers = genResult.ResponseMetadata.Headers
+	}
+
+	return &types.ImageResult{
+		Image:        images[0],
+		Images:       images,
+		Base64Image:  base64Images[0],
+		Base64Images: base64Images,
+		Usage: types.ImageUsage{
+			ImageCount:   len(images),
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Warnings:         genResult.Warnings,
+		ProviderMetadata: map[string]interface{}{"google": googleMetadata},
+		Response: &types.ResponseMetadata{
+			ModelID:   modelID,
+			Timestamp: time.Now(),
+			Headers:   headers,
+		},
+	}
 }
 
 // googleBatchInlineResultsStream implements provider.BatchV4ItemResultStream
