@@ -452,8 +452,16 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
 		message := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
+		// Matches TS send()'s two distinct 404 suffixes: a request that
+		// carried a (now stale) session id gets the session-expired message,
+		// while a 404 with no session id in play means the server likely
+		// doesn't support this transport at all.
 		if resp.StatusCode == http.StatusNotFound {
-			message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+			if sentSessionID != "" {
+				message += ". The MCP session expired. Create a new client without `initialSessionId` to start a fresh session"
+			} else {
+				message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+			}
 		}
 		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body)))
 	}
