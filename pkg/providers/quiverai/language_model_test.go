@@ -13,11 +13,6 @@ package quiverai
 //     computed Authorization header. The workflow test below asserts this
 //     Go-specific exclusion instead of literally re-asserting the same
 //     Authorization header after round-trip.
-//   - openresponses' non-streaming text conversion does not currently
-//     attach per-text-block providerMetadata (itemId); assertions below
-//     check result.Text instead of a content-part's providerMetadata for
-//     text. This is a pre-existing openresponses gap unrelated to this
-//     slice (see final report).
 
 import (
 	"context"
@@ -128,6 +123,22 @@ func TestLanguageModelGeneratesText(t *testing.T) {
 	}
 	if result.Text != "Use a simple blue compass." {
 		t.Fatalf("Text = %q", result.Text)
+	}
+	// TS: `result.content` = [{type:'text', text:..., providerMetadata:
+	// {quiverai: {itemId: 'msg_1'}}}] (quiverai-language-model.test.ts).
+	if len(result.Content) != 1 {
+		t.Fatalf("Content = %+v, want 1 text part", result.Content)
+	}
+	textPart, ok := result.Content[0].(types.TextContent)
+	if !ok || textPart.Text != "Use a simple blue compass." {
+		t.Fatalf("Content[0] = %+v", result.Content[0])
+	}
+	var textMetadata map[string]map[string]interface{}
+	if err := json.Unmarshal(textPart.ProviderMetadata, &textMetadata); err != nil {
+		t.Fatalf("text providerMetadata unmarshal: %v", err)
+	}
+	if textMetadata["quiverai"]["itemId"] != "msg_1" {
+		t.Fatalf("text providerMetadata = %+v, want quiverai.itemId = msg_1", textMetadata)
 	}
 	if result.FinishReason != types.FinishReasonStop {
 		t.Fatalf("FinishReason = %q", result.FinishReason)

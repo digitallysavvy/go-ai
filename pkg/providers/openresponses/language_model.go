@@ -180,7 +180,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools})
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -839,10 +839,22 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	for _, item := range response.Output {
 		switch item.Type {
 		case "message":
-			// Extract text from message content
+			// Extract text from message content. Each output_text content
+			// part becomes its own types.TextContent in result.Content,
+			// carrying {itemId, annotations?} provider metadata, mirroring
+			// TS's `content.push({type: 'text', text: contentPart.text,
+			// providerMetadata: {...}})` per content part -- not just the
+			// plain-string accumulation into result.Text, which loses the
+			// item id a later turn needs to replay this text under
+			// Config.StrictResponseInput.
+			itemCopy := item
 			for _, part := range item.Content {
 				if part.Type == "output_text" {
 					textParts = append(textParts, part.Text)
+					result.Content = append(result.Content, types.TextContent{
+						Text:             part.Text,
+						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, part.Annotations),
+					})
 				}
 			}
 
@@ -1183,6 +1195,15 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ID:   event.Item.ID,
 			}, nil
 		}
+		// A new message item starts streaming text content. Mirrors TS:
+		// `chunk.type === 'response.output_item.added' && chunk.item.type ===
+		// 'message'` -> `{type: 'text-start', id: chunk.item.id}`.
+		if event.Item != nil && event.Item.Type == "message" {
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeTextStart,
+				ID:   event.Item.ID,
+			}, nil
+		}
 		// A caller-executed "custom" tool call starts streaming its raw text
 		// input. Keyed by item id, mirroring the function_call accumulator.
 		if event.Item != nil && event.Item.Type == "custom_tool_call" {
@@ -1201,9 +1222,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return s.Next()
 
 	case "response.output_text.delta":
-		// Text delta
+		// Text delta. TS: `{type: 'text-delta', id: chunk.item_id, delta:
+		// chunk.delta}`.
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeText,
+			ID:   event.ItemID,
 			Text: event.Delta,
 		}, nil
 
@@ -1379,6 +1402,20 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ProviderMetadata: providerMeta,
 			}, nil
 
+		case "message":
+			// Close the text block started by output_item.added, carrying
+			// {itemId, annotations?} provider metadata built from the
+			// completed item's content parts. Mirrors TS: `chunk.type ===
+			// 'response.output_item.done' && chunk.item.type === 'message'`
+			// -> `{type: 'text-end', id: chunk.item.id, providerMetadata:
+			// {[providerOptionsName]: {itemId, ...(annotations.length > 0 &&
+			// {annotations})}}}`.
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextEnd,
+				ID:               event.Item.ID,
+				ProviderMetadata: openResponsesTextProviderMetadata(s.providerName, event.Item),
+			}, nil
+
 		default:
 			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
 			// registered extension's namespaced output item.
@@ -1521,10 +1558,17 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			RawFinishReason: rawReason,
 			Usage:           usage,
 		}
+		// Row 6fe187f (extended to response.failed): close an unfinished
+		// reasoning block before the finish chunk here too, mirroring TS's
+		// flush() running unconditionally regardless of what ended the
+		// stream.
+		tail := s.finishChunksAfterReasoningClose(finishChunk)
 		if respErr == nil {
-			return finishChunk, nil
+			first := tail[0]
+			s.pending = append(s.pending, tail[1:]...)
+			return first, nil
 		}
-		s.pending = append(s.pending, finishChunk)
+		s.pending = append(s.pending, tail...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
@@ -1534,16 +1578,19 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 	case "error":
 		// A bare error event (no response wrapper). Mirrors TS: enqueued as a
 		// mid-stream error chunk; the stream still ends normally via a later
-		// [DONE]/flush, so a finish chunk is queued behind it here too.
+		// [DONE]/flush, so a finish chunk (with any still-open reasoning
+		// block closed first, same as response.failed above) is queued
+		// behind it here too.
 		if event.Error == nil {
 			return s.Next()
 		}
 		s.finishReason = types.FinishReasonError
-		s.pending = append(s.pending, &provider.StreamChunk{
+		finishChunk := &provider.StreamChunk{
 			Type:            provider.ChunkTypeFinish,
 			FinishReason:    types.FinishReasonError,
 			RawFinishReason: event.Error.Code,
-		})
+		}
+		s.pending = append(s.pending, s.finishChunksAfterReasoningClose(finishChunk)...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
@@ -1607,6 +1654,42 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	return raw
 }
 
+// openResponsesTextMetadataPayload builds the {itemId, annotations?}
+// provider metadata payload shared by a completed text content part
+// (convertResponse, one call per output_text content part) and a streamed
+// text-end chunk (one call per message item, annotations flattened across
+// all of the item's content parts), mirroring TS's
+// `{[providerOptionsName]: {itemId, ...(annotations.length > 0 &&
+// {annotations})}}`.
+func openResponsesTextMetadataPayload(providerName, itemID string, annotations []Annotation) json.RawMessage {
+	payload := map[string]interface{}{"itemId": itemID}
+	if len(annotations) > 0 {
+		payload["annotations"] = annotations
+	}
+	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// openResponsesTextProviderMetadata builds the provider metadata for a
+// completed message item's text-end chunk, mirroring TS's
+// `chunk.item.content.flatMap(getOutputTextAnnotations)` (annotations
+// aggregated across every content part on the item, unlike the
+// non-streaming path which attaches each content part's own annotations
+// individually).
+func openResponsesTextProviderMetadata(providerName string, item *OutputItem) json.RawMessage {
+	if item == nil {
+		return nil
+	}
+	var annotations []Annotation
+	for _, part := range item.Content {
+		annotations = append(annotations, part.Annotations...)
+	}
+	return openResponsesTextMetadataPayload(providerName, item.ID, annotations)
+}
+
 func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
 	if itemID == "" && namespace == "" {
 		return nil
@@ -1634,6 +1717,25 @@ func (s *openResponsesStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// finishChunksAfterReasoningClose returns finishChunk alone, or -- when a
+// reasoning block is still open (s.activeReasoningID != "") -- a
+// reasoning-end chunk for it followed by finishChunk, closing s's active
+// reasoning state either way. Used by response.failed and a bare error
+// event (response.completed/incomplete apply the same reasoning-close
+// ordering inline above) so an interrupted reasoning block always closes
+// before the finish chunk, no matter which event ended the stream, mirroring
+// TS's flush() (which runs unconditionally at the end of the ReadableStream
+// regardless of the reason) closing `activeReasoningId` before enqueuing
+// `finish`.
+func (s *openResponsesStream) finishChunksAfterReasoningClose(finishChunk *provider.StreamChunk) []*provider.StreamChunk {
+	if s.activeReasoningID == "" {
+		return []*provider.StreamChunk{finishChunk}
+	}
+	reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
+	s.activeReasoningID = ""
+	return []*provider.StreamChunk{reasoningEnd, finishChunk}
 }
 
 // streamProviderError classifies a streamed response.failed/error event's

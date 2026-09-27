@@ -736,6 +736,59 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 	}
 }
 
+// TestOpenResponsesStreamTextStartDeltaEnd verifies that a "message" output
+// item streams text-start (on output_item.added), a text delta carrying the
+// item id (on response.output_text.delta), and text-end with {itemId,
+// annotations?} provider metadata (on output_item.done), mirroring TS's
+// `{type:'text-start', id: chunk.item.id}` / `{type:'text-delta', id:
+// chunk.item_id, delta: chunk.delta}` / `{type:'text-end', id:
+// chunk.item.id, providerMetadata: {...}}`.
+func TestOpenResponsesStreamTextStartDeltaEnd(t *testing.T) {
+	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+
+	startChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.added",
+		Item: &OutputItem{Type: "message", ID: "msg_1"},
+	})
+	if err != nil || startChunk.Type != provider.ChunkTypeTextStart || startChunk.ID != "msg_1" {
+		t.Fatalf("text-start failed: chunk=%+v err=%v", startChunk, err)
+	}
+
+	deltaChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_text.delta", ItemID: "msg_1", Delta: "hello",
+	})
+	if err != nil || deltaChunk.Type != provider.ChunkTypeText || deltaChunk.ID != "msg_1" || deltaChunk.Text != "hello" {
+		t.Fatalf("text delta failed: chunk=%+v err=%v", deltaChunk, err)
+	}
+
+	endChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.done",
+		Item: &OutputItem{
+			Type: "message",
+			ID:   "msg_1",
+			Content: []ContentPart{
+				{Type: "output_text", Text: "hello", Annotations: []Annotation{
+					{Type: "url_citation", URL: "https://example.com", Title: "Example", StartIndex: 0, EndIndex: 5},
+				}},
+			},
+		},
+	})
+	if err != nil || endChunk.Type != provider.ChunkTypeTextEnd || endChunk.ID != "msg_1" {
+		t.Fatalf("text-end failed: chunk=%+v err=%v", endChunk, err)
+	}
+	var payload map[string]map[string]interface{}
+	if unmarshalErr := json.Unmarshal(endChunk.ProviderMetadata, &payload); unmarshalErr != nil {
+		t.Fatalf("ProviderMetadata unmarshal failed: %v", unmarshalErr)
+	}
+	meta := payload["open-responses"]
+	if meta["itemId"] != "msg_1" {
+		t.Fatalf("itemId = %v, want msg_1", meta["itemId"])
+	}
+	if annotations, ok := meta["annotations"].([]interface{}); !ok || len(annotations) != 1 {
+		t.Fatalf("annotations = %+v, want 1 entry", meta["annotations"])
+	}
+}
+
 func TestOpenResponsesStreamFunctionCallPreservesProviderMetadata(t *testing.T) {
 	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
 
