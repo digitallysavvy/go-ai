@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -20,24 +21,56 @@ func isMistralModel(modelID string) bool {
 	return strings.Contains(modelID, "mistral.")
 }
 
+// validMistralToolCallIDPattern matches TS /^[a-zA-Z0-9]{9}$/.
+var validMistralToolCallIDPattern = regexp.MustCompile(`^[a-zA-Z0-9]{9}$`)
+
+const base62Characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const normalizedToolCallIDLength = 9
+
 // normalizeToolCallID rewrites toolCallID into Mistral's required 9-char
 // alphanumeric form when isMistral is true, otherwise returns it unchanged.
-// Ports TS normalize-tool-call-id.ts.
+// Passthrough IDs already matching ^[a-zA-Z0-9]{9}$ are preserved; anything
+// else is deterministically hashed via FNV-1a (64-bit) and base62-encoded,
+// mirroring TS normalize-tool-call-id.ts convertToBase62Hash exactly (same
+// hash constants, same base62 alphabet/order, same digit-extraction loop).
 func normalizeToolCallID(toolCallID string, isMistral bool) string {
 	if !isMistral {
 		return toolCallID
 	}
-	var b strings.Builder
-	b.Grow(9)
-	for _, r := range toolCallID {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			if b.Len() == 9 {
-				break
-			}
-		}
+	if validMistralToolCallIDPattern.MatchString(toolCallID) {
+		return toolCallID
 	}
-	return b.String()
+	return convertToBase62Hash(toolCallID)
+}
+
+// convertToBase62Hash ports TS normalize-tool-call-id.ts#convertToBase62Hash.
+// FNV-1a 64-bit is computed over UTF-16 code units (mirroring
+// value.charCodeAt(i)) and is deterministic across runtimes; Go's uint64
+// arithmetic wraps modulo 2^64 exactly like TS's `& fnv64BitMask` after each
+// multiplication, so no explicit masking is needed.
+func convertToBase62Hash(value string) string {
+	const fnvOffsetBasis64 uint64 = 14695981039346656037
+	const fnvPrime64 uint64 = 1099511628211
+
+	hash := fnvOffsetBasis64
+	for _, codeUnit := range utf16.Encode([]rune(value)) {
+		hash ^= uint64(codeUnit)
+		hash *= fnvPrime64
+	}
+
+	base62Length := uint64(len(base62Characters))
+	normalizedToolCallIDSpace := uint64(1)
+	for i := 0; i < normalizedToolCallIDLength; i++ {
+		normalizedToolCallIDSpace *= base62Length
+	}
+
+	base62Value := hash % normalizedToolCallIDSpace
+	result := make([]byte, normalizedToolCallIDLength)
+	for i := normalizedToolCallIDLength - 1; i >= 0; i-- {
+		result[i] = base62Characters[base62Value%base62Length]
+		base62Value /= base62Length
+	}
+	return string(result)
 }
 
 // sanitizeToolName ports TS convert-to-amazon-bedrock-chat-messages.ts#sanitizeToolName.
