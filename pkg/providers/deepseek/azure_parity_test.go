@@ -17,7 +17,7 @@ func TestDeepSeekPenaltySamplingDefaultOff(t *testing.T) {
 
 	fp := 0.5
 	pp := 0.3
-	body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, warnings, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:           types.Prompt{Text: "hi"},
 		FrequencyPenalty: &fp,
 		PresencePenalty:  &pp,
@@ -59,7 +59,7 @@ func TestDeepSeekPenaltySamplingEnabledForAzure(t *testing.T) {
 
 	fp := 0.5
 	pp := 0.3
-	body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, warnings, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:           types.Prompt{Text: "hi"},
 		FrequencyPenalty: &fp,
 		PresencePenalty:  &pp,
@@ -87,7 +87,7 @@ func TestDeepSeekTemperatureTopPOmittedWhenThinkingEnabled(t *testing.T) {
 	temp := 0.7
 	topP := 0.9
 	reasoning := types.ReasoningHigh
-	body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, warnings, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:      types.Prompt{Text: "hi"},
 		Temperature: &temp,
 		TopP:        &topP,
@@ -123,7 +123,7 @@ func TestDeepSeekTemperatureTopPSentWhenThinkingDisabled(t *testing.T) {
 
 	temp := 0.7
 	topP := 0.9
-	body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, warnings, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:      types.Prompt{Text: "hi"},
 		Temperature: &temp,
 		TopP:        &topP,
@@ -146,7 +146,7 @@ func TestDeepSeekStructuredOutputsDefaultOffUsesJSONObject(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-chat")
 
-	body, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, _, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hi"},
 		ResponseFormat: &provider.ResponseFormat{
 			Type:   "json",
@@ -169,7 +169,7 @@ func TestDeepSeekStructuredOutputsEnabledForAzure(t *testing.T) {
 	model := NewLanguageModel(p, "deepseek-chat")
 
 	schema := map[string]interface{}{"type": "object"}
-	body, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, _, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hi"},
 		ResponseFormat: &provider.ResponseFormat{
 			Type:   "json",
@@ -204,7 +204,7 @@ func TestDeepSeekStructuredOutputsRespectsNameDescriptionAndStrictOverride(t *te
 	p := New(Config{APIKey: "test-key", SupportsStructuredOutputs: &supportsStructured})
 	model := NewLanguageModel(p, "deepseek-chat")
 
-	body, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	body, _, _ := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hi"},
 		ResponseFormat: &provider.ResponseFormat{
 			Type:        "json",

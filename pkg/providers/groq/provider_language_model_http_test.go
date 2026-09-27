@@ -38,8 +38,9 @@ func TestGroqProviderSurface(t *testing.T) {
 	if _, err := p.SpeechModel("x"); err == nil {
 		t.Fatal("expected unsupported speech")
 	}
-	if _, err := p.TranscriptionModel("x"); err == nil {
-		t.Fatal("expected unsupported transcription")
+	tm, err := p.TranscriptionModel("x")
+	if err != nil || tm == nil || tm.ModelID() != "x" {
+		t.Fatalf("TranscriptionModel(%q) = %v, %v", "x", tm, err)
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("expected unsupported reranking")

@@ -8,8 +8,13 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the default Moonshot API base URL
-	DefaultBaseURL = "https://api.moonshot.cn/v1"
+	// DefaultBaseURL is the default Moonshot API base URL.
+	//
+	// BREAKING CHANGE: this now matches the TS SDK's default
+	// (https://api.moonshot.ai/v1) instead of the China-region
+	// https://api.moonshot.cn/v1. Callers relying on the previous
+	// default must set Config.BaseURL explicitly to the .cn host.
+	DefaultBaseURL = "https://api.moonshot.ai/v1"
 )
 
 // Provider implements the provider.Provider interface for Moonshot AI

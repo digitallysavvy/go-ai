@@ -205,12 +205,14 @@ func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*Trans
 	return Transcribe(ctx, opts)
 }
 
+// detectTranscriptionMediaType mirrors the TypeScript SDK's
+// `detectMediaType({data, topLevelType: 'audio'}) ?? 'audio/wav'`. Using the
+// "audio" top-level table (rather than the generic, no-topLevelType scan)
+// means MP4-container audio such as M4A is correctly reported as audio/mp4
+// instead of being dropped because a generic scan can't tell an MP4 audio
+// container apart from video/mp4.
 func detectTranscriptionMediaType(data []byte) string {
-	mediaType := fileutil.DetectMediaType(data).MimeType
-	if mediaType == "audio/wave" {
-		return "audio/wav"
-	}
-	if strings.HasPrefix(mediaType, "audio/") {
+	if mediaType, ok := fileutil.DetectMediaTypeSignature(data, "audio"); ok {
 		return mediaType
 	}
 	return "audio/wav"

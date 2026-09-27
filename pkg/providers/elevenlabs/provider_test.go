@@ -21,8 +21,12 @@ func TestProviderFactoriesAndUnsupported(t *testing.T) {
 	if im, err := p.ImageModel("x"); im != nil || err == nil {
 		t.Fatalf("ImageModel expected unsupported error, got model=%v err=%v", im, err)
 	}
-	if tm, err := p.TranscriptionModel("x"); tm != nil || err == nil {
-		t.Fatalf("TranscriptionModel expected unsupported error, got model=%v err=%v", tm, err)
+	tm, err := p.TranscriptionModel("scribe_v1")
+	if err != nil || tm == nil {
+		t.Fatalf("TranscriptionModel: model=%v err=%v", tm, err)
+	}
+	if tm.ModelID() != "scribe_v1" {
+		t.Fatalf("TranscriptionModel ModelID = %q", tm.ModelID())
 	}
 	if rm, err := p.RerankingModel("x"); rm != nil || err == nil {
 		t.Fatalf("RerankingModel expected unsupported error, got model=%v err=%v", rm, err)

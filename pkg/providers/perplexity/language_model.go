@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -79,7 +80,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result := m.convertResponse(response, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
@@ -148,8 +149,19 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			"json_schema": jsonSchema,
 		}
 	}
-	if providerOpts, ok := opts.ProviderOptions["perplexity"].(map[string]interface{}); ok {
-		for k, v := range providerOpts {
+	if raw, ok := opts.ProviderOptions["perplexity"]; ok && raw != nil {
+		rawMap, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, invalidPerplexityProviderOptions("perplexity", fmt.Sprintf("must be an object, got %T", raw))
+		}
+		parsed, extras, err := parsePerplexityLanguageModelOptions(rawMap)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range parsed.toWireMap() {
+			body[k] = v
+		}
+		for k, v := range extras {
 			body[k] = v
 		}
 	}
@@ -286,13 +298,23 @@ func convertPerplexityFilePart(file types.FileContent, index int) (map[string]in
 	mediaType := firstNonEmpty(normalized.MediaType, normalized.MimeType, normalized.FileData.MediaType)
 	switch normalized.FileData.Type {
 	case types.FileDataTypeReference:
-		return nil, fmt.Errorf("perplexity: unsupported functionality: file parts with provider references")
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
 	case types.FileDataTypeText:
-		return nil, fmt.Errorf("perplexity: unsupported functionality: text file parts")
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 	case types.FileDataTypeURL, types.FileDataTypeData:
-		if mediaType == "application/pdf" {
+		isDataPart := normalized.FileData.Type == types.FileDataTypeData
+		top := topLevelMediaType(mediaType)
+		switch top {
+		case "application":
+			fullMediaType, resolveErr := resolvePerplexityMediaType(mediaType, normalized.Data, isDataPart)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			if fullMediaType != "application/pdf" {
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("file part media type %s", fullMediaType)}
+			}
 			url := normalized.URL
-			if normalized.FileData.Type == types.FileDataTypeData {
+			if isDataPart {
 				url = base64.StdEncoding.EncodeToString(normalized.Data)
 			}
 			filename := normalized.Filename
@@ -304,26 +326,59 @@ func convertPerplexityFilePart(file types.FileContent, index int) (map[string]in
 				"file_url":  map[string]interface{}{"url": url},
 				"file_name": filename,
 			}, nil
-		}
-		if topLevelMediaType(mediaType) == "image" {
+		case "image":
 			url := normalized.URL
-			if normalized.FileData.Type == types.FileDataTypeData {
-				fullType := mediaType
-				if fullType == "image" || fullType == "image/*" || fullType == "" {
-					fullType = http.DetectContentType(normalized.Data)
-					if !strings.HasPrefix(fullType, "image/") {
-						fullType = "image/png"
-					}
+			if isDataPart {
+				fullMediaType, resolveErr := resolvePerplexityMediaType(mediaType, normalized.Data, isDataPart)
+				if resolveErr != nil {
+					return nil, resolveErr
 				}
-				url = fmt.Sprintf("data:%s;base64,%s", fullType, base64.StdEncoding.EncodeToString(normalized.Data))
+				url = fmt.Sprintf("data:%s;base64,%s", fullMediaType, base64.StdEncoding.EncodeToString(normalized.Data))
 			}
 			return map[string]interface{}{
 				"type":      "image_url",
 				"image_url": map[string]interface{}{"url": url},
 			}, nil
+		default:
+			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("file part media type %s", mediaType)}
 		}
 	}
 	return nil, nil
+}
+
+// isFullMediaType reports whether mediaType is already a complete "type/subtype"
+// media type (i.e. has a non-empty, non-wildcard subtype), mirroring the TS
+// SDK's isFullMediaType helper.
+func isFullMediaType(mediaType string) bool {
+	idx := strings.Index(mediaType, "/")
+	if idx == -1 {
+		return false
+	}
+	subtype := mediaType[idx+1:]
+	return subtype != "" && subtype != "*"
+}
+
+// resolvePerplexityMediaType resolves a file part's media type to a full
+// "type/subtype" form. If mediaType is already a full media type it is
+// returned as-is. Otherwise, when inline bytes are available, the subtype is
+// sniffed from the bytes via signature detection. If neither applies, an
+// UnsupportedFunctionalityError is returned — mirrors the TS SDK's
+// resolveFullMediaType.
+func resolvePerplexityMediaType(mediaType string, data []byte, isDataPart bool) (string, error) {
+	if isFullMediaType(mediaType) {
+		return mediaType, nil
+	}
+	if isDataPart {
+		if detected, ok := fileutil.DetectMediaTypeSignature(data, topLevelMediaType(mediaType)); ok {
+			return detected, nil
+		}
+		return "", &providererrors.UnsupportedFunctionalityError{
+			Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType),
+		}
+	}
+	return "", &providererrors.UnsupportedFunctionalityError{
+		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType),
+	}
 }
 
 func contentText(parts []types.ContentPart) string {
@@ -388,7 +443,7 @@ type PerplexityMetadata struct {
 	Cost   *PerplexityCost     `json:"cost"`
 }
 
-func (m *LanguageModel) convertResponse(response perplexityResponse) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response perplexityResponse, rawBody []byte) *types.GenerateResult {
 	if len(response.Choices) == 0 {
 		return &types.GenerateResult{
 			Text:         "",
@@ -396,10 +451,12 @@ func (m *LanguageModel) convertResponse(response perplexityResponse) *types.Gene
 		}
 	}
 	choice := response.Choices[0]
+	usage := convertPerplexityUsagePtr(response.Usage)
+	usage.Raw = extractRawUsage(rawBody)
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
 		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertPerplexityUsagePtr(response.Usage),
+		Usage:        usage,
 		RawResponse:  response,
 	}
 	if len(response.Citations) > 0 {
@@ -495,26 +552,28 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 	}
 	text := c - reasoning
 	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
-	result.Raw = map[string]interface{}{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens}
-	if usage.CitationTokens != nil {
-		result.Raw["citation_tokens"] = *usage.CitationTokens
-	}
-	if usage.NumSearchQueries != nil {
-		result.Raw["num_search_queries"] = *usage.NumSearchQueries
-	}
-	if usage.ReasoningTokens != nil {
-		result.Raw["reasoning_tokens"] = *usage.ReasoningTokens
-	}
-	if usage.Cost != nil {
-		result.Raw["cost"] = usage.Cost
-	}
-	if usage.PromptTokensDetails != nil {
-		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
-	}
-	if usage.CompletionTokensDetails != nil {
-		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
-	}
+	// Raw is populated by the caller (extractRawUsage) from the original wire
+	// bytes so that ALL fields returned by the API are preserved — including
+	// any not modeled by the perplexityUsage struct — matching the TS SDK's
+	// `raw: usage` (the untransformed response object).
 	return result
+}
+
+// extractRawUsage decodes the top-level "usage" object from the raw response
+// body into a generic map, preserving every field the API returned (including
+// ones not modeled by perplexityUsage). Returns nil if the body has no usage
+// object or cannot be parsed.
+func extractRawUsage(body []byte) map[string]interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil
+	}
+	return wrapper.Usage
 }
 
 type perplexityResponse struct {
@@ -576,6 +635,7 @@ type perplexityUsage struct {
 type perplexityStream struct {
 	*streaming.OpenAICompatStream
 	usage                   *perplexityUsage
+	usageRaw                map[string]interface{}
 	providerMetadata        PerplexityMetadata
 	responseHeaders         map[string]string
 	emittedCitations        bool
@@ -604,6 +664,7 @@ func newPerplexityStream(reader io.ReadCloser, includeRawChunks bool, responseHe
 
 		if peek.Usage != nil {
 			s.usage = peek.Usage
+			s.usageRaw = extractRawUsage(data)
 			s.providerMetadata.Usage = PerplexityUsageMeta{
 				CitationTokens:   peek.Usage.CitationTokens,
 				NumSearchQueries: peek.Usage.NumSearchQueries,
@@ -663,6 +724,7 @@ func (s *perplexityStream) Next() (*provider.StreamChunk, error) {
 	if chunk != nil && chunk.Type == provider.ChunkTypeFinish {
 		if s.usage != nil {
 			usage := convertPerplexityUsage(*s.usage)
+			usage.Raw = s.usageRaw
 			chunk.Usage = &usage
 		}
 		if s.metadataMarshalErr == nil {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // SerializedModel is the JSON-friendly representation of a provider model used
@@ -50,11 +52,14 @@ func DeserializeModel(serialized SerializedModel) (LanguageModel, error) {
 // SerializeModel returns a JSON-friendly serialized model representation.
 func SerializeModel(model LanguageModel) (SerializedModel, error) {
 	if model == nil {
-		return SerializedModel{}, fmt.Errorf("provider: model is nil")
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
 	}
 	serializable, ok := model.(SerializableModel)
 	if !ok {
-		return SerializedModel{}, fmt.Errorf("provider: model %q from provider %q is not serializable", model.ModelID(), model.Provider())
+		return SerializedModel{}, providererrors.NewSerializationError(
+			fmt.Sprintf("provider: model %q from provider %q is not serializable", model.ModelID(), model.Provider()),
+			nil,
+		)
 	}
 	serialized := serializable.Serialize()
 	if serialized.Config == nil {

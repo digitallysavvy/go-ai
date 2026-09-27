@@ -70,7 +70,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support transcription")
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID

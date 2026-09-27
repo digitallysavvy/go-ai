@@ -3,6 +3,7 @@ package fireworks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -144,47 +145,66 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["response_format"] = format
 	}
 	// Map top-level Reasoning to Fireworks reasoning_effort.
-	// none and provider-default → omit (Fireworks passes through the raw level string
-	// and only accepts supported values; none is excluded at the base layer).
-	// minimal/low → "low", medium → "medium", high/xhigh → "high".
+	// TS: reasoning_effort is set to the raw reasoning value whenever
+	// isCustomReasoning(reasoning) is true — which excludes only undefined
+	// and 'provider-default', NOT 'none' (openai-compatible-chat-language-
+	// model.ts:310-312) — then Fireworks' own transformRequestBody remaps
+	// only minimal→low and xhigh→high, passing low/medium/high/none through
+	// unchanged (fireworks-provider.ts:169-177). So 'none' is forwarded as
+	// "none", not omitted; only 'provider-default' (nil here) is omitted.
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			body["reasoning_effort"] = "none"
 		case types.ReasoningMinimal, types.ReasoningLow:
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-			// ReasoningNone and ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 
-	// Handle Fireworks-specific options (thinking and reasoning for Kimi K2.5)
-	if opts.ProviderOptions != nil {
-		// Extract thinking options
-		if thinking, ok := opts.ProviderOptions["thinking"].(map[string]interface{}); ok {
-			thinkingBody := make(map[string]interface{})
+	// Fireworks-specific options (providerOptions.fireworks; TS
+	// fireworksLanguageModelOptions/fireworks-provider.ts's
+	// transformRequestBody). All of these previously read from
+	// opts.ProviderOptions[...] directly (the top-level namespace) instead of
+	// the "fireworks" provider-options namespace resolved above, so they were
+	// silently ignored whenever a caller correctly namespaced them under
+	// providerOptions.fireworks.
+	if thinking, ok := fireworksOptions["thinking"].(map[string]interface{}); ok {
+		thinkingBody := make(map[string]interface{})
 
-			if thinkingType, ok := thinking["type"].(string); ok {
-				thinkingBody["type"] = thinkingType
-			}
-
-			// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
-			if budgetTokens, ok := thinking["budgetTokens"].(int); ok {
-				thinkingBody["budget_tokens"] = budgetTokens
-			} else if budgetTokens, ok := thinking["budgetTokens"].(float64); ok {
-				thinkingBody["budget_tokens"] = int(budgetTokens)
-			}
-
-			if len(thinkingBody) > 0 {
-				body["thinking"] = thinkingBody
-			}
+		if thinkingType, ok := thinking["type"].(string); ok {
+			thinkingBody["type"] = thinkingType
 		}
 
-		// Extract reasoningHistory and convert to snake_case (reasoning_history)
-		if reasoningHistory, ok := opts.ProviderOptions["reasoningHistory"].(string); ok {
-			body["reasoning_history"] = reasoningHistory
+		// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
+		if budgetTokens, ok := providerutils.OpenAICompatibleIntOption(thinking, "budgetTokens"); ok {
+			thinkingBody["budget_tokens"] = budgetTokens
 		}
+
+		if len(thinkingBody) > 0 {
+			body["thinking"] = thinkingBody
+		}
+	}
+
+	// Extract reasoningHistory and convert to snake_case (reasoning_history)
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok {
+		body["reasoning_history"] = reasoningHistory
+	}
+
+	// A stable key for routing requests with shared prompt prefixes to the
+	// same prompt cache.
+	if promptCacheKey, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "promptCacheKey"); ok {
+		body["prompt_cache_key"] = promptCacheKey
+	}
+
+	// Fireworks Priority serving path for higher reliability during peak
+	// traffic.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "serviceTier"); ok {
+		body["service_tier"] = serviceTier
 	}
 
 	return body
@@ -225,7 +245,19 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+	if parsed := parseFireworksProviderError(err); parsed != nil {
+		return parsed
+	}
+	// TS createJsonErrorResponseHandler always sets statusCode: response.status
+	// even in its catch-all branch; preserve the real HTTP status here too
+	// instead of hardcoding 0 (which several retry-classification paths treat
+	// as "unknown", i.e. retryable).
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("fireworks", statusCode, "", err.Error(), err)
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct

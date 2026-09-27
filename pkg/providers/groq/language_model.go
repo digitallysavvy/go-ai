@@ -3,6 +3,7 @@ package groq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,7 +75,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -143,22 +147,36 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	// Map top-level Reasoning to Groq reasoning_effort.
-	// none and provider-default → omit (Groq does not accept "disabled" for none).
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Map top-level Reasoning to Groq reasoning_effort. An explicit
+	// providerOptions.groq.reasoningEffort always wins (applied below via
+	// ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
+	// provider-default → omit. none → "none" for qwen/qwen3.6-27b (the only
+	// model that accepts it), else an "unsupported" warning (Groq otherwise
+	// has no way to disable reasoning on a reasoning model).
 	// minimal/low → "low", medium → "medium", high/xhigh → "high".
-	if opts.Reasoning != nil {
+	if _, hasExplicitReasoningEffort := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningEffort", "reasoning_effort", "reasoning-effort"); !hasExplicitReasoningEffort && opts.Reasoning != nil {
 		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			if m.modelID == "qwen/qwen3.6-27b" {
+				body["reasoning_effort"] = "none"
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "reasoning",
+					Details: `reasoning "none" is not supported by this model.`,
+				})
+			}
 		case types.ReasoningMinimal, types.ReasoningLow:
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-			// ReasoningNone and ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
-	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
-	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
 	// strictJsonSchema both default to true; a dropped schema is warned about.
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
@@ -171,15 +189,22 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// Groq performance service tier: on_demand/flex/auto/performance.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "serviceTier", "service_tier", "service-tier"); ok {
+		body["service_tier"] = serviceTier
+	}
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(compatibleOptions, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
+	}
+	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
+		body["reasoning_format"] = reasoningFormat
+	}
 	return body, warnings
 }
 
-func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateResult, error) {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
@@ -205,7 +230,7 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func convertGroqUsage(usage groqUsage) types.Usage {
@@ -289,7 +314,15 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
+	if parsed := parseGroqProviderError(err); parsed != nil {
+		return parsed
+	}
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("groq", statusCode, "", err.Error(), err)
 }
 
 type groqResponse struct {

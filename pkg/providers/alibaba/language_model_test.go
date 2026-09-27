@@ -1,6 +1,7 @@
 package alibaba
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -73,6 +74,10 @@ func TestAlibabaLanguageModelBuildRequestBodyBasicFields(t *testing.T) {
 }
 
 func TestAlibabaLanguageModelBuildRequestBodyResponseFormatAndTools(t *testing.T) {
+	// qwen-plus does not support Alibaba's native JSON Schema output mode
+	// (supportsJsonSchemaOutput), so response_format falls back to
+	// json_object; see TestAlibabaLanguageModelJSONSchemaSupportedModel below
+	// for the json_schema path.
 	model := NewLanguageModel(New(Config{APIKey: "test-key"}), "qwen-plus")
 
 	opts := &provider.GenerateOptions{
@@ -98,7 +103,7 @@ func TestAlibabaLanguageModelBuildRequestBodyResponseFormatAndTools(t *testing.T
 	if !ok {
 		t.Fatalf("response_format type = %T", body["response_format"])
 	}
-	if responseFormat["type"] != "json_schema" {
+	if responseFormat["type"] != "json_object" {
 		t.Fatalf("response_format.type = %#v", responseFormat["type"])
 	}
 	if _, ok := body["tools"]; !ok {
@@ -110,5 +115,80 @@ func TestAlibabaLanguageModelBuildRequestBodyResponseFormatAndTools(t *testing.T
 	}
 	if toolChoice["type"] != "function" {
 		t.Fatalf("tool_choice.type = %#v", toolChoice["type"])
+	}
+}
+
+func TestAlibabaLanguageModelJSONSchemaSupportedModel(t *testing.T) {
+	// qwen3.7-max is in the supportsJsonSchemaOutput allow-list, so the
+	// schema is forwarded natively instead of falling back to json_object.
+	model := NewLanguageModel(New(Config{APIKey: "test-key"}), "qwen3.7-max")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json",
+			Schema: map[string]interface{}{"type": "object"},
+			Name:   "Weather",
+		},
+	}
+
+	body := model.buildRequestBody(opts, false)
+	responseFormat, ok := body["response_format"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response_format type = %T", body["response_format"])
+	}
+	if responseFormat["type"] != "json_schema" {
+		t.Fatalf("response_format.type = %#v", responseFormat["type"])
+	}
+	jsonSchema, ok := responseFormat["json_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("json_schema type = %T", responseFormat["json_schema"])
+	}
+	if jsonSchema["name"] != "Weather" {
+		t.Fatalf("json_schema.name = %#v", jsonSchema["name"])
+	}
+}
+
+func TestAlibabaLanguageModelJSONObjectFallbackInjectsInstruction(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "test-key"}), "qwen-plus")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "Be concise."}}},
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Generate a person"}}},
+			},
+		},
+		ResponseFormat: &provider.ResponseFormat{
+			Type:   "json",
+			Schema: map[string]interface{}{"type": "object"},
+		},
+	}
+
+	_, warnings := model.buildRequestBodyWithWarnings(opts, false)
+	body := model.buildRequestBody(opts, false)
+
+	responseFormat, ok := body["response_format"].(map[string]interface{})
+	if !ok || responseFormat["type"] != "json_object" {
+		t.Fatalf("response_format = %#v", body["response_format"])
+	}
+
+	messages, ok := body["messages"].([]map[string]interface{})
+	if !ok || len(messages) == 0 {
+		t.Fatalf("messages type = %T", body["messages"])
+	}
+	systemContent, _ := messages[0]["content"].(string)
+	if !strings.Contains(systemContent, "Be concise.") || !strings.Contains(systemContent, "JSON schema:") {
+		t.Fatalf("system content missing injected instruction: %q", systemContent)
+	}
+
+	foundCompatWarning := false
+	for _, w := range warnings {
+		if w.Type == "compatibility" && w.Feature == "responseFormat JSON schema" {
+			foundCompatWarning = true
+		}
+	}
+	if !foundCompatWarning {
+		t.Fatalf("expected a compatibility warning for the JSON schema fallback, got %+v", warnings)
 	}
 }

@@ -97,6 +97,10 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 	var payload interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		renameReasoningContent(payload)
+		renameMaxTokens(payload)
+		if extras, ok := req.Context().Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
+			applyCerebrasRequestExtras(payload, extras)
+		}
 		if transformed, err := json.Marshal(payload); err == nil {
 			body = transformed
 		}
@@ -104,6 +108,45 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	return t.base.RoundTrip(req)
+}
+
+// cerebrasOptionsContextKey is the context key LanguageModel uses to hand
+// resolved providerOptions.cerebras extras to cerebrasTransformTransport,
+// since the OpenAI-compatible base model only ever reads
+// providerOptions["openai"] and has no hook for provider-specific extras
+// (TS's OpenAICompatibleChatLanguageModel supports a transformRequestBody
+// hook; Go's does not, so this carries the same information across the
+// request/transport boundary instead).
+type cerebrasOptionsContextKey struct{}
+
+// renameMaxTokens mirrors TS transformCerebrasRequestBody: Cerebras expects
+// max_completion_tokens, not the OpenAI-compatible chat model's max_tokens.
+func renameMaxTokens(value interface{}) {
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	maxTokens, hasMaxTokens := payload["max_tokens"]
+	if !hasMaxTokens {
+		return
+	}
+	delete(payload, "max_tokens")
+	payload["max_completion_tokens"] = maxTokens
+}
+
+// applyCerebrasRequestExtras merges providerOptions.cerebras-derived fields
+// into the request body (TS transformCerebrasRequestBody). strictJsonSchema
+// is not among these: the base OpenAI-compatible chat model already applies
+// it to response_format.json_schema.strict when building the body (see
+// resolveCerebrasOptions).
+func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for key, val := range extras {
+		payload[key] = val
+	}
 }
 
 func renameReasoningContent(value interface{}) {

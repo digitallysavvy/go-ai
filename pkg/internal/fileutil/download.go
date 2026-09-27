@@ -52,7 +52,20 @@ type DownloadOptions struct {
 type DownloadResult struct {
 	Data        []byte
 	ContentType string
+
+	// Headers are the successful response's HTTP headers, when the request
+	// reached an HTTP response (nil for data: URLs). PollJSON callers use
+	// this to surface a provider's response headers on the caller-visible
+	// result, matching TS getFromApi's responseHeaders.
+	Headers map[string][]string
 }
+
+// maxErrorBodyBytes bounds how much of a non-2xx response body
+// DownloadWithMetadata retains on providererrors.DownloadError, so JSON
+// status-poll callers (fileutil.PollJSON) can decode a provider's structured
+// error envelope without risking unbounded memory use from a hostile or
+// oversized error response.
+const maxErrorBodyBytes = 64 * 1024
 
 // DefaultDownloadOptions returns default download options
 func DefaultDownloadOptions() DownloadOptions {
@@ -128,14 +141,17 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 
 	// Check status code
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-		return nil, providererrors.NewDownloadError(
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		downloadErr := providererrors.NewDownloadError(
 			url,
 			resp.StatusCode,
 			responseStatusText(resp),
 			"",
 			nil,
 		)
+		downloadErr.Body = body
+		downloadErr.Headers = map[string][]string(resp.Header)
+		return nil, downloadErr
 	}
 
 	data, err := ReadResponseWithSizeLimit(resp, url, opts.MaxSize)
@@ -143,7 +159,11 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		return nil, err
 	}
 
-	return &DownloadResult{Data: data, ContentType: resp.Header.Get("Content-Type")}, nil
+	return &DownloadResult{
+		Data:        data,
+		ContentType: resp.Header.Get("Content-Type"),
+		Headers:     map[string][]string(resp.Header),
+	}, nil
 }
 
 // DownloadToWriter downloads a file from a URL and writes it to an io.Writer

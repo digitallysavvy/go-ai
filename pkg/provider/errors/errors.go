@@ -475,6 +475,18 @@ type DownloadError struct {
 
 	// Underlying cause
 	Cause error
+
+	// Body is a bounded prefix of the response body for non-2xx HTTP
+	// responses, when captured. Callers that poll a JSON status endpoint
+	// (e.g. fileutil.PollJSON) rather than download a binary file need this
+	// to decode a provider's structured error envelope; plain file/media
+	// downloads leave it nil. Nil also when the error never reached an HTTP
+	// response (network/validation errors).
+	Body []byte
+
+	// Headers are the response headers for non-2xx HTTP responses, when
+	// captured. See Body.
+	Headers map[string][]string
 }
 
 // SSRFError represents a blocked URL due to SSRF protections.

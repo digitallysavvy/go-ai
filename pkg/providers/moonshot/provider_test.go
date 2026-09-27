@@ -221,8 +221,11 @@ func TestMoonshotUsageWithCaching(t *testing.T) {
 				t.Errorf("expected no-cache tokens %d, got %v", tt.expectedNoCache, result.InputDetails.NoCacheTokens)
 			}
 
-			if result.Raw["cachedTokens"] != tt.expectedCacheRead {
-				t.Errorf("expected raw cachedTokens %d, got %v", tt.expectedCacheRead, result.Raw["cachedTokens"])
+			if result.Raw == nil {
+				t.Fatal("expected full decoded usage object in Raw")
+			}
+			if result.Raw["prompt_tokens"] != float64(100) {
+				t.Errorf("expected raw prompt_tokens 100, got %v", result.Raw["prompt_tokens"])
 			}
 		})
 	}
@@ -253,8 +256,75 @@ func TestMoonshotUsageWithThinking(t *testing.T) {
 		t.Errorf("expected text tokens 40, got %v", result.OutputDetails.TextTokens)
 	}
 
-	if result.Raw["reasoningTokens"] != 60 {
-		t.Errorf("expected raw reasoningTokens 60, got %v", result.Raw["reasoningTokens"])
+	details, ok := result.Raw["completion_tokens_details"].(map[string]interface{})
+	if !ok || details["reasoning_tokens"] != float64(60) {
+		t.Errorf("expected raw completion_tokens_details.reasoning_tokens 60, got %v", result.Raw["completion_tokens_details"])
+	}
+}
+
+// TestMoonshotUsageClampsNegativeTextTokens verifies that when reasoning
+// tokens exceed completion tokens (a provider-side inconsistency), text
+// tokens are clamped to zero rather than going negative.
+func TestMoonshotUsageClampsNegativeTextTokens(t *testing.T) {
+	usage := MoonshotUsage{
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+		CompletionTokensDetails: &CompletionTokensDetails{
+			ReasoningTokens: intPtr(9),
+		},
+	}
+
+	result := ConvertMoonshotUsage(usage)
+
+	if result.OutputDetails == nil || result.OutputDetails.TextTokens == nil {
+		t.Fatal("expected output details with text tokens")
+	}
+	if *result.OutputDetails.TextTokens != 0 {
+		t.Errorf("expected clamped text tokens 0, got %d", *result.OutputDetails.TextTokens)
+	}
+}
+
+// TestConvertMoonshotUsageRawPreservesUnknownFields verifies Raw contains the
+// full decoded usage object, including fields the SDK doesn't model.
+func TestConvertMoonshotUsageRawPreservesUnknownFields(t *testing.T) {
+	raw := []byte(`{
+		"prompt_tokens": 100,
+		"completion_tokens": 50,
+		"total_tokens": 150,
+		"cached_tokens": 20,
+		"provider_usage_id": "usage-123",
+		"prompt_tokens_details": {"cached_tokens": 20, "cache_type": "ephemeral"},
+		"completion_tokens_details": {"reasoning_tokens": 10, "billable_tokens": 42}
+	}`)
+
+	result, err := ConvertMoonshotUsageRaw(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Raw["provider_usage_id"] != "usage-123" {
+		t.Errorf("expected provider_usage_id preserved, got %v", result.Raw["provider_usage_id"])
+	}
+	details, ok := result.Raw["prompt_tokens_details"].(map[string]interface{})
+	if !ok || details["cache_type"] != "ephemeral" {
+		t.Errorf("expected prompt_tokens_details.cache_type preserved, got %v", result.Raw["prompt_tokens_details"])
+	}
+	completionDetails, ok := result.Raw["completion_tokens_details"].(map[string]interface{})
+	if !ok || completionDetails["billable_tokens"] != float64(42) {
+		t.Errorf("expected completion_tokens_details.billable_tokens preserved, got %v", result.Raw["completion_tokens_details"])
+	}
+	if result.InputDetails == nil || result.InputDetails.CacheReadTokens == nil || *result.InputDetails.CacheReadTokens != 20 {
+		t.Errorf("expected cache read tokens 20, got %v", result.InputDetails)
+	}
+}
+
+// TestConvertMoonshotUsageRawRejectsWrongFieldType verifies that a known
+// numeric usage field with the wrong JSON type produces an error, mirroring
+// TS's Zod-validated tokenUsageSchema rejecting malformed usage payloads.
+func TestConvertMoonshotUsageRawRejectsWrongFieldType(t *testing.T) {
+	raw := []byte(`{"prompt_tokens": "100", "completion_tokens": 50, "total_tokens": 150}`)
+	if _, err := ConvertMoonshotUsageRaw(raw); err == nil {
+		t.Fatal("expected an error for a string prompt_tokens value")
 	}
 }
 

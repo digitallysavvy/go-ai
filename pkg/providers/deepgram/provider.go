@@ -65,7 +65,7 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("deepgram does not support speech synthesis")
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID

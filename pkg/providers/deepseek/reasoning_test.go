@@ -7,6 +7,79 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// TestDeepSeekThinkingSuppressesTemperatureAndTopP guards TS
+// deepseek-chat-language-model.ts:322-345: temperature/topP are omitted from
+// the wire body (with "unsupported" warnings) whenever DeepSeek thinking is
+// enabled — including the default case where no explicit reasoning/thinking
+// option is set but the model is deepseek-reasoner or a V4 model.
+func TestDeepSeekThinkingSuppressesTemperatureAndTopP(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	temp := 0.7
+	topP := 0.9
+
+	t.Run("deepseek-reasoner default thinking suppresses both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-reasoner")
+		body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := body["temperature"]; ok {
+			t.Errorf("temperature = %#v, want omitted", body["temperature"])
+		}
+		if _, ok := body["top_p"]; ok {
+			t.Errorf("top_p = %#v, want omitted", body["top_p"])
+		}
+		var sawTemp, sawTopP bool
+		for _, w := range warnings {
+			if w.Feature == "temperature" {
+				sawTemp = true
+			}
+			if w.Feature == "topP" {
+				sawTopP = true
+			}
+		}
+		if !sawTemp || !sawTopP {
+			t.Fatalf("warnings = %#v, want temperature and topP unsupported warnings", warnings)
+		}
+	})
+
+	t.Run("deepseek-chat non-reasoner keeps both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-chat")
+		body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["temperature"] != temp || body["top_p"] != topP {
+			t.Fatalf("body = %#v, want temperature/top_p forwarded", body)
+		}
+	})
+
+	t.Run("thinking explicitly disabled keeps both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-reasoner")
+		none := types.ReasoningNone
+		body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Reasoning:   &none,
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["temperature"] != temp || body["top_p"] != topP {
+			t.Fatalf("body = %#v, want temperature/top_p forwarded when thinking is disabled", body)
+		}
+	})
+}
+
 func TestDeepSeekReasoningAllLevels(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")
@@ -110,7 +183,10 @@ func TestDeepSeekProviderOptionsOverrideReasoning(t *testing.T) {
 			},
 		},
 	}
-	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+	body, warnings, err := model.buildRequestBodyWithWarnings(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBodyWithWarnings error = %v", err)
+	}
 
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for camelCase provider options, got %#v", warnings)
@@ -128,24 +204,38 @@ func TestDeepSeekProviderOptionsThinkingTypesPassThrough(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")
 
-	for _, thinkingType := range []string{"adaptive", "enabled", "disabled"} {
-		t.Run(thinkingType, func(t *testing.T) {
-			body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	tests := []struct {
+		thinkingType string
+		wantType     string
+		wantWarnings int
+	}{
+		// "adaptive" is a legacy value mapped to "enabled" with a compatibility warning.
+		{"adaptive", "enabled", 1},
+		{"enabled", "enabled", 0},
+		{"disabled", "disabled", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.thinkingType, func(t *testing.T) {
+			body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 				ProviderOptions: map[string]interface{}{
 					"deepseek": map[string]interface{}{
-						"thinking": map[string]interface{}{"type": thinkingType},
+						"thinking": map[string]interface{}{"type": tt.thinkingType},
 					},
 				},
 			}, false)
-			if len(warnings) != 0 {
-				t.Fatalf("warnings = %#v, want none", warnings)
+			if err != nil {
+				t.Fatalf("buildRequestBodyWithWarnings error = %v", err)
+			}
+			if len(warnings) != tt.wantWarnings {
+				t.Fatalf("warnings = %#v, want %d", warnings, tt.wantWarnings)
 			}
 			thinking, ok := body["thinking"].(map[string]interface{})
 			if !ok {
 				t.Fatalf("thinking = %T, want map", body["thinking"])
 			}
-			if thinking["type"] != thinkingType {
-				t.Fatalf("thinking.type = %v, want %q", thinking["type"], thinkingType)
+			if thinking["type"] != tt.wantType {
+				t.Fatalf("thinking.type = %v, want %q", thinking["type"], tt.wantType)
 			}
 		})
 	}
@@ -164,7 +254,10 @@ func TestDeepSeekProviderOptionsReasoningEffort(t *testing.T) {
 			},
 		},
 	}
-	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+	body, warnings, err := model.buildRequestBodyWithWarnings(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBodyWithWarnings error = %v", err)
+	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for reasoningEffort option, got %#v", warnings)
 	}
@@ -188,6 +281,11 @@ func TestDeepSeekReasoningCompatibilityWarnings(t *testing.T) {
 			wantDetail: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`,
 		},
 		{
+			name:       "medium",
+			level:      types.ReasoningMedium,
+			wantDetail: `reasoning "medium" is not directly supported by this model. mapped to effort "high".`,
+		},
+		{
 			name:       "xhigh",
 			level:      types.ReasoningXHigh,
 			wantDetail: `reasoning "xhigh" is not directly supported by this model. mapped to effort "max".`,
@@ -201,7 +299,10 @@ func TestDeepSeekReasoningCompatibilityWarnings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &tt.level}, false)
+			_, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &tt.level}, false)
+			if err != nil {
+				t.Fatalf("buildRequestBodyWithWarnings error = %v", err)
+			}
 			if len(warnings) != 1 {
 				t.Fatalf("warnings = %#v, want one compatibility warning", warnings)
 			}
@@ -216,12 +317,15 @@ func TestDeepSeekProviderReasoningEffortSuppressesMappingWarning(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")
 	level := types.ReasoningXHigh
-	_, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+	_, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Reasoning: &level,
 		ProviderOptions: map[string]interface{}{
 			"deepseek": map[string]interface{}{"reasoningEffort": "max"},
 		},
 	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBodyWithWarnings error = %v", err)
+	}
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v, want none when provider reasoningEffort is explicit", warnings)
 	}

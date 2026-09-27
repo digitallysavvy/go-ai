@@ -12,7 +12,7 @@ type Config struct {
 	APIKey string
 
 	// BaseURL is the base URL for the API (optional)
-	// Default: https://api.moonshot.cn/v1
+	// Default: https://api.moonshot.ai/v1
 	BaseURL string
 }
 

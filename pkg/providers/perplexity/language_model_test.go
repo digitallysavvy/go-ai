@@ -1,11 +1,14 @@
 package perplexity
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -392,10 +395,16 @@ func TestPerplexityGenerateCitationsAndReasoningUsage(t *testing.T) {
 	if converted.OutputDetails == nil || converted.OutputDetails.TextTokens == nil || *converted.OutputDetails.TextTokens != 3 {
 		t.Fatalf("output details = %+v, want text tokens 3", converted.OutputDetails)
 	}
-	if got := converted.Raw["reasoning_tokens"]; got != 2 {
-		t.Fatalf("raw reasoning_tokens = %v, want 2", got)
+	// convertPerplexityUsage no longer populates Raw itself: Raw is now set by
+	// the caller from the untransformed wire bytes (extractRawUsage), so that
+	// ALL fields the API returns are preserved, not just the ones modeled by
+	// perplexityUsage. Verify that behavior end-to-end via convertResponse,
+	// including a field not modeled by perplexityUsage at all.
+	if converted.Raw != nil {
+		t.Fatalf("convertPerplexityUsage() Raw = %v, want nil (populated by caller)", converted.Raw)
 	}
 
+	rawBody := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"reasoning_tokens":2,"unmodeled_future_field":"x"}}`)
 	result := NewLanguageModel(New(Config{APIKey: "test-key"}), "sonar").convertResponse(perplexityResponse{
 		Citations: []string{"https://example.com/a"},
 		Choices: []struct {
@@ -416,13 +425,19 @@ func TestPerplexityGenerateCitationsAndReasoningUsage(t *testing.T) {
 			},
 		},
 		Usage: &usage,
-	})
+	}, rawBody)
 	if len(result.Content) != 1 {
 		t.Fatalf("content len = %d, want 1 source", len(result.Content))
 	}
 	source, ok := result.Content[0].(types.SourceContent)
 	if !ok || source.URL != "https://example.com/a" {
 		t.Fatalf("source content = %#v, want citation source", result.Content[0])
+	}
+	if got := result.Usage.Raw["reasoning_tokens"]; got != float64(2) {
+		t.Fatalf("raw reasoning_tokens = %v, want 2", got)
+	}
+	if got := result.Usage.Raw["unmodeled_future_field"]; got != "x" {
+		t.Fatalf("Usage.Raw = %+v, want unmodeled_future_field preserved (full decoded usage object)", result.Usage.Raw)
 	}
 }
 
@@ -445,7 +460,7 @@ func TestPerplexityMissingUsageMatchesTypeScriptUndefinedUsage(t *testing.T) {
 				}{Role: "assistant", Content: "hello"},
 			},
 		},
-	})
+	}, nil)
 	if result.Usage.InputTokens != nil || result.Usage.OutputTokens != nil || result.Usage.TotalTokens != nil || result.Usage.Raw != nil {
 		t.Fatalf("usage = %+v, want empty usage when provider omits usage", result.Usage)
 	}
@@ -648,5 +663,177 @@ func TestPerplexityWarningsMatchTypeScript(t *testing.T) {
 	warnings = model.checkWarnings(&provider.GenerateOptions{Reasoning: &reasoning})
 	if len(warnings) != 1 || warnings[0].Type != "unsupported" || warnings[0].Feature != "reasoning" {
 		t.Fatalf("reasoning warning = %+v, want TypeScript unsupported reasoning warning", warnings)
+	}
+}
+
+// pngBase64 decodes to the PNG signature bytes (0x89 P N G \r \n \x1a \n),
+// matching the fixture used by the TS SDK's convert-to-perplexity-messages
+// test suite ("top-level-only media type resolution").
+const pngBase64 = "iVBORw0KGgo="
+
+// pdfBase64 decodes to "%PDF-1.4", matching the TS test fixture.
+const pdfBase64 = "JVBERi0xLjQ="
+
+func TestPerplexityFilePartFullImageMediaTypePassesThroughUnchanged(t *testing.T) {
+	data, _ := base64.StdEncoding.DecodeString(pngBase64)
+	messages, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: data, MediaType: "image/png"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToPerplexityMessages() error = %v", err)
+	}
+	content := messages[0]["content"].([]map[string]interface{})
+	url := content[0]["image_url"].(map[string]interface{})["url"].(string)
+	if url != "data:image/png;base64,"+pngBase64 {
+		t.Fatalf("url = %q, want data:image/png;base64,%s", url, pngBase64)
+	}
+}
+
+func TestPerplexityFilePartBareImageMediaTypeSniffsSubtypeFromBytes(t *testing.T) {
+	data, _ := base64.StdEncoding.DecodeString(pngBase64)
+	messages, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: data, MediaType: "image"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToPerplexityMessages() error = %v", err)
+	}
+	content := messages[0]["content"].([]map[string]interface{})
+	url := content[0]["image_url"].(map[string]interface{})["url"].(string)
+	if url != "data:image/png;base64,"+pngBase64 {
+		t.Fatalf("url = %q, want data:image/png;base64,%s", url, pngBase64)
+	}
+}
+
+func TestPerplexityFilePartBareImageMediaTypeWithURLSourcePassesThrough(t *testing.T) {
+	messages, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/x.png", MediaType: "image"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToPerplexityMessages() error = %v, want no error for URL-sourced top-level-only image", err)
+	}
+	content := messages[0]["content"].([]map[string]interface{})
+	url := content[0]["image_url"].(map[string]interface{})["url"].(string)
+	if url != "https://example.com/x.png" {
+		t.Fatalf("url = %q, want raw URL passthrough (no media type resolution needed)", url)
+	}
+}
+
+func TestPerplexityFilePartBareApplicationMediaTypeSniffsToPDF(t *testing.T) {
+	data, _ := base64.StdEncoding.DecodeString(pdfBase64)
+	messages, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: data, MediaType: "application", Filename: "doc.pdf"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToPerplexityMessages() error = %v", err)
+	}
+	content := messages[0]["content"].([]map[string]interface{})
+	part := content[0]
+	if part["type"] != "file_url" {
+		t.Fatalf("part type = %v, want file_url", part["type"])
+	}
+	if url := part["file_url"].(map[string]interface{})["url"].(string); url != pdfBase64 {
+		t.Fatalf("url = %q, want %q", url, pdfBase64)
+	}
+	if part["file_name"] != "doc.pdf" {
+		t.Fatalf("file_name = %v, want doc.pdf", part["file_name"])
+	}
+}
+
+func TestPerplexityFilePartUnsupportedMediaTypeErrorsInsteadOfDropping(t *testing.T) {
+	_, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: []byte("ID3\x04\x00\x00\x00\x00\x00\x0f"), MediaType: "audio/mpeg", Filename: "clip.mp3"},
+		}},
+	})
+	if err == nil {
+		t.Fatal("convertToPerplexityMessages() error = nil, want UnsupportedFunctionalityError for audio/mpeg")
+	}
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("error = %v (%T), want UnsupportedFunctionalityError", err, err)
+	}
+}
+
+func TestPerplexityFilePartImageWildcardSubtypeIsDetected(t *testing.T) {
+	data, _ := base64.StdEncoding.DecodeString(pngBase64)
+	messages, err := convertToPerplexityMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: data, MediaType: "image/*"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("convertToPerplexityMessages() error = %v", err)
+	}
+	content := messages[0]["content"].([]map[string]interface{})
+	url := content[0]["image_url"].(map[string]interface{})["url"].(string)
+	if url != "data:image/png;base64,"+pngBase64 {
+		t.Fatalf("url = %q, want data:image/png;base64,%s", url, pngBase64)
+	}
+}
+
+func TestPerplexityLanguageModelOptionsValidation(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "sonar")
+
+	// Invalid enum value should error rather than being forwarded verbatim.
+	_, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"search_mode": "not-a-real-mode",
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("buildRequestBody() error = nil, want validation error for invalid search_mode")
+	}
+
+	// Valid nested web_search_options enum should pass through.
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"reasoning_effort": "high",
+				"web_search_options": map[string]interface{}{
+					"search_context_size": "medium",
+				},
+				"unmodeled_future_option": "passthrough",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v, want high", body["reasoning_effort"])
+	}
+	wso, ok := body["web_search_options"].(map[string]interface{})
+	if !ok || wso["search_context_size"] != "medium" {
+		t.Fatalf("web_search_options = %+v, want search_context_size=medium", body["web_search_options"])
+	}
+	if body["unmodeled_future_option"] != "passthrough" {
+		t.Fatalf("unmodeled_future_option = %v, want passthrough (loose-object forwarding)", body["unmodeled_future_option"])
+	}
+
+	// Invalid nested enum should also error.
+	_, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"web_search_options": map[string]interface{}{
+					"search_type": "bogus",
+				},
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("buildRequestBody() error = nil, want validation error for invalid web_search_options.search_type")
 	}
 }
