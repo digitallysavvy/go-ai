@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
+	"github.com/digitallysavvy/go-ai/pkg/providers/minimax"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
@@ -78,6 +79,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if zai.CreateZai(zai.Config{}) == nil {
 		t.Fatal("CreateZai returned nil")
+	}
+	if minimax.CreateMiniMax(minimax.Config{}) == nil {
+		t.Fatal("CreateMiniMax returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{
