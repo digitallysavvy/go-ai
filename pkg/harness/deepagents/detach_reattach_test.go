@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,12 +16,20 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// TS "reuses a caller-minted token and passes endpoint headers when
-// attaching" (deepagents-harness.test.ts): DoDetach returns bridge
-// coordinates carrying the caller-minted token, and reattaching (a second
-// DoStart with that ResumeSessionState) must reuse the same token — no
-// second MintBridgeToken call — and must not respawn a fresh bridge process,
-// since live coordinates route it through the attach rung instead.
+// Partial port of TS "reuses a caller-minted token and passes endpoint
+// headers when attaching" (deepagents-harness.test.ts:526): DoDetach returns
+// bridge coordinates carrying the caller-minted token, and reattaching (a
+// second DoStart with that ResumeSessionState) must reuse the same token —
+// no second MintBridgeToken call — and must not respawn a fresh bridge
+// process, since live coordinates route it through the attach rung instead.
+//
+// Not covered here (needs bridgetest infra this package doesn't have):
+// the TS test's other two assertions — that a custom PortEndpoint's headers
+// travel to both the initial and the reattach WebSocket connect call
+// (bridgetest has no handshake-header capture), and that the identical
+// `reconnect` config object is reused on both channels (no Go hook exposes
+// a Channel's reconnect option for inspection outside the bridge package).
+// See review hand-off notes.
 func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	const token = "detach-reattach-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
@@ -186,6 +195,63 @@ func TestDoStart_WarnsWhenCredentialBrokeringUnavailable(t *testing.T) {
 	defer sandbox.inner.mu.Unlock()
 	if len(sandbox.inner.spawnEnvs) == 0 || sandbox.inner.spawnEnvs[0]["ANTHROPIC_API_KEY"] != "anthropic-secret" {
 		t.Fatalf("spawn env = %v, want ANTHROPIC_API_KEY=anthropic-secret", sandbox.inner.spawnEnvs)
+	}
+}
+
+// TS "customizes real credentials when request transformations are
+// unavailable" (deepagents-harness.test.ts:408), first half: when the
+// sandbox does not support additive request transformations but a
+// CredentialForwarding callback replaces the real credential with a
+// genuinely different value, DoStart must forward that substituted value
+// (not the real one) and must NOT emit the brokering-unavailable warning —
+// the callback already accounted for the missing broker, so no signal is
+// needed. The warn-path sibling (identity callback / no callback) is
+// TestDoStart_WarnsWhenCredentialBrokeringUnavailable above.
+func TestDoStart_CustomForwardingSuppressesBrokeringWarning(t *testing.T) {
+	const token = "custom-forward-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := &basicNetworkSandbox{inner: newFakeSandbox(srv)}
+	assertNotRequestTransformationAdder(t, sandbox)
+
+	var warnings []string
+	orig := harnessutil.Warn
+	harnessutil.Warn = func(m string) { warnings = append(warnings, m) }
+	t.Cleanup(func() { harnessutil.Warn = orig })
+
+	var forwarded []harness.CredentialForwardingOptions
+	h := CreateDeepAgents(Settings{
+		MintBridgeToken: func(string) string { return token },
+		Auth: harness.AuthEnvironment(map[string]string{
+			"ANTHROPIC_API_KEY": "anthropic-secret",
+		}),
+		CredentialForwarding: func(_ context.Context, opts harness.CredentialForwardingOptions) (string, error) {
+			forwarded = append(forwarded, opts)
+			return "caller-managed-credential", nil
+		},
+	})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none (a genuinely substituted credential needs no fallback warning)", warnings)
+	}
+	if len(forwarded) != 1 || forwarded[0].Credential != "anthropic-secret" || forwarded[0].EnvironmentVariableName != "ANTHROPIC_API_KEY" {
+		t.Fatalf("forwarded calls = %+v, want exactly one for ANTHROPIC_API_KEY carrying the real secret", forwarded)
+	}
+
+	sandbox.inner.mu.Lock()
+	defer sandbox.inner.mu.Unlock()
+	if len(sandbox.inner.spawnEnvs) == 0 || sandbox.inner.spawnEnvs[0]["ANTHROPIC_API_KEY"] != "caller-managed-credential" {
+		t.Fatalf("spawn env = %v, want ANTHROPIC_API_KEY=caller-managed-credential", sandbox.inner.spawnEnvs)
+	}
+	blob, _ := json.Marshal(sandbox.inner.spawnEnvs[0])
+	if strings.Contains(string(blob), "anthropic-secret") {
+		t.Fatalf("spawn env leaked the real credential: %s", blob)
 	}
 }
 
