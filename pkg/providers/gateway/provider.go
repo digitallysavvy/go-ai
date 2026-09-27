@@ -829,6 +829,18 @@ func (t *Tools) TakoSearch(config tools.TakoSearchConfig) tools.TakoSearchTool {
 	return tools.NewTakoSearch(config)
 }
 
+// BrowserbaseSearch creates a Browserbase search tool with the given
+// configuration.
+func (t *Tools) BrowserbaseSearch(config tools.BrowserbaseSearchConfig) tools.BrowserbaseSearchTool {
+	return tools.NewBrowserbaseSearch(config)
+}
+
+// BrowserbaseFetch creates a Browserbase fetch tool with the given
+// configuration.
+func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.BrowserbaseFetchTool {
+	return tools.NewBrowserbaseFetch(config)
+}
+
 // NewTools creates a new Tools instance for accessing gateway-specific tools
 func NewTools() *Tools {
 	return &Tools{}
