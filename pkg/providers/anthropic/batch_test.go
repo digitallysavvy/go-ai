@@ -640,6 +640,199 @@ func TestBatch_SkipsUnknownContentBlocksButFailsOnMalformedKnownBlock(t *testing
 	}
 }
 
+// TestBatch_PreservesSignedCompactionBlock ports TS "preserves signed
+// compaction blocks in batch results" (anthropic-batch.test.ts:1046): a
+// succeeded batch message whose only content block is a signed "compaction"
+// block converts to a text content part carrying the compaction
+// providerMetadata, through the same convertResponseWithOptions path
+// TestCompactionResponse_PreserveSignature exercises directly.
+func TestBatch_PreservesSignedCompactionBlock(t *testing.T) {
+	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"compaction","content":"Summary of the conversation.","signature":"compaction-signature"}],` +
+		`"stop_reason":"compaction","usage":{"input_tokens":0,"output_tokens":0}}`
+	resultsBody := `{"custom_id":"compaction","result":{"type":"succeeded","message":` + message + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	got := items["compaction"]
+	if got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("compaction = %+v", got)
+	}
+	if len(got.TextResult.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(got.TextResult.Content))
+	}
+	text, ok := got.TextResult.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("Content[0] = %T, want types.TextContent", got.TextResult.Content[0])
+	}
+	if text.Text != "Summary of the conversation." {
+		t.Errorf("text.Text = %q", text.Text)
+	}
+	var meta map[string]map[string]interface{}
+	if err := json.Unmarshal(text.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode providerMetadata: %v", err)
+	}
+	if meta["anthropic"]["type"] != "compaction" || meta["anthropic"]["signature"] != "compaction-signature" {
+		t.Errorf("providerMetadata.anthropic = %+v", meta["anthropic"])
+	}
+	if got.TextResult.FinishReason != types.FinishReasonOther {
+		t.Errorf("FinishReason = %v, want %v", got.TextResult.FinishReason, types.FinishReasonOther)
+	}
+}
+
+// TestBatch_PreservesClientAndProviderExecutedToolContent ports TS
+// "preserves client and provider-executed tool content"
+// (anthropic-batch.test.ts:1104): a succeeded batch message mixing a client
+// tool_use, two server_tool_use variants (web_search, code_execution) and
+// their web_search_tool_result all convert the same way they do outside a
+// batch, through the shared convertResponseWithOptions path with
+// markCodeExecutionDynamic forced on (batch results have no original tool
+// list to consult).
+func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
+	content := `[` +
+		`{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"city":"Paris"}},` +
+		`{"type":"server_tool_use","id":"srvtoolu_123","name":"web_search","input":{"query":"weather Paris"}},` +
+		`{"type":"server_tool_use","id":"code_123","name":"code_execution","input":{"code":"print(\"Paris\")"}},` +
+		`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_123","content":[` +
+		`{"type":"web_search_result","url":"https://example.com/weather","title":"Paris weather","encrypted_content":"encrypted"}` +
+		`]}` +
+		`]`
+	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":` + content + `,"stop_reason":"tool_use","usage":{"input_tokens":0,"output_tokens":0}}`
+	resultsBody := `{"custom_id":"tool-call","result":{"type":"succeeded","message":` + message + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	got := items["tool-call"]
+	if got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("tool-call = %+v", got)
+	}
+	res := got.TextResult
+
+	if len(res.ToolCalls) != 3 {
+		t.Fatalf("len(ToolCalls) = %d, want 3: %+v", len(res.ToolCalls), res.ToolCalls)
+	}
+	weather := res.ToolCalls[0]
+	if weather.ID != "toolu_123" || weather.ToolName != "get_weather" || weather.Arguments["city"] != "Paris" || weather.ProviderExecuted {
+		t.Errorf("ToolCalls[0] (client tool_use) = %+v", weather)
+	}
+	webSearch := res.ToolCalls[1]
+	if webSearch.ID != "srvtoolu_123" || webSearch.ToolName != "web_search" || !webSearch.ProviderExecuted || webSearch.Dynamic {
+		t.Errorf("ToolCalls[1] (server_tool_use web_search) = %+v", webSearch)
+	}
+	codeExec := res.ToolCalls[2]
+	if codeExec.ID != "code_123" || codeExec.ToolName != "code_execution" || !codeExec.ProviderExecuted || !codeExec.Dynamic {
+		t.Errorf("ToolCalls[2] (server_tool_use code_execution) = %+v", codeExec)
+	}
+	if codeExec.Arguments["type"] != "programmatic-tool-call" || codeExec.Arguments["code"] != `print("Paris")` {
+		t.Errorf("ToolCalls[2].Arguments = %+v", codeExec.Arguments)
+	}
+
+	// web_search_tool_result: a ToolResultContent plus a synthesized source
+	// content part, both appended to Content in that order.
+	var toolResult *types.ToolResultContent
+	var source *types.SourceContent
+	for i := range res.Content {
+		switch c := res.Content[i].(type) {
+		case types.ToolResultContent:
+			toolResult = &c
+		case types.SourceContent:
+			source = &c
+		}
+	}
+	if toolResult == nil || toolResult.ToolCallID != "srvtoolu_123" || toolResult.ToolName != "web_search" || !toolResult.ProviderExecuted {
+		t.Fatalf("web_search_tool_result ToolResultContent = %+v", toolResult)
+	}
+	resultList, ok := toolResult.Result.([]map[string]interface{})
+	if !ok || len(resultList) != 1 || resultList[0]["url"] != "https://example.com/weather" || resultList[0]["encryptedContent"] != "encrypted" {
+		t.Fatalf("web_search_tool_result.Result = %#v", toolResult.Result)
+	}
+	if source == nil || source.SourceType != "url" || source.URL != "https://example.com/weather" || source.Title != "Paris weather" {
+		t.Fatalf("web_search source = %+v", source)
+	}
+}
+
+// TestBatch_NormalizesAdvisorToolResults ports TS "normalizes advisor tool
+// results to the provider output shape" (anthropic-batch.test.ts:1568): the
+// three advisor_tool_result content variants (plain, redacted, error) map to
+// ToolResultContent with the shared convertAdvisorResult helper, the same as
+// outside a batch.
+func TestBatch_NormalizesAdvisorToolResults(t *testing.T) {
+	content := `[` +
+		`{"type":"advisor_tool_result","tool_use_id":"advisor-plain","content":{"type":"advisor_result","text":"Use a queue.","stop_reason":"end_turn"}},` +
+		`{"type":"advisor_tool_result","tool_use_id":"advisor-redacted","content":{"type":"advisor_redacted_result","encrypted_content":"opaque-advice","stop_reason":"max_tokens"}},` +
+		`{"type":"advisor_tool_result","tool_use_id":"advisor-error","content":{"type":"advisor_tool_result_error","error_code":"max_uses_exceeded"}}` +
+		`]`
+	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":` + content + `,"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`
+	resultsBody := `{"custom_id":"advisor-results","result":{"type":"succeeded","message":` + message + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	got := items["advisor-results"]
+	if got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("advisor-results = %+v", got)
+	}
+	content2 := got.TextResult.Content
+	if len(content2) != 3 {
+		t.Fatalf("len(Content) = %d, want 3: %+v", len(content2), content2)
+	}
+
+	plain, ok := content2[0].(types.ToolResultContent)
+	if !ok || plain.ToolCallID != "advisor-plain" || plain.ToolName != "advisor" || plain.Error != "" {
+		t.Fatalf("Content[0] (advisor_result) = %+v (ok=%v)", content2[0], ok)
+	}
+	plainResult, ok := plain.Result.(map[string]interface{})
+	if !ok || plainResult["type"] != "advisor_result" || plainResult["text"] != "Use a queue." || plainResult["stopReason"] != "end_turn" {
+		t.Fatalf("Content[0].Result = %#v", plain.Result)
+	}
+
+	redacted, ok := content2[1].(types.ToolResultContent)
+	if !ok || redacted.ToolCallID != "advisor-redacted" || redacted.ToolName != "advisor" || redacted.Error != "" {
+		t.Fatalf("Content[1] (advisor_redacted_result) = %+v (ok=%v)", content2[1], ok)
+	}
+	redactedResult, ok := redacted.Result.(map[string]interface{})
+	if !ok || redactedResult["type"] != "advisor_redacted_result" || redactedResult["encryptedContent"] != "opaque-advice" || redactedResult["stopReason"] != "max_tokens" {
+		t.Fatalf("Content[1].Result = %#v", redacted.Result)
+	}
+
+	errored, ok := content2[2].(types.ToolResultContent)
+	if !ok || errored.ToolCallID != "advisor-error" || errored.ToolName != "advisor" || errored.Error != "max_uses_exceeded" {
+		t.Fatalf("Content[2] (advisor_tool_result_error) = %+v (ok=%v)", content2[2], ok)
+	}
+	erroredResult, ok := errored.Result.(map[string]interface{})
+	if !ok || erroredResult["type"] != "advisor_tool_result_error" || erroredResult["errorCode"] != "max_uses_exceeded" {
+		t.Fatalf("Content[2].Result = %#v", errored.Result)
+	}
+}
+
 // anthropicBatchResultsServer starts a batch server that reports batch "b1"
 // as ended (with results_url same-origin), streaming resultsBody as the
 // results file's NDJSON content.
