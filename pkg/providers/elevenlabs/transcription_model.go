@@ -140,8 +140,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if present {
-		if elOpts.LanguageCode != "" {
-			if err := writer.WriteField("language_code", elOpts.LanguageCode); err != nil {
+		if elOpts.LanguageCode != nil {
+			if err := writer.WriteField("language_code", *elOpts.LanguageCode); err != nil {
 				return nil, "", nil, err
 			}
 		}

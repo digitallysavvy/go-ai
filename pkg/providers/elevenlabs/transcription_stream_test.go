@@ -262,12 +262,12 @@ func TestTranscriptionModel_DoStream_BuildsURLWithQueryParams(t *testing.T) {
 		MinSilenceDurationMs:     intPtr(200),
 		MinSpeechDurationMs:      intPtr(150),
 		NoVerbatim:               boolPtr(true),
-		PreviousText:             "Earlier context",
+		PreviousText:             stringPtr("Earlier context"),
 		SecondaryLanguages:       []string{"es", "fr"},
 		VadSilenceThresholdSecs:  floatPtr2(1.2),
 		VadThreshold:             floatPtr2(0.5),
 	}
-	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", "en", streaming)
+	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", stringPtr("en"), streaming)
 	if err != nil {
 		t.Fatalf("buildElevenLabsRealtimeURL() error = %v", err)
 	}
@@ -305,13 +305,131 @@ func TestTranscriptionModel_DoStream_BuildsURLWithQueryParams(t *testing.T) {
 // TestTranscriptionModel_DoStream_NullStreamingOptionsOmitParams mirrors TS
 // "accepts explicit null values in realtime provider options".
 func TestTranscriptionModel_DoStream_NullStreamingOptionsOmitParams(t *testing.T) {
-	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", "", nil)
+	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", nil, nil)
 	if err != nil {
 		t.Fatalf("buildElevenLabsRealtimeURL() error = %v", err)
 	}
 	q := u.Query()
 	if len(q) != 2 || q.Get("model_id") != ModelScribeV2Realtime || q.Get("audio_format") != "pcm_16000" {
 		t.Fatalf("query = %v, want only model_id and audio_format", q)
+	}
+}
+
+// TestBuildElevenLabsRealtimeURL_DistinguishesExplicitEmptyLanguageCode
+// mirrors TS's `languageCode ?? undefined`: an explicit "" is not null, so it
+// is still forwarded to the wire (unlike an absent/nil value, which is
+// omitted). A plain Go string can't represent "unset" separately from "",
+// which is why LanguageCode is a *string.
+func TestBuildElevenLabsRealtimeURL_DistinguishesExplicitEmptyLanguageCode(t *testing.T) {
+	withEmpty, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", stringPtr(""), nil)
+	if err != nil {
+		t.Fatalf("buildElevenLabsRealtimeURL() error = %v", err)
+	}
+	if got, ok := withEmpty.Query()["language_code"]; !ok || len(got) != 1 || got[0] != "" {
+		t.Fatalf("query[language_code] = %v, want a present empty value", got)
+	}
+
+	withNil, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", nil, nil)
+	if err != nil {
+		t.Fatalf("buildElevenLabsRealtimeURL() error = %v", err)
+	}
+	if _, ok := withNil.Query()["language_code"]; ok {
+		t.Fatalf("query = %v, want language_code omitted for a nil (unset) value", withNil.Query())
+	}
+}
+
+// TestExtractTranscriptionOptions_DistinguishesEmptyFromUnset verifies that
+// providerOptions.elevenlabs.languageCode / streaming.previousText set to an
+// explicit "" parse to a non-nil pointer to "", while an absent key parses to
+// nil, mirroring TS's z.string().nullish() (no default): only null/undefined
+// collapse to "unset"; an explicit "" survives.
+func TestExtractTranscriptionOptions_DistinguishesEmptyFromUnset(t *testing.T) {
+	optsExplicitEmpty, present, _ := extractTranscriptionOptions(map[string]interface{}{
+		"elevenlabs": map[string]interface{}{
+			"languageCode": "",
+			"streaming":    map[string]interface{}{"previousText": ""},
+		},
+	})
+	if !present {
+		t.Fatal("expected present = true")
+	}
+	if optsExplicitEmpty.LanguageCode == nil || *optsExplicitEmpty.LanguageCode != "" {
+		t.Fatalf("LanguageCode = %v, want a non-nil pointer to \"\"", optsExplicitEmpty.LanguageCode)
+	}
+	if optsExplicitEmpty.Streaming == nil || optsExplicitEmpty.Streaming.PreviousText == nil || *optsExplicitEmpty.Streaming.PreviousText != "" {
+		t.Fatalf("Streaming.PreviousText = %v, want a non-nil pointer to \"\"", optsExplicitEmpty.Streaming)
+	}
+
+	optsUnset, present, _ := extractTranscriptionOptions(map[string]interface{}{
+		"elevenlabs": map[string]interface{}{
+			"streaming": map[string]interface{}{},
+		},
+	})
+	if !present {
+		t.Fatal("expected present = true")
+	}
+	if optsUnset.LanguageCode != nil {
+		t.Fatalf("LanguageCode = %v, want nil when unset", optsUnset.LanguageCode)
+	}
+	if optsUnset.Streaming.PreviousText != nil {
+		t.Fatalf("Streaming.PreviousText = %v, want nil when unset", optsUnset.Streaming.PreviousText)
+	}
+
+	optsNull, _, _ := extractTranscriptionOptions(map[string]interface{}{
+		"elevenlabs": map[string]interface{}{
+			"languageCode": nil,
+			"streaming":    map[string]interface{}{"previousText": nil},
+		},
+	})
+	if optsNull.LanguageCode != nil {
+		t.Fatalf("LanguageCode = %v, want nil for an explicit null (TS nullish collapses null to undefined)", optsNull.LanguageCode)
+	}
+	if optsNull.Streaming.PreviousText != nil {
+		t.Fatalf("Streaming.PreviousText = %v, want nil for an explicit null", optsNull.Streaming.PreviousText)
+	}
+}
+
+// TestTranscriptionModel_DoStream_ExplicitEmptyPreviousTextIsSent verifies
+// the wire-level effect of the LanguageCode/PreviousText pointer fix: an
+// explicit "" still rides the first audio chunk's `previous_text` field and
+// the WebSocket URL's `language_code` query param, exactly like a non-empty
+// value would, unlike an absent option (see
+// TestTranscriptionModel_DoStream_NullStreamingOptionsOmitParams).
+func TestTranscriptionModel_DoStream_ExplicitEmptyPreviousTextIsSent(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	model := newRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+		ProviderOptions: map[string]interface{}{
+			"elevenlabs": map[string]interface{}{
+				"languageCode": "",
+				"streaming":    map[string]interface{}{"previousText": ""},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	wsURL := result.RequestBody.(string)
+	if !strings.Contains(wsURL, "language_code=") {
+		t.Fatalf("request URL = %q, want an explicit (empty) language_code param", wsURL)
+	}
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	msgs := server.waitForCount(t, 2, time.Second)
+	firstChunk := msgs[0]
+	previousText, ok := firstChunk["previous_text"]
+	if !ok || previousText != "" {
+		t.Fatalf("msgs[0].previous_text = %v (present=%v), want a present empty string", previousText, ok)
 	}
 }
 
@@ -463,6 +581,129 @@ func TestTranscriptionModel_DoStream_SkipsDuplicateFinalForTimestampedCompanion(
 	finish := rest[1]
 	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "Hola" || finish.Language != "es" || len(finish.Segments) != 0 {
 		t.Fatalf("finish = %+v", finish)
+	}
+}
+
+// TestTranscriptionModel_DoStream_TimestampOnlyResponseToFinalCommit mirrors
+// TS "finishes a timestamp-only response to the final commit": a
+// committed_transcript_with_timestamps event with no preceding
+// committed_transcript still produces a transcript-final (the "normally
+// paired" defensive fallback) with timestamps and a duration from it.
+func TestTranscriptionModel_DoStream_TimestampOnlyResponseToFinalCommit(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	model := newRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+		ProviderOptions: map[string]interface{}{
+			"elevenlabs": map[string]interface{}{
+				"streaming": map[string]interface{}{"includeTimestamps": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.waitForCount(t, 2, time.Second)
+
+	server.toSend <- map[string]interface{}{
+		"message_type":  "committed_transcript_with_timestamps",
+		"text":          "Hello",
+		"language_code": "en",
+		"words":         []map[string]interface{}{{"text": "Hello", "start": 0, "end": 0.4, "type": "word"}},
+	}
+
+	rest, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if len(rest) != 2 {
+		t.Fatalf("len(rest) = %d, want 2 (final, finish); got %+v", len(rest), rest)
+	}
+	final := rest[0]
+	if final.Type != provider.TranscriptionStreamPartTypeFinal || final.Text != "Hello" {
+		t.Fatalf("final = %+v", final)
+	}
+	if final.StartSecond == nil || *final.StartSecond != 0 || final.EndSecond == nil || *final.EndSecond != 0.4 {
+		t.Fatalf("final timestamps = start=%v end=%v", final.StartSecond, final.EndSecond)
+	}
+	finish := rest[1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "Hello" || finish.Language != "en" {
+		t.Fatalf("finish = %+v", finish)
+	}
+	if len(finish.Segments) != 1 || finish.Segments[0].Text != "Hello" {
+		t.Fatalf("segments = %+v", finish.Segments)
+	}
+	if finish.DurationInSeconds == nil || *finish.DurationInSeconds != 0.4 {
+		t.Fatalf("durationInSeconds = %v", finish.DurationInSeconds)
+	}
+}
+
+// TestTranscriptionModel_DoStream_HandlesLegacyFinalTranscriptVariants mirrors
+// TS "handles legacy final transcript event variants": `final_transcript` /
+// `final_transcript_with_timestamps` are older aliases for
+// `committed_transcript` / `committed_transcript_with_timestamps` and must be
+// handled identically.
+func TestTranscriptionModel_DoStream_HandlesLegacyFinalTranscriptVariants(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	model := newRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+		ProviderOptions: map[string]interface{}{
+			"elevenlabs": map[string]interface{}{
+				"streaming": map[string]interface{}{"includeTimestamps": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.waitForCount(t, 2, time.Second)
+
+	server.toSend <- map[string]interface{}{"message_type": "final_transcript", "text": "Legacy final"}
+	server.toSend <- map[string]interface{}{
+		"message_type":  "final_transcript_with_timestamps",
+		"text":          "Legacy final",
+		"language_code": "en",
+		"words":         []map[string]interface{}{{"text": "Legacy final", "start": 0, "end": 0.5, "type": "word"}},
+	}
+
+	rest, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if len(rest) != 2 {
+		t.Fatalf("len(rest) = %d, want 2 (final, finish); got %+v", len(rest), rest)
+	}
+	if rest[0].Type != provider.TranscriptionStreamPartTypeFinal || rest[0].Text != "Legacy final" {
+		t.Fatalf("rest[0] = %+v", rest[0])
+	}
+	finish := rest[1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "Legacy final" || finish.Language != "en" {
+		t.Fatalf("finish = %+v", finish)
+	}
+	if len(finish.Segments) != 1 || finish.Segments[0].Text != "Legacy final" {
+		t.Fatalf("segments = %+v", finish.Segments)
+	}
+	if finish.DurationInSeconds == nil || *finish.DurationInSeconds != 0.5 {
+		t.Fatalf("durationInSeconds = %v", finish.DurationInSeconds)
 	}
 }
 
@@ -751,3 +992,4 @@ func TestTranscriptionModel_DoStream_CancelMidStream(t *testing.T) {
 func boolPtr(v bool) *bool         { return &v }
 func floatPtr2(v float64) *float64 { return &v }
 func intPtr(v int) *int            { return &v }
+func stringPtr(v string) *string   { return &v }

@@ -8,8 +8,13 @@ import "encoding/json"
 // `streaming` sub-object consumed by scribe_v2_realtime's DoStream.
 // See https://elevenlabs.io/docs/api-reference/speech-to-text/convert
 type TranscriptionModelOptions struct {
-	// LanguageCode is an ISO 639 language hint for the audio.
-	LanguageCode string `json:"languageCode,omitempty"`
+	// LanguageCode is an ISO 639 language hint for the audio. A pointer
+	// distinguishes "not set" (nil) from an explicit empty string, mirroring
+	// TS's `languageCode: z.string().nullish()` (no default): TS forwards an
+	// explicit "" to the wire (it is only `??`-coalesced away when null or
+	// undefined), which a plain Go string cannot represent since its zero
+	// value is indistinguishable from "unset".
+	LanguageCode *string `json:"languageCode,omitempty"`
 
 	// TagAudioEvents tags non-speech audio events. Defaults to true.
 	TagAudioEvents *bool `json:"tagAudioEvents,omitempty"`
@@ -65,8 +70,12 @@ type StreamingOptions struct {
 	NoVerbatim *bool `json:"noVerbatim,omitempty"`
 
 	// PreviousText seeds the model with prior conversational context on the
-	// first audio chunk.
-	PreviousText string `json:"previousText,omitempty"`
+	// first audio chunk. A pointer distinguishes "not set" (nil) from an
+	// explicit empty string, mirroring TS's `previousText: z.string().nullish()`:
+	// TS sends `previous_text` on the first chunk whenever the option is
+	// non-null (`previousText != null`), including an explicit "", which a
+	// plain Go string cannot represent.
+	PreviousText *string `json:"previousText,omitempty"`
 
 	// SecondaryLanguages are additional language codes the session may switch
 	// between.

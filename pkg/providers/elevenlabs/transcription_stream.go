@@ -93,7 +93,7 @@ func elevenLabsRealtimeAudioFormat(format provider.AudioFormat) (audioFormat str
 
 // buildElevenLabsRealtimeURL builds the wss:// realtime transcription URL
 // with query parameters, mirroring TS buildElevenLabsRealtimeTranscriptionUrl.
-func buildElevenLabsRealtimeURL(baseURL, modelID, audioFormat, languageCode string, streaming *StreamingOptions) (*url.URL, error) {
+func buildElevenLabsRealtimeURL(baseURL, modelID, audioFormat string, languageCode *string, streaming *StreamingOptions) (*url.URL, error) {
 	full := strings.TrimRight(baseURL, "/") + "/v1/speech-to-text/realtime"
 	u, err := url.Parse(full)
 	if err != nil {
@@ -132,8 +132,8 @@ func buildElevenLabsRealtimeURL(baseURL, modelID, audioFormat, languageCode stri
 	} else if streaming != nil && streaming.IncludeTimestamps != nil {
 		q.Set("include_timestamps", strconv.FormatBool(*streaming.IncludeTimestamps))
 	}
-	if languageCode != "" {
-		q.Set("language_code", languageCode)
+	if languageCode != nil {
+		q.Set("language_code", *languageCode)
 	}
 	if streaming != nil {
 		if streaming.MinSilenceDurationMs != nil {
@@ -168,6 +168,18 @@ func formatFloatParam(f float64) string {
 }
 
 func boolValue(v *bool) bool { return v != nil && *v }
+
+// stringValue dereferences an optional string, returning "" for nil. Used
+// only for internal state (e.g. the detected-language seed) where "unset"
+// and "" are already equivalent; wire-affecting call sites keep the pointer
+// so an explicit "" is still distinguishable from "not set" (see
+// TranscriptionModelOptions.LanguageCode / StreamingOptions.PreviousText).
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
 
 // DoStream streams a transcript for live audio over ElevenLabs' Scribe v2
 // Realtime WebSocket endpoint. Mirrors TS
@@ -217,7 +229,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	languageCode := ""
+	var languageCode *string
 	if elOpts != nil {
 		languageCode = elOpts.LanguageCode
 	}
@@ -229,7 +241,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 
 	headers := internalhttp.MergeHeaders(map[string]string{"xi-api-key": m.provider.config.APIKey}, opts.Headers)
 
-	previousText := ""
+	var previousText *string
 	if streaming != nil {
 		previousText = streaming.PreviousText
 	}
@@ -250,7 +262,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		includeTimestamps:        includeTimestamps,
 		includeLanguageDetection: includeLanguageDetection,
 		includeRawChunks:         opts.IncludeRawChunks,
-		language:                 languageCode,
+		language:                 stringValue(languageCode),
 		warnings:                 warnings,
 	})
 
@@ -266,7 +278,7 @@ type elevenLabsRealtimeStreamConfig struct {
 	headers                  map[string]string
 	audio                    provider.AudioStream
 	sampleRate               int
-	previousText             string
+	previousText             *string
 	includeTimestamps        bool
 	includeLanguageDetection bool
 	includeRawChunks         bool
@@ -413,8 +425,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 			"commit":        false,
 			"sample_rate":   cfg.sampleRate,
 		}
-		if firstChunk && cfg.previousText != "" {
-			msg["previous_text"] = cfg.previousText
+		if firstChunk && cfg.previousText != nil {
+			msg["previous_text"] = *cfg.previousText
 		}
 		firstChunk = false
 		payload, marshalErr := json.Marshal(msg)
