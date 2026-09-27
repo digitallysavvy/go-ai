@@ -178,6 +178,21 @@ type TextStream interface {
 	Close() error
 }
 
+// StreamRequestBody is an optional capability a TextStream implementation
+// can additionally provide to expose the raw serialized request body sent
+// to the provider for that stream, mirroring types.StepRequest.Body on the
+// non-streaming DoGenerate path (TS doStream() resolves {request: {body}}
+// alongside {stream}). pkg/ai/stream.go checks for this via a type
+// assertion after opening the stream and, when present, copies it into the
+// step's types.StepRequest.Body (hand-off: "stream request body field").
+// A TextStream that doesn't implement this simply has an empty
+// StepRequest.Body for streaming calls, as before.
+type StreamRequestBody interface {
+	// RequestBody returns the raw request body that was sent to open this
+	// stream, or nil if unavailable.
+	RequestBody() interface{}
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk

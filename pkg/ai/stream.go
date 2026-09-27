@@ -1873,6 +1873,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Performance:        performance,
 			Sources:            stepSources,
 			Request: types.StepRequest{
+				Body:     streamRequestBody(r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
 			Response:         types.StepResponse{Headers: stepHeaders},
@@ -3179,6 +3180,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Sources:            r.sources,
 		Files:              r.files,
 		Request: types.StepRequest{
+			Body:     streamRequestBody(r.currentStream()),
 			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
 		},
 		Response: types.StepResponse{
@@ -3326,6 +3328,17 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+// streamRequestBody returns the raw request body for s if it implements the
+// optional provider.StreamRequestBody capability, or nil otherwise (hand-off:
+// "stream request body field"). No current provider implements this yet;
+// this is the core-side plumbing for one to opt in.
+func streamRequestBody(s provider.TextStream) interface{} {
+	if brb, ok := s.(provider.StreamRequestBody); ok {
+		return brb.RequestBody()
+	}
+	return nil
 }
 
 func isAbortErr(ctx context.Context, err error) bool {
