@@ -77,13 +77,17 @@ func isFunctionTool(t types.Tool) bool {
 
 // IsUndeclaredParallelToolCall reports whether toolName is the internal
 // "parallel" wrapper name, respecting a user's own tool actually named
-// "parallel" (in which case it is never treated as the wrapper).
+// "parallel" (in which case it is never treated as the wrapper). Matching
+// TS's isUndeclaredParallelToolCall, the collision check only considers
+// plain client-side function tools -- tools may be the full, unfiltered
+// request tool list; a provider-defined/built-in tool named "parallel"
+// does not suppress wrapper expansion.
 func IsUndeclaredParallelToolCall(toolName string, tools []types.Tool) bool {
 	if toolName != parallelToolName {
 		return false
 	}
 	for _, t := range tools {
-		if t.Name == parallelToolName {
+		if isFunctionTool(t) && t.Name == parallelToolName {
 			return false
 		}
 	}
