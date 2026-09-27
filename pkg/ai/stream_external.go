@@ -305,7 +305,20 @@ consumeLoop:
 			// must not create a spurious empty extra step. Handle that case
 			// distinctly instead of running it through finishStep, which
 			// always appends a step and always sums usage.
-			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() {
+			//
+			// Guarded by stepNumber > 0 so a caller whose *only* step ends
+			// directly in ChunkTypeFinish (no ChunkTypeFinishStep ever seen —
+			// the general, non-harness shape: a single real step that
+			// happens to have produced no visible content) still gets that
+			// step appended to Steps() and its usage summed, exactly as
+			// before this change. Without this guard, a legitimately empty
+			// first-and-only step would be silently dropped from Steps()
+			// instead of recorded. A harness turn always closes every model
+			// step, including a lone one, with its own ChunkTypeFinishStep
+			// before the terminal ChunkTypeFinish (run_prompt.go rejects a
+			// terminal `finish` with unclosed step content), so stepNumber is
+			// always >= 1 by the time the real turn-closing boundary arrives.
+			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() && stepNumber > 0 {
 				r.mu.Lock()
 				if chunk.Usage != nil {
 					r.usage = *chunk.Usage

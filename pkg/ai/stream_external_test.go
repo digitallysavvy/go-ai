@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -257,6 +258,76 @@ func TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage(t *testi
 	}
 	if got := result.FinishReason(); got != types.FinishReasonStop {
 		t.Fatalf("FinishReason() = %q, want stop", got)
+	}
+}
+
+// TestNewStreamTextResultFromParts_SingleEmptyStepStillAppended guards
+// against the terminal-ChunkTypeFinish-as-boundary optimization above
+// misfiring for a non-harness caller whose only step happens to produce no
+// visible content and is closed directly by ChunkTypeFinish with no
+// preceding ChunkTypeFinishStep (stepNumber never advanced past 0). That
+// step must still be appended to Steps() and its usage recorded, exactly as
+// it would have been before the harness-specific override was added.
+func TestNewStreamTextResultFromParts_SingleEmptyStepStillAppended(t *testing.T) {
+	t.Parallel()
+
+	one := int64(1)
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("len(Steps()) = %d, want 1 (a genuinely empty lone step must still be recorded)", len(steps))
+	}
+	usage := result.Usage()
+	if usage.TotalTokens == nil || *usage.TotalTokens != 1 {
+		t.Fatalf("Usage().TotalTokens = %v, want 1", usage.TotalTokens)
+	}
+}
+
+// TestNewStreamTextResultFromParts_TerminalFinishAppliesFinishReasonAndMetadata
+// verifies that when the terminal-boundary override path fires (harness
+// shape), FinishReason, RawFinishReason and ProviderMetadata carried on that
+// chunk are still applied to the result rather than being dropped along with
+// its (absent) content.
+func TestNewStreamTextResultFromParts_TerminalFinishAppliesFinishReasonAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonLength, RawFinishReason: "max_tokens", ProviderMetadata: json.RawMessage(`{"harness":{"turnID":"t1"}}`)},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if got := result.FinishReason(); got != types.FinishReasonLength {
+		t.Fatalf("FinishReason() = %q, want %q", got, types.FinishReasonLength)
+	}
+	if got := result.RawFinishReason(); got != "max_tokens" {
+		t.Fatalf("RawFinishReason() = %q, want %q", got, "max_tokens")
+	}
+	md := result.ProviderMetadata()
+	if md == nil {
+		t.Fatal("ProviderMetadata() = nil, want the terminal finish chunk's metadata")
+	}
+	var decoded map[string]map[string]interface{}
+	if err := json.Unmarshal(md, &decoded); err != nil {
+		t.Fatalf("ProviderMetadata() did not decode: %v", err)
+	}
+	if decoded["harness"]["turnID"] != "t1" {
+		t.Fatalf("ProviderMetadata() = %s, want harness.turnID = t1", md)
 	}
 }
 
