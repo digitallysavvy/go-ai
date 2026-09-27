@@ -377,22 +377,28 @@ func ReadResponseWithSizeLimit(resp *http.Response, rawURL string, maxBytes int6
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
 		return nil, providererrors.NewDownloadError(
 			rawURL,
-			0,
-			"",
+			resp.StatusCode,
+			responseStatusText(resp),
 			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).",
 				rawURL, maxBytes, contentLength),
 			nil,
 		)
 	}
+	// Preserve the real HTTP status code even when the body read/decode
+	// itself fails (e.g. a truncated 2xx response), so callers such as the
+	// gateway retry classifier (pkg/ai.isGatewayCallRetryable) see the
+	// status the provider actually returned instead of losing it to a
+	// generic body-read error (hand-off: "internal/http real status on
+	// body-read errors"; TS keeps e.g. 200 on a truncated 2xx).
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return nil, providererrors.NewDownloadError(rawURL, 0, "", "", err)
+		return nil, providererrors.NewDownloadError(rawURL, resp.StatusCode, responseStatusText(resp), "", err)
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, providererrors.NewDownloadError(
 			rawURL,
-			0,
-			"",
+			resp.StatusCode,
+			responseStatusText(resp),
 			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", rawURL, maxBytes),
 			nil,
 		)

@@ -132,19 +132,21 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	supportsStrictOnTools := bedrockSupportsStrictTools(modelID)
 
 	for _, tool := range filteredFunctionTools {
-		supportsStrictForTool := supportsStrictOnTools && (!tool.Strict || isStrictToolSchemaCompatible(tool.Parameters))
+		// types.Tool.Strict is now a tri-state *bool (hand-off: "Tool.Strict
+		// bool -> *bool"), so this mirrors TS amazon-bedrock-prepare-tools.ts
+		// exactly: strictSet distinguishes "unset" from "explicitly false"
+		// (tool.strict != null), and strictTrue is the `=== true` check.
+		strictSet := tool.Strict != nil
+		strictTrue := strictSet && *tool.Strict
+		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(tool.Parameters))
 
-		// NOTE: types.Tool.Strict is a plain bool (not a tri-state pointer), so
-		// unlike the TS SDK we cannot distinguish "explicitly false" from
-		// "unset". We warn for the "strict: true is ignored" cases, which
-		// cover the practically meaningful scenarios.
-		if tool.Strict && !supportsStrictOnTools {
+		if !supportsStrictOnTools && strictSet {
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
-				Details: fmt.Sprintf("Tool '%s' has strict: true, but strict mode is not supported by this model on Amazon Bedrock. The strict property will be ignored.", tool.Name),
+				Details: fmt.Sprintf("Tool '%s' has strict: %t, but strict mode is not supported by this model on Amazon Bedrock. The strict property will be ignored.", tool.Name, *tool.Strict),
 			})
-		} else if tool.Strict && !supportsStrictForTool {
+		} else if strictTrue && !supportsStrictForTool {
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
@@ -156,8 +158,8 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		if tool.Description != "" {
 			toolSpec["description"] = tool.Description
 		}
-		if tool.Strict && supportsStrictForTool {
-			toolSpec["strict"] = tool.Strict
+		if strictSet && supportsStrictForTool {
+			toolSpec["strict"] = *tool.Strict
 		}
 		inputSchema := tool.Parameters
 		if inputSchema == nil {

@@ -52,7 +52,7 @@ type SerializableToolDef struct {
 	Type                    string                   `json:"type,omitempty"`
 	ID                      string                   `json:"id,omitempty"`
 	Args                    map[string]interface{}   `json:"args,omitempty"`
-	Strict                  bool                     `json:"strict,omitempty"`
+	Strict                  *bool                    `json:"strict,omitempty"`
 	ProviderExecuted        bool                     `json:"providerExecuted,omitempty"`
 	IsProviderExecuted      bool                     `json:"isProviderExecuted,omitempty"`
 	SupportsDeferredResults bool                     `json:"supportsDeferredResults,omitempty"`

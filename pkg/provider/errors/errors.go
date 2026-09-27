@@ -51,6 +51,15 @@ type ProviderError struct {
 
 	// Data is provider-specific structured error data, when available.
 	Data interface{}
+
+	// Retryable overrides the default status-code-based retryability
+	// classification in IsRetryable, when set. Providers use this for
+	// errors whose HTTP status isn't in the default retryable set but that
+	// TS still treats as retryable (e.g. Bedrock's modelStreamErrorException
+	// at 424), or the reverse (a normally-retryable status that a provider
+	// knows is not, in a given case). Hand-off: "ProviderError Retryable
+	// override".
+	Retryable *bool
 }
 
 // RetryErrorReason identifies why retrying stopped.
@@ -111,6 +120,9 @@ func (e *ProviderError) Unwrap() error {
 func (e *ProviderError) IsRetryable() bool {
 	if e == nil {
 		return false
+	}
+	if e.Retryable != nil {
+		return *e.Retryable
 	}
 	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
 }

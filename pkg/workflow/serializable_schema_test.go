@@ -42,7 +42,7 @@ func TestSerializeToolSetRoundTripOmitsFunctions(t *testing.T) {
 			"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}},
 			"required":   []interface{}{"city"},
 		},
-		Strict:           true,
+		Strict:           types.BoolPtr(true),
 		ProviderExecuted: true,
 		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 			return "hidden", nil
@@ -56,7 +56,7 @@ func TestSerializeToolSetRoundTripOmitsFunctions(t *testing.T) {
 	if !ok {
 		t.Fatal("missing serialized tool")
 	}
-	if def.Parameters["type"] != "object" || !def.Strict || !def.ProviderExecuted {
+	if def.Parameters["type"] != "object" || def.Strict == nil || !*def.Strict || !def.ProviderExecuted {
 		t.Fatalf("unexpected serialized def: %+v", def)
 	}
 	resolved := ResolveSerializableTools(serialized)
@@ -66,7 +66,7 @@ func TestSerializeToolSetRoundTripOmitsFunctions(t *testing.T) {
 	if resolved[0].Execute != nil {
 		t.Fatal("serialized tool should not restore function fields")
 	}
-	if resolved[0].Name != "weather" || !resolved[0].Strict || !resolved[0].ProviderExecuted {
+	if resolved[0].Name != "weather" || resolved[0].Strict == nil || !*resolved[0].Strict || !resolved[0].ProviderExecuted {
 		t.Fatalf("unexpected resolved tool: %+v", resolved[0])
 	}
 	if err := ValidateSerializableToolInput(def, map[string]interface{}{"city": "Tokyo"}); err != nil {

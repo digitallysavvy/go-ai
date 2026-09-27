@@ -112,11 +112,18 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		// `additionalProperties: false` in the JSON schema (row 6e405ae:
 		// xAI's upstream removal of the additionalProperties flag was itself
 		// reverted, so the SDK must stop stripping it).
-		return map[string]interface{}{
+		m := map[string]interface{}{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  t.Parameters,
 		}
+		// TS xai-responses-prepare-tools.ts: `...(tool.strict != null ?
+		// {strict: tool.strict} : {})` — forward the explicit value,
+		// including `false`.
+		if t.Strict != nil {
+			m["strict"] = *t.Strict
+		}
+		return m
 	}
 }

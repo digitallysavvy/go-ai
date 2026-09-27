@@ -400,7 +400,7 @@ func TestVertexAnthropicStrictToolWarningAndOmission(t *testing.T) {
 			Name:        "strict_tool",
 			Description: "strict",
 			Parameters:  map[string]interface{}{"type": "object"},
-			Strict:      true,
+			Strict:      types.BoolPtr(true),
 		}},
 	})
 	if err != nil {

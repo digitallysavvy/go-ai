@@ -454,7 +454,7 @@ func TestDeepSeekStrictToolCallsRequireBeta(t *testing.T) {
 	prov := New(Config{APIKey: "k"})
 	m := NewLanguageModel(prov, "deepseek-v4")
 
-	tools := []types.Tool{{Name: "search", Parameters: map[string]interface{}{}, Strict: true}}
+	tools := []types.Tool{{Name: "search", Parameters: map[string]interface{}{}, Strict: types.BoolPtr(true)}}
 	if _, _, _, err := m.prepareDeepSeekTools(tools, types.ToolChoice{}); err == nil {
 		t.Fatal("expected error: strict tool calls require the beta endpoint")
 	}
@@ -465,8 +465,8 @@ func TestDeepSeekMixedStrictToolCallsRejected(t *testing.T) {
 	m := NewLanguageModel(prov, "deepseek-v4")
 
 	tools := []types.Tool{
-		{Name: "search", Parameters: map[string]interface{}{}, Strict: true},
-		{Name: "lookup", Parameters: map[string]interface{}{}, Strict: false},
+		{Name: "search", Parameters: map[string]interface{}{}, Strict: types.BoolPtr(true)},
+		{Name: "lookup", Parameters: map[string]interface{}{}, Strict: types.BoolPtr(false)},
 	}
 	if _, _, _, err := m.prepareDeepSeekTools(tools, types.ToolChoice{}); err == nil {
 		t.Fatal("expected error: mixed strict/non-strict tool calls rejected")
@@ -477,7 +477,7 @@ func TestDeepSeekStrictToolCallsAllowedOnBeta(t *testing.T) {
 	prov := New(Config{APIKey: "k", BaseURL: "https://api.deepseek.com/beta"})
 	m := NewLanguageModel(prov, "deepseek-v4")
 
-	tools := []types.Tool{{Name: "search", Parameters: map[string]interface{}{}, Strict: true}}
+	tools := []types.Tool{{Name: "search", Parameters: map[string]interface{}{}, Strict: types.BoolPtr(true)}}
 	deepseekTools, _, warnings, err := m.prepareDeepSeekTools(tools, types.ToolChoice{})
 	if err != nil {
 		t.Fatalf("prepareDeepSeekTools error = %v", err)

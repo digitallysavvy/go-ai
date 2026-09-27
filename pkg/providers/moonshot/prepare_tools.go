@@ -50,9 +50,11 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			Description: tool.Description,
 			Parameters:  normalized,
 		}
-		if tool.Strict {
-			strict := true
-			fn.Strict = &strict
+		// TS moonshotai-prepare-tools.ts: `...(tool.strict != null ?
+		// {strict: tool.strict} : {})` — forwards the value whenever it was
+		// explicitly set, including `false`, not only `true`.
+		if tool.Strict != nil {
+			fn.Strict = tool.Strict
 		}
 		moonshotTools = append(moonshotTools, moonshotFunctionTool{Type: "function", Function: fn})
 	}

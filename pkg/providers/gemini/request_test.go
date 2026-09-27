@@ -90,7 +90,7 @@ func TestBuildRequest_JSONSchemaKeys(t *testing.T) {
 
 // TS google-prepare-tools.test.ts: forced tool choices keep ANY with strict tools (8e90283).
 func TestPrepareTools_ForcedChoiceKeepsAnyWithStrict(t *testing.T) {
-	tools := []types.Tool{{Name: "f", Strict: true}}
+	tools := []types.Tool{{Name: "f", Strict: types.BoolPtr(true)}}
 	cases := []struct {
 		choice types.ToolChoice
 		want   string

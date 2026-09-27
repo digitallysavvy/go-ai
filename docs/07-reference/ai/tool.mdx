@@ -180,7 +180,7 @@ strictTool := types.Tool{
         "required":             []string{"username", "email"},
         "additionalProperties": false,
     },
-    Strict: true, // Enforce strict schema validation
+    Strict: types.BoolPtr(true), // Enforce strict schema validation
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // Create user
         return map[string]interface{}{

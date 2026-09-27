@@ -243,13 +243,6 @@ func (s *simulatedStream) Next() (*provider.StreamChunk, error) {
 	return chunk, nil
 }
 
-// Read implements io.Reader (required by TextStream interface)
-func (s *simulatedStream) Read(p []byte) (n int, err error) {
-	// Simulated streams don't support raw reading
-	// Return EOF to indicate no raw data available
-	return 0, io.EOF
-}
-
 // Close closes the simulated stream
 func (s *simulatedStream) Close() error {
 	s.closed = true

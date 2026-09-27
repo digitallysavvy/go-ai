@@ -161,15 +161,20 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if eager {
 			m["eager_input_streaming"] = true
 		}
-		if !o.supportsStrictTools && t.Strict {
+		// TS anthropic-prepare-tools.ts checks `tool.strict != null`
+		// (specified at all, true OR false), not `=== true`: strictSet must
+		// distinguish "unset" from "explicitly false", matching
+		// types.Tool.Strict's tri-state *bool.
+		strictSet := t.Strict != nil
+		if !o.supportsStrictTools && strictSet {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
-				Details: fmt.Sprintf("Tool '%s' has strict: %t, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name, t.Strict),
+				Details: fmt.Sprintf("Tool '%s' has strict: %t, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name, *t.Strict),
 			})
 		}
-		if o.supportsStrictTools && t.Strict {
-			m["strict"] = true
+		if o.supportsStrictTools && strictSet {
+			m["strict"] = *t.Strict
 		}
 		var allowedCallers []string
 		if toolOpts != nil {

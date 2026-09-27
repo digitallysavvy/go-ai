@@ -127,6 +127,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
+	inner.requestBody = reqBody
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -797,6 +798,7 @@ type openAIStream struct {
 	outputStarted    bool
 	providerName     string
 	responseHeaders  http.Header
+	requestBody      interface{}
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -817,6 +819,14 @@ func newOpenAIStreamWithMetadata(reader io.ReadCloser, emitRaw bool, providerNam
 		providerName:     providerName,
 		responseHeaders:  headers,
 	}
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that opened this stream in types.StepRequest.Body for
+// streaming calls, matching TS doStream()'s {request: {body}} (hand-off:
+// "stream request body field").
+func (s *openAIStream) RequestBody() interface{} {
+	return s.requestBody
 }
 
 // Read implements io.Reader
