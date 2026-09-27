@@ -66,3 +66,20 @@ func TestChatResponseFormatMapping(t *testing.T) {
 	body, _ = structured.buildRequestBodyWithWarnings(responseFormatOpts(schemaRF, map[string]interface{}{"togetherai": map[string]interface{}{"strictJsonSchema": false}}), false)
 	assertResponseFormat(t, body, wantJSONSchemaLoose)
 }
+
+// TestTogetherAIProviderOptionsKeyReachesGenericOptions guards against a
+// providerOptions.togetherai.* value (the key TS docs/examples and tests use
+// — togetherai-provider.ts's provider config is "togetherai.chat") being
+// silently dropped by the generic common-options path
+// (ApplyOpenAICompatibleCommonRequestOptions), which previously only ever
+// saw providerOptions["together"].
+func TestTogetherAIProviderOptionsKeyReachesGenericOptions(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "meta-llama/Llama-3-70b-chat-hf")
+	body, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"togetherai": map[string]interface{}{"user": "user-123"}},
+	}, false)
+	if body["user"] != "user-123" {
+		t.Fatalf("user = %#v, want user-123", body["user"])
+	}
+}

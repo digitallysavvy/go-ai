@@ -147,6 +147,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	mergeTogetherAIProviderOptions(compatibleOptions, opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Response format (TS openai-compatible chat model with
 	// supportsStructuredOutputs = getModelStructuredOutputSupport(modelId)):
@@ -370,10 +371,28 @@ func SupportsStructuredOutputs(modelID string) bool {
 
 // togetherStrictJSONSchema reads strictJsonSchema (default true) from the
 // "together" options and the TS provider options key "togetherai".
-func togetherStrictJSONSchema(providerOptions, compatibleOptions map[string]interface{}) bool {
-	strict := providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true)
-	if opts, ok := providerOptions["togetherai"].(map[string]interface{}); ok {
-		strict = providerutils.BoolOption(opts, "strictJsonSchema", strict)
+func togetherStrictJSONSchema(_, compatibleOptions map[string]interface{}) bool {
+	// mergeTogetherAIProviderOptions has already folded providerOptions.togetherai
+	// (the TS provider options key) into compatibleOptions by the time this runs.
+	return providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true)
+}
+
+// mergeTogetherAIProviderOptions merges providerOptions.togetherai into an
+// already-resolved compatibleOptions map (in place), giving it precedence.
+// TS's provider config name is "togetherai.chat"
+// (togetherai-provider.ts:150), so its OpenAICompatibleChatLanguageModel's
+// providerOptionsName (config.provider.split('.')[0]) is "togetherai" — not
+// "together", which is this Go SDK's own package/provider-name convention.
+// ResolveOpenAICompatibleProviderOptions only ever resolves the literal name
+// passed to it (plus its camelCase form, which is a no-op here), so a caller
+// following TS docs/examples and writing providerOptions.togetherai.* would
+// otherwise be silently ignored.
+func mergeTogetherAIProviderOptions(compatibleOptions, providerOptions map[string]interface{}) {
+	togetherAI, ok := providerOptions["togetherai"].(map[string]interface{})
+	if !ok {
+		return
 	}
-	return strict
+	for k, v := range togetherAI {
+		compatibleOptions[k] = v
+	}
 }
