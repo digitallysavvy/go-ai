@@ -2358,6 +2358,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		ExperimentalContext: r.cbExperimentalCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
+		Output:              r.outputResult,
 	}, r.cbOnEndEvent)
 }
 
@@ -3236,6 +3237,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		ExperimentalContext: r.cbExperimentalCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
+		Output:              r.outputResult,
 	}, r.cbOnEndEvent)
 
 	return r.text, nil

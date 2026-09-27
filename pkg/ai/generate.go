@@ -1659,6 +1659,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
+		Output:              result.Output,
 	}, onEndEvent)
 
 	// Apply retention settings (v6.0.60)

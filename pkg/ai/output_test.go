@@ -988,6 +988,58 @@ func TestGenerateText_WithTextOutput(t *testing.T) {
 	}
 }
 
+// TestGenerateText_Output_OnFinishEvent verifies that the OnFinishEvent
+// notification carries the parsed structured output for GenerateText,
+// mirroring TS generate-text.ts's onFinish event (audit row 6669d69 /
+// WG4 item #98).
+func TestGenerateText_Output_OnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Name string `json:"name"`
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"widget"}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	var captured OnFinishEvent
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Name a thing",
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			captured = e
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	obj, ok := result.Output.(Obj)
+	if !ok {
+		t.Fatalf("expected Obj, got %T", result.Output)
+	}
+	if obj.Name != "widget" {
+		t.Errorf("expected name=widget, got %q", obj.Name)
+	}
+
+	capturedObj, ok := captured.Output.(Obj)
+	if !ok {
+		t.Fatalf("expected OnFinishEvent.Output to be Obj, got %T", captured.Output)
+	}
+	if capturedObj.Name != "widget" {
+		t.Errorf("expected OnFinishEvent.Output.Name=widget, got %q", capturedObj.Name)
+	}
+}
+
 func TestGenerateText_OutputParseError(t *testing.T) {
 	t.Parallel()
 
@@ -1548,6 +1600,63 @@ func TestStreamText_Output_ViaOnFinish(t *testing.T) {
 	}
 	if pt.X != 3 || pt.Y != 7 {
 		t.Errorf("expected {3,7}, got {%d,%d}", pt.X, pt.Y)
+	}
+}
+
+// TestStreamText_Output_OnFinishEvent verifies that the OnFinishEvent
+// notification carries the parsed structured output (audit row 6669d69 /
+// WG4 item #98), mirroring TS stream-text.ts's onFinish event which carries
+// the resolved object alongside the raw text.
+func TestStreamText_Output_OnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	type Point struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"x":5,"y":9}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	events := make(chan OnFinishEvent, 1)
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Give a point",
+		Output: ObjectOutput[Point](ObjectOutputOptions{
+			Schema: SchemaFor[Point](),
+		}),
+		OnEndEvent: func(ctx context.Context, e OnFinishEvent) {
+			events <- e
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	event := <-events
+
+	out := event.Output
+	if out == nil {
+		t.Fatal("expected OnFinishEvent.Output to be non-nil")
+	}
+	pt, ok := out.(Point)
+	if !ok {
+		t.Fatalf("unexpected Output type: %T", out)
+	}
+	if pt.X != 5 || pt.Y != 9 {
+		t.Errorf("expected {5,9}, got {%d,%d}", pt.X, pt.Y)
 	}
 }
 

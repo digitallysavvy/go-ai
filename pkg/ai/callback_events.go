@@ -481,6 +481,13 @@ type OnFinishEvent struct {
 	ExperimentalContext interface{}
 	RuntimeContext      interface{}
 	ToolsContext        map[string]interface{}
+
+	// Output is the parsed structured output, set only when an Output spec
+	// was configured and parsing succeeded; omitted (nil) when no Output was
+	// configured or when parsing failed (see OutputErr()/OutputErr on the
+	// result instead). Mirrors TS generate-text.ts/stream-text.ts's onEnd/
+	// onFinish event carrying the parsed output (audit row 6669d69 / WG4).
+	Output interface{}
 }
 
 // Canonical event type name aliases. The deprecated On* names remain for backward compatibility.
