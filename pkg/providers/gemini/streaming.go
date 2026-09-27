@@ -608,11 +608,13 @@ func (s *stream) processFuncCallPart(part Part) {
 				s.applyPartialArgsAndMaybeFinish(accumulator, toolCallID, fc.PartialArgs, willContinueTrue, sigMeta)
 			}
 		} else if fc.PartialArgsSet && len(s.activeStreamingToolCalls) > 0 {
+			// TS never rewrites `active.providerMetadata` (or, by extension, our
+			// convenience thoughtSignature mirror) from a continuation chunk: the
+			// finish/tool-call chunk always carries whatever metadata was present
+			// when the call was first pushed. A continuation chunk's own
+			// thoughtSignature only affects the tool-input-delta emitted for it
+			// (via the local `sigMeta` passed below), never the stored `active`.
 			active := s.activeStreamingToolCalls[len(s.activeStreamingToolCalls)-1]
-			if part.ThoughtSignature != "" {
-				active.thoughtSignature = part.ThoughtSignature
-				active.providerMetadata = sigMeta
-			}
 			s.applyPartialArgsAndMaybeFinish(active.accumulator, active.toolCallID, fc.PartialArgs, willContinueTrue, sigMeta)
 		}
 
