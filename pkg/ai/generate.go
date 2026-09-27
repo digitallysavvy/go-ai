@@ -70,6 +70,20 @@ func preparedMaxRetries(maxRetries *int) int {
 	return *maxRetries
 }
 
+// validateStreamRetries mirrors TS's prepareRetries({parameter:
+// 'streamRetries'}) validation for StreamTextOptions.StreamRetries: a
+// negative value is rejected synchronously (stream-text.test.ts "should
+// reject invalid streamRetries values").
+func validateStreamRetries(streamRetries *int) error {
+	if streamRetries != nil && *streamRetries < 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "streamRetries",
+			Message: "streamRetries must be >= 0",
+		}
+	}
+	return nil
+}
+
 func isGatewayCallRetryable(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false

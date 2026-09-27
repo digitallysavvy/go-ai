@@ -287,23 +287,38 @@ type StreamTextOptions struct {
 	// the stream. If nil, error chunks are silently forwarded to OnChunk.
 	OnError func(ctx context.Context, err error)
 
-	// StreamRetries is the maximum number of automatic retries for a
-	// retryable provider error received after streaming has already
-	// started (a mid-stream error chunk, normalized to a
-	// providererrors.StreamProviderError). nil disables automatic stream
-	// retries (OnErrorRetry can still request one manually). 0 disables
-	// automatic retries too, but still allows OnErrorRetry to request at
-	// most one retry. A ToolChoiceViolationError is never retried,
-	// automatically or via OnErrorRetry (TS stream-text.ts
-	// isToolChoiceViolation check). Audit row 802af1e / WG8.
+	// StreamRetries is the maximum number of automatic retries for ANY
+	// provider error chunk received after streaming has already started
+	// (a mid-stream error chunk). Matching TS (stream-text.ts's
+	// `automaticStreamRetryCount < streamRetries`), this budget is
+	// consulted unconditionally — it does not check whether the
+	// normalized providererrors.StreamProviderError considers itself
+	// retryable; that classification is informational, for OnError/
+	// OnErrorRetry to build their own heuristics on.
+	//
+	// nil (the option omitted entirely) disables ALL stream retry
+	// behavior, both automatic and OnErrorRetry-directed, and preserves
+	// pre-streamRetries incremental chunk delivery for existing OnError
+	// observers (TS: "Omit this option to disable all stream retry
+	// behavior and preserve incremental tool streaming for existing
+	// onError observers"). An explicit 0 disables automatic retries but
+	// still allows OnErrorRetry to request one retry (TS
+	// canRetryStreamViaOnError = streamRetries !== undefined &&
+	// onErrorArg != null). A negative value is rejected synchronously by
+	// StreamText (TS "streamRetries must be >= 0").
+	//
+	// A ToolChoiceViolationError is never retried, automatically or via
+	// OnErrorRetry (TS stream-text.ts isToolChoiceViolation check). Audit
+	// row 802af1e / WG8.
 	StreamRetries *int
 
 	// OnErrorRetry is called for a mid-stream provider error (after
 	// OnError) and, if StreamRetries permits a retry, may request one by
-	// returning true. It is consulted only when no automatic retry
-	// applies (StreamRetries exhausted or unset) and is honored at most
-	// once per streamText call, matching TS's
-	// StreamTextOnErrorRetryCallback semantics.
+	// returning true. It is consulted only when StreamRetries was
+	// explicitly set (even to 0) and no automatic retry applies
+	// (StreamRetries exhausted), and is honored at most once per
+	// streamText call, matching TS's StreamTextOnErrorRetryCallback
+	// semantics.
 	OnErrorRetry func(ctx context.Context, event StreamTextOnErrorRetryEvent) bool
 
 	// OnAbort is called when streaming is aborted by context cancellation or
@@ -624,6 +639,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		return nil, fmt.Errorf("model is required")
 	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	if err := validateStreamRetries(opts.StreamRetries); err != nil {
 		return nil, err
 	}
 	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
@@ -1768,14 +1786,29 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					safeInvoke(func() { opts.OnError(ctx, normalizedErr) })
 				}
 
-				isRetryableErr := !isToolChoiceViolation && isStreamErrorRetryable(normalizedErr)
+				// TS's automatic streamRetries budget (stream-text.ts's
+				// `automaticRetry = !isToolChoiceViolation &&
+				// automaticStreamRetryCount < streamRetries`) retries ANY
+				// mid-stream error chunk while budget remains — it does not
+				// gate on StreamProviderError.IsRetryable. isRetryable is
+				// exposed to consumers (OnError/OnErrorRetry) to build their
+				// own retry heuristics, not consulted by the SDK's own
+				// automatic-retry decision.
 				streamRetriesLimit := 0
 				if opts.StreamRetries != nil {
 					streamRetriesLimit = *opts.StreamRetries
 				}
-				automaticRetry := !isToolChoiceViolation && isRetryableErr && automaticStreamRetryCount < streamRetriesLimit
+				automaticRetry := !isToolChoiceViolation && automaticStreamRetryCount < streamRetriesLimit
+				// Callback-directed retry additionally requires StreamRetries
+				// to have been explicitly set (even to 0): TS's
+				// canRetryStreamViaOnError is `streamRetries !== undefined &&
+				// onErrorArg != null`. Omitting StreamRetries entirely
+				// disables ALL stream retry behavior, matching TS's "Omit
+				// this option to disable all stream retry behavior and
+				// preserve incremental tool streaming for existing onError
+				// observers."
 				callbackRetry := false
-				if !isToolChoiceViolation && !automaticRetry && opts.OnErrorRetry != nil && callbackStreamRetryCount < 1 {
+				if !isToolChoiceViolation && !automaticRetry && opts.StreamRetries != nil && opts.OnErrorRetry != nil && callbackStreamRetryCount < 1 {
 					callbackRetry = safeInvokeBool(func() bool {
 						return opts.OnErrorRetry(ctx, StreamTextOnErrorRetryEvent{Error: normalizedErr})
 					})
@@ -3615,20 +3648,6 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
 }
 
-// isStreamErrorRetryable reports whether a normalized mid-stream provider
-// error (see providererrors.NormalizeStreamProviderError) is retryable,
-// checking the two shapes NormalizeStreamProviderError can produce.
-func isStreamErrorRetryable(err error) bool {
-	var streamErr *providererrors.StreamProviderError
-	if errors.As(err, &streamErr) {
-		return streamErr.IsRetryable
-	}
-	var providerErr *providererrors.ProviderError
-	if errors.As(err, &providerErr) {
-		return providerErr.IsRetryable()
-	}
-	return false
-}
 
 // armStepChunkDeadline returns the initial chunk-read deadline context for a
 // step: FirstChunk if configured (it always takes priority at the start of a
