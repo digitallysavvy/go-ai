@@ -1260,6 +1260,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 			}
+			// Close the step span (and, for the GenAI integration, the nested
+			// "chat" span) right here: they were opened in modelCallCtx/stepCtx,
+			// local to this loop iteration, which never gets threaded back into
+			// the outer ctx the deferred FireOnAbort/FireOnError below (line
+			// ~825) uses for the root span — so without this, they'd leak
+			// (H4 item 2). No error status is recorded for an abort, matching
+			// TS onAbort's plain span.end().
+			stepErr := err
+			if isAbortErr(stepCtx, err) {
+				stepErr = nil
+			}
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: stepErr})
 			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
 		}
 

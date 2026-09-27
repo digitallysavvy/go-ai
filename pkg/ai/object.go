@@ -946,6 +946,11 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
+		// Close the step span (and, for the GenAI integration, the nested
+		// "chat" span) opened by fireObjectStepStart above — otherwise they
+		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
+		// ever run for this step (H4 item 2).
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
@@ -1096,6 +1101,11 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
+		// Close the step span (and, for the GenAI integration, the nested
+		// "chat" span) opened by fireObjectStepStart above — otherwise they
+		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
+		// ever run for this step (H4 item 2).
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
@@ -1236,6 +1246,11 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
+		// Close the step span (and, for the GenAI integration, the nested
+		// "chat" span) opened by fireObjectStepStart above — otherwise they
+		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
+		// ever run for this step (H4 item 2).
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
@@ -1370,6 +1385,11 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
+		// Close the step span (and, for the GenAI integration, the nested
+		// "chat" span) opened by fireObjectStepStart above — otherwise they
+		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
+		// ever run for this step (H4 item 2).
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
@@ -1770,6 +1790,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, err) })
 		}
+		// Close the step span (and, for the GenAI integration, the nested
+		// "chat" span) opened by fireObjectStepStart above before the root
+		// FireOnError call below, which only closes the root span (H4 item 2).
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
 		return nil, fmt.Errorf("stream error: %w", err)
 	}

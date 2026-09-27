@@ -686,22 +686,10 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 		ModelID:        "gpt-5",
 		RuntimeContext: map[string]interface{}{"user": "alice"},
 	})
-	integration.OnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{
-		Settings:      settings,
-		CallID:        "lm-1",
-		ModelProvider: "openai",
-		ModelID:       "gpt-5",
-	})
-	integration.OnLanguageModelCallEnd(stepCtx, LanguageModelCallEndEvent{
-		Settings:     settings,
-		CallID:       "lm-1",
-		FinishReason: "stop",
-		Performance: LanguageModelCallPerformance{
-			ResponseTimeMs:                 10,
-			EffectiveOutputTokensPerSecond: 20,
-			EffectiveTotalTokensPerSecond:  30,
-		},
-	})
+	// No OnLanguageModelCallStart/End here (H4 item 1): LegacyOpenTelemetry no
+	// longer implements those methods — TS's LegacyOpenTelemetry never
+	// creates a "chat"/languageModel span at all, only the doGenerate/
+	// doStream step span (OnStepStart/OnStepEnd above/below).
 	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{
 		Settings:   settings,
 		ToolCallID: "call-1",
@@ -748,8 +736,8 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	integration.OnEnd(ctx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
 
 	ended := rec.Ended()
-	if len(ended) != 6 {
-		t.Fatalf("ended spans = %d, want 6", len(ended))
+	if len(ended) != 5 {
+		t.Fatalf("ended spans = %d, want 5", len(ended))
 	}
 
 	spansByType := map[string]map[string]interface{}{}
@@ -762,7 +750,10 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 			spansByType[spanType] = attrs
 		}
 	}
-	for _, spanType := range []string{"operation", "step", "languageModel", "tool", "embedding", "reranking"} {
+	// No "languageModel" span type here (H4 item 1): LegacyOpenTelemetry no
+	// longer creates a nested model-call/"chat" span — only GenAI's
+	// OpenTelemetry does.
+	for _, spanType := range []string{"operation", "step", "tool", "embedding", "reranking"} {
 		if spansByType[spanType] == nil {
 			t.Fatalf("missing custom attributes for %s span: %#v", spanType, spansByType)
 		}
@@ -773,7 +764,7 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	if spansByType["tool"]["custom.call_id"] != "call-1" {
 		t.Fatalf("tool call id was not passed to tool enricher: %#v", spansByType["tool"])
 	}
-	if spansByType["languageModel"]["custom.call_id"] != "lm-1" || spansByType["embedding"]["custom.call_id"] != "embed-1" || spansByType["reranking"]["custom.call_id"] != "rerank-1" {
+	if spansByType["embedding"]["custom.call_id"] != "embed-1" || spansByType["reranking"]["custom.call_id"] != "rerank-1" {
 		t.Fatalf("model call ids were not passed to enrichers: %#v", spansByType)
 	}
 	// The root "operation" span no longer carries gen_ai.request.model (TS's

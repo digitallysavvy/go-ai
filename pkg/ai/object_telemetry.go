@@ -96,6 +96,20 @@ func fireObjectLanguageModelCallEnd(
 	})
 }
 
+// fireObjectStepError closes the step span (and, for the GenAI integration,
+// the nested "chat" span) opened by fireObjectStepStart when the provider
+// call itself failed, so neither fireObjectStepEnd nor
+// fireObjectLanguageModelCallEnd will ever run for this step (H4 item 2:
+// "span leak on provider error"). Pass a non-nil err to record an error
+// status on the closed span; nil just closes it (abort).
+func fireObjectStepError(step objectTelemetryStep, settings *telemetry.Settings, err error) {
+	telemetry.FireOnStepError(step.modelCallCtx, telemetry.TelemetryErrorEvent{
+		Settings: settings,
+		CallID:   step.callID,
+		Error:    err,
+	})
+}
+
 // fireObjectStepEnd fires the step-end event, ending the step span created
 // by fireObjectStepStart. objectText is the raw (possibly partial, for a
 // streaming error path) JSON text of the model's response, used by
