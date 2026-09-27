@@ -135,7 +135,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	isAnthropic := isAnthropicModelID(m.modelID, m.modelFamily(), reasoningBudgetTokens)
 
 	existingReasoningConfig := mergeReasoningConfigSources(m.options, amazonBedrockOptions)
-	resolvedReasoningConfig := resolveBedrockReasoningConfig(opts.Reasoning, existingReasoningConfig, isAnthropic, m.modelID, &warnings)
+	resolvedReasoningConfig := resolveBedrockReasoningConfig(opts.Reasoning, existingReasoningConfig, isAnthropic, isOpenAIModel, m.modelID, &warnings)
 	if resolvedReasoningConfig != nil {
 		amazonBedrockOptions["reasoningConfig"] = reasoningConfigToMap(resolvedReasoningConfig)
 	}
@@ -215,7 +215,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		disableParallelToolUse = m.options.DisableParallelToolUse
 	}
 
-	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse)
+	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
 	warnings = append(warnings, prepared.Warnings...)
 	for k, v := range prepared.AdditionalTools {
 		additionalModelRequestFields[k] = v

@@ -33,7 +33,11 @@ var bedrockUnsupportedWebToolIDs = map[string]bool{
 }
 
 // prepareBedrockTools ports TS amazon-bedrock-prepare-tools.ts#prepareTools.
-func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToolChoice bool, modelID, modelFamily string, reasoningBudgetTokens *int, disableParallelToolUse *bool) preparedTools {
+// rejectsForcedToolUse mirrors the model-capability flag (e.g. Claude Opus
+// 5.5 on Bedrock, per anthropic.GetModelCapabilities): when true and the
+// model is Anthropic, forced tool_choice ('required' or a named tool) falls
+// back to 'auto' with an "unsupported" warning instead of being sent as-is.
+func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToolChoice bool, modelID, modelFamily string, reasoningBudgetTokens *int, disableParallelToolUse *bool, rejectsForcedToolUse bool) preparedTools {
 	result := preparedTools{}
 
 	if len(tools) == 0 {
@@ -86,7 +90,34 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		}
 	}
 
-	usingAnthropicTools := isAnthropic && len(providerTools) > 0
+	// rejectsForcedToolChoice mirrors TS: only Anthropic models with the
+	// capability flag reject forced tool_choice, and only when the caller
+	// actually requested a forced choice ('required' or a named tool).
+	rejectsForcedToolChoice := isAnthropic && rejectsForcedToolUse && hasToolChoice &&
+		(toolChoice.Type == types.ToolChoiceRequired || toolChoice.Type == types.ToolChoiceTool)
+
+	// providerToolsForRequest mirrors TS: when a forced named-tool choice is
+	// rejected, only the requested provider tool is still sent to the model
+	// (with 'auto' tool choice) so the model can still use it if instructed.
+	// TS filters by the tool's wire/API name (tool.name, e.g. "bash") — not
+	// its id (e.g. "anthropic.bash_20250124") — because TS keeps those as
+	// separate fields. Go's types.Tool collapses them into a single Name
+	// field holding the id, so the comparison must resolve each provider
+	// tool's Anthropic wire name (bedrockAnthropicProviderToolWireName)
+	// before matching toolChoice.ToolName, which callers set to the wire
+	// name that will actually appear in the request's toolSpec/tool_choice.
+	providerToolsForRequest := providerTools
+	if rejectsForcedToolChoice && toolChoice.Type == types.ToolChoiceTool {
+		var filtered []types.Tool
+		for _, t := range providerTools {
+			if bedrockAnthropicProviderToolWireName(t) == toolChoice.ToolName {
+				filtered = append(filtered, t)
+			}
+		}
+		providerToolsForRequest = filtered
+	}
+
+	usingAnthropicTools := isAnthropic && len(providerToolsForRequest) > 0
 
 	var bedrockTools []map[string]interface{}
 
@@ -94,7 +125,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		// Bedrock only forwards a `tool_choice` for Anthropic provider-defined
 		// tools; the tool spec itself is sent through the standard toolConfig
 		// via bedrockAnthropicProviderTool.
-		for _, tool := range providerTools {
+		for _, tool := range providerToolsForRequest {
 			if spec := bedrockAnthropicProviderTool(tool); spec != nil {
 				bedrockTools = append(bedrockTools, map[string]interface{}{"toolSpec": spec})
 			} else {
@@ -105,17 +136,41 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 			}
 		}
 		if hasToolChoice {
-			if choice := bedrockAnthropicToolChoice(toolChoice, disableParallelToolUse); choice != nil {
+			if choice := bedrockAnthropicToolChoice(toolChoice, disableParallelToolUse, rejectsForcedToolUse, &result.Warnings); choice != nil {
 				result.AdditionalTools = map[string]interface{}{"tool_choice": choice}
 			}
 		}
 	} else {
-		for _, tool := range providerTools {
+		for _, tool := range providerToolsForRequest {
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "tool " + tool.Name,
 			})
 		}
+	}
+
+	// preparedToolChoice mirrors TS: when a forced choice was rejected and no
+	// Anthropic provider tools absorbed the fallback (i.e. we're about to
+	// build the standard Bedrock toolConfig/tool_choice below), fall back to
+	// 'auto' with a warning instead of sending the forced choice.
+	preparedToolChoice := toolChoice
+	hasPreparedToolChoice := hasToolChoice
+	if !usingAnthropicTools && rejectsForcedToolChoice {
+		if toolChoice.Type == types.ToolChoiceTool {
+			result.Warnings = append(result.Warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "toolChoice",
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the '%s' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.", toolChoice.ToolName),
+			})
+		} else {
+			result.Warnings = append(result.Warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "toolChoice",
+				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
+			})
+		}
+		preparedToolChoice = types.ToolChoice{Type: types.ToolChoiceAuto}
+		hasPreparedToolChoice = true
 	}
 
 	filteredFunctionTools := functionTools
@@ -170,13 +225,13 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	}
 
 	if isAnthropic && !usingAnthropicTools && disableParallelToolUse != nil && *disableParallelToolUse &&
-		len(bedrockTools) > 0 && !(hasToolChoice && toolChoice.Type == types.ToolChoiceNone) {
+		len(bedrockTools) > 0 && !(hasPreparedToolChoice && preparedToolChoice.Type == types.ToolChoiceNone) {
 		var choice map[string]interface{}
 		switch {
-		case hasToolChoice && toolChoice.Type == types.ToolChoiceRequired:
+		case hasPreparedToolChoice && preparedToolChoice.Type == types.ToolChoiceRequired:
 			choice = map[string]interface{}{"type": "any", "disable_parallel_tool_use": true}
-		case hasToolChoice && toolChoice.Type == types.ToolChoiceTool:
-			choice = map[string]interface{}{"type": "tool", "name": toolChoice.ToolName, "disable_parallel_tool_use": true}
+		case hasPreparedToolChoice && preparedToolChoice.Type == types.ToolChoiceTool:
+			choice = map[string]interface{}{"type": "tool", "name": preparedToolChoice.ToolName, "disable_parallel_tool_use": true}
 		default:
 			choice = map[string]interface{}{"type": "auto", "disable_parallel_tool_use": true}
 		}
@@ -184,8 +239,8 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	}
 
 	var amazonToolChoice map[string]interface{}
-	if !usingAnthropicTools && result.AdditionalTools == nil && len(bedrockTools) > 0 && hasToolChoice {
-		switch toolChoice.Type {
+	if !usingAnthropicTools && result.AdditionalTools == nil && len(bedrockTools) > 0 && hasPreparedToolChoice {
+		switch preparedToolChoice.Type {
 		case types.ToolChoiceAuto:
 			amazonToolChoice = map[string]interface{}{"auto": map[string]interface{}{}}
 		case types.ToolChoiceRequired:
@@ -194,7 +249,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 			bedrockTools = nil
 			amazonToolChoice = nil
 		case types.ToolChoiceTool:
-			amazonToolChoice = map[string]interface{}{"tool": map[string]interface{}{"name": toolChoice.ToolName}}
+			amazonToolChoice = map[string]interface{}{"tool": map[string]interface{}{"name": preparedToolChoice.ToolName}}
 		}
 	}
 
@@ -288,15 +343,32 @@ func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
 	return nil
 }
 
+// bedrockAnthropicProviderToolWireName returns the Anthropic API tool name
+// (e.g. "bash") that bedrockAnthropicProviderTool would send for t, or "" if
+// t does not resolve to a recognized Anthropic provider tool. Used to match
+// a forced types.ToolChoiceTool.ToolName against provider-defined tools by
+// their wire name (see providerToolsForRequest above).
+func bedrockAnthropicProviderToolWireName(t types.Tool) string {
+	spec := bedrockAnthropicProviderTool(t)
+	if spec == nil {
+		return ""
+	}
+	name, _ := spec["name"].(string)
+	return name
+}
+
 // bedrockAnthropicToolChoice maps a ToolChoice to Bedrock's Anthropic
 // `tool_choice` shape used in `additionalModelRequestFields.tool_choice` for
 // Anthropic provider-defined tools. The base {type, name?} mapping is shared
 // with the direct Anthropic provider via
 // providerutils/tool.ConvertToolChoiceToAnthropic (also used by
-// pkg/providers/anthropic/language_model.go); this only adds Bedrock's
-// disable_parallel_tool_use augmentation and the "auto with no override
-// needs no explicit tool_choice" special case.
-func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, disableParallelToolUse *bool) map[string]interface{} {
+// pkg/providers/anthropic/language_model.go); this adds Bedrock's
+// disable_parallel_tool_use augmentation, the "auto with no override needs no
+// explicit tool_choice" special case, and (mirroring TS prepareAnthropicTools
+// via rejectsForcedToolUse) a forced-choice ('required' or a named tool)
+// fallback to 'auto' with an "unsupported" warning for models that reject
+// forced tool use (e.g. Claude Opus 5.5).
+func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, disableParallelToolUse *bool, rejectsForcedToolUse bool, warnings *[]types.Warning) map[string]interface{} {
 	disable := disableParallelToolUse != nil && *disableParallelToolUse
 
 	if toolChoice.Type == types.ToolChoiceAuto || toolChoice.Type == "" {
@@ -307,6 +379,27 @@ func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, disableParallelTool
 	}
 	if toolChoice.Type == types.ToolChoiceNone {
 		return nil
+	}
+
+	if rejectsForcedToolUse && (toolChoice.Type == types.ToolChoiceRequired || toolChoice.Type == types.ToolChoiceTool) {
+		if toolChoice.Type == types.ToolChoiceTool {
+			*warnings = append(*warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "toolChoice",
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the '%s' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.", toolChoice.ToolName),
+			})
+		} else {
+			*warnings = append(*warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "toolChoice",
+				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
+			})
+		}
+		choice := map[string]interface{}{"type": "auto"}
+		if disable {
+			choice["disable_parallel_tool_use"] = true
+		}
+		return choice
 	}
 
 	choice, _ := tool.ConvertToolChoiceToAnthropic(toolChoice).(map[string]interface{})

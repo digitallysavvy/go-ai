@@ -380,6 +380,86 @@ func TestBuildRequestBody_Gemini2ImageToolResultFallsBackToText(t *testing.T) {
 	}
 }
 
+// TestBuildRequestBody_Gemini3VertexGCSToolResultForwardsFileData ports TS
+// "should convert supported tool result URLs into functionResponse file
+// data" (ai@7.0.118 commit bc49f786f0) end-to-end through
+// buildRequestBody: on Vertex (Config.SupportsGoogleCloudStorageUrls) with a
+// Gemini 3+ model, a tool-result file part with a gs:// URL is forwarded as
+// functionResponse.parts[].fileData instead of being downloaded or
+// JSON-stringified as text.
+func TestBuildRequestBody_Gemini3VertexGCSToolResultForwardsFileData(t *testing.T) {
+	m := NewLanguageModel(Config{
+		ProviderName:                   "google-vertex",
+		MetadataKey:                    "vertex",
+		ProviderOptionsKeys:            []string{"googleVertex", "vertex", "google"},
+		IsVertex:                       true,
+		SupportsGoogleCloudStorageUrls: true,
+	}, "gemini-3-pro-preview")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{
+					types.TextContent{Text: "Describe this image"},
+				}},
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+					{ID: "call1", ToolName: "imageGenerator", Arguments: map[string]interface{}{}},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "call1",
+						ToolName:   "imageGenerator",
+						Output: &types.ToolResultOutput{
+							Type: types.ToolResultOutputContent,
+							Content: []types.ToolResultContentBlock{
+								types.FileContentBlock{
+									URL:       "gs://example-bucket/renditions/hero.png",
+									MediaType: "image/png",
+								},
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	body := m.buildRequestBody(opts, false)
+	contents, ok := body["contents"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("contents type = %T", body["contents"])
+	}
+
+	var toolMsg map[string]interface{}
+	for _, c := range contents {
+		if c["role"] == "user" {
+			parts, _ := c["parts"].([]map[string]interface{})
+			for _, pt := range parts {
+				if _, hasFR := pt["functionResponse"]; hasFR {
+					toolMsg = c
+				}
+			}
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool-result message (functionResponse) found in contents")
+	}
+
+	parts := toolMsg["parts"].([]map[string]interface{})
+	fr := parts[0]["functionResponse"].(map[string]interface{})
+	frParts, ok := fr["parts"].([]map[string]interface{})
+	if !ok || len(frParts) == 0 {
+		t.Fatalf("functionResponse.parts missing or empty; got %v", fr["parts"])
+	}
+	fileData, ok := frParts[0]["fileData"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("functionResponse.parts[0].fileData missing; got %v", frParts[0])
+	}
+	if fileData["mimeType"] != "image/png" || fileData["fileUri"] != "gs://example-bucket/renditions/hero.png" {
+		t.Errorf("fileData = %#v", fileData)
+	}
+}
+
 // --- convertResponse: detailed content types ---------------------------------
 
 func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {

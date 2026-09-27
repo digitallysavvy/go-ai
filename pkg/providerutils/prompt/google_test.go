@@ -88,6 +88,54 @@ func TestConvertToGoogleMessages_OmitsFunctionCallIDs(t *testing.T) {
 	}
 }
 
+// TestConvertToGoogleMessages_SerializesJSONSchemaReferenceInFunctionResponse
+// ports TS convert-to-google-messages.test.ts "should serialize JSON Schema
+// references in function response content" (ai@7.0.118 commit 8beac3e3ad):
+// Google reserves {$ref: displayName} in structured function responses for
+// multimodal parts, which conflicts with JSON Schema $ref, so a json tool
+// result value containing "$ref" anywhere is JSON-stringified instead of
+// forwarded as a nested object.
+func TestConvertToGoogleMessages_SerializesJSONSchemaReferenceInFunctionResponse(t *testing.T) {
+	toolResult := map[string]interface{}{
+		"tools": []interface{}{
+			map[string]interface{}{
+				"name": "find_records",
+				"inputSchema": map[string]interface{}{
+					"$defs": map[string]interface{}{
+						"Node": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"child": map[string]interface{}{"$ref": "#/$defs/Node"},
+							},
+						},
+					},
+					"$ref": "#/$defs/Node",
+				},
+			},
+		},
+	}
+	msgs := []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+		ToolCallID: "testCallId", ToolName: "get_schema",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toolResult},
+	}}}}
+	out, err := ConvertToGoogleMessages(msgs, GoogleMessagesOptions{IncludeFunctionCallIDs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := out.Contents[0]["parts"].([]map[string]interface{})[0]["functionResponse"].(map[string]interface{})
+	response, ok := fr["response"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response = %#v, want a map", fr["response"])
+	}
+	content, ok := response["content"].(string)
+	if !ok {
+		t.Fatalf("content = %#v, want a JSON string", response["content"])
+	}
+	if want := googleJSON(t, toolResult); content != want {
+		t.Errorf("content = %s, want %s", content, want)
+	}
+}
+
 // TestConvertToGoogleMessages_CombinesConsecutiveToolMessages ports the
 // core combining step (MergeConsecutiveToolMessages, hash 33647d7) applied
 // ahead of Google conversion: two consecutive RoleTool SDK messages must
@@ -165,6 +213,74 @@ func TestConvertToGoogleMessages_LegacyToolResultFileText(t *testing.T) {
 	}
 	if parts[3]["text"] != "Tool executed successfully and returned this image as a response" {
 		t.Errorf("image text = %v", parts[3]["text"])
+	}
+}
+
+// TestConvertToGoogleMessages_SupportedToolResultURLForwardedAsFileData
+// ports TS "should convert supported tool result URLs into functionResponse
+// file data" (ai@7.0.118 commit bc49f786f0): a tool-result file part whose
+// URL matches SupportedFunctionResponseURLs (e.g. a gs:// URL on Vertex) is
+// forwarded directly as functionResponse.parts[].fileData instead of being
+// JSON-stringified as text.
+func TestConvertToGoogleMessages_SupportedToolResultURLForwardedAsFileData(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+		ToolCallID: "testCallId", ToolName: "imageGenerator",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+			types.FileContentBlock{URL: "gs://example-bucket/renditions/hero.png", MediaType: "image/png"},
+		}},
+	}}}}
+	out, err := ConvertToGoogleMessages(msgs, GoogleMessagesOptions{
+		IncludeFunctionCallIDs:        true,
+		SupportsFunctionResponseParts: true,
+		SupportedFunctionResponseURLs: map[string][]string{"*": {`^gs://.*$`}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := out.Contents[0]["parts"].([]map[string]interface{})[0]["functionResponse"].(map[string]interface{})
+	response := fr["response"].(map[string]interface{})
+	if response["content"] != "Tool executed successfully." {
+		t.Errorf("response.content = %v", response["content"])
+	}
+	respParts, ok := fr["parts"].([]map[string]interface{})
+	if !ok || len(respParts) != 1 {
+		t.Fatalf("functionResponse.parts = %#v", fr["parts"])
+	}
+	fileData, ok := respParts[0]["fileData"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("parts[0] = %#v, want fileData", respParts[0])
+	}
+	if fileData["mimeType"] != "image/png" || fileData["fileUri"] != "gs://example-bucket/renditions/hero.png" {
+		t.Errorf("fileData = %#v", fileData)
+	}
+}
+
+// TestConvertToGoogleMessages_UnsupportedToolResultURLFallsBackToText verifies
+// that without a matching SupportedFunctionResponseURLs entry (e.g. plain
+// Google Developer API, which never sets it), the same gs:// URL falls back
+// to the pre-existing JSON-stringified text behavior instead of fileData.
+func TestConvertToGoogleMessages_UnsupportedToolResultURLFallsBackToText(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+		ToolCallID: "testCallId", ToolName: "imageGenerator",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+			types.FileContentBlock{URL: "gs://example-bucket/renditions/hero.png", MediaType: "image/png"},
+		}},
+	}}}}
+	out, err := ConvertToGoogleMessages(msgs, GoogleMessagesOptions{
+		IncludeFunctionCallIDs:        true,
+		SupportsFunctionResponseParts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := out.Contents[0]["parts"].([]map[string]interface{})[0]["functionResponse"].(map[string]interface{})
+	if _, has := fr["parts"]; has {
+		t.Fatalf("functionResponse.parts = %#v, want none (unsupported URL falls back to text)", fr["parts"])
+	}
+	response := fr["response"].(map[string]interface{})
+	content, ok := response["content"].(string)
+	if !ok || !strings.Contains(content, "gs://example-bucket/renditions/hero.png") {
+		t.Errorf("response.content = %#v, want the JSON-stringified file part", response["content"])
 	}
 }
 

@@ -78,6 +78,15 @@ type Config struct {
 	// (tests). Returns the bytes and the response content type.
 	ToolResultDownload func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error)
 
+	// SupportsGoogleCloudStorageUrls enables forwarding supported gs://
+	// (Google Cloud Storage) tool-result file URLs directly as
+	// functionResponse.parts[].fileData for Gemini 3+ models, instead of
+	// falling back to a JSON-stringified text part. Vertex sets this true
+	// (TS google-vertex-provider-base.ts downloadToolResultFiles.
+	// supportsGoogleCloudStorageUrls); the standalone Google Developer API
+	// provider never sets it (gs:// URLs are not resolvable there).
+	SupportsGoogleCloudStorageUrls bool
+
 	// GenerateID generates IDs for tool calls and sources. Defaults to a
 	// random ID generator.
 	GenerateID func() string

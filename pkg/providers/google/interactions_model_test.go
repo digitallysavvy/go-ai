@@ -689,6 +689,9 @@ func TestInteractionsVideoInputProcessingOption(t *testing.T) {
 	})
 
 	t.Run("static config object", func(t *testing.T) {
+		// start_offset/end_offset serialize as duration strings ("1s"/"5s"),
+		// not raw numbers, mirroring TS `${config.startOffset}s` (ai@7.0.118
+		// commit b126c4b222). fps stays numeric.
 		block, warnings, err := fileContentToInteractionBlock(types.FileContent{
 			MediaType: "video/mp4",
 			URL:       "https://example.com/in.mp4",
@@ -710,8 +713,37 @@ func TestInteractionsVideoInputProcessingOption(t *testing.T) {
 		if !ok {
 			t.Fatalf("processing = %#v", block["processing"])
 		}
-		if processing["type"] != "static" || processing["start_offset"] != float64(1) || processing["end_offset"] != float64(5) || processing["fps"] != float64(2) {
+		if processing["type"] != "static" || processing["start_offset"] != "1s" || processing["end_offset"] != "5s" || processing["fps"] != float64(2) {
 			t.Fatalf("processing = %#v", processing)
+		}
+	})
+
+	t.Run("static config object with fractional offsets", func(t *testing.T) {
+		block, warnings, err := fileContentToInteractionBlock(types.FileContent{
+			MediaType: "video/mp4",
+			URL:       "https://example.com/in.mp4",
+			ProviderOptions: map[string]interface{}{
+				"google": map[string]interface{}{
+					"processing": map[string]interface{}{
+						"type":        "static",
+						"startOffset": 10.5,
+						"endOffset":   20.25,
+					},
+				},
+			},
+		}, "")
+		if err != nil || len(warnings) != 0 {
+			t.Fatalf("err=%v warnings=%#v", err, warnings)
+		}
+		processing, ok := block["processing"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("processing = %#v", block["processing"])
+		}
+		if processing["start_offset"] != "10.5s" || processing["end_offset"] != "20.25s" {
+			t.Fatalf("processing = %#v", processing)
+		}
+		if _, has := processing["fps"]; has {
+			t.Fatalf("expected no fps key when unset: %#v", processing)
 		}
 	})
 
