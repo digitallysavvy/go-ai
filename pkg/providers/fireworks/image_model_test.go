@@ -303,6 +303,66 @@ func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
 	}
 }
 
+// TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline verifies that once
+// polling reports the image ready, the final download is not subject to the
+// poll timeout: TS doGenerateAsync downloads with the caller's own
+// abortSignal, not pollForImageUrl's internal timeoutController signal, so a
+// slow download that outlives the remaining poll budget must still succeed.
+func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
+	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const requestID = "req-slow-download"
+	const pollTimeoutMs = 30
+	const downloadLatency = 100 * time.Millisecond
+
+	mux := http.NewServeMux()
+	submitPath := "/v1/workflows/" + modelID
+	pollPath := "/v1/workflows/" + modelID + "/get_result"
+
+	var imageURL string
+	mux.HandleFunc("/v1/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case submitPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"request_id": %q}`, requestID)
+		case pollPath:
+			// Reports ready immediately, well within pollTimeoutMs.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id": %q, "status": "Ready", "result": {"sample": %q}}`, requestID, imageURL)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/fake-image", func(w http.ResponseWriter, r *http.Request) {
+		// The download alone takes longer than the poll timeout budget; it
+		// must not be aborted by the (already-satisfied) poll deadline.
+		time.Sleep(downloadLatency)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(fakeImageBytes)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	imageURL = server.URL + "/fake-image"
+
+	prov := New(Config{
+		APIKey:              "test-key",
+		BaseURL:             server.URL,
+		ImagePollIntervalMs: 1,
+		ImagePollTimeoutMs:  pollTimeoutMs,
+	})
+	model := NewImageModel(prov, modelID)
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A patient sunrise",
+	})
+	if err != nil {
+		t.Fatalf("expected the slow download to succeed despite the poll deadline, got: %v", err)
+	}
+	if len(result.Image) == 0 {
+		t.Error("expected non-empty image bytes")
+	}
+}
+
 // TestDoGenerateAsync_SubmitRequestBody verifies the submit request body is correctly built.
 func TestDoGenerateAsync_SubmitRequestBody(t *testing.T) {
 	const modelID = "accounts/fireworks/models/flux-kontext-dev"

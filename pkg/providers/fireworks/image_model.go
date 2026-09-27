@@ -163,7 +163,9 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 	// otherwise let the loop run well past timeoutMs before it notices, since
 	// counting attempts only bounds wall time when every request completes
 	// instantly. Deriving pollCtx from the caller's ctx and canceling it both
-	// on timeout and on return also aborts any poll/download request in flight.
+	// on timeout and on return also aborts any poll request in flight (the
+	// final image download deliberately uses the caller's own ctx instead;
+	// see the comment at its call site below).
 	pollCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var timedOut atomic.Bool
@@ -182,7 +184,13 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 			return nil, err
 		}
 		if done {
-			return m.downloadImage(pollCtx, imageURL)
+			// TS doGenerateAsync downloads with the caller's own abortSignal,
+			// not the internal polling-deadline signal: once pollForImageUrl
+			// resolves, the poll timeout no longer applies. Using pollCtx here
+			// would let the deadline timer (still armed until this function
+			// returns) abort an in-progress download that outlives the
+			// remaining poll budget.
+			return m.downloadImage(ctx, imageURL)
 		}
 
 		select {
