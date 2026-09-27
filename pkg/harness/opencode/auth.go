@@ -50,6 +50,25 @@ func isDirectProvider(v string) bool {
 	return false
 }
 
+// SplitOpenCodeModel splits a harness model id into its OpenCode provider
+// and model components. A "provider/model" id splits on the first slash
+// (with any remaining slashes kept in ModelID); a bare model id pairs with
+// the given provider (and ModelID matches Model when no provider is given
+// either). Mirrors TS `splitOpenCodeModel`.
+func SplitOpenCodeModel(model, provider string) (providerID, modelID, fullModel string) {
+	if model == "" {
+		return "", "", ""
+	}
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		return model[:idx], model[idx+1:], model
+	}
+	full := model
+	if provider != "" {
+		full = provider + "/" + model
+	}
+	return provider, model, full
+}
+
 // resolveProvider mirrors TS `resolveOpenCodeProvider`.
 func resolveProvider(model, provider string) ResolvedAuthenticationMode {
 	if isDirectProvider(provider) {

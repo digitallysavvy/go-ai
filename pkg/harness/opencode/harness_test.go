@@ -388,6 +388,22 @@ func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 	}
 }
 
+// Ports TS `splits provider-prefixed models` (opencode-auth.test.ts).
+func TestSplitOpenCodeModel(t *testing.T) {
+	providerID, modelID, model := SplitOpenCodeModel("anthropic/claude-sonnet-4-5", "")
+	if providerID != "anthropic" || modelID != "claude-sonnet-4-5" || model != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("SplitOpenCodeModel(prefixed) = (%q, %q, %q)", providerID, modelID, model)
+	}
+	providerID, modelID, model = SplitOpenCodeModel("gpt-5.1", "openai")
+	if providerID != "openai" || modelID != "gpt-5.1" || model != "openai/gpt-5.1" {
+		t.Fatalf("SplitOpenCodeModel(bare+provider) = (%q, %q, %q)", providerID, modelID, model)
+	}
+	providerID, modelID, model = SplitOpenCodeModel("", "openai")
+	if providerID != "" || modelID != "" || model != "" {
+		t.Fatalf("SplitOpenCodeModel(empty) = (%q, %q, %q), want all empty", providerID, modelID, model)
+	}
+}
+
 func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
 	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
 		t.Fatalf("extractUserText(text) error = %v", err)
