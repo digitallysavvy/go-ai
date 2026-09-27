@@ -1569,6 +1569,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.warnings = append(r.warnings, chunk.Warnings...)
 			}
 
+			// A text-start boundary: start a new stepContent text part when the
+			// trailing part is already a TextContent, so a text-like block
+			// immediately following another one (e.g. an Anthropic compaction
+			// block followed by plain text) doesn't merge into the previous
+			// block's part and inherit its providerMetadata.
+			if chunk.Type == provider.ChunkTypeTextStart {
+				stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
+			}
+
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
@@ -3395,6 +3404,11 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		// Accumulate warnings from stream-start chunks
 		if chunk.Type == provider.ChunkTypeStreamStart {
 			r.warnings = append(r.warnings, chunk.Warnings...)
+		}
+
+		// A text-start boundary: see the identical branch in processStream.
+		if chunk.Type == provider.ChunkTypeTextStart {
+			stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
 		}
 
 		// Accumulate text

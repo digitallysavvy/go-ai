@@ -683,3 +683,64 @@ func TestStreamText_KeepsTextProviderMetadata(t *testing.T) {
 		t.Errorf("ProviderMetadata = %s, want %s", found.ProviderMetadata, meta)
 	}
 }
+
+// TestStreamText_AdjacentTextStartBoundariesDoNotMerge is an end-to-end
+// regression test for two text-like blocks streamed back-to-back with no
+// other content between them (e.g. an Anthropic compaction block
+// immediately followed by a plain text block): each carries its own
+// text-start providerMetadata, and without respecting the text-start
+// boundary, appendTextPart's blind trailing-part merge would fold both
+// blocks into one TextContent and mislabel the whole merged text with
+// whichever block's metadata arrived last. TS keys accumulated text by the
+// text-start chunk's id and always starts a fresh record on text-start
+// (stream-text.ts activeTextContent), so two text-starts always produce two
+// content parts.
+func TestStreamText_AdjacentTextStartBoundariesDoNotMerge(t *testing.T) {
+	metaA := json.RawMessage(`{"anthropic":{"type":"compaction","signature":"sig-a"}}`)
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "0", ProviderMetadata: metaA},
+				{Type: provider.ChunkTypeText, ID: "0", Text: "Summary of the conversation."},
+				{Type: provider.ChunkTypeTextEnd, ID: "0", ProviderMetadata: metaA},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Here is the answer."},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Continue",
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	var textParts []types.TextContent
+	for _, part := range result.Content() {
+		if tc, ok := part.(types.TextContent); ok {
+			textParts = append(textParts, tc)
+		}
+	}
+	if len(textParts) != 2 {
+		t.Fatalf("len(textParts) = %d, want 2 (one per text-start boundary): %+v", len(textParts), textParts)
+	}
+	if textParts[0].Text != "Summary of the conversation." {
+		t.Errorf("textParts[0].Text = %q", textParts[0].Text)
+	}
+	if string(textParts[0].ProviderMetadata) != string(metaA) {
+		t.Errorf("textParts[0].ProviderMetadata = %s, want %s", textParts[0].ProviderMetadata, metaA)
+	}
+	if textParts[1].Text != "Here is the answer." {
+		t.Errorf("textParts[1].Text = %q", textParts[1].Text)
+	}
+	if textParts[1].ProviderMetadata != nil {
+		t.Errorf("textParts[1].ProviderMetadata = %s, want nil (must not inherit the compaction block's metadata)", textParts[1].ProviderMetadata)
+	}
+}
