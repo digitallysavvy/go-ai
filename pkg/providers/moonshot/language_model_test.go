@@ -21,6 +21,34 @@ func moonshotChunksOfType(chunks []*provider.StreamChunk, chunkType provider.Chu
 	return filtered
 }
 
+// TestMoonshotConvertResponse_ProviderMetadataKeyIsMoonshotAI guards TS
+// parity of the providerMetadata output shape: moonshotai-chat-language-
+// model.ts's providerOptionsName is "moonshotai" (config.provider.split('.')[0]
+// on "moonshotai.chat"), and every test in moonshotai-chat-language-model.test.ts
+// reads providerMetadata.moonshotai — not "moonshot", this Go SDK's own
+// package/provider-name convention.
+func TestMoonshotConvertResponse_ProviderMetadataKeyIsMoonshotAI(t *testing.T) {
+	model := newMoonshotTestModel("kimi-k3")
+	idx := 0
+	resp := moonshotResponse{
+		Object: "chat.completion",
+		Choices: []moonshotChoice{
+			{Index: &idx, Message: moonshotMessage{Role: "assistant", Content: "hi"}, FinishReason: "stop"},
+		},
+		Usage: []byte(`{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}`),
+	}
+	result, err := model.convertResponse(resp)
+	if err != nil {
+		t.Fatalf("convertResponse error = %v", err)
+	}
+	if _, ok := result.ProviderMetadata["moonshotai"]; !ok {
+		t.Fatalf("ProviderMetadata = %#v, want a \"moonshotai\" key", result.ProviderMetadata)
+	}
+	if _, ok := result.ProviderMetadata["moonshot"]; ok {
+		t.Fatalf("ProviderMetadata unexpectedly has a \"moonshot\" key: %#v", result.ProviderMetadata)
+	}
+}
+
 func TestMoonshotStream_TextChunks(t *testing.T) {
 	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
 

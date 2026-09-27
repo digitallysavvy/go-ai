@@ -6,6 +6,24 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
+// mergeMoonshotAIProviderOptions merges providerOptions.moonshotai into an
+// already-resolved options map (in place), giving it precedence. TS's
+// provider config is "moonshotai.chat" (moonshotai-provider.ts), so its
+// providerOptionsName (config.provider.split('.')[0]) is "moonshotai" — not
+// "moonshot", which is this Go SDK's own package/provider-name convention
+// (mirrors the same fix in the together package, whose TS provider name is
+// "togetherai"). Without this, a caller following TS docs/examples and
+// writing providerOptions.moonshotai.* is silently ignored.
+func mergeMoonshotAIProviderOptions(resolved, providerOptions map[string]interface{}) {
+	moonshotAI, ok := providerOptions["moonshotai"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for k, v := range moonshotAI {
+		resolved[k] = v
+	}
+}
+
 // moonshotThinkingOption mirrors the parsed providerOptions.moonshot.thinking
 // object (TS: { type?: 'enabled'|'disabled', budgetTokens?: number }).
 type moonshotThinkingOption struct {
@@ -168,6 +186,7 @@ type moonshotMessageOptions struct {
 
 func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moonshotMessageOptions, error) {
 	resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions("moonshot", providerOptions)
+	mergeMoonshotAIProviderOptions(resolved, providerOptions)
 	if len(resolved) == 0 {
 		return nil, nil
 	}

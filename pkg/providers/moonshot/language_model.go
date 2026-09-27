@@ -142,6 +142,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 // body. Mirrors TS MoonshotAIChatLanguageModel.getArgs.
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	moonshotOpts, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("moonshot", opts.ProviderOptions)
+	mergeMoonshotAIProviderOptions(moonshotOpts, opts.ProviderOptions)
 	modelOpts, err := parseMoonshotModelOptions(moonshotOpts)
 	if err != nil {
 		return nil, nil, err
@@ -579,7 +580,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 			}
 		}
 	}
-	result.ProviderMetadata = map[string]interface{}{"moonshot": meta}
+	result.ProviderMetadata = map[string]interface{}{"moonshotai": meta}
 
 	return result, nil
 }
@@ -908,8 +909,8 @@ func (s *moonshotStream) buildFlushChunks() []*provider.StreamChunk {
 	return chunks
 }
 
-// buildProviderMetadata assembles the finish chunk's providerMetadata.moonshot
-// object. Always returns a non-nil `{"moonshot": {...}}` payload, even when
+// buildProviderMetadata assembles the finish chunk's providerMetadata.moonshotai
+// object. Always returns a non-nil `{"moonshotai": {...}}` payload, even when
 // empty, matching TS's unconditional providerMetadata assignment.
 func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 	meta := map[string]json.RawMessage{}
@@ -947,7 +948,7 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 			meta["toolCallTypes"] = b
 		}
 	}
-	raw, _ := json.Marshal(map[string]interface{}{"moonshot": meta})
+	raw, _ := json.Marshal(map[string]interface{}{"moonshotai": meta})
 	return raw
 }
 

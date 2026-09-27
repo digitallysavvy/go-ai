@@ -38,6 +38,27 @@ func wireMessages(t *testing.T, body map[string]interface{}) []map[string]interf
 	return out
 }
 
+// TestBuildRequestBody_MoonshotAIProviderOptionsKeyReachesWireBody guards
+// against providerOptions.moonshotai.* (the key TS docs/examples and tests
+// use — moonshotai-provider.ts's provider config is "moonshotai.chat") being
+// silently dropped: ResolveOpenAICompatibleProviderOptions only ever
+// resolved this Go SDK's own "moonshot" key.
+func TestBuildRequestBody_MoonshotAIProviderOptionsKeyReachesWireBody(t *testing.T) {
+	model := newMoonshotTestModel("kimi-k3")
+	body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: textPrompt("Hello"),
+		ProviderOptions: map[string]interface{}{
+			"moonshotai": map[string]interface{}{"promptCacheKey": "cache-key-123"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body["prompt_cache_key"] != "cache-key-123" {
+		t.Errorf("prompt_cache_key = %#v, want cache-key-123", body["prompt_cache_key"])
+	}
+}
+
 func TestBuildRequestBody_MaxOutputTokensAsMaxCompletionTokens(t *testing.T) {
 	model := newMoonshotTestModel("kimi-k3")
 	maxTokens := 17
