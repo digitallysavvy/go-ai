@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"io"
 	"regexp"
 	"strings"
 
@@ -146,132 +145,199 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 				closingTag:         closingTag,
 				separator:          options.Separator,
 				startWithReasoning: options.StartWithReasoning,
-				isReasoning:        options.StartWithReasoning,
-				isFirstReasoning:   true,
-				isFirstText:        true,
-				buffer:             "",
+				extractions:        map[string]*reasoningExtraction{},
+				delayedTextStarts:  map[string]*provider.StreamChunk{},
 			}, nil
 		},
 	}
 }
 
-// extractReasoningStream wraps a TextStream to extract reasoning from text chunks
+// reasoningExtraction holds the per-text-block-ID state machine used to pull
+// XML-tagged reasoning out of a single content block's text deltas. Streams
+// that interleave multiple text blocks (distinct StreamChunk.ID values, e.g.
+// two concurrent text parts) get one independent extraction per ID so their
+// buffers, tag-switch state and reasoning IDs never bleed into each other
+// (audit row 2b105fa / WG12).
+type reasoningExtraction struct {
+	isFirstReasoning bool
+	isFirstText      bool
+	afterSwitch      bool
+	isReasoning      bool
+	buffer           string
+	reasoningID      string
+	textID           string
+}
+
+// extractReasoningStream wraps a TextStream to extract reasoning from text
+// chunks, mirroring TS extractReasoningMiddleware's wrapStream transform.
 type extractReasoningStream struct {
 	underlying         provider.TextStream
 	openingTag         string
 	closingTag         string
 	separator          string
 	startWithReasoning bool
-	isReasoning        bool
-	isFirstReasoning   bool
-	isFirstText        bool
-	afterSwitch        bool
-	buffer             string
-	reasoningCounter   int
+
+	extractions        map[string]*reasoningExtraction
+	reasoningIDCounter int
+
+	// delayedTextStarts holds text-start chunks until either the matching
+	// text-end chunk arrives (unused block: forwarded as-is) or the first
+	// non-reasoning text-delta is published for that ID (so a text-start
+	// never precedes the reasoning-start of a leading reasoning block —
+	// see https://github.com/vercel/ai/issues/7774).
+	delayedTextStarts map[string]*provider.StreamChunk
+
+	pending []*provider.StreamChunk
 }
 
-// Next returns the next chunk from the stream, with reasoning extraction applied
+// Next returns the next chunk from the stream, with reasoning extraction applied.
 func (s *extractReasoningStream) Next() (*provider.StreamChunk, error) {
 	for {
-		chunk, err := s.underlying.Next()
-		if err != nil {
-			// Flush remaining buffer on EOF
-			if err == io.EOF && len(s.buffer) > 0 {
-				bufferedChunk := s.flushBuffer()
-				if bufferedChunk != nil {
-					s.buffer = ""
-					return bufferedChunk, nil
-				}
-			}
-			return chunk, err
-		}
-
-		// Pass through non-text chunks unchanged
-		if chunk.Type != provider.ChunkTypeText {
+		if len(s.pending) > 0 {
+			chunk := s.pending[0]
+			s.pending = s.pending[1:]
 			return chunk, nil
 		}
 
-		// Buffer the incoming text
-		s.buffer += chunk.Text
-
-		// Process buffer to extract reasoning/text
-		for {
-			nextTag := s.closingTag
-			if !s.isReasoning {
-				nextTag = s.openingTag
-			}
-
-			startIndex := getPotentialStartIndex(s.buffer, nextTag)
-
-			// No tag found, publish the buffer
-			if startIndex == -1 {
-				if len(s.buffer) > 0 {
-					publishChunk := s.createChunk(s.buffer)
-					s.buffer = ""
-					if publishChunk != nil {
-						return publishChunk, nil
-					}
-				}
-				break
-			}
-
-			// Publish text before the tag
-			if startIndex > 0 {
-				beforeTag := s.buffer[:startIndex]
-				publishChunk := s.createChunk(beforeTag)
-				s.buffer = s.buffer[startIndex:]
-				if publishChunk != nil {
-					return publishChunk, nil
-				}
-			}
-
-			// Check if we have a complete tag match
-			foundFullMatch := startIndex+len(nextTag) <= len(s.buffer)
-
-			if foundFullMatch {
-				// Remove the tag from buffer
-				s.buffer = s.buffer[len(nextTag):]
-
-				// Switch between reasoning and text mode
-				if s.isReasoning {
-					s.reasoningCounter++
-				}
-				s.isReasoning = !s.isReasoning
-				s.afterSwitch = true
-			} else {
-				// Partial match at end of buffer, keep buffering
-				break
-			}
+		chunk, err := s.underlying.Next()
+		if err != nil {
+			return chunk, err
 		}
+
+		s.transform(*chunk)
 	}
 }
 
-// createChunk creates a chunk with appropriate type and content
-func (s *extractReasoningStream) createChunk(text string) *provider.StreamChunk {
-	if len(text) == 0 {
-		return nil
+// enqueue appends chunk to the pending output queue.
+func (s *extractReasoningStream) enqueue(chunk provider.StreamChunk) {
+	c := chunk
+	s.pending = append(s.pending, &c)
+}
+
+// transform processes one upstream chunk, appending zero or more output
+// chunks to s.pending.
+func (s *extractReasoningStream) transform(chunk provider.StreamChunk) {
+	// Do not send text-start before reasoning-start.
+	if chunk.Type == provider.ChunkTypeTextStart {
+		c := chunk
+		s.delayedTextStarts[chunk.ID] = &c
+		return
 	}
 
-	// In streaming mode, don't add separators - each section is a separate chunk
-	// The separator is only used in non-streaming mode when combining sections
-	s.afterSwitch = false
-
-	if s.isReasoning {
-		return &provider.StreamChunk{
-			Type:      provider.ChunkTypeReasoning,
-			Reasoning: text,
+	if chunk.Type == provider.ChunkTypeTextEnd {
+		if start, ok := s.delayedTextStarts[chunk.ID]; ok {
+			s.enqueue(*start)
+			delete(s.delayedTextStarts, chunk.ID)
 		}
 	}
 
-	return &provider.StreamChunk{
-		Type: provider.ChunkTypeText,
-		Text: text,
+	if chunk.Type != provider.ChunkTypeText {
+		s.enqueue(chunk)
+		return
 	}
-}
 
-// flushBuffer creates a final chunk from any remaining buffer content
-func (s *extractReasoningStream) flushBuffer() *provider.StreamChunk {
-	return s.createChunk(s.buffer)
+	ext, ok := s.extractions[chunk.ID]
+	if !ok {
+		ext = &reasoningExtraction{
+			isFirstReasoning: true,
+			isFirstText:      true,
+			isReasoning:      s.startWithReasoning,
+			textID:           chunk.ID,
+		}
+		s.extractions[chunk.ID] = ext
+	}
+
+	ext.buffer += chunk.Text
+
+	getReasoningID := func() string {
+		if ext.reasoningID == "" {
+			ext.reasoningID = fmt.Sprintf("reasoning-%d", s.reasoningIDCounter)
+			s.reasoningIDCounter++
+		}
+		return ext.reasoningID
+	}
+
+	publish := func(text string) {
+		if len(text) == 0 {
+			return
+		}
+
+		prefix := ""
+		if ext.afterSwitch {
+			if ext.isReasoning {
+				if !ext.isFirstReasoning {
+					prefix = s.separator
+				}
+			} else if !ext.isFirstText {
+				prefix = s.separator
+			}
+		}
+
+		if ext.isReasoning && (ext.afterSwitch || ext.isFirstReasoning) {
+			s.enqueue(provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: getReasoningID()})
+		}
+
+		if ext.isReasoning {
+			s.enqueue(provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: getReasoningID(), Reasoning: prefix + text})
+		} else {
+			if start, ok := s.delayedTextStarts[ext.textID]; ok {
+				s.enqueue(*start)
+				delete(s.delayedTextStarts, ext.textID)
+			}
+			s.enqueue(provider.StreamChunk{Type: provider.ChunkTypeText, ID: ext.textID, Text: prefix + text})
+		}
+		ext.afterSwitch = false
+
+		if ext.isReasoning {
+			ext.isFirstReasoning = false
+		} else {
+			ext.isFirstText = false
+		}
+	}
+
+	for {
+		nextTag := s.openingTag
+		if ext.isReasoning {
+			nextTag = s.closingTag
+		}
+
+		startIndex := getPotentialStartIndex(ext.buffer, nextTag)
+
+		// No opening or closing tag found: publish the whole buffer.
+		if startIndex == -1 {
+			publish(ext.buffer)
+			ext.buffer = ""
+			break
+		}
+
+		// Publish text before the tag.
+		publish(ext.buffer[:startIndex])
+
+		foundFullMatch := startIndex+len(nextTag) <= len(ext.buffer)
+
+		if foundFullMatch {
+			ext.buffer = ext.buffer[startIndex+len(nextTag):]
+
+			if ext.isReasoning {
+				// Emit reasoning-start for empty reasoning blocks (no delta
+				// was published): startWithReasoning=false, <think></think>
+				// (afterSwitch=true), or startWithReasoning=true with an
+				// immediate </think> (afterSwitch=false).
+				if ext.isFirstReasoning {
+					s.enqueue(provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: getReasoningID()})
+				}
+				s.enqueue(provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: getReasoningID()})
+				ext.reasoningID = ""
+			}
+
+			ext.isReasoning = !ext.isReasoning
+			ext.afterSwitch = true
+		} else {
+			// Partial match at end of buffer: keep buffering.
+			ext.buffer = ext.buffer[startIndex:]
+			break
+		}
+	}
 }
 
 // Close closes the underlying stream
