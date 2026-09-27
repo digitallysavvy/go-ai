@@ -1343,11 +1343,6 @@ func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool b
 	}
 }
 
-// Read implements io.Reader
-func (s *anthropicStream) Read(p []byte) (n int, err error) {
-	return s.reader.Read(p)
-}
-
 // Close implements io.Closer
 func (s *anthropicStream) Close() error {
 	return s.reader.Close()

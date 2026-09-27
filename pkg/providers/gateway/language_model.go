@@ -229,11 +229,6 @@ type gatewayStreamChunk struct {
 	raw map[string]interface{}
 }
 
-// Read implements io.Reader
-func (s *gatewayTextStream) Read(p []byte) (n int, err error) {
-	return s.body.Read(p)
-}
-
 // Close implements io.Closer
 func (s *gatewayTextStream) Close() error {
 	return s.body.Close()
