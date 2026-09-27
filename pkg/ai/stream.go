@@ -1422,6 +1422,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepSawTerminal = true
 				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
+				if chunk.RawFinishReason != "" {
+					r.rawFinishReason = chunk.RawFinishReason
+				}
 				if chunk.ContextManagement != nil {
 					r.contextManagement = chunk.ContextManagement
 				}
@@ -2964,6 +2967,9 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		if chunk.Type == provider.ChunkTypeFinish {
 			sawTerminal = true
 			r.finishReason = chunk.FinishReason
+			if chunk.RawFinishReason != "" {
+				r.rawFinishReason = chunk.RawFinishReason
+			}
 			if chunk.ContextManagement != nil {
 				r.contextManagement = chunk.ContextManagement
 			}

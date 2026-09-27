@@ -221,6 +221,13 @@ type StreamChunk struct {
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
 
+	// RawFinishReason is the raw, provider-specific finish reason string
+	// (when Type is ChunkTypeFinish), before normalization to FinishReason.
+	// Providers that know their raw finish reason before the unified one
+	// should set it here so StreamTextResult.RawFinishReason() can surface
+	// it, mirroring the TS SDK's raw finish reason passthrough.
+	RawFinishReason string
+
 	// Context management information (Anthropic-specific)
 	// Contains statistics about automatic conversation history cleanup
 	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata
