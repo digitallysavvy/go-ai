@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -312,8 +313,8 @@ func videoProcessingField(providerOptions map[string]interface{}) (interface{}, 
 	if m, ok := processing.(map[string]interface{}); ok && stringValue(m["type"]) == "static" {
 		out := pruneMap(map[string]interface{}{
 			"type":         "static",
-			"start_offset": numericOrNil(m["startOffset"]),
-			"end_offset":   numericOrNil(m["endOffset"]),
+			"start_offset": videoOffsetString(m["startOffset"]),
+			"end_offset":   videoOffsetString(m["endOffset"]),
 			"fps":          numericOrNil(m["fps"]),
 		})
 		if out == nil {
@@ -334,6 +335,33 @@ func numericOrNil(v interface{}) interface{} {
 	default:
 		return nil
 	}
+}
+
+// videoOffsetString formats a numeric video start/end offset as a duration
+// string like "10.5s", mirroring TS `${config.startOffset}s` (a template
+// literal, which coerces the number via JS's Number-to-string algorithm).
+// strconv.FormatFloat with precision -1 (shortest round-tripping decimal, no
+// exponential notation for this typical offset range) matches that output
+// for realistic values (no trailing zeros, no redundant decimal point for
+// whole numbers). Returns nil for non-numeric values so pruneMap drops the
+// key, matching TS's `typeof config.startOffset === 'number'` guard.
+func videoOffsetString(v interface{}) interface{} {
+	var f float64
+	switch n := v.(type) {
+	case int:
+		f = float64(n)
+	case int32:
+		f = float64(n)
+	case int64:
+		f = float64(n)
+	case float32:
+		f = float64(n)
+	case float64:
+		f = n
+	default:
+		return nil
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64) + "s"
 }
 
 func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []types.Warning, error) {
