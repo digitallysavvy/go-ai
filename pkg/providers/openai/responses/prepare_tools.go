@@ -80,6 +80,8 @@ func convertTool(t types.Tool) interface{} {
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.computer":
+		return map[string]interface{}{"type": "computer"}
 	case "openai.code_interpreter":
 		return convertCodeInterpreterTool(t)
 	case "openai.file_search":

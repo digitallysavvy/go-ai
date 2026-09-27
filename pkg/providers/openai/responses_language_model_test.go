@@ -2401,3 +2401,133 @@ func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
 		t.Fatalf("input[0] = %#v, want function_call with async=true", input[0])
 	}
 }
+
+// TestResponsesLanguageModel_ComputerToolPrepareAndDecode covers row
+// 0063c2d: the computer tool prepares as {type:"computer"}, and a
+// computer_call output item decodes into a tool call with camelCase
+// actions/pendingSafetyChecks/status arguments, in both generate and
+// stream.
+func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  []types.Tool{responses.NewComputerTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	def, ok := body["tools"].([]interface{})[0].(map[string]interface{})
+	if !ok || def["type"] != "computer" {
+		t.Fatalf("tool def = %#v, want {type:computer}", body["tools"])
+	}
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "cu_1", "call_id": "call_1", "status": "completed",
+		"actions": []interface{}{
+			map[string]interface{}{"type": "click", "button": "left", "x": 10, "y": 20},
+			map[string]interface{}{"type": "scroll", "x": 1, "y": 2, "scroll_x": 0, "scroll_y": -5},
+		},
+		"pending_safety_checks": []interface{}{
+			map[string]interface{}{"id": "sc_1", "code": "malicious_instructions", "message": "review this"},
+		},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one computer tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.computer" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.computer", tc)
+	}
+	actions, ok := tc.Arguments["actions"].([]map[string]interface{})
+	if !ok || len(actions) != 2 {
+		t.Fatalf("actions = %#v, want two actions", tc.Arguments["actions"])
+	}
+	if fmt.Sprint(actions[1]["scrollX"]) != "0" || fmt.Sprint(actions[1]["scrollY"]) != "-5" {
+		t.Fatalf("scroll action = %#v, want scrollX/scrollY mapped from scroll_x/scroll_y", actions[1])
+	}
+	checks, ok := tc.Arguments["pendingSafetyChecks"].([]map[string]interface{})
+	if !ok || len(checks) != 1 || checks[0]["id"] != "sc_1" {
+		t.Fatalf("pendingSafetyChecks = %#v", tc.Arguments["pendingSafetyChecks"])
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+
+	// Streaming path.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.computer" {
+		t.Fatalf("chunk = %#v, want an openai.computer tool call", chunk)
+	}
+}
+
+// TestResponsesLanguageModel_ComputerToolInputReplay covers row 0063c2d: a
+// computer tool call and its result round-trip through input conversion as
+// computer_call/computer_call_output items.
+func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
+	tc := types.ToolCall{
+		ID:       "call_1",
+		ToolName: "openai.computer",
+		Arguments: map[string]interface{}{
+			"status":  "completed",
+			"actions": []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
+		},
+	}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one computer_call item", input)
+	}
+	cc, ok := input[0].(responses.ComputerCall)
+	if !ok || cc.CallID != "call_1" || len(cc.Actions) != 1 {
+		t.Fatalf("input[0] = %#v, want computer_call with one action", input[0])
+	}
+
+	toolResultInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call_1",
+				ToolName:   "openai.computer",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputJSON,
+					Value: map[string]interface{}{
+						"output": map[string]interface{}{"imageUrl": "https://example.com/shot.png"},
+					},
+				},
+			}},
+		}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (tool result) failed: %v", err)
+	}
+	if len(toolResultInput) != 1 {
+		t.Fatalf("toolResultInput = %#v, want one computer_call_output item", toolResultInput)
+	}
+	out, ok := toolResultInput[0].(responses.ComputerCallOutput)
+	if !ok || out.CallID != "call_1" || out.Output.ImageURL != "https://example.com/shot.png" {
+		t.Fatalf("toolResultInput[0] = %#v, want computer_call_output with the screenshot URL", toolResultInput[0])
+	}
+}

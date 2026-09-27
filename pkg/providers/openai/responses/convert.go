@@ -541,6 +541,16 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Operation: operation,
 		}, true
 	}
+	if opts.HasComputerTool && toolName == "computer" {
+		return ComputerCall{
+			Type:                "computer_call",
+			ID:                  stringPtr(itemID),
+			CallID:              tc.ID,
+			Status:              stringArgDefault(tc.Arguments, "status", "completed"),
+			Actions:             computerActionsFromArgs(tc.Arguments),
+			PendingSafetyChecks: computerSafetyChecksFromArgs(tc.Arguments, "pendingSafetyChecks"),
+		}, true
+	}
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := tc.RawArguments
 		if input == "" {
@@ -1009,6 +1019,11 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 			return nil
 		}
 		return convertApplyPatchOutput(part)
+	case "computer":
+		if !opts.HasComputerTool {
+			return nil
+		}
+		return convertComputerOutput(part)
 	default:
 		return nil
 	}
@@ -1085,6 +1100,39 @@ func convertShellOutput(part types.ToolResultContent) interface{} {
 	}
 }
 
+func convertComputerOutput(part types.ToolResultContent) interface{} {
+	var parsed struct {
+		Output struct {
+			ImageURL string `json:"imageUrl"`
+			FileID   string `json:"fileId"`
+			Detail   string `json:"detail"`
+		} `json:"output"`
+		AcknowledgedSafetyChecks []struct {
+			ID      string `json:"id"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"acknowledgedSafetyChecks"`
+	}
+	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
+		return nil
+	}
+	checks := make([]ComputerSafetyCheck, 0, len(parsed.AcknowledgedSafetyChecks))
+	for _, c := range parsed.AcknowledgedSafetyChecks {
+		checks = append(checks, ComputerSafetyCheck{ID: c.ID, Code: c.Code, Message: c.Message})
+	}
+	return ComputerCallOutput{
+		Type:   "computer_call_output",
+		CallID: part.ToolCallID,
+		Output: ComputerCallOutputScreenshot{
+			Type:     "computer_screenshot",
+			ImageURL: parsed.Output.ImageURL,
+			FileID:   parsed.Output.FileID,
+			Detail:   parsed.Output.Detail,
+		},
+		AcknowledgedSafetyChecks: checks,
+	}
+}
+
 func convertApplyPatchOutput(part types.ToolResultContent) interface{} {
 	var parsed struct {
 		Status string  `json:"status"`
@@ -1131,6 +1179,50 @@ func shellActionFromArgs(args map[string]interface{}) ShellCallAction {
 		TimeoutMs:       intPtrArg(action, "timeoutMs"),
 		MaxOutputLength: intPtrArg(action, "maxOutputLength"),
 	}
+}
+
+// computerActionsFromArgs extracts the "actions" array from a computer tool
+// call's arguments and translates each action's field names to the wire
+// format (row 0063c2d).
+func computerActionsFromArgs(args map[string]interface{}) []map[string]interface{} {
+	raw, ok := args["actions"].([]interface{})
+	if !ok {
+		return nil
+	}
+	actions := make([]map[string]interface{}, 0, len(raw))
+	for _, item := range raw {
+		if m, ok := item.(map[string]interface{}); ok {
+			actions = append(actions, MapComputerActionToWire(m))
+		}
+	}
+	return actions
+}
+
+func computerSafetyChecksFromArgs(args map[string]interface{}, key string) []ComputerSafetyCheck {
+	raw, ok := args[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	checks := make([]ComputerSafetyCheck, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		checks = append(checks, ComputerSafetyCheck{
+			ID:      stringArg(m, "id"),
+			Code:    stringArg(m, "code"),
+			Message: stringArg(m, "message"),
+		})
+	}
+	return checks
+}
+
+func stringArgDefault(values map[string]interface{}, key, fallback string) string {
+	if v := stringArg(values, key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func applyPatchOperationFromArgs(args map[string]interface{}) ApplyPatchOperation {

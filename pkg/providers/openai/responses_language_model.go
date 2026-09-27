@@ -785,7 +785,7 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	case types.ToolChoiceTool:
 		name, tool := resolveResponsesToolChoiceName(tc.ToolName, tools)
 		switch name {
-		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch":
+		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer":
 			return map[string]interface{}{"type": name}
 		}
 		if tool != nil {
@@ -878,6 +878,7 @@ func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *t
 		"openai.web_search":         "web_search",
 		"openai.mcp":                "mcp",
 		"openai.apply_patch":        "apply_patch",
+		"openai.computer":           "computer",
 		"code_interpreter":          "code_interpreter",
 		"file_search":               "file_search",
 		"image_generation":          "image_generation",
@@ -885,6 +886,7 @@ func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *t
 		"web_search":                "web_search",
 		"mcp":                       "mcp",
 		"apply_patch":               "apply_patch",
+		"computer":                  "computer",
 	}
 	if mapped, ok := providerNames[name]; ok {
 		for i := range tools {
@@ -1084,6 +1086,25 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, ""),
 			})
 
+		case "computer_call":
+			// Row 0063c2d: decode a batch of UI actions into a tool call.
+			var item responses.ComputerCall
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			args, rawArgs := computerCallArguments(item)
+			computerItemID := ""
+			if item.ID != nil {
+				computerItemID = *item.ID
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.computer",
+				Arguments:        args,
+				RawArguments:     rawArgs,
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, ""),
+			})
+
 		case "reasoning":
 			// Parse encrypted_content and summary text.
 			var item struct {
@@ -1173,6 +1194,39 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	}
 
 	return result, nil
+}
+
+// computerCallArguments builds the SDK-facing {actions, pendingSafetyChecks,
+// status} arguments for a decoded computer_call item, mirroring TS
+// mapComputerCallInput (row 0063c2d): actions are translated from wire
+// (scroll_x/scroll_y) to SDK (scrollX/scrollY) field names.
+func computerCallArguments(item responses.ComputerCall) (map[string]interface{}, string) {
+	actions := make([]map[string]interface{}, 0, len(item.Actions))
+	for _, action := range item.Actions {
+		actions = append(actions, responses.MapComputerActionToSDK(action))
+	}
+	checks := make([]map[string]interface{}, 0, len(item.PendingSafetyChecks))
+	for _, c := range item.PendingSafetyChecks {
+		check := map[string]interface{}{"id": c.ID}
+		if c.Code != "" {
+			check["code"] = c.Code
+		}
+		if c.Message != "" {
+			check["message"] = c.Message
+		}
+		checks = append(checks, check)
+	}
+	status := item.Status
+	if status == "" {
+		status = "completed"
+	}
+	args := map[string]interface{}{
+		"actions":             actions,
+		"pendingSafetyChecks": checks,
+		"status":              status,
+	}
+	raw, _ := json.Marshal(args)
+	return args, string(raw)
 }
 
 func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async ...*bool) map[string]interface{} {
@@ -1930,6 +1984,29 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, ""),
+			},
+		})
+
+	case "computer_call":
+		// Row 0063c2d.
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ComputerCall
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.emitDecodeError("computer_call", err)
+		}
+		computerArgs, computerRawArgs := computerCallArguments(item)
+		computerItemID := ""
+		if item.ID != nil {
+			computerItemID = *item.ID
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               item.CallID,
+				ToolName:         "openai.computer",
+				Arguments:        computerArgs,
+				RawArguments:     computerRawArgs,
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, ""),
 			},
 		})
 
