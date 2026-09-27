@@ -31,7 +31,10 @@ func TestConvertResponse_ReasoningWithEncryptedContentNoID(t *testing.T) {
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	// The reasoning text should appear in the combined output.
 	if !strings.Contains(result.Text, "thinking step") {
@@ -58,7 +61,10 @@ func TestConvertResponse_ReasoningWithIDNoEncryptedContent(t *testing.T) {
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	if !strings.Contains(result.Text, "reasoning text") {
 		t.Errorf("expected reasoning text in output, got %q", result.Text)
@@ -87,7 +93,10 @@ func TestConvertResponse_ReasoningWithNoIDNoEncryptedContent(t *testing.T) {
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	if strings.Contains(result.Text, "should be ignored") {
 		t.Errorf("reasoning item without ID or encrypted_content should be skipped, got %q", result.Text)
@@ -112,7 +121,10 @@ func TestConvertResponse_FunctionCallPreservesProviderMetadata(t *testing.T) {
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("tool calls = %+v, want one", result.ToolCalls)
 	}
@@ -143,7 +155,10 @@ func TestConvertResponse_ReasoningPopulatesContentWithEncryptedContent(t *testin
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	// result.Content must contain exactly one ReasoningContent part.
 	if len(result.Content) != 1 {
@@ -172,7 +187,10 @@ func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.
 	}
 
 	lm := &LanguageModel{}
-	result := lm.convertResponse(response)
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	if len(result.Content) != 0 {
 		t.Errorf("expected no content parts, got %d", len(result.Content))

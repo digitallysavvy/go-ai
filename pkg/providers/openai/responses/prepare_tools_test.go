@@ -882,3 +882,137 @@ func TestResolveAllowedTools_EmptyReturnsNil(t *testing.T) {
 		t.Fatalf("ResolveAllowedTools(nil) = %#v, %#v, %v, want all nil", choice, warnings, err)
 	}
 }
+
+// TestResolveAllowedTools_CanonicalAliasResolves covers item 4 of the P1-5c
+// slice: an allowedTools entry that names a provider tool's canonical wire
+// identity ("file_search") rather than its own (custom) SDK Name resolves
+// via the alias layer.
+func TestResolveAllowedTools_CanonicalAliasResolves(t *testing.T) {
+	tools := []types.Tool{{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       "myFileSearch",
+		ProviderID: "openai.file_search",
+	}}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"file_search"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "file_search" {
+		t.Fatalf("choice = %#v, want a file_search entry via alias", choice)
+	}
+}
+
+// mcpTool builds an MCP provider tool with a custom SDK Name distinct from
+// its fixed ProviderID, mirroring the TS test helper `mcpTool(name,
+// serverLabel)` in openai-responses-prepare-tools.test.ts: two such tools
+// with different server labels both canonicalize to the alias "mcp" (see
+// canonicalAllowedToolName), which is exactly what makes the ambiguous case
+// below reachable.
+func mcpToolWithName(name, serverLabel string) types.Tool {
+	return types.Tool{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       name,
+		ProviderID: "openai.mcp",
+		ProviderOptions: openaitool.MCPConfig{
+			ServerLabel: serverLabel,
+			ServerURL:   "https://" + serverLabel + ".example.com/mcp",
+		},
+	}
+}
+
+// TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning ports TS's
+// "should drop an ambiguous canonical name when several tools share it"
+// (openai-responses-prepare-tools.test.ts). Two MCP tools with different
+// server labels (and therefore different custom Names) both canonicalize to
+// the fixed alias "mcp"; requesting "mcp" in allowedTools is genuinely
+// ambiguous between them and is dropped with a warning, leaving only the
+// unambiguous function tool allowed.
+func TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "get_weather"},
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"get_weather", "mcp"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "get_weather" {
+		t.Fatalf("choice = %#v, want only the unambiguous get_weather function tool", choice)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want exactly one ambiguity warning", warnings)
+	}
+	if warnings[0].Feature != `allowedTools entry "mcp"` ||
+		warnings[0].Details != "several tools in this request share this provider tool name; use the tool name from the tools for this request instead" {
+		t.Fatalf("warning = %#v, want the ambiguous-canonical-name warning", warnings[0])
+	}
+}
+
+// TestResolveAllowedTools_EachMcpServerResolvesByOwnName ports TS's "should
+// still resolve each mcp server by its own tool name": even though both MCP
+// tools canonicalize to the ambiguous alias "mcp", an allowedTools entry
+// that names one tool's own SDK Name directly ("beta") resolves
+// unambiguously to that tool, with no warnings.
+func TestResolveAllowedTools_EachMcpServerResolvesByOwnName(t *testing.T) {
+	tools := []types.Tool{
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"beta"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "mcp" || choice.Tools[0].ServerLabel != "beta" {
+		t.Fatalf("choice = %#v, want the beta mcp server resolved directly by its own name", choice)
+	}
+}
+
+// TestResolveAllowedTools_IsSameAllowedTool unit-tests the equality helper
+// used to decide whether two colliding canonical aliases are "the same
+// tool" (and thus not ambiguous) directly.
+func TestResolveAllowedTools_IsSameAllowedTool(t *testing.T) {
+	a := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "one"}}
+	b := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "two"}}
+	if isSameAllowedTool(a, b) {
+		t.Fatalf("isSameAllowedTool(%#v, %#v) = true, want false (different entries)", a, b)
+	}
+	if !isSameAllowedTool(a, a) {
+		t.Fatalf("isSameAllowedTool(a, a) = false, want true (identical entries)")
+	}
+	unsupportedA := allowedToolResolution{reason: "r1"}
+	unsupportedB := allowedToolResolution{reason: "r2"}
+	if isSameAllowedTool(unsupportedA, unsupportedB) {
+		t.Fatalf("isSameAllowedTool with different reasons = true, want false")
+	}
+	if isSameAllowedTool(a, unsupportedA) {
+		t.Fatalf("isSameAllowedTool(supported, unsupported) = true, want false")
+	}
+}
+
+// TestResolveAllowedTools_DirectNameWinsOverAlias covers the first of item
+// 4's two warnings: a name that matches both a tool's own SDK Name and
+// another tool's canonical alias resolves to the direct match, with a
+// warning explaining the overlap.
+func TestResolveAllowedTools_DirectNameWinsOverAlias(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "file_search"},
+		{Type: types.ToolTypeProviderDefined, Name: "myFileSearch", ProviderID: "openai.file_search"},
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"file_search"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one overlap warning", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "file_search" {
+		t.Fatalf("choice = %#v, want the direct function-tool match to win", choice)
+	}
+}

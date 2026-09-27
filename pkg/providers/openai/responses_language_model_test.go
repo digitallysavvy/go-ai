@@ -121,7 +121,7 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools)
+	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools), tools)
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools), tools)
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -1282,7 +1282,7 @@ func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
 		ID:     "resp_123",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{raw},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2132,7 +2132,7 @@ func TestResponsesLanguageModel_ReasoningContextMetadata(t *testing.T) {
 	resp.ServiceTier = "priority"
 	resp.Reasoning = &responses.ResponsesReasoningInfo{Context: "current_turn"}
 
-	result, err := model.convertResponse(resp, true, "", nil, "openai")
+	result, err := model.convertResponse(resp, true, "", nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2460,7 +2460,7 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2486,13 +2486,28 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 // TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
 // 45f2b6a for the streaming path.
 func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","operation":{"type":"delete_file","path":"bar.go"}}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	// A delete_file operation is fully known at output_item.added (row
+	// 45f2b6a / item 9): expect tool-input-start, tool-input-delta (full
+	// input), tool-input-end, then the final tool-call at output_item.done.
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeToolInputStart {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-start", start, err)
+	}
+	delta, err := stream.Next()
+	if err != nil || delta.Type != provider.ChunkTypeToolInputDelta {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta", delta, err)
+	}
+	end, err := stream.Next()
+	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-end", end, err)
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
@@ -2520,11 +2535,15 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reaso
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeReasoningStart {
+		t.Fatalf("chunk = %#v, err = %v, want reasoning-start", start, err)
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original" {
+	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original:0" {
 		t.Fatalf("chunk = %#v, want reasoning-end with the original (first-seen) item id", chunk)
 	}
 }
@@ -2611,7 +2630,7 @@ func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2674,7 +2693,7 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2732,7 +2751,7 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2883,7 +2902,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{programItem, outputItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -3096,7 +3115,7 @@ func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", tools)
+	}, true, "", tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -3162,7 +3181,7 @@ func TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclar
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", tools)
+	}, true, "", tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}

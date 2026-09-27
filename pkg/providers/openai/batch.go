@@ -641,7 +641,9 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	var lm ResponsesLanguageModel
 	// tools is nil: it is only used to expand the internal parallel tool
 	// call wrapper (P1-5b), which batch requests never include.
-	genResult, err := lm.convertResponse(resp.ResponsesAPIResponse, false, "", nil, "openai")
+	// approvalFromPrompt is nil: a batch result has no prior turns carrying
+	// MCP approval responses (P1-5c).
+	genResult, err := lm.convertResponse(resp.ResponsesAPIResponse, false, "", nil, nil, "openai")
 	if err != nil {
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}

@@ -125,7 +125,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Convert response to GenerateResult
-	result := m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 	result.Warnings = warnings
 
 	return result, nil
@@ -748,8 +751,13 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProvid
 	}
 }
 
-// convertResponse converts an Open Responses response to GenerateResult
-func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.GenerateResult {
+// convertResponse converts an Open Responses response to GenerateResult. It
+// returns an error (rather than a partial result) when a registered
+// extension's DecodeItem fails on a known extension item type, matching TS's
+// doGenerate: there, decodeExtensionItem has no surrounding try/catch, so a
+// decode failure propagates and fails the whole generate call (row 9a68261 /
+// P1-5c item 6).
+func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.GenerateResult, error) {
 	result := &types.GenerateResult{
 		RawResponse: response,
 	}
@@ -831,19 +839,14 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 			decoded, handled, err := decodeExtensionItem(m.provider.extensionRegistry, item.Raw, "generate", m.providerName())
 			if handled {
 				if err != nil {
-					// NOTE: this deliberately diverges from TS, which has no
-					// try/catch around decodeExtensionItem in doGenerate --
-					// there, a decode failure propagates and fails the whole
-					// generate call. convertResponse has no error return, so
-					// making this call site match TS exactly would require
-					// threading an error out of convertResponse (and
-					// updating its non-test callers); until that lands, a
-					// decode failure here just skips the malformed item
-					// instead of aborting the response. The streaming path
-					// (decodeExtensionEvent below) does match TS: it
-					// downgrades a decode failure to a per-event stream
-					// error without aborting the whole stream.
-					continue
+					// Matches TS doGenerate: decodeExtensionItem has no
+					// surrounding try/catch there, so a decode failure
+					// propagates and fails the whole generate call. The
+					// streaming path (decodeExtensionEvent below) still
+					// diverges intentionally: it downgrades a decode failure
+					// to a per-event stream error without aborting the whole
+					// stream, matching TS's doStream behavior.
+					return nil, err
 				}
 				result.Content = append(result.Content, decoded...)
 				for _, part := range decoded {
@@ -890,7 +893,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 	}
 	result.FinishReason = MapOpenResponsesFinishReason(finishReason, hasToolCalls)
 
-	return result
+	return result, nil
 }
 
 // convertOpenResponsesUsage converts Open Responses usage to AI SDK usage

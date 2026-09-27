@@ -393,6 +393,70 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 	}
 }
 
+// TestConvertReasoningItemNonOpenAIPartWarns covers the first of P1-5c item
+// 7's two missing warnings: a reasoning part with neither an itemId nor
+// encrypted_content didn't originate from this provider and is dropped with
+// a warning instead of silently.
+func TestConvertReasoningItemNonOpenAIPartWarns(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{types.ReasoningContent{Text: "summary without encrypted content"}},
+	}}}
+	input, warnings, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions: %v", err)
+	}
+	if len(input) != 0 {
+		t.Fatalf("non-OpenAI reasoning part should be dropped, got %#v", input)
+	}
+	if len(warnings) != 1 || warnings[0].Type != "other" || !strings.Contains(warnings[0].Message, "Non-OpenAI reasoning parts are not supported") {
+		t.Fatalf("warnings = %#v, want a Non-OpenAI reasoning parts warning", warnings)
+	}
+}
+
+// TestConvertReasoningItemEmptyAppendWarns covers the second of P1-5c item
+// 7's two missing warnings: an empty-text reasoning part that would append
+// nothing to an already-started (non-stored) reasoning sequence for the
+// same itemId is dropped with a warning, while still forwarding any
+// encrypted_content it carries onto the existing sequence.
+func TestConvertReasoningItemEmptyAppendWarns(t *testing.T) {
+	first := types.ReasoningContent{
+		Text: "first",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"itemId": "rs_1"},
+		},
+	}
+	emptyFollowUp := types.ReasoningContent{
+		Text:             "",
+		EncryptedContent: "enc_late",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"itemId": "rs_1"},
+		},
+	}
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{first, emptyFollowUp},
+	}}}
+	input, warnings, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("expected a single merged reasoning item, got %#v", input)
+	}
+	item := input[0].(map[string]interface{})
+	if item["encrypted_content"] != "enc_late" {
+		t.Fatalf("reasoning item = %#v, want the late encrypted_content still forwarded", item)
+	}
+	summary := item["summary"].([]map[string]interface{})
+	if len(summary) != 1 || summary[0]["text"] != "first" {
+		t.Fatalf("reasoning summary = %#v, want only the first (non-empty) summary part", summary)
+	}
+	if len(warnings) != 1 || warnings[0].Type != "other" || !strings.Contains(warnings[0].Message, "Cannot append empty reasoning part") {
+		t.Fatalf("warnings = %#v, want a Cannot append empty reasoning part warning", warnings)
+	}
+}
+
 func TestConvertPromptToInputResponsesStoredAssistantTextAndClientFunctionCalls(t *testing.T) {
 	prompt := types.Prompt{Messages: []types.Message{{
 		Role: types.RoleAssistant,

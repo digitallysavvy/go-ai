@@ -318,11 +318,21 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string) (*x
 	}
 
 	if resp.StatusCode == 202 {
-		// Bound how much of the body we attempt to parse; treat an empty,
-		// invalid, or oversized payload as a pending status rather than an
-		// error.
+		// Bound how much of the body we attempt to parse. An empty or
+		// non-JSON payload is treated as a pending status, but an oversized
+		// one is a real error (row 2b872b0 / item 8) -- mirroring TS
+		// readPendingBody, which throws an APICallError once the streamed
+		// body exceeds MAX_PENDING_BODY_BYTES rather than silently guessing
+		// "pending" for a payload that large.
 		limited, readErr := io.ReadAll(io.LimitReader(bytes.NewReader(resp.Body), maxPendingStatusBodyBytes+1))
-		if readErr != nil || len(limited) > maxPendingStatusBodyBytes || len(limited) == 0 {
+		if readErr != nil {
+			return &xaiVideoStatusResponse{Status: "pending"}, nil
+		}
+		if len(limited) > maxPendingStatusBodyBytes {
+			return nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
+				fmt.Sprintf("xAI video status response exceeded %d bytes", maxPendingStatusBodyBytes), nil)
+		}
+		if len(limited) == 0 {
 			return &xaiVideoStatusResponse{Status: "pending"}, nil
 		}
 
