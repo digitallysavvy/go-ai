@@ -470,6 +470,68 @@ func TestDualIntegration_Embed_Error(t *testing.T) {
 	assertRootSpanEnded(t, "genai", genAIRec, "embeddings test-embedding-model", true)
 }
 
+// --- embedMany ----------------------------------------------------------------
+
+// TestDualIntegration_EmbedMany_Success exercises the batching path in
+// pkg/ai/embed_many_batching.go, which opens a nested "doEmbed" span per
+// batch (keyed by its own embedCallId, not the top-level callId) under the
+// "ai.embedMany" root — the embedSpans map case in legacyCallState/
+// genAICallState (H5), distinct from Embed's single top-level doEmbed span.
+func TestDualIntegration_EmbedMany_Success(t *testing.T) {
+	legacyRec, genAIRec, settings := dualIntegrationSettings(t)
+
+	model := &testutil.MockEmbeddingModel{
+		ProviderName: "test-provider",
+		ModelName:    "test-embedding-model",
+	}
+
+	_, err := EmbedMany(context.Background(), EmbedManyOptions{
+		Model:                 model,
+		Inputs:                []string{"hello", "world"},
+		ExperimentalTelemetry: settings,
+	})
+	if err != nil {
+		t.Fatalf("EmbedMany() error = %v", err)
+	}
+
+	assertAllSpansEndedExactlyOnce(t, "legacy", legacyRec)
+	assertAllSpansEndedExactlyOnce(t, "genai", genAIRec)
+	assertRootSpanEnded(t, "legacy", legacyRec, "ai.embedMany", false)
+	assertRootSpanEnded(t, "genai", genAIRec, "embeddings test-embedding-model", false)
+}
+
+// TestDualIntegration_EmbedMany_Error covers the provider-error path through
+// embedManyCalls: OnEmbedStart opens the nested doEmbed span, DoEmbedMany
+// fails before OnEmbedEnd can close it, and FireOnError must close both the
+// leaked nested doEmbed span (via the embedSpans defensive cleanup, H5) and
+// the root span for both integrations.
+func TestDualIntegration_EmbedMany_Error(t *testing.T) {
+	legacyRec, genAIRec, settings := dualIntegrationSettings(t)
+
+	wantErr := errors.New("provider boom")
+	model := &testutil.MockEmbeddingModel{
+		ProviderName: "test-provider",
+		ModelName:    "test-embedding-model",
+		DoEmbedManyFunc: func(_ context.Context, _ []string, _ *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+			return nil, wantErr
+		},
+	}
+
+	_, err := EmbedMany(context.Background(), EmbedManyOptions{
+		Model:                 model,
+		Inputs:                []string{"hello", "world"},
+		ExperimentalTelemetry: settings,
+	})
+	if err == nil {
+		t.Fatal("expected EmbedMany to return an error")
+	}
+
+	assertAllSpansEndedExactlyOnce(t, "legacy", legacyRec)
+	assertAllSpansEndedExactlyOnce(t, "genai", genAIRec)
+	assertRootSpanEnded(t, "legacy", legacyRec, "ai.embedMany", true)
+	assertRootSpanEnded(t, "genai", genAIRec, "embeddings test-embedding-model", true)
+}
+
 // --- rerank -----------------------------------------------------------------
 
 func TestDualIntegration_Rerank_Success(t *testing.T) {
