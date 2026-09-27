@@ -1263,10 +1263,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 						ProviderExecuted: true,
 					},
 					types.ToolResultContent{
-						ToolCallID:       computerItemID,
-						ToolName:         "openai.computer_use",
-						Result:           map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
-						ProviderExecuted: true,
+						ToolCallID: computerItemID,
+						ToolName:   "openai.computer_use",
+						Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
+						// TS never sets providerExecuted on this tool-result,
+						// only on the tool-call.
 					},
 				)
 				continue
@@ -1360,10 +1361,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
-				ToolCallID:       item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
-				Result:           map[string]interface{}{"result": item.Result, "status": item.Status},
-				ProviderExecuted: true,
+				ToolCallID: item.CallID,
+				ToolName:   "openai.programmatic_tool_calling",
+				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
+				// TS never sets providerExecuted on this tool-result, only
+				// on the tool-call.
 			})
 
 		case "web_search_call":
@@ -1391,10 +1393,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					ProviderExecuted: true,
 				},
 				types.ToolResultContent{
-					ToolCallID:       item.ID,
-					ToolName:         toolName,
-					Result:           mapWebSearchOutput(item.Action),
-					ProviderExecuted: true,
+					ToolCallID: item.ID,
+					ToolName:   toolName,
+					Result:     mapWebSearchOutput(item.Action),
+					// TS never sets providerExecuted on this tool-result,
+					// only on the tool-call.
 				},
 			)
 
