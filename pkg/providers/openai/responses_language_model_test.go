@@ -121,7 +121,7 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(opts.Tools))
+	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools))
+	}, true, responsesWebSearchToolName(tools), tools)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools))
+	}, true, responsesWebSearchToolName(tools), tools)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -1204,7 +1204,7 @@ func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
 		ID:     "resp_123",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{raw},
-	}, true, "")
+	}, true, "", nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2222,7 +2222,7 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "")
+	}, true, "", nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2373,7 +2373,7 @@ func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "")
+	}, true, "", nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2436,7 +2436,7 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "")
+	}, true, "", nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2564,7 +2564,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{programItem, outputItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "")
+	}, true, "", nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2754,5 +2754,185 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingRejectsDeniedResult(t *te
 	}, "system", responses.ConvertOptions{})
 	if err != nil {
 		t.Fatalf("direct caller's execution-denied result should not be rejected: %v", err)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools covers row
+// 6be0f51: an internal "parallel" function call whose tool_uses all name
+// declared function tools expands into one tool call per recipient, in both
+// generate and stream.
+func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{
+		{Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "get_time", Parameters: map[string]interface{}{"type": "object"}},
+	}
+
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.get_weather","parameters":{"city":"nyc"}},{"recipient_name":"functions.get_time","parameters":{"zone":"utc"}}]}`
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_p", "name": "parallel",
+		"arguments": rawInput,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", tools)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %#v, want two expanded tool calls", result.ToolCalls)
+	}
+	if result.ToolCalls[0].ID != "call_p_0" || result.ToolCalls[0].ToolName != "get_weather" || result.ToolCalls[0].Arguments["city"] != "nyc" {
+		t.Fatalf("ToolCalls[0] = %#v, want get_weather with city=nyc", result.ToolCalls[0])
+	}
+	if result.ToolCalls[1].ID != "call_p_1" || result.ToolCalls[1].ToolName != "get_time" || result.ToolCalls[1].Arguments["zone"] != "utc" {
+		t.Fatalf("ToolCalls[1] = %#v, want get_time with zone=utc", result.ToolCalls[1])
+	}
+	openaiMeta, ok := result.ToolCalls[0].ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ToolCalls[0].ProviderMetadata = %#v, want openai metadata", result.ToolCalls[0].ProviderMetadata)
+	}
+	parallelMeta, ok := openaiMeta["parallelToolCall"].(responses.ParallelToolCallMetadata)
+	if !ok || parallelMeta.ToolCallID != "call_p" || parallelMeta.ToolName != "parallel" || parallelMeta.Count != 2 || parallelMeta.Index != 0 {
+		t.Fatalf("parallelToolCall metadata = %#v, want wrapper call_p/parallel, count=2, index=0", openaiMeta["parallelToolCall"])
+	}
+
+	// Streaming path: the wrapper's arguments arrive as one delta, expansion
+	// happens at output_item.done.
+	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel"}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":""}}
+
+`)), false, "web_search", "openai", nil)
+	stream.tools = tools
+	defer stream.Close() //nolint:errcheck
+
+	chunk1, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk1.Type != provider.ChunkTypeToolCall || chunk1.ToolCall.ToolName != "get_weather" {
+		t.Fatalf("chunk1 = %#v, want get_weather tool call", chunk1)
+	}
+	chunk2, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "get_time" {
+		t.Fatalf("chunk2 = %#v, want get_time tool call", chunk2)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclared
+// covers row 6be0f51: when a tool_uses recipient doesn't name a declared
+// function tool, the "parallel" call is left unexpanded.
+func TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclared(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{{Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}}}
+
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.unknown_tool","parameters":{}}]}`
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_p", "name": "parallel",
+		"arguments": rawInput,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", tools)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "parallel" {
+		t.Fatalf("ToolCalls = %#v, want a single unexpanded 'parallel' tool call", result.ToolCalls)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallReplayGrouping covers row
+// 6be0f51: with conversation state, expanded child calls/results regroup
+// back into a single function_call/function_call_output pair using the
+// original wrapper's call_id; without conversation state, each child
+// replays individually.
+func TestResponsesLanguageModel_ParallelToolCallReplayGrouping(t *testing.T) {
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.get_weather","parameters":{"city":"nyc"}},{"recipient_name":"functions.get_time","parameters":{"zone":"utc"}}]}`
+	wrapperMeta := func(index int) map[string]interface{} {
+		return map[string]interface{}{
+			"openai": map[string]interface{}{
+				"parallelToolCall": responses.ParallelToolCallMetadata{
+					ItemID: "fc_1", ToolCallID: "call_p", ToolName: "parallel",
+					Input: rawInput, Index: index, Count: 2,
+				},
+			},
+		}
+	}
+	toolCalls := []types.ToolCall{
+		{ID: "call_p_0", ToolName: "get_weather", Arguments: map[string]interface{}{"city": "nyc"}, ProviderMetadata: wrapperMeta(0)},
+		{ID: "call_p_1", ToolName: "get_time", Arguments: map[string]interface{}{"zone": "utc"}, ProviderMetadata: wrapperMeta(1)},
+	}
+	toolResults := []types.ContentPart{
+		types.ToolResultContent{
+			ToolCallID: "call_p_0", ToolName: "get_weather",
+			Output:          &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "sunny"},
+			ProviderOptions: wrapperMeta(0),
+		},
+		types.ToolResultContent{
+			ToolCallID: "call_p_1", ToolName: "get_time",
+			Output:          &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "noon"},
+			ProviderOptions: wrapperMeta(1),
+		},
+	}
+
+	// With conversation state: regroup into one function_call + one
+	// function_call_output using the wrapper's own call_id.
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: toolCalls},
+			{Role: types.RoleTool, Content: toolResults},
+		},
+	}, "system", responses.ConvertOptions{HasConversation: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	// hasConversation: the assistant side contributes nothing (the
+	// conversation already has the wrapper item); the tool side contributes
+	// exactly one regrouped function_call_output.
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one regrouped function_call_output", input)
+	}
+	out, ok := input[0].(responses.FunctionCallOutputItem)
+	if !ok || out.CallID != "call_p" {
+		t.Fatalf("input[0] = %#v, want function_call_output for call_p", input[0])
+	}
+	joined, ok := out.Output.(string)
+	if !ok || joined != "sunny\nnoon" {
+		t.Fatalf("output = %#v, want \"sunny\\nnoon\"", out.Output)
+	}
+
+	// Without conversation/previousResponseId state: each child replays
+	// individually (no regrouping).
+	plainInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: toolCalls},
+			{Role: types.RoleTool, Content: toolResults},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (stateless) failed: %v", err)
+	}
+	var functionCalls, functionCallOutputs int
+	for _, item := range plainInput {
+		switch item.(type) {
+		case responses.FunctionCallItem:
+			functionCalls++
+		case responses.FunctionCallOutputItem:
+			functionCallOutputs++
+		}
+	}
+	if functionCalls != 2 || functionCallOutputs != 2 {
+		t.Fatalf("stateless replay: functionCalls=%d functionCallOutputs=%d, want 2 and 2 (no regrouping)", functionCalls, functionCallOutputs)
 	}
 }

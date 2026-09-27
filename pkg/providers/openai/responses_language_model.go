@@ -88,7 +88,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
 	}
 
-	result, err := m.convertResponse(resp, store, webSearchToolName, m.provider.responsesProviderOptionsName())
+	result, err := m.convertResponse(resp, store, webSearchToolName, opts.Tools, m.provider.responsesProviderOptionsName())
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,9 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header), warnings), nil
+	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
+	stream.tools = opts.Tools
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1011,7 +1013,7 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
-func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, providerOptionsName ...string) (*types.GenerateResult, error) {
+func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
 	if len(providerOptionsName) > 0 && providerOptionsName[0] != "" {
 		providerName = providerOptionsName[0]
@@ -1049,6 +1051,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		case "function_call":
 			var item responses.FunctionCallItem
 			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			// Row 6be0f51: expand an internal "parallel" wrapper call into
+			// one tool call per nested recipient, when every recipient names
+			// a declared function tool.
+			if expanded, ok := responses.ExpandParallelToolCall(item.CallID, item.Name, item.Arguments, item.ID, tools, providerName); ok {
+				toolCalls = append(toolCalls, expanded...)
 				continue
 			}
 			var args map[string]interface{}
@@ -1510,6 +1519,12 @@ type responsesStream struct {
 	// instead of whatever response.completed/incomplete would otherwise
 	// report, so callers don't see a false "stop"/"length" outcome.
 	hadDecodeError bool
+
+	// tools holds the request's declared tools, used to expand an internal
+	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
+	// Left nil in most tests; only DoStream and tests exercising parallel
+	// expansion set it.
+	tools []types.Tool
 }
 
 // emitDecodeError reports a decode failure for a known Responses API SSE
@@ -1954,6 +1969,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if accum.arguments != "" {
 			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
 		}
+		rawArguments := accum.arguments
 		var item responses.FunctionCallItem
 		if err := json.Unmarshal(e.Item, &item); err == nil {
 			if item.ID != "" {
@@ -1964,7 +1980,21 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			}
 			if accum.arguments == "" && item.Arguments != "" {
 				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+				rawArguments = item.Arguments
 			}
+		}
+		// Row 6be0f51: expand an internal "parallel" wrapper call into one
+		// tool-call chunk per nested recipient, when every recipient names a
+		// declared function tool.
+		if expanded, ok := responses.ExpandParallelToolCall(accum.id, accum.name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
+			for _, tc := range expanded {
+				tc := tc
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolCall,
+					ToolCall: &tc,
+				})
+			}
+			return s.Next()
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,

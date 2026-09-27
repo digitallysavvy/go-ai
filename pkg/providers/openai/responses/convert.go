@@ -60,6 +60,24 @@ type ConvertOptions struct {
 	// when the result itself doesn't carry its own caller metadata (row
 	// e105b2b). Do not set directly.
 	programmaticCallerIDs map[string]bool
+
+	// parallelToolResultGroups, emittedParallelToolCalls and
+	// emittedParallelToolResults support regrouping an expanded "parallel"
+	// tool call wrapper's child results back into a single
+	// function_call/function_call_output pair on replay, when Responses API
+	// server-side state (conversation or previousResponseId) requires the
+	// server's original wrapper call_id to be preserved (row 6be0f51).
+	// Populated by ConvertPromptToInputWithOptions; do not set directly.
+	parallelToolResultGroups   map[string]parallelToolResultGroup
+	emittedParallelToolCalls   map[string]bool
+	emittedParallelToolResults map[string]bool
+}
+
+// parallelToolResultGroup is a complete set of child results for one
+// expanded "parallel" tool call wrapper, ordered by their original index.
+type parallelToolResultGroup struct {
+	metadata ParallelToolCallMetadata
+	results  []types.ToolResultContent
 }
 
 // toolSearchName returns the configured tool_search tool name, defaulting to
@@ -82,6 +100,13 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
 	opts.programmaticCallerIDs = collectProgrammaticCallerIDs(prompt, openAIProviderOptionsName(opts))
+	if opts.HasConversation || opts.HasPreviousResponseID {
+		opts.parallelToolResultGroups = collectCompleteParallelToolResultGroups(prompt, openAIProviderOptionsName(opts))
+	} else {
+		opts.parallelToolResultGroups = map[string]parallelToolResultGroup{}
+	}
+	opts.emittedParallelToolCalls = map[string]bool{}
+	opts.emittedParallelToolResults = map[string]bool{}
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -536,6 +561,28 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 }
 
 func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool) {
+	// Row 6be0f51: a tool call expanded from an internal "parallel" wrapper
+	// replays as the ORIGINAL wrapper's single function_call (only once, and
+	// only when the server doesn't already remember it via conversation
+	// state), not as its own individual function_call.
+	if metadata, ok := GetParallelToolCallMetadata(tc.ProviderMetadata, openAIProviderOptionsName(opts)); ok {
+		if group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]; exists && sameParallelToolCall(group.metadata, metadata) {
+			if opts.emittedParallelToolCalls[group.metadata.ToolCallID] {
+				return nil, true
+			}
+			opts.emittedParallelToolCalls[group.metadata.ToolCallID] = true
+			if opts.HasConversation {
+				// Conversations already contain the original wrapper item.
+				return nil, true
+			}
+			return FunctionCallItem{
+				Type:      "function_call",
+				CallID:    group.metadata.ToolCallID,
+				Name:      group.metadata.ToolName,
+				Arguments: group.metadata.Input,
+			}, true
+		}
+	}
 	toolName := normalizeOpenAIToolName(tc.ToolName)
 	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
@@ -1062,6 +1109,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Approve:           p.Approved,
 			})
 		case types.ToolResultContent:
+			if handled, err := appendParallelToolResult(&items, p, opts); handled {
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if shouldSkipApprovalDeniedOutput(p) {
 				continue
 			}
@@ -1087,6 +1140,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 			})
 		case *types.ToolResultContent:
 			if p != nil {
+				if handled, err := appendParallelToolResult(&items, *p, opts); handled {
+					if err != nil {
+						return nil, err
+					}
+					continue
+				}
 				if shouldSkipApprovalDeniedOutput(*p) {
 					continue
 				}
@@ -1114,6 +1173,27 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 		}
 	}
 	return items, nil
+}
+
+// appendParallelToolResult reports whether part belongs to a complete
+// parallel tool result group (row 6be0f51): if so, it appends the group's
+// single regrouped function_call_output to items (only on the first child
+// result seen for that group) and returns handled=true so the caller skips
+// its normal per-part handling for this part.
+func appendParallelToolResult(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) (handled bool, err error) {
+	metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), openAIProviderOptionsName(opts))
+	if !ok {
+		return false, nil
+	}
+	group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]
+	if !exists || !sameParallelToolCall(group.metadata, metadata) {
+		return false, nil
+	}
+	if !opts.emittedParallelToolResults[group.metadata.ToolCallID] {
+		opts.emittedParallelToolResults[group.metadata.ToolCallID] = true
+		*items = append(*items, buildParallelFunctionCallOutput(group, opts))
+	}
+	return true, nil
 }
 
 // collectProgrammaticCallerIDs scans the prompt's assistant messages for
@@ -1168,6 +1248,137 @@ func rejectDeniedProgrammaticToolResult(part types.ToolResultContent, opts Conve
 		return nil
 	}
 	return fmt.Errorf("openai.responses: execution-denied results for programmatic tool calls are not supported")
+}
+
+// sameParallelToolCall reports whether two ParallelToolCallMetadata values
+// describe the same "parallel" wrapper call (row 6be0f51).
+func sameParallelToolCall(a, b ParallelToolCallMetadata) bool {
+	return a.ItemID == b.ItemID &&
+		a.ToolCallID == b.ToolCallID &&
+		a.ToolName == b.ToolName &&
+		a.Input == b.Input &&
+		a.Count == b.Count
+}
+
+// toolResultContentProviderMetadata merges a ToolResultContent's
+// ProviderOptions and ProviderMetadata into one map, keyed by provider name,
+// mirroring toolCallContentProviderMetadata for the tool-result side.
+func toolResultContentProviderMetadata(part types.ToolResultContent) map[string]interface{} {
+	metadata := map[string]interface{}{}
+	for key, value := range part.ProviderOptions {
+		metadata[key] = value
+	}
+	if len(part.ProviderMetadata) == 0 {
+		return metadata
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(part.ProviderMetadata, &raw); err != nil {
+		return metadata
+	}
+	for key, value := range raw {
+		if _, ok := metadata[key]; !ok {
+			metadata[key] = value
+		}
+	}
+	return metadata
+}
+
+// collectCompleteParallelToolResultGroups scans the prompt's "tool" role
+// messages for results carrying parallelToolCall metadata, and returns the
+// complete groups: every child result for a given wrapper call_id present,
+// none duplicated, and all agreeing on the same wrapper identity (row
+// 6be0f51, mirrors TS collectCompleteParallelToolResultGroups).
+func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName string) map[string]parallelToolResultGroup {
+	type pendingGroup struct {
+		metadata ParallelToolCallMetadata
+		results  map[int]types.ToolResultContent
+		invalid  bool
+	}
+	pending := map[string]*pendingGroup{}
+
+	addResult := func(part types.ToolResultContent) {
+		metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), providerName)
+		if !ok {
+			return
+		}
+		g, exists := pending[metadata.ToolCallID]
+		if !exists {
+			pending[metadata.ToolCallID] = &pendingGroup{
+				metadata: metadata,
+				results:  map[int]types.ToolResultContent{metadata.Index: part},
+			}
+			return
+		}
+		if _, has := g.results[metadata.Index]; has || !sameParallelToolCall(g.metadata, metadata) {
+			g.invalid = true
+			return
+		}
+		g.results[metadata.Index] = part
+	}
+
+	for _, msg := range prompt.Messages {
+		if msg.Role != types.RoleTool {
+			continue
+		}
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolResultContent:
+				addResult(p)
+			case *types.ToolResultContent:
+				if p != nil {
+					addResult(*p)
+				}
+			}
+		}
+	}
+
+	complete := map[string]parallelToolResultGroup{}
+	for toolCallID, g := range pending {
+		if g.invalid || len(g.results) != g.metadata.Count {
+			continue
+		}
+		ordered := make([]types.ToolResultContent, g.metadata.Count)
+		allPresent := true
+		for i := 0; i < g.metadata.Count; i++ {
+			r, has := g.results[i]
+			if !has {
+				allPresent = false
+				break
+			}
+			ordered[i] = r
+		}
+		if allPresent {
+			complete[toolCallID] = parallelToolResultGroup{metadata: g.metadata, results: ordered}
+		}
+	}
+	return complete
+}
+
+// buildParallelFunctionCallOutput joins a complete parallel tool result
+// group's child outputs into the single function_call_output the server
+// expects for its original "parallel" wrapper call_id, in the same order as
+// the original tool_uses array (row 6be0f51).
+//
+// TS additionally supports per-child prompt-cache-breakpoints by emitting an
+// array-of-parts output in that case; this port always joins with "\n"
+// (matching TS's plain-string fallback), since attaching a prompt-cache
+// breakpoint to one child of a regrouped parallel call is a narrow edge case.
+func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts ConvertOptions) FunctionCallOutputItem {
+	parts := make([]string, len(group.results))
+	for i, r := range group.results {
+		switch out := toolResultOutputWithOptions(r, opts).(type) {
+		case string:
+			parts[i] = out
+		default:
+			b, _ := json.Marshal(out)
+			parts[i] = string(b)
+		}
+	}
+	return FunctionCallOutputItem{
+		Type:   "function_call_output",
+		CallID: group.metadata.ToolCallID,
+		Output: strings.Join(parts, "\n"),
+	}
 }
 
 func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions) interface{} {
