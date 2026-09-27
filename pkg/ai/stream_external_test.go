@@ -2,6 +2,9 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +212,204 @@ func TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep(t *testing.
 	}
 	if steps[0].FinishReason != types.FinishReasonError {
 		t.Errorf("Steps()[0].FinishReason = %q, want %q", steps[0].FinishReason, types.FinishReasonError)
+	}
+}
+
+// TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage ports
+// the harness.md WG4 / TS 57e0a59 behavior: a terminal ChunkTypeFinish that
+// carries no new step content of its own (every step was already closed by
+// its own ChunkTypeFinishStep) must not sum its Usage onto the locally
+// accumulated total, and must not append a spurious empty extra step —
+// its Usage instead OVERRIDES the total, matching
+// HarnessStreamTextResult.finish()'s `this.accumulatedUsage =
+// asLanguageModelUsage(input.totalUsage)`.
+func TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage(t *testing.T) {
+	t.Parallel()
+
+	one := int64(1)
+	hundred := int64(100)
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		// Step 0.
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+		// Step 1.
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: " there"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+		// Terminal finish: no new content, carries the bridge's own
+		// (larger, e.g. cache-inclusive) totalUsage that must win outright.
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &hundred, OutputTokens: &hundred, TotalTokens: &hundred}},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if got, want := result.Text(), "hi there"; got != want {
+		t.Fatalf("Text() = %q, want %q", got, want)
+	}
+	steps := result.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("len(Steps()) = %d, want 2 (no phantom step for the terminal boundary): %+v", len(steps), steps)
+	}
+	usage := result.Usage()
+	if usage.TotalTokens == nil || *usage.TotalTokens != 100 {
+		t.Fatalf("Usage().TotalTokens = %v, want 100 (overridden by the terminal finish, not summed to 102)", usage.TotalTokens)
+	}
+	if got := result.FinishReason(); got != types.FinishReasonStop {
+		t.Fatalf("FinishReason() = %q, want stop", got)
+	}
+}
+
+// TestNewStreamTextResultFromParts_SingleEmptyStepStillAppended guards
+// against the terminal-ChunkTypeFinish-as-boundary optimization above
+// misfiring for a non-harness caller whose only step happens to produce no
+// visible content and is closed directly by ChunkTypeFinish with no
+// preceding ChunkTypeFinishStep (stepNumber never advanced past 0). That
+// step must still be appended to Steps() and its usage recorded, exactly as
+// it would have been before the harness-specific override was added.
+func TestNewStreamTextResultFromParts_SingleEmptyStepStillAppended(t *testing.T) {
+	t.Parallel()
+
+	one := int64(1)
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("len(Steps()) = %d, want 1 (a genuinely empty lone step must still be recorded)", len(steps))
+	}
+	usage := result.Usage()
+	if usage.TotalTokens == nil || *usage.TotalTokens != 1 {
+		t.Fatalf("Usage().TotalTokens = %v, want 1", usage.TotalTokens)
+	}
+}
+
+// TestNewStreamTextResultFromParts_TerminalFinishAppliesFinishReasonAndMetadata
+// verifies that when the terminal-boundary override path fires (harness
+// shape), FinishReason, RawFinishReason and ProviderMetadata carried on that
+// chunk are still applied to the result rather than being dropped along with
+// its (absent) content.
+func TestNewStreamTextResultFromParts_TerminalFinishAppliesFinishReasonAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonLength, RawFinishReason: "max_tokens", ProviderMetadata: json.RawMessage(`{"harness":{"turnID":"t1"}}`)},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if got := result.FinishReason(); got != types.FinishReasonLength {
+		t.Fatalf("FinishReason() = %q, want %q", got, types.FinishReasonLength)
+	}
+	if got := result.RawFinishReason(); got != "max_tokens" {
+		t.Fatalf("RawFinishReason() = %q, want %q", got, "max_tokens")
+	}
+	md := result.ProviderMetadata()
+	if md == nil {
+		t.Fatal("ProviderMetadata() = nil, want the terminal finish chunk's metadata")
+	}
+	var decoded map[string]map[string]interface{}
+	if err := json.Unmarshal(md, &decoded); err != nil {
+		t.Fatalf("ProviderMetadata() did not decode: %v", err)
+	}
+	if decoded["harness"]["turnID"] != "t1" {
+		t.Fatalf("ProviderMetadata() = %s, want harness.turnID = t1", md)
+	}
+}
+
+// TestNewStreamTextResultFromParts_AbortChunkPreservesPartialStep ports TS
+// 86a84c9's "settle a turn aborted by the caller's abortSignal with an
+// `abort` stream part instead of an [error]" contract at the
+// NewStreamTextResultFromParts level: a ChunkTypeAbort arriving mid-step
+// (like ChunkTypeError) still flushes accumulated text/tool calls onto
+// Steps()/Text() instead of discarding them, uses FinishReasonOther (not
+// FinishReasonError, since this is a clean stop, not a failure), and Err()
+// is still non-nil so an awaiting caller does not hang.
+func TestNewStreamTextResultFromParts_AbortChunkPreservesPartialStep(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "partial"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "stopped by caller"},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	err := result.Err()
+	if err == nil || !strings.Contains(err.Error(), "stopped by caller") {
+		t.Fatalf("Err() = %v, want it to mention %q", err, "stopped by caller")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Err() = %v, want errors.Is(err, context.Canceled) so downstream abort-detection classifies it correctly regardless of which ctx later reads the result", err)
+	}
+	if result.Text() != "partial" {
+		t.Errorf("Text() = %q, want %q (partial content preserved)", result.Text(), "partial")
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps() = %d, want 1 (the partial step should still be flushed)", len(steps))
+	}
+	if steps[0].FinishReason != types.FinishReasonOther {
+		t.Errorf("Steps()[0].FinishReason = %q, want %q (a clean stop, not an error)", steps[0].FinishReason, types.FinishReasonOther)
+	}
+}
+
+// TestNewStreamTextResultFromParts_AbortChunkSurfacesAsUIMessageAbort verifies
+// that ToUIMessageStream forwards a ChunkTypeAbort as an "abort" UI chunk
+// rather than an "error" one, matching TS's "toUIMessageStream emits an
+// abort chunk [and] skips onError" expectation (TS 86a84c9).
+func TestNewStreamTextResultFromParts_AbortChunkSurfacesAsUIMessageAbort(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "stopped by caller"},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	var types_ []string
+	for c := range uiChunks {
+		ty, _ := c["type"].(string)
+		types_ = append(types_, ty)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("ToUIMessageStream error = %v", err)
+	}
+
+	sawAbort, sawError := false, false
+	for _, ty := range types_ {
+		if ty == "abort" {
+			sawAbort = true
+		}
+		if ty == "error" {
+			sawError = true
+		}
+	}
+	if !sawAbort {
+		t.Fatalf("chunk types = %v, want an \"abort\" chunk", types_)
+	}
+	if sawError {
+		t.Fatalf("chunk types = %v, want no \"error\" chunk", types_)
 	}
 }
 

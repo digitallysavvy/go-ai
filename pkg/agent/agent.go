@@ -115,6 +115,17 @@ type AgentGenerateOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	ExperimentalDownload        ai.DownloadFunction
 
+	// HarnessSession is the extension point a harness.HarnessAgent (see
+	// pkg/harness) uses to receive the *harness.AgentSession its caller
+	// created via HarnessAgent.CreateSession. Typed as interface{} (rather
+	// than a pkg/harness type) to avoid an import cycle: pkg/harness imports
+	// this package so HarnessAgent can satisfy the Agent interface. Other
+	// Agent implementations ignore this field. Mirrors the way TS
+	// `AgentCallParameters` carries a `session` for HarnessAgent's
+	// generate/stream (state/parity/sep_23_2026/harness.md §1.3, "the
+	// session is passed via options"). See harness.SessionFromCallOptions.
+	HarnessSession interface{}
+
 	// InstructionMessages supplies this call's instructions as system
 	// messages. Takes precedence over Instructions/System/Prompt when
 	// non-empty. See AgentConfig.InstructionMessages.

@@ -53,8 +53,27 @@ type ExternalStreamOptions struct {
 //   - provider.ChunkTypeFinishStep closes a step that is not the last one:
 //     the step is appended to Steps(), and consumption continues (expecting
 //     another ChunkTypeStreamStart).
-//   - provider.ChunkTypeFinish closes the final step the same way, and marks
-//     the whole result done.
+//   - provider.ChunkTypeFinish closes the final step the same way when it
+//     carries new content of its own (no preceding ChunkTypeFinishStep for
+//     that content), and marks the whole result done. But when it arrives
+//     with no new content at all — i.e. every step was already closed by its
+//     own ChunkTypeFinishStep — it is treated as a pure turn-closing
+//     boundary: no extra empty step is appended, and its Usage (when set)
+//     OVERRIDES the locally-summed total instead of being added to it. This
+//     is the shape a harness.HarnessAgent turn produces: one
+//     ChunkTypeFinishStep per underlying model step (each with that step's
+//     own usage), then a terminal, content-less ChunkTypeFinish carrying the
+//     turn's real totalUsage (see state/parity/sep_23_2026/harness.md WG4,
+//     TS 57e0a59).
+//   - provider.ChunkTypeAbort closes the in-progress step the same way
+//     ChunkTypeError does (preserving whatever it accumulated), marks the
+//     result done, and sets Err() to a non-nil error — but with
+//     types.FinishReasonOther instead of FinishReasonError, since it
+//     represents a clean, caller-initiated stop (TS 86a84c9) rather than a
+//     failure. Consumers using ToUIMessageStream see the usual `abort` UI
+//     chunk and no `onError`, exactly as for a provider.LanguageModel-driven
+//     stream, since every chunk (including this one) is forwarded to
+//     opts.OnChunk/the internal chunk buffer unconditionally.
 //
 // No provider is called and no tools are executed: src is assumed to already
 // represent everything that happened (e.g. a harness bridge session that ran
@@ -81,6 +100,20 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 	go result.consumeExternalParts(ctx, src, opts)
 
 	return result
+}
+
+// isEmpty reports whether no content has been accumulated for this step
+// since it was last reset. Used to distinguish a terminal ChunkTypeFinish
+// that closes a step's own content (the general case) from one that is a
+// pure turn-closing boundary carrying no new content of its own (the harness
+// case: every step was already closed by its own ChunkTypeFinishStep, and
+// the terminal ChunkTypeFinish exists only to carry the turn's totalUsage and
+// mark the stream done). See consumeExternalParts's ChunkTypeFinish handling
+// below.
+func (s *externalStepAccum) isEmpty() bool {
+	return s.text == "" && len(s.content) == 0 && len(s.reasoning) == 0 &&
+		len(s.files) == 0 && len(s.sources) == 0 && len(s.toolCalls) == 0 &&
+		len(s.toolResults) == 0 && len(s.warnings) == 0
 }
 
 // externalStepAccum holds the in-progress state for one step while
@@ -269,6 +302,53 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeFinishStep, provider.ChunkTypeFinish:
+			// A terminal ChunkTypeFinish that arrives with no step content
+			// accumulated since the last step boundary is a pure turn-closing
+			// boundary, not a fresh step of its own: every real step was
+			// already appended to Steps() by its own ChunkTypeFinishStep.
+			// This is exactly the shape a harness.HarnessAgent turn produces
+			// (harness.md WG4, TS 57e0a59 "ensure finish chunk's total usage
+			// is actually coming from total usage"): the terminal `finish`
+			// bridge part carries the run's totalUsage, which must OVERRIDE
+			// the locally summed total rather than being added to it, and
+			// must not create a spurious empty extra step. Handle that case
+			// distinctly instead of running it through finishStep, which
+			// always appends a step and always sums usage.
+			//
+			// Guarded by stepNumber > 0 so a caller whose *only* step ends
+			// directly in ChunkTypeFinish (no ChunkTypeFinishStep ever seen —
+			// the general, non-harness shape: a single real step that
+			// happens to have produced no visible content) still gets that
+			// step appended to Steps() and its usage summed, exactly as
+			// before this change. Without this guard, a legitimately empty
+			// first-and-only step would be silently dropped from Steps()
+			// instead of recorded. A harness turn always closes every model
+			// step, including a lone one, with its own ChunkTypeFinishStep
+			// before the terminal ChunkTypeFinish (run_prompt.go rejects a
+			// terminal `finish` with unclosed step content), so stepNumber is
+			// always >= 1 by the time the real turn-closing boundary arrives.
+			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() && stepNumber > 0 {
+				r.mu.Lock()
+				if chunk.Usage != nil {
+					r.usage = *chunk.Usage
+				}
+				r.finishReason = chunk.FinishReason
+				if chunk.RawFinishReason != "" {
+					r.rawFinishReason = chunk.RawFinishReason
+				}
+				if len(chunk.ProviderMetadata) > 0 {
+					var md map[string]interface{}
+					if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+						if raw, err := json.Marshal(md); err == nil {
+							r.providerMetadata = raw
+						}
+					}
+				}
+				r.status = StreamStatusDone
+				r.mu.Unlock()
+				break
+			}
+
 			if chunk.Usage != nil {
 				step.usage = *chunk.Usage
 			}
@@ -281,6 +361,48 @@ consumeLoop:
 				}
 			}
 			finishStep(chunk.Type == provider.ChunkTypeFinish)
+
+		case provider.ChunkTypeAbort:
+			// Mirrors ChunkTypeError's handling below: preserve whatever
+			// content the in-progress step accumulated instead of silently
+			// dropping it, and stop consuming src immediately. Unlike
+			// ChunkTypeError, this is a clean, caller-initiated stop (TS
+			// 86a84c9: "settle a turn aborted by the caller's abortSignal
+			// with an `abort` stream part instead of an [error]"), so
+			// FinishReason is FinishReasonOther rather than
+			// FinishReasonError. Err() is still set so callers awaiting
+			// completion observe the abort rather than hanging — TS's
+			// equivalent note is that "the delayed promise accessors still
+			// reject with the underlying error". ChunkTypeAbort was already
+			// forwarded to opts.OnChunk and r.chunkBuf above (unconditional,
+			// like every other chunk type), so ToUIMessageStream's own
+			// abort handling (isAborted, an `abort` UI chunk, no onError)
+			// applies to this result exactly as it does to a
+			// provider.LanguageModel-driven one.
+			if step.finishReason == "" {
+				step.finishReason = types.FinishReasonOther
+			}
+			if step.rawFinishReason == "" {
+				step.rawFinishReason = "aborted"
+			}
+			reason := chunk.AbortReason
+			if reason == "" {
+				reason = "aborted"
+			}
+			// Wraps context.Canceled (rather than a plain fmt.Errorf string)
+			// so that generic abort-detection helpers downstream —
+			// isAbortErr, used by ToUIMessageStream to decide whether a
+			// terminal stream error is an abort (no "error" chunk, no
+			// errCh error) or a real failure — classify it correctly via
+			// errors.Is(err, context.Canceled) regardless of which ctx
+			// instance a later ToUIMessageStream call happens to be given:
+			// a harness turn's own ctx (the abort's actual cause) is often
+			// no longer the same ctx used to read back the already-buffered
+			// result afterward (e.g. an HTTP handler keeps writing the
+			// response with a live ctx after the generation ctx aborted).
+			r.err = fmt.Errorf("%s: %w", reason, context.Canceled)
+			finishStep(true)
+			break consumeLoop
 
 		case provider.ChunkTypeError:
 			// An error chunk ends the step (and the whole result) the same
