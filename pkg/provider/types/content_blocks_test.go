@@ -437,7 +437,7 @@ func TestProviderOptionsOnAllBlocks(t *testing.T) {
 func TestCustomContentType(t *testing.T) {
 	// ContentType()
 	c := CustomContent{
-		Kind:             "xai-citation",
+		Kind:             "xai.citation",
 		ProviderMetadata: json.RawMessage(`{"url":"https://example.com","title":"Example"}`),
 	}
 	if c.ContentType() != "custom" {
@@ -470,7 +470,7 @@ func TestCustomContentType(t *testing.T) {
 // TestCustomContentNoMetadata verifies CustomContent marshals correctly when
 // ProviderMetadata is absent (omitempty).
 func TestCustomContentNoMetadata(t *testing.T) {
-	c := CustomContent{Kind: "xai-unknown"}
+	c := CustomContent{Kind: "xai.unknown"}
 	data, err := json.Marshal(c)
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
@@ -480,8 +480,8 @@ func TestCustomContentNoMetadata(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("json.Unmarshal failed: %v", err)
 	}
-	if got.Kind != "xai-unknown" {
-		t.Errorf("Kind = %q, want \"xai-unknown\"", got.Kind)
+	if got.Kind != "xai.unknown" {
+		t.Errorf("Kind = %q, want \"xai.unknown\"", got.Kind)
 	}
 	if got.ProviderMetadata != nil {
 		t.Errorf("ProviderMetadata should be nil, got %s", got.ProviderMetadata)
@@ -586,7 +586,7 @@ func TestGenerateResultContainsCustomContent(t *testing.T) {
 		Text: "hello",
 		Content: []ContentPart{
 			CustomContent{
-				Kind:             "xai-citation",
+				Kind:             "xai.citation",
 				ProviderMetadata: json.RawMessage(`{"url":"https://x.ai"}`),
 			},
 		},
@@ -599,8 +599,8 @@ func TestGenerateResultContainsCustomContent(t *testing.T) {
 	if !ok {
 		t.Fatal("Content[0] should be CustomContent")
 	}
-	if cc.Kind != "xai-citation" {
-		t.Errorf("Kind = %q, want \"xai-citation\"", cc.Kind)
+	if cc.Kind != "xai.citation" {
+		t.Errorf("Kind = %q, want \"xai.citation\"", cc.Kind)
 	}
 }
 
@@ -784,7 +784,7 @@ func TestGeneratedFileContentURLUsesTaggedDataShape(t *testing.T) {
 // is preserved through JSON round-trip (input/prompt direction).
 func TestCustomContentProviderOptions(t *testing.T) {
 	c := CustomContent{
-		Kind: "anthropic-tool-reference",
+		Kind: "anthropic.tool-reference",
 		ProviderOptions: map[string]interface{}{
 			"anthropic": map[string]interface{}{
 				"type":     "tool-reference",

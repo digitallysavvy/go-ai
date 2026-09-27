@@ -216,6 +216,14 @@ type ImageResult struct {
 
 	// Response contains provider response metadata such as model ID and headers.
 	Response *ResponseMetadata `json:"response,omitempty"`
+
+	// IsRetryable classifies whether an empty result (no images) may be
+	// retried. Nil means "unclassified" (the caller decides, e.g. by
+	// retrying up to MaxRetries); false means the provider knows the empty
+	// result is terminal (e.g. a content-filter block) and it must not be
+	// retried. Mirrors TS ImageModelV4Result.isRetryable (audit row
+	// 45099daf24 / WG10).
+	IsRetryable *bool `json:"-"`
 }
 
 // SpeechResult contains the result of a speech synthesis operation

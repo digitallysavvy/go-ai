@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
+	"time"
 )
 
 // CB-T05: Unit tests for Notify[E]
@@ -23,23 +25,25 @@ func TestNotify_CallsListener(t *testing.T) {
 }
 
 func TestNotify_MultipleListeners(t *testing.T) {
+	// Notify dispatches listeners concurrently (TS Promise.all semantics), so
+	// only the *set* of calls is guaranteed, not their relative order.
 	ctx := context.Background()
-	var order []int
+	var seen []int
 	var mu sync.Mutex
 
 	l1 := func(_ context.Context, _ int) {
 		mu.Lock()
-		order = append(order, 1)
+		seen = append(seen, 1)
 		mu.Unlock()
 	}
 	l2 := func(_ context.Context, _ int) {
 		mu.Lock()
-		order = append(order, 2)
+		seen = append(seen, 2)
 		mu.Unlock()
 	}
 	l3 := func(_ context.Context, _ int) {
 		mu.Lock()
-		order = append(order, 3)
+		seen = append(seen, 3)
 		mu.Unlock()
 	}
 
@@ -47,11 +51,48 @@ func TestNotify_MultipleListeners(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 3 {
-		t.Fatalf("expected 3 calls, got %d", len(order))
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(seen))
 	}
-	if order[0] != 1 || order[1] != 2 || order[2] != 3 {
-		t.Errorf("unexpected call order: %v", order)
+	sort.Ints(seen)
+	if seen[0] != 1 || seen[1] != 2 || seen[2] != 3 {
+		t.Errorf("unexpected calls: %v", seen)
+	}
+}
+
+// TestNotify_ListenersRunConcurrently verifies Notify does not serialize
+// listeners: two blocking listeners must overlap in time.
+func TestNotify_ListenersRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+
+	blocker := func(_ context.Context, _ int) {
+		started <- struct{}{}
+		<-release
+	}
+
+	done := make(chan struct{})
+	go func() {
+		Notify(ctx, 1, blocker, blocker)
+		close(done)
+	}()
+
+	// Both listeners must start before either can finish, proving they run
+	// concurrently rather than one-at-a-time.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for both listeners to start concurrently")
+		}
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Notify did not return after listeners completed")
 	}
 }
 
@@ -157,7 +198,8 @@ func TestNotify_PanicDoesNotSkipSubsequentListeners(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("expected 3 non-panicking listeners called, got %d: %v", len(calls), calls)
 	}
+	sort.Ints(calls)
 	if calls[0] != 0 || calls[1] != 2 || calls[2] != 3 {
-		t.Errorf("unexpected call order after panic: %v", calls)
+		t.Errorf("unexpected calls after panic: %v", calls)
 	}
 }

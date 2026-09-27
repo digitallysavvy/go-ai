@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,77 @@ func TestGenerateObject_ArrayMode(t *testing.T) {
 	if len(result.Array) != 2 {
 		t.Errorf("expected 2 items, got %d", len(result.Array))
 	}
+}
+
+// TestGenerateObject_ArrayModeHoistsDefsToRoot ports TS's preservation of
+// root-level $defs when wrapping array output schemas to the GenerateObject
+// array wrapper (audit row 72ec74f / WG4).
+func TestGenerateObject_ArrayModeHoistsDefsToRoot(t *testing.T) {
+	t.Parallel()
+
+	var capturedFormat *provider.ResponseFormat
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedFormat = opts.ResponseFormat
+			return &types.GenerateResult{
+				Text:         `{"elements": [{"name": "John"}]}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"$ref":    "#/$defs/Person",
+		"$defs": map[string]interface{}{
+			"Person": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	})
+
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:      model,
+		Prompt:     "Generate people",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedFormat == nil {
+		t.Fatal("model was not called with a ResponseFormat")
+	}
+
+	schemaMap, ok := unwrapSchemaForTest(capturedFormat.Schema)
+	if !ok {
+		t.Fatalf("Schema = %#v, not a map", capturedFormat.Schema)
+	}
+	if _, ok := schemaMap["$defs"]; !ok {
+		t.Fatal("$defs was not hoisted to the wrapper root")
+	}
+	props, _ := schemaMap["properties"].(map[string]interface{})
+	elements, _ := props["elements"].(map[string]interface{})
+	items, _ := elements["items"].(map[string]interface{})
+	if _, ok := items["$defs"]; ok {
+		t.Fatal("$defs was left under items as well as hoisted to root")
+	}
+}
+
+// unwrapSchemaForTest handles both the plain map schema shape and the
+// enumSchemaWrapper wrapper used for array/enum modes.
+func unwrapSchemaForTest(rawSchema interface{}) (map[string]interface{}, bool) {
+	if m, ok := rawSchema.(map[string]interface{}); ok {
+		return m, true
+	}
+	if w, ok := rawSchema.(enumSchemaWrapper); ok {
+		return w.JSONSchema(), true
+	}
+	return nil, false
 }
 
 func TestGenerateObject_ArrayModeReturnsDefaultedElements(t *testing.T) {
@@ -908,6 +980,88 @@ func TestStreamObject_Basic(t *testing.T) {
 	}
 	if result.Object == nil {
 		t.Error("expected non-nil object")
+	}
+}
+
+// TestStreamObject_PanickingOnChunkDoesNotAbortStream ports TS's callback
+// exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
+// not kill StreamObject's stream-processing loop.
+func TestStreamObject_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result"`},
+				{Type: provider.ChunkTypeText, Text: `: "streamed"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: testSchema,
+		OnChunk: func(partialObject interface{}) {
+			panic("boom from OnChunk")
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Error("expected non-nil object despite panicking OnChunk")
+	}
+}
+
+// TestStreamObject_ErrorChunkIsTerminal ports TS stream-object.ts's
+// TransformStream error handling (audit row b181020 / WG5): a provider error
+// part must stop consumption immediately (no later chunks processed) and
+// report finishReason "error" rather than whatever finish reason the model
+// sent (or omitted).
+func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result": "partial"`},
+				{Type: provider.ChunkTypeError, Text: "provider exploded"},
+				// These must never be observed: the stream is terminal at the
+				// error part above.
+				{Type: provider.ChunkTypeText, Text: `"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	var finishEvent *ObjectOnFinishEvent
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: testSchema,
+		OnEnd: func(ctx context.Context, e ObjectOnFinishEvent) {
+			finishEvent = &e
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider exploded") {
+		t.Fatalf("StreamObject() error = %v, want it to wrap the provider error part", err)
+	}
+	if finishEvent == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if finishEvent.FinishReason != types.FinishReasonError {
+		t.Fatalf("FinishReason = %q, want error", finishEvent.FinishReason)
+	}
+	if finishEvent.Object != nil {
+		t.Fatalf("Object = %#v, want nil after an error part", finishEvent.Object)
 	}
 }
 

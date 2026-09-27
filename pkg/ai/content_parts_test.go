@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -565,5 +566,43 @@ func TestGenerateTextToModelOutputErrorPropagatesUnwrapped(t *testing.T) {
 	}
 	if err.Error() != "conversion failed" {
 		t.Fatalf("GenerateText error string = %q, want original conversion error", err.Error())
+	}
+}
+
+// TestToolResultModelOutputNormalizesStructValue ports TS
+// createToolModelOutput's toJSONValue behavior (audit row 6aa7c54 / WG24): a
+// non-string tool output is round-tripped through JSON so it lands as a
+// plain JSON value (map/slice/scalar), not the raw Go struct/time.Time.
+func TestToolResultModelOutputNormalizesStructValue(t *testing.T) {
+	type payload struct {
+		City string    `json:"city"`
+		At   time.Time `json:"at"`
+	}
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	out := toolResultModelOutput(payload{City: "Tokyo", At: at})
+	if out.Type != types.ToolResultOutputJSON {
+		t.Fatalf("Type = %v, want json", out.Type)
+	}
+	m, ok := out.Value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Value = %T (%#v), want map[string]interface{}", out.Value, out.Value)
+	}
+	if m["city"] != "Tokyo" {
+		t.Fatalf("city = %v, want Tokyo", m["city"])
+	}
+	if m["at"] != at.Format(time.RFC3339) {
+		t.Fatalf("at = %v, want %s", m["at"], at.Format(time.RFC3339))
+	}
+}
+
+// TestToolResultModelOutputNilBecomesJSONNull mirrors TS's undefined -> null.
+func TestToolResultModelOutputNilBecomesJSONNull(t *testing.T) {
+	out := toolResultModelOutput(nil)
+	if out.Type != types.ToolResultOutputJSON {
+		t.Fatalf("Type = %v, want json", out.Type)
+	}
+	if out.Value != nil {
+		t.Fatalf("Value = %#v, want nil", out.Value)
 	}
 }

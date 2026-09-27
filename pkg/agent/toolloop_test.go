@@ -2016,14 +2016,19 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 
 	started := false
 	result, err := agent.Generate(context.Background(), AgentGenerateOptions{
-		Prompt:          "hello",
-		System:          "per-call system",
-		Temperature:     &callTemp,
-		MaxTokens:       &maxTokens,
-		Seed:            &seed,
-		RuntimeContext:  runtimeCtx,
-		ToolsContext:    map[string]interface{}{"tool": map[string]interface{}{"tenant": "acme"}},
-		ToolChoice:      types.RequiredToolChoice(),
+		Prompt:         "hello",
+		System:         "per-call system",
+		Temperature:    &callTemp,
+		MaxTokens:      &maxTokens,
+		Seed:           &seed,
+		RuntimeContext: runtimeCtx,
+		ToolsContext:   map[string]interface{}{"tool": map[string]interface{}{"tenant": "acme"}},
+		// Uses NoneToolChoice (rather than RequiredToolChoice) so this test,
+		// which only checks that the per-call override is forwarded to the
+		// provider request, doesn't also need to satisfy tool-choice
+		// enforcement (ToolChoiceViolationError, audit row 8b6b756 / WG3)
+		// with a mock that returns no tool call.
+		ToolChoice:      types.ToolChoice{Type: types.ToolChoiceNone},
 		ProviderOptions: providerOpts,
 		OnStart: func(ctx context.Context, e ai.OnStartEvent) {
 			started = true
@@ -2051,7 +2056,7 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 	if got.Seed == nil || *got.Seed != seed {
 		t.Fatalf("seed override not forwarded: %v", got.Seed)
 	}
-	if got.ToolChoice.Type != types.ToolChoiceRequired {
+	if got.ToolChoice.Type != types.ToolChoiceNone {
 		t.Fatalf("tool choice override not forwarded: %+v", got.ToolChoice)
 	}
 	if !reflect.DeepEqual(got.RuntimeContext, runtimeCtx) {
@@ -2328,6 +2333,37 @@ func TestToolLoopAgentPrepareCallCanOverrideModelAndInclude(t *testing.T) {
 	}
 	if result.Request.Body == nil {
 		t.Fatal("PrepareCall include override did not retain request body")
+	}
+}
+
+// TestToolLoopAgentGenerateTagsUserAgent ports the TS "tags outgoing
+// requests so usage can be attributed to ToolLoopAgent" case (audit row
+// 75763b0): the model call's User-Agent header must carry the
+// "ai-sdk-agent/tool-loop" segment, and any caller-supplied headers survive.
+func TestToolLoopAgentGenerateTagsUserAgent(t *testing.T) {
+	var generateOpts *provider.GenerateOptions
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			generateOpts = opts
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:   model,
+		Headers: map[string]string{"x-user": "custom"},
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if generateOpts == nil {
+		t.Fatal("model was not called")
+	}
+	if generateOpts.Headers["x-user"] != "custom" {
+		t.Fatalf("caller header lost: %#v", generateOpts.Headers)
+	}
+	ua := generateOpts.Headers["user-agent"]
+	if !strings.Contains(ua, "ai-sdk-agent/tool-loop") {
+		t.Fatalf("user-agent = %q, want it to contain ai-sdk-agent/tool-loop", ua)
 	}
 }
 

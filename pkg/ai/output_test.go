@@ -46,6 +46,57 @@ func TestTextOutput_ParsePartialOutput(t *testing.T) {
 	}
 }
 
+// TestOutputProcessor_ParsePartialOutput_DistinguishesNullFromNotYetParseable
+// ports TS stream-text.ts's `result !== undefined` check (audit row
+// 84f5d1b / WG4): a JSON null is a legitimate parsed value (hasValue=true,
+// value=nil), distinct from "not enough content to parse anything yet"
+// (hasValue=false).
+func TestOutputProcessor_ParsePartialOutput_DistinguishesNullFromNotYetParseable(t *testing.T) {
+	t.Parallel()
+
+	jsonOut := JSONOutput(JSONOutputOptions{}).(outputProcessor)
+
+	value, hasValue, err := jsonOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: "null"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasValue {
+		t.Fatal("hasValue = false for a fully-parsed JSON null, want true")
+	}
+	if value != nil {
+		t.Fatalf("value = %#v, want nil", value)
+	}
+
+	_, hasValue, err = jsonOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasValue {
+		t.Fatal("hasValue = true for empty/unparseable input, want false")
+	}
+}
+
+// TestOutputProcessor_ParsePartialOutput_TextOutputAlwaysHasValue verifies
+// that Output.Text's partial value (including the empty string) always
+// reports hasValue=true, since any accumulated text is already valid partial
+// text output.
+func TestOutputProcessor_ParsePartialOutput_TextOutputAlwaysHasValue(t *testing.T) {
+	t.Parallel()
+
+	textOut := TextOutput().(outputProcessor)
+
+	value, hasValue, err := textOut.parsePartialOutput(context.Background(), ParsePartialOutputOptions{Text: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasValue {
+		t.Fatal("hasValue = false for empty text output, want true (an empty string is a valid partial)")
+	}
+	if value != "" {
+		t.Fatalf("value = %#v, want empty string", value)
+	}
+}
+
 func TestObjectOutput_ParseCompleteOutput(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +235,146 @@ func TestArrayOutput_ParseCompleteOutput(t *testing.T) {
 	}
 	if result[0].Label != "go" || result[1].Label != "ai" {
 		t.Errorf("unexpected elements: %+v", result)
+	}
+}
+
+// TestArrayOutput_MinMaxItemsInSchema ports TS Output.array()'s minItems/
+// maxItems JSON Schema placement (audit row d4485fe / WG4).
+func TestArrayOutput_MinMaxItemsInSchema(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(2),
+		MaxItems:      intPtr(5),
+	})
+
+	format, err := out.ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatalf("ResponseFormat error: %v", err)
+	}
+	schemaMap, ok := format.Schema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Schema = %T, want map[string]interface{}", format.Schema)
+	}
+	props := schemaMap["properties"].(map[string]interface{})
+	elements := props["elements"].(map[string]interface{})
+	if elements["minItems"] != 2 {
+		t.Errorf("minItems = %v, want 2", elements["minItems"])
+	}
+	if elements["maxItems"] != 5 {
+		t.Errorf("maxItems = %v, want 5", elements["maxItems"])
+	}
+}
+
+// TestArrayOutput_MinItemsGreaterThanMaxItemsIsInvalidArgument ports TS's
+// synchronous constructor-time validation (audit row d4485fe / WG4).
+func TestArrayOutput_MinItemsGreaterThanMaxItemsIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(5),
+		MaxItems:      intPtr(2),
+	})
+
+	if _, err := out.ResponseFormat(context.Background()); err == nil {
+		t.Fatal("expected an error when minItems > maxItems")
+	}
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{Text: `{"elements":[]}`}); err == nil {
+		t.Fatal("expected an error when minItems > maxItems")
+	}
+}
+
+// TestArrayOutput_NegativeMinItemsIsInvalidArgument ports TS's
+// validateArrayBound (audit row d4485fe / WG4).
+func TestArrayOutput_NegativeMinItemsIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(-1),
+	})
+
+	if _, err := out.ResponseFormat(context.Background()); err == nil {
+		t.Fatal("expected an error for negative minItems")
+	}
+}
+
+// TestArrayOutput_ParseCompleteOutput_LengthOutOfBounds ports TS's
+// getArrayLengthValidationError applied to the final parsed array (audit row
+// d4485fe / WG4).
+func TestArrayOutput_ParseCompleteOutput_LengthOutOfBounds(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(2),
+		MaxItems:      intPtr(3),
+	})
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{}]}`,
+	}); err == nil {
+		t.Fatal("expected NoObjectGeneratedError for too few elements")
+	}
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{},{},{},{}]}`,
+	}); err == nil {
+		t.Fatal("expected NoObjectGeneratedError for too many elements")
+	}
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{},{},{}]}`,
+	}); err != nil {
+		t.Fatalf("unexpected error for in-bounds length: %v", err)
+	}
+}
+
+// TestArrayOutput_ResponseFormatHoistsDefsToRoot ports TS's preservation of
+// root-level $defs/definitions when wrapping array output schemas (audit row
+// 72ec74f / WG4): putting them under "items" breaks "#/$defs/..." refs,
+// which resolve against the document root.
+func TestArrayOutput_ResponseFormatHoistsDefsToRoot(t *testing.T) {
+	t.Parallel()
+
+	elementSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"$ref":    "#/$defs/Item",
+		"$defs": map[string]interface{}{
+			"Item": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	})
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: elementSchema,
+	})
+
+	format, err := out.ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatalf("ResponseFormat error: %v", err)
+	}
+	schemaMap, ok := format.Schema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Schema = %T, want map[string]interface{}", format.Schema)
+	}
+	if _, ok := schemaMap["$defs"]; !ok {
+		t.Fatal("$defs was not hoisted to the wrapper root")
+	}
+	props := schemaMap["properties"].(map[string]interface{})
+	elements := props["elements"].(map[string]interface{})
+	items := elements["items"].(map[string]interface{})
+	if _, ok := items["$defs"]; ok {
+		t.Fatal("$defs was left under items as well as hoisted to root")
+	}
+	if items["$ref"] != "#/$defs/Item" {
+		t.Fatalf("items[$ref] = %v, want #/$defs/Item preserved", items["$ref"])
 	}
 }
 
@@ -797,6 +988,58 @@ func TestGenerateText_WithTextOutput(t *testing.T) {
 	}
 }
 
+// TestGenerateText_Output_OnFinishEvent verifies that the OnFinishEvent
+// notification carries the parsed structured output for GenerateText,
+// mirroring TS generate-text.ts's onFinish event (audit row 6669d69 /
+// WG4 item #98).
+func TestGenerateText_Output_OnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Name string `json:"name"`
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"widget"}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	var captured OnFinishEvent
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Name a thing",
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			captured = e
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	obj, ok := result.Output.(Obj)
+	if !ok {
+		t.Fatalf("expected Obj, got %T", result.Output)
+	}
+	if obj.Name != "widget" {
+		t.Errorf("expected name=widget, got %q", obj.Name)
+	}
+
+	capturedObj, ok := captured.Output.(Obj)
+	if !ok {
+		t.Fatalf("expected OnFinishEvent.Output to be Obj, got %T", captured.Output)
+	}
+	if capturedObj.Name != "widget" {
+		t.Errorf("expected OnFinishEvent.Output.Name=widget, got %q", capturedObj.Name)
+	}
+}
+
 func TestGenerateText_OutputParseError(t *testing.T) {
 	t.Parallel()
 
@@ -1157,7 +1400,13 @@ func TestStreamText_NoOutput_NoResponseFormat(t *testing.T) {
 // NOT call parseCompleteOutput (and leaves result.Output nil) when the model
 // finishes with reason "length" (truncated response). Parsing truncated JSON
 // would always fail; the TS SDK guards with if (finishReason === 'stop').
-func TestGenerateText_FinishReasonLength_NilOutput(t *testing.T) {
+// TestGenerateText_FinishReasonLength_SurfacesNoObjectGeneratedError ports TS
+// generate-text.ts's length-truncation diagnostics (audit rows eed7950/
+// 9de0baf / WG4): a non-stop, non-tool-calls finish reason with non-empty
+// text is still a parse candidate (a provider may truncate structured
+// output), so truncated/invalid JSON now surfaces NoObjectGeneratedError
+// instead of silently leaving Output nil with no error at all.
+func TestGenerateText_FinishReasonLength_SurfacesNoObjectGeneratedError(t *testing.T) {
 	t.Parallel()
 
 	type Obj struct {
@@ -1181,13 +1430,15 @@ func TestGenerateText_FinishReasonLength_NilOutput(t *testing.T) {
 			Schema: SchemaFor[Obj](),
 		}),
 	})
-	// Should succeed (no error), but Output must be nil because parseCompleteOutput
-	// is skipped for non-stop finish reasons.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	var noObj *NoObjectGeneratedError
+	if !errors.As(err, &noObj) {
+		t.Fatalf("error = %v, want *NoObjectGeneratedError", err)
 	}
-	if result.Output != nil {
-		t.Errorf("expected nil Output for length finish reason, got %v", result.Output)
+	if noObj.FinishReason != types.FinishReasonLength {
+		t.Errorf("FinishReason = %q, want length", noObj.FinishReason)
+	}
+	if result != nil {
+		t.Errorf("expected nil result on output parsing failure, got %+v", result)
 	}
 }
 
@@ -1251,7 +1502,15 @@ func TestStreamText_Output_FinalResult(t *testing.T) {
 // TestStreamText_Output_NilWhenLengthFinish verifies that Output() is nil when
 // the stream ends with finishReason "length" (truncated response), matching the
 // TS SDK guard: parseCompleteOutput is only called on 'stop' finish reason.
-func TestStreamText_Output_NilWhenLengthFinish(t *testing.T) {
+// TestStreamText_Output_LengthFinishSurfacesOutputErr ports TS
+// stream-text.ts's length-truncation diagnostics (audit rows eed7950/
+// 9de0baf / WG4): non-empty text with a non-stop, non-tool-calls finish
+// reason is still a parse candidate, so truncated/invalid JSON now surfaces
+// through OutputErr() (NoObjectGeneratedError) instead of leaving both
+// Output() and OutputErr() silently nil. Output() itself must stay nil: a
+// failed parse must never publish the parser's zero value as if it were a
+// real result.
+func TestStreamText_Output_LengthFinishSurfacesOutputErr(t *testing.T) {
 	t.Parallel()
 
 	type Obj struct {
@@ -1284,7 +1543,72 @@ func TestStreamText_Output_NilWhenLengthFinish(t *testing.T) {
 	}
 
 	if result.Output() != nil {
-		t.Errorf("expected nil Output() for length finish reason, got %v", result.Output())
+		t.Errorf("expected nil Output() on parse failure, got %v", result.Output())
+	}
+	var noObj *NoObjectGeneratedError
+	if !errors.As(result.OutputErr(), &noObj) {
+		t.Fatalf("OutputErr() = %v, want *NoObjectGeneratedError", result.OutputErr())
+	}
+}
+
+// TestStreamText_Output_ToolCallsFinishStillParses ports TS stream-text.ts's
+// getOutputPromise(), which — unlike generate-text.ts's gated final-output
+// parse — has no finishReason condition: it unconditionally calls
+// output.parseCompleteOutput on the final step's text. So a step that
+// finishes on 'tool-calls' with no text still attempts the parse, and for a
+// schema-based Output that means NoObjectGeneratedError surfaces from the
+// parse itself (empty text fails JSON parsing) rather than Output() being
+// silently left nil.
+func TestStreamText_Output_ToolCallsFinishStillParses(t *testing.T) {
+	t.Parallel()
+
+	type Obj struct {
+		Val int `json:"val"`
+	}
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+			ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+		}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "search something",
+		Tools:    tools,
+		MaxSteps: &maxSteps,
+		Output: ObjectOutput[Obj](ObjectOutputOptions{
+			Schema: SchemaFor[Obj](),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	if result.Output() != nil {
+		t.Errorf("expected nil Output() when the final step has no text, got %v", result.Output())
+	}
+	var noObj *NoObjectGeneratedError
+	if !errors.As(result.OutputErr(), &noObj) {
+		t.Fatalf("OutputErr() = %v, want *NoObjectGeneratedError (TS parses unconditionally, unlike GenerateText)", result.OutputErr())
 	}
 }
 
@@ -1337,6 +1661,63 @@ func TestStreamText_Output_ViaOnFinish(t *testing.T) {
 	}
 	if pt.X != 3 || pt.Y != 7 {
 		t.Errorf("expected {3,7}, got {%d,%d}", pt.X, pt.Y)
+	}
+}
+
+// TestStreamText_Output_OnFinishEvent verifies that the OnFinishEvent
+// notification carries the parsed structured output (audit row 6669d69 /
+// WG4 item #98), mirroring TS stream-text.ts's onFinish event which carries
+// the resolved object alongside the raw text.
+func TestStreamText_Output_OnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	type Point struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: `{"x":5,"y":9}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+
+	events := make(chan OnFinishEvent, 1)
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Give a point",
+		Output: ObjectOutput[Point](ObjectOutputOptions{
+			Schema: SchemaFor[Point](),
+		}),
+		OnEndEvent: func(ctx context.Context, e OnFinishEvent) {
+			events <- e
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+
+	event := <-events
+
+	out := event.Output
+	if out == nil {
+		t.Fatal("expected OnFinishEvent.Output to be non-nil")
+	}
+	pt, ok := out.(Point)
+	if !ok {
+		t.Fatalf("unexpected Output type: %T", out)
+	}
+	if pt.X != 5 || pt.Y != 9 {
+		t.Errorf("expected {5,9}, got {%d,%d}", pt.X, pt.Y)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	telemetrypkg "github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // StepEndCallback is called after each completed step.
@@ -820,13 +821,13 @@ func mergeAbort(a, b AbortCallback) AbortCallback {
 // (TS prepareCall setting parity: d56638a stopWhen/activeTools/download,
 // 419adc7 maxRetries/abortSignal, b666f57 initial instructions/messages).
 type prepareCallContext struct {
-	activeTools          []string
-	stopWhen             []ai.StopCondition
-	download             ai.DownloadFunction
-	maxRetries           *int
-	timeout              *ai.TimeoutConfig
-	initialInstructions  string
-	initialMessages      []types.Message
+	activeTools         []string
+	stopWhen            []ai.StopCondition
+	download            ai.DownloadFunction
+	maxRetries          *int
+	timeout             *ai.TimeoutConfig
+	initialInstructions string
+	initialMessages     []types.Message
 }
 
 func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
@@ -1012,7 +1013,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		AllowSystemInMessages: allowSystemInMessages,
 		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx),
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
-		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: w.Headers, Reasoning: w.Reasoning,
+		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
 		ToolChoice:                     w.ToolChoice,
 		Output:                         w.Output,

@@ -42,7 +42,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 			"",
 			`data: {"type":"file","mediaType":"text/plain","data":"SGk=","providerMetadata":{"gateway":{"fileId":"f1"}}}`,
 			"",
-			`data: {"type":"custom","kind":"gateway-extra","providerMetadata":{"gateway":{"x":true}}}`,
+			`data: {"type":"custom","kind":"gateway.extra","providerMetadata":{"gateway":{"x":true}}}`,
 			"",
 			`data: {"type":"finish","finishReason":"stop"}`,
 			"",
@@ -91,7 +91,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 		t.Fatalf("file mismatch chunk=%#v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
-	if err != nil || chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent.Kind != "gateway-extra" {
+	if err != nil || chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent.Kind != "gateway.extra" {
 		t.Fatalf("custom mismatch chunk=%#v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
@@ -274,7 +274,7 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 		t.Fatalf("tool result file block = %#v", fileBlock)
 	}
 
-	_, err = model.convertContentPart(types.CustomContent{Kind: "xai-citation"})
+	_, err = model.convertContentPart(types.CustomContent{Kind: "xai.citation"})
 	if err == nil || !strings.Contains(err.Error(), "unsupported content part type") {
 		t.Fatalf("unsupported part error = %v", err)
 	}

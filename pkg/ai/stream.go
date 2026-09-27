@@ -281,7 +281,16 @@ type StreamTextOptions struct {
 
 	// OnAbort is called when streaming is aborted by context cancellation or
 	// deadline before normal completion.
+	//
+	// Deprecated: use OnAbortEvent, which also carries the call ID and abort
+	// reason.
 	OnAbort func(ctx context.Context, steps []types.StepResult)
+
+	// OnAbortEvent is called when streaming is aborted by context
+	// cancellation or deadline before normal completion, with a
+	// GenerateTextAbortEvent carrying the call ID, completed steps, and
+	// abort reason. Takes precedence over the deprecated OnAbort.
+	OnAbortEvent OnAbortCallback
 
 	// ExperimentalTransform is an ordered list of transform functions applied to
 	// each stream chunk after provider emission but before forwarding to OnChunk.
@@ -430,6 +439,14 @@ type StreamTextResult struct {
 	// Used for deduplication — only written from the stream-consuming goroutine.
 	lastPartialJSON string
 
+	// hasPublishedPartialLegacy tracks whether readAllLegacy has published a
+	// partial yet, distinguishing that from lastPartialJSON's zero value so a
+	// genuine first empty-string/null partial is not suppressed (audit row
+	// 84f5d1b / WG4). Only the multi-step path (processStream) is used in
+	// practice; this exists so readAllLegacy compiles against the same
+	// outputProcessor.parsePartialOutput contract.
+	hasPublishedPartialLegacy bool
+
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
 
@@ -493,7 +510,8 @@ type StreamTextResult struct {
 	cbSensitiveRuntimeCtx bool
 	cbToolsCtx            map[string]interface{}
 	// cbToolChoice carries the current step's effective tool choice across
-	// into processStream, for TelemetryStepStartEvent.ToolChoice (152c67c).
+	// into processStream, for TelemetryStepStartEvent.ToolChoice (152c67c)
+	// and the tool-choice violation check.
 	cbToolChoice       types.ToolChoice
 	cbInclude          IncludeOptions
 	cbSteps            []types.StepResult
@@ -999,10 +1017,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
 		if isAbortErr(stepCtx, err) {
-			if opts.OnAbort != nil {
-				opts.OnAbort(stepCtx, nil)
+			reason := abortReason(stepCtx, err)
+			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+				onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason})
 			}
-			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err})
+			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
@@ -1076,7 +1095,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	combinedOnChunk := func(c provider.StreamChunk) {
 		r.chunkBuf.push(c)
 		if userOnChunk != nil {
-			userOnChunk(c)
+			safeInvoke(func() { userOnChunk(c) })
 		}
 	}
 	r.processStream(ctx, combinedOnChunk, onEnd)
@@ -1155,6 +1174,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	pendingDeferredToolCalls := make(map[string]string)
 
 	var allSteps []types.StepResult
+	// currentToolChoice tracks the tool choice actually used to open each
+	// step's stream (bootstrapAndStream's resolved value, including any
+	// PrepareStep override, for step 1; then whatever PrepareStep resolves
+	// for later steps below), so the tool-choice-enforcement check can
+	// compare each step's tool calls against the choice that produced them
+	// (audit rows 8b6b756/36b3364/ccf98e7, WG3).
+	currentToolChoice := r.cbToolChoice
+	// lastStepText holds the most recently completed step's own text (not
+	// the all-steps concatenation in accumulatedTextParts/r.text), so the
+	// final structured-output parse below uses only the step that actually
+	// produced it, matching TS stream-text.ts (audit row 2a5ed55 / WG4).
+	var lastStepText string
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
 	var accumulatedTextParts []string
@@ -1166,8 +1197,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			return
 		}
 		abortFired = true
-		if opts.OnAbort != nil {
-			opts.OnAbort(ctx, allSteps)
+		reason = abortReason(ctx, reason)
+		if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+			onAbort(ctx, GenerateTextAbortEvent{
+				CallID: r.cbCallID,
+				Steps:  append([]types.StepResult(nil), allSteps...),
+				Reason: reason,
+			})
 		}
 		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 			Settings: r.telemetrySettings,
@@ -1241,6 +1277,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends.
 		var stepTextParts []string
+		// hasPublishedPartial/stepLastPartialJSON reset every step (audit row
+		// 2a5ed55 / WG4: partial output must be parsed from the current
+		// step's text only, not all steps concatenated), and
+		// hasPublishedPartial replaces relying on stepLastPartialJSON=="" as
+		// a "nothing published yet" sentinel, which incorrectly suppressed a
+		// genuine first empty-string partial (audit row 84f5d1b / WG4).
+		hasPublishedPartial := false
+		stepLastPartialJSON := ""
 		var stepToolCalls []types.ToolCall
 		var stepContent []types.ContentPart
 		var stepReasoningBuilder strings.Builder
@@ -1332,20 +1376,27 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
-				// matching the TypeScript SDK's deduplication behavior.
+				// matching the TypeScript SDK's deduplication behavior. Parses from
+				// this step's text only (audit row 2a5ed55 / WG4): in a multi-step
+				// tool-loop call, only the final step's text is ever a candidate
+				// structured-output response.
 				if r.outputSpec != nil {
-					currentText := strings.Join(accumulatedTextParts, "")
-					partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+					currentText := strings.Join(stepTextParts, "")
+					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 						Text: currentText,
 					})
 					if partialErr != nil {
 						r.err = partialErr
 						break
 					}
-					if partial != nil {
+					// A nil partial is a legitimate JSON null value, not "no
+					// partial yet": hasPartial distinguishes the two so a
+					// null value still publishes (audit row 84f5d1b / WG4).
+					if hasPartial {
 						newJSONStr, ok := partialOutputDedupKey(partial)
-						if ok && newJSONStr != r.lastPartialJSON {
-							r.lastPartialJSON = newJSONStr
+						if ok && (!hasPublishedPartial || newJSONStr != stepLastPartialJSON) {
+							hasPublishedPartial = true
+							stepLastPartialJSON = newJSONStr
 							r.mu.Lock()
 							r.partialOutput = partial
 							r.mu.Unlock()
@@ -1436,7 +1487,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepSawTerminal = true
 				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
-				r.rawFinishReason = chunk.RawFinishReason
+				if chunk.RawFinishReason != "" {
+					r.rawFinishReason = chunk.RawFinishReason
+				}
 				if chunk.ContextManagement != nil {
 					r.contextManagement = chunk.ContextManagement
 				}
@@ -1521,7 +1574,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					r.finishReason = types.FinishReasonError
 				}
 				if opts.OnError != nil {
-					opts.OnError(ctx, errors.New(chunk.Text))
+					safeInvoke(func() { opts.OnError(ctx, errors.New(chunk.Text)) })
 				}
 			}
 
@@ -1614,12 +1667,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		stepText := strings.Join(stepTextParts, "")
+		lastStepText = stepText
 		r.text = strings.Join(accumulatedTextParts, "")
 		// stepToolCalls were already parsed (with repair) and refined
 		// per-chunk above, as each ChunkTypeToolCall arrived.
 		stepInputSchemaInputs := inputSchemaInputs(preRefinementCalls, stepToolCalls)
 		stepContent = replaceToolCallContentParts(stepContent, stepToolCalls)
 		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
+
+		if violation := checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent); violation != nil {
+			r.err = violation
+			cancelStep()
+			break
+		}
 
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
@@ -2032,6 +2092,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbInstructionMessages = nextInstructionMessages
 		r.cbToolChoice = nextToolChoice
 		currentTools = append([]types.Tool(nil), nextTools...)
+		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
 		nextStepCtx := ctx
 		nextStepCancel := func() {}
@@ -2164,7 +2225,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			fireAbort(r.err)
 		}
 		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
-			opts.OnError(ctx, r.err)
+			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
 			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
@@ -2178,17 +2239,27 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		return
 	}
 
-	// Resolve final typed output if spec was provided and stream completed cleanly.
-	// Only parse when finishReason is Stop; truncated responses (e.g. length limit)
-	// would produce invalid JSON, matching the TypeScript SDK's behavior.
-	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+	// Resolve final typed output if spec was provided, from the last step's
+	// own text (audit row 2a5ed55 / WG4). Unlike GenerateText, StreamText's
+	// TS getOutputPromise() (stream-text.ts) parses the final step's text
+	// unconditionally — it has no finishReason gate — so a schema-based
+	// Output spec throws NoObjectGeneratedError from output.parseCompleteOutput
+	// itself (e.g. on empty text) rather than being silently skipped here.
+	if r.outputSpec != nil {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         r.text,
+			Text:         lastStepText,
 			FinishReason: r.finishReason,
 			Usage:        &r.usage,
 		})
 		r.mu.Lock()
-		r.outputResult = parsed
+		// Only publish a result on success: the generic outputProcessor
+		// interface returns the parse method's zero value (e.g. a
+		// zero-valued struct, not untyped nil) alongside a non-nil error, so
+		// assigning it unconditionally would make Output() return a
+		// non-nil-but-empty value instead of nil on a parse failure.
+		if parseErr == nil {
+			r.outputResult = parsed
+		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
 	}
@@ -2325,6 +2396,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		ExperimentalContext: r.cbExperimentalCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
+		Output:              r.outputResult,
 	}, r.cbOnEndEvent)
 }
 
@@ -2874,7 +2946,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 				telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 					Settings: r.telemetrySettings,
 					CallID:   r.cbCallID,
-					Reason:   err,
+					Reason:   abortReason(ctx, err),
 					Steps:    append([]types.StepResult(nil), r.cbSteps...),
 				})
 			}
@@ -2923,16 +2995,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 
 			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
-				partial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
+				partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
 					Text: r.text,
 				})
 				if partialErr != nil {
 					r.err = partialErr
 					return "", partialErr
 				}
-				if partial != nil {
+				// A nil partial is a legitimate JSON null value, not "no
+				// partial yet" (audit row 84f5d1b / WG4).
+				if hasPartial {
 					newJSONStr, ok := partialOutputDedupKey(partial)
-					if ok && newJSONStr != r.lastPartialJSON {
+					if ok && (!r.hasPublishedPartialLegacy || newJSONStr != r.lastPartialJSON) {
+						r.hasPublishedPartialLegacy = true
 						r.lastPartialJSON = newJSONStr
 						r.mu.Lock()
 						r.partialOutput = partial
@@ -2989,7 +3064,9 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		if chunk.Type == provider.ChunkTypeFinish {
 			sawTerminal = true
 			r.finishReason = chunk.FinishReason
-			r.rawFinishReason = chunk.RawFinishReason
+			if chunk.RawFinishReason != "" {
+				r.rawFinishReason = chunk.RawFinishReason
+			}
 			if chunk.ContextManagement != nil {
 				r.contextManagement = chunk.ContextManagement
 			}
@@ -3110,15 +3187,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	r.stepResponse = step.Response
 	r.mu.Unlock()
 
-	// Resolve final typed output if spec was provided and stream completed cleanly.
-	if r.outputSpec != nil && r.finishReason == types.FinishReasonStop {
+	// Resolve final typed output if spec was provided (audit rows
+	// eed7950/9de0baf / WG4). Unconditional, matching TS StreamText's
+	// getOutputPromise() — see the comment at the other call site above.
+	if r.outputSpec != nil {
 		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         r.text,
 			FinishReason: r.finishReason,
 			Usage:        &r.usage,
 		})
 		r.mu.Lock()
-		r.outputResult = parsed
+		if parseErr == nil {
+			r.outputResult = parsed
+		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
 	}
@@ -3195,6 +3276,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		ExperimentalContext: r.cbExperimentalCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
+		Output:              r.outputResult,
 	}, r.cbOnEndEvent)
 
 	return r.text, nil
@@ -3373,6 +3455,20 @@ func (r *StreamTextResult) ResponseHeaders() map[string]string {
 	return r.responseHeaders
 }
 
+// shouldParseFinalOutput mirrors TS generate-text.ts's (non-streaming)
+// final-output parse condition: parse on a clean stop, or on any other
+// finish reason besides tool-calls as long as the step actually produced
+// text (a provider that omits/misreports finishReason but still returned
+// the object). Used by GenerateText only — StreamText's TS counterpart
+// (stream-text.ts getOutputPromise) has no such gate and always parses the
+// final step's text. Mirrors audit rows eed7950/9de0baf, WG4.
+func shouldParseFinalOutput(finishReason types.FinishReason, stepText string) bool {
+	if finishReason == types.FinishReasonStop {
+		return true
+	}
+	return finishReason != types.FinishReasonToolCalls && stepText != ""
+}
+
 func partialOutputDedupKey(partial interface{}) (string, bool) {
 	// TS parity: for text/string partial outputs, avoid JSON serialization on each chunk.
 	if s, ok := partial.(string); ok {
@@ -3393,9 +3489,22 @@ func responseIDFromMetadata(metadata *provider.ResponseMetadata) string {
 }
 
 // Warnings returns any provider warnings surfaced via stream-start chunks.
+// Safe to call concurrently with streaming.
 func (r *StreamTextResult) Warnings() []types.Warning {
 	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.warnings
+}
+
+// Files returns model-generated output files accumulated across every step,
+// matching the TypeScript SDK's accumulative StreamTextResult.files.
+// Safe to call concurrently with streaming.
+func (r *StreamTextResult) Files() []types.GeneratedFileContent {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.files
 }
 
 // Chunks returns a channel that streams the full, processed multi-step chunk

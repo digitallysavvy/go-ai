@@ -371,55 +371,40 @@ func openAIToolResultPromptCacheBreakpoint(p types.ToolResultContent) (interface
 
 // openAIToolResultText extracts a plain string from a ToolResultContent for
 // use as the "content" field of an OpenAI tool role message. Mirrors TS's
-// tool-response contentValue switch exactly (convert-to-openai-chat-messages.ts,
-// and identically in @ai-sdk/openai-compatible's convert-to-openai-compatible-
-// chat-messages.ts, so this applies to every ToOpenAIMessages caller): text
-// and error-text forward the value verbatim, execution-denied uses the
-// denial reason (or a default message), and content/json/error-json all
-// JSON.stringify the output's value -- "content" is JSON.stringify(the whole
-// block array), not a first-text-block extraction. Falls back to the legacy
-// Result field when Output isn't set.
+// tool-response contentValue switch (convert-to-openai-chat-messages.ts, and
+// identically @ai-sdk/openai-compatible's convert-to-openai-compatible-chat-
+// messages.ts, so this applies to every ToOpenAIMessages caller): text and
+// error-text forward the value verbatim, execution-denied uses the denial
+// reason (or the default message), and content/json/error-json all
+// JSON.stringify the output's value. "content" is JSON.stringify of the whole
+// block array, not a first-text-block extraction (follow-up C, b2e53c3).
+// resolveToolOutput (shared with the Anthropic converter) also handles the
+// legacy Result/Error fields (P1-1 7259126).
 func openAIToolResultText(p types.ToolResultContent) string {
-	if p.Output != nil {
-		switch p.Output.Type {
-		case types.ToolResultOutputText, types.ToolResultOutputErrorText:
-			if s, ok := p.Output.Value.(string); ok {
-				return s
-			}
-			return fmt.Sprintf("%v", p.Output.Value)
-		case types.ToolResultOutputExecutionDenied:
-			if p.Output.Reason != "" {
-				return p.Output.Reason
-			}
-			return "Tool call execution denied."
-		case types.ToolResultOutputContent:
-			// TS's contentValue switch JSON.stringifies output.value (the
-			// whole content-block array) for the "content" case, exactly
-			// like "json"/"error-json" -- both OpenAI's own converter and
-			// the shared @ai-sdk/openai-compatible base do this, there is no
-			// first-text-block extraction in either. Mirror ToolResultOutput.
-			// MarshalJSON's own value/Content precedence so a round-tripped
-			// (Value set) and a natively-built (Content set) output produce
-			// the same wire text.
-			var value interface{} = p.Output.Content
-			if p.Output.Value != nil {
-				value = p.Output.Value
-			}
-			if value == nil {
-				value = []types.ToolResultContentBlock{}
-			}
-			if b, err := json.Marshal(value); err == nil {
-				return string(b)
-			}
-			return fmt.Sprintf("[complex output from %s]", p.ToolName)
-		case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
-			if b, err := json.Marshal(p.Output.Value); err == nil {
-				return string(b)
-			}
-			return fmt.Sprintf("%v", p.Output.Value)
+	out := resolveToolOutput(p)
+	switch out.kind {
+	case "text", "error-text":
+		return stringValue(out.value)
+	case "execution-denied":
+		if out.reason != "" {
+			return out.reason
 		}
+		return "Tool call execution denied."
+	case "content":
+		// Mirror ToolResultOutput.MarshalJSON's Value/Content precedence so a
+		// round-tripped (Value set) and a natively built (Content set) output
+		// produce the same wire text.
+		var value interface{} = out.content
+		if out.value != nil {
+			value = out.value
+		}
+		if value == nil {
+			value = []types.ToolResultContentBlock{}
+		}
+		return jsonStringify(value)
+	default: // json, error-json
+		return jsonStringify(out.value)
 	}
-	return fmt.Sprintf("%v", p.Result)
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages

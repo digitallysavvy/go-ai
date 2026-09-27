@@ -1107,12 +1107,57 @@ func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
 	}
 	// The first provider request now happens in the background (matching TS,
 	// where streamText() returns before any I/O), so wait for it before
-	// reading the value DoStreamFunc captured.
-	if _, err := result.ReadAll(); err != nil {
-		t.Fatalf("ReadAll error = %v", err)
+	// reading the value DoStreamFunc captured. The mock stream produces no
+	// tool call despite ToolChoice: required, so this now correctly surfaces
+	// ToolChoiceViolationError (audit row 36b3364/ccf98e7 / WG3) rather than
+	// silently succeeding.
+	if _, err := result.ReadAll(); !IsToolChoiceViolationError(err) {
+		t.Fatalf("ReadAll error = %v, want ToolChoiceViolationError", err)
 	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall ports TS's
+// ToolChoiceViolationError happy path to streamText (audit row 36b3364/
+// ccf98e7 / WG3): any tool call satisfies "required".
+func TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.RequiredToolChoice(),
+		MaxSteps:   &maxSteps,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if len(result.ToolCalls()) != 1 || result.ToolCalls()[0].ToolName != "search" {
+		t.Fatalf("ToolCalls() = %+v", result.ToolCalls())
 	}
 }
 
@@ -1637,17 +1682,18 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
 		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
 	}
-	if toolResults[0].ApprovalReason == nil || *toolResults[0].ApprovalReason == "" {
-		t.Fatalf("expected default denial reason, got %#v", toolResults[0].ApprovalReason)
-	}
-	if *toolResults[0].ApprovalReason != "Tool execution denied." {
-		t.Fatalf("unexpected default denial reason: %q", *toolResults[0].ApprovalReason)
+	// No reason was supplied, so Go must leave it unset here (matching TS,
+	// which leaves `reason` undefined) rather than synthesize a default;
+	// each provider converter applies its own default denial text when it
+	// serializes the tool result (audit row 58a2ad7 / G6).
+	if toolResults[0].ApprovalReason != nil {
+		t.Fatalf("expected no synthesized denial reason, got %#v", *toolResults[0].ApprovalReason)
 	}
 	output, ok := toolResults[0].Result.(types.ToolResultOutput)
 	if !ok {
 		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
 	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "Tool execution denied." {
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "" {
 		t.Fatalf("unexpected denied output: %#v", output)
 	}
 }
@@ -2205,6 +2251,111 @@ func TestStreamEmitsGeneratedFile(t *testing.T) {
 	}
 }
 
+// TestStreamTextResult_FilesAccumulatesAcrossSteps verifies that
+// StreamTextResult.Files() accumulates generated files from every step,
+// matching the TypeScript SDK's accumulative StreamTextResult.files.
+func TestStreamTextResult_FilesAccumulatesAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name:        "makeFile",
+		Description: "make a file",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	file1 := &types.GeneratedFileContent{MediaType: "image/png", Data: []byte{1}}
+	file2 := &types.GeneratedFileContent{MediaType: "image/jpeg", Data: []byte{2}}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file1},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID: "call_1", ToolName: "makeFile", Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			case 2:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file2},
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Fatalf("unexpected stream call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "make two files",
+		Tools:  []types.Tool{tool},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	files := result.Files()
+	if len(files) != 2 {
+		t.Fatalf("Files() = %d files, want 2: %+v", len(files), files)
+	}
+	if files[0].MediaType != "image/png" || files[1].MediaType != "image/jpeg" {
+		t.Errorf("unexpected file media types: %q, %q", files[0].MediaType, files[1].MediaType)
+	}
+}
+
+// TestStreamTextResult_FilesEmptyWhenNoFiles verifies Files() returns an
+// empty slice (never panics/nil-dereferences) when no files were generated.
+func TestStreamTextResult_FilesEmptyWhenNoFiles(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+	if got := result.Files(); len(got) != 0 {
+		t.Errorf("Files() = %+v, want empty", got)
+	}
+}
+
 // TestStreamEmitsCustomContent verifies that a provider can emit a
 // ChunkTypeCustom chunk and that it flows through to the OnChunk consumer.
 func TestStreamEmitsCustomContent(t *testing.T) {
@@ -2461,6 +2612,49 @@ func TestStreamTextAbortDoesNotCallFinish(t *testing.T) {
 	}
 }
 
+// TestStreamTextAbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape (audit row a8e8ad0 / WG5): the stable OnAbortEvent must carry the
+// call ID and abort reason, and take precedence over the deprecated OnAbort.
+func TestStreamTextAbortEventCarriesCallIDAndReason(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStreamWithError(context.Canceled), nil
+		},
+	}
+
+	eventCh := make(chan GenerateTextAbortEvent, 1)
+	deprecatedCalled := false
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			eventCh <- e
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	select {
+	case e := <-eventCh:
+		if e.CallID == "" {
+			t.Error("GenerateTextAbortEvent.CallID is empty")
+		}
+		if e.Reason == nil {
+			t.Error("GenerateTextAbortEvent.Reason is nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
+	}
+	_ = result
+}
+
 func TestStreamTextRejectsIncompleteMetadataOnlyStream(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
@@ -2560,6 +2754,42 @@ func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
 	}
 	if result.FinishReason() != types.FinishReasonOther {
 		t.Fatalf("finishReason = %q, want other", result.FinishReason())
+	}
+}
+
+// TestStreamText_PublishesEmptyStringPartialOutput ports TS's "stream null
+// and empty-string JSON partial outputs" case (audit row 84f5d1b / WG4): a
+// genuine first empty-string partial must be published, not suppressed by
+// comparing against the "nothing published yet" sentinel.
+func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: ""},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		Output: TextOutput(),
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	partial := result.PartialOutput()
+	s, ok := partial.(string)
+	if !ok {
+		t.Fatalf("PartialOutput() = %#v (%T), want the published empty string, not the unpublished zero value", partial, partial)
+	}
+	if s != "" {
+		t.Fatalf("PartialOutput() = %q, want empty string", s)
 	}
 }
 
@@ -3124,5 +3354,53 @@ func TestStreamTextResult_NoCallbacksChunksChannelYieldsFullMultiStep(t *testing
 	}
 	if got := atomic.LoadInt32(&doStreamCalls); got != 2 {
 		t.Fatalf("expected DoStream to be called twice, got %d", got)
+	}
+}
+
+// TestStreamText_PanickingOnChunkDoesNotAbortStream ports TS's callback
+// exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
+// not kill the stream-processing goroutine, and the full text/finish must
+// still be produced.
+func TestStreamText_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "Hello, "},
+				{Type: provider.ChunkTypeText, Text: "world!"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var onErrorCalls int
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnChunk: func(chunk provider.StreamChunk) {
+			panic("boom from OnChunk")
+		},
+		OnError: func(ctx context.Context, err error) {
+			onErrorCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "Hello, world!" {
+		t.Fatalf("text = %q, want %q", text, "Hello, world!")
+	}
+	if result.FinishReason() != types.FinishReasonStop {
+		t.Fatalf("FinishReason() = %q, want stop", result.FinishReason())
+	}
+	// The panic must not be misreported as a stream error.
+	if onErrorCalls != 0 {
+		t.Fatalf("onErrorCalls = %d, want 0", onErrorCalls)
 	}
 }

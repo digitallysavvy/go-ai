@@ -191,7 +191,7 @@ func TestAnthropicFallbackResponsePreservesBlockAndIterations(t *testing.T) {
 		t.Fatalf("Text = %q", result.Text)
 	}
 	for _, part := range result.Content {
-		if custom, ok := part.(types.CustomContent); ok && custom.Kind == "anthropic-fallback" {
+		if custom, ok := part.(types.CustomContent); ok && (custom.Kind == "anthropic.fallback" || custom.Kind == "anthropic-fallback") {
 			t.Fatalf("fallback content block should be dropped like TS, got %#v", part)
 		}
 	}

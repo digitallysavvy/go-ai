@@ -36,7 +36,13 @@ func TestVideoModel_EncodesProviderRequestID(t *testing.T) {
 			defer server.Close()
 
 			model := NewVideoModel(New(Config{APIKey: "k", BaseURL: server.URL}), "grok-imagine-video")
-			if _, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "p"}); err != nil {
+			opts := &provider.VideoModelV3CallOptions{
+				Prompt: "p",
+				ProviderOptions: map[string]interface{}{
+					"xai": map[string]interface{}{"pollIntervalMs": 1},
+				},
+			}
+			if _, err := model.DoGenerate(context.Background(), opts); err != nil {
 				t.Fatalf("DoGenerate: %v", err)
 			}
 			if statusPath != tt.want {

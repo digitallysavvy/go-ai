@@ -481,6 +481,13 @@ type OnFinishEvent struct {
 	ExperimentalContext interface{}
 	RuntimeContext      interface{}
 	ToolsContext        map[string]interface{}
+
+	// Output is the parsed structured output, set only when an Output spec
+	// was configured and parsing succeeded; omitted (nil) when no Output was
+	// configured or when parsing failed (see OutputErr()/OutputErr on the
+	// result instead). Mirrors TS generate-text.ts/stream-text.ts's onEnd/
+	// onFinish event carrying the parsed output (audit row 6669d69 / WG4).
+	Output interface{}
 }
 
 // Canonical event type name aliases. The deprecated On* names remain for backward compatibility.
@@ -599,4 +606,37 @@ func firstLMCallEnd(stable, experimental OnLanguageModelCallEndCallback) OnLangu
 		return stable
 	}
 	return experimental
+}
+
+// GenerateTextAbortEvent is fired when generation is aborted by context
+// cancellation or a timeout, exposing the call ID, the completed steps so
+// far, and the abort reason. Mirrors TS generate-text-events.ts's onAbort
+// event (audit row a8e8ad0 / WG5).
+type GenerateTextAbortEvent struct {
+	// CallID correlates this event with the other events for this call.
+	CallID string
+
+	// Steps contains every step that completed before the abort.
+	Steps []types.StepResult
+
+	// Reason is why the call was aborted: context.Cause(ctx) when available,
+	// else ctx.Err().
+	Reason error
+}
+
+// OnAbortCallback is the callback type for OnAbortEvent.
+type OnAbortCallback = func(ctx context.Context, e GenerateTextAbortEvent)
+
+// firstOnAbort returns stable if non-nil, else it adapts the deprecated
+// OnAbort(ctx, steps) callback (if set) into the stable shape.
+func firstOnAbort(stable OnAbortCallback, deprecated func(ctx context.Context, steps []types.StepResult)) OnAbortCallback {
+	if stable != nil {
+		return stable
+	}
+	if deprecated == nil {
+		return nil
+	}
+	return func(ctx context.Context, e GenerateTextAbortEvent) {
+		deprecated(ctx, e.Steps)
+	}
 }

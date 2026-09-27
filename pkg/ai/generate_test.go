@@ -860,11 +860,88 @@ func TestGenerateText_ToolChoiceForwardedToProvider(t *testing.T) {
 		Prompt:     "use a tool",
 		ToolChoice: types.RequiredToolChoice(),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The mock returns no tool call despite ToolChoice: required, so this now
+	// correctly surfaces ToolChoiceViolationError (audit row 8b6b756 / WG3)
+	// rather than silently succeeding.
+	if !IsToolChoiceViolationError(err) {
+		t.Fatalf("error = %v, want ToolChoiceViolationError", err)
 	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// TestGenerateText_ToolChoiceRequiredSatisfiedByAnyToolCall ports TS
+// generate-text.test.ts's ToolChoiceViolationError happy path (audit row
+// 8b6b756 / WG3): any tool call satisfies "required".
+func TestGenerateText_ToolChoiceRequiredSatisfiedByAnyToolCall(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.RequiredToolChoice(),
+		MaxSteps:   &maxSteps,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "search" {
+		t.Fatalf("ToolCalls = %+v", result.ToolCalls)
+	}
+}
+
+// TestGenerateText_ToolChoiceSpecificToolViolation ports TS's specific-tool
+// enforcement message (audit row 8b6b756 / WG3): a call to a different tool
+// does not satisfy {type:"tool", toolName}.
+func TestGenerateText_ToolChoiceSpecificToolViolation(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{Name: "search"}, {Name: "other"}}
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "other", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.SpecificToolChoice("search"),
+	})
+	var violation *ToolChoiceViolationError
+	if !errors.As(err, &violation) {
+		t.Fatalf("error = %v, want *ToolChoiceViolationError", err)
+	}
+	wantMsg := "Model response did not contain a call to the required tool 'search'."
+	if violation.Error() != wantMsg {
+		t.Fatalf("message = %q, want %q", violation.Error(), wantMsg)
+	}
+	if violation.ToolChoice.ToolName != "search" || violation.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("violation = %+v", violation)
 	}
 }
 
@@ -1925,5 +2002,47 @@ func TestGenerateTextReasoningNilNotPropagated(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGenerateText_AbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape to generateText (audit row a8e8ad0 / WG5): the stable OnAbortEvent
+// must carry the call ID and abort reason, and take precedence over the
+// deprecated OnAbort.
+func TestGenerateText_AbortEventCarriesCallIDAndReason(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, context.Canceled
+		},
+	}
+
+	var event *GenerateTextAbortEvent
+	deprecatedCalled := false
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			event = &e
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if event == nil {
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if event.CallID == "" {
+		t.Error("GenerateTextAbortEvent.CallID is empty")
+	}
+	if event.Reason == nil {
+		t.Error("GenerateTextAbortEvent.Reason is nil")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
 	}
 }

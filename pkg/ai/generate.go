@@ -23,6 +23,18 @@ func now() int64 {
 	return time.Now().UnixMilli()
 }
 
+// abortReason resolves the reason an aborted call should report:
+// context.Cause(ctx) when the context carries a specific cancellation cause,
+// else fallback (typically the error that surfaced the abort). Mirrors TS
+// generate-text.ts/stream-text.ts's onAbort reason resolution (audit row
+// a8e8ad0 / WG5).
+func abortReason(ctx context.Context, fallback error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return fallback
+}
+
 func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	if model == nil || model.Provider() != "gateway" {
 		return 0
@@ -31,6 +43,14 @@ func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 		return 2
 	}
 	return *maxRetries
+}
+
+// GatewayMaxRetries is the exported form of gatewayMaxRetries: 0 unless model
+// is an AI Gateway model, in which case it is maxRetries (default 2 when
+// nil). Exported so other packages (e.g. pkg/agent) can share this logic
+// instead of maintaining their own copy.
+func GatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
+	return gatewayMaxRetries(model, maxRetries)
 }
 
 func validateMaxRetries(maxRetries *int) error {
@@ -66,6 +86,13 @@ func isGatewayCallRetryable(err error) bool {
 	return false
 }
 
+// IsGatewayCallRetryable is the exported form of isGatewayCallRetryable.
+// Exported so other packages (e.g. pkg/agent) can share this logic instead
+// of maintaining their own copy.
+func IsGatewayCallRetryable(err error) bool {
+	return isGatewayCallRetryable(err)
+}
+
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
@@ -86,6 +113,14 @@ func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 		return err
 	})
 	return result, err
+}
+
+// DoGenerateWithGatewayRetry is the exported form of
+// doGenerateWithGatewayRetry: it calls model.DoGenerate, retrying with the
+// AI Gateway's retry policy when model is a Gateway model. Used by pkg/agent's
+// step loop (which calls DoGenerate directly) so both share one retry policy.
+func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	return doGenerateWithGatewayRetry(ctx, model, opts, maxRetries)
 }
 
 func doStreamWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (provider.TextStream, error) {
@@ -423,7 +458,16 @@ type GenerateTextOptions struct {
 
 	// OnAbort is called when generation is aborted by context cancellation or
 	// deadline before normal completion.
+	//
+	// Deprecated: use OnAbortEvent, which also carries the call ID and abort
+	// reason.
 	OnAbort func(ctx context.Context, steps []types.StepResult)
+
+	// OnAbortEvent is called when generation is aborted by context
+	// cancellation or deadline before normal completion, with a
+	// GenerateTextAbortEvent carrying the call ID, completed steps, and
+	// abort reason. Takes precedence over the deprecated OnAbort.
+	OnAbortEvent OnAbortCallback
 }
 
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
@@ -688,10 +732,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if result != nil {
 					abortSteps = append([]types.StepResult(nil), result.Steps...)
 				}
-				if opts.OnAbort != nil {
-					opts.OnAbort(ctx, abortSteps)
+				reason := abortReason(ctx, err)
+				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+					onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason})
 				}
-				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: err, Steps: abortSteps})
+				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
 				return
 			}
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
@@ -1115,6 +1160,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Performance:      languageModelCallPerformance(performance),
 		})
 
+		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), genResult.Content); violation != nil {
+			return nil, violation
+		}
+
 		// Extract sources, files, and reasoning from content parts
 		var stepSources []types.SourceContent
 		var stepFiles []types.GeneratedFileContent
@@ -1312,10 +1361,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs
 
-			// Parse typed output if an Output spec was provided.
-			// Only parse when generation finished cleanly; a 'length' finish means
-			// the response was truncated and would likely produce invalid JSON.
-			if op, ok := opts.Output.(outputProcessor); ok && genResult.FinishReason == types.FinishReasonStop {
+			// Parse typed output if an Output spec was provided. Parse on a
+			// clean stop, or on any other finish reason besides tool-calls
+			// as long as the step produced text — e.g. a provider that
+			// omits/misreports finishReason but still returned the object
+			// (audit rows eed7950/9de0baf / WG4). A 'length' finish with no
+			// text is still skipped: it would likely be invalid/truncated
+			// JSON, surfaced instead as NoObjectGeneratedError by the Output
+			// spec's own parseCompleteOutput.
+			if op, ok := opts.Output.(outputProcessor); ok && shouldParseFinalOutput(genResult.FinishReason, genResult.Text) {
 				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
 					Text:         genResult.Text,
 					FinishReason: genResult.FinishReason,
@@ -1623,6 +1677,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
+		Output:              result.Output,
 	}, onEndEvent)
 
 	// Apply retention settings (v6.0.60)
@@ -1831,16 +1886,21 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
+			// Leave the reason unset (rather than synthesizing a default
+			// here) so each provider converter applies its own default
+			// denial text (TS leaves `reason` undefined; see audit row
+			// 58a2ad7 / G6).
 			reason := approval.Reason
-			if reason == nil {
-				reason = strPtr("Tool execution denied.")
+			reasonText := ""
+			if reason != nil {
+				reasonText = *reason
 			}
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,

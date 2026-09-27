@@ -153,7 +153,11 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
-	mediaType := resolveGeneratedSpeechMediaType(raw.Audio)
+	var responseHeaders map[string]string
+	if raw.Response != nil {
+		responseHeaders = raw.Response.Headers
+	}
+	mediaType := resolveGeneratedSpeechMediaType(raw.Audio, responseHeaders, opts.OutputFormat)
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{
@@ -195,14 +199,61 @@ func speechHeadersWithUserAgent(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(headers, version.UserAgent())
 }
 
-// resolveGeneratedSpeechMediaType mirrors the "audio" top-level branch of the
-// TypeScript SDK's `detectMediaType({data, topLevelType: 'audio'})` call in
-// generate-speech.ts, falling back to audio/mp3 when no signature matches.
-func resolveGeneratedSpeechMediaType(data []byte) string {
+// resolveGeneratedSpeechMediaType resolves the generated audio's media type
+// in priority order: sniffed from the bytes (audio-scoped signature
+// detection, TS `detectMediaType({data, topLevelType: 'audio'})`), then the
+// provider response's Content-Type header, then the requested outputFormat,
+// then an audio/mp3 fallback. Mirrors TS generate-speech.ts (audit row
+// e61cbd8 / WG11).
+func resolveGeneratedSpeechMediaType(data []byte, responseHeaders map[string]string, outputFormat string) string {
 	if mediaType, ok := fileutil.DetectMediaTypeSignature(data, "audio"); ok {
 		return mediaType
 	}
+	if fromHeader := responseAudioMediaType(responseHeaders); fromHeader != "" {
+		return fromHeader
+	}
+	if fromFormat := outputFormatMediaType(outputFormat); fromFormat != "" {
+		return fromFormat
+	}
 	return "audio/mp3"
+}
+
+// responseAudioMediaType extracts an audio/* media type from a
+// case-insensitive Content-Type response header, ignoring parameters (e.g.
+// "audio/wav; codecs=1" -> "audio/wav"). Returns "" when absent, empty, or
+// not an audio/* type.
+func responseAudioMediaType(headers map[string]string) string {
+	for name, value := range headers {
+		if !strings.EqualFold(name, "content-type") {
+			continue
+		}
+		normalized := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		if normalized == "" {
+			return ""
+		}
+		if strings.HasPrefix(normalized, "audio/") {
+			return normalized
+		}
+		return ""
+	}
+	return ""
+}
+
+// outputFormatMediaType maps the caller's requested outputFormat to a media
+// type for headerless raw formats that can't be sniffed from the bytes.
+func outputFormatMediaType(outputFormat string) string {
+	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+	case "pcm", "audio/pcm":
+		return "audio/pcm"
+	case "audio/l16":
+		return "audio/l16"
+	case "mulaw", "audio/mulaw":
+		return "audio/mulaw"
+	case "alaw", "audio/alaw":
+		return "audio/alaw"
+	default:
+		return ""
+	}
 }
 
 func generatedAudioFormat(mediaType string) string {

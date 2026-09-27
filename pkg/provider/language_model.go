@@ -222,10 +222,11 @@ type StreamChunk struct {
 	FinishReason types.FinishReason
 
 	// RawFinishReason is the raw, provider-specific finish/incomplete reason
-	// string (when Type is ChunkTypeFinish), mirroring
-	// types.GenerateResult.RawFinishReason for the non-streaming path.
-	// Row e6376c2: for a response.failed event, this carries the failure's
-	// raw reason (or "error" if none was given).
+	// string (when Type is ChunkTypeFinish), before normalization to
+	// FinishReason. It mirrors types.GenerateResult.RawFinishReason for the
+	// non-streaming path and is surfaced by StreamTextResult.RawFinishReason()
+	// (TS raw finish reason passthrough). For a Responses response.failed
+	// event it carries the failure's raw reason, or "error" if none was given.
 	RawFinishReason string
 
 	// Context management information (Anthropic-specific)
@@ -309,6 +310,17 @@ const (
 
 	// ChunkTypeFinish indicates the final chunk with finish reason
 	ChunkTypeFinish ChunkType = "finish"
+
+	// ChunkTypeFinishStep marks the end of one step in a multi-step stream
+	// produced outside the normal provider.LanguageModel.DoStream loop (e.g.
+	// a harness bridge session that already ran its own model calls), when
+	// more steps follow. Unlike ChunkTypeFinish it never means the stream is
+	// over; consumers should expect another ChunkTypeStreamStart afterward.
+	// Carries the same Usage/FinishReason fields as ChunkTypeFinish, scoped
+	// to that one step. Mirrors TS harness-v1-stream-part.ts's "finish-step"
+	// (distinct from "finish"). See state/parity/sep_23_2026/harness.md §3
+	// ("P0 prerequisite").
+	ChunkTypeFinishStep ChunkType = "finish-step"
 
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"

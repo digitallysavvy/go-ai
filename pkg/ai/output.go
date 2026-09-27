@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -50,7 +51,12 @@ type PartialOutput[T any] struct {
 type outputProcessor interface {
 	ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error)
 	parseCompleteOutput(ctx context.Context, opts ParseCompleteOutputOptions) (interface{}, error)
-	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error)
+	// parsePartialOutput returns (value, hasValue, err). hasValue is false
+	// only when there isn't enough content to parse anything yet
+	// (TS: `result` itself is undefined); a JSON null is a legitimate parsed
+	// value (hasValue=true, value=nil) and must not be conflated with "not
+	// parseable yet" (audit row 84f5d1b / WG4).
+	parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (value interface{}, hasValue bool, err error)
 }
 
 // =============================================================================
@@ -205,15 +211,15 @@ func (o *textOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *textOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -374,15 +380,15 @@ func (o *objectOutput[T]) parseCompleteOutput(ctx context.Context, opts ParseCom
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *objectOutput[T]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -401,6 +407,18 @@ type ArrayOutputOptions[ELEMENT any] struct {
 	// Description is an optional description of the output
 	// Used by some providers for additional LLM guidance (e.g., via tool or schema description)
 	Description string
+
+	// MinItems is an optional minimum number of elements to generate. Placed
+	// on the "elements" JSON Schema property and validated against the final
+	// parsed array. Mirrors TS Output.array()'s minItems (audit row d4485fe
+	// / WG4).
+	MinItems *int
+
+	// MaxItems is an optional maximum number of elements to generate. Placed
+	// on the "elements" JSON Schema property and validated against the final
+	// parsed array, and against streamed partial output once exceeded.
+	// Mirrors TS Output.array()'s maxItems (audit row d4485fe / WG4).
+	MaxItems *int
 }
 
 // arrayOutput is the implementation of Output for array generation
@@ -408,6 +426,13 @@ type arrayOutput[ELEMENT any] struct {
 	elementSchema schema.Schema
 	name          string
 	description   string
+	minItems      *int
+	maxItems      *int
+	// constructErr holds a synchronous constructor-time validation failure
+	// (invalid minItems/maxItems), surfaced lazily from ResponseFormat/
+	// ParseCompleteOutput/ParsePartialOutput since ArrayOutput itself has no
+	// error return, matching this file's other Output constructors.
+	constructErr error
 }
 
 // ArrayOutput creates an output specification for generating arrays of elements
@@ -434,32 +459,107 @@ type arrayOutput[ELEMENT any] struct {
 //	    fmt.Printf("Element %d: %v\n", elem.Index, elem.Element)
 //	}
 func ArrayOutput[ELEMENT any](opts ArrayOutputOptions[ELEMENT]) Output[[]ELEMENT, []ELEMENT] {
-	return &arrayOutput[ELEMENT]{
+	o := &arrayOutput[ELEMENT]{
 		elementSchema: opts.ElementSchema,
 		name:          opts.Name,
 		description:   opts.Description,
+		minItems:      opts.MinItems,
+		maxItems:      opts.MaxItems,
 	}
+	if err := validateArrayBound("minItems", opts.MinItems); err != nil {
+		o.constructErr = err
+		return o
+	}
+	if err := validateArrayBound("maxItems", opts.MaxItems); err != nil {
+		o.constructErr = err
+		return o
+	}
+	if opts.MinItems != nil && opts.MaxItems != nil && *opts.MinItems > *opts.MaxItems {
+		o.constructErr = &providererrors.InvalidArgumentError{
+			Field:   "minItems",
+			Message: "minItems must be less than or equal to maxItems",
+		}
+	}
+	return o
+}
+
+// validateArrayBound mirrors TS output.ts's validateArrayBound: non-negative
+// (Go's *int is already integer-typed, so only the sign check applies).
+func validateArrayBound(name string, value *int) error {
+	if value == nil {
+		return nil
+	}
+	if *value < 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   name,
+			Message: fmt.Sprintf("%s must be greater than or equal to 0", name),
+		}
+	}
+	return nil
+}
+
+// arrayLengthValidationError mirrors TS output.ts's
+// getArrayLengthValidationError.
+func arrayLengthValidationError(length int, minItems, maxItems *int) error {
+	if minItems != nil && length < *minItems {
+		return fmt.Errorf("elements array must contain at least %d items", *minItems)
+	}
+	if maxItems != nil && length > *maxItems {
+		return fmt.Errorf("elements array must contain at most %d items", *maxItems)
+	}
+	return nil
 }
 
 func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error) {
+	if o.constructErr != nil {
+		return nil, o.constructErr
+	}
+
 	elementJSONSchema := cloneSchemaMap(o.elementSchema.Validator().JSONSchema())
 
 	// Remove $schema from element schema if present
 	delete(elementJSONSchema, "$schema")
 
+	// Hoist definitions/$defs from the element schema to the wrapper root:
+	// putting them under "items" instead would break "#/$defs/..." /
+	// "#/definitions/..." refs, which resolve against the document root, not
+	// "items" (audit row 72ec74f / WG4).
+	definitions, hasDefinitions := elementJSONSchema["definitions"]
+	if hasDefinitions {
+		delete(elementJSONSchema, "definitions")
+	}
+	defs, hasDefs := elementJSONSchema["$defs"]
+	if hasDefs {
+		delete(elementJSONSchema, "$defs")
+	}
+
+	elementsSchema := map[string]interface{}{
+		"type":  "array",
+		"items": elementJSONSchema,
+	}
+	if o.minItems != nil {
+		elementsSchema["minItems"] = *o.minItems
+	}
+	if o.maxItems != nil {
+		elementsSchema["maxItems"] = *o.maxItems
+	}
+
 	// Create array wrapper schema
 	arraySchema := map[string]interface{}{
 		"$schema": "http://json-schema.org/draft-07/schema#",
-		"type":    "object",
-		"properties": map[string]interface{}{
-			"elements": map[string]interface{}{
-				"type":  "array",
-				"items": elementJSONSchema,
-			},
-		},
-		"required":             []string{"elements"},
-		"additionalProperties": false,
 	}
+	if hasDefinitions {
+		arraySchema["definitions"] = definitions
+	}
+	if hasDefs {
+		arraySchema["$defs"] = defs
+	}
+	arraySchema["type"] = "object"
+	arraySchema["properties"] = map[string]interface{}{
+		"elements": elementsSchema,
+	}
+	arraySchema["required"] = []string{"elements"}
+	arraySchema["additionalProperties"] = false
 
 	format := &provider.ResponseFormat{
 		Type:   "json",
@@ -517,6 +617,17 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
 			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Text:         options.Text,
+			Response:     options.Response,
+			Usage:        options.Usage,
+			FinishReason: options.FinishReason,
+		}
+	}
+
+	if lengthErr := arrayLengthValidationError(len(elementsArray), o.minItems, o.maxItems); lengthErr != nil {
+		return nil, &NoObjectGeneratedError{
+			Message:      "No object generated: response did not match schema.",
+			Cause:        lengthErr,
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -633,15 +744,15 @@ func (o *arrayOutput[ELEMENT]) parseCompleteOutput(ctx context.Context, opts Par
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *arrayOutput[ELEMENT]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -857,15 +968,15 @@ func (o *choiceOutput[CHOICE]) parseCompleteOutput(ctx context.Context, opts Par
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *choiceOutput[CHOICE]) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }
 
 // =============================================================================
@@ -953,13 +1064,13 @@ func (o *jsonOutput) parseCompleteOutput(ctx context.Context, opts ParseComplete
 	return o.ParseCompleteOutput(ctx, opts)
 }
 
-func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, error) {
+func (o *jsonOutput) parsePartialOutput(ctx context.Context, opts ParsePartialOutputOptions) (interface{}, bool, error) {
 	r, err := o.ParsePartialOutput(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	return r.Partial, nil
+	return r.Partial, true, nil
 }

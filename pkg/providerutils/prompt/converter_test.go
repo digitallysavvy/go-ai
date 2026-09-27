@@ -15,7 +15,7 @@ func TestToAnthropicMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "anthropic-future-block",
+					Kind: "anthropic.future-block",
 					ProviderOptions: map[string]interface{}{
 						"anthropic": map[string]interface{}{
 							"type":  "future_block",
@@ -55,7 +55,7 @@ func TestToAnthropicMessagesCustomContentNoOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Answer."},
-				types.CustomContent{Kind: "xai-citation"}, // no ProviderOptions
+				types.CustomContent{Kind: "xai.citation"}, // no ProviderOptions
 			},
 		},
 	}
@@ -127,7 +127,7 @@ func TestToOpenAIMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "openai-custom",
+					Kind: "openai.custom",
 					ProviderOptions: map[string]interface{}{
 						"openai": map[string]interface{}{
 							"type":  "custom_block",
@@ -164,7 +164,7 @@ func TestToOpenAIMessagesCustomContentNoOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Hello."},
-				types.CustomContent{Kind: "xai-citation"}, // no openai options
+				types.CustomContent{Kind: "xai.citation"}, // no openai options
 			},
 		},
 	}
@@ -220,6 +220,66 @@ func TestToOpenAIMessagesAssistantToolCallsUseNullContentWhenNoText(t *testing.T
 	if function["arguments"] != `{"foo":"bar123"}` {
 		t.Fatalf("arguments = %q, want JSON object", function["arguments"])
 	}
+}
+
+// TestToOpenAIMessagesToolResultOutputTypes ports the TS
+// convert-to-openai-chat-messages.ts tool-result output.type switch (audit
+// row 58a2ad7 / G6). Before this fix, every ToolResultContent using the
+// structured Output field (instead of the deprecated Result field) other
+// than "content" serialized to the literal string "<nil>", because Output
+// being set left the legacy Result field nil.
+func TestToOpenAIMessagesToolResultOutputTypes(t *testing.T) {
+	msg := func(output types.ToolResultOutput) map[string]interface{} {
+		result := ToOpenAIMessages([]types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &output},
+			},
+		}})
+		return result[0]
+	}
+
+	t.Run("text", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "hello"})
+		if got["content"] != "hello" {
+			t.Fatalf("content = %#v, want %q", got["content"], "hello")
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"a": 1}})
+		if got["content"] != `{"a":1}` {
+			t.Fatalf("content = %#v, want JSON string", got["content"])
+		}
+	})
+
+	t.Run("error-text", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputError, Value: "boom"})
+		if got["content"] != "boom" {
+			t.Fatalf("content = %#v, want %q", got["content"], "boom")
+		}
+	})
+
+	t.Run("error-json", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputError, Value: map[string]interface{}{"code": 500}})
+		if got["content"] != `{"code":500}` {
+			t.Fatalf("content = %#v, want JSON string", got["content"])
+		}
+	})
+
+	t.Run("execution-denied with reason", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "policy"})
+		if got["content"] != "policy" {
+			t.Fatalf("content = %#v, want %q", got["content"], "policy")
+		}
+	})
+
+	t.Run("execution-denied without reason uses default", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied})
+		if got["content"] != "Tool call execution denied." {
+			t.Fatalf("content = %#v, want default denial text", got["content"])
+		}
+	})
 }
 
 func TestToOpenAIMessagesAssistantWithoutToolCallsUsesEmptyStringContent(t *testing.T) {
@@ -359,7 +419,7 @@ func TestToGoogleMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "google-grounding",
+					Kind: "google.grounding",
 					ProviderOptions: map[string]interface{}{
 						"google": map[string]interface{}{
 							"type":  "grounding_metadata",
@@ -395,7 +455,7 @@ func TestCustomContentNilProviderOptionsNoCrash(t *testing.T) {
 		{
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
-				types.CustomContent{Kind: "xai-citation"}, // ProviderOptions is nil
+				types.CustomContent{Kind: "xai.citation"}, // ProviderOptions is nil
 			},
 		},
 	}
@@ -416,7 +476,7 @@ func TestCustomContentProviderMetadataNotForwarded(t *testing.T) {
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Answer."},
 				types.CustomContent{
-					Kind:             "xai-citation",
+					Kind:             "xai.citation",
 					ProviderMetadata: json.RawMessage(`{"url":"https://x.ai"}`),
 					// No ProviderOptions — should be dropped even though metadata is set.
 				},
