@@ -18,6 +18,7 @@ type StdioTransport struct {
 	// Command to execute
 	command string
 	args    []string
+	env     []string
 
 	// Process
 	cmd    *exec.Cmd
@@ -45,7 +46,11 @@ type StdioTransportConfig struct {
 	// Args are the arguments to pass to the command
 	Args []string
 
-	// Env are additional environment variables to set
+	// Env are additional environment variables to set, in "KEY=VALUE" form
+	// (the os.Environ()/exec.Cmd.Env convention). The child process does not
+	// inherit the full parent environment: only Env plus a small safe
+	// allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment)
+	// are passed through, mirroring TS mcp-stdio/get-environment.ts.
 	Env []string
 
 	// WorkingDir is the working directory for the command
@@ -83,6 +88,7 @@ func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 	return &StdioTransport{
 		command: config.Command,
 		args:    config.Args,
+		env:     config.Env,
 		config:  config.Config,
 	}
 }
@@ -102,6 +108,10 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 
 	// Create command
 	t.cmd = exec.CommandContext(ctx, t.command, t.args...)
+	// Mirrors TS createChildProcess: the child's env is the caller-supplied
+	// Env merged with a safe allowlist of inherited parent env vars, not a
+	// blind inherit of the whole parent environment.
+	t.cmd.Env = getEnvironment(t.env)
 
 	// Get stdin, stdout, stderr pipes
 	var err error
