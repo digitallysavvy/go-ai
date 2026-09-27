@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
@@ -121,7 +122,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	authMode := resolveAuthenticationMode(settings.Auth, harnessutil.ProcessEnv())
-	resolvedAuthEnv := resolveAuthenticationEnvironment(settings.Auth, harnessutil.ProcessEnv())
+	resolvedAuthEnv := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
 
 	sandboxAuthEnv := resolvedAuthEnv
 	var sandboxCredentialEnv map[string]string
@@ -180,6 +181,44 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		return nil, err
 	}
 
+	// Rung 1 — ATTACH. When lifecycle state carries live bridge coordinates,
+	// try to reopen a socket to the still-running bridge instead of
+	// respawning. No spawn, no fresh token. A continued (suspended) turn
+	// requests replay of everything past the persisted cursor; a resumed
+	// (parked) session just attaches and waits for the next start. If the
+	// bridge is gone the open fails and DoStart falls through to a
+	// spawn-based recovery. Mirrors TS `createCodex().doStart` rung 1.
+	coords := resumeData.Bridge
+	if coords != nil {
+		if sess := h.tryAttach(ctx, attachOptions{
+			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
+			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil, cliShimPath: cliShimPath,
+			reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
+			codexConfig: settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
+			resumeThreadID:               resumeData.ThreadID,
+			sandboxCredentialEnvironment: sandboxCredentialEnv,
+			permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
+			turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
+		}); sess != nil {
+			return sess, nil
+		}
+	}
+
+	// Rungs 2/3 — REPLAY vs RERUN. Respawn the bridge. `replay` is only
+	// sound for a continued (suspended) turn; a resumed (parked) session
+	// always reruns via `codex.resumeThread(threadId)`. Mirrors TS `doStart`
+	// rungs 2/3.
+	respawnStrategy := ""
+	if isResume {
+		respawnStrategy = "rerun"
+	}
+	if coords != nil && opts.ContinueFrom != nil {
+		logText, _ := restricted.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+		if harnessutil.ClassifyDiskLog(logText) == harnessutil.DiskLogReplay {
+			respawnStrategy = "replay"
+		}
+	}
+
 	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
 	if err != nil {
 		return nil, harness.NewCapabilityUnsupportedError(
@@ -213,7 +252,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
 		Command: fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s --cli-shim-dir %s",
 			harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir), harnessutil.ShellQuote(cliShimDir)),
-		Env: env, Port: port, Token: token, BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
+		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
+		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
 			return bridge.ResolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
 		},
@@ -222,13 +262,26 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		return nil, err
 	}
 
-	channel := bridge.NewChannel(bridge.ChannelOptions{
+	channelOpts := bridge.ChannelOptions{
 		Connect: func(ctx context.Context) (bridge.Conn, error) {
 			return bridge.Dial(ctx, launched.Endpoint, bridge.DialOptions{Name: "codex bridge"})
 		},
 		Reconnect: settings.Reconnect,
-	})
-	if err := channel.Open(ctx, false); err != nil {
+	}
+	replaying := respawnStrategy == "replay"
+	if replaying {
+		channelOpts.InitialLastSeenEventID = coords.LastSeenEventID
+	}
+	channel := bridge.NewChannel(channelOpts)
+	var finishAttachment func()
+	if replaying {
+		finishAttachment = channel.BeginListenerAttachment()
+	}
+	err = channel.Open(ctx, replaying)
+	if finishAttachment != nil {
+		finishAttachment()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -243,6 +296,74 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
 	}), nil
+}
+
+// attachOptions is the input of tryAttach.
+type attachOptions struct {
+	coords         *bridgeCoords
+	sandboxSession providerutils.SandboxSession
+	settings       Settings
+	timeout        time.Duration
+	sessionID      string
+	isContinue     bool
+	cliShimPath    string
+
+	reasoningEffort              string
+	webSearch                    *bool
+	codexConfig                  map[string]any
+	mcpServers                   map[string]any
+	headers                      map[string]string
+	resumeThreadID               string
+	sandboxCredentialEnvironment map[string]string
+	permissionMode               harness.PermissionMode
+	sandbox                      providerutils.SandboxSession
+	sandboxHomeDir               string
+	turnConfigurationFingerprint string
+}
+
+// tryAttach reopens a socket to a still-running bridge using persisted
+// coordinates, reusing the existing token (no new mint) and reusing the
+// existing process (proc: nil). Returns nil when the bridge is unreachable,
+// so the caller falls through to a spawn-based recovery. Mirrors TS rung 1
+// of `doStart`.
+func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
+	endpoint, err := bridge.ResolveBridgeEndpoint(ctx, opts.sandboxSession, opts.settings.PortEndpoint, opts.coords.Port)
+	if err != nil {
+		return nil
+	}
+	attachEndpoint, err := bridge.WithBridgeToken(endpoint, opts.coords.Token)
+	if err != nil {
+		return nil
+	}
+	channel := bridge.NewChannel(bridge.ChannelOptions{
+		Connect: func(ctx context.Context) (bridge.Conn, error) {
+			return bridge.Dial(ctx, attachEndpoint, bridge.DialOptions{Name: "codex bridge"})
+		},
+		Reconnect:              opts.settings.Reconnect,
+		InitialLastSeenEventID: opts.coords.LastSeenEventID,
+	})
+	var finishAttachment func()
+	if opts.isContinue {
+		finishAttachment = channel.BeginListenerAttachment()
+	}
+	err = channel.Open(ctx, opts.isContinue)
+	if finishAttachment != nil {
+		finishAttachment()
+	}
+	if err != nil {
+		return nil
+	}
+	return newSession(sessionOptions{
+		sessionID: opts.sessionID, channel: channel, proc: nil, cliShimPath: opts.cliShimPath,
+		model: DefaultModel, reasoningEffort: opts.reasoningEffort, webSearch: opts.webSearch,
+		codexConfig: opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
+		isResume: true, seedResumeThreadOnFirstPrompt: false, rerunContinue: false,
+		resumeThreadID: opts.resumeThreadID,
+		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
+		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
+		permissionMode:               opts.permissionMode, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
+		turnConfigurationFingerprint: opts.turnConfigurationFingerprint,
+	})
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {

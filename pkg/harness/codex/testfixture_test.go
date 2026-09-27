@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -14,12 +15,17 @@ import (
 // fake bridge server without any real Node process or CLI.
 type testSandbox struct {
 	*bridgetest.Sandbox
-	home     string
-	id       string
-	workDir  string
-	endpoint harness.PortEndpoint
-	ports    []int
+	home       string
+	id         string
+	workDir    string
+	endpoint   harness.PortEndpoint
+	ports      []int
+	spawnCount int32
 }
+
+// SpawnCount returns how many times Spawn has been called, so a test can
+// assert an attach rung skipped (or a fallback rung required) a respawn.
+func (t *testSandbox) SpawnCount() int { return int(atomic.LoadInt32(&t.spawnCount)) }
 
 func newTestSandbox(srv *bridgetest.Server) *testSandbox {
 	return &testSandbox{
@@ -41,7 +47,16 @@ func (t *testSandbox) Run(ctx context.Context, opts providerutils.SandboxProcess
 func (t *testSandbox) ID() string                      { return t.id }
 func (t *testSandbox) DefaultWorkingDirectory() string { return t.workDir }
 func (t *testSandbox) Ports() []int                    { return t.ports }
-func (t *testSandbox) GetPortEndpoint(context.Context, harness.PortEndpointOptions) (harness.PortEndpoint, error) {
+
+// GetPortEndpoint returns the live fake bridge server's endpoint for the
+// declared port; any other port (used to simulate stale, unreachable
+// persisted bridge coordinates in an attach-failure test) resolves to a
+// closed local port so the connection is refused immediately instead of
+// hanging.
+func (t *testSandbox) GetPortEndpoint(_ context.Context, opts harness.PortEndpointOptions) (harness.PortEndpoint, error) {
+	if len(t.ports) > 0 && opts.Port != t.ports[0] {
+		return harness.PortEndpoint{URL: "ws://127.0.0.1:1/"}, nil
+	}
 	return t.endpoint, nil
 }
 func (t *testSandbox) GetPortURL(context.Context, harness.PortEndpointOptions) (string, error) {
@@ -59,6 +74,7 @@ var _ harness.NetworkSandboxSession = (*testSandbox)(nil)
 // exit-wait budget.
 func wireSpawn(sandbox *testSandbox) {
 	sandbox.SetSpawn(func(context.Context, providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
+		atomic.AddInt32(&sandbox.spawnCount, 1)
 		proc := bridgetest.NewProcess()
 		proc.WriteStdout("{\"type\":\"bridge-ready\",\"port\":4319}\n")
 		go func() {
