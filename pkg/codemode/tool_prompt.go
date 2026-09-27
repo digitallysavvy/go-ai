@@ -91,6 +91,20 @@ func BuildCodeModeToolCatalogMessage(tools ToolSet) string {
 // keys iterate in declaration/insertion order); this port sorts
 // alphabetically instead so output is reproducible. This is a deliberate,
 // documented deviation from TypeScript's insertion-order behavior.
+//
+// Note for a future fix: giving this package's own ToolSet an ordered
+// representation would only close part of the gap. The primary,
+// README-documented usage path -- CodeModeTool bound through
+// ai.ExperimentalToolCallers -- receives its tools from
+// types.ToolCallerDefinition.Bind(tools map[string]types.Tool) and
+// PrepareModelMessage(tools map[string]types.Tool) (pkg/provider/types/
+// tool.go), both already map-typed by the core tool-caller plumbing
+// (pkg/ai/tool_caller.go) before they ever reach this package -- order is
+// lost upstream of pkg/codemode. Closing this for real needs an ordered
+// tool collection threaded through Bind/PrepareModelMessage in core-ai,
+// which is out of this package's scope; only CreateCodeModeTool's direct
+// (non-tool-caller) path could be fixed locally, and only by also
+// replacing ToolSet with an ordered type throughout this package.
 func sortedToolNames(tools ToolSet) []string {
 	names := make([]string, 0, len(tools))
 	for name := range tools {

@@ -9,13 +9,29 @@
 //
 // This package ports the TypeScript package's core execution path: source
 // wrapping, execution limits, the host tool bridge (including approval),
-// error translation, and the TypeScript-signature prompt builder. It does
-// NOT yet port the continuation/interrupt system (CodeModeContinuation,
-// experimental_runCodeMode's continuation/interruptResolution inputs, the
-// approval "interrupt" mode, and experimental_requestCodeModeInterrupt and
-// friends). See the package README/PRD tracking notes for the precise list
-// of deferred TypeScript surface. Approval mode "callback" (the default) is
-// fully supported; approval mode "interrupt" returns a clear error.
+// error translation, and the TypeScript-signature prompt builder. Approval
+// mode "callback" (the default) is fully supported; approval mode
+// "interrupt" returns a clear error.
+//
+// It does NOT yet port the continuation/interrupt system. Precise deferred
+// TypeScript surface (all of it out of scope for this package as written;
+// tracked for a follow-up):
+//   - experimental_requestCodeModeInterrupt (host-interrupt.ts) and
+//     experimental_continueCodeModeInterrupt,
+//     experimental_getCodeModeInterrupt, experimental_isCodeModeInterrupt,
+//     experimental_unwrapCodeModeResult (interrupt-continuation.ts).
+//   - experimental_continueCodeModeApproval,
+//     experimental_getCodeModeApprovalResponse,
+//     experimental_isCodeModeApprovalInterrupt,
+//     experimental_toCodeModeApprovalMessages (approval-continuation.ts) --
+//     these implement approval mode "interrupt"; see ApprovalModeInterrupt.
+//   - experimental_setCodeModeContinuationSigningKey and the rest of
+//     continuation-capability.ts (HMAC-SHA256 signed continuation tokens).
+//   - The CodeModeContinuation, CodeModeContinuationSecurityOptions,
+//     CodeModeInterrupt(ExecutionContext|Payload|Resolution),
+//     CodeModeApprovalInterrupt, CodeModeApprovalResponse, and
+//     CodeModeUnwrappedResult types, and RunCodeModeInput's
+//     continuation/interruptResolution fields (RunInput has neither).
 //
 // # Host tool bridge dispatch
 //
