@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 func isInvalidArgumentError(err error) bool {
@@ -39,6 +40,16 @@ func (m *mockBatchV4) DoGetBatchStatus(ctx context.Context, opts provider.BatchV
 
 func (m *mockBatchV4) DoGetBatchResults(ctx context.Context, opts provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
 	return m.resultsFn(ctx, opts)
+}
+
+// mockBatchV4NoURLSupport wraps mockBatchV4 with an empty SupportedURLs map,
+// forcing every file URL in a batch prompt to be downloaded.
+type mockBatchV4NoURLSupport struct {
+	*mockBatchV4
+}
+
+func (m *mockBatchV4NoURLSupport) SupportedURLs() map[string][]string {
+	return nil
 }
 
 type mockBatchV4WithCanceller struct {
@@ -173,6 +184,81 @@ func TestExperimentalStartTextBatch_AllowsIdenticalToolDefinitions(t *testing.T)
 	}
 	if result.Status != provider.BatchStatusPending {
 		t.Fatalf("Status = %v", result.Status)
+	}
+}
+
+// TestExperimentalStartTextBatch_NormalizesPromptDownloads mirrors
+// TypeScript's use of convertToLanguageModelPrompt with the batch
+// interface's supportedUrls in packages/ai/src/batch/batch.ts: a file URL
+// the batch interface cannot pass through directly must be downloaded and
+// inlined before the request reaches DoStartBatch, exactly like
+// generateText/streamText.
+func TestExperimentalStartTextBatch_NormalizesPromptDownloads(t *testing.T) {
+	originalDownload := DefaultDownload
+	defer func() { DefaultDownload = originalDownload }()
+
+	var downloadedURLs []string
+	DefaultDownload = func(_ context.Context, requests []promptutils.DownloadRequest) ([]*promptutils.DownloadResult, error) {
+		results := make([]*promptutils.DownloadResult, len(requests))
+		for i, req := range requests {
+			downloadedURLs = append(downloadedURLs, req.URL)
+			results[i] = &promptutils.DownloadResult{Data: []byte("inlined-bytes"), MediaType: "image/png"}
+		}
+		return results, nil
+	}
+
+	var gotRequests []provider.BatchV4Request
+	// SupportedURLs returns nothing, so every file URL must be downloaded
+	// (mirrors TypeScript's empty supportedUrls map treatment).
+	mock := &mockBatchV4NoURLSupport{
+		mockBatchV4: &mockBatchV4{
+			providerName: "mock.batch",
+			startFn: func(_ context.Context, opts provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+				gotRequests = opts.Requests
+				return &provider.BatchV4StartResult{BatchID: "job_1"}, nil
+			},
+		},
+	}
+
+	req := BatchRequest{Text: &BatchTextRequest{
+		ID:    "req-1",
+		Model: "m",
+		Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.FileContent{URL: "https://example.com/image.png", MediaType: "image/png"},
+			},
+		}},
+	}}
+
+	_, err := ExperimentalStartTextBatch(context.Background(), StartBatchOptions{
+		Provider: mock,
+		Requests: []BatchRequest{req},
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalStartTextBatch() error = %v", err)
+	}
+
+	if len(downloadedURLs) != 1 || downloadedURLs[0] != "https://example.com/image.png" {
+		t.Fatalf("downloadedURLs = %v, want the file URL to be downloaded", downloadedURLs)
+	}
+
+	if len(gotRequests) != 1 || gotRequests[0].Text == nil {
+		t.Fatalf("gotRequests = %+v", gotRequests)
+	}
+	sentMessages := gotRequests[0].Text.Options.Prompt.Messages
+	if len(sentMessages) != 1 || len(sentMessages[0].Content) != 1 {
+		t.Fatalf("sentMessages = %+v", sentMessages)
+	}
+	file, ok := sentMessages[0].Content[0].(types.FileContent)
+	if !ok {
+		t.Fatalf("sent content part = %T, want types.FileContent", sentMessages[0].Content[0])
+	}
+	if file.URL != "" {
+		t.Fatalf("file.URL = %q, want empty (URL should have been inlined)", file.URL)
+	}
+	if string(file.Data) != "inlined-bytes" {
+		t.Fatalf("file.Data = %q, want the downloaded bytes", file.Data)
 	}
 }
 

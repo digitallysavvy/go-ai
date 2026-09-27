@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -174,9 +175,18 @@ func ExperimentalStartTextBatch(ctx context.Context, opts StartBatchOptions) (*S
 	callCtx, cancel := withOptionalTimeout(ctx, opts.Timeout)
 	defer cancel()
 
+	// Mirrors TypeScript's `const supportedUrls = await batchApi.supportedUrls`
+	// in packages/ai/src/batch/batch.ts: URL support is queried from the
+	// batch interface itself (requests may target arbitrary per-request
+	// models), not from a single provider.LanguageModel.
+	urlChecker := SupportedURLCheckerFromPatterns(batchAPI.SupportedURLs())
+
 	providerRequests := make([]provider.BatchV4Request, 0, len(opts.Requests))
 	for _, req := range opts.Requests {
-		pr, buildErr := buildBatchProviderRequest(req)
+		if err := callCtx.Err(); err != nil {
+			return nil, err
+		}
+		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -602,12 +612,29 @@ func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) err
 	return nil
 }
 
-func buildBatchProviderRequest(req BatchRequest) (provider.BatchV4Request, error) {
+func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker) (provider.BatchV4Request, error) {
 	switch {
 	case req.Text != nil:
 		t := req.Text
+		// Mirrors TypeScript's `convertToLanguageModelPrompt({ prompt: standardizedPrompt,
+		// supportedUrls, download: undefined, ... })` in packages/ai/src/batch/batch.ts:
+		// batch prompts go through the same download-normalization path as
+		// generateText/streamText (using the SDK's default download function,
+		// since batch does not expose an experimental_download option), so
+		// remote file URLs the batch interface can't consume directly are
+		// inlined before the request is sent.
+		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
+			ctx,
+			buildPrompt(t.Prompt, t.Messages, t.System),
+			false,
+			DefaultDownload,
+			urlChecker,
+		)
+		if normErr != nil {
+			return provider.BatchV4Request{}, normErr
+		}
 		genOpts := provider.GenerateOptions{
-			Prompt:           buildPrompt(t.Prompt, t.Messages, t.System),
+			Prompt:           normalizedPrompt,
 			Temperature:      t.Temperature,
 			MaxTokens:        t.MaxTokens,
 			TopP:             t.TopP,
