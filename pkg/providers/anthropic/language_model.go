@@ -2380,6 +2380,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
 			return s.Next()
 		}
+		// anthropicStreamErrorMetadata returns (0, false) for an
+		// unrecognized type (TS's getAnthropicStreamErrorMetadata returns
+		// {}, i.e. both fields undefined). Only apply the inferred
+		// isRetryable when the type was actually recognized — otherwise
+		// leave it nil so NewStreamProviderError falls back to its own
+		// message/status-code inference instead of forcing false.
 		inferredStatus, inferredRetryable := anthropicStreamErrorMetadata(errEvent.Error.Type)
 		statusCode := errEvent.Error.StatusCode
 		if statusCode == nil && inferredStatus != 0 {
@@ -2387,7 +2393,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			statusCode = &sc
 		}
 		isRetryable := errEvent.Error.IsRetryable
-		if isRetryable == nil {
+		if isRetryable == nil && inferredStatus != 0 {
 			ir := inferredRetryable
 			isRetryable = &ir
 		}
