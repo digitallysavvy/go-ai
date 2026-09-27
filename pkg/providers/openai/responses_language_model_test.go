@@ -773,6 +773,67 @@ func TestResponsesLanguageModel_DoStream_TextBoundaries(t *testing.T) {
 	}
 }
 
+// TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent ports
+// TS's `phase = value.item.phase ?? activeMessagePhase` in the
+// output_item.done "message" case: when output_item.done's own item omits
+// phase, text-end's providerMetadata falls back to the phase captured from
+// output_item.added, rather than silently dropping it.
+func TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"Hi."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
+			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var textEnd *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeTextEnd {
+			textEnd = chunk
+		}
+	}
+
+	if textEnd == nil {
+		t.Fatal("expected a text-end chunk")
+	}
+	var endMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textEnd.ProviderMetadata, &endMeta); err != nil {
+		t.Fatalf("decode text-end providerMetadata: %v", err)
+	}
+	if endMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-end providerMetadata.openai.phase = %v, want final_answer (fallback to output_item.added's phase)", endMeta["openai"]["phase"])
+	}
+}
+
 func TestResponsesLanguageModel_DoStreamIncludesRawChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

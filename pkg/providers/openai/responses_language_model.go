@@ -2172,6 +2172,12 @@ type responsesStream struct {
 	// message item starts (output_item.added) and attached to that item's
 	// text-end providerMetadata.openai.annotations (TS `ongoingAnnotations`).
 	ongoingAnnotations []responses.TextAnnotation
+
+	// activeMessagePhase captures the "message" item's phase at
+	// output_item.added, used as a fallback for text-end's providerMetadata
+	// when the output_item.done event's own item omits phase (TS
+	// `activeMessagePhase`: `phase = value.item.phase ?? activeMessagePhase`).
+	activeMessagePhase *string
 }
 
 // responsesOngoingToolCall tracks per-output-index state for a tool call
@@ -2440,6 +2446,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// TS: `ongoingAnnotations.splice(0)` then emit text-start with
 			// providerMetadata {itemId, phase?} (no annotations yet).
 			s.ongoingAnnotations = nil
+			s.activeMessagePhase = e.Item.Phase
 			var meta json.RawMessage
 			if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
 				meta, _ = json.Marshal(m)
@@ -3105,8 +3112,16 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		annotations := s.ongoingAnnotations
 		s.ongoingAnnotations = nil
+		// TS: `phase = value.item.phase ?? activeMessagePhase` -- the done
+		// event's own item can omit phase even when output_item.added carried
+		// one, so fall back to the phase captured at text-start.
+		phase := item.Phase
+		if phase == nil {
+			phase = s.activeMessagePhase
+		}
+		s.activeMessagePhase = nil
 		var meta json.RawMessage
-		if m := openAIResponsesMessageProviderOptions(s.providerName, itemID, item.Phase, annotations); m != nil {
+		if m := openAIResponsesMessageProviderOptions(s.providerName, itemID, phase, annotations); m != nil {
 			meta, _ = json.Marshal(m)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
