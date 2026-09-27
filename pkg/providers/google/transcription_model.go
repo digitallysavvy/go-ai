@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -23,19 +24,21 @@ func isLiveTranscriptionModelID(modelID string) bool {
 	return strings.Contains(modelID, "-live")
 }
 
-// TranscriptionModel implements unary Gemini 3.5 Transcribe
-// (TS GoogleTranscriptionModel.doGenerate): audio is transcribed through the
-// Interactions API (https://ai.google.dev/gemini-api/docs/transcribe).
-//
-// The "-live" model variants only support streaming transcription over a
-// WebSocket (TS doStream). The Go SDK's provider.TranscriptionModel
-// interface has no streaming counterpart (no DoStream), so that half of TS
-// GoogleTranscriptionModel is not implemented here; DoTranscribe rejects a
-// live model ID with an explanatory error instead of silently doing the
-// wrong thing.
+// TranscriptionModel implements Gemini 3.5 Transcribe (TS
+// GoogleTranscriptionModel): unary audio is transcribed through the
+// Interactions API (DoTranscribe, TS doGenerate); "-live" model variants
+// (e.g. "gemini-3.5-transcribe-live") only support streaming transcription
+// over the Gemini Live API WebSocket (DoStream, TS doStream, in
+// transcription_stream.go). DoTranscribe rejects a live model ID and
+// DoStream rejects a non-live model ID, matching TS's cross-rejection.
 type TranscriptionModel struct {
 	prov    *Provider
 	modelID string
+
+	// finishGraceMs overrides defaultFinishGraceDuration for tests
+	// (mirrors TS config._internal.finishGraceMs). Zero means "use the
+	// default".
+	finishGraceMs time.Duration
 }
 
 // NewTranscriptionModel creates a Gemini 3.5 Transcribe model.
@@ -172,10 +175,13 @@ type transcriptionResponse struct {
 // (POST /interactions), matching TS GoogleTranscriptionModel.doGenerate.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isLiveTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf(
-			"model '%s' only supports streaming transcription, which the Go SDK's TranscriptionModel does not yet expose (no DoStream); use a unary model such as '%s'",
-			m.modelID, ModelGemini35Transcribe,
-		)
+		return nil, &providererrors.InvalidArgumentError{
+			Field: "modelId",
+			Message: fmt.Sprintf(
+				"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
+				m.modelID, ModelGemini35Transcribe,
+			),
+		}
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}

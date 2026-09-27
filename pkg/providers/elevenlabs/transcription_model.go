@@ -18,12 +18,12 @@ import (
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for
-// ElevenLabs batch (non-streaming) transcription (POST /v1/speech-to-text).
-//
-// scribe_v2_realtime is a STREAMING-only realtime model (WebSocket-based) in
-// the TypeScript SDK; that path is out of scope here, and DoTranscribe
-// rejects it, matching TS's UnsupportedFunctionalityError for non-streaming
-// use of that model.
+// ElevenLabs transcription: batch (non-streaming) transcription via
+// DoTranscribe (POST /v1/speech-to-text), and scribe_v2_realtime's
+// WebSocket-based streaming transcription via DoStream (see
+// transcription_stream.go), mirroring TS ElevenLabsTranscriptionModel.
+// DoTranscribe rejects scribe_v2_realtime and DoStream rejects every other
+// model ID, matching TS's cross-rejection (UnsupportedFunctionalityError).
 type TranscriptionModel struct {
 	provider *Provider
 	modelID  string
@@ -140,8 +140,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if present {
-		if elOpts.LanguageCode != "" {
-			if err := writer.WriteField("language_code", elOpts.LanguageCode); err != nil {
+		if elOpts.LanguageCode != nil {
+			if err := writer.WriteField("language_code", *elOpts.LanguageCode); err != nil {
 				return nil, "", nil, err
 			}
 		}
