@@ -119,9 +119,17 @@ func isSVGBytes(data []byte) bool {
 // for structural well-formedness (unbalanced/mismatched tags, multiple roots)
 // rather than porting the TS SDK's hand-written XML validator byte-for-byte;
 // it rejects the same class of malformed input (e.g. "<svg><g></svg>").
+//
+// dec.Entity is set to xml.HTMLEntity so named HTML entity references (e.g.
+// "&nbsp;", "&copy;") don't fail decoding as unknown entities. TS's own
+// validator (hasValidXmlReferences in quiverai-image-model.ts) is even more
+// permissive -- it accepts ANY syntactically valid XML Name as a named
+// reference, not just the standard HTML set, plus numeric character
+// references (which Go's decoder already resolves without an Entity map).
 func isSvgMarkupWellFormed(svg string) bool {
 	dec := xml.NewDecoder(strings.NewReader(svg))
 	dec.Strict = true
+	dec.Entity = xml.HTMLEntity
 
 	var rootName string
 	depth := 0
