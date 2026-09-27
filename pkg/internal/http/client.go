@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -194,7 +196,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, transportError(err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
@@ -316,7 +318,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, transportError(err)
 	}
 
 	// Check for error status codes
@@ -379,4 +381,19 @@ func (c *Client) SetHeader(key, value string) {
 // SetBaseURL updates the base URL
 func (c *Client) SetBaseURL(baseURL string) {
 	c.baseURL = baseURL
+}
+
+// transportError wraps a failure from http.Client.Do. Mirrors TS
+// provider-utils handleFetchError: cancellation and timeouts (TS abort
+// errors) are returned unchanged, and other transport failures read
+// "Cannot connect to API: <cause>". The cause stays wrapped for errors.Is/As.
+func transportError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return err
+	}
+	return fmt.Errorf("Cannot connect to API: %w", err)
 }
