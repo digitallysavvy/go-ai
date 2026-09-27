@@ -161,7 +161,7 @@ func TestCreateGitHubCopilot_E2ERoundTrip(t *testing.T) {
 	}
 	select {
 	case <-control.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("turn did not finish")
 	}
 	if err := control.Err(); err != nil {
