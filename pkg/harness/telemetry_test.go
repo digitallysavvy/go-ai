@@ -81,7 +81,7 @@ func TestAgent_TelemetryNoSpanWithoutIntegration(t *testing.T) {
 // TestAgent_TelemetrySpanNesting ports the turn/step/model-call/tool span
 // nesting TS turn-telemetry.ts establishes: with telemetry.NewOpenTelemetry
 // registered, a one-step turn with a single host tool call produces exactly
-// one "ai.harness" turn span, one "step 0" span nested under it, one "chat"
+// one "ai.harness harness-model" turn span, one "step 1" span nested under it, one "chat"
 // model-call span nested under the step, and one "execute_tool getWeather"
 // span (from OnToolExecutionStart/End, fired by recordToolResult) also
 // nested under the step.
@@ -128,7 +128,9 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	turnSpans := spansNamed(rec, "ai.harness")
+	// GenAI root span is "<operation> <modelId>"; ai.harness is unmapped in TS
+	// mapOperationName, so it keeps its operation id. Step spans are 1-indexed.
+	turnSpans := spansNamed(rec, "ai.harness harness-model")
 	if len(turnSpans) != 1 {
 		t.Fatalf("ai.harness spans = %d, want 1", len(turnSpans))
 	}
@@ -137,8 +139,8 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	// Two model steps ran (the tool-call step, then the text-answer step),
 	// so two step spans and two chat spans are expected — TS turn-telemetry
 	// opens a fresh step/model-call span pair per finish-step boundary.
-	step0 := spansNamed(rec, "step 0")
-	step1 := spansNamed(rec, "step 1")
+	step0 := spansNamed(rec, "step 1")
+	step1 := spansNamed(rec, "step 2")
 	if len(step0) != 1 || len(step1) != 1 {
 		t.Fatalf("step spans: step0=%d step1=%d, want 1 each", len(step0), len(step1))
 	}
