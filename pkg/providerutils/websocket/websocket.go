@@ -129,6 +129,25 @@ func ReceiveLoop(ctx context.Context, conn *websocket.Conn, out chan<- Message) 
 	}
 }
 
+// Receive reads a single text frame from conn, honoring ctx cancellation.
+// Callers that pump messages continuously should prefer ReceiveLoop, run on
+// its own goroutine; Receive is for callers that pull one message per call
+// (e.g. a caller-driven duplex session rather than a push-based stream).
+func Receive(ctx context.Context, conn *websocket.Conn) (string, error) {
+	done := make(chan Message, 1)
+	go func() {
+		var msg string
+		err := websocket.Message.Receive(conn, &msg)
+		done <- Message{Text: msg, Err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-done:
+		return res.Text, res.Err
+	}
+}
+
 // Send writes v (a string for a text frame, or []byte for a binary frame) to
 // conn, mirroring golang.org/x/net/websocket.Message's type-based framing so
 // callers get the same wire behavior as TS's `socket.send(value)`. The write

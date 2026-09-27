@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -124,38 +125,22 @@ func (s *RealtimeSession) Close() error {
 	return s.conn.Close()
 }
 
+// WebSocketRealtimeDialer is the default RealtimeDialer, backed by
+// golang.org/x/net/websocket. Origin is unused: dial derives the handshake's
+// Origin header from the target URL itself (x/net/websocket requires one;
+// TS's connectToWebSocket, dialing through a browser or Node WebSocket
+// client, sets none). Kept as a field for backward compatibility with
+// existing callers; a future release may remove it.
 type WebSocketRealtimeDialer struct {
 	Origin string
 }
 
 func (d WebSocketRealtimeDialer) Dial(ctx context.Context, config provider.WebSocketConfig) (RealtimeWebSocketConn, error) {
-	origin := d.Origin
-	if origin == "" {
-		origin = "http://localhost/"
-	}
-	wsConfig, err := websocket.NewConfig(config.URL, origin)
+	conn, err := wsutil.Dial(ctx, config.URL, wsutil.DialOptions{Protocols: config.Protocols})
 	if err != nil {
 		return nil, err
 	}
-	wsConfig.Protocol = append([]string(nil), config.Protocols...)
-	type result struct {
-		conn *websocket.Conn
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		conn, err := websocket.DialConfig(wsConfig)
-		ch <- result{conn: conn, err: err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			return nil, res.err
-		}
-		return &xNetWebSocketConn{conn: res.conn}, nil
-	}
+	return &xNetWebSocketConn{conn: conn}, nil
 }
 
 type xNetWebSocketConn struct {
@@ -164,43 +149,20 @@ type xNetWebSocketConn struct {
 }
 
 func (c *xNetWebSocketConn) Send(ctx context.Context, message []byte) error {
-	done := make(chan error, 1)
 	c.mu.Lock()
-	go func() {
-		defer c.mu.Unlock()
-		done <- websocket.Message.Send(c.conn, string(message))
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-done:
-		return err
-	}
+	defer c.mu.Unlock()
+	return wsutil.Send(ctx, c.conn, string(message))
 }
 
 func (c *xNetWebSocketConn) Receive(ctx context.Context) ([]byte, error) {
-	type result struct {
-		msg string
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var msg string
-		err := websocket.Message.Receive(c.conn, &msg)
-		ch <- result{msg: msg, err: err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			if errors.Is(res.err, io.EOF) {
-				return nil, io.EOF
-			}
-			return nil, fmt.Errorf("realtime websocket receive failed: %w", res.err)
+	text, err := wsutil.Receive(ctx, c.conn)
+	if err != nil {
+		if wsutil.IsCleanClose(err) {
+			return nil, io.EOF
 		}
-		return []byte(res.msg), nil
+		return nil, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
+	return []byte(text), nil
 }
 
 func (c *xNetWebSocketConn) Close() error {

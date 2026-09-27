@@ -122,6 +122,51 @@ func TestSend_ReceiveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReceive_OneShotRoundTrip(t *testing.T) {
+	wsHandler := websocket.Server{Handler: func(conn *websocket.Conn) {
+		_ = websocket.Message.Send(conn, "hello")
+	}}
+	ts := httptest.NewServer(wsHandler)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[len("http"):]
+	conn, err := Dial(context.Background(), wsURL, DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close() //nolint:errcheck
+
+	text, err := Receive(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if text != "hello" {
+		t.Fatalf("text = %q, want %q", text, "hello")
+	}
+}
+
+func TestReceive_UnblocksOnContextCancel(t *testing.T) {
+	wsHandler := websocket.Server{Handler: func(conn *websocket.Conn) {
+		<-context.Background().Done() // block forever without sending
+	}}
+	ts := httptest.NewServer(wsHandler)
+	defer ts.Close()
+
+	wsURL := "ws" + ts.URL[len("http"):]
+	conn, err := Dial(context.Background(), wsURL, DialOptions{})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := Receive(ctx, conn); err == nil {
+		t.Fatal("expected Receive to return an error for an already-cancelled context")
+	}
+}
+
 func TestReceiveLoop_CleanCloseIsEOF(t *testing.T) {
 	wsHandler := websocket.Server{Handler: func(conn *websocket.Conn) {
 		_ = conn.Close()
