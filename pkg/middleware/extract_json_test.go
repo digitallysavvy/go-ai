@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -258,4 +259,70 @@ func TestExtractJSONMiddleware_Stream_WithFinalBuffer(t *testing.T) {
 	if allText != expected {
 		t.Errorf("expected %q, got %q", expected, allText)
 	}
+}
+
+// TestExtractJSONMiddleware_Stream_LongTrailingWhitespaceAfterFence ports the
+// TS "should strip a closing fence followed by long trailing whitespace"
+// case (audit row 1058ed5 / WG12): with the old fixed 12-byte suffix buffer,
+// a closing fence followed by 20+ trailing whitespace characters pushed the
+// fence itself out of the buffering window and leaked "```" into the output.
+// getPotentialSuffixStart must hold back arbitrarily long trailing
+// whitespace plus the fence.
+func TestExtractJSONMiddleware_Stream_LongTrailingWhitespaceAfterFence(t *testing.T) {
+	const jsonText = `{"value": "test"}`
+	fencedJSON := "```json\n" + jsonText + "\n```"
+
+	for _, trailing := range []string{strings.Repeat(" ", 20), strings.Repeat("\n", 20)} {
+		text := fencedJSON + trailing
+
+		layouts := [][]string{
+			{text},
+			splitToChars(text),
+			{"```json\n" + jsonText + "\n", "```", trailing},
+		}
+
+		for li, chunkTexts := range layouts {
+			chunks := make([]*provider.StreamChunk, len(chunkTexts))
+			for i, c := range chunkTexts {
+				chunks[i] = &provider.StreamChunk{Type: provider.ChunkTypeText, Text: c}
+			}
+
+			mockStream := &mockTextStream{chunks: chunks}
+			mockModel := &mockLanguageModel{stream: mockStream}
+			middleware := ExtractJSONMiddleware(nil)
+			wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+			stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+			if err != nil {
+				t.Fatalf("layout %d: unexpected error: %v", li, err)
+			}
+
+			var allText string
+			for {
+				chunk, err := stream.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("layout %d: unexpected error: %v", li, err)
+				}
+				if chunk.Type == provider.ChunkTypeText {
+					allText += chunk.Text
+				}
+			}
+
+			if allText != jsonText {
+				t.Errorf("layout %d (trailing %q): got %q, want %q", li, trailing, allText, jsonText)
+			}
+		}
+	}
+}
+
+func splitToChars(s string) []string {
+	runes := []rune(s)
+	out := make([]string, len(runes))
+	for i, r := range runes {
+		out[i] = string(r)
+	}
+	return out
 }
