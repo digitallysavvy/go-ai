@@ -866,11 +866,14 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 	if result != nil {
 		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-			Settings:      opts.ExperimentalTelemetry,
-			ModelProvider: opts.Model.Provider(),
-			ModelID:       opts.Model.ModelID(),
-			FinishReason:  string(result.FinishReason),
-			Text:          result.Text,
+			OperationType:    "ai.generateObject",
+			Settings:         opts.ExperimentalTelemetry,
+			ModelProvider:    opts.Model.Provider(),
+			ModelID:          opts.Model.ModelID(),
+			FinishReason:     string(result.FinishReason),
+			Text:             result.Text,
+			Object:           objectResultValue(opts.OutputMode, result),
+			ProviderMetadata: result.ProviderMetadata,
 			Usage: telemetry.TelemetryUsage{
 				InputTokens:  result.Usage.InputTokens,
 				OutputTokens: result.Usage.OutputTokens,
@@ -880,6 +883,24 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 
 	return result, err
+}
+
+// objectResultValue returns the TS-equivalent "event.object" value for
+// onObjectOperationEnd (legacy-open-telemetry.ts): the parsed object for
+// object/no-schema mode, the array for array mode, or the enum string for
+// enum mode.
+func objectResultValue(mode ObjectOutputMode, r *GenerateObjectResult) interface{} {
+	if r == nil {
+		return nil
+	}
+	switch mode {
+	case ObjectModeArray:
+		return r.Array
+	case ObjectModeEnum:
+		return r.EnumValue
+	default:
+		return r.Object
+	}
 }
 
 // generateObjectMode handles standard object generation
@@ -919,7 +940,11 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Metadata:        cc.metadata,
 	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
-	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
+	// Fire step-start/language-model-call-start telemetry (H3 item 1):
+	// GenerateObject previously fired no step/model-call spans at all.
+	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
+
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
@@ -933,6 +958,9 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
+
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata)
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -1064,7 +1092,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Metadata:        cc.metadata,
 	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
-	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
+	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
+
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
@@ -1078,6 +1108,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
+
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1199,7 +1232,9 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Metadata:        cc.metadata,
 	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
-	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
+	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
+
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
@@ -1213,6 +1248,9 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
+
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1328,7 +1366,9 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Metadata:        cc.metadata,
 	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
-	genResult, err := doGenerateWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
+	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
+
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
@@ -1342,6 +1382,9 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
+
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1649,6 +1692,37 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Metadata:          cbMeta,
 	}, resolveObjectOnStart(opts.OnStart, opts.ExperimentalOnStart))
 
+	// Route telemetry through the shared Fire* dispatch (H3 item 1):
+	// StreamObject previously fired no telemetry spans whatsoever, unlike
+	// GenerateObject/GenerateText/StreamText.
+	streamObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
+	streamObjectMaxRetries := opts.MaxRetries
+	startEvent := telemetry.TelemetryStartEvent{
+		OperationType:    "ai.streamObject",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         opts.ExperimentalTelemetry,
+		Prompt:           telemetryInputValue(opts.ExperimentalTelemetry, opts.Prompt),
+		Headers:          opts.Headers,
+		MaxOutputTokens:  opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		PresencePenalty:  opts.PresencePenalty,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		Seed:             opts.Seed,
+		MaxRetries:       &streamObjectMaxRetries,
+		SettingsOutput:   string(opts.OutputMode),
+	}
+	if streamObjectRecordInputs {
+		startEvent.System = opts.System
+		startEvent.Messages = opts.Messages
+		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.SchemaName = opts.SchemaName
+		startEvent.SchemaDescription = opts.SchemaDescription
+	}
+	ctx = telemetry.FireOnStart(ctx, startEvent)
+
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
 
@@ -1686,7 +1760,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Metadata:        cbMeta,
 	}, resolveObjectOnStepStart(opts.OnStepStart, opts.ExperimentalOnStepStart))
 
-	stream, err := doStreamWithRetry(ctx, opts.Model, genOpts, opts.MaxRetries)
+	telStep := fireObjectStepStart(ctx, "ai.streamObject", callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
+
+	stream, err := doStreamWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
 	if err != nil || stream == nil {
 		if err == nil {
 			err = errors.New("stream is nil")
@@ -1694,6 +1770,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, err) })
 		}
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
 		return nil, fmt.Errorf("stream error: %w", err)
 	}
 	defer stream.Close() //nolint:errcheck
@@ -1826,6 +1903,13 @@ streamLoop:
 
 	streamReqMeta := GenerateStepRequest{}
 
+	// Fire language-model-call-end/step-end telemetry unconditionally, like
+	// the callback events above — TS's TransformStream flush handler always
+	// runs, whether the stream ended cleanly or with a content error (H3
+	// item 1).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, nil, streamResMeta.ID, streamProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata)
+
 	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
 	// error (matching TS flush handler) then return.
 	if streamErr != nil {
@@ -1855,6 +1939,7 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: streamErr})
 		return nil, fmt.Errorf("stream error: %w", streamErr)
 	}
 
@@ -1916,6 +2001,7 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: parseErr})
 		return nil, parseErr
 	}
 	finalObject = parsedObject
@@ -1951,6 +2037,17 @@ streamLoop:
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		OperationType:    "ai.streamObject",
+		Settings:         opts.ExperimentalTelemetry,
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		FinishReason:     string(finishReason),
+		Text:             accumulatedText,
+		Object:           objectResultValue(opts.OutputMode, result),
+		ProviderMetadata: streamProviderMetadata,
+		Usage:            telemetryUsageFromUsage(usage),
+	})
 
 	// Call legacy OnFinish if provided
 	if opts.OnFinish != nil {
