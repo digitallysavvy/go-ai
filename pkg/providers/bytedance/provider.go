@@ -93,9 +93,12 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 	return nil, fmt.Errorf("ByteDance provider does not support embedding models")
 }
 
-// ImageModel returns an image generation model by ID
+// ImageModel returns a Seedream image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support image generation")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID is required")
+	}
+	return newImageModel(p, modelID), nil
 }
 
 // VideoModel returns a video generation model by ID
