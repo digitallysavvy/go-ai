@@ -1,5 +1,7 @@
 package anthropic
 
+import "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+
 // ContextManagementEdit represents a single context management edit configuration.
 // The Anthropic API supports different types of edits for managing conversation context:
 // - clear_tool_uses_20250919: Removes old tool calls and results
@@ -166,7 +168,9 @@ const (
 	// BetaHeaderCompaction is required for the request-level Compaction option
 	// (on-demand summarization) and for replaying signed compaction blocks
 	// from message history. Distinct from BetaHeaderCompact.
-	BetaHeaderCompaction = "compact-2026-09-04"
+	// It is the same flag the prompt converter adds when replaying compaction
+	// blocks, so it references that constant rather than repeating the literal.
+	BetaHeaderCompaction = prompt.AnthropicBetaCompact
 
 	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
 	BetaHeaderFastMode = "fast-mode-2026-02-01"
