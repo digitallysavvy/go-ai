@@ -542,6 +542,12 @@ func (d *turnDriver) processStartupContinuations() (turnOutcome, error) {
 // settled it already did, if appropriate: a pause fires neither, matching
 // TS's finishForHostInputPause).
 func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alreadySettled bool, err error) {
+	// Guarantees the checkpoint pin (if any) is released on every exit path —
+	// including ctx.Done() at the top of the read select and every mid-loop
+	// error return — not just the two paths that release it explicitly below.
+	// Mirrors TS run-prompt.ts's top-level `try { ... } finally {
+	// releasePendingStopBoundary(); }` around the whole read loop.
+	defer d.releasePendingStopBoundary()
 	for {
 		// TS 32349cc: every tool call in the current step has now been
 		// observed (a handleHostToolCall pause point deferred instead of
