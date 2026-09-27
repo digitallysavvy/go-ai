@@ -115,7 +115,14 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 
 	// Both the initial spawn's connect and the reattach's connect must carry
 	// the custom PortEndpoint's headers (TS `webSocketMocks.calls`).
+	// The server records a handshake in its connection handler, which can
+	// run just after the client side is already connected, so poll briefly
+	// for the reattach entry instead of reading once.
 	handshakes := srv.HandshakeHeaders()
+	for deadline := time.Now().Add(2 * time.Second); len(handshakes) < 2 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		handshakes = srv.HandshakeHeaders()
+	}
 	if len(handshakes) != 2 {
 		t.Fatalf("bridgetest server saw %d handshakes, want exactly 2 (initial connect + reattach connect)", len(handshakes))
 	}
