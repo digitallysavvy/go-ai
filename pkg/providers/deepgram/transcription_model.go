@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -94,7 +95,7 @@ func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOption
 		setQueryBool(query, "paragraphs", dgOpts.Paragraphs)
 		setQueryBool(query, "punctuate", dgOpts.Punctuate)
 		if dgOpts.Redact != nil {
-			query["redact"] = fmt.Sprint(dgOpts.Redact)
+			query["redact"] = deepgramQueryStringValue(dgOpts.Redact)
 		}
 		if dgOpts.Replace != "" {
 			query["replace"] = dgOpts.Replace
@@ -105,7 +106,7 @@ func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOption
 		setQueryBool(query, "sentiment", dgOpts.Sentiment)
 		setQueryBool(query, "smart_format", dgOpts.SmartFormat)
 		if dgOpts.Summarize != nil {
-			query["summarize"] = fmt.Sprint(dgOpts.Summarize)
+			query["summarize"] = deepgramQueryStringValue(dgOpts.Summarize)
 		}
 		setQueryBool(query, "topics", dgOpts.Topics)
 		setQueryBool(query, "utterances", dgOpts.Utterances)
@@ -121,6 +122,25 @@ func setQueryBool(query map[string]string, key string, value *bool) {
 	if value != nil {
 		query[key] = strconv.FormatBool(*value)
 	}
+}
+
+// deepgramQueryStringValue mirrors TS's `String(value)` coercion used when
+// building /v1/listen query params (deepgram-transcription-model.ts:88-94):
+// a JS array stringifies to its elements joined with commas (no brackets or
+// spaces), unlike Go's fmt.Sprint("%v")-style formatting of a slice/
+// []interface{}, which would otherwise produce "[a b]".
+func deepgramQueryStringValue(value interface{}) string {
+	if items, ok := value.([]interface{}); ok {
+		parts := make([]string, len(items))
+		for i, item := range items {
+			parts[i] = fmt.Sprint(item)
+		}
+		return strings.Join(parts, ",")
+	}
+	if items, ok := value.([]string); ok {
+		return strings.Join(items, ",")
+	}
+	return fmt.Sprint(value)
 }
 
 // DoTranscribe performs speech-to-text transcription

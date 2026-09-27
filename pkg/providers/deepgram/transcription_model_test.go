@@ -4,7 +4,26 @@ import (
 	"testing"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
+
+// TestDeepgramRedactArraySerialization guards against a Go fmt.Sprint
+// formatting of a []interface{} ("[a b]") leaking into the redact query
+// param; TS's `String(value)` on a JS array joins elements with commas, no
+// brackets or spaces (deepgram-transcription-model.ts:88-94).
+func TestDeepgramRedactArraySerialization(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "nova-2")
+	query := m.buildQueryParams(&provider.TranscriptionOptions{
+		ProviderOptions: map[string]interface{}{
+			"deepgram": map[string]interface{}{
+				"redact": []interface{}{"pci", "ssn"},
+			},
+		},
+	})
+	if query["redact"] != "pci,ssn" {
+		t.Fatalf("redact = %q, want %q", query["redact"], "pci,ssn")
+	}
+}
 
 func TestDeepgramTranscriptionModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "k"})
