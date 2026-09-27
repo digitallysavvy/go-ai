@@ -845,6 +845,18 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			s.isActiveReasoning = false
 		}
 		for i, tc := range delta.ToolCalls {
+			// d53589a (TS moonshotai-chat-language-model.ts: `const
+			// toolCallIndex = toolCallDelta.index ?? index`): when a delta
+			// omits "index", TS derives it from the tool call's position
+			// within THAT delta's tool_calls array -- it does not rely on
+			// StreamingToolCallTracker's id/latest-call fallback for
+			// Moonshot. This position is stable because Moonshot always
+			// repeats every in-flight tool call at its original array
+			// position on each continuation delta (see the
+			// moonshotai-stream-indexless-tool-calls fixture: two calls
+			// started together at positions 0/1 are continued together at
+			// positions 0/1). Used for both toolCallTypes bookkeeping and
+			// the tracker correlation key below.
 			idx := i
 			if tc.Index != nil {
 				idx = *tc.Index

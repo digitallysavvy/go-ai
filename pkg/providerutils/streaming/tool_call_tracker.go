@@ -56,6 +56,10 @@ type StreamingToolCallTracker struct {
 	ordered        []*accumToolCall
 	nextSequence   int
 	generateIDFunc func() string
+	// latest is the most recently tracked call, used as a last-resort lookup
+	// fallback when a delta carries neither a usable ID nor an index (TS
+	// StreamingToolCallTracker.latestToolCall, provider-utils/src/streaming-tool-call-tracker.ts).
+	latest *accumToolCall
 }
 
 // NewStreamingToolCallTracker creates a tracker with the default ID generator.
@@ -118,6 +122,7 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	if len(delta.ProviderMetadata) > 0 && call.providerMetadata == nil {
 		call.providerMetadata = delta.ProviderMetadata
 	}
+	t.latest = call
 	return t.buildInputChunks(call, delta.ArgumentsDelta)
 }
 
@@ -184,6 +189,7 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 	t.accumMap = make(map[int]*accumToolCall)
 	t.fallbackMap = make(map[string]*accumToolCall)
 	t.ordered = nil
+	t.latest = nil
 	return chunks
 }
 
@@ -229,18 +235,21 @@ func (t *StreamingToolCallTracker) buildInputChunks(call *accumToolCall, delta s
 	return chunks
 }
 
+// lookup matches TS StreamingToolCallTracker.processDelta's precedence
+// exactly: a non-empty ID is looked up on its own (even if it misses,
+// meaning a fresh/reused ID always starts a new call rather than falling
+// back to the index); otherwise fall back to the index; otherwise fall back
+// to whatever call was tracked most recently. This makes a reused index with
+// a new, non-empty ID correctly start a new tool call instead of merging
+// into the old one at that index.
 func (t *StreamingToolCallTracker) lookup(index *int, id string) *accumToolCall {
-	if index != nil {
-		if call := t.accumMap[*index]; call != nil {
-			return call
-		}
-	}
 	if id != "" {
-		if call := t.fallbackMap[id]; call != nil {
-			return call
-		}
+		return t.fallbackMap[id]
 	}
-	return nil
+	if index != nil {
+		return t.accumMap[*index]
+	}
+	return t.latest
 }
 
 func parseToolArguments(raw string) map[string]interface{} {

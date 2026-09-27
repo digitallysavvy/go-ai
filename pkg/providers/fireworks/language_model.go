@@ -145,25 +145,42 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["response_format"] = format
 	}
 	// Map top-level Reasoning to Fireworks reasoning_effort.
-	// TS: reasoning_effort is set to the raw reasoning value whenever
-	// isCustomReasoning(reasoning) is true — which excludes only undefined
-	// and 'provider-default', NOT 'none' (openai-compatible-chat-language-
-	// model.ts:310-312) — then Fireworks' own transformRequestBody remaps
-	// only minimal→low and xhigh→high, passing low/medium/high/none through
-	// unchanged (fireworks-provider.ts:169-177). So 'none' is forwarded as
-	// "none", not omitted; only 'provider-default' (nil here) is omitted.
-	if opts.Reasoning != nil {
+	// TS (openai-compatible-chat-language-model.ts:310-312): reasoning_effort
+	// is `compatibleOptions.reasoningEffort ?? (isCustomReasoning(reasoning)
+	// ? reasoning : undefined)` -- an explicit providerOptions.fireworks.
+	// reasoningEffort always wins over the unified Reasoning field.
+	// isCustomReasoning excludes only undefined/'provider-default', NOT
+	// 'none', so 'none' is forwarded as "none", not omitted. Fireworks' own
+	// transformRequestBody then remaps only minimal→low and xhigh→high,
+	// passing every other value (including an override with an
+	// unrecognized/custom string) straight through
+	// (fireworks-provider.ts:169-177).
+	reasoningEffort, hasReasoningEffort := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningEffort")
+	if !hasReasoningEffort && opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
-			body["reasoning_effort"] = "none"
-		case types.ReasoningMinimal, types.ReasoningLow:
-			body["reasoning_effort"] = "low"
+			reasoningEffort, hasReasoningEffort = "none", true
+		case types.ReasoningMinimal:
+			reasoningEffort, hasReasoningEffort = "minimal", true
+		case types.ReasoningLow:
+			reasoningEffort, hasReasoningEffort = "low", true
 		case types.ReasoningMedium:
-			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh:
-			body["reasoning_effort"] = "high"
+			reasoningEffort, hasReasoningEffort = "medium", true
+		case types.ReasoningHigh:
+			reasoningEffort, hasReasoningEffort = "high", true
+		case types.ReasoningXHigh:
+			reasoningEffort, hasReasoningEffort = "xhigh", true
 			// ReasoningDefault: omit
 		}
+	}
+	if hasReasoningEffort {
+		switch reasoningEffort {
+		case "minimal":
+			reasoningEffort = "low"
+		case "xhigh":
+			reasoningEffort = "high"
+		}
+		body["reasoning_effort"] = reasoningEffort
 	}
 
 	// Fireworks-specific options (providerOptions.fireworks; TS

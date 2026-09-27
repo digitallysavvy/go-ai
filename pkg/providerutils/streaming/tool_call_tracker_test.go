@@ -151,3 +151,75 @@ func TestStreamingToolCallTrackerGeneratesFallbackID(t *testing.T) {
 		t.Fatalf("input end id = %#v, want generated", inputEnds)
 	}
 }
+
+// TestStreamingToolCallTrackerReusedIndexNewID ports TS "should keep distinct
+// tool calls that reuse an index" (streaming-tool-call-tracker.test.ts): a
+// non-empty ID is looked up on its own, so a second delta at the same index
+// but a different, non-empty ID must start a brand new tool call instead of
+// merging into the first one (1bec07d).
+func TestStreamingToolCallTrackerReusedIndexNewID(t *testing.T) {
+	tracker := NewStreamingToolCallTracker()
+
+	tracker.Track(intPtr(0), "call_1", "fn", `{"value":1}`)
+	tracker.Track(intPtr(0), "call_2", "fn", `{"value":2}`)
+
+	chunks := tracker.Flush()
+	toolCalls := chunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected 2 tool-call chunks, got %d: %#v", len(toolCalls), toolCalls)
+	}
+	if toolCalls[0].ToolCall.ID != "call_1" || toolCalls[0].ToolCall.Arguments["value"] != float64(1) {
+		t.Fatalf("unexpected first tool call: %#v", toolCalls[0].ToolCall)
+	}
+	if toolCalls[1].ToolCall.ID != "call_2" || toolCalls[1].ToolCall.Arguments["value"] != float64(2) {
+		t.Fatalf("unexpected second tool call: %#v", toolCalls[1].ToolCall)
+	}
+}
+
+// TestStreamingToolCallTrackerContinuesLatestWhenIndexOmitted ports TS
+// "should continue the latest tool call when an index is omitted after
+// starting at %s": a delta with neither a usable ID nor an index falls back
+// to whatever call was most recently tracked (1bec07d).
+func TestStreamingToolCallTrackerContinuesLatestWhenIndexOmitted(t *testing.T) {
+	for _, startIndex := range []*int{nil, intPtr(7)} {
+		tracker := NewStreamingToolCallTracker()
+
+		tracker.Track(startIndex, "call_1", "fn", `{"val`)
+		chunks := tracker.Track(nil, "", "", `ue":1}`)
+		chunks = append(chunks, tracker.Flush()...)
+
+		toolCalls := chunksOfType(chunks, provider.ChunkTypeToolCall)
+		if len(toolCalls) != 1 {
+			t.Fatalf("startIndex=%v: expected 1 tool-call chunk, got %d", startIndex, len(toolCalls))
+		}
+		if toolCalls[0].ToolCall.ID != "call_1" {
+			t.Fatalf("startIndex=%v: id = %q, want call_1", startIndex, toolCalls[0].ToolCall.ID)
+		}
+		if got := toolCalls[0].ToolCall.Arguments["value"]; got != float64(1) {
+			t.Fatalf("startIndex=%v: value = %#v, want 1", startIndex, got)
+		}
+	}
+}
+
+// TestStreamingToolCallTrackerIndexFallbackWhenIDEmpty ports TS "should use
+// the index when continuation IDs are empty": an explicit empty-string ID on
+// a continuation delta must not be treated as a lookup key -- it falls back
+// to the index (1bec07d).
+func TestStreamingToolCallTrackerIndexFallbackWhenIDEmpty(t *testing.T) {
+	tracker := NewStreamingToolCallTracker()
+
+	tracker.Track(intPtr(0), "call_1", "fn", `{"val`)
+	tracker.Track(intPtr(0), "", "", `ue":1}`)
+
+	chunks := tracker.Flush()
+	toolCalls := chunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
+	}
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Fatalf("id = %q, want call_1", toolCalls[0].ToolCall.ID)
+	}
+	if got := toolCalls[0].ToolCall.Arguments["value"]; got != float64(1) {
+		t.Fatalf("value = %#v, want 1", got)
+	}
+}

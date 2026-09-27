@@ -116,6 +116,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(response)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata.Headers = result.ResponseHeaders
+	result.ResponseMetadata = responseMetadata
 	return result, nil
 }
 
@@ -577,7 +580,11 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			Delta        struct {
 				Content   json.RawMessage `json:"content"`
 				ToolCalls []struct {
-					Index    int    `json:"index"`
+					// Index is nullish in TS's mistralChatChunkSchema
+					// (index: z.number().nullish()); a *int (rather than a
+					// bare int defaulting to 0) preserves "omitted" as
+					// distinct from index 0 for the tracker's lookup order.
+					Index    *int   `json:"index"`
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
@@ -716,8 +723,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 	// finish-time-only semantics).
 	if len(choice.Delta.ToolCalls) > 0 {
 		for _, tc := range choice.Delta.ToolCalls {
-			idx := tc.Index
-			for _, chunk := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+			for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 				c := chunk
 				s.flushQueue = append(s.flushQueue, &c)
 			}

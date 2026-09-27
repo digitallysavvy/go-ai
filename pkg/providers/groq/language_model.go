@@ -81,6 +81,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata.Headers = result.ResponseHeaders
+	result.ResponseMetadata = responseMetadata
 	return result, nil
 }
 
@@ -223,8 +226,15 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			id := tc.ID
+			if id == "" {
+				// e6087c9/f807e45: some Groq-compatible endpoints omit tool
+				// call IDs on non-streaming responses; generate one rather
+				// than sending an empty tool_call_id back on the next turn.
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 			}
@@ -283,9 +293,14 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		}
 	}
 
-	// Set output details
+	// Set output details. 2214258: clamp to zero -- some providers report
+	// reasoning tokens that exceed the completion token count (TS
+	// convertGroqUsage: Math.max(0, completionTokens - reasoningTokens)).
 	if reasoningTokens > 0 {
 		textOutputTokens := completionTokens - reasoningTokens
+		if textOutputTokens < 0 {
+			textOutputTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textOutputTokens,
 			ReasoningTokens: &reasoningTokens,

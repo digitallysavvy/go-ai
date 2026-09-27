@@ -519,9 +519,14 @@ func convertPerplexityUsagePtr(usage *perplexityUsage) types.Usage {
 	return convertPerplexityUsage(*usage)
 }
 
+// convertPerplexityUsage matches TS convertPerplexityUsage
+// (perplexity/src/convert-perplexity-usage.ts). Unlike every other
+// OpenAI-compatible provider in this SDK, Perplexity reports reasoning_tokens
+// as ADDITIONAL to completion_tokens rather than a subset of it (2214258):
+// outputTokens.total is completion+reasoning, and text is completion_tokens
+// unmodified (no subtraction, so no clamp is needed there).
 func convertPerplexityUsage(usage perplexityUsage) types.Usage {
-	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
-	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
+	p, c := int64(usage.PromptTokens), int64(usage.CompletionTokens)
 	var cached int64
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cached = int64(*usage.PromptTokensDetails.CachedTokens)
@@ -545,13 +550,19 @@ func convertPerplexityUsage(usage perplexityUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
+
+	// outputTokens.total = completionTokens + reasoningTokens (TS: "Perplexity
+	// reports reasoning tokens separately from completion tokens").
+	outputTotal := c + reasoning
+	totalTokens := p + outputTotal
+	result := types.Usage{InputTokens: &p, OutputTokens: &outputTotal, TotalTokens: &totalTokens}
+
 	noCache := p - cached
 	result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: nil, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
 	if cached > 0 {
 		result.InputDetails.CacheReadTokens = &cached
 	}
-	text := c - reasoning
-	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &c, ReasoningTokens: &reasoning}
 	// Raw is populated by the caller (extractRawUsage) from the original wire
 	// bytes so that ALL fields returned by the API are preserved — including
 	// any not modeled by the perplexityUsage struct — matching the TS SDK's
