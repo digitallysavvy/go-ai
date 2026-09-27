@@ -466,7 +466,7 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 }
 
 // CustomContent is a provider-specific content block with no standard mapping.
-// Kind follows the format "{provider}-{provider-type}" (e.g., "xai-citation").
+// Kind follows the format "{provider}.{provider-type}" (e.g., "xai.citation").
 //
 // This type serves dual duty matching both TS SDK roles:
 //   - Output (LanguageModelV4CustomContent): ProviderMetadata carries raw JSON

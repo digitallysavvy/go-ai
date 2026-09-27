@@ -649,13 +649,13 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 // CustomContent is emitted by providers for unknown/provider-specific parts
 type CustomContent struct {
-    Kind             string                 // e.g. "xai-citation", "openai-compaction"
+    Kind             string                 // e.g. "xai.citation", "openai.compaction"
     ProviderOptions  map[string]interface{} // input: provider-specific options to forward
     ProviderMetadata json.RawMessage        // output: raw JSON from provider
 }
 ```
 
-- `Kind` identifies the content type using the format `"{provider}-{type}"` (e.g., `"xai-citation"`)
+- `Kind` identifies the content type using the format `"{provider}.{type}"` (e.g., `"xai.citation"`)
 - `ProviderMetadata` carries the raw JSON returned by the provider (output direction)
 - `ProviderOptions` carries provider-specific options keyed by provider name (input direction)
 

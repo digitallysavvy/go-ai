@@ -447,7 +447,7 @@ Full runnable examples are in:
 
 When the Responses API compacts the conversation context server-side, it emits a
 `compaction` event in the SSE stream. The Go-AI SDK surfaces this as a
-`ChunkTypeCustom` stream chunk with `CustomContent{Kind: "openai-compaction"}`.
+`ChunkTypeCustom` stream chunk with `CustomContent{Kind: "openai.compaction"}`.
 
 The `ProviderMetadata` JSON on the chunk contains:
 
@@ -470,7 +470,7 @@ event := responses.CompactionEvent{
 }
 chunk := responses.CompactionEventToChunk(event)
 // chunk.Type == provider.ChunkTypeCustom
-// chunk.CustomContent.Kind == "openai-compaction"
+// chunk.CustomContent.Kind == "openai.compaction"
 ```
 
 When you pass that custom content back in a later assistant message, the
