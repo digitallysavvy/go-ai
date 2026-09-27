@@ -906,6 +906,250 @@ func TestDoGenerate_ResponseMetadata(t *testing.T) {
 	}
 }
 
+// TestDoStart_JSONRoundTripAcrossFreshModel mirrors "doStart / doStatus >
+// should preserve normalized inputs and metadata across JSON and a fresh
+// model": the operation returned by DoStart must serialize to plain
+// JSON (no closures/functions), survive a marshal/unmarshal round trip, and
+// still resolve correctly when fed into a brand-new VideoModel instance for
+// DoStatus and DoGenerate (i.e. the operation, not any in-memory model
+// state, is what carries the resolved-input bookkeeping across a
+// process boundary).
+func TestDoStart_JSONRoundTripAcrossFreshModel(t *testing.T) {
+	imageFiles := make([]provider.VideoModelV3File, 10)
+	for i := range imageFiles {
+		imageFiles[i] = provider.VideoModelV3File{Type: "url", URL: "https://cdn.example.com/first.png", MediaType: "image/png"}
+	}
+	videoFiles := make([]provider.VideoModelV3File, 4)
+	for i := range videoFiles {
+		videoFiles[i] = provider.VideoModelV3File{Type: "url", URL: fmt.Sprintf("https://cdn.example.com/clip-%d.mp4", i), MediaType: "video/mp4"}
+	}
+	refs := append(append([]provider.VideoModelV3File{}, imageFiles...), videoFiles...)
+
+	server, bodies, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse()})
+	defer server.Close()
+	prov := providerForMinimaxServer(server.URL)
+
+	dur := 20.0
+	opts := minimaxDefaultCallOptions(nil)
+	opts.Duration = &dur
+	opts.InputReferences = refs
+
+	// A fresh model instance starts the operation.
+	startModel := newVideoModel(prov, ModelH3)
+	start, err := startModel.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *opts})
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+
+	// Round-trip the operation through JSON, as if it crossed a process
+	// boundary, before a *different* fresh model instance resumes it.
+	roundTripped, err := json.Marshal(json.RawMessage(start.Operation))
+	if err != nil {
+		t.Fatalf("marshal operation: %v", err)
+	}
+	var op minimaxOperation
+	if err := json.Unmarshal(roundTripped, &op); err != nil {
+		t.Fatalf("unmarshal operation: %v", err)
+	}
+	if op.TaskID != minimaxTestTaskID || op.ResolvedInputs.ImageCount != 9 {
+		t.Fatalf("operation = %+v, want taskId=%s imageCount=9", op, minimaxTestTaskID)
+	}
+	if len(op.ResolvedInputs.ReferenceVideoIndices) != 3 || op.ResolvedInputs.ReferenceVideoIndices[0] != 10 ||
+		op.ResolvedInputs.ReferenceVideoIndices[1] != 11 || op.ResolvedInputs.ReferenceVideoIndices[2] != 12 {
+		t.Fatalf("referenceVideoIndices = %v, want [10 11 12]", op.ResolvedInputs.ReferenceVideoIndices)
+	}
+
+	statusModel := newVideoModel(prov, ModelH3)
+	status, err := statusModel.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: roundTripped})
+	if err != nil {
+		t.Fatalf("DoStatus() error: %v", err)
+	}
+	if status.Status != provider.VideoOperationStatusCompleted {
+		t.Fatalf("status = %v", status.Status)
+	}
+	statusMeta := status.ProviderMetadata["minimax"].(map[string]interface{})
+	statusResolved := statusMeta["resolvedInputs"].(map[string]interface{})
+	if statusResolved["imageCount"] != 9 {
+		t.Errorf("status resolvedInputs.imageCount = %v, want 9", statusResolved["imageCount"])
+	}
+
+	// A third fresh model runs the whole thing through DoGenerate; the
+	// resulting request body must match the very first create call exactly
+	// (byte for byte, since it's built from the same normalized inputs),
+	// and the warnings must be identical (3: duration clamp, >9 images
+	// cap, >3 videos cap).
+	genModel := newVideoModel(prov, ModelH3)
+	generated, err := genModel.DoGenerate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	if len(*bodies) != 2 {
+		t.Fatalf("expected 2 create calls (initial doStart + doGenerate), got %d", len(*bodies))
+	}
+	firstBody, _ := json.Marshal((*bodies)[0])
+	secondBody, _ := json.Marshal((*bodies)[1])
+	if string(firstBody) != string(secondBody) {
+		t.Errorf("create bodies differ:\n%s\nvs\n%s", firstBody, secondBody)
+	}
+	if len(start.Warnings) != 3 {
+		t.Fatalf("start.Warnings = %+v, want 3", start.Warnings)
+	}
+	if len(generated.Warnings) != len(start.Warnings) {
+		t.Errorf("generated.Warnings = %+v, want same as start.Warnings %+v", generated.Warnings, start.Warnings)
+	}
+
+	genMeta := generated.ProviderMetadata["minimax"].(map[string]interface{})
+	genResolved := genMeta["resolvedInputs"].(map[string]interface{})
+	if genResolved["imageCount"] != 9 {
+		t.Errorf("generated resolvedInputs.imageCount = %v, want 9", genResolved["imageCount"])
+	}
+	wantURLs := []string{
+		"https://cdn.example.com/clip-0.mp4",
+		"https://cdn.example.com/clip-1.mp4",
+		"https://cdn.example.com/clip-2.mp4",
+	}
+	gotURLs, ok := genResolved["referenceVideoUrls"].([]string)
+	if !ok || len(gotURLs) != 3 {
+		t.Fatalf("referenceVideoUrls = %v", genResolved["referenceVideoUrls"])
+	}
+	for i, u := range wantURLs {
+		if gotURLs[i] != u {
+			t.Errorf("referenceVideoUrls[%d] = %q, want %q", i, gotURLs[i], u)
+		}
+	}
+	if _, ok := genResolved["referenceVideoIndices"]; ok {
+		t.Errorf("expected referenceVideoIndices to be replaced by referenceVideoUrls, got %+v", genResolved)
+	}
+}
+
+// TestDoStart_MixedInputIndices mirrors "doStart / doStatus > should retain
+// mixed input indices, preserving duplicates and counting inline videos
+// toward the cap": a mix of ignored (audio), image, URL video, inline video,
+// duplicate video, capped-out video, and untyped (fallback-to-image)
+// references must be routed and indexed correctly, and the operation must
+// not leak any URLs, prompt text, or inline data into its serialized form.
+func TestDoStart_MixedInputIndices(t *testing.T) {
+	server, bodies, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse()})
+	defer server.Close()
+	prov := providerForMinimaxServer(server.URL)
+
+	inlineVideoData := []byte("inline-video") // base64 "aW5saW5lLXZpZGVv"
+	opts := minimaxDefaultCallOptions(nil)
+	opts.InputReferences = []provider.VideoModelV3File{
+		{Type: "url", URL: "https://example.com/audio.mp3", MediaType: "audio/mpeg"},    // 0: dropped, neither image nor video
+		{Type: "url", URL: "https://cdn.example.com/first.png", MediaType: "image/png"}, // 1: image
+		{Type: "url", URL: "https://cdn.example.com/clip.mp4", MediaType: "video/mp4"},  // 2: video (kept, URL)
+		{Type: "file", Data: inlineVideoData, MediaType: "video/mp4"},                   // 3: video (kept, inline)
+		{Type: "url", URL: "https://cdn.example.com/clip.mp4", MediaType: "video/mp4"},  // 4: video (kept, URL, duplicate of 2)
+		{Type: "url", URL: "https://example.com/capped.mp4", MediaType: "video/mp4"},    // 5: video (dropped by 3-video cap)
+		{Type: "url", URL: "https://example.com/untyped.png"},                           // 6: no mediaType -> treated as image
+	}
+
+	result, err := newVideoModel(prov, ModelH3).DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *opts})
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+
+	var op minimaxOperation
+	if err := json.Unmarshal(result.Operation, &op); err != nil {
+		t.Fatalf("unmarshal operation: %v", err)
+	}
+	if op.TaskID != minimaxTestTaskID {
+		t.Errorf("taskId = %q", op.TaskID)
+	}
+	if op.ResolvedInputs.ImageCount != 2 {
+		t.Errorf("imageCount = %d, want 2", op.ResolvedInputs.ImageCount)
+	}
+	if len(op.ResolvedInputs.ReferenceVideoIndices) != 2 || op.ResolvedInputs.ReferenceVideoIndices[0] != 2 || op.ResolvedInputs.ReferenceVideoIndices[1] != 4 {
+		t.Errorf("referenceVideoIndices = %v, want [2 4]", op.ResolvedInputs.ReferenceVideoIndices)
+	}
+
+	// The serialized operation must carry only counts/indices, never the
+	// prompt, a URL, or inline data.
+	serialized := string(result.Operation)
+	for _, forbidden := range []string{"https://", minimaxTestPrompt, "aW5saW5lLXZpZGVv"} {
+		if strings.Contains(serialized, forbidden) {
+			t.Errorf("serialized operation leaked %q: %s", forbidden, serialized)
+		}
+	}
+
+	content, ok := (*bodies)[0]["content"].([]interface{})
+	if !ok || len(content) != 6 {
+		t.Fatalf("content = %+v", (*bodies)[0]["content"])
+	}
+	wantRoles := []string{"", "reference_image", "reference_image", "reference_video", "reference_video", "reference_video"}
+	wantTypes := []string{"text", "image_url", "image_url", "video_url", "video_url", "video_url"}
+	for i, part := range content {
+		p := part.(map[string]interface{})
+		if p["type"] != wantTypes[i] {
+			t.Errorf("content[%d].type = %v, want %v", i, p["type"], wantTypes[i])
+		}
+		if i > 0 && p["role"] != wantRoles[i] {
+			t.Errorf("content[%d].role = %v, want %v", i, p["role"], wantRoles[i])
+		}
+	}
+	inlinePart := content[4].(map[string]interface{})
+	inlineURL := inlinePart["video_url"].(map[string]interface{})["url"]
+	if inlineURL != "data:video/mp4;base64,aW5saW5lLXZpZGVv" {
+		t.Errorf("inline video url = %v", inlineURL)
+	}
+}
+
+// TestDoGenerate_H3MaxIgnoresUnsupportedReferences mirrors "request body >
+// should omit reference inputs that MiniMax-H3-Max does not support":
+// MiniMax-H3-Max supports neither reference-to-video inputs nor reference
+// audio, and both must be dropped from the request with a warning apiece,
+// leaving a plain text-to-video request.
+func TestDoGenerate_H3MaxIgnoresUnsupportedReferences(t *testing.T) {
+	server, bodies, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse()})
+	defer server.Close()
+	prov := providerForMinimaxServer(server.URL)
+	model := newVideoModel(prov, ModelH3Max)
+
+	opts := minimaxDefaultCallOptions(minimaxProviderOptions(map[string]interface{}{
+		"resolution":         "480P",
+		"referenceAudioUrls": []string{"https://cdn.example.com/ref.wav"},
+	}))
+	opts.InputReferences = []provider.VideoModelV3File{
+		{Type: "url", URL: "https://cdn.example.com/first.png", MediaType: "image/png"},
+		{Type: "url", URL: "https://cdn.example.com/clip.mp4", MediaType: "video/mp4"},
+	}
+
+	result, err := model.DoGenerate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	body := (*bodies)[0]
+	wantBody := map[string]interface{}{
+		"model":      ModelH3Max,
+		"content":    []interface{}{map[string]interface{}{"type": "text", "text": minimaxTestPrompt}},
+		"resolution": "480P",
+		"duration":   float64(5),
+		"ratio":      "16:9",
+	}
+	gotJSON, _ := json.Marshal(body)
+	wantJSON, _ := json.Marshal(wantBody)
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("body = %s, want %s", gotJSON, wantJSON)
+	}
+
+	wantWarnings := map[string]string{
+		"inputReferences":    "MiniMax-H3-Max does not support reference-to-video inputs. The references were ignored.",
+		"referenceAudioUrls": "MiniMax-H3-Max does not support reference audio. The audio was ignored.",
+	}
+	found := map[string]bool{}
+	for _, w := range result.Warnings {
+		if want, ok := wantWarnings[w.Feature]; ok && w.Details == want {
+			found[w.Feature] = true
+		}
+	}
+	for feature, want := range wantWarnings {
+		if !found[feature] {
+			t.Errorf("missing warning %q: %q; got %+v", feature, want, result.Warnings)
+		}
+	}
+}
+
 // TestVideoModel_ProviderIntegration verifies that Provider.VideoModel wires
 // up the model correctly.
 func TestVideoModel_ProviderIntegration(t *testing.T) {

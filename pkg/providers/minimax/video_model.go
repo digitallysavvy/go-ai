@@ -134,9 +134,27 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // DNS-pinning transport, and credentials are only forwarded on the trusted
 // hop.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	result, statusErr, err := m.getStatus(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if statusErr != nil {
+		result.Error = statusErr.Error()
+	}
+	return result, nil
+}
+
+// getStatus is the internal counterpart to DoStatus that keeps a task
+// failure/cancellation/expiry as a typed *Error (TS's private getStatus,
+// which returns an AISDKError on the status result rather than a string).
+// DoStatus stringifies it into the public VideoModelV3OperationStatusResult
+// (TS's public doStatus: `error: result.error.message`); DoGenerate calls
+// getStatus directly so it can throw the typed error, matching TS's
+// `if (result.status === 'error') throw result.error;`.
+func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, *Error, error) {
 	var op minimaxOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
-		return nil, fmt.Errorf("minimax: invalid operation reference: %w", err)
+		return nil, nil, fmt.Errorf("minimax: invalid operation reference: %w", err)
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.videoBaseURL, nil)
@@ -147,7 +165,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	var statusResp minimaxStatusResponse
 	result, err := fileutil.PollJSON(ctx, statusURL, downloadOpts, &statusResp)
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, nil, m.handlePollError(err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
@@ -160,7 +178,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	switch task.Status {
 	case "succeeded":
 		if task.Content == nil || task.Content.URL == "" {
-			return nil, NewVideoGenerationError(fmt.Sprintf("MiniMax video generation completed but no video URL was returned. Task ID: %s", op.TaskID))
+			return nil, nil, NewVideoGenerationError(fmt.Sprintf("MiniMax video generation completed but no video URL was returned. Task ID: %s", op.TaskID))
 		}
 
 		meta := map[string]interface{}{
@@ -195,7 +213,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			},
 			ProviderMetadata: map[string]interface{}{"minimax": meta},
 			Response:         responseInfo,
-		}, nil
+		}, nil, nil
 
 	case "failed":
 		msg := "MiniMax video generation failed"
@@ -207,31 +225,31 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}
 		msg += fmt.Sprintf(". Task ID: %s", op.TaskID)
 		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    msg,
-			Response: responseInfo,
-		}, nil
+				Status:   provider.VideoOperationStatusError,
+				Response: responseInfo,
+			},
+			NewVideoGenerationFailedError(msg), nil
 
 	case "cancelled":
 		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    fmt.Sprintf("MiniMax video generation was cancelled. Task ID: %s", op.TaskID),
-			Response: responseInfo,
-		}, nil
+				Status:   provider.VideoOperationStatusError,
+				Response: responseInfo,
+			},
+			NewVideoGenerationCancelledError(fmt.Sprintf("MiniMax video generation was cancelled. Task ID: %s", op.TaskID)), nil
 
 	case "expired":
 		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    fmt.Sprintf("MiniMax video generation request expired. Task ID: %s", op.TaskID),
-			Response: responseInfo,
-		}, nil
+				Status:   provider.VideoOperationStatusError,
+				Response: responseInfo,
+			},
+			NewVideoGenerationExpiredError(fmt.Sprintf("MiniMax video generation request expired. Task ID: %s", op.TaskID)), nil
 
 	// 'queued' | 'preparing' | 'processing' | unknown → keep polling.
 	default:
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusPending,
 			Response: responseInfo,
-		}, nil
+		}, nil, nil
 	}
 }
 
@@ -266,7 +284,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	var jobFailureErr error
 
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
-		status, err := m.DoStatus(ctx, &provider.VideoModelV3StatusOptions{
+		status, statusErr, err := m.getStatus(ctx, &provider.VideoModelV3StatusOptions{
 			Operation: startResult.Operation,
 			Headers:   opts.Headers,
 		})
@@ -278,8 +296,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			finalStatus = status
 			return &polling.JobResult{Status: polling.JobStatusCompleted}, nil
 		case provider.VideoOperationStatusError:
-			jobFailureErr = errors.New(status.Error)
-			return &polling.JobResult{Status: polling.JobStatusFailed, Error: status.Error}, nil
+			// TS doGenerate throws the typed AISDKError from getStatus
+			// directly (`throw result.error`), preserving its .name.
+			jobFailureErr = statusErr
+			return &polling.JobResult{Status: polling.JobStatusFailed, Error: statusErr.Error()}, nil
 		default:
 			return &polling.JobResult{Status: polling.JobStatusProcessing}, nil
 		}
@@ -541,14 +561,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "inputReferences",
-					Details: fmt.Sprintf("%s requires an explicit mediaType to route URL references as video or image. Pass { data: url, mediaType: \"video/mp4\" } for video references. The reference was treated as an image.", m.modelID),
+					Details: "MiniMax-H3 requires an explicit mediaType to route URL references as video or image. Pass { data: url, mediaType: \"video/mp4\" } for video references. The reference was treated as an image.",
 				})
 				referenceImages = append(referenceImages, file)
 			default:
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "inputReferences",
-					Details: fmt.Sprintf("%s only accepts image and video references; the %q reference was ignored. Pass reference audio via providerOptions.minimax.referenceAudioUrls.", m.modelID, file.MediaType),
+					Details: fmt.Sprintf("MiniMax-H3 only accepts image and video references; the %q reference was ignored. Pass reference audio via providerOptions.minimax.referenceAudioUrls.", file.MediaType),
 				})
 			}
 		}
@@ -573,7 +593,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "inputReferences",
-				Details: fmt.Sprintf("%s accepts at most %d reference images. Extra images were ignored.", m.modelID, minimaxMaxReferenceImages),
+				Details: fmt.Sprintf("MiniMax-H3 accepts at most %d reference images. Extra images were ignored.", minimaxMaxReferenceImages),
 			})
 		}
 
@@ -602,7 +622,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "inputReferences",
-				Details: fmt.Sprintf("%s accepts at most %d reference videos. Extra videos were ignored.", m.modelID, minimaxMaxReferenceVideos),
+				Details: fmt.Sprintf("MiniMax-H3 accepts at most %d reference videos. Extra videos were ignored.", minimaxMaxReferenceVideos),
 			})
 		}
 
@@ -611,7 +631,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "referenceAudioUrls",
-					Details: fmt.Sprintf("%s reference audio must be paired with at least one reference image or video. The audio was ignored.", m.modelID),
+					Details: "MiniMax-H3 reference audio must be paired with at least one reference image or video. The audio was ignored.",
 				})
 			} else {
 				audioLimit := len(referenceAudioURLs)
