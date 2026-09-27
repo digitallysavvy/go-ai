@@ -751,6 +751,64 @@ func TestBatch_PreservesRawCitationsWithoutMisattributingDocumentIndices(t *test
 	}
 }
 
+// TestBatch_WebFetchToolResultNeverGrowsCitationDocuments verifies batch
+// results never resolve a page_location/char_location citation against a
+// document fetched within the same batch response, matching TS's batch
+// converter which always resolves citations against a hardcoded `[]`
+// (anthropic-batch.ts:762 `createCitationSource(citation, [], generateId)`),
+// never growing it for web_fetch_tool_result -- unlike doGenerate/doStream,
+// where TestDoGenerate_WebFetchCitationDocument confirms the equivalent
+// citation DOES resolve. Batch result retrieval has no original prompt to
+// derive document ordering from, so indexed citations can never be
+// normalized safely there, even against a document fetched in the same
+// response.
+func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
+	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[` +
+		`{"type":"web_fetch_tool_result","tool_use_id":"toolu_1","content":` + webFetchResultContent("Fetched Report", "application/pdf") + `},` +
+		`{"type":"text","text":"The report shows growth.","citations":[` +
+		`{"type":"page_location","cited_text":"growth","document_index":0,"start_page_number":1,"end_page_number":2}` +
+		`]}` +
+		`],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`
+	resultsBody := `{"custom_id":"web-fetch-citation","result":{"type":"succeeded","message":` + message + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	got := items["web-fetch-citation"]
+	if got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("web-fetch-citation = %+v", got)
+	}
+	res := got.TextResult
+
+	for _, c := range res.Content {
+		if _, ok := c.(types.SourceContent); ok {
+			t.Fatalf("expected no SourceContent (page_location can't resolve in batch even against a web-fetched document), got %+v", res.Content)
+		}
+	}
+	text, ok := res.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("Content[0] = %T, want types.TextContent", res.Content[0])
+	}
+	var meta map[string]struct {
+		Citations []map[string]interface{} `json:"citations"`
+	}
+	if err := json.Unmarshal(text.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode text providerMetadata: %v", err)
+	}
+	if len(meta["anthropic"].Citations) != 1 || meta["anthropic"].Citations[0]["type"] != "page_location" {
+		t.Errorf("citations = %#v, want the raw page_location citation preserved", meta["anthropic"].Citations)
+	}
+}
+
 // TestBatch_PreservesSignedCompactionBlock ports TS "preserves signed
 // compaction blocks in batch results" (anthropic-batch.test.ts:1046): a
 // succeeded batch message whose only content block is a signed "compaction"

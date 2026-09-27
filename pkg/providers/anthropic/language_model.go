@@ -314,6 +314,14 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		var textParts []string
 		var textBlocks []types.ContentPart
 		hasExtraContent := false
+		// citationDocs starts from the prompt-derived documents and grows in
+		// response-content order as web_fetch_tool_result blocks are
+		// encountered below, mirroring TS's single ordered `for (const part of
+		// response.content)` loop where `citationDocuments.push(...)` runs
+		// inline with citation resolution (anthropic-language-model.ts:1216).
+		// A citation can only resolve against a web-fetched document that
+		// appears earlier in the content array, same as TS.
+		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
 		for _, content := range response.Content {
 			switch content.Type {
 			case "text":
@@ -330,12 +338,25 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 					hasExtraContent = true
 				}
 				for _, citation := range content.Citations {
-					src, ok := createCitationSource(citation, co.citationDocuments, anthropicGenerateID)
+					src, ok := createCitationSource(citation, citationDocs, anthropicGenerateID)
 					if !ok {
 						continue
 					}
 					textBlocks = append(textBlocks, src)
 					hasExtraContent = true
+				}
+			case "web_fetch_tool_result":
+				// Batch result retrieval has no original prompt to derive
+				// document ordering from at all, so indexed document citations
+				// can never be normalized safely there -- not even against a
+				// document fetched within the same batch response. TS's batch
+				// converter always resolves citations against a hardcoded `[]`
+				// (anthropic-batch.ts:762 `createCitationSource(citation, [],
+				// generateId)`), never growing it for web_fetch_tool_result.
+				if !co.rawBatchCitations {
+					if doc, ok := extractWebFetchCitationDocument(content.Content); ok {
+						citationDocs = append(citationDocs, doc)
+					}
 				}
 			case "compaction":
 				text, ok := anthropicCompactionText(content.Content)
@@ -1794,6 +1815,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					} else if len(part.Content) > 0 {
 						tr.Result = convertWebFetchToolResult(part.Content)
+						// Grow the citation document list in stream order so a later
+						// page_location/char_location citation (in a subsequent text
+						// block) can resolve against this fetched document, mirroring
+						// TS's inline `citationDocuments.push(...)` in the same
+						// content_block_start switch (anthropic-language-model.ts:2228).
+						if doc, ok := extractWebFetchCitationDocument(part.Content); ok {
+							s.citationDocuments = append(s.citationDocuments, doc)
+						}
 					}
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type:       provider.ChunkTypeToolResult,

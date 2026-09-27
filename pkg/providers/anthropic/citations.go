@@ -200,3 +200,30 @@ func createCitationSource(citation map[string]interface{}, citationDocuments []c
 func anthropicGenerateID() string {
 	return streaming.GenerateID()
 }
+
+// extractWebFetchCitationDocument builds the citationDocument that a
+// successful web_fetch_tool_result contributes to the running citation
+// document list, mirroring TS's inline `citationDocuments.push({title:
+// part.content.content.title ?? part.content.url, mediaType:
+// part.content.content.source.media_type})` (anthropic-language-model.ts:1463,
+// 2228). Only the "web_fetch_result" content variant contributes a document;
+// error results (content.type !== "web_fetch_result") are skipped, matching
+// TS's `if (part.content.type === 'web_fetch_result')` guard. Note: unlike
+// extractCitationDocuments, a web-fetched document has no filename.
+func extractWebFetchCitationDocument(raw json.RawMessage) (citationDocument, bool) {
+	var wire webFetchResultWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return citationDocument{}, false
+	}
+	if wire.Type != "web_fetch_result" {
+		return citationDocument{}, false
+	}
+	title := wire.Content.Title
+	if title == "" {
+		title = wire.URL
+	}
+	return citationDocument{
+		Title:     title,
+		MediaType: wire.Content.Source.MediaType,
+	}, true
+}
