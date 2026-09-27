@@ -21,22 +21,23 @@ import (
 var _ harness.Session = (*session)(nil)
 var _ harness.PromptControl = (*promptControl)(nil)
 var _ harness.ToolApprovalSubmitter = (*promptControl)(nil)
+var _ harness.UserMessageSubmitter = (*promptControl)(nil)
 var _ harness.CheckpointPinner = (*promptControl)(nil)
 
 // sessionOptions is the input of newSession. Mirrors the object TS
 // `createSession` closes over.
 type sessionOptions struct {
-	sessionID   string
-	channel     *bridge.Channel
-	proc        providerutils.SandboxProcess
-	cliShimPath string
+	sessionID string
+	channel   *bridge.Channel
+	proc      providerutils.SandboxProcess
 
-	model           string
-	reasoningEffort string
-	webSearch       *bool
-	codexConfig     map[string]any
-	mcpServers      map[string]any
-	headers         map[string]string
+	model                string
+	reasoningEffort      string
+	webSearch            *bool
+	builtinToolFiltering *harness.BuiltinToolFiltering
+	codexConfig          map[string]any
+	mcpServers           map[string]any
+	headers              map[string]string
 
 	isResume                      bool
 	seedResumeThreadOnFirstPrompt bool
@@ -61,7 +62,6 @@ type session struct {
 	mu                                 sync.Mutex
 	stopped                            bool
 	pendingResumeThreadID              string
-	initialPromptGuidanceApplied       bool
 	latestThreadID                     string
 	latestTurnConfigurationFingerprint string
 }
@@ -69,7 +69,6 @@ type session struct {
 func newSession(opts sessionOptions) *session {
 	s := &session{
 		opts:                               opts,
-		initialPromptGuidanceApplied:       opts.isResume,
 		latestThreadID:                     opts.resumeThreadID,
 		latestTurnConfigurationFingerprint: opts.turnConfigurationFingerprint,
 	}
@@ -109,7 +108,6 @@ func (s *session) synchronizeTurnConfiguration(ctx context.Context, skills []har
 		(result.Changed || (s.latestTurnConfigurationFingerprint != "" && s.latestTurnConfigurationFingerprint != fingerprint))
 	s.latestTurnConfigurationFingerprint = fingerprint
 	if restart {
-		s.initialPromptGuidanceApplied = false
 		s.pendingResumeThreadID = ""
 	}
 	return restart, nil
@@ -149,17 +147,6 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	applied := s.initialPromptGuidanceApplied
-	s.initialPromptGuidanceApplied = true
-	s.mu.Unlock()
-	if !applied {
-		toolUsage := ""
-		if len(opts.Tools) > 0 {
-			toolUsage = composeToolUsageInstructions(opts.Tools, s.opts.cliShimPath)
-		}
-		text = frameInitialPromptGuidance(toolUsage, text)
-	}
 
 	control := s.wireTurn(ctx, opts.Emit)
 	if ctx.Err() != nil {
@@ -194,7 +181,7 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	frame := &StartFrame{
 		StartBase: bridge.StartBase{
 			Prompt: prompt, Tools: ts.Tools, Model: firstNonEmpty(ts.Model, s.opts.model), ResponseFormat: rf,
-			PermissionMode: s.opts.permissionMode,
+			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering,
 		},
 		Instructions:    ts.Instructions,
 		ReasoningEffort: s.opts.reasoningEffort,
@@ -370,6 +357,12 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
 	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), emit: emit}
 	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
+	// Mid-turn steering: unconditionally wired, mirroring TS `wireTurn`'s
+	// unconditional `experimental_createBridgeUserMessageSubmitter(...)`
+	// (unlike claude-code/opencode, codex does not gate this on a
+	// bridge-advertised hello capability — the bridge always accepts
+	// `turn/steer` once a turn is active).
+	pc.userMessages = bridge.NewChannelUserMessageSubmitter(s.opts.channel)
 
 	eventTypes := []string{
 		harness.PartTypeStreamStart, harness.PartTypeTextStart, harness.PartTypeTextDelta, harness.PartTypeTextEnd,
@@ -426,12 +419,14 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	return pc
 }
 
-// promptControl implements harness.PromptControl + ToolApprovalSubmitter.
+// promptControl implements harness.PromptControl + ToolApprovalSubmitter +
+// UserMessageSubmitter.
 type promptControl struct {
-	channel    *bridge.Channel
-	emit       harness.EmitFunc
-	unsubs     []func()
-	checkpoint *bridge.CheckpointRecorder
+	channel      *bridge.Channel
+	emit         harness.EmitFunc
+	unsubs       []func()
+	userMessages *bridge.ExperimentalUserMessageSubmitter
+	checkpoint   *bridge.CheckpointRecorder
 
 	once sync.Once
 	done chan struct{}
@@ -448,6 +443,9 @@ func (c *promptControl) settleSuccess() {
 		for _, u := range c.unsubs {
 			u()
 		}
+		if c.userMessages != nil {
+			c.userMessages.Close(nil)
+		}
 		close(c.done)
 	})
 }
@@ -457,6 +455,9 @@ func (c *promptControl) settleError(err error) {
 		c.err = err
 		for _, u := range c.unsubs {
 			u()
+		}
+		if c.userMessages != nil {
+			c.userMessages.Close(err)
 		}
 		close(c.done)
 	})
@@ -472,6 +473,13 @@ func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }
 func (c *promptControl) Err() error            { return c.err }
+
+// SubmitUserMessage steers the in-flight turn with an acknowledged mid-turn
+// user message. Mirrors TS `control.submitUserMessage`, which is present
+// unconditionally on the returned control object (see wireTurn).
+func (c *promptControl) SubmitUserMessage(ctx context.Context, text string) error {
+	return c.userMessages.Submit(ctx, text)
+}
 
 // PinCheckpoint implements harness.CheckpointPinner by pinning the bridge
 // channel's replay checkpoint to the finish-step event's own seq, recorded
@@ -498,37 +506,4 @@ func extractUserText(prompt harness.Prompt) (string, error) {
 		parts = append(parts, text.Text)
 	}
 	return strings.Join(parts, "\n\n"), nil
-}
-
-// frameInitialPromptGuidance mirrors TS `frameInitialPromptGuidance`.
-func frameInitialPromptGuidance(toolUsageBlock, userText string) string {
-	if toolUsageBlock == "" {
-		return userText
-	}
-	return toolUsageBlock + "\n\n<user-message>\n" + userText + "\n</user-message>"
-}
-
-// composeToolUsageInstructions mirrors TS `composeToolUsageInstructions`.
-func composeToolUsageInstructions(tools []harness.ToolSpec, cliShimPath string) string {
-	var b strings.Builder
-	b.WriteString("<host-tool-instructions>\n")
-	b.WriteString("You have access to the following host-provided tools. To use one, run the following command via your built-in `bash` tool:\n\n")
-	fmt.Fprintf(&b, "  node %s <toolName> '<jsonInput>'\n\n", cliShimPath)
-	b.WriteString("The script prints the JSON result to stdout. Do not invent another way to call these tools — only this CLI invocation will work. Pass the JSON input as a single-quoted argument.\n")
-	b.WriteString("For every user request that depends on a host-provided tool, run a separate CLI invocation for each needed tool call in the current turn before answering. Do not reuse previous tool results, and do not say you used a host tool unless the command has completed in the current turn.\n\n")
-	for _, t := range tools {
-		if t.Description != "" {
-			fmt.Fprintf(&b, "- **%s**: %s\n", t.Name, t.Description)
-		} else {
-			fmt.Fprintf(&b, "- **%s**\n", t.Name)
-		}
-		schema := t.InputSchema
-		if schema == nil {
-			schema = map[string]any{}
-		}
-		schemaJSON, _ := json.Marshal(schema)
-		fmt.Fprintf(&b, "  - Input schema: `%s`\n", schemaJSON)
-	}
-	b.WriteString("</host-tool-instructions>")
-	return b.String()
 }

@@ -2,7 +2,6 @@ package codex_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,8 +19,8 @@ func TestBuiltinTools_Declared(t *testing.T) {
 		t.Fatalf("HarnessID = %q", h.HarnessID())
 	}
 	tools := h.BuiltinTools()
-	if len(tools) != 2 {
-		t.Fatalf("len(tools) = %d, want 2 (bash, webSearch)", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("len(tools) = %d, want 4 (bash, webSearch, apply_patch, view_image)", len(tools))
 	}
 	if tools["bash"].NativeName != "shell" || tools["bash"].ToolUseKind != harness.BuiltinToolUseKindBash {
 		t.Errorf("bash tool = %+v", tools["bash"])
@@ -29,27 +28,66 @@ func TestBuiltinTools_Declared(t *testing.T) {
 	if tools["webSearch"].NativeName != "web_search" {
 		t.Errorf("webSearch.NativeName = %q, want web_search", tools["webSearch"].NativeName)
 	}
+	if tools["apply_patch"].ToolUseKind != harness.BuiltinToolUseKindEdit {
+		t.Errorf("apply_patch.ToolUseKind = %q, want edit", tools["apply_patch"].ToolUseKind)
+	}
+	if tools["view_image"].ToolUseKind != harness.BuiltinToolUseKindReadonly {
+		t.Errorf("view_image.ToolUseKind = %q, want readonly", tools["view_image"].ToolUseKind)
+	}
 	if harness.SupportsBuiltinToolApprovals(h) {
 		t.Error("codex must not support built-in tool approvals")
 	}
-	if harness.SupportsBuiltinToolFiltering(h) {
-		t.Error("codex must not support built-in tool filtering")
+	// TS d17ead78cd: `supportsBuiltinToolFiltering: true` (app-server filters
+	// bash/webSearch/view_image via config and apply_patch via a trusted
+	// hook, both bridge-internal).
+	if !harness.SupportsBuiltinToolFiltering(h) {
+		t.Error("codex must support built-in tool filtering")
 	}
 }
 
-// TS: "rejects built-in tool filtering controls"
-func TestDoStart_RejectsBuiltinToolFiltering(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+// TS "forwards built-in tool filtering to the bridge".
+func TestDoPromptTurn_ForwardsBuiltinToolFiltering(t *testing.T) {
+	var captured map[string]any
+	captureDone := make(chan struct{})
+	filtering := &harness.BuiltinToolFiltering{Mode: harness.BuiltinToolFilteringDeny, ToolNames: []string{"bash"}}
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+		captured = start
+		close(captureDone)
+		turn.Emit(finishFrame())
+	}})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }})
-	_, err := h.DoStart(context.Background(), harness.StartOptions{
+
+	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
-		BuiltinToolFiltering: &harness.BuiltinToolFiltering{Mode: harness.BuiltinToolFilteringAllow, ToolNames: []string{"bash"}},
+		BuiltinToolFiltering: filtering,
 	})
-	if _, ok := err.(*harness.CapabilityUnsupportedError); !ok {
-		t.Fatalf("error = %v, want *harness.CapabilityUnsupportedError", err)
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	_, err = sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hello"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-captureDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received a start frame")
+	}
+
+	gotFiltering, _ := captured["builtinToolFiltering"].(map[string]any)
+	if gotFiltering["mode"] != "deny" {
+		t.Errorf("start.builtinToolFiltering.mode = %v, want deny", gotFiltering["mode"])
+	}
+	names, _ := gotFiltering["toolNames"].([]any)
+	if len(names) != 1 || names[0] != "bash" {
+		t.Errorf("start.builtinToolFiltering.toolNames = %v, want [bash]", gotFiltering["toolNames"])
 	}
 }
 
@@ -391,12 +429,13 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	}
 }
 
-// TS commit 0d1cb8e ("avoid placing relay shim file in session workdir") +
-// codex-instructions.test.ts "prepends host tool usage guidance on the first
-// user message only": the CLI shim path lives under the harness state
-// directory ($HOME/.ai-sdk-harness/.agent-runs/<session>/codex), never under
-// the session's own working directory.
-func TestDoPromptTurn_HostToolGuidanceUsesStateDirShimPath(t *testing.T) {
+// TS codex-instructions.test.ts "passes dynamic tools without changing user
+// messages": since the d17ead78cd app-server migration, tools are declared
+// only in the ordinary `tools` start-frame field (the bridge registers them
+// as app-server "dynamic tools" and handles tool-call/tool-result frames);
+// there is no more CLI-relay prompt-text framing of the user message, and no
+// separate MCP-server registration path on the host side.
+func TestDoPromptTurn_ToolsForwardedPlainlyWithoutPromptFraming(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
 	_, sess := startedHarness(t, codex.Settings{}, func(turn *bridgetest.Turn, start map[string]any) {
@@ -419,24 +458,9 @@ func TestDoPromptTurn_HostToolGuidanceUsesStateDirShimPath(t *testing.T) {
 		t.Fatal("bridge never received a start frame")
 	}
 
-	prompt, _ := captured["prompt"].(string)
-	const shimPath = "/home/agent/.ai-sdk-harness/.agent-runs/s1/codex/harness-tool.mjs"
-	if !strings.Contains(prompt, shimPath) {
-		t.Errorf("prompt does not contain the state-dir shim path %q:\n%s", shimPath, prompt)
+	if prompt, _ := captured["prompt"].(string); prompt != "what's the weather" {
+		t.Errorf("prompt = %q, want the raw user text unchanged", prompt)
 	}
-	if strings.Contains(prompt, "/workdir/") {
-		t.Errorf("prompt places the shim under the session workdir:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "weather") {
-		t.Errorf("prompt does not mention the declared host tool:\n%s", prompt)
-	}
-
-	// TS commit b2f553b ("route Codex host tools through the CLI relay only
-	// instead of registering them as MCP tools"): the host's only
-	// responsibility for host tools is declaring them in the ordinary
-	// `tools` start-frame field (same as every other adapter) and handling
-	// tool-call/tool-result frames; there is no separate MCP-server
-	// registration path on the host side.
 	tools, _ := captured["tools"].([]any)
 	if len(tools) != 1 {
 		t.Fatalf("start.tools = %v, want exactly the one declared host tool", captured["tools"])
@@ -447,6 +471,31 @@ func TestDoPromptTurn_HostToolGuidanceUsesStateDirShimPath(t *testing.T) {
 	}
 	if _, hasMCPServers := captured["mcpServers"]; hasMCPServers {
 		t.Errorf("start frame declares mcpServers = %v; host tools must not be registered as MCP tools", captured["mcpServers"])
+	}
+}
+
+// TS "waits for Codex to accept steering and rejects messages after the turn
+// finishes": mid-turn steering (`submitUserMessage`/`turn/steer`) is wired
+// unconditionally by wireTurn (not gated on a bridge-advertised hello
+// capability, unlike claude-code/opencode).
+func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
+	_, sess := startedHarness(t, codex.Settings{}, func(turn *bridgetest.Turn, start map[string]any) {})
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+
+	submitter, ok := control.(harness.UserMessageSubmitter)
+	if !ok {
+		t.Fatal("control does not implement harness.UserMessageSubmitter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := submitter.SubmitUserMessage(ctx, "Actually, Paris, Texas."); err != nil {
+		t.Fatalf("SubmitUserMessage: %v", err)
 	}
 }
 
