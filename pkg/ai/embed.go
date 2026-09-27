@@ -106,6 +106,14 @@ type EmbedOnFinishEvent struct {
 	Metadata map[string]any
 }
 
+// EmbedStartEvent is the canonical name for EmbedOnStartEvent (TS parity,
+// 29d8cf4 event renames).
+type EmbedStartEvent = EmbedOnStartEvent
+
+// EmbedEndEvent is the canonical name for EmbedOnFinishEvent (TS parity,
+// 29d8cf4 event renames).
+type EmbedEndEvent = EmbedOnFinishEvent
+
 // EmbedOptions contains options for embedding generation
 type EmbedOptions struct {
 	// Model to use for embedding
@@ -142,15 +150,25 @@ type EmbedOptions struct {
 	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
-	// ExperimentalOnStart is called before the embedding model is invoked.
+	// OnStart is called before the embedding model is invoked.
+	OnStart func(event EmbedOnStartEvent)
+
+	// ExperimentalOnStart is a deprecated alias for OnStart.
+	//
+	// Deprecated: use OnStart.
 	ExperimentalOnStart func(event EmbedOnStartEvent)
 
-	// ExperimentalOnEnd is called after the embedding model returns.
+	// OnEnd is called after the embedding model returns.
+	OnEnd func(event EmbedOnFinishEvent)
+
+	// ExperimentalOnEnd is a deprecated alias for OnEnd.
+	//
+	// Deprecated: use OnEnd.
 	ExperimentalOnEnd func(event EmbedOnFinishEvent)
 
-	// ExperimentalOnFinish is called after the embedding model returns.
+	// ExperimentalOnFinish is a deprecated alias for OnEnd.
 	//
-	// Deprecated: use ExperimentalOnEnd.
+	// Deprecated: use OnEnd.
 	ExperimentalOnFinish func(event EmbedOnFinishEvent)
 }
 
@@ -255,7 +273,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
-	if opts.ExperimentalOnStart != nil {
+	if opts.OnStart != nil {
+		opts.OnStart(startEvent)
+	} else if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
@@ -360,11 +380,15 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
-	if opts.ExperimentalOnEnd != nil {
-		opts.ExperimentalOnEnd(finishEvent)
-	}
-	if opts.ExperimentalOnFinish != nil {
-		opts.ExperimentalOnFinish(finishEvent)
+	if opts.OnEnd != nil {
+		opts.OnEnd(finishEvent)
+	} else {
+		if opts.ExperimentalOnEnd != nil {
+			opts.ExperimentalOnEnd(finishEvent)
+		}
+		if opts.ExperimentalOnFinish != nil {
+			opts.ExperimentalOnFinish(finishEvent)
+		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
 		Settings:      opts.ExperimentalTelemetry,
@@ -420,15 +444,25 @@ type EmbedManyOptions struct {
 	// Deprecated: use Telemetry.
 	ExperimentalTelemetry *TelemetrySettings
 
-	// ExperimentalOnStart is called before the embedding model is invoked.
+	// OnStart is called before the embedding model is invoked.
+	OnStart func(event EmbedOnStartEvent)
+
+	// ExperimentalOnStart is a deprecated alias for OnStart.
+	//
+	// Deprecated: use OnStart.
 	ExperimentalOnStart func(event EmbedOnStartEvent)
 
-	// ExperimentalOnEnd is called after the embedding model returns.
+	// OnEnd is called after the embedding model returns.
+	OnEnd func(event EmbedOnFinishEvent)
+
+	// ExperimentalOnEnd is a deprecated alias for OnEnd.
+	//
+	// Deprecated: use OnEnd.
 	ExperimentalOnEnd func(event EmbedOnFinishEvent)
 
-	// ExperimentalOnFinish is called after the embedding model returns.
+	// ExperimentalOnFinish is a deprecated alias for OnEnd.
 	//
-	// Deprecated: use ExperimentalOnEnd.
+	// Deprecated: use OnEnd.
 	ExperimentalOnFinish func(event EmbedOnFinishEvent)
 }
 
@@ -539,7 +573,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
-	if opts.ExperimentalOnStart != nil {
+	if opts.OnStart != nil {
+		opts.OnStart(startEvent)
+	} else if opts.ExperimentalOnStart != nil {
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
@@ -588,11 +624,15 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
-	if opts.ExperimentalOnEnd != nil {
-		opts.ExperimentalOnEnd(finishEvent)
-	}
-	if opts.ExperimentalOnFinish != nil {
-		opts.ExperimentalOnFinish(finishEvent)
+	if opts.OnEnd != nil {
+		opts.OnEnd(finishEvent)
+	} else {
+		if opts.ExperimentalOnEnd != nil {
+			opts.ExperimentalOnEnd(finishEvent)
+		}
+		if opts.ExperimentalOnFinish != nil {
+			opts.ExperimentalOnFinish(finishEvent)
+		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
 		Settings:      opts.ExperimentalTelemetry,

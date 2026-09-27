@@ -187,6 +187,20 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	return raw
 }
 
+// decodeProviderMetadataMap is the inverse of providerMetadataRaw: it decodes
+// a chunk's raw provider metadata back into a map for structured events such
+// as LanguageModelCallEndEvent.
+func decodeProviderMetadataMap(raw json.RawMessage) map[string]interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 func contentHasText(parts []types.ContentPart) bool {
 	for _, part := range parts {
 		switch p := part.(type) {

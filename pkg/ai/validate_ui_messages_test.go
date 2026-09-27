@@ -636,3 +636,39 @@ func TestSafeValidateUIMessages(t *testing.T) {
 		assert.False(t, result.Success)
 	})
 }
+
+// Ported from validate-ui-messages.test.ts "should warn when rawInput is
+// present in output-error state" (issue #51): ValidateUIMessages logs a
+// deprecation warning via LogWarnings when an output-error tool part still
+// carries the deprecated rawInput field. The global warning logger is
+// process state, so this test is not parallel (see log_warnings_test.go).
+func TestValidateUIMessages_WarnsOnDeprecatedRawInput(t *testing.T) {
+	buf := setupLogWarnings(t)
+	tools := []types.Tool{testFooTool()}
+	_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+		Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+			{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad","rawInput":{"foo":"bar"}}
+		]}]`),
+		Tools: tools,
+	})
+	require.NoError(t, err)
+	lines := logLines(buf)
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], `rawInput in output-error UI message parts`)
+	assert.Contains(t, lines[1], `Use the "input" field instead`)
+}
+
+// A rawInput-free output-error part, or a non-output-error part carrying
+// rawInput, must not trigger the warning.
+func TestValidateUIMessages_NoWarningWithoutDeprecatedRawInput(t *testing.T) {
+	buf := setupLogWarnings(t)
+	tools := []types.Tool{testFooTool()}
+	_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+		Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+			{"type":"tool-foo","toolCallId":"1","state":"output-error","errorText":"bad"}
+		]}]`),
+		Tools: tools,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, logLines(buf))
+}

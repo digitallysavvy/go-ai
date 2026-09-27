@@ -74,10 +74,16 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 
 		var lastText string
 		var lastElementCount int
-		ctx := context.Background()
+		// Consume via Stream() rather than result.nextChunk() directly: for
+		// StreamTextResult values from StreamText, processStream is already
+		// reading the raw provider stream in the background (it always runs
+		// now, to execute tools and multi-step continuations regardless of
+		// callbacks). Reading result.nextChunk() here too would race with
+		// that goroutine over the same underlying stream.
+		stream := result.Stream()
 
 		for {
-			chunk, err := result.nextChunk(ctx)
+			chunk, err := stream.Next()
 			if err != nil {
 				if err.Error() != "EOF" && opts.OnError != nil {
 					opts.OnError(err)
@@ -225,9 +231,13 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 		var lastText string
 		var lastElementCount int
 		ctx := context.Background()
+		// See ElementStream: consume via Stream(), not result.nextChunk(),
+		// to avoid racing processStream's own read of the raw provider
+		// stream.
+		stream := result.Stream()
 
 		for {
-			chunk, err := result.nextChunk(ctx)
+			chunk, err := stream.Next()
 			if err != nil {
 				break
 			}
