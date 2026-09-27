@@ -18,12 +18,12 @@ type mockLanguageModel struct {
 	streamError    error
 }
 
-func (m *mockLanguageModel) SpecificationVersion() string { return "v3" }
-func (m *mockLanguageModel) Provider() string              { return "test" }
-func (m *mockLanguageModel) ModelID() string               { return "test-model" }
-func (m *mockLanguageModel) SupportsTools() bool           { return true }
+func (m *mockLanguageModel) SpecificationVersion() string   { return "v3" }
+func (m *mockLanguageModel) Provider() string               { return "test" }
+func (m *mockLanguageModel) ModelID() string                { return "test-model" }
+func (m *mockLanguageModel) SupportsTools() bool            { return true }
 func (m *mockLanguageModel) SupportsStructuredOutput() bool { return true }
-func (m *mockLanguageModel) SupportsImageInput() bool     { return false }
+func (m *mockLanguageModel) SupportsImageInput() bool       { return false }
 
 func (m *mockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	if m.generateError != nil {

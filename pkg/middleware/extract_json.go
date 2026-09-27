@@ -20,9 +20,9 @@ type ExtractJSONOptions struct {
 // defaultJSONTransform strips markdown code fences from text
 func defaultJSONTransform(text string) string {
 	// Remove opening fence: ```json or ```
-	text = regexp.MustCompile(`^` + "```" + `(?:json)?\s*\n?`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`^`+"```"+`(?:json)?\s*\n?`).ReplaceAllString(text, "")
 	// Remove closing fence: ```
-	text = regexp.MustCompile(`\n?` + "```" + `\s*$`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`\n?`+"```"+`\s*$`).ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
 }
 
