@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -28,11 +30,25 @@ type TelemetryStartEvent struct {
 	// Settings holds the caller-supplied telemetry configuration.
 	// nil means telemetry was not configured for this call.
 	Settings *Settings
-	// Prompt and System are only populated when Settings.RecordInputs is true.
+	// Prompt, System, and Messages are only populated when
+	// Settings.RecordInputs is true.
 	Prompt string
 	System string
+	// Messages carries the caller-supplied message list (generateText/
+	// streamText/generateObject/streamObject), used to build
+	// gen_ai.input.messages on the root span (fc15550, 12cfe40).
+	Messages []types.Message
 	// ValueCount is populated for batch value operations such as embedMany.
 	ValueCount int
+	// Headers carries caller-supplied request headers, emitted as
+	// ai.request.headers.* when OpenTelemetryOptions.Headers is set (18651f6).
+	Headers map[string]string
+	// Schema, SchemaName, and SchemaDescription are populated for
+	// generateObject/streamObject and emitted as ai.schema* when
+	// OpenTelemetryOptions.Schema is set (18651f6).
+	Schema            map[string]interface{}
+	SchemaName        string
+	SchemaDescription string
 	// RuntimeContext and ToolsContext contain only keys explicitly included by
 	// Settings.IncludeRuntimeContext and Settings.IncludeToolsContext.
 	RuntimeContext map[string]interface{}
@@ -44,10 +60,14 @@ type TelemetryStepStartEvent struct {
 	Settings *Settings
 	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
 	// Used to name the per-step OTel child span.
-	OperationType  string
-	StepNumber     int
-	ModelProvider  string
-	ModelID        string
+	OperationType string
+	StepNumber    int
+	ModelProvider string
+	ModelID       string
+	// ToolChoice is the effective tool choice for this step, emitted as
+	// ai.prompt.toolChoice when OpenTelemetryOptions.ToolChoice is set
+	// (152c67c, 18651f6). The zero value (Type == "") means unset.
+	ToolChoice     types.ToolChoice
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
 }
@@ -60,6 +80,20 @@ type LanguageModelCallStartEvent struct {
 	ModelID       string
 	Prompt        interface{}
 	Tools         interface{}
+
+	// System carries the effective system/instructions text for this call,
+	// used for gen_ai.system_instructions in the GenAI integration.
+	System string
+
+	// Request settings, used for gen_ai.request.* in the GenAI integration.
+	Temperature      *float64
+	MaxOutputTokens  *int
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
 }
 
 // LanguageModelCallEndEvent is emitted after a provider model call returns and
@@ -74,6 +108,10 @@ type LanguageModelCallEndEvent struct {
 	Content       interface{}
 	ResponseID    string
 	Performance   LanguageModelCallPerformance
+	// ProviderMetadata holds provider-specific response metadata, emitted as
+	// ai.response.providerMetadata when OpenTelemetryOptions.ProviderMetadata
+	// is set (18651f6).
+	ProviderMetadata map[string]interface{}
 }
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
@@ -229,6 +267,10 @@ type TelemetryFinishEvent struct {
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+	// ProviderMetadata holds the final step's provider-specific response
+	// metadata, emitted as ai.response.providerMetadata when
+	// OpenTelemetryOptions.ProviderMetadata is set (18651f6).
+	ProviderMetadata map[string]interface{}
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -341,7 +383,7 @@ type TelemetryIntegration interface {
 type Telemetry = TelemetryIntegration
 
 type languageModelCallStartHandler interface {
-	OnLanguageModelCallStart(context.Context, LanguageModelCallStartEvent)
+	OnLanguageModelCallStart(context.Context, LanguageModelCallStartEvent) context.Context
 }
 
 type languageModelCallEndHandler interface {
@@ -423,14 +465,64 @@ func (NoopTelemetryIntegration) ExecuteTool(
 // OTelTelemetryIntegration
 // ---------------------------------------------------------------------------
 
-// OTelTelemetryIntegration translates TelemetryIntegration events into
-// OpenTelemetry spans.  Register it to enable OTel tracing:
+// LegacyOpenTelemetry translates TelemetryIntegration events into the SDK's
+// original "ai.*"-shaped OpenTelemetry spans, matching TS's
+// `otel/src/legacy-open-telemetry.ts` LegacyOpenTelemetry class. Register it
+// (or construct one with NewLegacyOpenTelemetry to configure a tracer or
+// EnrichSpan) to enable OTel tracing:
 //
-//	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
-type OTelTelemetryIntegration struct{}
+//	telemetry.RegisterTelemetryIntegration(telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{}))
+//
+// The zero value is valid and uses the global OTel tracer provider, matching
+// TS's `new LegacyOpenTelemetry()` with no options.
+type LegacyOpenTelemetry struct {
+	tracer     trace.Tracer
+	enrichSpan EnrichSpanFunc
+}
+
+// LegacyOpenTelemetryOptions configures a LegacyOpenTelemetry integration.
+type LegacyOpenTelemetryOptions struct {
+	// Tracer is the OTel tracer to use. Defaults to the global tracer
+	// provider's "ai-sdk" tracer when nil.
+	Tracer trace.Tracer
+	// EnrichSpan adds custom attributes to spans as they are created.
+	// SDK-managed attributes win on key collisions. A per-call
+	// Settings.EnrichSpan, when set, overrides this constructor-level value.
+	EnrichSpan EnrichSpanFunc
+}
+
+// NewLegacyOpenTelemetry creates a LegacyOpenTelemetry integration
+// configured with a tracer and/or EnrichSpan function, matching TS's
+// `new LegacyOpenTelemetry({tracer, enrichSpan})` (9b47dea).
+func NewLegacyOpenTelemetry(opts LegacyOpenTelemetryOptions) LegacyOpenTelemetry {
+	return LegacyOpenTelemetry{tracer: opts.Tracer, enrichSpan: opts.EnrichSpan}
+}
+
+// tracerFor resolves the tracer this integration should use: a no-op tracer
+// when telemetry is disabled, the constructor-configured tracer when set,
+// else the shared GetTracer fallback (global "ai-sdk" tracer).
+func (i LegacyOpenTelemetry) tracerFor(settings *Settings) trace.Tracer {
+	if !Enabled(settings) {
+		return noop.NewTracerProvider().Tracer(TracerName)
+	}
+	if i.tracer != nil {
+		return i.tracer
+	}
+	return GetTracer(settings)
+}
+
+// OTelTelemetryIntegration is a deprecated alias for LegacyOpenTelemetry.
+//
+// Deprecated: use LegacyOpenTelemetry / NewLegacyOpenTelemetry.
+type OTelTelemetryIntegration = LegacyOpenTelemetry
 
 type otelSpanEntry struct {
 	span trace.Span
+	// toolDefs is used only by the GenAI OpenTelemetry integration's
+	// languageModel span entries: the declared tool definitions captured at
+	// OnLanguageModelCallStart, merged with provider-executed tool calls
+	// observed at OnLanguageModelCallEnd (5ad6abf).
+	toolDefs []map[string]interface{}
 }
 
 var otelModelCallSpans sync.Map
@@ -448,14 +540,54 @@ func modelCallID(parts ...string) string {
 	return ""
 }
 
-func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSpanOptions) []attribute.KeyValue {
-	if settings == nil || settings.EnrichSpan == nil {
+// finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
+// false when the value is NaN or ±Inf. OTLP does not support non-finite
+// floats; mirrors TS sanitizeAttributeValue (otel/src/sanitize-attribute-value.ts).
+func finiteFloat64Attr(key string, v float64) (attribute.KeyValue, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return attribute.KeyValue{}, false
+	}
+	return attribute.Float64(key, v), true
+}
+
+// finiteFloat64Slice returns values unchanged, or false if any element is
+// NaN/±Inf (TS drops the whole array in that case; see sanitizeAttributeValue).
+func finiteFloat64Slice(values []float64) ([]float64, bool) {
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// setFiniteFloat64 appends a Float64 attribute.KeyValue to attrs, skipping
+// non-finite values (NaN/±Inf), which are otherwise silently dropped or
+// rejected by OTLP exporters. Common source: tokens-per-second metrics
+// computed with a zero-duration denominator.
+func setFiniteFloat64(attrs []attribute.KeyValue, key string, v float64) []attribute.KeyValue {
+	if kv, ok := finiteFloat64Attr(key, v); ok {
+		return append(attrs, kv)
+	}
+	return attrs
+}
+
+// customSpanAttributes builds attributes from an EnrichSpan function. A
+// per-call Settings.EnrichSpan takes precedence over the integration's
+// constructor-level EnrichSpan (ctorEnrich), matching TS's per-call/
+// constructor EnrichSpan precedence (c025d60).
+func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settings *Settings, opts EnrichSpanOptions) []attribute.KeyValue {
+	enrich := ctorEnrich
+	if settings != nil && settings.EnrichSpan != nil {
+		enrich = settings.EnrichSpan
+	}
+	if enrich == nil {
 		return nil
 	}
 	defer func() {
 		_ = recover()
 	}()
-	attrs := settings.EnrichSpan(ctx, opts)
+	attrs := enrich(ctx, opts)
 	if len(attrs) == 0 {
 		return nil
 	}
@@ -471,7 +603,9 @@ func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSp
 		case int64:
 			out = append(out, attribute.Int64(key, v))
 		case float64:
-			out = append(out, attribute.Float64(key, v))
+			if kv, ok := finiteFloat64Attr(key, v); ok {
+				out = append(out, kv)
+			}
 		case []string:
 			out = append(out, attribute.StringSlice(key, v))
 		case []bool:
@@ -481,7 +615,9 @@ func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSp
 		case []int64:
 			out = append(out, attribute.Int64Slice(key, v))
 		case []float64:
-			out = append(out, attribute.Float64Slice(key, v))
+			if finite, ok := finiteFloat64Slice(v); ok {
+				out = append(out, attribute.Float64Slice(key, finite))
+			}
 		default:
 			if b, err := json.Marshal(v); err == nil {
 				out = append(out, attribute.String(key, string(b)))
@@ -493,17 +629,17 @@ func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSp
 
 // OnStart starts the root OTel span and embeds it in the returned context.
 // Returns ctx unchanged when settings explicitly disables telemetry.
-func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
+func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
 	}
-	tracer := GetTracer(e.Settings)
+	tracer := i.tracerFor(e.Settings)
 	spanName := e.OperationType
 	if e.Settings != nil && e.Settings.FunctionID != "" {
 		spanName += "." + e.Settings.FunctionID
 	}
 	ctx, span := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationType,
 		RuntimeContext: e.RuntimeContext,
@@ -527,7 +663,80 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 	if e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
 		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
 	}
+	if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+		// Stashed so descendant spans (e.g. tool call spans) can also carry
+		// the flattened ai.settings.context.* attrs, matching TS's
+		// baseTelemetryAttributes reuse (0651c5f). RuntimeContext here is
+		// already filtered by Settings.IncludeRuntimeContext upstream.
+		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
+	}
 	return ctx // span is embedded via OTel context propagation
+}
+
+// runtimeContextAttrsKey is a private context key carrying the root span's
+// flattened ai.settings.context.* attributes down to descendant spans.
+type runtimeContextAttrsKey struct{}
+
+// runtimeContextAttributes flattens a runtime context map into
+// "ai.settings.context.<path>" attributes, mirroring TS's
+// getRuntimeContextAttributes (otel/src/supplemental-attributes.ts): nested
+// objects recurse, arrays and other primitives are kept as-is, and nil
+// values are skipped.
+func runtimeContextAttributes(runtimeContext map[string]interface{}) []attribute.KeyValue {
+	if len(runtimeContext) == 0 {
+		return nil
+	}
+	var attrs []attribute.KeyValue
+	for key, value := range runtimeContext {
+		attrs = appendRuntimeContextAttribute(attrs, "ai.settings.context."+key, value)
+	}
+	return attrs
+}
+
+func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value interface{}) []attribute.KeyValue {
+	if value == nil {
+		return attrs
+	}
+	if nested, ok := value.(map[string]interface{}); ok {
+		for nestedKey, nestedValue := range nested {
+			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
+		}
+		return attrs
+	}
+	switch v := value.(type) {
+	case string:
+		return append(attrs, attribute.String(key, v))
+	case bool:
+		return append(attrs, attribute.Bool(key, v))
+	case int:
+		return append(attrs, attribute.Int(key, v))
+	case int64:
+		return append(attrs, attribute.Int64(key, v))
+	case float64:
+		if kv, ok := finiteFloat64Attr(key, v); ok {
+			return append(attrs, kv)
+		}
+		return attrs
+	case []string:
+		return append(attrs, attribute.StringSlice(key, v))
+	case []bool:
+		return append(attrs, attribute.BoolSlice(key, v))
+	case []int:
+		return append(attrs, attribute.IntSlice(key, v))
+	case []int64:
+		return append(attrs, attribute.Int64Slice(key, v))
+	case []float64:
+		if finite, ok := finiteFloat64Slice(v); ok {
+			return append(attrs, attribute.Float64Slice(key, finite))
+		}
+		return attrs
+	default:
+		if b, err := json.Marshal(v); err == nil {
+			return append(attrs, attribute.String(key, string(b)))
+		}
+		return attrs
+	}
 }
 
 // stepSpanKey is a private context key used to pass the OTel step span from
@@ -537,7 +746,7 @@ type stepSpanKey struct{}
 
 // OnStepStart creates a child OTel span for the step and embeds it in the
 // returned context via stepSpanKey, mirroring the TS SDK's onStepStart span.
-func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
+func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
 	rootSpan := trace.SpanFromContext(ctx)
 	if !rootSpan.IsRecording() {
 		return ctx
@@ -549,7 +758,7 @@ func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStep
 	}
 	spanName := fmt.Sprintf("%s step %d", opType, e.StepNumber)
 	ctx, stepSpan := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeStep,
 		OperationType:  opType,
 		RuntimeContext: e.RuntimeContext,
@@ -564,18 +773,22 @@ func (OTelTelemetryIntegration) OnStepStart(ctx context.Context, e TelemetryStep
 }
 
 // OnLanguageModelCallStart creates a child span for provider model inference.
-func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+// OnLanguageModelCallStart starts the "chat"/model-call span and returns it
+// embedded in the returned ctx, so the provider call this wraps (and any
+// HTTP client spans the provider itself creates) runs inside it as a child
+// span (594029e) instead of the span being immediately orphaned.
+func (i LegacyOpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
-		return
+		return ctx
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
 	spanName := "chat"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	ctx, span := tracer.Start(ctx, spanName)
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeLanguageModel,
 		OperationType: "ai.generateText",
 		CallID:        e.CallID,
@@ -590,10 +803,11 @@ func (OTelTelemetryIntegration) OnLanguageModelCallStart(ctx context.Context, e 
 	if e.CallID != "" {
 		otelModelCallSpans.Store(otelSpanKey("languageModel", e.CallID), otelSpanEntry{span: span})
 	}
+	return ctx
 }
 
 // OnLanguageModelCallEnd records model-call attributes and ends the inference span.
-func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e LanguageModelCallEndEvent) {
+func (i LegacyOpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e LanguageModelCallEndEvent) {
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID))
 	if !ok {
 		return
@@ -602,30 +816,36 @@ func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e Lang
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	entry.span.SetAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("ai.response.finishReason", e.FinishReason),
 		attribute.Int64("ai.response.responseTimeMs", e.Performance.ResponseTimeMs),
-		attribute.Float64("ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
-		attribute.Float64("ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond),
-	)
+	}
+	attrs = setFiniteFloat64(attrs, "ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)
+	attrs = setFiniteFloat64(attrs, "ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond)
+	entry.span.SetAttributes(attrs...)
 	if e.Performance.OutputTokensPerSecond != nil {
-		entry.span.SetAttributes(attribute.Float64("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond))
+		if kv, ok := finiteFloat64Attr("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond); ok {
+			entry.span.SetAttributes(kv)
+		}
 	}
 	if e.Performance.InputTokensPerSecond != nil {
-		entry.span.SetAttributes(attribute.Float64("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond))
+		if kv, ok := finiteFloat64Attr("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond); ok {
+			entry.span.SetAttributes(kv)
+		}
 	}
 	if e.Performance.TimeToFirstOutputMs != nil {
 		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputMs", *e.Performance.TimeToFirstOutputMs))
 	}
 	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		entry.span.SetAttributes(
+		durationAttrs := []attribute.KeyValue{
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.min", stats.Min),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p10", stats.P10),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.median", stats.Median),
-			attribute.Float64("ai.response.timeBetweenOutputChunksMs.avg", stats.Avg),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p90", stats.P90),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.max", stats.Max),
-		)
+		}
+		durationAttrs = setFiniteFloat64(durationAttrs, "ai.response.timeBetweenOutputChunksMs.avg", stats.Avg)
+		entry.span.SetAttributes(durationAttrs...)
 	}
 	if e.Usage.InputTokens != nil {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
@@ -637,7 +857,7 @@ func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e Lang
 }
 
 // OnEmbedStart creates a child span for embedding model inference.
-func (OTelTelemetryIntegration) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
+func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
 		return
@@ -649,7 +869,7 @@ func (OTelTelemetryIntegration) OnEmbedStart(ctx context.Context, e EmbeddingMod
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeEmbedding,
 		OperationType: e.OperationID,
 		CallID:        callID,
@@ -667,7 +887,7 @@ func (OTelTelemetryIntegration) OnEmbedStart(ctx context.Context, e EmbeddingMod
 }
 
 // OnEmbedEnd records embedding attributes and ends the embedding span.
-func (OTelTelemetryIntegration) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
+func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
 	if !ok {
@@ -685,7 +905,7 @@ func (OTelTelemetryIntegration) OnEmbedEnd(_ context.Context, e EmbeddingModelCa
 }
 
 // OnRerankStart creates a child span for reranking model inference.
-func (OTelTelemetryIntegration) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
+func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	parent := trace.SpanFromContext(ctx)
 	if !parent.IsRecording() {
 		return
@@ -697,7 +917,7 @@ func (OTelTelemetryIntegration) OnRerankStart(ctx context.Context, e RerankingMo
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeReranking,
 		OperationType: e.OperationID,
 		CallID:        callID,
@@ -715,7 +935,7 @@ func (OTelTelemetryIntegration) OnRerankStart(ctx context.Context, e RerankingMo
 }
 
 // OnRerankEnd records reranking attributes and ends the reranking span.
-func (OTelTelemetryIntegration) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
+func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", callID))
 	if !ok {
@@ -730,14 +950,14 @@ func (OTelTelemetryIntegration) OnRerankEnd(_ context.Context, e RerankingModelC
 }
 
 // OnToolExecutionStart starts a child span for tool execution and embeds it.
-func (OTelTelemetryIntegration) OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return ctx
 	}
 	tracer := span.TracerProvider().Tracer("go-ai")
 	ctx, child := tracer.Start(ctx, "ai.toolCall."+e.ToolName)
-	if attrs := customSpanAttributes(ctx, e.Settings, EnrichSpanOptions{
+	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
 		CallID:   e.ToolCallID,
 	}); len(attrs) > 0 {
@@ -747,11 +967,17 @@ func (OTelTelemetryIntegration) OnToolExecutionStart(ctx context.Context, e Tele
 		attribute.String("ai.toolCall.id", e.ToolCallID),
 		attribute.String("ai.toolCall.name", e.ToolName),
 	)
+	// Runtime context attrs on tool call spans (0651c5f): reuse the root
+	// span's already-flattened ai.settings.context.* attrs, since
+	// TelemetryToolCallStartEvent carries no RuntimeContext of its own.
+	if attrs, ok := ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue); ok {
+		child.SetAttributes(attrs...)
+	}
 	return ctx
 }
 
 // OnToolExecutionEnd ends the tool execution child span.
-func (OTelTelemetryIntegration) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
+func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
@@ -767,22 +993,22 @@ func (OTelTelemetryIntegration) OnToolExecutionEnd(ctx context.Context, e Teleme
 // OnToolCallStart is the previous Go name for OnToolExecutionStart.
 //
 // Deprecated: use OnToolExecutionStart.
-func (i OTelTelemetryIntegration) OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+func (i LegacyOpenTelemetry) OnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
 	return i.OnToolExecutionStart(ctx, e)
 }
 
 // OnToolCallFinish is the previous Go name for OnToolExecutionEnd.
 //
 // Deprecated: use OnToolExecutionEnd.
-func (i OTelTelemetryIntegration) OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
+func (i LegacyOpenTelemetry) OnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	i.OnToolExecutionEnd(ctx, e)
 }
 
-func (OTelTelemetryIntegration) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
+func (i LegacyOpenTelemetry) OnChunk(_ context.Context, _ TelemetryChunkEvent) {}
 
 // OnStepEnd records step-level OTel attributes on the child step span created
 // by OnStepStart and ends the span. Mirrors the TS SDK's onStepEnd behavior.
-func (OTelTelemetryIntegration) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
+func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
 	if !ok || !stepSpan.IsRecording() {
 		return
@@ -894,7 +1120,7 @@ func (OTelTelemetryIntegration) OnStepEnd(ctx context.Context, e TelemetryStepEn
 }
 
 // OnEnd sets output attributes on the root span and ends it.
-func (OTelTelemetryIntegration) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
@@ -974,25 +1200,24 @@ func (OTelTelemetryIntegration) OnEnd(ctx context.Context, e TelemetryFinishEven
 }
 
 // OnFinish is a deprecated compatibility alias for OnEnd.
-func (i OTelTelemetryIntegration) OnFinish(ctx context.Context, e TelemetryFinishEvent) {
+func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEvent) {
 	i.OnEnd(ctx, e)
 }
 
 // OnError records the error on the root span and ends it.
-func (OTelTelemetryIntegration) OnError(ctx context.Context, e TelemetryErrorEvent) {
+func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
 	}
 	if e.Error != nil {
-		span.RecordError(e.Error)
-		span.SetStatus(codes.Error, e.Error.Error())
+		RecordErrorOnSpan(span, e.Error)
 	}
 	span.End()
 }
 
 // OnAbort records the abort reason on the root span and ends it.
-func (OTelTelemetryIntegration) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	if e.CallID != "" {
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
@@ -1008,7 +1233,7 @@ func (OTelTelemetryIntegration) OnAbort(ctx context.Context, e TelemetryAbortEve
 }
 
 // ExecuteTool delegates directly to execute. Nested span support can be added here.
-func (OTelTelemetryIntegration) ExecuteTool(
+func (i LegacyOpenTelemetry) ExecuteTool(
 	ctx context.Context,
 	_ string,
 	args map[string]interface{},
@@ -1126,16 +1351,22 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 }
 
 // FireOnLanguageModelCallStart publishes and fans out a model-call start event.
-func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) {
+// FireOnLanguageModelCallStart calls OnLanguageModelCallStart on every
+// registered integration that implements it, threading ctx through each call
+// so an integration (e.g. the OTel one) can embed a model-call span in the
+// returned ctx. The caller should use the returned ctx for the actual
+// provider call (594029e), so provider HTTP spans become children of it.
+func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
-		return
+		return ctx
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallStartHandler); ok {
-			handler.OnLanguageModelCallStart(ctx, e)
+			ctx = handler.OnLanguageModelCallStart(ctx, e)
 		}
 	}
+	return ctx
 }
 
 // FireOnLanguageModelCallEnd publishes and fans out a model-call end event.

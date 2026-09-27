@@ -5,8 +5,6 @@ package telemetry
 
 import (
 	"context"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 // SpanType identifies the OTel span being created for custom enrichment.
@@ -53,9 +51,6 @@ type Options struct {
 
 	// FunctionID is an identifier for grouping telemetry data by function or operation.
 	FunctionID string
-
-	// Tracer is a custom OpenTelemetry tracer. If nil, the global tracer will be used.
-	Tracer trace.Tracer
 
 	// EnrichSpan adds custom attributes to OTel spans as they are created.
 	// SDK-managed attributes override custom attributes on key collisions.
@@ -126,9 +121,8 @@ func (s *Settings) WithFunctionID(id string) *Settings {
 	return &copy
 }
 
-// WithTracer returns a copy of Settings with Tracer set to the given value.
-func (s *Settings) WithTracer(tracer trace.Tracer) *Settings {
-	copy := *s
-	copy.Tracer = tracer
-	return &copy
-}
+// WithTracer no longer exists: Options.Tracer was removed (9b47dea) because a
+// single process-wide field could not express "each registered integration
+// gets its own tracer." Configure a tracer on the integration itself instead:
+// telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: t})
+// or telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: t}).

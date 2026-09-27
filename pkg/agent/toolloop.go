@@ -276,7 +276,8 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
 		StopWhen:                       callConfig.StopWhen,
-		Timeout:                        config.Timeout,
+		Timeout:                        callConfig.Timeout,
+		MaxRetries:                     callConfig.MaxRetries,
 		Reasoning:                      callConfig.Reasoning,
 		SendReasoning:                  callConfig.SendReasoning,
 		ProviderOptions:                callConfig.ProviderOptions,
@@ -386,7 +387,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
 		StopWhen:                       callConfig.StopWhen,
-		Timeout:                        config.Timeout,
+		Timeout:                        callConfig.Timeout,
+		MaxRetries:                     callConfig.MaxRetries,
 		Reasoning:                      callConfig.Reasoning,
 		SendReasoning:                  callConfig.SendReasoning,
 		ProviderOptions:                callConfig.ProviderOptions,
@@ -860,6 +862,8 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		AccumulatedUsage:               accumulatedUsage,
 		CustomData:                     customData,
 		CallOptions:                    a.config.CallOptions,
+		MaxRetries:                     a.config.MaxRetries,
+		Timeout:                        a.config.Timeout,
 	}
 
 	if a.config.PrepareCall != nil {
@@ -1311,8 +1315,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		ResponseFormat:        responseFormat,
 	}
 
-	// Call the model with step context
-	genResult, err := stepModel.DoGenerate(stepCtx, genOpts)
+	// Call the model with step context, retrying transient Gateway failures
+	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
+	genResult, err := doGenerateWithGatewayRetry(stepCtx, stepModel, genOpts, callConfig.MaxRetries)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}

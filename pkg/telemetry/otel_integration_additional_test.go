@@ -21,12 +21,11 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled:     Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
-		Tracer:        tracer,
 		FunctionID:    "fn-id",
 	}
 
@@ -123,10 +122,9 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := OTelTelemetryIntegration{}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled: Bool(true),
-		Tracer:    tracer,
 		EnrichSpan: func(_ context.Context, opts EnrichSpanOptions) map[string]interface{} {
 			return map[string]interface{}{
 				"custom.span_type":       string(opts.SpanType),
@@ -253,8 +251,8 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-parentage-test")
 
-	integration := OTelTelemetryIntegration{}
-	settings := &Settings{IsEnabled: Bool(true), Tracer: tracer, FunctionID: "outer"}
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), FunctionID: "outer"}
 
 	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
@@ -271,7 +269,7 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 		ToolName:   "lookup",
 	})
 
-	innerSettings := &Settings{IsEnabled: Bool(true), Tracer: tracer, FunctionID: "inner"}
+	innerSettings := &Settings{IsEnabled: Bool(true), FunctionID: "inner"}
 	innerCtx := integration.OnStart(toolCtx, TelemetryStartEvent{
 		OperationType: "ai.generateText",
 		Settings:      innerSettings,
@@ -308,14 +306,33 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 }
 
 func TestGetTracerPaths(t *testing.T) {
-	custom := trace.NewNoopTracerProvider().Tracer("custom")
 	if GetTracer(&Settings{IsEnabled: Bool(false)}) == nil {
 		t.Fatal("GetTracer(disabled) should return a tracer")
 	}
-	if got := GetTracer(&Settings{Tracer: custom}); got == nil {
-		t.Fatal("GetTracer(custom) should return custom tracer")
+	if GetTracer(&Settings{IsEnabled: Bool(true)}) == nil {
+		t.Fatal("GetTracer(enabled) should return the global tracer")
 	}
 	if GetTracer(nil) == nil {
 		t.Fatal("GetTracer(nil) should return global tracer")
+	}
+}
+
+// TestLegacyOpenTelemetryConstructorTracer covers 9b47dea: a
+// NewLegacyOpenTelemetry-constructed integration uses its own tracer even
+// though Settings no longer carries one.
+func TestLegacyOpenTelemetryConstructorTracer(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("ctor-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      &Settings{IsEnabled: Bool(true)},
+	})
+	trace.SpanFromContext(ctx).End()
+	if len(rec.Ended()) != 1 {
+		t.Fatalf("expected the constructor's tracer to record 1 span, got %d", len(rec.Ended()))
 	}
 }

@@ -344,6 +344,12 @@ type AgentConfig struct {
 	// Supports total timeout, per-step timeout, and per-chunk timeout
 	Timeout *ai.TimeoutConfig
 
+	// MaxRetries controls transient provider call retries, forwarded to
+	// ai.GenerateTextOptions.MaxRetries / ai.StreamTextOptions.MaxRetries.
+	// nil uses the default retry count (2), matching TS WorkflowAgent's
+	// `mergedGenerationSettings.maxRetries ?? 2`.
+	MaxRetries *int
+
 	// ========================================================================
 	// Dynamic Configuration (v6.0.41 - NEW)
 	// ========================================================================
@@ -701,6 +707,13 @@ type PrepareCallConfig struct {
 
 	// CustomData allows passing custom data between PrepareCall invocations
 	CustomData interface{}
+
+	// MaxRetries controls transient provider call retries for this call.
+	MaxRetries *int
+
+	// Timeout provides granular timeout controls for this call, the Go
+	// stand-in for TS's per-call abortSignal.
+	Timeout *ai.TimeoutConfig
 }
 
 // DefaultAgentConfig returns a config with sensible defaults

@@ -11,8 +11,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
-func TestWorkflowChatTransportSSEAndResume(t *testing.T) {
-	tr := &WorkflowChatTransport{}
+func TestWorkflowRunMultiplexerSSEAndResume(t *testing.T) {
+	tr := &WorkflowRunMultiplexer{}
 	srv := httptest.NewServer(tr)
 	defer srv.Close()
 
@@ -42,8 +42,8 @@ func TestWorkflowChatTransportSSEAndResume(t *testing.T) {
 	}
 }
 
-func TestWorkflowChatTransportResumeNotFound(t *testing.T) {
-	tr := &WorkflowChatTransport{}
+func TestWorkflowRunMultiplexerResumeNotFound(t *testing.T) {
+	tr := &WorkflowRunMultiplexer{}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/resume", nil)
 	tr.Resume("missing").ServeHTTP(rr, req)
@@ -52,8 +52,8 @@ func TestWorkflowChatTransportResumeNotFound(t *testing.T) {
 	}
 }
 
-func TestWorkflowChatTransportResumeStartIndex(t *testing.T) {
-	tr := &WorkflowChatTransport{}
+func TestWorkflowRunMultiplexerResumeStartIndex(t *testing.T) {
+	tr := &WorkflowRunMultiplexer{}
 	runID := "run-start-index"
 	tr.appendEvent(runID, "start", `{"n":1}`)
 	tr.appendEvent(runID, "progress", `{"n":2}`)
@@ -72,8 +72,8 @@ func TestWorkflowChatTransportResumeStartIndex(t *testing.T) {
 	}
 }
 
-func TestWorkflowChatTransportResumeNegativeStartIndex(t *testing.T) {
-	tr := &WorkflowChatTransport{}
+func TestWorkflowRunMultiplexerResumeNegativeStartIndex(t *testing.T) {
+	tr := &WorkflowRunMultiplexer{}
 	runID := "run-tail"
 	tr.appendEvent(runID, "e1", `1`)
 	tr.appendEvent(runID, "e2", `2`)
@@ -92,7 +92,7 @@ func TestWorkflowChatTransportResumeNegativeStartIndex(t *testing.T) {
 	}
 }
 
-func TestWorkflowChatTransportClientSendAndReconnect(t *testing.T) {
+func TestWorkflowRunMultiplexerClientSendAndReconnect(t *testing.T) {
 	var seenPost bool
 	var seenReconnect bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +126,7 @@ func TestWorkflowChatTransportClientSendAndReconnect(t *testing.T) {
 	var endHook bool
 	var prepareSend bool
 	var prepareReconnect bool
-	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{
+	tr := NewWorkflowRunMultiplexer(WorkflowRunMultiplexerOptions{
 		API: srv.URL,
 		OnChatSendMessage: func(resp *http.Response, opts SendMessagesOptions) error {
 			sendHook = resp.Header.Get("X-Workflow-Run-ID") == "run-client" && opts.ChatID == "chat-1"

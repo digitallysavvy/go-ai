@@ -27,24 +27,21 @@ type runState struct {
 	watchers map[chan runEvent]struct{}
 }
 
-// WorkflowChatTransport serves run-scoped SSE and resume handlers.
+// WorkflowRunMultiplexer serves run-scoped SSE and resume handlers, plus a
+// client-side helper pair (SendMessages/ReconnectToStream) that returns raw
+// []*streaming.SSEEvent rather than a <-chan pkg/ai.UIMessageChunk.
 //
-// Parity note (WORKFLOW-TRANSPORT, tracked separately from this file's
-// current scope): in TS, `packages/workflow/src/workflow-chat-transport.ts`
-// exports a client-side WorkflowChatTransport that `implements
-// ChatTransport<UIMessage>` (packages/ai/src/ui/chat-transport.ts) — it
-// parses the server's response into a UIMessageChunk stream, drops orphan
-// chunks on a mid-part resume, and is handed directly to `useChat`/
-// `runAgentTUI` as a `transport`. This Go type is a different, earlier-stage
-// design: a server-side SSE run multiplexer (ServeHTTP/Resume) with its own
-// SendMessages/ReconnectToStream methods that return raw
-// []*streaming.SSEEvent rather than a <-chan pkg/ai.UIMessageChunk, so it
-// does not (and currently cannot) satisfy pkg/ai.ChatTransport. Closing that
-// gap — porting the TS client transport's UIMessageChunk parsing and orphan
-// filter — is WORKFLOW-TRANSPORT's job; until then, do not add a second,
-// competing ChatTransport-shaped interface here. See pkg/ai/chat_transport.go
-// for the one canonical interface.
-type WorkflowChatTransport struct {
+// This is a Go-only, earlier-stage design that predates WORKFLOW-TRANSPORT's
+// port of TS's `packages/workflow/src/workflow-chat-transport.ts` (a
+// client-side type that `implements ChatTransport<UIMessage>`,
+// packages/ai/src/ui/chat-transport.ts). TS has no equivalent of this
+// server-side multiplexer, so it is kept under this distinct name rather than
+// satisfying pkg/ai.ChatTransport itself. The canonical, TS-parity
+// ChatTransport implementation is the separate WorkflowChatTransport type in
+// workflow_chat_transport_client.go — use that one for `runAgentTUI`/`useChat`
+// style integrations. See pkg/ai/chat_transport.go for the one canonical
+// interface.
+type WorkflowRunMultiplexer struct {
 	Runs sync.Map // map[string]*runState
 
 	API                             string
@@ -57,8 +54,8 @@ type WorkflowChatTransport struct {
 	PrepareReconnectToStreamRequest func(ReconnectToStreamOptions) (PreparedChatRequest, error)
 }
 
-// WorkflowChatTransportOptions configures both server and client transport use.
-type WorkflowChatTransportOptions struct {
+// WorkflowRunMultiplexerOptions configures both server and client transport use.
+type WorkflowRunMultiplexerOptions struct {
 	API                             string
 	HTTPClient                      *http.Client
 	MaxConsecutiveErrors            int
@@ -95,16 +92,16 @@ type ChatEndEvent struct {
 	Events     []*streaming.SSEEvent
 }
 
-// PreparedChatRequest customizes a WorkflowChatTransport client request.
+// PreparedChatRequest customizes a WorkflowRunMultiplexer client request.
 type PreparedChatRequest struct {
 	API     string
 	Body    map[string]interface{}
 	Headers map[string]string
 }
 
-// NewWorkflowChatTransport creates a transport with optional client settings.
-func NewWorkflowChatTransport(opts ...WorkflowChatTransportOptions) *WorkflowChatTransport {
-	t := &WorkflowChatTransport{}
+// NewWorkflowRunMultiplexer creates a transport with optional client settings.
+func NewWorkflowRunMultiplexer(opts ...WorkflowRunMultiplexerOptions) *WorkflowRunMultiplexer {
+	t := &WorkflowRunMultiplexer{}
 	if len(opts) > 0 {
 		o := opts[0]
 		t.API = o.API
@@ -122,7 +119,7 @@ func NewWorkflowChatTransport(opts ...WorkflowChatTransportOptions) *WorkflowCha
 	return t
 }
 
-func (t *WorkflowChatTransport) getOrCreate(runID string) *runState {
+func (t *WorkflowRunMultiplexer) getOrCreate(runID string) *runState {
 	if v, ok := t.Runs.Load(runID); ok {
 		return v.(*runState)
 	}
@@ -131,7 +128,7 @@ func (t *WorkflowChatTransport) getOrCreate(runID string) *runState {
 	return actual.(*runState)
 }
 
-func (t *WorkflowChatTransport) appendEvent(runID, event, data string) {
+func (t *WorkflowRunMultiplexer) appendEvent(runID, event, data string) {
 	rs := t.getOrCreate(runID)
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -145,7 +142,7 @@ func (t *WorkflowChatTransport) appendEvent(runID, event, data string) {
 	}
 }
 
-func (t *WorkflowChatTransport) finish(runID string) {
+func (t *WorkflowRunMultiplexer) finish(runID string) {
 	rs := t.getOrCreate(runID)
 	rs.mu.Lock()
 	rs.done = true
@@ -156,14 +153,14 @@ func (t *WorkflowChatTransport) finish(runID string) {
 	rs.mu.Unlock()
 }
 
-func (t *WorkflowChatTransport) client() *http.Client {
+func (t *WorkflowRunMultiplexer) client() *http.Client {
 	if t != nil && t.HTTPClient != nil {
 		return t.HTTPClient
 	}
 	return http.DefaultClient
 }
 
-func (t *WorkflowChatTransport) endpoint() string {
+func (t *WorkflowRunMultiplexer) endpoint() string {
 	if t != nil && t.API != "" {
 		return t.API
 	}
@@ -185,7 +182,7 @@ func mergeHeaders(base, extra map[string]string) map[string]string {
 }
 
 // SendMessages POSTs chat messages to the configured API and returns parsed SSE events.
-func (t *WorkflowChatTransport) SendMessages(ctx context.Context, opts SendMessagesOptions) ([]*streaming.SSEEvent, error) {
+func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMessagesOptions) ([]*streaming.SSEEvent, error) {
 	body := map[string]interface{}{}
 	for k, v := range opts.Body {
 		body[k] = v
@@ -292,7 +289,7 @@ func containsFinishEvent(events []*streaming.SSEEvent) bool {
 }
 
 // ReconnectToStream GETs the configured API to resume a run-scoped SSE stream.
-func (t *WorkflowChatTransport) ReconnectToStream(ctx context.Context, opts ReconnectToStreamOptions) ([]*streaming.SSEEvent, error) {
+func (t *WorkflowRunMultiplexer) ReconnectToStream(ctx context.Context, opts ReconnectToStreamOptions) ([]*streaming.SSEEvent, error) {
 	if opts.RunID == "" {
 		return nil, fmt.Errorf("workflow chat transport: run id is required")
 	}
@@ -349,7 +346,7 @@ func (t *WorkflowChatTransport) ReconnectToStream(ctx context.Context, opts Reco
 }
 
 // Resume attaches an SSE reader to an in-progress run.
-func (t *WorkflowChatTransport) Resume(runID string) http.Handler {
+func (t *WorkflowRunMultiplexer) Resume(runID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v, ok := t.Runs.Load(runID)
 		if !ok {
@@ -360,7 +357,7 @@ func (t *WorkflowChatTransport) Resume(runID string) http.Handler {
 	})
 }
 
-func (t *WorkflowChatTransport) serveRun(w http.ResponseWriter, r *http.Request, runID string, rs *runState) {
+func (t *WorkflowRunMultiplexer) serveRun(w http.ResponseWriter, r *http.Request, runID string, rs *runState) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -435,7 +432,7 @@ func parseStartIndex(r *http.Request, total int) int {
 }
 
 // ServeHTTP starts a new run stream and emits simple lifecycle events.
-func (t *WorkflowChatTransport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (t *WorkflowRunMultiplexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		runID := r.URL.Query().Get("runId")
 		if runID != "" {

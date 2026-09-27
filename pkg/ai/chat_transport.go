@@ -17,14 +17,13 @@ import (
 // option (packages/tui/src/run-agent-tui.ts, agent-tui-runner.ts).
 //
 // This is the cross-package core concept referenced by pkg/tui's
-// RunAgentTUIOptions.Transport. pkg/langchain.LangSmithDeploymentTransport
-// implements this interface verbatim, matching its TS counterpart.
-// pkg/workflow.WorkflowChatTransport does not yet: it is a separate
-// server-side SSE run multiplexer (ServeHTTP/Resume) that predates the
-// TS-parity port of packages/workflow's client-side WorkflowChatTransport
-// (WORKFLOW-TRANSPORT), and closing that gap belongs to that PRD item, not
-// here — do not add a second ChatTransport-shaped interface in pkg/workflow
-// to paper over the difference in the meantime.
+// RunAgentTUIOptions.Transport. pkg/langchain.LangSmithDeploymentTransport and
+// pkg/workflow.WorkflowChatTransport both implement this interface verbatim,
+// matching their TS counterparts. pkg/workflow also keeps a separate,
+// Go-only WorkflowRunMultiplexer type (server-side SSE run multiplexer,
+// ServeHTTP/Resume) that predates the TS-parity WorkflowChatTransport port
+// and has no TS equivalent, so it intentionally does not implement this
+// interface.
 type ChatTransport interface {
 	// SendMessages submits the current message history and returns a
 	// channel of UI message chunks describing the response, plus an error

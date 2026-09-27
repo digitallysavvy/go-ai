@@ -492,9 +492,12 @@ type StreamTextResult struct {
 	cbRuntimeCtx          interface{}
 	cbSensitiveRuntimeCtx bool
 	cbToolsCtx            map[string]interface{}
-	cbInclude             IncludeOptions
-	cbSteps               []types.StepResult
-	cbResponseMessages    []types.Message
+	// cbToolChoice carries the current step's effective tool choice across
+	// into processStream, for TelemetryStepStartEvent.ToolChoice (152c67c).
+	cbToolChoice       types.ToolChoice
+	cbInclude          IncludeOptions
+	cbSteps            []types.StepResult
+	cbResponseMessages []types.Message
 	// initialResponseMessages holds the tool message produced by resuming
 	// tool approvals from the input messages (prepended to ResponseMessages).
 	initialResponseMessages []types.Message
@@ -630,9 +633,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// from processStream or ReadAll once the stream completes.
 	telPrompt := ""
 	telSystem := ""
+	var telMessages []types.Message
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
 		telPrompt = opts.Prompt
 		telSystem = system
+		telMessages = opts.Messages
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		OperationType:  "ai.streamText",
@@ -641,6 +646,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Settings:       telemetrySettings,
 		Prompt:         telPrompt,
 		System:         telSystem,
+		Messages:       telMessages,
+		Headers:        opts.Headers,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	})
@@ -957,17 +964,31 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Seed:                genOpts.Seed,
 		Reasoning:           genOpts.Reasoning,
 	}, onLanguageModelCallStart)
-	telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:      telemetrySettings,
-		CallID:        callID,
-		ModelProvider: stepModel.Provider(),
-		ModelID:       stepModel.ModelID(),
-		Prompt:        genOpts.Prompt,
-		Tools:         genOpts.Tools,
+	// Scoped to just this call (594029e): the model call runs inside the
+	// returned ctx, which embeds the telemetry integration's "chat" span when
+	// one is registered, so the provider's own DoStream/HTTP spans become its
+	// children. stepCtx itself is unchanged for subsequent chunk processing
+	// and tool execution, which are parented under the step span instead.
+	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
+		Settings:         telemetrySettings,
+		CallID:           callID,
+		ModelProvider:    stepModel.Provider(),
+		ModelID:          stepModel.ModelID(),
+		Prompt:           genOpts.Prompt,
+		Tools:            genOpts.Tools,
+		System:           stepSystem,
+		Temperature:      genOpts.Temperature,
+		MaxOutputTokens:  genOpts.MaxTokens,
+		TopP:             genOpts.TopP,
+		TopK:             genOpts.TopK,
+		PresencePenalty:  genOpts.PresencePenalty,
+		FrequencyPenalty: genOpts.FrequencyPenalty,
+		StopSequences:    genOpts.StopSequences,
+		Seed:             genOpts.Seed,
 	})
 
 	// Start streaming
-	stream, err := doStreamWithGatewayRetry(stepCtx, stepModel, genOpts, opts.MaxRetries)
+	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -1022,6 +1043,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbRuntimeCtx = runtimeContext
 	r.cbSensitiveRuntimeCtx = opts.SensitiveRuntimeContext
 	r.cbToolsCtx = toolsContext
+	r.cbToolChoice = stepToolChoice
 	r.cbInclude = include
 	r.cbMessages = stepMessages
 	r.cbTools = stepTools
@@ -1205,6 +1227,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StepNumber:     stepIndex,
 			ModelProvider:  stepProvider,
 			ModelID:        stepModelID,
+			ToolChoice:     r.cbToolChoice,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
@@ -1435,14 +1458,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Performance:      languageModelCallPerformance(performance),
 					}, onLanguageModelCallEnd)
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
-						Settings:      r.telemetrySettings,
-						CallID:        r.cbCallID,
-						ModelProvider: stepProvider,
-						ModelID:       stepModelID,
-						FinishReason:  string(chunk.FinishReason),
-						Usage:         telemetryUsageFromUsage(stepUsage),
-						ResponseID:    responseID,
-						Performance:   languageModelCallPerformance(performance),
+						Settings:         r.telemetrySettings,
+						CallID:           r.cbCallID,
+						ModelProvider:    stepProvider,
+						ModelID:          stepModelID,
+						FinishReason:     string(chunk.FinishReason),
+						Usage:            telemetryUsageFromUsage(stepUsage),
+						Content:          append([]types.ContentPart(nil), stepContent...),
+						ResponseID:       responseID,
+						ProviderMetadata: decodeProviderMetadataMap(chunk.ProviderMetadata),
+						Performance:      languageModelCallPerformance(performance),
 					})
 				}
 			}
@@ -2001,6 +2026,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbModelID = nextModel.ModelID()
 		r.cbSystem = nextSystem
 		r.cbInstructionMessages = nextInstructionMessages
+		r.cbToolChoice = nextToolChoice
 		currentTools = append([]types.Tool(nil), nextTools...)
 		opts.ExperimentalSandbox = nextSandbox
 		nextStepCtx := ctx
@@ -2081,15 +2107,26 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Seed:                nextGenOpts.Seed,
 			Reasoning:           nextGenOpts.Reasoning,
 		}, onLanguageModelCallStart)
-		telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:      r.telemetrySettings,
-			CallID:        r.cbCallID,
-			ModelProvider: nextModel.Provider(),
-			ModelID:       nextModel.ModelID(),
-			Prompt:        nextGenOpts.Prompt,
-			Tools:         nextGenOpts.Tools,
+		// Scoped to just this call (594029e): see the analogous comment where
+		// the first step's stream is started, above.
+		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
+			Settings:         r.telemetrySettings,
+			CallID:           r.cbCallID,
+			ModelProvider:    nextModel.Provider(),
+			ModelID:          nextModel.ModelID(),
+			Prompt:           nextGenOpts.Prompt,
+			Tools:            nextGenOpts.Tools,
+			System:           nextSystem,
+			Temperature:      nextGenOpts.Temperature,
+			MaxOutputTokens:  nextGenOpts.MaxTokens,
+			TopP:             nextGenOpts.TopP,
+			TopK:             nextGenOpts.TopK,
+			PresencePenalty:  nextGenOpts.PresencePenalty,
+			FrequencyPenalty: nextGenOpts.FrequencyPenalty,
+			StopSequences:    nextGenOpts.StopSequences,
+			Seed:             nextGenOpts.Seed,
 		})
-		newStream, err := nextModel.DoStream(nextStepCtx, nextGenOpts)
+		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
 		if err != nil {
 			nextStepCancel()
 			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
