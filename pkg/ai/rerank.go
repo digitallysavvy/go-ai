@@ -483,6 +483,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		OperationType: "ai.rerank",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),
 		ModelProvider: opts.Model.Provider(),

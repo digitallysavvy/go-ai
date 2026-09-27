@@ -1473,6 +1473,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// runs, for the approval inputSchemaInput diff.
 		var preRefinementCalls []types.ToolCall
 		// Fire step-start telemetry. OTel implementations create a child step span.
+		// PromptMessages reuses r.stepReopenGenOpts, the exact GenerateOptions
+		// this step's provider call was dispatched with (set either during
+		// bootstrap for step 1, or at the tail of the previous iteration for
+		// step N>1 — see the two doStream/DoStream call sites above/below).
+		var stepPromptMessages []types.Message
+		if r.stepReopenGenOpts != nil {
+			stepPromptMessages = r.stepReopenGenOpts.Prompt.Messages
+		}
 		telemetryStepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
@@ -1480,6 +1488,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ModelProvider:  stepProvider,
 			ModelID:        stepModelID,
 			ToolChoice:     r.cbToolChoice,
+			PromptMessages: stepPromptMessages,
+			StepTools:      stepTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
@@ -2301,12 +2311,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepEnd(telemetryStepCtx, telemetry.TelemetryStepEndEvent{
+				OperationType:  "ai.streamText",
 				StepNumber:     stepIndex,
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
 				Text:           stepText,
+				Reasoning:      stepResult.ReasoningText,
 				ToolCalls:      stepToolCalls,
 				Files:          stepFiles,
+				Performance:    languageModelCallPerformance(performance),
 				Settings:       r.telemetrySettings,
 				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
@@ -2755,17 +2768,30 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	r.mu.Lock()
 	streamFiles := r.files
 	streamWarnings := r.warnings
+	streamToolCalls := r.toolCalls
+	var streamReasoningText string
+	if len(allSteps) > 0 {
+		streamReasoningText = allSteps[len(allSteps)-1].ReasoningText
+	}
+	var streamProviderMeta map[string]interface{}
+	if len(r.providerMetadata) > 0 {
+		_ = json.Unmarshal(r.providerMetadata, &streamProviderMeta)
+	}
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
-		FinishReason:   string(r.finishReason),
-		Usage:          streamTelUsage,
-		ModelProvider:  r.cbModelProvider,
-		ModelID:        r.cbModelID,
-		Text:           r.text,
-		Files:          streamFiles,
-		Settings:       r.telemetrySettings,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+		OperationType:    "ai.streamText",
+		FinishReason:     string(r.finishReason),
+		Usage:            streamTelUsage,
+		ModelProvider:    r.cbModelProvider,
+		ModelID:          r.cbModelID,
+		Text:             r.text,
+		Reasoning:        streamReasoningText,
+		ToolCalls:        streamToolCalls,
+		Files:            streamFiles,
+		ProviderMetadata: streamProviderMeta,
+		Settings:         r.telemetrySettings,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+		ToolsContext:     telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 
 	// Mark stream as done before firing callbacks so callers that check
@@ -3723,17 +3749,25 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 	r.mu.Lock()
 	readAllFiles := r.files
+	var readAllProviderMeta map[string]interface{}
+	if len(r.providerMetadata) > 0 {
+		_ = json.Unmarshal(r.providerMetadata, &readAllProviderMeta)
+	}
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
-		FinishReason:   string(r.finishReason),
-		Usage:          readAllTelUsage,
-		ModelProvider:  r.cbModelProvider,
-		ModelID:        r.cbModelID,
-		Text:           r.text,
-		Files:          readAllFiles,
-		Settings:       r.telemetrySettings,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-		ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+		OperationType:    "ai.streamText",
+		FinishReason:     string(r.finishReason),
+		Usage:            readAllTelUsage,
+		ModelProvider:    r.cbModelProvider,
+		ModelID:          r.cbModelID,
+		Text:             r.text,
+		Reasoning:        step.ReasoningText,
+		ToolCalls:        step.ToolCalls,
+		Files:            readAllFiles,
+		ProviderMetadata: readAllProviderMeta,
+		Settings:         r.telemetrySettings,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+		ToolsContext:     telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 	})
 
 	// Mark stream as done.

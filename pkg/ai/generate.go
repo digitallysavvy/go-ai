@@ -1200,6 +1200,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ModelProvider:  stepModel.Provider(),
 			ModelID:        stepModel.ModelID(),
 			ToolChoice:     stepToolChoice,
+			PromptMessages: genOpts.Prompt.Messages,
+			StepTools:      stepTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
@@ -1650,6 +1652,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 			}
 			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
+				OperationType:    "ai.generateText",
 				StepNumber:       stepIndex,
 				FinishReason:     string(genResult.FinishReason),
 				Usage:            stepTelUsage,
@@ -1658,6 +1661,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ToolCalls:        genResult.ToolCalls,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
+				Performance:      languageModelCallPerformance(performance),
 				Settings:         telemetrySettings,
 				RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
@@ -1745,15 +1749,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
-		FinishReason:   string(result.FinishReason),
-		Usage:          telUsage,
-		ModelProvider:  opts.Model.Provider(),
-		ModelID:        opts.Model.ModelID(),
-		Text:           result.Text,
-		Files:          result.Files,
-		Settings:       telemetrySettings,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		OperationType:    "ai.generateText",
+		FinishReason:     string(result.FinishReason),
+		Usage:            telUsage,
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Text:             result.Text,
+		Reasoning:        result.ReasoningText,
+		ToolCalls:        result.ToolCalls,
+		Files:            result.Files,
+		ProviderMetadata: result.ProviderMetadata,
+		Settings:         telemetrySettings,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
 	// Call end callback (v6.0: with user context)
