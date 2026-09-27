@@ -720,9 +720,50 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 			content = out.reason
 		}
 	} else {
-		content = out.value
+		content = serializeFunctionResponseContent(out.value)
 	}
 	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(p.ToolName, p.ToolCallID, content)})
+}
+
+// containsJSONSchemaReference reports whether value (a decoded JSON value:
+// map[string]interface{}, []interface{}, or a scalar) contains a "$ref" key
+// anywhere, recursively. Ports TS convert-to-google-messages.ts
+// containsJSONSchemaReference.
+func containsJSONSchemaReference(value interface{}) bool {
+	switch v := value.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if containsJSONSchemaReference(item) {
+				return true
+			}
+		}
+		return false
+	case map[string]interface{}:
+		for key, nested := range v {
+			if key == "$ref" || containsJSONSchemaReference(nested) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// serializeFunctionResponseContent ports TS convert-to-google-messages.ts
+// serializeFunctionResponseContent: Google reserves {$ref: displayName} in
+// structured function responses for multimodal parts, which conflicts with
+// JSON Schema $ref, so a value containing "$ref" anywhere is JSON-stringified
+// to preserve it as-is without triggering Google's reference handling.
+func serializeFunctionResponseContent(value interface{}) interface{} {
+	if !containsJSONSchemaReference(value) {
+		return value
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	return string(encoded)
 }
 
 func (c *googleConverter) functionResponse(toolName, toolCallID string, content interface{}) map[string]interface{} {
