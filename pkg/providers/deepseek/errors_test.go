@@ -18,7 +18,7 @@ import (
 func TestDeepSeekStreamErrorInsufficientQuotaForcedNonRetryable(t *testing.T) {
 	// TS special-case: insufficient_quota is (429, isRetryable:false), even
 	// though 429 would normally be retryable via isRetryableStatusCode.
-	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"quota exceeded","type":"insufficient_quota"}`))
+	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"quota exceeded","type":"insufficient_quota"}`), nil)
 	if se.StatusCode == nil || *se.StatusCode != 429 {
 		t.Errorf("StatusCode = %v, want 429", se.StatusCode)
 	}
@@ -30,7 +30,7 @@ func TestDeepSeekStreamErrorInsufficientQuotaForcedNonRetryable(t *testing.T) {
 func TestDeepSeekStreamErrorExplicitHTTPStatusCodeWins(t *testing.T) {
 	// TS: an explicit HTTP-status-shaped code takes precedence over the
 	// discriminator table.
-	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"custom","type":"rate_limit_exceeded","code":"503"}`))
+	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"custom","type":"rate_limit_exceeded","code":"503"}`), nil)
 	if se.StatusCode == nil || *se.StatusCode != 503 {
 		t.Errorf("StatusCode = %v, want explicit 503 (not the rate_limit_exceeded discriminator's 429)", se.StatusCode)
 	}
@@ -40,7 +40,7 @@ func TestDeepSeekStreamErrorExplicitHTTPStatusCodeWins(t *testing.T) {
 }
 
 func TestDeepSeekStreamErrorDiscriminatorTable(t *testing.T) {
-	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"model not found","type":"model_not_found"}`))
+	se := newDeepSeekStreamProviderErrorChunk([]byte(`{"message":"model not found","type":"model_not_found"}`), nil)
 	if se.StatusCode == nil || *se.StatusCode != 404 {
 		t.Errorf("StatusCode = %v, want 404", se.StatusCode)
 	}
@@ -76,5 +76,14 @@ data: [DONE]
 	}
 	if !streamErr.IsRetryable {
 		t.Error("IsRetryable = false, want true for rate_limit_exceeded")
+	}
+	// TS createDeepSeekStreamError(value.error, value) sets `data` to the
+	// whole chunk value (with the `error` wrapper key), not just value.error.
+	dataMap, ok := streamErr.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("streamErr.Data type = %T, want map[string]interface{}", streamErr.Data)
+	}
+	if _, ok := dataMap["error"]; !ok {
+		t.Fatalf("streamErr.Data = %#v, want the whole chunk (with an \"error\" key)", dataMap)
 	}
 }

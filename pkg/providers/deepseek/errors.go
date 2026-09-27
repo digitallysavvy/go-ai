@@ -83,8 +83,12 @@ func deepseekStreamErrorMetadata(code, errType string) (statusCode int, isRetrya
 // newDeepSeekStreamProviderErrorChunk builds a
 // *providererrors.StreamProviderError from a mid-stream `error` frame's raw
 // {"message","type","code"} payload, mirroring TS
-// createDeepSeekStreamError(value.error, value).
-func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage) *providererrors.StreamProviderError {
+// createDeepSeekStreamError(value.error, value). fullFrame is the whole SSE
+// chunk (e.g. `{"error":{"message","type","code"}}`), used verbatim for
+// `data` to match TS's `data: value` (the full chunk, not just
+// `value.error`); it may be nil/empty, in which case raw is used as a
+// fallback.
+func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMessage) *providererrors.StreamProviderError {
 	var payload struct {
 		Message string          `json:"message"`
 		Type    string          `json:"type"`
@@ -106,8 +110,12 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage) *providererrors.St
 		}
 	}
 	statusCode, isRetryable, matched := deepseekStreamErrorMetadata(codeStr, payload.Type)
+	dataSrc := fullFrame
+	if len(dataSrc) == 0 {
+		dataSrc = raw
+	}
 	var data interface{}
-	_ = json.Unmarshal(raw, &data)
+	_ = json.Unmarshal(dataSrc, &data)
 	var statusPtr *int
 	var retryablePtr *bool
 	if matched {

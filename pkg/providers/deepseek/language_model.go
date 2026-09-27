@@ -768,7 +768,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			// createDeepSeekStreamError) so streamRetries/IsRetryable see the
 			// real type/code/statusCode/isRetryable instead of generic
 			// text-based inference.
-			Err: newDeepSeekStreamProviderErrorChunk(chunkData.Error),
+			Err: newDeepSeekStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
 		})
 	}
 	if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
