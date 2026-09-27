@@ -607,4 +607,3 @@ func TestOpenAIBatch_FailedResultsAndUnsupportedItemsDontStopStream(t *testing.T
 
 // --- test helpers shared with files_api_v4_test.go are reused via
 // decodeMultipartFields/decodeMultipartFieldsAndFile.
-

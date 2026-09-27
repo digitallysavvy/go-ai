@@ -292,10 +292,10 @@ func (m *EvaluationModel) handleError(err error) error {
 // typesafeErrorEnvelope decodes TypeSafe AI's several observed error body
 // shapes: {message}, {error: string}, {error: {message}}, {detail}, {error_type}.
 type typesafeErrorEnvelope struct {
-	Message   string             `json:"message"`
-	Detail    interface{}        `json:"detail"`
+	Message   string              `json:"message"`
+	Detail    interface{}         `json:"detail"`
 	Error     *typesafeErrorUnion `json:"error"`
-	ErrorType string             `json:"error_type"`
+	ErrorType string              `json:"error_type"`
 }
 
 // typesafeErrorUnion decodes the "error" field, which may be either a bare
