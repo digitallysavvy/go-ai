@@ -53,6 +53,65 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 	}
 }
 
+// TestGenerateText_CombinesConsecutiveToolMessagesForEveryProvider proves
+// that consecutive tool-role messages are merged into one before ANY
+// provider's DoGenerate is invoked -- mirroring TS convertToLanguageModelPrompt,
+// which runs once in the shared core for every provider (packages/ai/src/prompt/
+// convert-to-language-model-prompt.ts, hash 33647d7). The merge lives in
+// promptutils.NormalizePrompt (called from GenerateText before model.DoGenerate),
+// not in any one provider's own message converter, so it reaches providers with
+// bespoke converters too (e.g. Bedrock Converse, Gateway, DeepSeek), not just the
+// three that call ToOpenAIMessages/ConvertToAnthropicPrompt/ConvertToGoogleMessages.
+func TestGenerateText_CombinesConsecutiveToolMessagesForEveryProvider(t *testing.T) {
+	t.Parallel()
+
+	var gotMessages []types.Message
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			gotMessages = opts.Prompt.Messages
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "call-1", ToolName: "t", Input: "{}"},
+					types.ToolCallContent{ToolCallID: "call-2", ToolName: "t", Input: "{}"},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "call-1", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r1"}},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "call-2", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r2"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotMessages) != 2 {
+		t.Fatalf("model saw %d messages, want 2 (assistant + one combined tool message); got %#v", len(gotMessages), gotMessages)
+	}
+	if gotMessages[1].Role != types.RoleTool {
+		t.Fatalf("gotMessages[1].Role = %q, want tool", gotMessages[1].Role)
+	}
+	if len(gotMessages[1].Content) != 2 {
+		t.Fatalf("gotMessages[1].Content has %d parts, want 2 (both tool results merged into one wire message)", len(gotMessages[1].Content))
+	}
+}
+
 func TestGenerateText_GatewayRetryableErrorsRetry(t *testing.T) {
 	t.Parallel()
 

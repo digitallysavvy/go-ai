@@ -204,6 +204,12 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	if err != nil {
 		return interactionsRequest{}, nil, GoogleInteractionsProviderOptions{}, err
 	}
+	// Defensive, idempotent: pkg/ai's per-step NormalizePromptWithDownloadSupport
+	// already merges consecutive tool messages before DoGenerate is called, but
+	// buildArgs can also be reached directly (bypassing pkg/ai), and this model
+	// builds one Interactions API turn per source message, so unmerged
+	// consecutive tool-role messages would otherwise produce separate turns.
+	normalizedPrompt.Messages = prompt.MergeConsecutiveToolMessages(normalizedPrompt.Messages)
 	normalizedOpts := *opts
 	normalizedOpts.Prompt = normalizedPrompt
 

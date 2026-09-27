@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"testing"
@@ -227,6 +228,112 @@ func TestNormalizePromptAllowsSystemMessagesWithOptIn(t *testing.T) {
 	}
 	if got.Messages[0].Role != types.RoleSystem {
 		t.Fatalf("Role = %q, want system", got.Messages[0].Role)
+	}
+}
+
+// TestNormalizePromptWithDownloadSupportCombinesConsecutiveToolMessages ports
+// the TS convert-to-language-model-prompt.test.ts "should combine 2
+// consecutive tool messages into a single tool message" case (hash 33647d7),
+// but targets NormalizePromptWithDownloadSupport rather than any one
+// provider's wire converter. TS applies this merge once, in the shared core
+// convertToLanguageModelPrompt, immediately before building the
+// LanguageModelV4Prompt handed to doGenerate -- so it reaches every
+// provider, including ones with their own bespoke converter (Bedrock
+// Converse, Cohere, Mistral, DeepSeek, etc.) that never call
+// ToOpenAIMessages/ConvertToAnthropicPrompt/ConvertToGoogleMessages.
+// NormalizePromptWithDownloadSupport is the Go equivalent: it is called
+// fresh for every step by pkg/ai (GenerateText/StreamText) and pkg/agent
+// (ToolLoopAgent) immediately before that step's provider.GenerateOptions is
+// built and handed to DoGenerate/DoStream, so proving the merge happens here
+// proves it reaches every provider uniformly.
+//
+// (Plain NormalizePrompt deliberately does NOT merge: pkg/ai/pkg/agent also
+// use it to seed the whole-conversation message history that
+// resumeToolApprovals and similar bookkeeping scan by original message
+// boundaries, before any step-specific normalization runs.)
+func TestNormalizePromptWithDownloadSupportCombinesConsecutiveToolMessages(t *testing.T) {
+	got, err := NormalizePromptWithDownloadSupport(context.Background(), types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "toolCallId", ToolName: "toolName", Input: "{}"},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "toolCallId1",
+						ToolName:   "toolName",
+						Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result1"},
+					},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "toolCallId2",
+						ToolName:   "toolName",
+						Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result2"},
+					},
+				},
+			},
+		},
+	}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("NormalizePromptWithDownloadSupport() error = %v", err)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2 (assistant + one combined tool message); got %#v", len(got.Messages), got.Messages)
+	}
+	if got.Messages[1].Role != types.RoleTool {
+		t.Fatalf("Messages[1].Role = %q, want tool", got.Messages[1].Role)
+	}
+	if len(got.Messages[1].Content) != 2 {
+		t.Fatalf("len(Messages[1].Content) = %d, want 2 (both tool results combined)", len(got.Messages[1].Content))
+	}
+	part1, ok := got.Messages[1].Content[0].(types.ToolResultContent)
+	if !ok || part1.ToolCallID != "toolCallId1" {
+		t.Fatalf("Messages[1].Content[0] = %#v, want ToolResultContent(toolCallId1)", got.Messages[1].Content[0])
+	}
+	part2, ok := got.Messages[1].Content[1].(types.ToolResultContent)
+	if !ok || part2.ToolCallID != "toolCallId2" {
+		t.Fatalf("Messages[1].Content[1] = %#v, want ToolResultContent(toolCallId2)", got.Messages[1].Content[1])
+	}
+}
+
+// TestNormalizePromptDoesNotCombineToolMessages locks in the design decision
+// that plain NormalizePrompt must NOT merge consecutive tool-role messages,
+// unlike NormalizePromptWithDownloadSupport. Regression guard: an earlier
+// version of this merge lived in NormalizePrompt itself, which broke
+// resumeToolApprovals (pkg/ai/tool_approval_resume.go) -- it scans the
+// whole-conversation history seeded by NormalizePrompt (via pkg/ai's outer,
+// once-per-call normalization) to find tool-approval-response parts by their
+// ORIGINAL message boundaries, before any step-specific normalization runs.
+func TestNormalizePromptDoesNotCombineToolMessages(t *testing.T) {
+	got, err := NormalizePrompt(types.Prompt{
+		Messages: []types.Message{
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "toolCallId1", ToolName: "toolName", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result1"}},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "toolCallId2", ToolName: "toolName", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result2"}},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("NormalizePrompt() error = %v", err)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2 (NormalizePrompt must leave consecutive tool messages unmerged); got %#v", len(got.Messages), got.Messages)
 	}
 }
 
