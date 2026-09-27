@@ -171,9 +171,9 @@ type GatewayProviderOptions struct {
 
 	// Has restricts routing to provider models that satisfy every given
 	// entry. Entries are capability tags (GatewayHasImplicitCaching,
-	// GatewayHasReasoning, GatewayHasToolUse, GatewayHasVision) or
-	// weight-format conditions built with GatewayHasQuantization /
-	// GatewayHasNotQuantization.
+	// GatewayHasReasoning, GatewayHasStructuredOutput, GatewayHasToolUse,
+	// GatewayHasVision) or weight-format conditions built with
+	// GatewayHasQuantization / GatewayHasNotQuantization.
 	Has []string `json:"has,omitempty"`
 
 	// IdempotencyKey is used by experimental_startBatch: retries with the
@@ -187,10 +187,11 @@ type GatewayProviderOptions struct {
 
 // Gateway `has` capability tags. See GatewayProviderOptions.Has.
 const (
-	GatewayHasImplicitCaching = "implicit-caching"
-	GatewayHasReasoning       = "reasoning"
-	GatewayHasToolUse         = "tool-use"
-	GatewayHasVision          = "vision"
+	GatewayHasImplicitCaching  = "implicit-caching"
+	GatewayHasReasoning        = "reasoning"
+	GatewayHasStructuredOutput = "structured-output"
+	GatewayHasToolUse          = "tool-use"
+	GatewayHasVision           = "vision"
 )
 
 // GatewayCachingAuto is the only valid value for GatewayProviderOptions.Caching.

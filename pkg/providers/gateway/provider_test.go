@@ -1109,6 +1109,7 @@ func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
 		Has: []string{
 			GatewayHasImplicitCaching,
 			GatewayHasReasoning,
+			GatewayHasStructuredOutput,
 			GatewayHasToolUse,
 			GatewayHasVision,
 			GatewayHasQuantization("fp8"),
@@ -1120,7 +1121,7 @@ func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
 	if !ok {
 		t.Fatalf("has type = %T, want []string", got["has"])
 	}
-	want := []string{"implicit-caching", "reasoning", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
+	want := []string{"implicit-caching", "reasoning", "structured-output", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
 	if len(has) != len(want) {
 		t.Fatalf("has = %#v, want %#v", has, want)
 	}
