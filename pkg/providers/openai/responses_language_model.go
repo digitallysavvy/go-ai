@@ -89,7 +89,8 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
 	}
 
-	result, err := m.convertResponse(resp, store, webSearchToolName, opts.Tools, m.provider.responsesProviderOptionsName())
+	approvalFromPrompt := extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
+	result, err := m.convertResponse(resp, store, webSearchToolName, opts.Tools, approvalFromPrompt, m.provider.responsesProviderOptionsName())
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +120,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
 	stream.tools = opts.Tools
 	stream.store = store
+	stream.approvalFromPrompt = extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
 	if name := toolSearchToolName(opts.Tools); name != "" {
 		stream.toolSearchToolName = name
 	}
@@ -1040,6 +1042,39 @@ func outputSchemaToolNames(tools []types.Tool) map[string]bool {
 	return names
 }
 
+// extractApprovalRequestIDToToolCallIDFromPrompt extracts a mapping from MCP
+// approval request IDs to their corresponding tool call IDs from the prompt.
+// When an MCP tool requires approval, the SDK generates a dummy tool call ID
+// to track the pending approval. When the caller responds to the approval
+// (and the conversation continues in a later turn), this maps the approval
+// request ID back to that dummy tool call ID so a later mcp_call for the
+// same approval references the correct tool call. Mirrors TS's
+// extractApprovalRequestIdToToolCallIdMapping.
+func extractApprovalRequestIDToToolCallIDFromPrompt(prompt types.Prompt) map[string]string {
+	mapping := map[string]string{}
+	for _, message := range prompt.Messages {
+		if message.Role != types.RoleAssistant {
+			continue
+		}
+		for _, part := range message.Content {
+			toolCall, ok := part.(types.ToolCallContent)
+			if !ok {
+				continue
+			}
+			openaiOpts, ok := toolCall.ProviderOptions["openai"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			approvalRequestID, ok := openaiOpts["approvalRequestId"].(string)
+			if !ok || approvalRequestID == "" {
+				continue
+			}
+			mapping[approvalRequestID] = toolCall.ToolCallID
+		}
+	}
+	return mapping
+}
+
 func responsesWebSearchToolName(tools []types.Tool) string {
 	for _, tool := range tools {
 		switch {
@@ -1066,7 +1101,7 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
-func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, providerOptionsName ...string) (*types.GenerateResult, error) {
+func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, approvalFromPrompt map[string]string, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
 	if len(providerOptionsName) > 0 && providerOptionsName[0] != "" {
 		providerName = providerOptionsName[0]
@@ -1503,6 +1538,17 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			toolCallID := item.ID
+			if item.ApprovalRequestID != nil {
+				// Matches TS: `approvalRequestIdToDummyToolCallIdFromPrompt[part.approval_request_id] ?? part.id`.
+				// When this mcp_call was already approved in a previous turn
+				// (an mcp_approval_request whose dummy tool-call id was
+				// carried in the prompt via providerOptions.openai.approvalRequestId),
+				// reuse that same tool-call id so the approval and its
+				// resulting call/result share one id across turns.
+				if alias, ok := approvalFromPrompt[*item.ApprovalRequestID]; ok {
+					toolCallID = alias
+				}
+			}
 			toolName := "mcp." + item.Name
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
@@ -2042,7 +2088,16 @@ type responsesStream struct {
 	// (seen earlier in this same stream) to the dummy tool-call id emitted
 	// for it, so a later mcp_call sharing that approval_request_id reuses
 	// the same tool-call id the approval was requested/answered under.
+	// Mirrors TS's approvalRequestIdToDummyToolCallIdFromStream.
 	mcpApprovalAlias map[string]string
+
+	// approvalFromPrompt maps an MCP approval_request_id to the dummy
+	// tool-call id it was assigned in a PREVIOUS turn, extracted from the
+	// prompt's assistant tool-call parts (providerOptions.openai.approvalRequestId).
+	// Used as a fallback when mcpApprovalAlias has no entry for the current
+	// stream (the approval request happened in an earlier turn, not this
+	// one). Mirrors TS's approvalRequestIdToDummyToolCallIdFromPrompt.
+	approvalFromPrompt map[string]string
 }
 
 // responsesOngoingToolCall tracks per-output-index state for a tool call
@@ -3315,7 +3370,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		toolCallID := item.ID
 		if item.ApprovalRequestID != nil {
+			// Matches TS precedence: check this stream's own alias map
+			// first (an mcp_approval_request seen earlier in the same
+			// stream), then the prompt-derived map (approved in a
+			// previous turn), then fall back to the item's own id.
 			if alias, ok := s.mcpApprovalAlias[*item.ApprovalRequestID]; ok {
+				toolCallID = alias
+			} else if alias, ok := s.approvalFromPrompt[*item.ApprovalRequestID]; ok {
 				toolCallID = alias
 			}
 		}

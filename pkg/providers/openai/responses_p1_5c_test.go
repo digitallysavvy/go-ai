@@ -20,7 +20,7 @@ func TestResponsesLanguageModel_ImageGenerationCallDecodesAsToolCallAndResult(t 
 	item, _ := json.Marshal(map[string]interface{}{
 		"type": "image_generation_call", "id": "ig_1", "result": "base64img",
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestResponsesLanguageModel_FileSearchCallDecodesAsToolCallAndResult(t *test
 			{"attributes": map[string]interface{}{"a": "b"}, "file_id": "file_1", "filename": "a.txt", "score": 0.9, "text": "hello"},
 		},
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestResponsesLanguageModel_CodeInterpreterCallDecodesAsToolCallAndResult(t 
 		"type": "code_interpreter_call", "id": "ci_1", "container_id": "cntr_1", "code": code, "status": "completed",
 		"outputs": []map[string]interface{}{{"type": "logs", "logs": "1\n"}},
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestResponsesLanguageModel_ToolSearchHostedCallOutputPairing(t *testing.T) 
 	})
 	resp := mockResponsesResponseWith(callItem)
 	resp.Output = append(resp.Output, outputItem)
-	result, err := model.convertResponse(resp, true, "", nil)
+	result, err := model.convertResponse(resp, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestResponsesLanguageModel_McpCallDecodesAsToolCallAndResult(t *testing.T) 
 		"type": "mcp_call", "id": "mcp_1", "status": "completed", "arguments": `{"x":1}`,
 		"name": "search", "server_label": "docs", "output": "found it",
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestResponsesLanguageModel_McpApprovalRequestDecodesAsApprovalRequest(t *te
 	item, _ := json.Marshal(map[string]interface{}{
 		"type": "mcp_approval_request", "id": "mar_1", "server_label": "docs", "name": "search", "arguments": `{}`,
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestResponsesLanguageModel_McpListToolsSkipped(t *testing.T) {
 		"type": "mcp_list_tools", "id": "mlt_1", "server_label": "docs",
 		"tools": []map[string]interface{}{{"name": "search"}},
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestResponsesLanguageModel_MessageAnnotationsDecodeAsSourceContent(t *testi
 			},
 		},
 	})
-	result, err := model.convertResponse(mockResponsesResponseWith(msg), true, "", nil)
+	result, err := model.convertResponse(mockResponsesResponseWith(msg), true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -528,5 +528,137 @@ data: {"type":"response.reasoning_summary_part.done","item_id":"rs_1","output_in
 	end, err := stream.Next()
 	if err != nil || end.Type != provider.ChunkTypeReasoningEnd || end.ID != "rs_1:0" {
 		t.Fatalf("chunk = %#v, err = %v, want an immediate reasoning-end (store=true)", end, err)
+	}
+}
+
+// ── MCP approvalRequestIdToDummyToolCallIdFromPrompt (P1-5c follow-up) ─────
+//
+// Mirrors TS's extractApprovalRequestIdToToolCallIdMapping: when an MCP tool
+// call was approved in a PREVIOUS turn, the approval request id is carried
+// in the current turn's prompt on the assistant tool-call part that
+// represented the pending approval (providerOptions.openai.approvalRequestId
+// -> that part's toolCallId). A later mcp_call in a new response that shares
+// the same approval_request_id must reuse that same tool call id.
+
+func TestResponsesLanguageModel_McpCallUsesApprovalIDFromPromptGenerate(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	prompt := types.Prompt{Messages: []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID: "dummy_call_1",
+					ToolName:   "mcp.search",
+					ProviderOptions: map[string]interface{}{
+						"openai": map[string]interface{}{"approvalRequestId": "req_1"},
+					},
+				},
+			},
+		},
+	}}
+	approvalFromPrompt := extractApprovalRequestIDToToolCallIDFromPrompt(prompt)
+	if approvalFromPrompt["req_1"] != "dummy_call_1" {
+		t.Fatalf("approvalFromPrompt = %#v, want req_1 -> dummy_call_1", approvalFromPrompt)
+	}
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "mcp_call", "id": "mcp_2", "status": "completed", "arguments": `{"x":1}`,
+		"name": "search", "server_label": "docs", "output": "found it",
+		"approval_request_id": "req_1",
+	})
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, approvalFromPrompt)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "dummy_call_1" {
+		t.Fatalf("ToolCalls = %#v, want id aliased to dummy_call_1 from the prompt", result.ToolCalls)
+	}
+	var tc types.ToolCallContent
+	var tr types.ToolResultContent
+	for _, c := range result.Content {
+		switch v := c.(type) {
+		case types.ToolCallContent:
+			tc = v
+		case types.ToolResultContent:
+			tr = v
+		}
+	}
+	if tc.ToolCallID != "dummy_call_1" || tr.ToolCallID != "dummy_call_1" {
+		t.Fatalf("content tool-call/result ids = %q/%q, want dummy_call_1", tc.ToolCallID, tr.ToolCallID)
+	}
+}
+
+func TestResponsesLanguageModel_McpCallWithUnknownApprovalIDFallsBackToItemID(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "mcp_call", "id": "mcp_3", "status": "completed", "arguments": `{}`,
+		"name": "search", "server_label": "docs", "output": "found it",
+		"approval_request_id": "req_unknown",
+	})
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, map[string]string{})
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "mcp_3" {
+		t.Fatalf("ToolCalls = %#v, want fallback to item id mcp_3", result.ToolCalls)
+	}
+}
+
+func TestResponsesLanguageModel_StreamMcpCallUsesApprovalIDFromPrompt(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"mcp_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{}","name":"search","server_label":"docs","output":"found","approval_request_id":"req_1"}}
+
+`)), false)
+	stream.approvalFromPrompt = map[string]string{"req_1": "dummy_call_1"}
+	defer stream.Close() //nolint:errcheck
+
+	call, err := stream.Next()
+	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ID != "dummy_call_1" {
+		t.Fatalf("chunk = %#v, err = %v, want tool-call aliased to dummy_call_1 from the prompt", call, err)
+	}
+	result, err := stream.Next()
+	if err != nil || result.Type != provider.ChunkTypeToolResult || result.ToolResult.ToolCallID != "dummy_call_1" {
+		t.Fatalf("chunk = %#v, err = %v, want tool-result aliased to dummy_call_1", result, err)
+	}
+}
+
+func TestResponsesLanguageModel_StreamMcpCallStreamAliasTakesPrecedenceOverPrompt(t *testing.T) {
+	// Both an in-stream mcp_approval_request (which populates
+	// mcpApprovalAlias) and a prompt-derived alias exist for the same
+	// approval_request_id; the in-stream one (the more recent) wins, as in
+	// TS: `approvalRequestIdToDummyToolCallIdFromStream.get(id) ??
+	// approvalRequestIdToDummyToolCallIdFromPrompt[id] ?? value.item.id`.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_approval_request","id":"mar_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"mcp_approval_request","id":"mar_1","server_label":"docs","name":"search","arguments":"{}","approval_request_id":"req_1"}}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"mcp_call","id":"mcp_1"}}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{}","name":"search","server_label":"docs","output":"found","approval_request_id":"req_1"}}
+
+`)), false)
+	stream.approvalFromPrompt = map[string]string{"req_1": "stale_dummy_call"}
+	defer stream.Close() //nolint:errcheck
+
+	approvalCall, err := stream.Next()
+	if err != nil || approvalCall.Type != provider.ChunkTypeToolCall {
+		t.Fatalf("chunk = %#v, err = %v, want the approval-request's tool-call", approvalCall, err)
+	}
+	streamDummyID := approvalCall.ToolCall.ID
+	if streamDummyID == "stale_dummy_call" {
+		t.Fatalf("stream-generated dummy id unexpectedly equals the prompt-derived one")
+	}
+	approval, err := stream.Next()
+	if err != nil || approval.Type != provider.ChunkTypeToolApprovalRequest {
+		t.Fatalf("chunk = %#v, err = %v, want a tool-approval-request", approval, err)
+	}
+	call, err := stream.Next()
+	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ID != streamDummyID {
+		t.Fatalf("chunk = %#v, err = %v, want mcp_call aliased to the in-stream dummy id %q (not the prompt one)", call, err, streamDummyID)
 	}
 }

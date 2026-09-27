@@ -121,7 +121,7 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools)
+	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools), tools)
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools), tools)
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -1282,7 +1282,7 @@ func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
 		ID:     "resp_123",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{raw},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2132,7 +2132,7 @@ func TestResponsesLanguageModel_ReasoningContextMetadata(t *testing.T) {
 	resp.ServiceTier = "priority"
 	resp.Reasoning = &responses.ResponsesReasoningInfo{Context: "current_turn"}
 
-	result, err := model.convertResponse(resp, true, "", nil, "openai")
+	result, err := model.convertResponse(resp, true, "", nil, nil, "openai")
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2460,7 +2460,7 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2630,7 +2630,7 @@ func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2693,7 +2693,7 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2751,7 +2751,7 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -2902,7 +2902,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{programItem, outputItem},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -3115,7 +3115,7 @@ func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", tools)
+	}, true, "", tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -3181,7 +3181,7 @@ func TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclar
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		Output: []json.RawMessage{item},
 		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, "", tools)
+	}, true, "", tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
