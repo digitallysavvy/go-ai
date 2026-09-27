@@ -35,7 +35,19 @@ type Provider struct {
 	// nil when the caller supplied an explicit BaseURL, matching TS: an
 	// explicit baseURL is used verbatim regardless of the endpoint flag.
 	endpointClient *http.Client
+
+	// cloudTTSClient targets the (non-regional) Cloud Text-to-Speech
+	// synthesize endpoint for Chirp 3: HD voices, reusing the same
+	// OAuth-authenticated *stdhttp.Client as client/endpointClient. nil in
+	// Express Mode (API key auth), which Chirp speech models reject outright.
+	cloudTTSClient *http.Client
 }
+
+// defaultCloudTTSSynthesizeURL is the (non-regional) Cloud Text-to-Speech
+// synthesize endpoint used by Chirp 3: HD voices
+// (TS CLOUD_TTS_SYNTHESIZE_URL). Unlike Vertex AI and Speech-to-Text, Cloud
+// Text-to-Speech has a single global host, not a per-region one.
+const defaultCloudTTSSynthesizeURL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
 // isEndpointModelID mirrors TS isEndpointModelId: tuned models are served
 // from a deployed endpoint and addressed by their "endpoints/{id}" resource,
@@ -72,6 +84,11 @@ type Config struct {
 
 	// BaseURL is the base URL for the Vertex AI API (optional, computed from project/location if not provided)
 	BaseURL string
+
+	// CloudTTSBaseURL overrides the Cloud Text-to-Speech synthesize endpoint
+	// used by Chirp 3: HD voices (default: the real, non-regional
+	// texttospeech.googleapis.com host). Primarily for tests.
+	CloudTTSBaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
@@ -243,10 +260,26 @@ func New(cfg Config) (*Provider, error) {
 		})
 	}
 
+	var cloudTTSClient *http.Client
+	// Chirp speech models reject Express Mode outright (checked in
+	// SpeechModel), so the Cloud TTS client is only built for OAuth auth.
+	if cfg.APIKey == "" {
+		cloudTTSBaseURL := cfg.CloudTTSBaseURL
+		if cloudTTSBaseURL == "" {
+			cloudTTSBaseURL = defaultCloudTTSSynthesizeURL
+		}
+		cloudTTSClient = http.NewClient(http.Config{
+			BaseURL:    cloudTTSBaseURL,
+			Headers:    mergedHeaders,
+			HTTPClient: httpClient,
+		})
+	}
+
 	return &Provider{
 		config:         cfg,
 		client:         client,
 		endpointClient: endpointClient,
+		cloudTTSClient: cloudTTSClient,
 	}, nil
 }
 
@@ -288,10 +321,67 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 	if isEndpointModelID(modelID) && p.config.APIKey != "" {
-		return nil, fmt.Errorf("google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 
 	return NewLanguageModel(p, modelID), nil
+}
+
+// Interactions returns a language model backed by the Gemini Interactions
+// API (`.../locations/{region}/interactions`) on Vertex. It reuses the base
+// google package's InteractionsLanguageModel (TS: the exact same
+// GoogleInteractionsLanguageModel class, just constructed with a
+// Vertex-flavored config) with Vertex's OAuth-authenticated client and
+// location-scoped, endpoint-style base URL (no "/publishers/google" suffix).
+func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
+}
+
+// InteractionsAgent returns a Vertex Interactions API model for a Gemini
+// agent preset (e.g. Deep Research).
+func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, error) {
+	if agent == "" {
+		return nil, fmt.Errorf("agent cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
+}
+
+// InteractionsManagedAgent returns a Vertex Interactions API model for a
+// user-defined agent created via the Agent Builder API.
+func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, error) {
+	if id == "" {
+		return nil, fmt.Errorf("managed agent id cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
+}
+
+// interactionsConfig builds the InteractionsConfig for Vertex: the
+// endpoint-style client when available (no "/publishers/google" suffix,
+// matching TS `createConfig('interactions', { endpoint: true })`), falling
+// back to the regular client when the caller supplied an explicit BaseURL
+// (TS loadBaseURL returns an explicit baseURL verbatim regardless of the
+// endpoint flag, so there is no separate endpoint client in that case).
+func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
+	client := p.client
+	if p.endpointClient != nil {
+		client = p.endpointClient
+	}
+	return googleprovider.InteractionsConfig{
+		ProviderName: "google.vertex.interactions",
+		Client:       client,
+	}
 }
 
 // AnthropicModel returns a Claude language model routed through Vertex AI's
@@ -354,6 +444,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a Gemini TTS speech synthesis model by ID.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	// Chirp 3: HD voices are served by the dedicated Cloud Text-to-Speech
+	// API, not Vertex's generateContent endpoint (TS:
+	// `modelId.startsWith('chirp')`).
+	if strings.HasPrefix(modelID, "chirp") {
+		if p.config.APIKey != "" {
+			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		}
+		return NewCloudTTSSpeechModel(p, modelID), nil
+	}
 	return googleprovider.NewSpeechModelWithConfig(modelID, googleprovider.SpeechModelConfig{
 		ProviderName:        "google.vertex.speech",
 		MetadataKey:         "google",
@@ -365,7 +464,8 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	}), nil
 }
 
-// Speech returns a Gemini TTS speech synthesis model by ID.
+// Speech returns a speech synthesis model by ID (Gemini TTS via
+// generateContent, or Chirp 3: HD via Cloud Text-to-Speech).
 func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
@@ -373,7 +473,7 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google vertex transcription models do not support Express Mode API keys")
+		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 	return NewTranscriptionModel(p, modelID), nil
 }

@@ -95,9 +95,13 @@ const (
 	ModelGeminiLive20FlashExp     = "gemini-live-2.0-flash-exp"
 )
 
-// Transcription model IDs (Gemini 3.5 Transcribe). Not yet wired to
-// Provider.TranscriptionModel(), which still returns an unsupported error;
-// see WG-G5 in the Sep 23 2026 parity handoff (deferred).
+// Transcription model IDs (Gemini 3.5 Transcribe), served through the
+// Interactions API. Provider.TranscriptionModel() routes any model ID to
+// TranscriptionModel; the unary variant (ModelGemini35Transcribe) supports
+// DoTranscribe. The "-live" variant only supports streaming transcription
+// over a WebSocket (TS doStream), which the Go SDK's TranscriptionModel
+// interface does not yet expose (no DoStream) — DoTranscribe rejects it with
+// an explanatory error instead of silently doing the wrong thing.
 const (
 	ModelGemini35Transcribe     = "gemini-3.5-transcribe"
 	ModelGemini35TranscribeLive = "gemini-3.5-transcribe-live"
@@ -138,13 +142,6 @@ const (
 	// InteractionsAgentDeepResearch is kept for source compatibility and maps to
 	// the current TS SDK deep-research pro preview agent name.
 	InteractionsAgentDeepResearch = InteractionsAgentDeepResearchProPreview
-)
-
-// Imagen model IDs for Google Generative AI image generation (use :predict API)
-const (
-	ModelImagen40Generate001      = "imagen-4.0-generate-001"
-	ModelImagen40UltraGenerate001 = "imagen-4.0-ultra-generate-001"
-	ModelImagen40FastGenerate001  = "imagen-4.0-fast-generate-001"
 )
 
 // Gemini image model IDs for Google Generative AI (use :generateContent API)
