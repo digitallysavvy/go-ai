@@ -672,6 +672,85 @@ func TestBatch_SkipsUnknownContentBlocksButFailsOnMalformedKnownBlock(t *testing
 	}
 }
 
+// TestBatch_PreservesRawCitationsWithoutMisattributingDocumentIndices ports
+// TS "preserves raw batch citations without misattributing document indices"
+// (anthropic-batch.test.ts:1297): batch results have no access to the
+// original prompt's document ordering, so ALL raw citations (not just the
+// web-search subset doGenerate/doStream keep) are preserved verbatim on the
+// text part's providerMetadata, while only web_search_result_location
+// citations resolve to a source part -- page_location/char_location would
+// misattribute document_index against an unrelated request's documents, so
+// they produce no source in batch (citationDocuments is empty).
+func TestBatch_PreservesRawCitationsWithoutMisattributingDocumentIndices(t *testing.T) {
+	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"text","text":"Paris is sunny.","citations":[` +
+		`{"type":"page_location","cited_text":"Paris is sunny.","document_index":0,"document_title":"Weather report","start_page_number":1,"end_page_number":1,"file_id":"file_page"},` +
+		`{"type":"char_location","cited_text":"Paris is sunny.","document_index":0,"document_title":"Weather report","start_char_index":0,"end_char_index":15,"file_id":"file_char"},` +
+		`{"type":"web_search_result_location","cited_text":"Paris is sunny.","url":"https://example.com/weather","title":"Paris weather","encrypted_index":"encrypted-index"}` +
+		`]}],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`
+	resultsBody := `{"custom_id":"citation","result":{"type":"succeeded","message":` + message + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := drainAnthropicBatchResults(t, stream)
+	got := items["citation"]
+	if got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("citation = %+v", got)
+	}
+	res := got.TextResult
+
+	if len(res.Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2 (text, source): %+v", len(res.Content), res.Content)
+	}
+	text, ok := res.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("Content[0] = %T, want types.TextContent", res.Content[0])
+	}
+	if text.Text != "Paris is sunny." {
+		t.Errorf("text.Text = %q", text.Text)
+	}
+	var meta map[string]struct {
+		Citations []map[string]interface{} `json:"citations"`
+	}
+	if err := json.Unmarshal(text.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode text providerMetadata: %v", err)
+	}
+	// All three raw citations preserved, including the two that never
+	// produce a source (page_location/char_location).
+	if len(meta["anthropic"].Citations) != 3 {
+		t.Fatalf("citations = %#v, want 3 raw entries", meta["anthropic"].Citations)
+	}
+	wantTypes := []string{"page_location", "char_location", "web_search_result_location"}
+	for i, want := range wantTypes {
+		if got := meta["anthropic"].Citations[i]["type"]; got != want {
+			t.Errorf("citations[%d].type = %v, want %v", i, got, want)
+		}
+	}
+
+	src, ok := res.Content[1].(types.SourceContent)
+	if !ok {
+		t.Fatalf("Content[1] = %T, want types.SourceContent", res.Content[1])
+	}
+	if src.SourceType != "url" || src.URL != "https://example.com/weather" || src.Title != "Paris weather" {
+		t.Errorf("source = %+v", src)
+	}
+	var srcMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(src.ProviderMetadata, &srcMeta); err != nil {
+		t.Fatalf("decode source providerMetadata: %v", err)
+	}
+	if srcMeta["anthropic"]["encryptedIndex"] != "encrypted-index" {
+		t.Errorf("source providerMetadata.anthropic.encryptedIndex = %v", srcMeta["anthropic"]["encryptedIndex"])
+	}
+}
+
 // TestBatch_PreservesSignedCompactionBlock ports TS "preserves signed
 // compaction blocks in batch results" (anthropic-batch.test.ts:1046): a
 // succeeded batch message whose only content block is a signed "compaction"
@@ -724,18 +803,15 @@ func TestBatch_PreservesSignedCompactionBlock(t *testing.T) {
 // TestBatch_PreservesClientAndProviderExecutedToolContent ports TS
 // "preserves client and provider-executed tool content"
 // (anthropic-batch.test.ts:1104): a succeeded batch message mixing a client
-// tool_use, two server_tool_use variants (web_search, code_execution) and
-// their web_search_tool_result all convert the same way they do outside a
-// batch, through the shared convertResponseWithOptions path with
-// markCodeExecutionDynamic forced on (batch results have no original tool
-// list to consult).
-//
-// The TS fixture also includes an mcp_tool_use/mcp_tool_result pair; that
-// part is intentionally not ported here because the shared non-batch
-// converter (language_model.go's providerToolResultName) does not yet
-// resolve mcp_tool_result's tool name to its paired mcp_tool_use name or set
-// dynamic/providerMetadata on it -- a pre-existing gap tracked separately
-// (FOLLOWUP_TRACKER.md "AR"), not specific to batch conversion.
+// tool_use, two server_tool_use variants (web_search, code_execution), their
+// web_search_tool_result, and an mcp_tool_use/mcp_tool_result pair all
+// convert the same way they do outside a batch, through the shared
+// convertResponseWithOptions path with markCodeExecutionDynamic forced on
+// (batch results have no original tool list to consult). Also ports the mcp
+// portion of the TS fixture (mcp_tool_use/mcp_tool_result), which needs the
+// shared converter to resolve mcp_tool_result's tool name to its paired
+// mcp_tool_use name and set dynamic:true / providerMetadata on it
+// (FOLLOWUP_TRACKER.md "AR").
 func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	content := `[` +
 		`{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"city":"Paris"}},` +
@@ -743,6 +819,12 @@ func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 		`{"type":"server_tool_use","id":"code_123","name":"code_execution","input":{"code":"print(\"Paris\")"}},` +
 		`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_123","content":[` +
 		`{"type":"web_search_result","url":"https://example.com/weather","title":"Paris weather","encrypted_content":"encrypted"}` +
+		`]},` +
+		`{"type":"mcp_tool_use","id":"mcp_123","name":"lookup","server_name":"weather","input":{"city":"Paris"}},` +
+		`{"type":"mcp_tool_result","tool_use_id":"mcp_123","is_error":false,"content":[` +
+		`{"type":"text","text":"sunny","citations":[` +
+		`{"type":"web_search_result_location","cited_text":"sunny","url":"https://example.com/weather","title":"Paris weather","encrypted_index":"encrypted-index"}` +
+		`]}` +
 		`]}` +
 		`]`
 	message := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
@@ -766,8 +848,8 @@ func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	}
 	res := got.TextResult
 
-	if len(res.ToolCalls) != 3 {
-		t.Fatalf("len(ToolCalls) = %d, want 3: %+v", len(res.ToolCalls), res.ToolCalls)
+	if len(res.ToolCalls) != 4 {
+		t.Fatalf("len(ToolCalls) = %d, want 4: %+v", len(res.ToolCalls), res.ToolCalls)
 	}
 	weather := res.ToolCalls[0]
 	if weather.ID != "toolu_123" || weather.ToolName != "get_weather" || weather.Arguments["city"] != "Paris" || weather.ProviderExecuted {
@@ -784,20 +866,35 @@ func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	if codeExec.Arguments["type"] != "programmatic-tool-call" || codeExec.Arguments["code"] != `print("Paris")` {
 		t.Errorf("ToolCalls[2].Arguments = %+v", codeExec.Arguments)
 	}
+	mcpCall := res.ToolCalls[3]
+	if mcpCall.ID != "mcp_123" || mcpCall.ToolName != "lookup" || !mcpCall.ProviderExecuted || !mcpCall.Dynamic {
+		t.Errorf("ToolCalls[3] (mcp_tool_use) = %+v", mcpCall)
+	}
+	if mcpCall.Arguments["city"] != "Paris" {
+		t.Errorf("ToolCalls[3].Arguments = %+v", mcpCall.Arguments)
+	}
+	if got, ok := mcpCall.ProviderMetadata["anthropic"].(map[string]interface{}); !ok || got["type"] != "mcp-tool-use" || got["serverName"] != "weather" {
+		t.Errorf("ToolCalls[3].ProviderMetadata = %+v", mcpCall.ProviderMetadata)
+	}
 
 	// web_search_tool_result: a ToolResultContent plus a synthesized source
-	// content part, both appended to Content in that order.
-	var toolResult *types.ToolResultContent
+	// content part, both appended to Content in that order. mcp_tool_result:
+	// a ToolResultContent resolving toolName/providerMetadata from the
+	// paired mcp_tool_use call, with dynamic:true and its raw content (incl.
+	// citations) passed through as Result verbatim (no source synthesis).
+	toolResults := map[string]*types.ToolResultContent{}
 	var source *types.SourceContent
 	for i := range res.Content {
 		switch c := res.Content[i].(type) {
 		case types.ToolResultContent:
-			toolResult = &c
+			cc := c
+			toolResults[c.ToolCallID] = &cc
 		case types.SourceContent:
 			source = &c
 		}
 	}
-	if toolResult == nil || toolResult.ToolCallID != "srvtoolu_123" || toolResult.ToolName != "web_search" || !toolResult.ProviderExecuted {
+	toolResult := toolResults["srvtoolu_123"]
+	if toolResult == nil || toolResult.ToolName != "web_search" || !toolResult.ProviderExecuted {
 		t.Fatalf("web_search_tool_result ToolResultContent = %+v", toolResult)
 	}
 	resultList, ok := toolResult.Result.([]map[string]interface{})
@@ -806,6 +903,30 @@ func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	}
 	if source == nil || source.SourceType != "url" || source.URL != "https://example.com/weather" || source.Title != "Paris weather" {
 		t.Fatalf("web_search source = %+v", source)
+	}
+
+	mcpResult := toolResults["mcp_123"]
+	if mcpResult == nil || mcpResult.ToolName != "lookup" || !mcpResult.Dynamic || mcpResult.ProviderExecuted {
+		t.Fatalf("mcp_tool_result ToolResultContent = %+v", mcpResult)
+	}
+	var mcpMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(mcpResult.ProviderMetadata, &mcpMeta); err != nil {
+		t.Fatalf("decode mcp_tool_result providerMetadata: %v", err)
+	}
+	if mcpMeta["anthropic"]["type"] != "mcp-tool-use" || mcpMeta["anthropic"]["serverName"] != "weather" {
+		t.Errorf("mcp_tool_result providerMetadata.anthropic = %+v", mcpMeta["anthropic"])
+	}
+	mcpContent, ok := mcpResult.Result.([]interface{})
+	if !ok || len(mcpContent) != 1 {
+		t.Fatalf("mcp_tool_result.Result = %#v", mcpResult.Result)
+	}
+	mcpBlock, ok := mcpContent[0].(map[string]interface{})
+	if !ok || mcpBlock["text"] != "sunny" {
+		t.Fatalf("mcp_tool_result.Result[0] = %#v", mcpContent[0])
+	}
+	mcpCitations, ok := mcpBlock["citations"].([]interface{})
+	if !ok || len(mcpCitations) != 1 {
+		t.Fatalf("mcp_tool_result.Result[0].citations = %#v", mcpBlock["citations"])
 	}
 }
 
