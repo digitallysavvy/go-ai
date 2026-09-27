@@ -375,7 +375,21 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	// only drains Next() to io.EOF may never make.
 	defer s.cancel()
 
+	var finishTimer *time.Timer
+	var finishTimerC <-chan time.Time
+	cancelPendingFinish := func() {
+		if finishTimer != nil {
+			finishTimer.Stop()
+			finishTimer = nil
+			finishTimerC = nil
+		}
+	}
+
+	// fail stops any pending finish-grace timer (mirroring TS cleanup(),
+	// which finishWithError also calls) before recording the error and
+	// cancelling the caller's AudioStream.
 	fail := func(err error) {
+		cancelPendingFinish()
 		s.setErr(err)
 		cfg.audio.Cancel(err)
 	}
@@ -455,15 +469,6 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 		return ok
 	}
 
-	var finishTimer *time.Timer
-	var finishTimerC <-chan time.Time
-	cancelPendingFinish := func() {
-		if finishTimer != nil {
-			finishTimer.Stop()
-			finishTimer = nil
-			finishTimerC = nil
-		}
-	}
 	// Trailing transcripts can arrive after the input audio ends; without a
 	// terminal signal, finish after a quiet grace window. Transcript
 	// activity reschedules the timer.
