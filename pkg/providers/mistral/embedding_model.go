@@ -40,15 +40,16 @@ func (m *EmbeddingModel) ModelID() string {
 	return m.modelID
 }
 
-// MaxEmbeddingsPerCall returns the maximum number of embeddings per call
-// Mistral AI supports 2048 embeddings per API call
+// MaxEmbeddingsPerCall returns the maximum number of embeddings per call.
+// Mirrors TS MistralEmbeddingModel.maxEmbeddingsPerCall = 32.
 func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
-	return 2048
+	return 32
 }
 
-// SupportsParallelCalls returns whether parallel calls are supported
+// SupportsParallelCalls returns whether parallel calls are supported.
+// Mirrors TS MistralEmbeddingModel.supportsParallelCalls = false.
 func (m *EmbeddingModel) SupportsParallelCalls() bool {
-	return true
+	return false
 }
 
 // DoEmbed performs embedding for a single input
@@ -72,6 +73,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,
+		// TS MistralEmbeddingModel.doEmbed always sends this.
+		"encoding_format": "float",
 	}
 	if mistralOpts := extractMistralEmbeddingOptions(opts); mistralOpts != nil {
 		if mistralOpts.Metadata != nil {

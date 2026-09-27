@@ -63,7 +63,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, fmt.Errorf("mistral: failed to decode audio_data: %w", err)
 	}
 
-	requestBytes, err := json.Marshal(reqBody)
+	requestBytes, err := json.Marshal(redactedSpeechRequestBody(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("mistral: failed to marshal speech request metadata: %w", err)
 	}
@@ -81,6 +81,23 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Body:      resp.Body,
 		},
 	}, nil
+}
+
+// redactedSpeechRequestBody returns a shallow copy of body with ref_audio
+// replaced by a redaction marker, matching TS mistral-speech-model.ts's
+// separate requestBodyValues (ref_audio: '[redacted]' when present). Voice
+// cloning reference audio is arbitrary, potentially large base64 audio data
+// that must not appear in exposed request-body telemetry.
+func redactedSpeechRequestBody(body map[string]interface{}) map[string]interface{} {
+	if _, ok := body["ref_audio"]; !ok {
+		return body
+	}
+	redacted := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		redacted[k] = v
+	}
+	redacted["ref_audio"] = "[redacted]"
+	return redacted
 }
 
 // buildRequestBody builds the /v1/audio/speech request body. Mistral speech

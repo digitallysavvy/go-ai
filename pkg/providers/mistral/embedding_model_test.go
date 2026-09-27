@@ -20,7 +20,8 @@ func TestMistralEmbeddingModelMetadataAndLimits(t *testing.T) {
 	if m.SpecificationVersion() != "v3" || m.Provider() != "mistral" || m.ModelID() != "mistral-embed" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
-	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {
+	// TS MistralEmbeddingModel: maxEmbeddingsPerCall = 32, supportsParallelCalls = false.
+	if m.MaxEmbeddingsPerCall() != 32 || m.SupportsParallelCalls() {
 		t.Fatalf("limits mismatch: max=%d parallel=%v", m.MaxEmbeddingsPerCall(), m.SupportsParallelCalls())
 	}
 }
@@ -53,6 +54,10 @@ func TestMistralEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	inputs, ok := seenBody["input"].([]interface{})
 	if seenBody["model"] != "mistral-embed" || !ok || len(inputs) != 1 || inputs[0] != "hello" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
+	}
+	// TS MistralEmbeddingModel.doEmbed always sends encoding_format: 'float'.
+	if seenBody["encoding_format"] != "float" {
+		t.Fatalf("encoding_format = %#v, want \"float\"", seenBody["encoding_format"])
 	}
 	if len(one.Embedding) != 2 || one.Usage.Tokens != 7 || one.Usage.InputTokens != 7 || one.Usage.TotalTokens != 9 || one.Response.Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbed result mismatch: %#v", one)

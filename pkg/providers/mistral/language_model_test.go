@@ -152,32 +152,56 @@ func TestConvertMistralUsageLegacyCachedTokenFallback(t *testing.T) {
 	}
 }
 
-func TestConvertMistralUsageCacheReadAndWriteAliases(t *testing.T) {
+// TestConvertMistralUsageCacheReadPrecedence guards convert-mistral-usage.ts's
+// exact cacheRead precedence: num_cached_tokens ??
+// prompt_tokens_details.cached_tokens ?? prompt_token_details.cached_tokens ??
+// 0. Mistral has no cache-write concept (cacheWrite is always undefined in
+// TS), and "cache_read_input_tokens"/"cache_creation_input_tokens" are not
+// Mistral usage fields at all (absent from mistralUsageSchema), so they must
+// not be read as cache tokens even though they survive into raw.
+func TestConvertMistralUsageCacheReadPrecedence(t *testing.T) {
 	cacheRead := 11
-	cacheWrite := 4
 	raw := json.RawMessage(`{
 		"prompt_tokens": 30,
 		"completion_tokens": 6,
 		"total_tokens": 36,
-		"cache_read_input_tokens": 11,
-		"cache_creation_input_tokens": 4
+		"num_cached_tokens": 11,
+		"cache_read_input_tokens": 999,
+		"cache_creation_input_tokens": 999,
+		"prompt_tokens_details": {"cached_tokens": 5}
 	}`)
 	usage := convertMistralUsage(raw)
 
 	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
 		t.Fatal("expected cache read tokens")
 	}
+	// num_cached_tokens takes precedence over prompt_tokens_details.cached_tokens.
 	if got := *usage.InputDetails.CacheReadTokens; got != int64(cacheRead) {
 		t.Fatalf("cache read tokens: want %d, got %d", cacheRead, got)
 	}
-	if usage.InputDetails.CacheWriteTokens == nil || *usage.InputDetails.CacheWriteTokens != int64(cacheWrite) {
-		t.Fatalf("cache write tokens: want %d, got %#v", cacheWrite, usage.InputDetails.CacheWriteTokens)
+	// Mistral has no cache-write concept; TS always leaves this undefined.
+	if usage.InputDetails.CacheWriteTokens != nil {
+		t.Fatalf("cache write tokens: want nil, got %#v", usage.InputDetails.CacheWriteTokens)
 	}
-	if got := usage.Raw["cache_read_input_tokens"]; got != float64(cacheRead) {
-		t.Fatalf("raw cache_read_input_tokens: want %d, got %v", cacheRead, got)
+	// Not real Mistral usage fields; only "raw" preserves them verbatim.
+	if got := usage.Raw["cache_read_input_tokens"]; got != float64(999) {
+		t.Fatalf("raw cache_read_input_tokens: want 999, got %v", got)
 	}
-	if got := usage.Raw["cache_creation_input_tokens"]; got != float64(cacheWrite) {
-		t.Fatalf("raw cache_creation_input_tokens: want %d, got %v", cacheWrite, got)
+}
+
+// TestConvertMistralUsageOutputAlwaysText guards TS convert-mistral-usage.ts:
+// outputTokens.text is always the full completion token count and
+// outputTokens.reasoning is always nil/undefined — Mistral usage never
+// reports a reasoning-token breakdown.
+func TestConvertMistralUsageOutputAlwaysText(t *testing.T) {
+	raw := json.RawMessage(`{"prompt_tokens": 10, "completion_tokens": 7, "total_tokens": 17}`)
+	usage := convertMistralUsage(raw)
+
+	if usage.OutputDetails == nil || usage.OutputDetails.TextTokens == nil || *usage.OutputDetails.TextTokens != 7 {
+		t.Fatalf("OutputDetails.TextTokens = %#v, want 7", usage.OutputDetails)
+	}
+	if usage.OutputDetails.ReasoningTokens != nil {
+		t.Fatalf("OutputDetails.ReasoningTokens = %#v, want nil", usage.OutputDetails.ReasoningTokens)
 	}
 }
 

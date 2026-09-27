@@ -351,70 +351,33 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 		TotalTokens:  &totalTokens,
 	}
 
-	// Parse detailed token information if available
+	// cacheRead precedence exactly matches TS convertMistralUsage:
+	// num_cached_tokens ?? prompt_tokens_details.cached_tokens ??
+	// prompt_token_details.cached_tokens ?? 0. Mistral has no cache-write
+	// concept and never reports reasoning/text/image token breakdowns, so
+	// those are intentionally not derived here (TS always leaves cacheWrite
+	// and outputTokens.reasoning undefined).
 	var cachedTokens int64
-	if usage.NumCachedTokens != nil {
+	switch {
+	case usage.NumCachedTokens != nil:
 		cachedTokens = int64(*usage.NumCachedTokens)
-	} else if usage.CacheReadInputTokens != nil {
-		cachedTokens = int64(*usage.CacheReadInputTokens)
-	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+	case usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil:
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
-	} else if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.CachedTokens != nil {
+	case usage.PromptTokenDetails != nil && usage.PromptTokenDetails.CachedTokens != nil:
 		cachedTokens = int64(*usage.PromptTokenDetails.CachedTokens)
 	}
-	var cacheWriteTokens *int64
-	if usage.CacheCreationInputTokens != nil {
-		v := int64(*usage.CacheCreationInputTokens)
-		cacheWriteTokens = &v
-	}
-	var textTokens *int64
-	var imageTokens *int64
-	if usage.PromptTokensDetails != nil {
-		if usage.PromptTokensDetails.TextTokens != nil {
-			textVal := int64(*usage.PromptTokensDetails.TextTokens)
-			textTokens = &textVal
-		}
-		if usage.PromptTokensDetails.ImageTokens != nil {
-			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
-			imageTokens = &imageVal
-		}
-	}
-	var reasoningTokens int64
-	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
-		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
-	}
 
-	// Set input details
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
-		noCacheTokens := promptTokens - cachedTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &noCacheTokens,
-			CacheReadTokens:  &cachedTokens,
-			CacheWriteTokens: cacheWriteTokens,
-			TextTokens:       textTokens,
-			ImageTokens:      imageTokens,
-		}
-	} else {
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &promptTokens,
-			CacheReadTokens:  nil,
-			CacheWriteTokens: cacheWriteTokens,
-		}
+	noCacheTokens := promptTokens - cachedTokens
+	inputDetails := &types.InputTokenDetails{NoCacheTokens: &noCacheTokens}
+	// TS: cacheRead: cacheReadTokens || undefined (0 is falsy -> omitted).
+	if cachedTokens != 0 {
+		inputDetails.CacheReadTokens = &cachedTokens
 	}
+	result.InputDetails = inputDetails
 
-	// Set output details
-	if reasoningTokens > 0 {
-		textOutputTokens := completionTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textOutputTokens,
-			ReasoningTokens: &reasoningTokens,
-		}
-	} else {
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &completionTokens,
-			ReasoningTokens: nil,
-		}
-	}
+	// TS: outputTokens.text is always the full completion token count;
+	// outputTokens.reasoning is always undefined.
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &completionTokens}
 
 	// Store the full raw usage object (every field Mistral returned), not a
 	// hand-picked subset, matching TS convertMistralUsage's `raw: usage`.
@@ -518,32 +481,25 @@ func parseMistralMessageContent(raw json.RawMessage) (text string, reasoningPart
 }
 
 // mistralUsage represents Mistral usage information
+// mistralUsage mirrors the declared fields of TS mistralUsageSchema
+// (convert-mistral-usage.ts) exactly. Mistral returns more fields than
+// declared here (service_tier, request_count, prompt_audio_seconds, ...);
+// convertMistralUsage separately decodes the same bytes into a generic map
+// for Usage.Raw so nothing is dropped.
 type mistralUsage struct {
-	PromptTokens             int  `json:"prompt_tokens"`
-	CompletionTokens         int  `json:"completion_tokens"`
-	TotalTokens              int  `json:"total_tokens"`
-	NumCachedTokens          *int `json:"num_cached_tokens,omitempty"`
-	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokens     int  `json:"prompt_tokens"`
+	CompletionTokens int  `json:"completion_tokens"`
+	TotalTokens      int  `json:"total_tokens"`
+	NumCachedTokens  *int `json:"num_cached_tokens,omitempty"`
 
-	// Detailed token breakdown (OpenAI-compatible, if supported)
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
-		AudioTokens  *int `json:"audio_tokens,omitempty"`
-		TextTokens   *int `json:"text_tokens,omitempty"`
-		ImageTokens  *int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 
 	// Legacy Mistral spelling kept for API compatibility.
 	PromptTokenDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 	} `json:"prompt_token_details,omitempty"`
-
-	CompletionTokensDetails *struct {
-		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
-		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
-		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
-	} `json:"completion_tokens_details,omitempty"`
 }
 
 // mistralStream implements provider.TextStream for Mistral AI SSE responses.
