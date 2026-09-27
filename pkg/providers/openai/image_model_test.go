@@ -133,9 +133,23 @@ func TestImageModel_DoGenerate_WithFilesUsesEditsMultipart(t *testing.T) {
 	}
 }
 
-func TestImageModel_DoGenerate_EditURLUsesConfiguredHTTPClient(t *testing.T) {
+// TestImageModel_DoGenerate_EditURLDoesNotUseConfiguredHTTPClient guards
+// against a P0 SSRF gap found in review round 2: writeImageFilePart used to
+// fetch a "url"-type edit/mask image (caller-supplied data, not the
+// provider's own endpoint) through the provider's configured HTTP client
+// directly -- no ValidateDownloadURL check, no DNS pinning, no redirect
+// protection and no size limit -- and forwarded the response body to OpenAI
+// as image data. TS's equivalent (fileToBlob -> downloadBlob ->
+// fetchWithValidatedRedirects) never uses the provider's configured fetch for
+// this call and always validates the target; matching that, the edit-image
+// URL must now go through the SSRF-safe download path. A loopback httptest
+// server is a disallowed target under that path, so the correct outcome is a
+// rejection, not a successful download through the configured transport.
+func TestImageModel_DoGenerate_EditURLDoesNotUseConfiguredHTTPClient(t *testing.T) {
 	var downloadHeader string
+	var imageServerHit bool
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageServerHit = true
 		downloadHeader = r.Header.Get("X-Custom-Download-Client")
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte{137, 80, 78, 71})
@@ -168,11 +182,14 @@ func TestImageModel_DoGenerate_EditURLUsesConfiguredHTTPClient(t *testing.T) {
 			MediaType: "image/png",
 		}},
 	})
-	if err != nil {
-		t.Fatalf("DoGenerate error = %v", err)
+	if err == nil {
+		t.Fatal("expected the loopback edit-image URL to be rejected by the SSRF-safe download path")
 	}
-	if downloadHeader != "yes" {
-		t.Fatalf("image download did not use configured HTTP client transport; header = %q", downloadHeader)
+	if imageServerHit {
+		t.Fatal("image server was contacted; the disallowed target must be rejected before any request is made")
+	}
+	if downloadHeader == "yes" {
+		t.Fatal("image download used the provider's configured HTTP client transport; it must use the SSRF-safe default download path instead, like TS downloadBlob")
 	}
 }
 
